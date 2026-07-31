@@ -52,6 +52,13 @@ If a milestone doesn't make that primitive better, it isn't a milestone.
     children stops its turn, a completion notification fires, and the parent reasons over a status
     message as though it were a result. **marion can gate this correctly where a single harness
     cannot**, because it owns the whole tree including children running in other harnesses.
+12. **Never hand back something that needs a monitor to interpret.** Integrations without lifecycle
+    ownership return a task handle and polling instructions — each reinventing a task-id format, a
+    status command, a cadence, and a caller obliged to poll. When that caller is a model, the
+    monitor is unreliable by construction: a handle in the result slot is indistinguishable from an
+    answer. Because marion's supervisor owns each child end-to-end, `spawn` can block, `wait` is a
+    real primitive, and the tree is already live. **If marion ever returns a handle plus "go check
+    status", the supervisor has lost ownership of something — fix it there.**
 
 ## Topology
 

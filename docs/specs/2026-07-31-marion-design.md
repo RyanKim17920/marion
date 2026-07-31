@@ -962,6 +962,31 @@ running in *other* harnesses, so its subtree scan is authoritative. This is one 
 marion is not merely bridging harnesses but doing something none of them can do alone — and it is
 worth stating as a reason the tree lives in marion rather than being inferred per-harness.
 
+#### Worked example: why "return a handle and poll" keeps getting reinvented
+
+During this design a Codex integration was asked for a review. It returned
+`task-ms9ifb08-bkcgol` and the instruction to check `/codex:status`. **That was the correct
+behaviour for its constraints** — it launches work it does not own the lifecycle of, so a handle is
+the only honest return value. It was not malfunctioning; it was missing a layer.
+
+The cost is that every such integration independently reinvents the same four things — a task-id
+format, a status command, a polling cadence, and a caller obliged to know it must poll — and a
+**monitor has to be built on top before delegation works at all.** When the caller is a language
+model, that monitor is unreliable by construction: nothing makes the model poll, and a handle in
+the result slot is indistinguishable to it from an answer.
+
+marion's position is that this is a symptom of missing ownership, not a protocol to standardise.
+Because the supervisor owns each child's lifecycle end-to-end:
+
+- `spawn` can block and return the finished `TaskContract` (M1 does exactly this).
+- `wait` is a real primitive, not a polling loop the caller writes.
+- The tree is continuously live, so "what is happening" needs no request at all.
+- **Nothing is ever handed back that requires a monitor to interpret.**
+
+If marion ever finds itself returning a handle plus polling instructions, that is a signal the
+supervisor has lost ownership of something — and it should be fixed there, not papered over with a
+status endpoint.
+
 1. Agent types are prompted to call `mcp__marion__report`.
 2. On a stop with no report, marion re-prompts once via a `Stop` hook returning
    **`{"decision":"block","reason":"are you reporting a result, or are you waiting on something?"}`**
