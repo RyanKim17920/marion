@@ -102,6 +102,13 @@ break things. During design alone, Gemini moved 0.40.1 → 0.53.0 and Codex remo
 `wire_api = "chat"` outright.
 
 Baseline: **Claude Code 2.1.220 · Codex CLI 0.145.0 · opencode 1.17.3 · Gemini CLI 0.53.0.**
+
+> **Local Codex moved to 0.146.0 on 2026-07-31** — spike S2's scripted Enter hit Codex's startup
+> update prompt, which defaults to "Update now", so `~/.codex/packages/standalone/current` now
+> points at 0.146.0. Both versions remain on disk and S2 captured both; behavior was identical for
+> every question it tested. This is itself a data point: **the harnesses will update themselves
+> out from under marion at a keystroke**, which is exactly what §7.7's binary-path pinning and
+> version-stamped capabilities exist for.
 Qwen Code and Amp claims below are **unstamped and unverified locally.**
 
 ### Launcher requirements
@@ -121,6 +128,33 @@ Qwen Code and Amp claims below are **unstamped and unverified locally.**
   demanding `--print`).
 - **`CLAUDE_CODE_CHILD_SESSION`:** set `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` on
   `interactive` children rather than scrubbing it. See *Retractions*.
+- **⚠ `CLAUDE_CONFIG_DIR` isolation breaks OAuth auth.** The macOS Keychain entry is keyed to the
+  *real* config dir, so an isolated child cannot authenticate on a subscription. **Config
+  isolation and subscription auth are mutually exclusive for Claude Code.** This promotes the
+  fileless path (`--agents`, `--mcp-config`, `--settings`) from "preferred" to **load-bearing**.
+  Whether `CODEX_HOME` / `GEMINI_CLI_HOME` share the coupling is **unverified**.
+- **⚠ Codex hooks are trust-gated and fail silently** — no warning, no log — until trusted via
+  `[hooks.state."<key>"] { enabled, trusted_hash }` in `config.toml`. Key and hash come
+  non-interactively from the app-server's `hooks/list`. A required marion setup step.
+- **⚠ Branch marion's hook script on `hook_event_name`.** A Stop-shaped `{"decision":"block"}`
+  returned from `UserPromptSubmit` blocks the user's prompt outright.
+- **Gemini 0.53.0 needs a settings file, not just a key.** `GEMINI_API_KEY` alone now fails with
+  `Invalid auth method selected.` marion must write
+  `<GEMINI_CLI_HOME>/.gemini/settings.json` = `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`.
+  There is no env-var equivalent — settings.json is the only lever. Headless still needs
+  `--skip-trust` or `GEMINI_CLI_TRUST_WORKSPACE=true`. **The HTTPS-unless-localhost restriction
+  is GONE at 0.53.0** (zero bundle hits; plain-HTTP non-localhost base URLs are accepted), so the
+  0.40.1 caveat below is retired.
+- **opencode: drive turns with the legacy `POST /session/{id}/prompt_async`.** The v2 path
+  `POST /api/session/{id}/prompt` returns 200 with an `admittedSeq` and then **nothing ever
+  runs** — no model request is made, messages stay empty — and `POST /api/session/{id}/wait`
+  returns `ServiceUnavailableError: Session wait is not available yet`. Broken in 1.17.3 with or
+  without the experimental flag.
+- **opencode `OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true`** unlocks the full `session.next.*` stream
+  family (`text.started/delta/ended`, `step.started/ended`, `prompt.admitted`, `prompted`).
+  Without it only `agent.switched` / `model.switched` appear. The legacy
+  `message.updated`/`message.part.updated`/`message.part.delta` family arrives either way and is
+  interleaved 1:1 with the new one.
 
 ### Keystroke injection (`interactive` / `opaque`)
 
@@ -155,7 +189,24 @@ record. Caveats:
   rollout fd is held only while loaded/writing — **fd presence is not a liveness signal.**
 - Rollout compression is **not** a live hazard. See *Retractions*.
 
-### Embedded VT — scope is NOT yet known
+### Embedded VT — RESOLVED by spike S2 (2026-07-31)
+
+**Verdict: `alacritty_terminal` retains scrollback correctly; scope is as designed.** Full detail
+in design doc §5.3. The three things that changed:
+
+1. **Claude Code 2.1.220 uses the alternate screen** — so it has *no* scrollback to retain and is
+   viewport-only. Scrollback is a **Codex-only** problem. (The claim below that "neither uses the
+   alternate screen" was stale and is corrected.)
+2. **Top-offset DECSTBM regions exist but are harmless** — Codex emits them only with reverse
+   index (scrolling *down*), which never feeds history. Every history-producing scroll is
+   top-anchored. `vt100` still retained **0** lines in every real capture; confirmed unusable.
+3. **The real hazard is `CSI 3J`** (erase scrollback), which Codex emits on *every resize* and
+   alacritty honors — history goes to zero on every SIGWINCH. **marion intercepts it and keeps
+   its own append-only history.**
+
+DECSET 2026 is validated as a reliable frame boundary for TUI test assertions.
+
+### Embedded VT — original notes (superseded above)
 
 VERIFIED: a dumb pty host answering **no** probes runs both TUIs correctly and interactively.
 Neither blocks on a reply. `TERM=xterm-256color` suffices; no XTGETTCAP. **Neither uses the
@@ -332,12 +383,28 @@ mandatory; prefer recording against the canned provider. Design doc §7.1.
 
 | # | Question | Fail consequence |
 |---|---|---|
-| **S1** | Can Claude Code be driven from raw Rust, including **interrupt**? | Claude adapter needs a TS sidecar — **changes the process model** |
+| ~~**S1**~~ | ~~Can Claude Code be driven from raw Rust, including **interrupt**?~~ | **RESOLVED 2026-07-31 — PASS.** Pure Rust confirmed; TS-sidecar branch dead. Protocol in design doc §5.2 |
 | **S2** | Which DECSTBM shape do the harnesses emit; can the chosen VT keep scrollback? | scrollback needs custom history above the scroll region |
-| **S3** | Codex `shared` lifecycle — does an idle app-server survive? | heartbeat requirement returns |
-| **S4** | Can a `Stop` hook re-prompt a stopping agent (Claude Code, Codex)? | explicit-reporting needs another mechanism |
+| ~~**S3**~~ | ~~Codex `shared` lifecycle — does an idle app-server survive?~~ | **RESOLVED 2026-07-31.** Yes, always — no reaper exists; the retraction stands. But `THREAD_UNLOADING_DELAY = 1800 s` unloads **unsubscribed** threads. Design doc §5.2 |
+| ~~**S4**~~ | ~~Can a `Stop` hook re-prompt a stopping agent?~~ | **RESOLVED 2026-07-31 — PASS on both.** Use `{"decision":"block","reason":…}`, **not** `additionalContext`. Codex hooks are trust-gated and fail silently. Design doc §7.6 |
 
-**S1 runs first** — it is the only open question that changes the language and process model.
+~~**S1 runs first**~~ — done. S2/S3/S4 remain.
+
+**A fifth spike was added by the Codex review and is now the highest-priority one:**
+
+| # | Question | Outcome |
+|---|---|---|
+| ~~**S5**~~ | ~~Does a late-joining observer receive the event stream in Codex `shared` mode?~~ | **RESOLVED 2026-07-31 — PASS.** `thread/resume` **is** the subscribe mechanism (there is no `thread/subscribe`); additive, non-disruptive, works mid-turn. Sequence and six caveats in design doc §5.2 |
+
+**Reconciled:** both earlier claims were half-right. `thread/read` genuinely does not subscribe
+(the Codex review was correct); `thread/resume` on a *live, loaded* thread is a safe additive
+subscribe (our "never resume a live thread" was wrong). The original `no rollout found` failure
+was the narrow case of a thread whose rollout had not yet been materialized.
+
+**One policy this forces:** approvals fan out to *all* subscribers as blocking requests, first
+answer wins. marion answers approvals only on threads **it originated**; on attached threads it
+renders them read-only and lets the owning UI decide. Otherwise marion races a human for their
+own permission prompt.
 
 **Milestones.** Acceptance criteria in design doc §9; each is a gate, not a vibe.
 
@@ -360,14 +427,71 @@ researching in parallel. Waiting on results." as its result.)
 
 1. marion's MCP server exposes **`report(result)`**; agent types are prompted to call it.
 2. On a stop with no report, marion re-prompts once: *are you reporting, or waiting?*
-3. Cross-harness via `Stop` hooks where they exist — **unverified in practice, spike S4** —
-   else one more turn on the channel marion already owns.
+3. Cross-harness via `Stop` hooks returning `{"decision":"block","reason":"…"}` — **verified
+   working on both Claude Code and Codex (S4)**. Not `additionalContext`: invisible in the stream
+   on Claude Code, nonexistent on Codex. Guard with `stop_hook_active`. Codex requires a one-time
+   hook-trust bootstrap or the hook silently never runs.
 4. Still nothing → synthesize from the transcript tail, mark `Exited{Unreported}`, surface it
    visibly. **Never silently promote a status message to an answer.**
 
 `Unreported` is a testable state; L3 asserts on it.
 
 ---
+
+## The strategic challenge (independent Codex review, 2026-07-31)
+
+An independent review by Codex/GPT-5.x argued that **marion as scoped is not worth building**.
+It is recorded here in full because it is the strongest argument against this project and should
+not have to be rediscovered.
+
+**Its case.** The scope is at least five products — a delegation broker, a session manager, a
+terminal multiplexer, a cross-vendor observability system, and a model-routing proxy — and most
+of the plan is not required to deliver the core contract. ACP already occupies the normalization
+layer with ~30 adapters, and vendors are moving *upward* into orchestration natively (Codex has
+`spawn_agent`/`wait_agent`/`interrupt_agent`; Claude Code has the Agent tool and agent teams).
+"Any harness × any model" is not a moat — it is proxy configuration plus documented losses
+(prompt caching, reasoning state, usage accounting) — while expanding the security boundary to
+credentials and inference traffic.
+
+**Its sharpest point, which is hard to argue with:** the number of version-sensitive facts
+already discovered, and the three retractions in this file, are evidence that marion proposes to
+own the union of every harness's compatibility burden — argv, env vars, transcript formats,
+terminal behavior, event schemas, approval semantics, session persistence, attach behavior —
+before writing a line of code.
+
+**Its recommended wedge:** *an ACP-first local delegation broker for cross-harness worktree
+delegation with auditable results — ownership, diff attribution, replayable task contracts.*
+Keep launch specs, worktree isolation, single ownership, intent-before-spawn journaling, direct
+structured returns, explicit result states, diff/verification capture, and no auto-merge. Cut the
+TUI, embedded vendor TUIs, PTY emulation, the mode taxonomy, transcript tailing, native adapters
+in v1, mid-turn steering, the universal IR, and the model proxy.
+
+### Assessment — what we accept and what we don't
+
+**Accepted, and already applied:** every technical correction (Lamport → `global_seq`, `Tier` →
+`Provenance`, modes as presets over `ExecutionSurfaces`, group-commit instead of fsync-per-record,
+the `thread/resume` reconciliation, `turn/completed` as the authoritative terminator, the
+server-initiated approval methods, `codex exec --json` for one-shot children). The **task
+contract** (design doc §6.7) is a genuine addition we did not have, and it is the right durable
+primitive.
+
+**Accepted on sequencing:** prove delegation before building anything that displays it. Our
+milestone order already does this (M1 is the cross-harness hop, M3 is the UI), but the *design
+doc* over-invested in terminal detail before the core was proven. The corrective is to build a
+disposable vertical slice — `spawn` → worktree child → structured contract → cancel, with no
+daemon, no VT emulator, no proxy — and only then decide what to keep.
+
+**Not accepted: cutting the TUI and the model plane outright.** Codex is optimizing for the most
+defensible product; that is not the same objective. Watching and clicking into running
+cross-harness subagents is the *stated purpose* of this project, and any-harness × any-model is
+an explicit north-star goal. A headless broker would be more defensible and would not be the
+thing we set out to build. The honest resolution is sequencing, not amputation — the UI comes
+after the thing it displays, and the model plane stays post-M5 where it already was.
+
+**The risk we are consciously accepting:** owning several unstable integration boundaries at
+once. Mitigations already in the design are `marion doctor`, version-stamped claims, pinned
+binary paths, and fixture-based drift detection. If those prove insufficient in practice, the
+Codex wedge above is the fallback scope — narrow to ACP-first and delete the adapters.
 
 ## North star
 
@@ -406,10 +530,23 @@ Three claims were stated confidently and were wrong. Recorded so they are not re
 a thread-loss story attached. **It did not reproduce** — an idle server with zero clients was
 alive at 160 s, and `codex-rs/app-server-daemon/` contains no idle reaper at any duration (only
 `START_TIMEOUT` 10 s, `OPERATION_LOCK_TIMEOUT` 75 s, `STOP_GRACE_PERIOD` 60 s / `STOP_TIMEOUT`
-70 s, all for an *explicit* `daemon stop`). The heartbeat requirement is struck. Something did
-kill a server once — plausibly started via `codex app-server daemon`/`remote-control`, or a
-child of an exiting shell. **Spike S3.** The related inference that this explained a Codex
-session "stopping" when opened is also withdrawn.
+70 s, all for an *explicit* `daemon stop`). The heartbeat requirement is struck.
+
+**S3 (2026-07-31) confirms the retraction and identifies the likely culprit: our own tooling.**
+Six invocations — bare `--listen`, `daemon start`, orphaned, with and without live threads and
+held clients — all survived 43 minutes. No timer exists in that band. The probable killer is
+`codex-app-server-test-client`'s `kill_listeners_on_same_port`, which runs `lsof -tiTCP:<port>`
+and kills whatever answers, with no delay floor — which also explains death while SIGSTOPped.
+The related inference that this explained a Codex session "stopping" when opened is withdrawn.
+
+**But S3 found a real hazard in its place: `THREAD_UNLOADING_DELAY = 1800 s`.** `thread/start`
+returns a rollout path but does not create the file, and an **unsubscribed** thread is unloaded
+after 30 minutes on a healthy server. Read-only probes do not refresh it, and a *connection*
+heartbeat cannot help — the timer is on the thread. marion must keep a subscriber attached
+(`thread/resume`, per S5), materialize the rollout by running a turn, or be able to re-create the
+thread. Also: run a bare `--listen ws://` marion owns, and **never** `daemon bootstrap` /
+`remote-control start` — `daemon stop` does not stop the updater, which then restarts the server,
+and there is no way to disable it.
 
 **CORRECTED — `CLAUDE_CODE_CHILD_SESSION`.** Earlier text said scrubbing it was mandatory or no
 transcript is written. A/B testing at 2.1.220 wrote transcripts **both** ways. The real gate

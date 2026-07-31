@@ -139,6 +139,35 @@ ceiling; caps may only be at or below it. `opaque` forces `steer/fork/resume/per
 token_deltas/structured_events = false` and `native_tui = true`. `structured_events` is
 therefore derived from mode, not stored — removing the overlap the review flagged.
 
+### 3.4 Spawn modes are presets, not the model
+
+The four named modes (`shared` / `headless` / `interactive` / `opaque`, tabled in
+`MILESTONES.md`) are a **cross-product of three independent properties**. Encoding them as a flat
+enum makes valid combinations silently unrepresentable — e.g. a harness offering typed control
+with no display at all would need a fifth mode invented for it.
+
+```rust
+enum ControlTransport  { Typed(TypedKind), TerminalInput, LaunchOnly }
+enum DisplaySurface    { NativePty, StructuredUi, None }
+enum ObservationSource { ProtocolEvents, TranscriptRecords, TerminalBytes }
+
+struct ExecutionSurfaces {
+    control: ControlTransport,
+    display: DisplaySurface,
+    observations: EnumSet<ObservationSource>,   // a node may have several at once
+}
+```
+
+- `shared` = `Typed` + `NativePty` + `{ProtocolEvents, TerminalBytes}`
+- `headless` = `Typed` + `StructuredUi` + `{ProtocolEvents}`
+- `interactive` = `TerminalInput` + `NativePty` + `{TranscriptRecords, TerminalBytes}`
+- `opaque` = `TerminalInput` + `NativePty` + `{TerminalBytes}`
+
+**Keep the four names** in the UI and in agent-type frontmatter — they are good shorthand and
+users should not have to think in three axes. But `ExecutionSurfaces` is what the code branches
+on, and it is also what makes §5.2's plane split fall out naturally rather than being a special
+case: `DisplayPlane` exists iff `display != None`, `ControlPlane` iff `control != LaunchOnly`.
+
 ---
 
 ## 4. The event IR
@@ -147,30 +176,41 @@ therefore derived from mode, not stored — removing the overlap the review flag
 struct Event {
     agent_id: AgentId,
     parent_id: Option<AgentId>,
-    seq: u64,                 // marion's per-agent receive order
+    global_seq: u64,          // supervisor-assigned total order (§4.2)
+    agent_seq: u64,           // marion's per-agent receive order
     src_seq: Option<u64>,     // source-side sequence where the harness provides one
-    lamport: u64,             // causal, cross-node (§4.2)
+    caused_by: Option<EventId>,   // explicit causal edge (§4.2)
+    thread_id: Option<ThreadId>,  // harness-native correlation, where applicable
+    turn_id: Option<TurnId>,
+    item_id: Option<ItemId>,
     ts: SystemTime,           // RFC3339 with offset in NDJSON; advisory only
     mono_ns: u64,             // monotonic since supervisor start; used for pty alignment
-    tier: Tier,
+    provenance: Provenance,
     payload: Payload,
 }
 ```
 
-**`Tier`** records how much semantic fidelity an event carries, and rides on every event rather
-than only on the node — because one agent can produce mixed-tier events (a `shared` node emits
-structured `item/*` *and* raw pty bytes simultaneously). The renderer needs to know per event.
+**`Provenance`** replaces rev 2's `Tier` enum. `Tier` collapsed several independent dimensions
+and, worse, implied the live protocol stream is "direct truth" while a transcript is merely
+"derived" — which is backwards in an important case: a vendor transcript is often the harness's
+*durable source of record*, with stable ids and explicit parent links, and is **more complete
+after process death** than an ephemeral notification stream. Exact but delayed is not the same
+as lossy.
 
 ```rust
-enum Tier {
-    Structured,  // typed events from a native control plane or ACP
-    Derived,     // reconstructed from a tailed transcript; correct but lagged
-    Opaque,      // raw bytes; no semantics
+struct Provenance {
+    source: Source,            // Protocol | Transcript | Pty | Marion
+    source_id: Option<String>, // the harness's own id, where one exists
+    observed_live: bool,
+    authoritative: bool,       // is this the harness's system of record?
+    completeness: Completeness,     // Complete | Partial | Unknown
+    transformation: Transformation,  // Native | Normalized | Inferred
 }
 ```
 
-Mapping from `SpawnMode`: `shared`/`headless` → `Structured` (plus `Opaque` for any pty bytes);
-`interactive` → `Derived` + `Opaque`; `opaque` → `Opaque` only.
+`completeness` is what the UI must key on when claiming anything about loss (§4, `src_seq`);
+`authoritative` is what reconciliation keys on when the same fact arrives from two sources —
+which happens routinely for `shared` nodes emitting protocol events *and* pty bytes at once.
 
 `Payload` variants: `Lifecycle`, `Message{role, block}`, `ToolCall{id,name,kind,input,status,
 locations}`, `ToolResult{id,output,is_error}`, `Permission{id,request}`, `Elicitation{id,
@@ -200,10 +240,22 @@ forbids custom root fields).
 ### 4.2 Ordering
 
 Wall clock is not trustworthy for causality — NTP steps and sleep/wake move `SystemTime`
-backwards, which can invert a parent's spawn against its child's `Spawned`. Since the topology
-is a **star**, a Lamport counter over the causal edges marion itself owns — `spawn`, `report`,
-`send`, `cancel` — is nearly free and exact. `lamport` is authoritative for cross-node
-ordering; `ts` is display-only.
+backwards, which can invert a parent's spawn against its child's `Spawned`. `ts` is display-only.
+
+**rev 2 proposed a Lamport clock here; that was a phantom solution and is removed.** Lamport
+clocks order events across independent producers with no shared sequencer. marion has exactly
+one authoritative supervisor receiving and writing every normalized event — it *is* the
+sequencer. A monotonic `global_seq` assigned on receipt gives a total order that is exactly as
+authoritative, since the same component would have been incrementing the Lamport counter anyway.
+It borrowed distributed-systems machinery for a centralized problem and added no information.
+
+Causality that actually matters is represented **explicitly**, not inferred from a counter:
+`caused_by` links a child's `Spawned` to the spawn request, a `report` to its task, an approval
+response to its request id; `thread_id`/`turn_id`/`item_id` carry harness-native correlation.
+
+A Lamport clock becomes justified only if marion ever admits multiple independent supervisors
+generating events offline and merging logs. That is contrary to this architecture; revisit only
+if that changes.
 
 `mono_ns` exists to align `events.jsonl` with `pty.cast`: asciicast v3 timestamps are
 **relative**, so without a shared anchor the two streams cannot be put on one timeline — which
@@ -223,11 +275,19 @@ short form `<agent-dir>/config/`.
   snapshot.json                       # opportunistic compaction of the journal
   agents/<agent_id>/                  # = <agent-dir>
     meta.json                         # compiled spec, caps, harness ref, binary path+version
-    events.jsonl                      # IR, append-only, fsync per record
+    events.jsonl                      # IR, append-only, group-commit (see below)
     pty.cast                          # asciicast v3, modes with a pty
     config/                           # isolated harness config dir, if any (§6.4)
     worktree                          # symlink, when isolation: worktree
 ```
+
+**Durability is group-commit, not fsync-per-record.** An earlier draft said fsync per record;
+with `--include-partial-messages` yielding token-level deltas that is one fsync per token and
+would destroy streaming throughput. Instead: append without fsync, fsync on a short timer
+(~50 ms), *and* fsync unconditionally before any state transition that must survive a crash —
+`Spawned`, `Exited`, `ReapedIdle`, and every journal write. Losing the last few content deltas
+in a hard crash costs a slightly truncated replay; losing a lifecycle record costs an untracked
+live process. Only the latter pays for a barrier.
 
 **Registry is an append-only journal, not a rewritten `registry.json`.** rev 1 asserted
 "atomically rewritten" without designing it, and rewriting the whole tree per state change is
@@ -304,22 +364,179 @@ the trait is named so that it survives v2.
 **codex.** `shared` mode: `codex app-server --listen ws://IP:PORT` (a literal `SocketAddr` —
 a hostname is a hard `InvalidWebSocketListenUrl`, and `wss://` is rejected). Threads via
 `thread/start`, driven with `turn/start`/`turn/steer`/`turn/interrupt`, consuming `item/*`.
-`codex --remote` attaches a TUI in a pty on demand (interactive subcommands only). For live
-threads: `thread/read` + `turn/start`, **never `thread/resume`** (it goes through the rollout
-file, which is not materialized for a live thread).
+`codex --remote` attaches a TUI in a pty on demand (interactive subcommands only).
 
-> rev 1 mandated a 25s heartbeat against an ~86–90s idle reap. **That did not reproduce** —
-> an idle app-server was alive at 160s and no idle reaper exists in `app-server-daemon/`
-> source at any duration. Requirement struck; see S3 and §10.
+**`thread/resume` — corrected.** rev 2 said "never use it on live threads," which was too
+broad. It is a **load-from-persisted-history** operation, not an attach primitive:
+
+- **Cold thread on disk:** `initialize` → `initialized` → optionally `thread/read` (expect
+  `notLoaded`) → `thread/resume` → `turn/start` → consume to `turn/completed`.
+- **Live in-memory thread:** keep the subscription from `thread/start`/`thread/resume`,
+  optionally `thread/read` to refresh, then `turn/start`. **Do not** call `thread/resume` merely
+  to attach — a live thread can exist in the app-server's registry before its rollout is
+  materialized, so resume enters the persisted path and fails (`no rollout found`) even though
+  the thread is perfectly alive. That failure is not evidence the thread is gone.
+
+`notLoaded` is a **residency** status, not a persistence verdict. Statuses: `active` (loaded,
+work in progress), `idle` (loaded, no active turn), `systemError`, `notLoaded` (known as stored
+history, no live in-memory session here).
+
+> **S5 RESOLVED (2026-07-31) — PASS. `shared` mode works.** Verified against 0.146.0 and
+> confirmed in `rust-v0.146.0` source. **`thread/resume` IS the subscribe mechanism; there is no
+> `thread/subscribe`** (the server's own 125-method enumeration lists `thread/unsubscribe` and no
+> inverse). Subscribers live in `ThreadEntry { connection_ids: HashSet<ConnectionId> }`
+> (`app-server/src/thread_state.rs:276`), inserted by `thread/start`, `thread/fork`,
+> `thread/resume` (both cold **and already-loaded** paths — `thread_lifecycle.rs:647`),
+> `review/start`, `thread/realtime/start`. **Not** by `thread/read` (its handler isn't even passed
+> a `ConnectionId`) and **not** by `turn/start`.
+>
+> Measured: a late joiner with `thread/read` alone received **2** events (global broadcasts only,
+> zero `item/*`); after `thread/resume`, **11 — full parity** with the originator, who was
+> undisturbed. Originating a turn does *not* subscribe you. Fanout re-reads the subscriber set per
+> event, so **mid-turn attach works** — a client joining 2.6 s into a streaming turn received 87
+> of 93 subsequent events including live deltas, without interrupting it. Multiple concurrent
+> subscribers work, including after the originating connection closes. `thread/unsubscribe` is
+> per-connection and does not affect other subscribers or the thread.
+>
+> **marion's attach sequence:**
+> ```
+> initialize {clientInfo}  →  initialized
+> thread/read   {threadId, includeTurns: true}   // backfill; does NOT subscribe
+> thread/resume {threadId}                       // subscribes; additive, non-disruptive
+> turn/start | turn/steer | turn/interrupt
+> thread/unsubscribe {threadId}                  // clean detach
+> ```
+> Order matters: resume delivers **no replay**, so `thread/read` must come first or events between
+> attach and subscribe are lost.
+>
+> **Caveats marion must encode:**
+> 1. `thread/resume` config overrides (`model`, `sandbox`, `approvalPolicy`) are **silently
+>    ignored** on an already-loaded thread (`thread_processor.rs:3529`, warn-only). Never rely on
+>    them in an attach-resume.
+> 2. Resuming a thread with **zero** subscribers that is idle-and-not-running triggers a shutdown
+>    and cold re-resume (`thread_processor.rs:3495`). Attaching to a merely-cached thread is *not*
+>    a pure attach; attaching to one a TUI still holds is.
+> 3. Retryable error: `"thread {id} is closing; retry thread/resume"`. Hard errors: `history` +
+>    already-running, stale `path` mismatch.
+> 4. `experimentalRawEvents` is thread-global, sticky, and settable **only** on `thread/start` —
+>    resume always passes `false` and cannot clear it. If marion wants raw events it must
+>    originate the thread.
+> 5. `initialize` accepts `optOutNotificationMethods: string[]` — use it to mute broadcast noise
+>    on observer connections.
+> 6. **Approvals and elicitations fan out to *all* subscribers as server→client requests, and
+>    whoever answers first wins.** So marion attaching to a TUI-owned thread receives duplicate
+>    approval prompts racing a human. **Policy: marion answers approvals only on threads it
+>    originated; on attached threads it renders them read-only and lets the owning UI decide.**
+>    Use `approvalsReviewer` on turns marion originates.
+>
+> Fixtures: `tests/fixtures/s5/` — three probes plus the server's method enumeration.
+
+**`turn/completed` is the authoritative turn-termination signal.** Nothing else is:
+`item/completed` ends one item of possibly many; an `error` event is diagnostic, not a lifecycle
+boundary; `thread/status/changed → idle` is thread-level and can lag, race, or coalesce; a
+closed transport cannot distinguish completion from interrupted delivery, server death, or an
+updater replacement; and a successful `turn/interrupt` means the *request* was accepted, not
+that cancellation finished. Relying on anything else means returning before the answer is known,
+scoring interrupted turns as successful, or starting a turn while Codex still considers the
+previous one active.
+
+**Server-initiated approval requests are JSON-RPC *requests*, not notifications** — they carry
+an `id` and **block the turn** until answered:
+`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
+`item/permissions/requestApproval`, plus `item/tool/requestUserInput`,
+`mcpServer/elicitation/request`, and `item/tool/call` for client-executed tools. Respond with
+the same id: `{"id":41,"result":{"decision":"accept"}}` — also `acceptForSession`, `decline`,
+`cancel`. `serverRequest/resolved` follows. So the codex `ControlPlane` needs a continuously
+serviced bidirectional reader and an id→pending-decision map, exactly as the Claude adapter does
+(§5.2, S1) — and it needs a stated policy for when no human UI is attached, or turns hang.
+
+**`codex exec --json` is the better surface for one-shot children** — a bounded job with one
+prompt and one terminal result, no steering, no attached TUI. It removes the handshake, thread
+loading, subscriptions, bidirectional approvals, item accumulation, and long-lived server
+lifecycle. Useful flags: `--output-schema`, `--output-last-message`, `--cd <worktree>`,
+`--sandbox workspace-write`, `--ephemeral`, `--ignore-user-config`. **Prefer it for fan-out
+work; reserve app-server for genuinely interactive children.**
+
+> **S3 RESOLVED (2026-07-31). Idle app-servers are never reaped — no process heartbeat needed.**
+> Six invocations (bare `--listen`, `daemon start`, orphaned, each with and without a live thread
+> and a held client) all survived 43 minutes. Two source sweeps of `rust-v0.145.0` found no timer
+> in the 86–90 s band. The only app-server killer is `app-server-daemon`'s `PidBackend::stop`,
+> which targets **only** the start-time-verified pid in its pidfile and explicitly refuses an
+> unmanaged server.
+>
+> **The original phantom SIGTERM was most likely self-inflicted:**
+> `codex-app-server-test-client`'s `kill_listeners_on_same_port` (`lib.rs:687`) runs
+> `lsof -tiTCP:<port>` and kills whatever it finds, with no delay floor — matching every symptom
+> including death while SIGSTOPped.
+>
+> The **updater is real but exonerated**: `INITIAL_UPDATE_DELAY` 300 s / `UPDATE_INTERVAL` 3600 s
+> (`update_loop.rs:46,50`), so it cannot fire at 86–90 s, and it is installed only by
+> `daemon bootstrap` / `remote-control start`, never `daemon start`. Confirmed by natural
+> experiment: a daemon server on 0.145.0 was **not** restarted when the package swapped to
+> 0.146.0 mid-spike. `REMOTE_CONTROL_CLIENT_IDLE_TIMEOUT` (600 s) drops a *relay registration*
+> only, applies to the outbound ChatGPT transport, and a server survived 763 s with an idle client
+> attached. `shutdown_when_no_connections` is gated to **stdio only**, so a ws/unix server does
+> not exit when its last client leaves.
+>
+> **⚠ The genuine hazard is `THREAD_UNLOADING_DELAY = 1800 s`.** `thread/start` returns a rollout
+> `path` but **does not create the file**, and an **unsubscribed** thread is unloaded after 30
+> minutes on a perfectly healthy server — measured: `thread/read` OK at 1241 s, then
+> `thread not loaded` / `no rollout found` at 1962 s, identical across a restart. **Read-only
+> probes do not refresh the timer, and a connection heartbeat would not have helped — the timer is
+> on the thread, not the connection.**
+>
+> **Therefore marion must:** run a **bare `--listen ws://` app-server it owns** (immune to every
+> codex-rs kill path); **never** run `daemon bootstrap` or `remote-control start` (note
+> `daemon stop` does *not* stop the updater, which then restarts the server, and there is no
+> config key or env var to disable it); and for any thread that matters either **keep a subscriber
+> attached** (`thread/resume`, per S5), **materialize its rollout by running a turn**, or be able
+> to re-create it. A never-turned, unsubscribed thread is lost after 30 minutes.
+>
+> Fixtures: `tests/fixtures/s3/`. **Caveat:** `daemon bootstrap` was not run (it installs durable
+> user state), so the updater's kill path is source-verified, not measured.
 
 **claude-code.** `interactive` (pty + JSONL tail) or `headless`
 (`-p --output-format stream-json --input-format stream-json`). Liveness via
 `claude agents --json` (no TTY needed). Note `claude attach <interactive-id>` prints
 `No job matching…` **and exits 0** — never branch on its exit status.
 
-> **Open risk (S1):** stream-json *input* control framing (interrupt) is SDK-internal and
-> undocumented. If it can't be driven from raw Rust, the Claude adapter needs a TS sidecar.
-> This decides the process model, which is why it now runs first.
+> **S1 RESOLVED — PASS (2026-07-31).** Verified against 2.1.220 by decompiling
+> `@anthropic-ai/claude-agent-sdk@0.3.220`, confirming from the binary's strings, and replaying
+> from plain Python with no SDK. **No TS sidecar needed.** Protocol, NDJSON on stdin:
+>
+> ```json
+> {"type":"user","session_id":"","message":{"role":"user","content":[{"type":"text","text":"…"}]},"parent_tool_use_id":null}
+> {"type":"control_request","request_id":"req_2","request":{"subtype":"interrupt"}}
+> ```
+>
+> `session_id:""` is what the SDK literally sends — the CLI owns the id and reports it on
+> `system/init`. `request_id` is client-generated and any unique string works. Optional
+> `cancel_queued: true` inside `request` also drops queued commands. Reply arrives on stdout as
+> `{"type":"control_response","response":{"subtype":"success","request_id":…,"response":{"still_queued":[]}}}`
+> in **1 ms**; the terminal `result` follows in **2 ms**. `initialize` is **optional** — the
+> interrupt path works with no handshake; it is needed only to register SDK-side hooks/MCP or
+> read the session's command/agent/model catalogue.
+>
+> **The channel is bidirectional, and this is load-bearing.** The CLI emits its *own* outbound
+> `control_request` frames — `can_use_tool`, hook callbacks, `request_user_dialog` — on the same
+> stdout stream, expecting marion to answer with a `control_response`. So `ControlPlane` needs a
+> `request_id -> oneshot::Sender` demux map, and **this is the concrete mechanism by which Claude
+> Code permission prompts reach marion's permission queue** (§5.6). Cancel an in-flight request
+> with `{"type":"control_cancel_request","request_id":…}`.
+>
+> **An interrupted turn reports `is_error: true`** with `subtype:"error_during_execution"` and
+> `terminal_reason:"aborted_streaming"`. marion MUST classify that as a clean interrupt, not a
+> failure.
+>
+> Other verified details: `--include-partial-messages` yields token-level
+> `{"type":"stream_event","event":{"type":"content_block_delta",…}}` but **requires `--verbose`**
+> alongside `-p --output-format stream-json`. A fresh `system/init` frame is emitted **per turn,
+> not per process** — do not treat it as a new session. Do not gate on the `initialize` response
+> advertising `capabilities` (2.1.220 returns none while still honoring `still_queued`); treat a
+> missing `still_queued` as the older-CLI fallback.
+>
+> **UNVERIFIED:** the replay used pipes, not a pty. If the CLI does isatty-conditional line
+> buffering, behavior under `pty-process` may differ. Fixture: `tests/fixtures/s1/`.
 
 ### 5.3 Display plane: pty + VT
 
@@ -353,8 +570,44 @@ DECSET 2026. But the choice does not by itself deliver scrollback.
 `scroll_display()`. The rev 1 "~150-line adapter" estimate covered the viewport half only.
 
 Coverage needed: SGR incl. 24-bit, CUP/ED/EL, DECSET 2026, reverse index, DECSTBM, OSC 0,
-OSC 8, cursor save/restore. A dumb host answering **no** probes was verified to run both TUIs
-correctly; neither uses the alternate screen.
+OSC 8, cursor save/restore, `?1049h/l` (alt screen), `CSI 3J`, and mouse modes
+`?1000/?1002/?1003/?1006`. A dumb host answering **no** probes was verified to run both TUIs
+correctly.
+
+> **S2 RESOLVED (2026-07-31) — it corrected two claims and moved the hazard.**
+>
+> **Claude Code 2.1.220 DOES use the alternate screen** (`ESC[?1049h` at startup, `?1049l` at
+> exit, plus mouse tracking). Earlier text saying neither harness does was stale. Consequence:
+> **for Claude Code there is no scrollback to retain** — the session is a fixed viewport,
+> `renderable_content()` suffices, and the ~150-line adapter estimate holds for that path.
+> **Scrollback is a Codex-only concern.** Codex uses the main screen, entering alt screen only
+> for transient overlays (the `/diff` pager, properly paired).
+>
+> **DECSTBM: PASS — though the literal assert was the wrong test.** Codex *does* emit top-offset
+> regions (`ESC[9;24r`, `ESC[8;40r`, `ESC[17;40r`), but *exclusively* paired with reverse index —
+> scrolling **down**, which never produces history in any terminal. Every scroll **up**, the only
+> operation that feeds scrollback, occurs under `top == 1`. Confirmed by replaying real captures
+> through both crates: `alacritty_terminal` retained 94 lines of genuine content from a 14-row
+> Codex run; **`vt100` retained 0 in every stream** — confirmed unusable.
+>
+> **The real hazard is `CSI 3J`.** Codex emits `ESC[r ESC[0m ESC[H ESC[2J ESC[3J ESC[H` on every
+> resize. `CSI 3J` is *erase scrollback*, which alacritty honors via `clear_history()`, so history
+> drops to zero on **every SIGWINCH** — this took one capture from 121 lines to 2.
+> **Decision: marion intercepts `CSI 3J` and maintains its own append-only history.** The harness
+> clears scrollback because it is about to repaint a viewport, not because the transcript is
+> invalid — and marion's entire value is that the transcript outlives the display.
+>
+> **DECSET 2026 validated as the "assert now" signal** (§8/L4.5): strict `h`/`l` alternation,
+> zero violations across every capture, every bracket closed, every frame containing a CUP. In
+> Codex, 16/18 and 22/24 DECSTBM changes occur *inside* a 2026 bracket, so a synchronized-output
+> boundary never observes a half-applied scroll region.
+>
+> **Untested edge:** alacritty `grid/mod.rs:258` resets rows outright when a scroll exceeds a
+> `region.start != 0` region's height. Observed RI bursts never came close (9 lines in a 33-row
+> region) and Codex chunks large inserts into repeated top-anchored passes — but this is unproven
+> for a single huge tool output on a very short terminal.
+>
+> Fixtures: `tests/fixtures/s2/` — 5 captures as asciicast v3 + raw, plus analysis tools.
 
 **Keystroke injection rules** (verified): never send text and `\r` in one write (paste-burst
 heuristics swallow the submit); never wrap in bracketed paste; one line at a time; wait for
@@ -476,6 +729,21 @@ marion **never mutates the user's real harness config**.
   key=value` (global, repeatable, TOML-parsed); opencode `OPENCODE_CONFIG_CONTENT`.
 - **Isolated dir otherwise:** `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GEMINI_CLI_HOME` under
   `<state>/agents/<id>/config/`, cleaned up on node deletion.
+
+> **⚠ `CLAUDE_CONFIG_DIR` isolation breaks OAuth authentication.** Found incidentally during S4:
+> the macOS Keychain entry holding Claude Code's OAuth credentials is keyed to the **real** config
+> dir, so a child launched with an isolated `CLAUDE_CONFIG_DIR` cannot authenticate — S4 had to
+> route through a local Anthropic-compatible proxy to run at all. Consequences:
+> - Config isolation and subscription auth are **mutually exclusive** for Claude Code children.
+> - Options, none free: **(a)** use the fileless path (`--agents`, `--mcp-config`, `--settings`),
+>   which keeps the real config dir and therefore keeps auth — **now the strong default, not
+>   merely the preference**; (b) copy credential material into the isolated dir, multiplying the
+>   blast radius §7.1 exists to contain; (c) run isolated children on an API key or through
+>   marion's proxy, accepting different billing.
+> - Any design element that *requires* an isolated `CLAUDE_CONFIG_DIR` must state which of
+>   (a)/(b)/(c) it takes.
+> - **UNVERIFIED:** whether `CODEX_HOME` and `GEMINI_CLI_HOME` carry the same coupling. Check
+>   before relying on isolation for those.
 - **Seeding from the user's real config is opt-in** (`inherit_user_config`), default off,
   because those directories hold OAuth tokens and API keys and because inherited MCP servers
   silently defeat `tools:` (§3.1). When on, marion copies only the keys the agent type names.
@@ -516,6 +784,61 @@ Policy: **at most one node with write tools per cwd by default.** A second write
 into an occupied cwd is refused with a message naming the holder, and the caller must either
 wait, use `isolation: worktree`, or pass an explicit `allow_concurrent_writes` override.
 `ToolCall.locations` gives attribution, but attribution is forensics — this is prevention.
+
+---
+
+### 6.7 The task contract
+
+Introduced after the independent Codex review, which argued — correctly — that marion's durable
+value is not "display several agents" but **"delegate repository work across independently
+evolving executors and know exactly what came back."** A prose result from a foreign agent is
+not auditable. A task contract is.
+
+Every delegation records one, written at spawn and completed at result:
+
+```rust
+struct TaskContract {
+    task_id: TaskId,
+    requester: AgentId,                  // parent identity
+    child: (Harness, String),            // harness + resolved version
+    repo: RepoIdentity,                  // git common-dir
+    base_commit: Oid,
+    workspace: Workspace,                // worktree path + branch, or shared-cwd
+    instructions: String,
+    acceptance_criteria: Vec<String>,    // stated up front, never authored after the fact
+    allowed_tools: Vec<String>,
+    writable_scope: Vec<PathBuf>,        // declared, then checked against ToolCall.locations
+    timeout: Option<Duration>,
+    verification: Vec<Command>,          // commands that must pass
+
+    // filled on completion
+    status: ResultStatus,                // Ok | Failed | Cancelled | Unreported | TimedOut
+    narrative: Option<String>,
+    result_commits: Vec<Oid>,
+    changed_paths: Vec<PathBuf>,
+    diff: Option<Patch>,
+    evidence: Vec<CommandOutcome>,       // verification runs, with exit codes and output
+    exit: ProcessExit,
+    timestamps: TaskTimestamps,
+}
+```
+
+Two rules make it more than bookkeeping:
+
+- **`acceptance_criteria` and `verification` are authored at spawn time, before the child runs.**
+  Criteria written afterward describe what happened, not what was required — the failure mode
+  from `info.md`'s original notes.
+- **`writable_scope` is checked against observed `ToolCall.locations`.** A child that writes
+  outside its declared scope is reported, not silently accepted. This converts §6.6's
+  attribution from post-hoc forensics into an actual check.
+
+The contract is what a parent gets back from `mcp__marion__spawn` (§5.4), what the UI renders as
+a completed node, and what makes a run replayable. It is deliberately independent of harness: a
+Codex child and a Claude child return the same structure.
+
+> This is also the seam where `info.md`'s graph-plan system would later attach — a plan node is a
+> task contract with dependencies. Still out of scope (see `MILESTONES.md`), but the contract is
+> designed so that adding it later is not a rewrite.
 
 ---
 
@@ -588,9 +911,49 @@ Re-parenting on request is a future affordance, never automatic.
 
 1. Agent types are prompted to call `mcp__marion__report`.
 2. On stop without a report, marion re-prompts once: *are you reporting a result, or waiting?*
-   Via `Stop` hooks where they exist (Claude Code's takes `additionalContext` delivered to the
-   agent; Codex has `Stop` hooks — **UNVERIFIED that either can re-prompt a stopping agent in
-   practice; this is what S4 tests**), else one more turn on marion's own channel.
+
+> **S4 RESOLVED (2026-07-31) — PASS on both harnesses.** Use
+> **`{"decision":"block","reason":"…"}` on both** — one code path. On Claude Code the reason
+> arrives as a real `user` message (`Stop hook feedback:\n<reason>`), `num_turns` goes 1→2, and it
+> is **observable in `stream-json`**. Exit-code-2-plus-stderr is equivalent.
+>
+> **Do not use `additionalContext`** (rev 2 specced it): on Claude Code it does produce another
+> turn but is delivered as a system-reminder emitting **no stream event**, leaving `num_turns` at
+> 1 — marion would have to diff the transcript to know the re-prompt landed. On **Codex it does
+> not exist**: `stop.command.output` is `additionalProperties:false` over
+> `{continue, decision:["block"], reason, stopReason, suppressOutput, systemMessage}`.
+>
+> **`stop_hook_active` is the loop guard** — `false` on first fire, `true` on the second, on both
+> harnesses. Honor it and the re-prompt happens exactly once.
+>
+> Stop-hook input is rich enough to decide without parsing a transcript: `session_id`,
+> `transcript_path`, `cwd`, `permission_mode`, `stop_hook_active`, **`last_assistant_message`**,
+> plus `background_tasks`/`session_crons` (Claude) and `turn_id`/`model` (Codex).
+>
+> **⚠ Codex hooks are trust-gated and fail *silently*** — no warning, no log — until trusted.
+> marion must bootstrap trust by writing `$CODEX_HOME/config.toml`:
+> ```toml
+> [hooks.state."<sourcePath>:<event_snake>:<groupIdx>:<hookIdx>"]
+> enabled = true
+> trusted_hash = "sha256:…"
+> ```
+> Key and current hash come **non-interactively** from the app-server: `initialize` →
+> `initialized` → `hooks/list {"cwds":[…]}` returns `key`, `currentHash`, `trustStatus`. Tie hash
+> invalidation into §7.7's version-bump handling.
+>
+> **⚠ Branch on `hook_event_name`.** Returning the Stop-shaped `{"decision":"block"}` from a
+> `UserPromptSubmit` hook **blocks the user's prompt entirely** and the turn produces no output.
+>
+> Other Codex gotchas: `hooks.json` accepts `Stop` and `stop`; **unknown event keys are silently
+> ignored**; `matcher` is ignored for `Stop`; shape is
+> `{"description":…,"hooks":{"<Event>":[{"hooks":[{…}]}]}}`.
+>
+> **`SubagentStop` verified statically only** — in the 2.1.220 bundle it shares the `Stop` code
+> path exactly, and its input adds `agent_id`, `agent_type`, `agent_transcript_path`, directly
+> useful for marion's child nodes. **A live confirmation under real auth is owed before M1.**
+>
+> Fixtures: `tests/fixtures/s4/{claude-code,codex}/`. The "one more turn on marion's own channel"
+> fallback is unnecessary for these two harnesses; retained for future ones.
 3. Still nothing → synthesize from the transcript tail, mark `Exited{Unreported}`, surface
    visibly. **Never silently promote a status message to an answer.**
 
@@ -784,11 +1147,29 @@ demand and also hosts `marion-supervisor mcp` (the per-child stdio bridge, §5.4
    idle reaper in source). Something killed it once — plausibly it was started via
    `codex app-server daemon` or `remote-control`, or was a child of an exiting shell. S3.
 3. **DECSTBM shapes are unmeasured** (S2), and M3's scope depends on the answer.
-4. **opencode SSE regression** (`anomalyco/opencode` issue #27966, affects 1.14.42+; local is
-   1.17.3): `message.part.updated` / `message.updated` reportedly stop reaching `/event`
-   subscribers. `session.next.tool.*` still flows. Verify before the opencode adapter.
-5. **Gemini claims are stamped to 0.40.1 but local is 0.53.0.** `GEMINI_CLI_HOME` and
-   `GOOGLE_GEMINI_BASE_URL` survive; the HTTPS-unless-localhost behavior is **UNVERIFIED** at
-   0.53.0.
+4. ~~**opencode SSE regression** (#27966)~~ — **RESOLVED 2026-07-31.** Issue closed 2026-05-21,
+   fixed in **1.15.5+**; local 1.17.3 is clear. Verified empirically at zero inference cost (a
+   local mock OpenAI-compatible provider): `message.updated`, `message.part.updated`, and
+   `message.part.delta` all arrive on `/event`. Adapter notes:
+   - `/event` and `/api/event` emit **identical event ids in identical order**, differing only in
+     envelope — `/event` uses `{id,type,properties}`, `/api/event` uses
+     `{id,type,data,location}` plus `version`/`seq` on some types.
+   - `/api/event` **suppresses** `server.heartbeat`, `plugin.added`, `reference.updated`. Since
+     `/event` heartbeats every ~30 s, **prefer `/event`** — it gives free idle-liveness detection,
+     which `/api/event` cannot.
+   - `OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true` unlocks the full `session.next.*` family;
+     without it only `agent.switched`/`model.switched` appear.
+   - **The v2 prompt path is broken in 1.17.3** — `POST /api/session/{id}/prompt` returns 200 and
+     never runs; `/api/session/{id}/wait` returns `ServiceUnavailableError`. Use legacy
+     `POST /session/{id}/prompt_async`.
+5. ~~**Gemini stamped to 0.40.1**~~ — **RESOLVED 2026-07-31 at 0.53.0.** `GOOGLE_GEMINI_BASE_URL`
+   still works (verified by a local logging server receiving
+   `POST /v1beta/models/{model}:generateContent`, auth as `x-goog-api-key`); `GEMINI_CLI_HOME`
+   still isolates; **the HTTPS-unless-localhost restriction is removed** (zero bundle hits, plain
+   HTTP non-localhost accepted). **New requirement:** `GEMINI_API_KEY` alone now yields
+   `Invalid auth method selected.` — marion must also write
+   `<GEMINI_CLI_HOME>/.gemini/settings.json` = `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`.
+   No env-var equivalent exists. Headless still needs `--skip-trust` or
+   `GEMINI_CLI_TRUST_WORKSPACE=true`.
 6. **Windows** is deferred — `pty-process` is Unix-only and `portable-pty` has no async.
 7. **Shim fidelity/cost** is now off the critical path (§5.4) but unmeasured if we ever ship it.
