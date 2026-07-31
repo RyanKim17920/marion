@@ -1,0 +1,27 @@
+{
+  "description": "marion S4",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<SCRATCH>/codex_stop_hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<SCRATCH>/codex_stop_hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

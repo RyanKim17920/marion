@@ -1,0 +1,2 @@
+2026-07-31T18:45:07.565Z thread/read FAIL {"code":-32600,"message":"thread not loaded: 019fb97e-7878-7313-8af5-b5287d1ae89c"}
+2026-07-31T18:45:07.592Z thread/resume FAIL {"code":-32600,"message":"no rollout found for thread id 019fb97e-7878-7313-8af5-b5287d1ae89c"}

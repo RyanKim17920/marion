@@ -1,0 +1,34 @@
+S2 fixtures — DECSTBM shape emitted by Claude Code and Codex CLI
+Captured 2026-07-31 on macOS 25.5.0 (arm64), TERM=xterm-256color, COLORTERM=truecolor.
+
+Each capture ships in two forms, byte-identical in content:
+  *.raw.bin  — every byte the TUI wrote to the pty master, concatenated, nothing else.
+  *.cast     — asciicast v3 (ndjson). Header line, then [interval_s, code, data].
+               code "o" = TUI output, "i" = keystrokes the host injected,
+               "r" = pty resize, data "COLSxROWS" (TIOCSWINSZ + SIGWINCH).
+               Only "o" events should be fed to a VT under test; "r" events must be
+               applied as a resize, in order, or the replay diverges.
+
+Captures
+  claude-2.1.220-boot-help-status-resize      120x40 -> 100x24 -> 140x45. /help, /status.
+  claude-2.1.220-boot-exit                    120x40. Boot then /exit (clean alt-screen exit).
+  codex-cli-0.145.0-boot-status-help-diff-resize  120x40 -> 100x24 -> 140x45. /status /help /diff.
+  codex-cli-0.146.0-boot-status-help-resize   120x40 -> 100x24 -> 140x45. /status /help.
+  codex-cli-0.146.0-14row-heavy-history-insert 100x14, no resize. Four slash commands on a short
+               terminal: the densest history-insert traffic of the set (94 lines scrolled into
+               scrollback, no CSI 3J).
+
+No paid model calls were made; only local slash commands were driven.
+
+Redaction: email addresses were replaced in place with an equal-length placeholder
+("redacted@example.invalid..."), so byte offsets and line widths are preserved and the
+streams remain replayable. No API keys, tokens, or credential-bearing paths were present.
+Home-directory paths (/Users/<name>) were left intact — they are load-bearing for the
+codex /status panel widths and contain no secrets.
+
+Tools (copied from the spike scratch dir, throwaway, not workspace code)
+  ptyhost.py   pty.fork host: TIOCSWINSZ, scripted keystrokes/resizes, logs all raw bytes.
+  extract.py   .rec -> .raw.bin + .cast
+  analyze.py   distinct DECSTBM regions + counts, DECSET 2026 brackets, alt-screen, scroll prims
+  scrollattr.py  VT state machine that attributes every scroll-up / scroll-down event to the
+               DECSTBM region active at that moment — this is what answers the S2 question.

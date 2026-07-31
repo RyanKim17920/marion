@@ -1,0 +1,4 @@
+{"t_rel": 0.0, "msg": {"type": "control_request", "request_id": "req_1_init", "request": {"subtype": "initialize", "hooks": {}}}}
+{"t_rel": 2.154, "msg": {"type": "user", "session_id": "", "message": {"role": "user", "content": [{"type": "text", "text": "Count slowly from 1 to 300, one number per line. Output nothing else. Do not stop early."}]}, "parent_tool_use_id": null}}
+{"t_rel": 7.571, "msg": {"type": "control_request", "request_id": "req_2_interrupt", "request": {"subtype": "interrupt"}}}
+{"t_rel": 8.078, "msg": {"type": "user", "session_id": "", "message": {"role": "user", "content": [{"type": "text", "text": "Reply with exactly: OK-AFTER-INTERRUPT"}]}, "parent_tool_use_id": null}}

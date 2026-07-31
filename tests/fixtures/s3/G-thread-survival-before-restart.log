@@ -1,0 +1,2 @@
+2026-07-31T18:45:01.398Z thread/read OK {"thread":{"id":"019fb97e-7878-7313-8af5-b5287d1ae89c","extra":null,"sessionId":"019fb97e-7878-7313-8af5-b5287d1ae89c","forkedFromId":null,"parentThreadId":null,"preview":"","ephemeral":false,"isPinned":false,"historyMode":"legacy","modelProvider":"openai","createdAt":1785523501,"updatedAt":17855235
+2026-07-31T18:45:01.425Z thread/resume FAIL {"code":-32600,"message":"no rollout found for thread id 019fb97e-7878-7313-8af5-b5287d1ae89c"}

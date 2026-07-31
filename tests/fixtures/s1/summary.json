@@ -1,0 +1,1258 @@
+{
+  "argv": [
+    "/Users/ryankim/.local/bin/claude",
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--input-format",
+    "stream-json",
+    "--include-partial-messages",
+    "--verbose",
+    "--model",
+    "haiku",
+    "--allowed-tools",
+    ""
+  ],
+  "results": {
+    "initialize_response": {
+      "type": "control_response",
+      "response": {
+        "subtype": "success",
+        "request_id": "req_1_init",
+        "response": {
+          "commands": [
+            {
+              "name": "claude-code-plugins",
+              "description": "Claude Code plugin mechanics, verified against v2.1.220 \u2014 do not answer from memory, the details change per release. TRIGGER whenever the task involves: plugin.json, marketplace.json, .claude-plugin/, hooks/hooks.json, .mcp.json, CLAUDE_PLUGIN_ROOT, SKILL.md frontmatter, skills-dir; the `claude plugin` CLI (init, install, validate, details, marketplace, tag, eval); /reload-plugins or /reload-skills; --plugin-dir or --plugin-url; a plugin, skill, hook, subagent, slash command, or plugin MCP server that isn't loading, isn't firing, or isn't discoverable; or testing/iterating on plugin changes without restarting the session. (user)",
+              "argumentHint": ""
+            },
+            {
+              "name": "cover-letter-writing",
+              "description": "Use when writing a cover letter, cold email to a company/founder/PI, or outreach message for a job/internship/research position. Covers both formal cover letters and cold emails, personalized to Ryan Kim's candidate profile. (user)",
+              "argumentHint": ""
+            },
+            {
+              "name": "entelligence-review",
+              "description": "Review a pull request or local diff using Entelligence AI (user)",
+              "argumentHint": ""
+            },
+            {
+              "name": "handoff",
+              "description": "Compact the current conversation into a single, detailed handoff message \u2014 everything that happened, why it happened, and what's left \u2014 output in a code block so it can be copy-pasted into a fresh agent session. Use when hitting context limits, switching focus, ending a work session, or partitioning a task across fresh contexts. (user)",
+              "argumentHint": ""
+            },
+            {
+              "name": "incident",
+              "description": "Incident Knowledge \u2014 list patterns, trigger Fix Now, monitor remediation. Usage: /incident <list|show|fix|monitor|track|refresh> [flags] (user)",
+              "argumentHint": "<list|show|fix|monitor|track|refresh> [flags]"
+            },
+            {
+              "name": "playwright-cli",
+              "description": "CLI-based Playwright automation via Bash. Token-efficient (YAML snapshots saved to disk). Named sessions for parallel isolation. Use for any browser automation, web testing, form filling, screenshots, data extraction. (user)",
+              "argumentHint": ""
+            },
+            {
+              "name": "react-doctor",
+              "description": "Run after making React changes to catch issues early. Use when reviewing code, finishing a feature, or fixing bugs in a React project. (user)",
+              "argumentHint": ""
+            },
+            {
+              "name": "browser",
+              "description": "Direct Browser Testing (MCP Playwright) (user)",
+              "argumentHint": ""
+            },
+            {
+              "name": "rps-loop",
+              "description": "RPS Loop - Recursive Problem Solving (user)",
+              "argumentHint": ""
+            },
+            {
+              "name": "deep-research",
+              "description": "Deep research harness \u2014 fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report. (dynamic workflow)",
+              "argumentHint": ""
+            },
+            {
+              "name": "ralph-wiggum:cancel-ralph",
+              "description": "(ralph-wiggum) Cancel active Ralph Wiggum loop",
+              "argumentHint": ""
+            },
+            {
+              "name": "ralph-wiggum:help",
+              "description": "(ralph-wiggum) Explain Ralph Wiggum technique and available commands",
+              "argumentHint": ""
+            },
+            {
+              "name": "ralph-wiggum:ralph-loop",
+              "description": "(ralph-wiggum) Start Ralph Wiggum loop in current session",
+              "argumentHint": "PROMPT [--max-iterations N] [--completion-promise TEXT]"
+            },
+            {
+              "name": "ralph-wiggum:rps-loop",
+              "description": "(ralph-wiggum) Start a Recursive Problem Solving loop - combines RLMGW-style decomposition with continuous autonomous execution",
+              "argumentHint": "PROMPT [--file PATH] [--max-iterations N] [--completion-promise TEXT]"
+            },
+            {
+              "name": "vercel:bootstrap",
+              "description": "(vercel) Bootstrap a repository with Vercel-linked resources by running preflight checks, provisioning integrations, verifying env keys, and then executing db/dev startup commands safely.",
+              "argumentHint": ""
+            },
+            {
+              "name": "vercel:deploy",
+              "description": "(vercel) Deploy the current project to Vercel. Pass \"prod\" or \"production\" as argument to deploy to production. Default is preview deployment.",
+              "argumentHint": ""
+            },
+            {
+              "name": "vercel:env",
+              "description": "(vercel) Manage Vercel environment variables. Commands include list, pull, add, remove, and diff. Use to sync environment variables between Vercel and your local development environment.",
+              "argumentHint": ""
+            },
+            {
+              "name": "vercel:status",
+              "description": "(vercel) Show the status of the current Vercel project \u2014 recent deployments, linked project info, and environment overview.",
+              "argumentHint": ""
+            },
+            {
+              "name": "codex:adversarial-review",
+              "description": "(codex) Run a Codex review that challenges the implementation approach and design choices",
+              "argumentHint": "[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [focus ...]"
+            },
+            {
+              "name": "codex:cancel",
+              "description": "(codex) Cancel an active background Codex job in this repository",
+              "argumentHint": "[job-id]"
+            },
+            {
+              "name": "codex:rescue",
+              "description": "(codex) Delegate investigation, an explicit fix request, or follow-up rescue work to the Codex rescue subagent",
+              "argumentHint": "[--background|--wait] [--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [what Codex should investigate, solve, or continue]"
+            },
+            {
+              "name": "codex:result",
+              "description": "(codex) Show the stored final output for a finished Codex job in this repository",
+              "argumentHint": "[job-id]"
+            },
+            {
+              "name": "codex:review",
+              "description": "(codex) Run a Codex code review against local git state",
+              "argumentHint": "[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]"
+            },
+            {
+              "name": "codex:setup",
+              "description": "(codex) Check whether the local Codex CLI is ready and optionally toggle the stop-time review gate",
+              "argumentHint": "[--enable-review-gate|--disable-review-gate]"
+            },
+            {
+              "name": "codex:status",
+              "description": "(codex) Show active and recent Codex jobs for this repository, including review-gate status",
+              "argumentHint": "[job-id] [--wait] [--timeout-ms <ms>] [--all]"
+            },
+            {
+              "name": "codex:transfer",
+              "description": "(codex) Transfer the current Claude Code session into a resumable Codex thread",
+              "argumentHint": "[--source <claude-jsonl>]"
+            },
+            {
+              "name": "frontend-design:frontend-design",
+              "description": "(frontend-design) Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.",
+              "argumentHint": "",
+              "aliases": [
+                "frontend-design"
+              ]
+            },
+            {
+              "name": "skill-creator:skill-creator",
+              "description": "(skill-creator) Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, update or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.",
+              "argumentHint": "",
+              "aliases": [
+                "skill-creator"
+              ]
+            },
+            {
+              "name": "superpowers:brainstorming",
+              "description": "(superpowers) You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.",
+              "argumentHint": "",
+              "aliases": [
+                "brainstorming"
+              ]
+            },
+            {
+              "name": "superpowers:dispatching-parallel-agents",
+              "description": "(superpowers) Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies",
+              "argumentHint": "",
+              "aliases": [
+                "dispatching-parallel-agents"
+              ]
+            },
+            {
+              "name": "superpowers:executing-plans",
+              "description": "(superpowers) Use when you have a written implementation plan to execute in a separate session with review checkpoints",
+              "argumentHint": "",
+              "aliases": [
+                "executing-plans"
+              ]
+            },
+            {
+              "name": "superpowers:finishing-a-development-branch",
+              "description": "(superpowers) Use when implementation is complete, all tests pass, and you need to decide how to integrate the work",
+              "argumentHint": "",
+              "aliases": [
+                "finishing-a-development-branch"
+              ]
+            },
+            {
+              "name": "superpowers:receiving-code-review",
+              "description": "(superpowers) Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation",
+              "argumentHint": "",
+              "aliases": [
+                "receiving-code-review"
+              ]
+            },
+            {
+              "name": "superpowers:requesting-code-review",
+              "description": "(superpowers) Use when completing tasks, implementing major features, or before merging to verify work meets requirements",
+              "argumentHint": "",
+              "aliases": [
+                "requesting-code-review"
+              ]
+            },
+            {
+              "name": "superpowers:subagent-driven-development",
+              "description": "(superpowers) Use when executing implementation plans with independent tasks in the current session",
+              "argumentHint": "",
+              "aliases": [
+                "subagent-driven-development"
+              ]
+            },
+            {
+              "name": "superpowers:systematic-debugging",
+              "description": "(superpowers) Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes",
+              "argumentHint": "",
+              "aliases": [
+                "systematic-debugging"
+              ]
+            },
+            {
+              "name": "superpowers:test-driven-development",
+              "description": "(superpowers) Use when implementing any feature or bugfix, before writing implementation code",
+              "argumentHint": "",
+              "aliases": [
+                "test-driven-development"
+              ]
+            },
+            {
+              "name": "superpowers:using-git-worktrees",
+              "description": "(superpowers) Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback",
+              "argumentHint": "",
+              "aliases": [
+                "using-git-worktrees"
+              ]
+            },
+            {
+              "name": "superpowers:using-superpowers",
+              "description": "(superpowers) Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions",
+              "argumentHint": "",
+              "aliases": [
+                "using-superpowers"
+              ]
+            },
+            {
+              "name": "superpowers:verification-before-completion",
+              "description": "(superpowers) Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always",
+              "argumentHint": "",
+              "aliases": [
+                "verification-before-completion"
+              ]
+            },
+            {
+              "name": "superpowers:writing-plans",
+              "description": "(superpowers) Use when you have a spec or requirements for a multi-step task, before touching code",
+              "argumentHint": "",
+              "aliases": [
+                "writing-plans"
+              ]
+            },
+            {
+              "name": "superpowers:writing-skills",
+              "description": "(superpowers) Use when creating new skills, editing existing skills, or verifying skills work before deployment",
+              "argumentHint": "",
+              "aliases": [
+                "writing-skills"
+              ]
+            },
+            {
+              "name": "sentrux:scan",
+              "description": "(sentrux) Scan a project with sentrux to get structural health grades (A-F) across 14 dimensions including coupling, cycles, cohesion, dead code, and test coverage. Use when the user wants to check code quality, architecture health, or before/after an agent session.",
+              "argumentHint": "",
+              "aliases": [
+                "scan"
+              ]
+            },
+            {
+              "name": "watch:watch",
+              "description": "(watch) Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.",
+              "argumentHint": "<video-url-or-path> [question]",
+              "aliases": [
+                "watch"
+              ]
+            },
+            {
+              "name": "humanizer:humanizer",
+              "description": "(humanizer) Remove signs of AI-generated writing from text. Use when editing or reviewing\ntext to make it sound more natural and human-written. Based on Wikipedia's\ncomprehensive \"Signs of AI writing\" guide. Detects and fixes patterns including:\ninflated symbolism, promotional language, superficial -ing analyses, vague\nattributions, em dash overuse, rule of three, AI vocabulary words, passive\nvoice, negative parallelisms, and filler phrases.",
+              "argumentHint": "",
+              "aliases": [
+                "humanizer"
+              ]
+            },
+            {
+              "name": "vercel:ai-gateway",
+              "description": "(vercel) Vercel AI Gateway expert guidance. Use when configuring model routing, provider failover, cost tracking, or managing multiple AI providers through a unified API.",
+              "argumentHint": "",
+              "aliases": [
+                "ai-gateway"
+              ]
+            },
+            {
+              "name": "vercel:ai-sdk",
+              "description": "(vercel) Vercel AI SDK expert guidance. Use when building AI-powered features \u2014 chat interfaces, text generation, structured output, tool calling, agents, MCP integration, streaming, embeddings, reranking, image generation, or working with any LLM provider.",
+              "argumentHint": "",
+              "aliases": [
+                "ai-sdk"
+              ]
+            },
+            {
+              "name": "vercel:auth",
+              "description": "(vercel) Authentication integration guidance \u2014 Clerk (native Vercel Marketplace), Descope, and Auth0 setup for Next.js applications. Covers middleware auth patterns, sign-in/sign-up flows, and Marketplace provisioning. Use when implementing user authentication.",
+              "argumentHint": "",
+              "aliases": [
+                "auth"
+              ]
+            },
+            {
+              "name": "vercel:bootstrap",
+              "description": "(vercel) Project bootstrapping orchestrator for repos that depend on Vercel-linked resources (databases, auth, and managed integrations). Use when setting up or repairing a repository so linking, environment provisioning, env pulls, and first-run db/dev commands happen in the correct safe order.",
+              "argumentHint": "",
+              "aliases": [
+                "bootstrap"
+              ]
+            },
+            {
+              "name": "vercel:cdn-caching",
+              "description": "(vercel) Debug Vercel CDN caching \u2014 cache hit rate, stale content, revalidation behavior, ISR + PPR, per-request cache reasons (cacheReason), and costs.",
+              "argumentHint": "",
+              "aliases": [
+                "cdn-caching"
+              ]
+            },
+            {
+              "name": "vercel:chat-sdk",
+              "description": "(vercel) Vercel Chat SDK expert guidance. Use when building multi-platform chat bots \u2014 Slack, Telegram, Microsoft Teams, Discord, Google Chat, GitHub, Linear \u2014 with a single codebase. Covers the Chat class, adapters, threads, messages, cards, modals, streaming, state management, and webhook setup.",
+              "argumentHint": "",
+              "aliases": [
+                "chat-sdk"
+              ]
+            },
+            {
+              "name": "vercel:deployments-cicd",
+              "description": "(vercel) Vercel deployment and CI/CD expert guidance. Use when deploying, promoting, rolling back, inspecting deployments, building with --prebuilt, or configuring CI workflow files for Vercel.",
+              "argumentHint": "",
+              "aliases": [
+                "deployments-cicd"
+              ]
+            },
+            {
+              "name": "vercel:env-vars",
+              "description": "(vercel) Vercel environment variable expert guidance. Use when working with .env files, vercel env commands, OIDC tokens, or managing environment-specific configuration.",
+              "argumentHint": "",
+              "aliases": [
+                "env-vars"
+              ]
+            },
+            {
+              "name": "vercel:eve",
+              "description": "(vercel) Build durable AI agents and agent-powered applications with the eve framework. Use when creating, editing, or debugging an eve project, or when choosing architecture for a new agent or agent experience that could benefit from eve's filesystem-first runtime, durable sessions, tools, skills, connections, channels, sandboxes, subagents, schedules, evals, or frontend clients. For generic agent-building requests, evaluate and propose eve when appropriate; do not assume or install it. Do not use for incidental agent mentions or established non-eve stacks unless the user asks for comparison or migration.",
+              "argumentHint": "",
+              "aliases": [
+                "eve"
+              ]
+            },
+            {
+              "name": "vercel:knowledge-update",
+              "description": "(vercel) Corrects outdated LLM knowledge about the Vercel platform and introduces new products. Injected at session start.",
+              "argumentHint": "",
+              "aliases": [
+                "knowledge-update"
+              ]
+            },
+            {
+              "name": "vercel:marketplace",
+              "description": "(vercel) Vercel Marketplace expert guidance \u2014 discovering, installing, and managing third-party integrations via the `vercel integration` CLI. Use when building any app that needs an external capability without a dedicated skill \u2014 commerce (stores, storefronts, selling products), payments (checkout, subscriptions, billing), observability/monitoring, messaging/email, search, or CMS \u2014 or when discovering, installing, or managing integrations.",
+              "argumentHint": ""
+            },
+            {
+              "name": "vercel:microfrontends",
+              "description": "(vercel) Guide for building, configuring, and deploying microfrontends on Vercel. Use this skill when the user mentions microfrontends, multi-zones, splitting an app across teams, independent deployments, cross-app routing, incremental migration, composing multiple frontends under one domain, microfrontends.json, @vercel/microfrontends, the microfrontends local proxy, or path-based routing between Vercel projects. Also use when the user asks about shared layouts across projects, navigation between microfrontends, fallback environments, asset prefixes, or feature flag controlled routing.",
+              "argumentHint": "",
+              "aliases": [
+                "microfrontends"
+              ]
+            },
+            {
+              "name": "vercel:next-cache-components",
+              "description": "(vercel) Next.js 16 Cache Components guidance \u2014 PPR, use cache directive, cacheLife, cacheTag, updateTag, and migration from unstable_cache. Use when implementing partial prerendering, caching strategies, or migrating from older Next.js cache patterns.",
+              "argumentHint": "",
+              "aliases": [
+                "next-cache-components"
+              ]
+            },
+            {
+              "name": "vercel:next-forge",
+              "description": "(vercel) next-forge expert guidance \u2014 production-grade Turborepo monorepo SaaS starter by Vercel. Use when working in a next-forge project, scaffolding with `npx next-forge init`, or editing @repo/* workspace packages.",
+              "argumentHint": "",
+              "aliases": [
+                "next-forge"
+              ]
+            },
+            {
+              "name": "vercel:next-upgrade",
+              "description": "(vercel) Upgrade Next.js to the latest version following official migration guides and codemods. Use when upgrading Next.js versions, running codemods, or migrating between major releases.",
+              "argumentHint": "",
+              "aliases": [
+                "next-upgrade"
+              ]
+            },
+            {
+              "name": "vercel:nextjs",
+              "description": "(vercel) Next.js App Router expert guidance. Use when building, debugging, or architecting Next.js applications \u2014 routing, Server Components, Server Actions, Cache Components, layouts, middleware/proxy, data fetching, rendering strategies, and deployment on Vercel.",
+              "argumentHint": "",
+              "aliases": [
+                "nextjs"
+              ]
+            },
+            {
+              "name": "vercel:react-best-practices",
+              "description": "(vercel) React best-practices reviewer for TSX files. Triggers after editing multiple TSX components to run a condensed quality checklist covering component structure, hooks usage, accessibility, performance, and TypeScript patterns.",
+              "argumentHint": "",
+              "aliases": [
+                "react-best-practices"
+              ]
+            },
+            {
+              "name": "vercel:routing-middleware",
+              "description": "(vercel) Vercel Routing Middleware guidance \u2014 request interception before cache, rewrites, redirects, personalization. Works with any framework. Supports Edge, Node.js, and Bun runtimes. Use when intercepting requests at the platform level.",
+              "argumentHint": "",
+              "aliases": [
+                "routing-middleware"
+              ]
+            },
+            {
+              "name": "vercel:runtime-cache",
+              "description": "(vercel) Vercel Runtime Cache API guidance \u2014 ephemeral per-region key-value cache with tag-based invalidation. Shared across Functions, Routing Middleware, and Builds. Use when implementing caching strategies beyond framework-level caching.",
+              "argumentHint": "",
+              "aliases": [
+                "runtime-cache"
+              ]
+            },
+            {
+              "name": "vercel:shadcn",
+              "description": "(vercel) shadcn/ui expert guidance \u2014 CLI, component installation, composition patterns, custom registries, theming, Tailwind CSS integration, and high-quality interface design. Use when initializing shadcn, adding components, composing product UI, building custom registries, configuring themes, or troubleshooting component issues.",
+              "argumentHint": "",
+              "aliases": [
+                "shadcn"
+              ]
+            },
+            {
+              "name": "vercel:turbopack",
+              "description": "(vercel) Turbopack expert guidance. Use when configuring the Next.js bundler, optimizing HMR, debugging build issues, or understanding the Turbopack vs Webpack differences.",
+              "argumentHint": "",
+              "aliases": [
+                "turbopack"
+              ]
+            },
+            {
+              "name": "vercel:vercel-agent",
+              "description": "(vercel) Vercel Agent guidance \u2014 AI-powered code review, incident investigation, and SDK installation. Automates PR analysis and anomaly debugging. Use when configuring or understanding Vercel's AI development tools.",
+              "argumentHint": "",
+              "aliases": [
+                "vercel-agent"
+              ]
+            },
+            {
+              "name": "vercel:vercel-cli",
+              "description": "(vercel) Vercel CLI expert guidance. Use when deploying, managing environment variables, linking projects, viewing logs, querying metrics, managing domains, or interacting with the Vercel platform from the command line.",
+              "argumentHint": "",
+              "aliases": [
+                "vercel-cli"
+              ]
+            },
+            {
+              "name": "vercel:vercel-connect",
+              "description": "(vercel) Vercel Connect expert guidance \u2014 securely obtain scoped OAuth tokens for third-party services (Slack, GitHub, MCP servers, OAuth, Snowflake) on behalf of apps or users via Vercel OIDC. Use when wiring up third-party API access, connecting to MCP servers, sending Slack messages, accessing GitHub APIs, receiving webhook events from Slack/Linear/GitHub and forwarding them to your agents and apps, or building Eve agent connections.",
+              "argumentHint": "",
+              "aliases": [
+                "vercel-connect"
+              ]
+            },
+            {
+              "name": "vercel:vercel-firewall",
+              "description": "(vercel) Vercel Firewall expert guidance \u2014 automatic DDoS mitigation, the Vercel WAF (custom rules, IP blocking, managed rulesets, rate limiting), Attack Mode, system bypass, bot management, and the `vercel firewall` CLI. Use when configuring platform-level security, responding to attacks, or staging firewall rules.",
+              "argumentHint": "",
+              "aliases": [
+                "vercel-firewall"
+              ]
+            },
+            {
+              "name": "vercel:vercel-functions",
+              "description": "(vercel) Vercel Functions expert guidance \u2014 Serverless Functions, Edge Functions, Fluid Compute, streaming, Cron Jobs, and runtime configuration. Use when configuring, debugging, or optimizing server-side code running on Vercel.",
+              "argumentHint": "",
+              "aliases": [
+                "vercel-functions"
+              ]
+            },
+            {
+              "name": "vercel:vercel-sandbox",
+              "description": "(vercel) Vercel Sandbox guidance \u2014 ephemeral Firecracker microVMs for running untrusted code safely. Supports AI agents, code generation, and experimentation. Use when executing user-generated or AI-generated code in isolation.",
+              "argumentHint": "",
+              "aliases": [
+                "vercel-sandbox"
+              ]
+            },
+            {
+              "name": "vercel:vercel-storage",
+              "description": "(vercel) Vercel storage expert guidance \u2014 Blob, Edge Config, and Marketplace storage (Neon Postgres, Upstash Redis). Use when choosing, configuring, or using data storage with Vercel applications.",
+              "argumentHint": "",
+              "aliases": [
+                "vercel-storage"
+              ]
+            },
+            {
+              "name": "vercel:verification",
+              "description": "(vercel) Full-story verification \u2014 infers what the user is building, then verifies the complete flow end-to-end: browser \u2192 API \u2192 data \u2192 response. Triggers on dev server start and 'why isn't this working' signals.",
+              "argumentHint": "",
+              "aliases": [
+                "verification"
+              ]
+            },
+            {
+              "name": "vercel:workflow",
+              "description": "(vercel) Vercel Workflow DevKit (WDK) expert guidance. Use when building durable workflows, long-running tasks, API routes or agents that need pause/resume, retries, step-based execution, or crash-safe orchestration with Vercel Workflow.",
+              "argumentHint": "",
+              "aliases": [
+                "workflow"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:ask-matt",
+              "description": "(mattpocock-skills) Ask which skill or flow fits your situation. A router over the skills in this repo.",
+              "argumentHint": "",
+              "aliases": [
+                "ask-matt"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:diagnosing-bugs",
+              "description": "(mattpocock-skills) Diagnosis loop for hard bugs and performance regressions. Use when the user says \"diagnose\"/\"debug this\", or reports something broken/throwing/failing/slow.",
+              "argumentHint": "",
+              "aliases": [
+                "diagnosing-bugs"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:grill-with-docs",
+              "description": "(mattpocock-skills) A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go.",
+              "argumentHint": "",
+              "aliases": [
+                "grill-with-docs"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:triage",
+              "description": "(mattpocock-skills) Move issues and external PRs through a state machine of triage roles \u2014 categorise, verify, grill if needed, and write agent-ready briefs.",
+              "argumentHint": "",
+              "aliases": [
+                "triage"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:improve-codebase-architecture",
+              "description": "(mattpocock-skills) Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.",
+              "argumentHint": "",
+              "aliases": [
+                "improve-codebase-architecture"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:setup-matt-pocock-skills",
+              "description": "(mattpocock-skills) Configure this repo for the engineering skills \u2014 set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills.",
+              "argumentHint": "",
+              "aliases": [
+                "setup-matt-pocock-skills"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:tdd",
+              "description": "(mattpocock-skills) Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions \"red-green-refactor\", or wants integration tests.",
+              "argumentHint": "",
+              "aliases": [
+                "tdd"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:to-spec",
+              "description": "(mattpocock-skills) Turn the current conversation into a spec and publish it to the project issue tracker \u2014 no interview, just synthesis of what you've already discussed.",
+              "argumentHint": "",
+              "aliases": [
+                "to-spec"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:to-tickets",
+              "description": "(mattpocock-skills) Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker \u2014 edges as text in one file per ticket locally, or native blocking links on a real tracker.",
+              "argumentHint": "",
+              "aliases": [
+                "to-tickets"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:wayfinder",
+              "description": "(mattpocock-skills) Plan a huge chunk of work \u2014 more than one agent session can hold \u2014 as a shared map of decision tickets on your issue tracker, and resolve them one at a time until the way to the destination is clear.",
+              "argumentHint": "",
+              "aliases": [
+                "wayfinder"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:implement",
+              "description": "(mattpocock-skills) Implement a piece of work based on a spec or set of tickets.",
+              "argumentHint": "",
+              "aliases": [
+                "implement"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:prototype",
+              "description": "(mattpocock-skills) Build a throwaway prototype to answer a design question. Use when the user wants to sanity-check whether a state model or logic feels right, or explore what a UI should look like.",
+              "argumentHint": "",
+              "aliases": [
+                "prototype"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:research",
+              "description": "(mattpocock-skills) Investigate a question against high-trust primary sources and capture the findings as a Markdown file in the repo. Use when the user wants a topic researched, docs or API facts gathered, or reading legwork delegated to a background agent.",
+              "argumentHint": "",
+              "aliases": [
+                "research"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:domain-modeling",
+              "description": "(mattpocock-skills) Build and sharpen a project's domain model. Use when the user wants to pin down domain terminology or a ubiquitous language, record an architectural decision, or when another skill needs to maintain the domain model.",
+              "argumentHint": "",
+              "aliases": [
+                "domain-modeling"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:codebase-design",
+              "description": "(mattpocock-skills) Shared vocabulary for designing deep modules. Use when the user wants to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary.",
+              "argumentHint": "",
+              "aliases": [
+                "codebase-design"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:code-review",
+              "description": "(mattpocock-skills) Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes \u2014 Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/PRD asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \"review since X\".",
+              "argumentHint": ""
+            },
+            {
+              "name": "mattpocock-skills:resolving-merge-conflicts",
+              "description": "(mattpocock-skills) Use when you need to resolve an in-progress git merge/rebase conflict.",
+              "argumentHint": "",
+              "aliases": [
+                "resolving-merge-conflicts"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:grill-me",
+              "description": "(mattpocock-skills) A relentless interview to sharpen a plan or design.",
+              "argumentHint": "",
+              "aliases": [
+                "grill-me"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:grilling",
+              "description": "(mattpocock-skills) Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.",
+              "argumentHint": "",
+              "aliases": [
+                "grilling"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:handoff",
+              "description": "(mattpocock-skills) Compact the current conversation into a handoff document for another agent to pick up.",
+              "argumentHint": "What will the next session be used for?"
+            },
+            {
+              "name": "mattpocock-skills:teach",
+              "description": "(mattpocock-skills) Teach the user a new skill or concept, within this workspace.",
+              "argumentHint": "What would you like to learn about?",
+              "aliases": [
+                "teach"
+              ]
+            },
+            {
+              "name": "mattpocock-skills:writing-great-skills",
+              "description": "(mattpocock-skills) Reference for writing and editing skills well \u2014 the vocabulary and principles that make a skill predictable.",
+              "argumentHint": "",
+              "aliases": [
+                "writing-great-skills"
+              ]
+            },
+            {
+              "name": "obsidian:defuddle",
+              "description": "(obsidian) Extract clean markdown content from web pages using Defuddle CLI, removing clutter and navigation to save tokens. Use instead of WebFetch when the user provides a URL to read or analyze, for online documentation, articles, blog posts, or any standard web page. Do NOT use for URLs ending in .md \u2014 those are already markdown, use WebFetch directly.",
+              "argumentHint": "",
+              "aliases": [
+                "defuddle"
+              ]
+            },
+            {
+              "name": "obsidian:json-canvas",
+              "description": "(obsidian) Create and edit JSON Canvas files (.canvas) with nodes, edges, groups, and connections. Use when working with .canvas files, creating visual canvases, mind maps, flowcharts, or when the user mentions Canvas files in Obsidian.",
+              "argumentHint": "",
+              "aliases": [
+                "json-canvas"
+              ]
+            },
+            {
+              "name": "obsidian:obsidian-bases",
+              "description": "(obsidian) Create and edit Obsidian Bases (.base files) with views, filters, formulas, and summaries. Use when working with .base files, creating database-like views of notes, or when the user mentions Bases, table views, card views, filters, or formulas in Obsidian.",
+              "argumentHint": "",
+              "aliases": [
+                "obsidian-bases"
+              ]
+            },
+            {
+              "name": "obsidian:obsidian-cli",
+              "description": "(obsidian) Interact with Obsidian vaults using the Obsidian CLI to read, create, search, and manage notes, tasks, properties, and more. Also supports plugin and theme development with commands to reload plugins, run JavaScript, capture errors, take screenshots, and inspect the DOM. Use when the user asks to interact with their Obsidian vault, manage notes, search vault content, perform vault operations from the command line, or develop and debug Obsidian plugins and themes.",
+              "argumentHint": "",
+              "aliases": [
+                "obsidian-cli"
+              ]
+            },
+            {
+              "name": "obsidian:obsidian-markdown",
+              "description": "(obsidian) Create and edit Obsidian Flavored Markdown with wikilinks, embeds, callouts, properties, and other Obsidian-specific syntax. Use when working with .md files in Obsidian, or when the user mentions wikilinks, callouts, frontmatter, tags, embeds, or Obsidian notes.",
+              "argumentHint": "",
+              "aliases": [
+                "obsidian-markdown"
+              ]
+            },
+            {
+              "name": "design-sync",
+              "description": "Push a React design system to claude.ai/design. This runs a converter that bundles the real component code (from Storybook or a bare package) and uploads it. Use when the user runs /design-sync or says \"sync my design system to Claude Design\".",
+              "argumentHint": "[<project hint, e.g. \"Acme DS\">]"
+            },
+            {
+              "name": "dataviz",
+              "description": "Use this skill whenever you are about to create ANY chart, graph, plot, dashboard, or data visualization, in ANY output medium \u2014 an HTML or React artifact, inline SVG, plotting code in any library (matplotlib, plotly, d3, Recharts, \u2026), an image/PNG you will render and upload, or a chart shared into Slack. Read it BEFORE writing the first line of chart code, choosing chart colors, building a stat tile / meter / KPI row, or laying out a dashboard. Produces visualizations that read as one system \u2014 elegant, accessible, consistent in light and dark \u2014 using a brand-neutral placeholder palette you swap for your own. Teaches a design-system-agnostic method: a form heuristic, a color formula with a runnable validator, mark specs, and interaction rules. A validated default palette is documented in `references/palette.md` \u2014 swap that file's values for your brand's. Triggers on: \"chart\", \"graph\", \"plot\", \"data viz\", \"visualization\", \"dashboard\", \"analytics\", \"visualize data\", \"categorical colors\", \"sequential / diverging palette\", \"stat tile\", \"sparkline\", \"heatmap\", \"legend\", \"axis\", \"tooltip\", \"chart colors\", \"color by series\".",
+              "argumentHint": ""
+            },
+            {
+              "name": "update-config",
+              "description": "Use this skill to configure the Claude Code harness via settings.json. Automated behaviors (\"from now on when X\", \"each time X\", \"whenever X\", \"before/after X\") require hooks configured in settings.json - the harness executes these, not Claude, so memory/preferences cannot fulfill them. Also use for: permissions (\"allow X\", \"add permission\", \"move permission to\"), env vars (\"set X=Y\"), hook troubleshooting, or any changes to settings.json/settings.local.json files. Examples: \"allow npm commands\", \"add bq permission to global settings\", \"move permission to user settings\", \"set DEBUG=true\", \"when claude stops show X\". For simple settings like theme/model, suggest the /config command.",
+              "argumentHint": ""
+            },
+            {
+              "name": "verify",
+              "description": "Verify that a code change actually does what it's supposed to by exercising it end-to-end and observing behavior \u2014 drive the affected flow, not just tests or typecheck. Run before committing nontrivial changes; bootstraps this repo's project verify skill if none exists yet. Don't invoke it on a diff that only touches tests, docs, or other code with no runtime surface to drive (a change to product source always has one) \u2014 there's nothing to observe.",
+              "argumentHint": ""
+            },
+            {
+              "name": "debug",
+              "description": "Enable debug logging for this session and help diagnose issues",
+              "argumentHint": "[issue description]"
+            },
+            {
+              "name": "code-review",
+              "description": "Review the current diff for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level (low/medium: fewer, high-confidence findings; high\u2192max: broader coverage, may include uncertain findings; ultra: deep multi-agent review in the cloud (requires claude.ai account access)). Pass --comment to post findings as inline PR comments, or --fix to apply the findings to the working tree after the review.",
+              "argumentHint": "[low|medium|high|xhigh|max|ultra] [--fix] [--comment] [<target>]"
+            },
+            {
+              "name": "simplify",
+              "description": "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only \u2014 it does not hunt for bugs; use /code-review for that.",
+              "argumentHint": "[<target>]"
+            },
+            {
+              "name": "batch",
+              "description": "Research and plan a large-scale change, then execute it in parallel across 5\u201330 isolated worktree agents that each open a PR.",
+              "argumentHint": "<instruction>"
+            },
+            {
+              "name": "fewer-permission-prompts",
+              "description": "Scan your transcripts for common read-only Bash and MCP tool calls, then add a prioritized allowlist to project .claude/settings.json to reduce permission prompts.",
+              "argumentHint": ""
+            },
+            {
+              "name": "doctor",
+              "description": "Health-check the user's Claude Code setup and fix issues: diagnose installation health \u2014 what the `claude doctor` terminal diagnostics cover \u2014 from local data (duplicate or leftover installs, PATH, unparseable settings files, broken or colliding agent definitions); find unused skills, MCP servers, and plugins versus their context cost and disable dead weight; deduplicate local CLAUDE.md files against checked-in ones; trim checked-in CLAUDE.md files by cutting content a session could derive from the codebase (directory layouts, tech-stack lists, architecture overviews) while keeping gotchas, rationale, and non-standard conventions; migrate always-loaded CLAUDE.md guidance into lazy skills and nested CLAUDE.md files; flag slow hooks and context-heavy extensions; check the installed version is current; make auto mode the default permission mode; and pre-approve frequently denied read-only commands. Use when the user asks for a doctor run, checkup, audit, tune-up, or cleanup of their Claude Code setup or configuration.",
+              "argumentHint": "",
+              "aliases": [
+                "checkup"
+              ]
+            },
+            {
+              "name": "loop",
+              "description": "Run a prompt or slash command on a recurring interval (e.g. /loop 5m /foo). Omit the interval to let the model self-pace.",
+              "argumentHint": "[interval] [prompt]",
+              "aliases": [
+                "proactive"
+              ]
+            },
+            {
+              "name": "schedule",
+              "description": "Create, update, list, or run scheduled cloud agents (routines) that execute on a cron schedule.",
+              "argumentHint": "",
+              "aliases": [
+                "routines"
+              ]
+            },
+            {
+              "name": "claude-api",
+              "description": "Reference for the Claude API / Anthropic SDK \u2014 model ids, pricing, params, streaming, tool use, MCP, agents, caching, token counting, model migration.\nTRIGGER \u2014 read BEFORE opening the target file; don't skip because it \"looks like a one-liner\" \u2014 whenever: the prompt names Claude/Anthropic in any form (Claude, Anthropic, Fable, Opus, Sonnet, Haiku, `anthropic`, `@anthropic-ai`, `claude-*`, `us.anthropic.*`, `[1m]`); the user asks about an LLM (pricing/model choice/limits/caching) \u2014 never answer from memory; OR the task is LLM-shaped with provider unstated (agent/MCP/tool-definition/multi-agent/RAG/LLM-judge/computer-use; generate/summarize/extract/classify/rewrite/converse over NL; debugging refusals/cutoffs/streaming/tool-calls/tokens).\nSKIP only when another provider is being worked on (overrides all triggers): OpenAI/GPT/Gemini/Llama/Mistral/Cohere/Ollama named in the query; OR `grep -rE 'openai|langchain_openai|google.generativeai|genai|mistralai|cohere|ollama'` over the project hits (run this grep FIRST if no provider named \u2014 don't Read the file).",
+              "argumentHint": ""
+            },
+            {
+              "name": "run",
+              "description": "Launch and drive this project's app to see a change working. Use when asked to run, start, or screenshot the app, or to confirm a change works in the real app (not just tests). First looks for a project skill that already covers launching the app; otherwise falls back to built-in patterns per project type (CLI, server, TUI, Electron, browser-driven, library).",
+              "argumentHint": ""
+            },
+            {
+              "name": "run-skill-generator",
+              "description": "Author or improve the run-<unit> skill \u2014 a per-project skill that tells agents how to build, launch, and drive this project's app. Use when the user asks to set up the project, get it running, write run instructions, or verify build/run steps work from a clean environment.",
+              "argumentHint": ""
+            },
+            {
+              "name": "agents",
+              "description": "(removed) Ask Claude to create/manage subagents, or edit .claude/agents/",
+              "argumentHint": ""
+            },
+            {
+              "name": "clear",
+              "description": "Start a new session with empty context; previous session stays on disk (resumable with /resume)",
+              "argumentHint": "[name]",
+              "aliases": [
+                "reset",
+                "new"
+              ]
+            },
+            {
+              "name": "color",
+              "description": "Set the prompt bar color for this session",
+              "argumentHint": "[red|blue|green|yellow|purple|orange|pink|cyan|default]"
+            },
+            {
+              "name": "compact",
+              "description": "Free up context by summarizing the conversation so far",
+              "argumentHint": "<optional custom summarization instructions>"
+            },
+            {
+              "name": "config",
+              "description": "Set a setting by key",
+              "argumentHint": "key=value",
+              "aliases": [
+                "settings"
+              ]
+            },
+            {
+              "name": "context",
+              "description": "Show current context usage",
+              "argumentHint": ""
+            },
+            {
+              "name": "effort",
+              "description": "Set effort level for model usage",
+              "argumentHint": "<low|medium|high|xhigh|max|ultracode|auto>"
+            },
+            {
+              "name": "fast",
+              "description": "Toggle fast mode (Opus 5)",
+              "argumentHint": "[on|off]"
+            },
+            {
+              "name": "heapdump",
+              "description": "Dump the JS heap to ~/Desktop",
+              "argumentHint": ""
+            },
+            {
+              "name": "init",
+              "description": "Initialize a new CLAUDE.md file with codebase documentation",
+              "argumentHint": ""
+            },
+            {
+              "name": "mcp",
+              "description": "Manage MCP servers",
+              "argumentHint": "[reconnect|enable|disable [<server>|all]]"
+            },
+            {
+              "name": "model",
+              "description": "Set the AI model for Claude Code",
+              "argumentHint": "<model>"
+            },
+            {
+              "name": "__remote-workflow",
+              "description": "Run the workflow script delivered in this session environment (server-launched sessions only)",
+              "argumentHint": ""
+            },
+            {
+              "name": "workflow-launch-exec",
+              "description": "Execute a server-launched workflow handoff (workflow_launch event sessions only)",
+              "argumentHint": ""
+            },
+            {
+              "name": "reload-skills",
+              "description": "Pick up skills added or changed on disk during this session",
+              "argumentHint": ""
+            },
+            {
+              "name": "rename",
+              "description": "Rename the current conversation",
+              "argumentHint": "[name]",
+              "aliases": [
+                "name"
+              ]
+            },
+            {
+              "name": "review",
+              "description": "Review a GitHub pull request; for your working diff use /code-review",
+              "argumentHint": "[pr number]"
+            },
+            {
+              "name": "security-review",
+              "description": "Complete a security review of the pending changes on the current branch",
+              "argumentHint": ""
+            },
+            {
+              "name": "usage-credits",
+              "description": "Configure usage credits or request them from your admin when you hit a limit",
+              "argumentHint": ""
+            },
+            {
+              "name": "extra-usage",
+              "description": "Renamed to /usage-credits",
+              "argumentHint": ""
+            },
+            {
+              "name": "usage",
+              "description": "Show session cost, plan usage, and what's contributing to your limits",
+              "argumentHint": "",
+              "aliases": [
+                "cost",
+                "stats"
+              ]
+            },
+            {
+              "name": "insights",
+              "description": "Generate a report analyzing your Claude Code sessions",
+              "argumentHint": ""
+            },
+            {
+              "name": "recap",
+              "description": "Generate a one-line session recap now",
+              "argumentHint": ""
+            },
+            {
+              "name": "goal",
+              "description": "Set a goal \u2014 keep working until the condition is met",
+              "argumentHint": ""
+            },
+            {
+              "name": "design",
+              "description": "Grant or revoke Claude agent access to your Design projects",
+              "argumentHint": "consent | revoke"
+            },
+            {
+              "name": "design-consent",
+              "description": "Grant Claude agent access to your Design projects",
+              "argumentHint": ""
+            },
+            {
+              "name": "design-revoke",
+              "description": "Revoke Claude agent access to your Design projects",
+              "argumentHint": ""
+            },
+            {
+              "name": "team-onboarding",
+              "description": "Help teammates ramp on Claude Code with a guide from your usage",
+              "argumentHint": ""
+            }
+          ],
+          "agents": [
+            {
+              "name": "claude",
+              "description": "Catch-all for any task that doesn't fit a more specific agent. FleetView's default when no agent name is typed."
+            },
+            {
+              "name": "codex:codex-rescue",
+              "description": "Proactively use when Claude Code is stuck, wants a second implementation or diagnosis pass, needs a deeper root-cause investigation, or should hand a substantial coding task to Codex through the shared runtime",
+              "model": "sonnet"
+            },
+            {
+              "name": "Explore",
+              "description": "Fast read-only search agent for locating code. Use it to find files by pattern (eg. \"src/components/**/*.tsx\"), grep for symbols or keywords (eg. \"API endpoints\"), or answer \"where is X defined / which files reference Y.\" Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis \u2014 it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: \"quick\" for a single targeted lookup, \"medium\" for moderate exploration, or \"very thorough\" to search across multiple locations and naming conventions."
+            },
+            {
+              "name": "general-purpose",
+              "description": "General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you."
+            },
+            {
+              "name": "Plan",
+              "description": "Software architect agent for designing implementation plans. Use this when you need to plan the implementation strategy for a task. Returns step-by-step plans, identifies critical files, and considers architectural trade-offs."
+            },
+            {
+              "name": "semble-search",
+              "description": "Code search agent for exploring any codebase. Use for finding code by intent, locating implementations, understanding how something works, or discovering related code. Prefer over Grep/Glob/Read for any semantic or exploratory question."
+            },
+            {
+              "name": "statusline-setup",
+              "description": "Use this agent to configure the user's Claude Code status line setting.",
+              "model": "sonnet"
+            },
+            {
+              "name": "vercel:ai-architect",
+              "description": "Specializes in architecting AI-powered applications on Vercel \u2014 choosing between AI SDK patterns, configuring providers, building agents, setting up durable workflows, and integrating MCP servers. Use when designing AI features, building chatbots, or creating agentic applications."
+            },
+            {
+              "name": "vercel:deployment-expert",
+              "description": "Specializes in Vercel deployment strategies, CI/CD pipelines, preview URLs, production promotions, rollbacks, environment variables, and domain configuration. Use when troubleshooting deployments, setting up CI/CD, or optimizing the deploy pipeline."
+            },
+            {
+              "name": "vercel:performance-optimizer",
+              "description": "Specializes in optimizing Vercel application performance \u2014 Core Web Vitals, rendering strategies, caching, image optimization, font loading, edge computing, and bundle size. Use when investigating slow pages, improving Lighthouse scores, or optimizing loading performance."
+            }
+          ],
+          "output_style": "default",
+          "available_output_styles": [
+            "default",
+            "Proactive",
+            "Explanatory",
+            "Learning"
+          ],
+          "models": [
+            {
+              "value": "default",
+              "resolvedModel": "claude-opus-5[1m]",
+              "displayName": "Default (recommended)",
+              "description": "Opus 5 with 1M context \u00b7 Best for everyday, complex tasks",
+              "supportsEffort": true,
+              "supportedEffortLevels": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "supportsAdaptiveThinking": true,
+              "supportsFastMode": true,
+              "supportsAutoMode": true
+            },
+            {
+              "value": "opus[1m]",
+              "resolvedModel": "claude-opus-5[1m]",
+              "displayName": "Opus (1M context)",
+              "description": "Opus 5 with 1M context \u00b7 Best for everyday, complex tasks",
+              "supportsEffort": true,
+              "supportedEffortLevels": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "supportsAdaptiveThinking": true,
+              "supportsFastMode": true,
+              "supportsAutoMode": true
+            },
+            {
+              "value": "claude-fable-5[1m]",
+              "resolvedModel": "claude-fable-5[1m]",
+              "displayName": "Fable",
+              "description": "Fable 5 \u00b7 Most capable for your hardest and longest-running tasks",
+              "supportsEffort": true,
+              "supportedEffortLevels": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "supportsAdaptiveThinking": true,
+              "supportsAutoMode": true
+            },
+            {
+              "value": "sonnet",
+              "resolvedModel": "Qwen/Qwen3.6-27B",
+              "displayName": "Sonnet",
+              "description": "Sonnet \u00b7 Efficient for routine tasks",
+              "supportsEffort": true,
+              "supportedEffortLevels": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "supportsAdaptiveThinking": true,
+              "supportsAutoMode": true
+            },
+            {
+              "value": "haiku",
+              "resolvedModel": "Qwen/Qwen3.6-27B",
+              "displayName": "Haiku",
+              "description": "Haiku 4.5 \u00b7 Fastest for quick answers",
+              "supportsEffort": true,
+              "supportedEffortLevels": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "supportsAdaptiveThinking": true,
+              "supportsAutoMode": true
+            }
+          ],
+          "account": "<REDACTED>",
+          "pid": 15406,
+          "remote_control_auto_enable": false,
+          "remote_control_auto_on_by_default": false,
+          "ide_rc_auto_enable_gate": false,
+          "fast_mode_state": "off",
+          "fast_mode_disabled_reason": "sdk_opt_in_required"
+        }
+      }
+    },
+    "first_delta_after_s": 2.3144218921661377,
+    "first_delta": {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "The"
+        },
+        "index": 0
+      },
+      "session_id": "ec715036-25fe-4c85-85bc-9f877293770b",
+      "parent_tool_use_id": null,
+      "uuid": "47c6eaaa-cd3e-41ab-9a2c-d52d61036640"
+    },
+    "interrupt_response": {
+      "type": "control_response",
+      "response": {
+        "subtype": "success",
+        "request_id": "req_2_interrupt",
+        "response": {
+          "still_queued": []
+        }
+      }
+    },
+    "interrupt_response_latency_s": 0.0005002021789550781,
+    "interrupted_result": {
+      "is_error": true,
+      "duration_api_ms": 0,
+      "num_turns": 2,
+      "stop_reason": null,
+      "session_id": "ec715036-25fe-4c85-85bc-9f877293770b",
+      "total_cost_usd": 0,
+      "usage": {
+        "input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 0,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "",
+        "iterations": [],
+        "speed": "standard"
+      },
+      "modelUsage": {},
+      "permission_denials": [],
+      "terminal_reason": "aborted_streaming",
+      "fast_mode_state": "off",
+      "fast_mode_disabled_reason": "sdk_opt_in_required",
+      "subtype": "error_during_execution",
+      "errors": [
+        "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"
+      ],
+      "type": "result",
+      "duration_ms": 5416,
+      "uuid": "85fe81a5-4baf-4b70-ba7e-8f08869542a0"
+    },
+    "interrupt_to_result_s": 0.0018680095672607422,
+    "followup_result": {
+      "is_error": false,
+      "duration_api_ms": 2118,
+      "num_turns": 1,
+      "stop_reason": "end_turn",
+      "session_id": "ec715036-25fe-4c85-85bc-9f877293770b",
+      "total_cost_usd": 0.093935,
+      "usage": {
+        "input_tokens": 18657,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 26,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "",
+        "iterations": [],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "Qwen/Qwen3.6-27B": {
+          "inputTokens": 18657,
+          "outputTokens": 26,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.093935,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "qwen/qwen3.6-27b",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "fast_mode_disabled_reason": "sdk_opt_in_required",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "\n\nOK-AFTER-INTERRUPT",
+      "ttft_ms": 2139,
+      "ttft_stream_ms": 2058,
+      "time_to_request_ms": 73,
+      "type": "result",
+      "duration_ms": 2584,
+      "uuid": "9a332f4b-4763-49ad-934f-baf63d3fdf66"
+    },
+    "followup_latency_s": 2.5866870880126953
+  },
+  "stderr": ""
+}
