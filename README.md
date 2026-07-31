@@ -57,31 +57,43 @@ RETRACTED / CORRECTED blocks in `MILESTONES.md`) — treat unverified assertions
 Re-verify before relying on anything version-specific: `claude --version`, `codex --version`,
 `gemini --version`, `opencode --version`.
 
-## First task: spike S1
+## All five spikes are resolved — start building
 
-**Question:** can Claude Code be driven as a child from raw Rust, including *interrupt*?
+S1–S5 ran on 2026-07-31 and **all passed**. Their recorded streams are in `tests/fixtures/`
+and are the seed of the L2 regression suite. Full results in `MILESTONES.md` and the design
+doc; the one-line version:
 
-`claude -p --output-format stream-json --input-format stream-json` gives spawn, stream, and
-prompt. The open question is the **interrupt / control-request framing on the input channel**,
-which is SDK-internal and undocumented.
+| spike | answer |
+|---|---|
+| **S1** Claude Code from raw Rust | Drivable, interrupt included (`control_response` in 1 ms). **No TS sidecar.** |
+| **S2** DECSTBM / scrollback | `alacritty_terminal` retains it. Claude Code uses the **alt screen**, so it needs none. |
+| **S3** app-server lifecycle | No reaper exists. But **unsubscribed threads unload after 30 min.** |
+| **S4** Stop-hook re-prompt | Works on both, via `{"decision":"block","reason":…}`. |
+| **S5** late-join subscription | `thread/resume` **is** subscribe. Mid-turn attach works. |
 
-- **Pass:** spawn, stream, steer, and interrupt all work with no TypeScript in the loop.
-- **Fail:** the Claude adapter needs a TS sidecar — which changes the process model for the
-  whole project.
+**Next task: the M1 vertical slice.** A real `claude` root calls `mcp__marion__spawn`, a real
+`codex` child edits a file in a worktree and reports back, and the parent receives a structured
+task contract — driven entirely by the canned provider so it costs nothing and repeats.
+Acceptance criteria are design doc §9.2; workspace layout is §11.
 
-This runs first because it is the only open question that changes the language and process
-architecture. Everything else is stack-agnostic.
+Build it **disposably first**. The independent Codex review argued — persuasively — that the
+delegation core should be proven before anything that displays it. No daemon, no VT emulator,
+no model proxy, no event log beyond a task audit trail. Only once that hop works should the
+supervisor split (M2) and the tree UI (M3) go in.
 
-**The concrete procedure is design doc §9.1** — including how to recover the undocumented
-interrupt framing (capture what the official TS SDK writes when `interrupt()` is called, then
-replay those bytes from Rust).
+## What is still open
 
-Then: **S2** (which DECSTBM shape do the harnesses emit — decides whether any off-the-shelf VT
-crate can give us scrollback), **S3** (resolve the unexplained Codex app-server death), **S4**
-(can a `Stop` hook re-prompt a stopping agent?).
+Small, and none of it blocks M1:
 
-**Every spike must emit a fixture** — spikes become the regression suite instead of being
-thrown away. Spikes live in `spikes/` and are not workspace members.
+- **`SubagentStop` is verified statically only** — it shares Claude Code's `Stop` code path in
+  the 2.1.220 bundle. Owed: a live confirmation under real auth.
+- **Does `CODEX_HOME` / `GEMINI_CLI_HOME` isolation break auth** the way `CLAUDE_CONFIG_DIR`
+  does? Unverified.
+- The Codex **daemon-updater kill path** is source-verified, not measured (running
+  `daemon bootstrap` installs durable user state, so the spike declined to).
+- An **alacritty edge case** (`grid/mod.rs:258`) unreachable in observed traffic but unproven
+  for one huge tool output on a very short terminal.
+- **Windows.** `pty-process` is Unix-only.
 
 ## Repo layout and milestone gates
 
