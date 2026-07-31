@@ -44,6 +44,14 @@ If a milestone doesn't make that primitive better, it isn't a milestone.
     acceptance criteria authored *before* the run, declared writable scope checked against observed
     writes, verification evidence, and the resulting diff. Prose from a foreign agent is not a
     result.
+11. **A node is not done while its children are running, and a status update is not a delivery.**
+    Completion is explicit *and* descendant-gated: an agent may deliberately report early (marked
+    as such, with the still-live children listed), but it may not exit without choosing. Crucially,
+    a non-terminal child **never enters the parent's context** — status flows to the tree/UI only.
+    The harm this prevents is real and observed: in Claude Code a subagent waiting on its own
+    children stops its turn, a completion notification fires, and the parent reasons over a status
+    message as though it were a result. **marion can gate this correctly where a single harness
+    cannot**, because it owns the whole tree including children running in other harnesses.
 
 ## Topology
 
@@ -71,10 +79,11 @@ parent pointer). **marion must enforce single-writer itself.**
 surface, observation sources). `shared` is preferred wherever it exists.
 
 **Terminals.** Claude Code uses the **alternate screen** for its entire session, so it needs no
-scrollback handling. Codex does **not**, so all scrollback work is a Codex concern — and Codex
-erases scrollback (`CSI 3J`) on every resize, which marion must intercept. **A pty host that
-answers no terminal probes deadlocks both harnesses**; answering DA1, XTVERSION, and CPR is
-mandatory.
+scrollback handling. Codex uses the main screen — so all scrollback work is a Codex concern — and
+erases scrollback (`CSI 3J`) on every resize, which marion must intercept. Codex does enter the alt
+screen transiently for full-screen overlays (the `/diff` pager), so buffer switching mid-session is
+required. Both harnesses emit terminal probes (DA1, XTVERSION, CPR); marion answers them, but our
+own fixtures show both proceeding without answers, so this is prudence, not a requirement.
 
 **Codex app-servers are never reaped**, but **unsubscribed threads unload after 30 minutes** and
 `thread/start` does not materialize a rollout. `thread/resume` is the subscribe mechanism.
@@ -189,6 +198,9 @@ mechanism, which is why the canned provider and the model-injection plane are th
 implementation:
 
 - **Every spike emits a fixture**, so answers become regression tests instead of evaporating.
+  **This rule is currently violated and the violations are known:** the Gemini and opencode
+  launcher findings and this document's entire resource model rest on uncommitted single sessions.
+  Re-measure them, with fixtures, before treating them as settled.
 - **Fixtures contain system prompts, repo contents, and anything secret that appeared in tool
   output.** Redaction pass plus a pre-commit secret scan are mandatory; prefer recording against
   the canned provider.
@@ -238,10 +250,17 @@ Codex optimizes for the most defensible product; that is not the objective here.
 clicking into running cross-harness subagents is the stated purpose, and any-harness × any-model is
 an explicit north-star goal. The resolution is sequencing, not amputation.
 
-**The risk we consciously accept:** owning several unstable integration boundaries at once.
-Mitigations: `marion doctor`, version-stamped claims, pinned binary paths, fixture-based drift
-detection. If those prove insufficient in practice, **the Codex wedge is the fallback scope** —
-narrow to ACP-first and delete the adapters.
+**The risk we consciously accept:** owning several unstable integration boundaries at once. On a
+second pass Codex sharpened this and we accept the sharpening: **the TUI and model plane are not
+what will sink this — the adapter layer is.** The TUI is largely bounded work once the adapters
+exist; the model proxy is substitutable (LiteLLM). Sustaining N adapters against tools that update
+weekly is the unbounded cost, and twelve corrections in one day of research is the evidence.
+
+Mitigations: `marion doctor --adapter` (behavioral contract tests, not just capability probes),
+version-stamped claims, pinned binary paths, fixture-based drift detection. **The trigger for
+narrowing to the ACP-first fallback is adapter churn, measured — not a decision made now.** The
+expected form of that narrowing is deep support for two harnesses with the rest as community
+adapters.
 
 ---
 

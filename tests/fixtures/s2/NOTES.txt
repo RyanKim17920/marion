@@ -20,11 +20,22 @@ Captures
 
 No paid model calls were made; only local slash commands were driven.
 
-Redaction: email addresses were replaced in place with an equal-length placeholder
-("redacted@example.invalid..."), so byte offsets and line widths are preserved and the
-streams remain replayable. No API keys, tokens, or credential-bearing paths were present.
-Home-directory paths (/Users/<name>) were left intact — they are load-bearing for the
-codex /status panel widths and contain no secrets.
+Redaction — EQUAL-LENGTH ONLY. These captures are byte-addressed by the design doc
+(§5.3 cites ESC[?1049h at byte 67 / 1900, and the 0.145.0 pair at 38963 / 43372), and the
+rendered panels are column-aligned, so every substitution here MUST preserve byte count.
+Do not use the <HOME>/<USER> placeholders used elsewhere in tests/fixtures — they are a
+different length and would shift every offset after them.
+
+  - Email addresses -> equal-length placeholder ("redacted@example.invalid...").
+  - Username "<name>" (7 bytes) -> "example" (7 bytes). Affects both real home paths
+    (/Users/<name>/.codex/... in the codex /status panel) and the path-encoded scratch
+    directory (.../-Users-<name>-Desktop-CODING-marion/...). All three /Users occurrences
+    in the 0.145.0 capture sit at 19709 / 27142 / 35155, i.e. before 38963, so a
+    length-changing substitution would have broken the cited offsets.
+
+Verified after redaction: file lengths, ESC[?1049h/l offsets, CSI 3J and CSI 2J counts,
+DECSET 2026 bracket counts and the DECSTBM region histogram are all unchanged.
+No API keys, tokens, or credential-bearing paths were present.
 
 Tools (copied from the spike scratch dir, throwaway, not workspace code)
   ptyhost.py   pty.fork host: TIOCSWINSZ, scripted keystrokes/resizes, logs all raw bytes.

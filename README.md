@@ -63,7 +63,7 @@ confidently before being disproved, including one that was wrong *twice*. Treat 
 | spike | answer |
 |---|---|
 | **S1** Claude Code from raw Rust | Drivable, interrupt included (`control_response` in 1 ms). **No TS sidecar.** The channel is bidirectional — that is how permission prompts arrive. *(Proven over pipes; pty re-confirmation owed in M1.)* |
-| **S2** Terminals and scrollback | Claude Code uses the **alt screen** (needs no scrollback). Codex does not. Real hazard is `CSI 3J` on resize. A dumb pty host **deadlocks both** — answering DA1/XTVERSION/CPR is mandatory. |
+| **S2** Terminals and scrollback | Claude Code uses the **alt screen** for its whole session (so needs no scrollback). Codex uses the main screen, entering alt only for the `/diff` pager. Real hazard is `CSI 3J` on every Codex resize — marion intercepts it. |
 | **S3** Codex app-server lifecycle | Never reaped; the earlier "reaping" was most likely our own tooling. But **unsubscribed threads unload after 30 min.** |
 | **S4** Stop-hook re-prompt | Works on both via `{"decision":"block","reason":…}`. **Codex hooks fail silently until trusted.** |
 | **S5** Late-join subscription | `thread/resume` **is** subscribe. Mid-turn attach works. Approvals fan out to all subscribers — marion must not race a human. |
@@ -76,15 +76,19 @@ are mutually exclusive for Claude Code children.
 
 A real `claude` root calls `mcp__marion__spawn`; a real `codex` child edits a file in a worktree
 and reports; the parent receives a **structured task contract** — driven entirely by the canned
-provider so it costs nothing and repeats. Acceptance criteria: design doc §9. Workspace layout: §10.
+provider so it costs nothing and repeats. Acceptance criteria and the concrete M1 decisions
+(blocking `spawn`, contract field ownership, the M1 permission policy, `codex exec --json` as the
+child surface): design doc §9. Repo layout: §10.
 
 **Build it disposably.** The independent Codex review argued persuasively that the delegation core
 should be proven before anything that displays it: no daemon, no VT emulator, no model proxy, no
 event log beyond the task audit trail. Only once that hop works do the supervisor split (M2) and
 the tree UI (M3) go in.
 
-Two debts fall due in M1: the pty re-confirmation of S1's protocol, and a live `SubagentStop`
-check (verified statically only — the spike could not spawn a subagent through its proxy).
+Three debts fall due in M1, all things currently designed on decompilation rather than measurement:
+the pty re-confirmation of S1's protocol, a live `SubagentStop` check, and **a real `can_use_tool`
+round-trip** — the inbound half of Claude Code's control channel, which the whole permission path
+depends on and which no committed fixture exercises.
 
 ## Stack
 
