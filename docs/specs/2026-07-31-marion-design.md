@@ -1,0 +1,794 @@
+# marion — Design
+
+**Status:** design, pre-implementation · **rev 2** (post adversarial review)
+**Date:** 2026-07-31
+**Companion:** `MILESTONES.md` (goals, principles). This document is the technical design.
+
+> **rev 2 changed the architecture.** Direct-MCP spawn replaces the Agent-tool shim as the
+> primary delegation path (§5.4). The Codex app-server reaping requirement is **struck** — it
+> did not reproduce (§10). The `Adapter` trait is split because it could not be implemented
+> for pty-only modes (§5.2). A security model was added (§7). Claims are version-stamped;
+> anything not independently verified is marked **UNVERIFIED**.
+
+---
+
+## 1. Purpose and scope
+
+marion runs any agent harness, on any model, as a first-class subagent of any other harness,
+with one UI over the whole tree. Everything serves one primitive:
+
+```
+Agent(harness, model, tools, prompt, …) -> handle
+handle: observe · steer · interrupt · result
+```
+
+Out of scope: the graph-plan system, mesh routing, remote hosting, the north star.
+
+**Verification baseline.** All harness claims below are stamped to: Claude Code **2.1.220**,
+Codex CLI **0.145.0**, opencode **1.17.3**, Gemini CLI **0.53.0** (note: earlier research used
+0.40.1 — thirteen minors stale; Gemini claims are re-stamped or marked UNVERIFIED). Crates:
+`alacritty_terminal` 0.26.0, `pty-process` 0.5.3, `ratatui` 0.30.2, `agent-client-protocol`
+2.0.0.
+
+---
+
+## 2. Architecture
+
+```
+┌─ marion-supervisor (daemon) ───────────────────────────────┐
+│  Registry      nodes, edges, capabilities, ownership       │
+│  ControlPlanes per-harness typed control                   │
+│  DisplayPlanes pty + VT grid, one per node with a terminal │
+│  EventLog      append-only IR, per agent, on disk          │
+│  ControlMCP    stdio MCP injected into children (scoped)   │
+│  CannedProvider / ModelProxy   (§5.5)                      │
+└───────────────▲────────────────────────────────────────────┘
+                │ unix socket, NDJSON JSON-RPC 2.0
+┌───────────────┴─ marion-tui (client, detachable) ──────────┐
+│  Tree · panes · permission+elicitation queue · renderers   │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Keying.** Supervisor and state are both keyed on the **project root** (the git common-dir,
+falling back to cwd) — *not* cwd, because §6.6 worktree children have a different cwd and
+would otherwise hash to a different supervisor. Socket path is length-checked against the
+104-byte `sun_path` limit; on overflow marion falls back to `/tmp/marion-<uid>/<12-hex>.sock`.
+
+**Client↔supervisor methods:** `tree/subscribe`, `node/get`, `node/attach`, `node/detach`,
+`node/input`, `node/steer`, `node/cancel`, `node/kill`, `node/rename`, `permission/reply`,
+`elicitation/reply`, `policy/set`, `agent/spawn`, `doctor/run`.
+
+---
+
+## 3. Core concepts
+
+### 3.1 Agent type = launch spec
+
+A declarative record that *compiles* to a process invocation. Markdown + YAML frontmatter
+(the prompt is the bulk of the content; every harness already uses this shape).
+
+**Discovery and precedence.** Agent types are loaded from, later overriding earlier:
+`$XDG_CONFIG_HOME/marion/agents/*.md` (user) → `<project>/.marion/agents/*.md` (project) →
+programmatic definitions passed to the supervisor. The `name:` field is the key and must match
+`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; the filename is not significant. Duplicate names are an
+error at load, reported by `marion doctor`, not silently last-wins.
+
+```yaml
+---
+name: codex-impl
+description: Implements a well-specified change in Rust.
+harness: codex
+model: gpt-5.3-codex
+effort: high
+mode: shared
+tools: [read, edit, bash]
+isolation: worktree
+maxTurns: 40
+---
+You implement changes precisely and do not expand scope…
+```
+
+**Tool compilation uses allowlists, not denylists.** Claude Code 2.1.220 ships
+`--tools <tools...>` — the actual allowlist. Compiling to `--disallowedTools` would require
+enumerating the complement of the built-in tool set and re-deriving it every release, which
+guarantees silent privilege escalation the first time a tool is added.
+
+**Tool declarations are only authoritative if the config is minimal.** Copying the user's MCP
+config into a child (§6.4) hands that child every MCP tool the user has configured regardless
+of `tools:`. Therefore config seeding is **opt-in per agent type** (`inherit_user_config:
+true`), default **off**.
+
+### 3.2 Node
+
+```rust
+struct Node {
+    id: AgentId,                  // marion's own; harness ids are unstable across fork/resume
+    parent_id: Option<AgentId>,   // see §7.5 for post-parent-exit semantics
+    lamport: u64,                 // causal ordering across nodes (§4.2)
+    name: Option<String>,
+    agent_type: String,
+    harness: Harness,
+    harness_version: String,      // resolved at spawn
+    binary_path: PathBuf,         // resolved through symlinks (§7.7)
+    session: Option<HarnessSessionRef>,   // None for `opaque`
+    mode: SpawnMode,
+    isolation: Isolation,
+    caps: Capabilities,
+    state: NodeState,
+    depth: u8,
+    reap_state: ReapState,        // Live | ReapedIdle | Orphaned  (§7.2)
+}
+```
+
+### 3.3 Capabilities
+
+Two-stage, because pty-only modes have no handshake to negotiate with:
+
+1. **Static**, keyed `(harness, harness_version, mode)`, produced by `marion doctor` and
+   cached. This is the only source for `interactive`/`opaque`.
+2. **Refined** at session open for modes with a handshake (ACP `initialize`, app-server
+   capability reads), narrowing — never widening — the static set.
+
+```rust
+fn static_caps(harness: &Harness, version: &str, mode: SpawnMode) -> Capabilities;
+fn refine(&self, session: &Session, base: Capabilities) -> Capabilities;
+```
+
+**`SpawnMode` is authoritative over `Capabilities`, not parallel to it.** Mode sets the
+ceiling; caps may only be at or below it. `opaque` forces `steer/fork/resume/permissions/
+token_deltas/structured_events = false` and `native_tui = true`. `structured_events` is
+therefore derived from mode, not stored — removing the overlap the review flagged.
+
+---
+
+## 4. The event IR
+
+```rust
+struct Event {
+    agent_id: AgentId,
+    parent_id: Option<AgentId>,
+    seq: u64,                 // marion's per-agent receive order
+    src_seq: Option<u64>,     // source-side sequence where the harness provides one
+    lamport: u64,             // causal, cross-node (§4.2)
+    ts: SystemTime,           // RFC3339 with offset in NDJSON; advisory only
+    mono_ns: u64,             // monotonic since supervisor start; used for pty alignment
+    tier: Tier,
+    payload: Payload,
+}
+```
+
+**`Tier`** records how much semantic fidelity an event carries, and rides on every event rather
+than only on the node — because one agent can produce mixed-tier events (a `shared` node emits
+structured `item/*` *and* raw pty bytes simultaneously). The renderer needs to know per event.
+
+```rust
+enum Tier {
+    Structured,  // typed events from a native control plane or ACP
+    Derived,     // reconstructed from a tailed transcript; correct but lagged
+    Opaque,      // raw bytes; no semantics
+}
+```
+
+Mapping from `SpawnMode`: `shared`/`headless` → `Structured` (plus `Opaque` for any pty bytes);
+`interactive` → `Derived` + `Opaque`; `opaque` → `Opaque` only.
+
+`Payload` variants: `Lifecycle`, `Message{role, block}`, `ToolCall{id,name,kind,input,status,
+locations}`, `ToolResult{id,output,is_error}`, `Permission{id,request}`, `Elicitation{id,
+request}`, `Plan`, `Usage{tokens,cost}`, `Control(ControlMsg)`, `Raw(Bytes)`,
+`Vendor{harness,key,json}`.
+
+`Lifecycle::Spawned` carries `{harness, harness_version, model, agent_type, isolation, caps,
+depth, mode}`.
+
+**`seq` records marion's observation order and nothing more.** rev 1 claimed "per-agent `seq`
+continuity proves no events were lost" — that was unearned: a notification dropped and never
+redelivered simply never gets a number, leaving the sequence gapless. Loss detection requires
+`src_seq`, which is populated where the harness supplies one (Codex `item/*` ids, Claude
+transcript `uuid` chains) and `None` otherwise. **Where `src_seq` is `None`, marion cannot
+detect loss and the UI must not claim otherwise.**
+
+**Granularity is chunks, not messages** — opencode emits token-level deltas, Amp emits whole
+messages. A message-granular IR would force buffering and lose live typing.
+
+**`kind: ToolKind`** (from ACP: `read|edit|delete|move|search|execute|think|fetch|switch_mode|
+other`) is what lets one renderer draw every harness — Claude's `Edit`, Codex's `apply_patch`,
+opencode's `edit`, Gemini's `replace` all normalize to `Edit`.
+
+**`Vendor` is carried, never discarded**; on an ACP wire it serializes into `_meta` (the spec
+forbids custom root fields).
+
+### 4.2 Ordering
+
+Wall clock is not trustworthy for causality — NTP steps and sleep/wake move `SystemTime`
+backwards, which can invert a parent's spawn against its child's `Spawned`. Since the topology
+is a **star**, a Lamport counter over the causal edges marion itself owns — `spawn`, `report`,
+`send`, `cancel` — is nearly free and exact. `lamport` is authoritative for cross-node
+ordering; `ts` is display-only.
+
+`mono_ns` exists to align `events.jsonl` with `pty.cast`: asciicast v3 timestamps are
+**relative**, so without a shared anchor the two streams cannot be put on one timeline — which
+§8/L6's screen-vs-log oracle requires.
+
+### 4.3 On-disk layout
+
+**`<state>`** = `$MARION_STATE_DIR` if set, else `$XDG_STATE_HOME/marion`, else
+`~/.local/state/marion`. **`<project-hash>`** = first 12 hex of BLAKE3 of the canonical project
+root (git common-dir, falling back to cwd). Every path below is under
+`<state>/<project-hash>/` — including the per-agent config dirs, which §6.4 references by the
+short form `<agent-dir>/config/`.
+
+```
+<state>/<project-hash>/
+  journal.jsonl                       # append-only registry journal (§7.4)
+  snapshot.json                       # opportunistic compaction of the journal
+  agents/<agent_id>/                  # = <agent-dir>
+    meta.json                         # compiled spec, caps, harness ref, binary path+version
+    events.jsonl                      # IR, append-only, fsync per record
+    pty.cast                          # asciicast v3, modes with a pty
+    config/                           # isolated harness config dir, if any (§6.4)
+    worktree                          # symlink, when isolation: worktree
+```
+
+**Registry is an append-only journal, not a rewritten `registry.json`.** rev 1 asserted
+"atomically rewritten" without designing it, and rewriting the whole tree per state change is
+O(tree) per event against an intentionally unbounded tree. The journal is replayed at startup;
+a compacted snapshot is written opportunistically via write-temp → fsync → rename → fsync-dir.
+
+**Spawn is journaled before the process starts.** A crash between "process spawned" and
+"registry updated" would otherwise leave a live child with no registry entry — an orphan
+marion cannot find, holding a session id the ownership invariant no longer knows about.
+Intent-then-confirm ordering makes that recoverable.
+
+---
+
+## 5. Components
+
+### 5.1 Registry and session ownership
+
+Neither Codex nor Claude Code locks a session (verified: two concurrent `codex resume`
+processes on one id both start, both hold the same inode read/write, neither is refused).
+Writes are `O_APPEND` so records survive; the failure is **semantic divergence**, and Codex
+rollout records carry `turn_id` but no parent pointer, so the fork is unreconstructable.
+
+The registry refuses to open a harness session id it already holds live. Branching is explicit
+(`codex fork`, `claude --fork-session`).
+
+**Scope, stated honestly:** this protects marion from marion. It cannot stop a user opening
+the same session in another terminal. It is worth having because reap-and-resume (§7.2),
+`send`-to-finished, and orphan recovery are all paths where marion could otherwise
+double-open *itself*. A reaped node **keeps** its ownership claim — the id stays held, and
+resume goes through the registry.
+
+### 5.2 Planes (was: one Adapter trait)
+
+rev 1's single `Adapter` trait could not be implemented for `opaque`: it required
+`events() -> Stream`, `prompt`, `steer`, `interrupt`, and `load(&SessionId)`/`resume(&SessionId)`
+for a mode with no event source, no typed input, and **no session id at all**. Split:
+
+```rust
+trait DisplayPlane {           // every node with a terminal
+    fn spawn_pty(&self, inv: Invocation) -> Result<PtyHandle>;
+    fn write_keys(&self, h: &PtyHandle, bytes: &[u8]) -> Result<()>;
+    fn resize(&self, h: &PtyHandle, cols: u16, rows: u16) -> Result<()>;
+    fn kill(&self, h: &PtyHandle) -> Result<()>;
+}
+
+trait ControlPlane {           // only modes with typed control
+    fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation>;
+    fn open(&self, inv: Invocation) -> Result<Session>;
+    fn events(&self, s: &Session) -> impl Stream<Item = Event>;
+    fn prompt(&self, s: &Session, p: Prompt) -> Result<()>;
+    fn steer(&self, s: &Session, p: Prompt) -> Result<()>;
+    fn interrupt(&self, s: &Session) -> Result<()>;
+    fn view(&self, id: &SessionId) -> Result<Session>;      // replays history
+    fn continue_(&self, id: &SessionId) -> Result<Session>; // does not replay
+    fn refine(&self, s: &Session, base: Capabilities) -> Capabilities;
+    fn shutdown(&self, s: &Session) -> Result<()>;
+}
+```
+
+- `opaque` = `DisplayPlane` only. Its events are `Raw(Bytes)` and the supervisor owns it
+  directly; it is not a `ControlPlane` implementor and does not pretend to be.
+- `interactive` = `DisplayPlane` + a **read-only** `ControlPlane` (transcript tail supplies
+  `events()`; `prompt`/`steer` route to `write_keys`; `interrupt` is a signal).
+- `headless` = `ControlPlane` only. `shared` = both, fully.
+
+**`view` / `continue_` replaces `load` / `resume`.** The distinction is marion-native —
+rebuild a view (orphan recovery, §7.2) versus continue work (reap-resume, §7.2) — and is *no
+longer justified by citing ACP*, because ACP v2's method list drops `session/load` entirely. `agent-client-protocol`
+2.0.0 is still wire **v1** (v2 is behind `unstable_protocol_v2`), so v1 semantics hold today;
+the trait is named so that it survives v2.
+
+**Day-one:** claude-code, codex. Then acp (breadth), opencode.
+
+**codex.** `shared` mode: `codex app-server --listen ws://IP:PORT` (a literal `SocketAddr` —
+a hostname is a hard `InvalidWebSocketListenUrl`, and `wss://` is rejected). Threads via
+`thread/start`, driven with `turn/start`/`turn/steer`/`turn/interrupt`, consuming `item/*`.
+`codex --remote` attaches a TUI in a pty on demand (interactive subcommands only). For live
+threads: `thread/read` + `turn/start`, **never `thread/resume`** (it goes through the rollout
+file, which is not materialized for a live thread).
+
+> rev 1 mandated a 25s heartbeat against an ~86–90s idle reap. **That did not reproduce** —
+> an idle app-server was alive at 160s and no idle reaper exists in `app-server-daemon/`
+> source at any duration. Requirement struck; see S3 and §10.
+
+**claude-code.** `interactive` (pty + JSONL tail) or `headless`
+(`-p --output-format stream-json --input-format stream-json`). Liveness via
+`claude agents --json` (no TTY needed). Note `claude attach <interactive-id>` prints
+`No job matching…` **and exits 0** — never branch on its exit status.
+
+> **Open risk (S1):** stream-json *input* control framing (interrupt) is SDK-internal and
+> undocumented. If it can't be driven from raw Rust, the Claude adapter needs a TS sidecar.
+> This decides the process model, which is why it now runs first.
+
+### 5.3 Display plane: pty + VT
+
+`pty-process` 0.5.3 with `features = ["async"]` (default is `[]`) — native tokio
+`AsyncRead`/`AsyncWrite`, `setsid` + `ioctl_tiocsctty`, real `resize`. **Unix-only, no
+`cfg(windows)` anywhere.** `portable-pty` 0.9.0 is blocking-only (`std::io::Read`/`Write`), so
+Windows support is a thread-bridge plus a second I/O model behind the trait — real work, not a
+feature flag. Windows is deferred.
+
+`alacritty_terminal` 0.26.0 for the VT. **The rev 1 rationale for rejecting `vt100` was
+wrong.** Both crates drop scrollback under a scroll region whose top is not row 0:
+
+- `alacritty` `grid/mod.rs:271-301` rotates into history only `if region.start == 0`, else
+  swaps rows (dropped); `:258` resets rows outright when the region is smaller than the scroll
+  amount and `region.start != 0`.
+- `vt100` `grid.rs:566` keys on `scroll_top != 0 || scroll_bottom != rows-1`.
+
+So the real difference is **top-anchored vs top-or-bottom**: with `ESC[1;20r` (bottom status
+bar) alacritty keeps history and vt100 does not; with `ESC[2;24r` (top offset) **neither
+does**. alacritty remains the pick — it is strictly more capable, is published (unlike
+`wezterm-term`), and handles OSC 8 (parsed in `vte` 0.15 `ansi.rs`, surfaced per-cell) and
+DECSET 2026. But the choice does not by itself deliver scrollback.
+
+> **S2 must first measure which DECSTBM shape Claude Code and Codex actually emit.** If either
+> uses a top offset, no off-the-shelf crate gives us scrollback and we either patch alacritty
+> or maintain our own history above the scroll region. rev 1's E0 pass criterion
+> ("alt-screen-free scrollback correct") was unachievable-by-default and is now conditional.
+
+**`renderable_content()` is viewport-only** (`display_iter` runs `-display_offset-1` to
+`bottommost_line()`). Scrollback requires `Grid` indexing with negative `Line` or driving
+`scroll_display()`. The rev 1 "~150-line adapter" estimate covered the viewport half only.
+
+Coverage needed: SGR incl. 24-bit, CUP/ED/EL, DECSET 2026, reverse index, DECSTBM, OSC 0,
+OSC 8, cursor save/restore. A dumb host answering **no** probes was verified to run both TUIs
+correctly; neither uses the alternate screen.
+
+**Keystroke injection rules** (verified): never send text and `\r` in one write (paste-burst
+heuristics swallow the submit); never wrap in bracketed paste; one line at a time; wait for
+boot modals detected from screen state.
+
+### 5.4 Control MCP — direct spawn is the primary path
+
+rev 1 made the Claude Code Agent-tool shim primary. **That was backwards on fidelity and on
+cost**, and the review is right:
+
+- The built-in Agent tool's return value is *the shim subagent's own final text*. So a real
+  child's structured result reaches the parent only after the shim **retypes it as prose** —
+  paraphrasable, truncatable, hallucinable. That is precisely what §7.6 exists to prevent, and
+  the shim reintroduces it structurally. rev 1's claim that the parent reasons over the
+  structured result "with zero adaptation" was **false**: the parent sees a string.
+- Each shim is a full Claude Code process. At ~462 MB for an active session, a 53 MB Codex
+  child costs ~9× more with a shim in front of it, which invalidated rev 1's capacity numbers.
+
+**Primary path: the parent calls `mcp__marion__spawn` directly and receives the structured
+result as a genuine tool result.** One turn, no retyping, no extra process, full fidelity.
+
+The Agent-tool shim remains available as **optional ergonomic sugar** for users who want
+foreign agents to appear in Claude Code's native agent picker, with its fidelity and memory
+costs documented. It is not on the critical path.
+
+| tool | purpose |
+|---|---|
+| `spawn` | create a child node; returns structured result (or a handle if backgrounded) |
+| `send` | message a node — see authorization below |
+| `report` | explicit result return (§7.6) |
+| `status` / `wait` / `cancel` / `list` | node state, block-until-idle, interrupt, discovery |
+
+**Authorization (new in rev 2).** rev 1 handed `spawn`/`send`/`cancel`/`list` to every child
+with no scoping — a peer routing table with an LLM on both ends, i.e. the mesh the star
+topology explicitly forbids, and a prompt-injection channel between siblings. Now:
+
+- Every child gets a per-node **capability token** bound to its `AgentId`.
+- `send`, `cancel`, `status`, `wait` are permitted **only to the node's own descendants**, or
+  to its parent. Sibling addressing is denied by default.
+- `list` returns descendants and parent only.
+- Cross-branch addressing requires an explicit `allow_peers: [names]` grant in the agent type.
+- Every denied call is logged and surfaced in the UI — a child attempting lateral addressing
+  is a signal worth seeing.
+
+**Wiring.** The server is registered under the name `marion`, producing the `mcp__marion__*`
+prefix Claude Code and Gemini apply. It is injected per child by the fileless path where
+available (`--mcp-config '{"mcpServers":{"marion":{...}}}'` for Claude Code; `-c
+mcp_servers.marion={...}` for Codex; `OPENCODE_CONFIG_CONTENT` for opencode), else written into
+`<agent-dir>/config/`. The command is `marion-supervisor mcp --token <tok>`, a thin stdio bridge
+back to the supervisor socket. The capability token is passed **as an argv flag on that bridge
+command, not as an env var**, so it is not inherited by grandchildren or by tools the agent
+shells out to. The bridge resolves the token to an `AgentId` and stamps every call, so a child
+cannot address outside its grant even if it reads its own config.
+
+`report`'s payload mirrors Claude Code's Agent result shape (`totalTokens`, `totalDurationMs`,
+`totalToolUseCount`, `usage`, `toolStats`, `worktreePath`) — and on the direct-MCP path the
+parent genuinely receives it.
+
+### 5.5 Canned provider and model proxy — two components, not one
+
+rev 1 bundled these and got the sequencing wrong in both directions — it called the proxy
+"optional" while making it the foundation of E2E testing, then scheduled it last.
+
+- **CannedProvider (early, small, unblocking).** Replays scripted SSE on a single wire format
+  (Anthropic Messages first) for L4. Port Codex's `mock_model_server.rs` pattern — `wiremock`
+  + `SeqResponder` + `.expect(n)` — and `core_test_support::responses` builders rather than
+  inventing an event vocabulary.
+- **ModelProxy (late, genuinely large).** Translation across four wire formats for
+  any-harness × any-model. Build order by measured difficulty: opencode (no proxy needed —
+  speaks all four natively) → Claude Code → Qwen → Gemini → **Codex last** (Responses API
+  only; `wire_api="chat"` was removed). Amp is structurally blocked.
+
+marion need not *write* the translation — LiteLLM, Vercel AI Gateway, and OpenRouter do it.
+marion owns the launcher primitives and the canned mode. Security constraints in §7.1.
+
+### 5.6 TUI client
+
+Tree pane, content pane, permission **and elicitation** queues. Per-harness renderer plugins
+keyed on `(harness, vendor_key)`, generic widgets as fallback.
+
+marion is the only process seeing permission requests from every harness — one queue, one
+keybinding, central policy. An `opaque` node cannot participate and will block invisibly, so
+the UI shows **"possibly blocked, no permission channel"** with elapsed time, never a spinner.
+
+---
+
+## 6. Data flow
+
+### 6.1 Spawn
+
+1. Parent calls `mcp__marion__spawn { agent_type, prompt, name? }`; token is checked (§5.4).
+2. Resolve agent type; check depth, concurrency caps, and **write-conflict policy** (§6.6).
+3. Resolve the harness binary **through symlinks**; record path + `--version`.
+4. Isolation: `worktree` → create; `shared-cwd` → inherit.
+5. `compile()` → argv + env + config, into an isolated config dir if needed (§6.4).
+6. **Journal the spawn intent**, then start the process, then journal confirmation.
+7. `Lifecycle::Spawned` with static caps, refined if the mode has a handshake.
+8. Events stream into the EventLog immediately and continuously, watched or not.
+
+### 6.2 Observe
+
+"Opening" a node is a **view switch in the client**, never a connection event. The supervisor
+has held the channel since `t=0`, so the double-open hazard is structurally unreachable.
+
+### 6.3 Steer vs continue
+
+rev 1's §5.4 collapsed what its own §6.3 forbade collapsing. Now explicit and separate:
+
+- **`node/steer`** — mid-flight injection into a **running** node. Requires `caps.steer`.
+- **`node/prompt`** — a new turn on an **idle** node.
+- **`send` to a finished node** — supervisor performs `continue_()` then `prompt()` as one
+  atomic registry operation, so there is no race between the two calls.
+
+### 6.4 Config injection and isolation
+
+marion **never mutates the user's real harness config**.
+
+- **Fileless preferred:** Claude Code `--agents '<json>'` + `--mcp-config`; Codex `-c
+  key=value` (global, repeatable, TOML-parsed); opencode `OPENCODE_CONFIG_CONTENT`.
+- **Isolated dir otherwise:** `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GEMINI_CLI_HOME` under
+  `<state>/agents/<id>/config/`, cleaned up on node deletion.
+- **Seeding from the user's real config is opt-in** (`inherit_user_config`), default off,
+  because those directories hold OAuth tokens and API keys and because inherited MCP servers
+  silently defeat `tools:` (§3.1). When on, marion copies only the keys the agent type names.
+
+**Verified launcher requirements (2.1.220 / 0.145.0):**
+
+- `ANTHROPIC_API_KEY=""` when using `ANTHROPIC_AUTH_TOKEN` — a non-empty key silently wins.
+  Note the empty string is inherited by grandchildren and by shelled-out tools, and some SDKs
+  distinguish empty from absent. Set it as narrowly as possible.
+- `CLAUDE_CODE_ATTRIBUTION_HEADER=0` — a per-request nonce destroyed third-party prefix
+  caching (0% → 99.7% when stripped).
+- `127.0.0.1` not `localhost` for Codex `--listen`; give `unix://` its own directory.
+- Codex reserves provider ids `openai`, `ollama`, `lmstudio`, `amazon-bedrock`.
+- Both binaries require a real TTY.
+- **`CLAUDE_CODE_CHILD_SESSION` — corrected.** rev 1 said scrubbing it was mandatory or no
+  transcript is written. A/B testing at 2.1.220 wrote transcripts **both** ways. The real gate
+  also requires the interactive path, not-a-teammate, and no tmux marker; `-p` is unaffected;
+  a third variable `CLAUDE_CODE_SKIP_PROMPT_HISTORY` has its own path. Claude Code also *sets*
+  this variable itself when spawning children, so scrubbing changes how the child identifies
+  itself. **Policy:** set `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` for `interactive` children
+  (explicit, no side effects) rather than scrubbing.
+
+### 6.5 Result
+
+Explicit only (§7.6), returned as a structured tool result on the direct-MCP path.
+
+### 6.6 Concurrency and isolation
+
+marion creates worktrees and reports diffs. **It never auto-merges** — that is how multi-agent
+systems silently destroy work. Merging is an explicit act by the parent or user.
+
+**`shared-cwd` write conflicts (new in rev 2).** rev 1 offered `shared-cwd` and analyzed only
+merging, which `shared-cwd` doesn't do. Two children writing one tree is lost-update, and it is
+worse than two humans because each harness keeps its own checkpoint state — a checkpoint
+restore in one child silently reverts the other's work.
+
+Policy: **at most one node with write tools per cwd by default.** A second write-capable spawn
+into an occupied cwd is refused with a message naming the holder, and the caller must either
+wait, use `isolation: worktree`, or pass an explicit `allow_concurrent_writes` override.
+`ToolCall.locations` gives attribution, but attribution is forensics — this is prevention.
+
+---
+
+## 7. Security and failure modes
+
+### 7.1 Security model (new in rev 2)
+
+**Threat model.** Children run arbitrary code by design; they are not a trust boundary. marion
+protects (a) the user's credentials, (b) the user's source, and (c) nodes from each other.
+
+- **Model traffic.** The proxy and canned provider bind **loopback only**, on an ephemeral
+  port, with a per-run bearer token in the child's env. Never `0.0.0.0`.
+- **Credentials never transit marion's logs.** The proxy redacts `Authorization`,
+  `x-api-key`, `anthropic-*` auth headers, and any configured secret pattern before anything
+  is written to disk.
+- **Fixtures are the biggest leak risk in this design, and it is self-inflicted.** §9 requires
+  every spike to emit a fixture and §8/L4 replays recorded conversations — which contain system
+  prompts, full repo contents in tool results, and anything secret that appeared in output.
+  Therefore: recording runs through a **redaction pass** that scrubs headers and known secret
+  shapes; fixtures land in `tests/fixtures/` with a mandatory `REVIEW.md` checklist; and a
+  pre-commit hook (gitleaks or equivalent) blocks a commit containing fixture files that
+  fail the scan. **Fixtures recorded against a real provider are never committed without a
+  human read.** Prefer recording against the canned provider.
+- **Control MCP** is scoped per node (§5.4). Descendants and parent only, by default.
+- **Supply chain.** If LiteLLM is ever used it is pinned by hash and run out-of-process; it
+  shipped credential-stealing malware on PyPI 1.82.7/1.82.8, so version pinning alone is not
+  an answer for a component in the credential path. Default is marion's own canned provider.
+- **Config copies** are opt-in (§6.4) and deleted with the node.
+
+### 7.2 Reaping, orphans, and supervisor restart
+
+`reap_state` distinguishes what rev 1 conflated — after a supervisor crash, a deliberately
+reaped node and a killed orphan were indistinguishable on disk, so restart recovery would have
+marked perfectly resumable nodes as dead.
+
+- **`ReapedIdle`** — process killed to reclaim memory, transcript intact, ownership claim
+  retained, resumable. Written to the journal *before* the kill.
+- **`Orphaned`** — process lost without a recorded reap (supervisor crash). Marked on restart
+  only for nodes that were `Live`.
+- Running nodes are never reaped. SIGSTOP is not used as hibernation: measured, it saves no
+  memory (footprints unchanged across a 175s stop, zero swapouts). The one place it pays is
+  `opencode serve`, which busy-polls at 1.15%/core while idle.
+
+On restart: replay the journal, mark `Live` → `Orphaned`, offer `view()` replay where the
+harness supports it, and leave `ReapedIdle` nodes resumable.
+
+### 7.3 TUI dies
+
+Nothing happens to agents. Reattach replays `events.jsonl` per node.
+
+### 7.4 Journal corruption
+
+A truncated final line is discarded on replay (append-only, fsync per record). Snapshots use
+write-temp → fsync → rename → fsync-dir. Spawn is journaled as intent-then-confirm so a crash
+mid-spawn is recoverable rather than producing an untracked live process.
+
+### 7.5 Parent exits while a child lives
+
+Explicit, since rev 1 left it undefined. `parent_id` is **immutable** — the tree never
+silently re-parents. A child whose parent has `Exited`:
+
+- keeps its edge (the tree records history, including dead nodes);
+- is marked `orphaned_report: true`;
+- on `report`, the result is stored and surfaced in the UI as **unclaimed** rather than
+  delivered, since there is no live turn to return into.
+
+Re-parenting on request is a future affordance, never automatic.
+
+### 7.6 Agent stops without reporting
+
+1. Agent types are prompted to call `mcp__marion__report`.
+2. On stop without a report, marion re-prompts once: *are you reporting a result, or waiting?*
+   Via `Stop` hooks where they exist (Claude Code's takes `additionalContext` delivered to the
+   agent; Codex has `Stop` hooks — **UNVERIFIED that either can re-prompt a stopping agent in
+   practice; this is what S4 tests**), else one more turn on marion's own channel.
+3. Still nothing → synthesize from the transcript tail, mark `Exited{Unreported}`, surface
+   visibly. **Never silently promote a status message to an answer.**
+
+### 7.7 Harness auto-update mid-session
+
+`claude update` and `codex update` exist, and Claude Code's `~/.local/bin/claude` is a
+**symlink** into `versions/<ver>` that a background update repoints while children run.
+Therefore: `binary_path` is resolved through symlinks at spawn and pinned in `meta.json`;
+`harness_version` rides on `Lifecycle::Spawned`; and a node resumed under a different version
+than it was recorded with is flagged, with its cached caps invalidated.
+
+### 7.8 Someone else's supervisor
+
+`claude daemon stop` terminates background sessions and has `--any` / `--keep-workers`. marion
+does not depend on that daemon, but must tolerate it acting on marion's children: an
+unexplained child death is `Exited{Killed}` with "external termination" and never presented as
+a normal completion.
+
+### 7.9 Transcript hazards
+
+- Claude Code transcripts are mostly non-conversation (`queue-operation`, `attachment`,
+  `mode`, `ai-title`, `file-history-*`) — filter by `type`, follow `parentUuid`.
+- The Codex rollout fd is held only while loaded/writing — **fd presence is not a liveness
+  signal**; use `~/.codex/state_5.sqlite` or the app-server.
+- **Rollout compression is not a live hazard.** `rollout/src/compression.rs` requires
+  `ThreadStoreConfig::Local` *and* a default-off feature flag, enforces `MIN_ROLLOUT_AGE = 7
+  days` against mtime, and explicitly skips referenced and fork-pointed rollouts; reads are
+  transparent and appends re-materialize plain `.jsonl`. rev 1 listed this as a hazard and
+  spent a fault-injection slot on it; both reclaimed.
+
+---
+
+## 8. Testing
+
+**E2E through real harnesses is the test.** Only inference is canned.
+
+- **L1 — pure units.** Spec compilation, IR normalization, journal replay, capability
+  resolution, ownership, ordering. Most of the code.
+- **L2 — fixture replay.** Recorded real streams replayed into planes, asserting on the IR.
+  Also format-drift detection. **Subject to §7.1 redaction rules.**
+- **L3 — fault injection against real harnesses.** Kill mid-turn, truncate a transcript line,
+  block a socket, leave a permission unanswered, attempt a double-open, crash the supervisor
+  mid-spawn. Small. (The `.zst` case is dropped per §7.9.)
+- **L4 — the E2E layer: real harness, canned model.** Real binaries, pty, transcripts, MCP,
+  subagent spawning, driven through marion.
+- **L4.5 — self-hosted TUI driver.** marion hosts marion; `TestBackend` + `insta` +
+  `assert_scrollback_lines`. DECSET 2026 frame brackets give a precise "assert now" signal. No
+  AI in the loop, so it gates commits.
+- **L5 — live smoke.** Nightly, real models, structural assertions only.
+- **L6 — agent-driven acceptance.** Against the canned provider, so only the tester is
+  stochastic. Cross-checks **screen against IR log** (needs `mono_ns`, §4.2) and attaches
+  artifacts as evidence.
+
+**`marion doctor`** probes each installed harness and produces the static capability table
+(§3.3) — same code as runtime negotiation. Port probe logic from
+`registry/.github/workflows/protocol_matrix.py`. It must include a **keystroke-injection
+submit check**, since that is the most version-fragile mechanism and currently the least
+covered.
+
+**Known limitation:** L1–L4 test marion against harnesses *as recorded*. Drift is caught only
+on re-record. This already bit us — Gemini moved 0.40.1 → 0.53.0 before implementation began.
+`marion doctor` is the smoke detector, not a guarantee.
+
+---
+
+## 9. Spikes and milestones
+
+rev 1 mixed these: E5's pass criterion was verbatim M2's definition of done, so M0 could not
+complete before M2 was built. Separated.
+
+**Spikes (S) — answer a question, emit a fixture, then stop.**
+
+| # | Question | Pass | Fail consequence |
+|---|---|---|---|
+| **S1** | Claude Code as child from raw Rust: spawn/stream/steer/**interrupt** | interrupt works with no TS in the loop | Claude adapter needs a TS sidecar — **changes the process model** |
+| **S2** | Which DECSTBM shape do the harnesses emit, and can the chosen VT keep scrollback? | region top-anchored, or a workable patch identified | scrollback needs custom history above the scroll region |
+| **S3** | Codex `shared` lifecycle: does an idle app-server survive? Under which invocation was the ~90s death seen? | reproduced or definitively struck | heartbeat requirement returns |
+| **S4** | Can a `Stop` hook actually re-prompt a stopping agent, on Claude Code and Codex? | re-prompt lands and the agent continues | §7.6 needs a different mechanism |
+
+**S1 runs first.** rev 1 put E0 first on self-contradictory grounds — arguing at length that
+its risk had dropped and then calling it the sole kill shot. S1's failure changes the language
+and process model; S2's changes a crate choice and some scope.
+
+### 9.1 Spike procedures
+
+Each spike is a throwaway binary under `spikes/`, not workspace code. Each writes its fixture
+to `tests/fixtures/<spike>/` **after the §7.1 redaction pass**.
+
+**S1 — Claude Code from raw Rust.** Spawn
+`claude -p --output-format stream-json --input-format stream-json --include-partial-messages`
+with `pty-process`. Feed a user message as one JSON line on stdin; confirm assistant events
+stream back. Then, mid-turn, attempt an interrupt on the *input* channel. The framing is
+undocumented, so the method is: run the same interaction once under the official TS SDK
+(`@anthropic-ai/claude-agent-sdk`) with `strace`/`dtruss` or a stdio tee capturing exactly what
+the SDK writes when `interrupt()` is called, then replay those bytes from Rust.
+*Assert:* the turn stops within 2s and a subsequent prompt is accepted on the same session.
+*Fixture:* the full stdin/stdout JSONL of both runs.
+*Also record:* whether `--include-partial-messages` yields token-level deltas.
+
+**S2 — DECSTBM shape.** Run `claude` and `codex` interactively under a pty host that logs raw
+output. Grep the captured stream for `\x1b[<top>;<bottom>r` and record every distinct region.
+*Assert:* whether any region has `top != 1`. If all regions are bottom-anchored (`top == 1`),
+`alacritty_terminal` retains scrollback and M3's scope is as designed. If any has a top offset,
+neither candidate crate keeps history and M3 must add a history buffer above the scroll region
+— cost that estimate before starting M3.
+*Fixture:* the raw byte stream as asciicast v3, replayable against both crates.
+
+**S3 — Codex app-server lifecycle.** Start `codex app-server --listen ws://127.0.0.1:PORT`
+three ways — bare, via `codex app-server daemon start`, and as a child of a shell that then
+exits — each with zero clients, and watch for ≥300s recording SIGTERM origin via
+`sudo dtrace`/`execsnoop` if it fires.
+*Assert:* which invocation, if any, dies. *Fixture:* a timing log per invocation.
+*Then:* repeat with one live thread to confirm whether an occupied server behaves differently.
+
+**S4 — Stop-hook re-prompt.** Configure a `Stop` hook on Claude Code returning
+`{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"..."}}`, and the Codex
+equivalent. Have the agent stop without calling `report`.
+*Assert:* the agent actually receives the context and produces another turn, rather than the
+hook merely being logged. *Fixture:* transcripts of both, with and without the hook.
+
+### 9.2 Milestones and acceptance criteria
+
+Each is a gate with an observable test, not a vibe. A milestone is done when its criteria pass
+in CI (or, where marked, by a recorded manual run).
+
+**M1 — one real cross-harness hop.** Includes the canned provider, since §8/L4 depends on it.
+- A real `claude` (root, `headless`) calls `mcp__marion__spawn` for a `codex` agent type.
+- A real `codex` process starts, edits a file in the repo, and calls `mcp__marion__report`.
+- The parent receives the **structured** result as a tool result and its next turn references
+  the child's output.
+- The whole run is driven by the canned provider — no paid tokens, repeatable.
+- `events.jsonl` for both nodes replays into an identical tree.
+
+**M2 — supervisor split.**
+- `marion-tui` is killed with SIGKILL mid-run; both agents keep running.
+- A new TUI attaches and shows the full tree with complete scrollback.
+- Per-agent `seq` is contiguous across the kill; where `src_seq` exists it is gap-free.
+- Supervisor restart after SIGKILL replays the journal: `ReapedIdle` nodes stay resumable,
+  `Live` nodes become `Orphaned`, and no live process is left untracked.
+
+**M3 — tree UI + embedded terminal.**
+- A real `claude` TUI runs inside a marion pane: resize is clean, mouse passes through, plan
+  mode and a permission prompt both render correctly over a 10-minute manual session (recorded).
+- Scrollback behaves per S2's finding.
+- L4.5 snapshot tests pass: click-through selects the right node, the tree renders the right
+  shape, detach/reattach restores state.
+
+**M4 — N→1.** A real `codex` root spawns a `claude` child through the same code path, with
+`parent_id = None` the only difference. M1's criteria hold with the harnesses swapped.
+
+**M5 — ACP breadth.** At least two ACP agents beyond the day-one set run as children via the
+single ACP adapter, with `marion doctor` correctly reporting their differing capabilities and
+the UI greying out what they cannot do.
+
+---
+
+## 11. Repo layout
+
+Cargo workspace, edition 2024, MSRV pinned in `rust-toolchain.toml`.
+
+```
+marion/
+  Cargo.toml                # [workspace]
+  rust-toolchain.toml
+  crates/
+    marion-core/            # IR, launch spec, registry model, journal. No I/O side effects.
+    marion-proto/           # client↔supervisor JSON-RPC types, shared by both binaries
+    marion-term/            # pty host + VT grid + ratatui rendering adapter
+    marion-harness/         # ControlPlane/DisplayPlane traits + per-harness impls
+    marion-provider/        # canned provider; later, ModelProxy
+    marion-supervisor/      # [[bin]] marion-supervisor  (also `mcp` bridge, `doctor`)
+    marion-tui/             # [[bin]] marion
+  spikes/                   # throwaway spike binaries, not workspace members
+  tests/fixtures/           # recorded streams — REDACTION REQUIRED (§7.1)
+  docs/specs/
+```
+
+`marion-core` must stay free of process spawning and filesystem side effects so L1 tests are
+pure. `marion-harness` depends on `marion-core` and `marion-term`, never the reverse.
+
+Binaries: the user-facing command is **`marion`** (the TUI). `marion-supervisor` is started on
+demand and also hosts `marion-supervisor mcp` (the per-child stdio bridge, §5.4) and
+`marion-supervisor doctor`. `marion doctor` in the TUI proxies to the latter.
+
+---
+
+## 10. Open questions
+
+1. **S1's outcome** decides pure-Rust vs Rust+TS-sidecar. Everything else is stack-agnostic.
+2. **The Codex ~90s app-server death is unexplained.** It did not reproduce (alive at 160s, no
+   idle reaper in source). Something killed it once — plausibly it was started via
+   `codex app-server daemon` or `remote-control`, or was a child of an exiting shell. S3.
+3. **DECSTBM shapes are unmeasured** (S2), and M3's scope depends on the answer.
+4. **opencode SSE regression** (`anomalyco/opencode` issue #27966, affects 1.14.42+; local is
+   1.17.3): `message.part.updated` / `message.updated` reportedly stop reaching `/event`
+   subscribers. `session.next.tool.*` still flows. Verify before the opencode adapter.
+5. **Gemini claims are stamped to 0.40.1 but local is 0.53.0.** `GEMINI_CLI_HOME` and
+   `GOOGLE_GEMINI_BASE_URL` survive; the HTTPS-unless-localhost behavior is **UNVERIFIED** at
+   0.53.0.
+6. **Windows** is deferred — `pty-process` is Unix-only and `portable-pty` has no async.
+7. **Shim fidelity/cost** is now off the critical path (§5.4) but unmeasured if we ever ship it.
