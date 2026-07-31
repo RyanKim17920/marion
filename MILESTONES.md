@@ -95,19 +95,21 @@ Full protocol details, launcher requirements, and per-harness caveats: design do
 Measured 2026-07-30 on macOS 26.5.1 / arm64 / 24 GB. `ps -o rss` overstates ~2× by counting shared
 clean pages — use `phys_footprint`.
 
-| harness | marginal footprint | startup | idle CPU |
-|---|---|---|---|
-| `codex app-server` | **53 MB** | **40 ms** | 0.20% |
-| `claude` idle | 182 MB | 0.8–1.8 s | 0.33% |
-| `claude` **active session** | **462 MB** | — | — |
-| `opencode serve` | 175 MB | 350 ms | **1.15%** |
-| `gemini` (2 procs) | 345 MB | 3.0 s | 0.00% |
+| harness | marginal footprint | startup | idle CPU | fds |
+|---|---|---|---|---|
+| `codex app-server` | **53 MB** | **40 ms** | 0.20% | 40 |
+| `claude` idle | 182 MB | 0.8–1.8 s | 0.33% | 25 |
+| `claude` **active session** | **462 MB** | — | — | — |
+| `opencode serve` | 175 MB | 350 ms | **1.15%** | 28 |
+| `gemini` (2 procs) | 345 MB | 3.0 s | 0.00% | 97 |
 
 Extrapolated for 1 Claude root + N Codex children with sessions loaded: **~200 on 32 GB, ~440 on
 64 GB** — valid for the **direct-MCP path only** (an Agent-tool shim per child adds ~462 MB, ~9×),
 and measured with MCP servers disabled. Memory binds before fds or process limits.
 **Context accumulation, not process overhead, is the real driver** — an in-use session is ~2.5× a
-fresh one.
+fresh one. macOS compression absorbs idle fleets well: 8 idle Claude instances grew the compressor
+473 MB while total anonymous pages *fell*, with zero swapouts — so dormant harnesses cost less than
+their footprint suggests, though an actively-inferring one's working set stays resident.
 
 Rules: rasterize only the visible pane; coalesce high-rate output from unwatched agents; **reap
 idle nodes** (never running ones) keeping transcript and ownership claim; expose a cross-harness

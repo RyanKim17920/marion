@@ -558,6 +558,12 @@ a 53 MB Codex child.
 | `report` | explicit result return (§7.6) |
 | `status` / `wait` / `cancel` / `list` | state, block-until-idle, interrupt, discovery |
 
+`report`'s payload **is** the `TaskContract` (§6.7) — it deliberately supersedes rev-2's plan to
+mirror Claude Code's Agent-result shape (`totalTokens`, `totalDurationMs`, `totalToolUseCount`,
+`usage`, `toolStats`, `worktreePath`). Those fields survive inside the contract's `evidence`,
+`timestamps`, and `workspace`, but the contract is harness-independent and auditable, which
+mirroring one vendor's result struct is not.
+
 **Authorization.** Every child gets a per-node capability token bound to its `AgentId`. `send`,
 `cancel`, `status`, `wait` are permitted only to the node's **descendants or its parent**; `list`
 returns the same set. Sibling addressing is denied by default and requires an explicit
@@ -652,8 +658,9 @@ marion **never mutates the user's real harness config.**
   key silently wins; the empty string is inherited by grandchildren, so scope it narrowly);
   `CLAUDE_CODE_ATTRIBUTION_HEADER=0` (a per-request nonce destroyed third-party prefix caching,
   0% → 99.7%); `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` on `interactive` children.
-- **Codex:** `127.0.0.1` literal, reserved provider ids `openai`/`ollama`/`lmstudio`/
-  `amazon-bedrock`, and **hook trust must be bootstrapped** (§7.6) or hooks silently never run.
+- **Codex (0.145.0 / 0.146.0):** `127.0.0.1` literal, reserved provider ids
+  `openai`/`ollama`/`lmstudio`/`amazon-bedrock`, and **hook trust must be bootstrapped** (§7.6) or
+  hooks silently never run.
 - **Gemini 0.53.0:** must write
   `<GEMINI_CLI_HOME>/.gemini/settings.json` = `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`
   — an API key alone now fails with `Invalid auth method selected.` and there is no env-var
@@ -796,8 +803,13 @@ Re-parenting on request is a future affordance, never automatic.
 
 ### 7.6 Agent stops without reporting
 
-"Final text is the return value" conflates *done* with *waiting*. Observed live during design: a
-research agent returned "Agents are researching in parallel. Waiting on results." as its result.
+"Final text is the return value" conflates *done* with *waiting*. Observed twice during design,
+both times from capable agents: one returned "Agents are researching in parallel. Waiting on
+results." as its result; another returned a background task handle (`task-ms9ifb08-bkcgol`) and
+told the caller to poll for the answer. In both cases a status message occupied the slot a result
+belonged in, and nothing downstream could tell the difference. **This failure mode is the norm,
+not an edge case** — which is why reporting is explicit and `Unreported` is a first-class terminal
+state rather than an error.
 
 1. Agent types are prompted to call `mcp__marion__report`.
 2. On a stop with no report, marion re-prompts once via a `Stop` hook returning
@@ -959,7 +971,9 @@ marion/
     marion-provider/        # canned provider; later ModelProxy
     marion-supervisor/      # [[bin]] marion-supervisor (also `mcp`, `doctor`)
     marion-tui/             # [[bin]] marion
-  spikes/                   # throwaway spike binaries, not workspace members
+  spikes/                   # future throwaway spikes, not workspace members.
+                            # S1-S5 tooling already lives beside its data in
+                            # tests/fixtures/s2/*.py and tests/fixtures/s5/*.mjs
   tests/fixtures/           # recorded streams — REDACTION REQUIRED (§7.1)
   docs/specs/
 ```
