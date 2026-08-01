@@ -693,7 +693,7 @@ connections to.
 > **This ordering leaves a window and the backfill must be reconciled, not trusted**: anything the
 > thread emits between the `thread/read` snapshot and the moment `thread/resume` takes effect
 > appears in neither the snapshot nor the subscription. marion therefore treats the two as
-> overlapping sources — it records the snapshot's last item id, and on the first subscribed events
+> overlapping sources — it records the snapshot's last item id and
 > **re-reads unconditionally once `thread/resume` has taken effect** — on the resume response, not
 > on the first subscribed event, which may never arrive on a thread that has gone quiet — merging
 > the second snapshot with the subscription and deduplicating by item id. Unconditionally, not "if the ids look
@@ -814,7 +814,8 @@ bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schem
 
 **Prefer `exec` for fan-out; reserve app-server for interactive children.**
 
-> **⚠ Three M1-critical assumptions about `exec`, all UNVERIFIED (spike S6, *not run* — started
+> **⚠ Three UNVERIFIED assumptions about `exec` — two of them M1-critical, the third (locations)
+> affecting attribution quality only, since the scope check is git-derived either way (spike S6, *not run* — started
 > and killed mid-run 2026-07-31; no S6 fixture exists in this repo). S6 must also record two
 > encodings §5.5 needs — see §11 item 12 for the full scope:**
 > 1. **Does `exec` host MCP servers?** M1 has the child return via marion's `report` tool — on
@@ -1895,9 +1896,9 @@ Say so plainly rather than implying a guarantee the process model does not deliv
   there — marion does **not** try to infer whether its own kill, a crash, or something external
   removed it, since the intent record already establishes that marion wanted it gone and every
   branch ends in the same state — so marion writes the confirmation; still alive means the supervisor died before the kill
-  landed, so marion kills it now and then confirms. **It is never marked `Orphaned`** — marion knows
-  exactly what happened to this process because it is the one that intended it, which is the whole
-  difference between a reap and a loss.
+  landed, so marion kills it now and then confirms. **It is never marked `Orphaned`** — marion knows what it
+  *intended* for this process, which is what `Orphaned` is actually about: an unexplained
+  disappearance, not an unattributed one. A reap has an explanation on record before the fact.
 - **`Orphaned`** — process lost without a recorded reap. Marked on restart only for `Live` nodes.
 - Running nodes are never reaped. **Nor is a node a `spawn` is currently blocked on, nor one in
   *any* `Blocked(_)` state** — `Descendants`, `Permission`, or `Elicitation` — because reaping any
