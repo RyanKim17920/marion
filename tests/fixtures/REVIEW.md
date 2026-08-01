@@ -178,9 +178,8 @@ table rows.
   a site no CSI-oriented scan reaches) → stable fakes; weekly-limit remaining (8 B) and the two
   reset dates (5 B each) → fixed placeholders. Same re-derivation: nothing cited changed. Lengths
   and replacements only — never the original values (see `s2/NOTES.txt`).
-- **Fourth pass, 2026-08-01 (round 14), equal-length**: the `s2` `/status` **usage bar** (7 of 20
-  glyphs filled → 20 empty, 60 B — the bar still drew the real percentage beside the text the
-  third pass had replaced) and the **reset times** beside the already-scrubbed dates (5 B each).
+- **Fourth pass, 2026-08-01 (round 14), equal-length**: the `s2` `/status` **usage bar** (20 glyphs → 20
+  empty, 60 B — the bar still drew the percentage the text scrub had already replaced) and the **reset times** beside the already-scrubbed dates (5 B each).
   In `s5` the same facts were carried as `usedPercent` and `resetsAt`, both zeroed. Nothing cited
   changed: all five s2 lengths, the `?1049h/l` offsets, `CSI 3J` counts, every DECSTBM figure, and
   probe3 A=93 / B=87 / probe2 `turnCount`=3 all re-derive.

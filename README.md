@@ -79,11 +79,14 @@ and corrected again. Treat anything marked
 
 **S6 is open, and it is M1's first task.** It was started and killed mid-run. It answers three
 questions about `codex exec --json` that decide what M1 builds — does `exec` host MCP servers (if
-not, the `mcp__marion__report` return path does not exist and M1 uses the `--output-schema`
-fallback); does it emit file locations (if not, marion loses per-tool-call attribution; the scope check is git-derived either way); and does
+not, marion's `report` return path does not exist and M1 uses the `--output-schema` fallback; on
+Codex that tool is reached by the `mcp__marion` **namespace** form, never the flat name — design
+§3.1 item 1); does it emit file locations (if not, marion loses per-tool-call attribution; the scope check is git-derived either way); and does
 `--output-schema`/`--output-last-message` actually deliver a document when the final message is
-canned — **and it records two Codex encodings the repo lacks** (a Lark-grammar `apply_patch` call
-and a `type:"namespace"` MCP call), without which M1's canned Codex script cannot be written.
+canned — **and it owes committed fixtures of two Codex encodings** (a Lark-grammar `apply_patch` call and
+the `type:"namespace"` MCP call). Only the `apply_patch` half is genuinely unknown and blocks
+authoring the canned script — the namespace call shape was recovered in round 15 and is written
+down in design §3.1 item 1 and §5.5.
 Design doc §9 specifies every branch, so M1 is not blocked — but run S6 before writing supervisor
 code. Full scope: design doc §11 item 12.
 

@@ -28,10 +28,14 @@ Each capture ships in two forms. **`.raw.bin` is authoritative.**
   `.raw.bin`; use `.cast` for timing and resize events.**
 
 Captures
-  claude-2.1.220-boot-help-status-resize      120x40 -> 100x24 -> 140x45. /help, /status.
+  claude-2.1.220-boot-help-status-resize      120x40 -> 100x24 -> 140x45. /help; /status was
+               typed but produced NO panel (swallowed) -- this capture contains no account state.
   claude-2.1.220-boot-exit                    120x40. Boot then /exit (clean alt-screen exit).
-  codex-cli-0.145.0-boot-status-help-diff-resize  120x40 -> 100x24 -> 140x45. /status /help /diff.
-  codex-cli-0.146.0-boot-status-help-resize   120x40 -> 100x24 -> 140x45. /status /help.
+  codex-cli-0.145.0-boot-status-help-diff-resize  120x40 -> 100x24 -> 140x45. /status (3 panels --
+               the ONLY capture with account state), /diff (the alt-screen pager), and /help,
+               which Codex answers 'Unrecognized command'.
+  codex-cli-0.146.0-boot-status-help-resize   120x40 -> 100x24 -> 140x45. /status typed but
+               swallowed by the boot modal; /help 'Unrecognized command'. No panels rendered.
   codex-cli-0.146.0-14row-heavy-history-insert 100x14, no resize. Four slash commands on a short
                terminal: the densest history-insert traffic of the set (94 lines scrolled into
                scrollback, no CSI 3J).

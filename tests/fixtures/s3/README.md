@@ -26,8 +26,9 @@ The real hazard is one level down: an **idle thread** is unloaded at
 ⚠ The `t=~1050s` field on the A-D LONG_RUN_CHECK lines is a recording artefact: the same lines'
 `start_utc=`/`utc=` stamps give 630 s (A), 609 s (B), 629 s (C) and 517 s (D — it started
 later). The stamps are authoritative. The
-longest lifetime any committed log evidences is the **D** server at 2442 s in
-`H-thread-unload-1800s.log`.
+longest lifetime any committed log evidences is the **D** server at **2432 s** — the last
+`SERVER_ALIVE` line of `H-thread-unload-1800s.log` (19:22:20Z) minus D's own `start_utc`
+(18:41:48Z). That line's `thread_age=2442s` counts from thread creation, 10 s earlier.
 
 Files: `{A..F}-timing.log` (5 s poll), `H-thread-unload-1800s.log`,
 `G-thread-survival-*.log`.

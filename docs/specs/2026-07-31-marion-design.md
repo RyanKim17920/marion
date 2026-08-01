@@ -722,7 +722,8 @@ still alive at a single check **630 s after A started** (609 s for B, 629 s for 
 which started later) — by the logs' own `utc=` stamps; the `t=~1050s`
 field on those lines is a recording artefact, and the stamps are authoritative. The two
 thread-holding cases ran 703 s and 763 s; and the **strongest logged lifetime is the D server at
-2442 s (~40.7 min)**, recorded `SERVER_ALIVE` in `s3/H-thread-unload-1800s.log`. A ~43-minute
+**2432 s (~40.5 min)**, the last `SERVER_ALIVE` line of `s3/H-thread-unload-1800s.log` (whose `thread_age=2442s` counts
+from thread creation, ten seconds before that server's own `start_utc`). A ~43-minute
 observation during the package-swap experiment was wall-clock only and has **no committed log**
 (§11 item 10). None died. `shutdown_when_no_connections` is gated to stdio only.
 **But `THREAD_UNLOADING_DELAY = 1800 s` unloads *unsubscribed* threads**, and `thread/start`
@@ -852,8 +853,11 @@ They emit **different** sets, measured across all five captures:
 marion answers all of them regardless, so this asymmetry costs nothing in code — but the earlier
 text had it backwards in both directions and is corrected here.
 **`tests/fixtures/s2/ptyhost.py` answers none of them** and nonetheless drove complete sessions on
-both harnesses (19,373 bytes of Codex boot + `/status` + `/help` + two resizes; Claude through the
-trust dialog, alt-screen entry at 1900, `/help`, `/status`, two resizes; a separate trusted-dir capture entered at 67 and exited cleanly). One earlier
+both harnesses (19,373 bytes of Codex boot and two resizes — its `/status` was swallowed by the boot modal
+and Codex answers `/help` with *Unrecognized command*; Claude through the trust dialog, alt-screen
+entry at 1900, `/help`, two resizes, its `/status` likewise producing no panel; a separate
+trusted-dir capture entered at 67 and exited cleanly. **Only the 0.145.0 capture renders `/status`
+panels** — 3 of them). One earlier
 capture *did* show Codex stalling at 1478 bytes after `ESC[6n` on a host that answered nothing and
 **sent no keystrokes** — *(that capture is **uncommitted**; the byte count is not reproducible from
 this repo, and none of the five committed captures truncates there)* — which suggests the stall is an input-starvation artifact rather than a
@@ -1075,7 +1079,10 @@ arbitrary match. Without this, `send` would be a peer routing table
 with an LLM on both ends, i.e. a prompt-injection channel between siblings and the mesh the star
 topology forbids.
 
-**Wiring.** The server is registered as `marion`, producing the `mcp__marion__*` prefix. Injected per child by the fileless path **where that path is
+**Wiring.** The server is registered as `marion`, producing the `mcp__marion__*` prefix **on Claude
+Code**; on Codex the tools arrive namespaced rather than flat (§3.1 item 1). **Any Codex
+declaration — file or `-c` — must carry `default_tools_approval_mode = "approve"`** (§9), or every
+call is silently cancelled. Injected per child by the fileless path **where that path is
 load-bearing** — `--mcp-config` for Claude Code, which is what keeps the real `CLAUDE_CONFIG_DIR`
 and therefore OAuth (§6.4) — and **otherwise written into `<agent-dir>/config/`**, which keeps the
 token off `ps` (below). M1's Codex child takes the file placement for exactly that reason (§9);
@@ -1149,10 +1156,12 @@ every call.
   converted.
   **But the burden is not zero, and §9 requires the hard part.** M1's child must edit a file and
   return, so the canned Responses script has to *contain* Codex's native encodings verbatim: a
-  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch — a `type:"namespace"` tool declaration whose
-  `tools` array contains `report`, and — for the call — a `function_call` with
-  `name: "report"` and `namespace: "mcp__marion"`, **not** a call named `mcp__marion__report`,
-  which Codex rejects as `unsupported call` (§3.1 item 1). Hand-authoring those is easier than translating them, but it
+  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch — and — on the MCP branch — a
+  `function_call` with `name: "report"` and `namespace: "mcp__marion"`, **not** a call named
+  `mcp__marion__report`, which Codex rejects as `unsupported call` (§3.1 item 1). **The
+  `type:"namespace"` *declaration* is not authored here**: it travels the other way, arriving on
+  Codex's own request, and is read from the provider's request log (§11 item 12). A canned provider
+  serves responses; it does not emit tool declarations. Hand-authoring those is easier than translating them, but it
   is not "small": **no fixture in this repo contains either shape** (`tests/fixtures/s4/codex/
   stream-*.jsonl` holds only `agent_message` items), so S6 must capture both alongside its three
   answers (§11 item 12). Budget §5.5 accordingly.
@@ -1199,6 +1208,13 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
 7. **Journal the spawn intent**, start the process, journal confirmation.
 8. **Wait for the injected MCP bridge to be ready before writing the first user frame** — and
    **observe that on marion's own side, not on the harness's stream.**
+
+   **This step binds only surfaces whose prompt is written *after* launch** — `headless` Claude
+   Code. A `LaunchOnly` child whose prompt rides argv, which is M1's `codex exec --json` child
+   (§5.2), has no frame to withhold and no `system/init` to read: its MCP readiness is not
+   observable before the turn, and is asserted *post hoc* from the `mcp_tool_call` items in its
+   JSONL stream. That is also why the `default_tools_approval_mode` trap (§9) bites there and not
+   here.
 
    *Why it is needed:* measured on 2.1.220, writing the user frame immediately leaves the server
    `pending`, the outbound request carries `tools: []`, and the call comes back
@@ -2595,8 +2611,10 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     `--output-schema` / `--output-last-message` pair actually deliver a schema document when the
     final message is scripted by the CannedProvider?** S6 must also **record two encodings the
     repo lacks and §5.5 needs**: a Lark-grammar `apply_patch` custom-tool call and a
-    `type:"namespace"`-wrapped MCP call, without which the canned Codex script for M1 cannot be
-    authored. **The two have different costs, and conflating them over-scopes S6:**
+    `type:"namespace"`-wrapped MCP call, **of which only the `apply_patch` half is unknown**: the
+    namespace call shape was recovered in round 15 and is stated in §3.1 item 1 and §5.5, so what
+    S6 owes for it is a committed *fixture*, not a discovery. Authoring the canned script is
+    blocked on the Lark-grammar encoding alone. **The two have different costs, and conflating them over-scopes S6:**
     - the **`type:"namespace"` declaration** rides the **codex→provider request**, so it is
       readable straight from the CannedProvider's own request log with a dummy key — **no proxy
       and no API key**. The matching *call* shape is likewise established by replaying candidates
@@ -2641,12 +2659,12 @@ design decision.
 
 | claim | fate |
 |---|---|
-| Codex app-server reaped when idle at ~86–90 s; 25 s heartbeat required | **RETRACTED.** No reaper exists (six invocations; four to ~10.5 min, two thread-holding to 703/763 s, and the D server logged alive at 2442 s ≈ 40.7 min). The phantom SIGTERM was most likely our own `codex-app-server-test-client`, which kills whatever answers on its port with no delay floor — explaining even death while SIGSTOPped. Replaced by the real hazard: `THREAD_UNLOADING_DELAY = 1800 s` on **unsubscribed threads**. |
+| Codex app-server reaped when idle at ~86–90 s; 25 s heartbeat required | **RETRACTED.** No reaper exists (six invocations; four to ~10.5 min, two thread-holding to 703/763 s, and the D server logged alive at 2432 s ≈ 40.5 min). The phantom SIGTERM was most likely our own `codex-app-server-test-client`, which kills whatever answers on its port with no delay floor — explaining even death while SIGSTOPped. Replaced by the real hazard: `THREAD_UNLOADING_DELAY = 1800 s` on **unsubscribed threads**. |
 | Scrubbing `CLAUDE_CODE_CHILD_SESSION` is required or no transcript is written | **CORRECTED.** A/B tested at 2.1.220 — transcripts written both ways. The gate also requires the interactive path, not-a-teammate, and no tmux marker. Use `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`. |
 | `vt100` loses scrollback under DECSTBM and alacritty does not | **CORRECTED.** Both drop it under a top-offset region; alacritty keeps top-anchored history. Moot in practice — every history-producing scroll is top-anchored. alacritty is the pick because vt100 retained **0** lines in every real capture — a figure that is itself unfixtured (§11 item 10). |
 | Rollout compression can replace a live `.jsonl` under a tailer | **RETIRED.** Default-off flag, 7-day age minimum, skips referenced rollouts. Not a live hazard. |
 | Neither harness uses the alternate screen | **RETRACTED.** Claude Code uses it for its entire session; Codex uses the main screen but **does** enter it transiently for the `/diff` pager (verified, 0.145.0 capture). The original capture had stalled at the trust dialog *before* `?1049h`, which is what made it look like there was no alt screen. |
-| A dumb pty host deadlocks both harnesses; answering DA1/XTVERSION/CPR is mandatory | **RETRACTED — this was our own overcorrection, refuted by our own fixture.** `tests/fixtures/s2/ptyhost.py` answers no probes and drove complete sessions on both. One earlier capture did show Codex stalling after `ESC[6n`, but on a host that also sent no keystrokes, so input starvation is the likelier cause. marion answers probes anyway (cheap, removes a class of boot-hang) but the docs must not call it required. **Why that capture stalled is unresolved — §11.** |
+| A dumb pty host deadlocks both harnesses; answering DA1/XTVERSION/CPR is mandatory | **RETRACTED — this was our own overcorrection, refuted by our own fixture.** `tests/fixtures/s2/ptyhost.py` answers no probes and drove full boot-to-exit sessions on both (though two captures' `/status` was swallowed by a boot modal — §5.3). One earlier capture did show Codex stalling after `ESC[6n`, but on a host that also sent no keystrokes, so input starvation is the likelier cause. marion answers probes anyway (cheap, removes a class of boot-hang) but the docs must not call it required. **Why that capture stalled is unresolved — §11.** |
 | "Never use `thread/resume` on live threads" | **REVERSED.** `thread/resume` **is** the subscribe mechanism and is additive on loaded threads. The original failure was the narrow case of an unmaterialized rollout. |
 | `additionalContext` is the Stop-hook re-prompt mechanism | **REPLACED** by `{"decision":"block","reason":…}` — `additionalContext` is invisible in Claude's stream and nonexistent on Codex. |
 | The Claude Code Agent-tool shim is the primary delegation path | **DEMOTED** to optional sugar. It launders results through an extra LLM turn and costs a full ~462 MB process per child. Direct-MCP spawn is primary. |
