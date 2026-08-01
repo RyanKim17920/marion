@@ -131,8 +131,12 @@ Codex's `hooks.json` has (§7.6) and which this project has already been bitten 
 
 **Discovery and precedence**, later overriding earlier: `$XDG_CONFIG_HOME/marion/agents/*.md` →
 `<project>/.marion/agents/*.md` → programmatic definitions. `name:` is the key and must match
-`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; the filename is not significant. Duplicate names are a load
-error surfaced by `marion doctor`, never silently last-wins.
+`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; the filename is not significant. **The two rules apply at
+different scopes and do not conflict**: *across* sources, a later source deliberately overrides an
+earlier one of the same name — that is what "precedence" means, and it is how a project pins an
+agent type the user also defines. *Within a single source*, two definitions of one name are a load
+error surfaced by `marion doctor`, never silently last-wins, because there the ordering is
+filesystem-dependent and no one authored it.
 
 **Tool names are marion's vocabulary, and the mapping is part of the adapter contract.** `tools:`
 uses marion's lowercase names; each adapter translates them to its harness's own — for Claude Code
@@ -446,8 +450,11 @@ the spec forbids custom root fields.
 ```
 
 **Durability is group-commit.** Append without fsync; fsync on a ~50 ms timer *and*
-unconditionally before any state transition that must survive a crash — `Spawned`, `Exited`,
-`ReapedIdle`, and every journal write. Losing trailing content deltas costs a slightly truncated
+unconditionally at each state transition that must survive a crash — `Spawned`, `Exited`,
+`ReapedIdle`, and every journal write. **Order within the barrier: append the record, fsync it,
+*then* perform and announce the transition.** An fsync issued before its own record is written
+guarantees nothing; the point is that the record is durable before anything observable depends on
+it. Losing trailing content deltas costs a slightly truncated
 replay; losing a lifecycle record costs an untracked live process. Only the latter pays for a
 barrier. (Per-record fsync would be one fsync per token under `--include-partial-messages`.)
 
@@ -996,10 +1003,12 @@ omitted `spawn` scope simply yields the ceiling. That is why "default: the whole
 not widen a narrower agent type: `**` contributes nothing to a conjunction. The check is
 conjunction at match time, not a set operation at spawn time — glob sets have no closed-form
 intersection, so "compute the intersection" would not be implementable as a single glob list. A
-`spawn` glob that matches nothing under the ceiling is a **spawn-time error**, not a silently empty
-scope: it means the parent asked for a scope the agent type forbids. **The test is decidable and
-specified, since "matches nothing" is not otherwise checkable without enumerating paths that do not
-exist yet**: take the `spawn` glob's **literal prefix** — its longest leading run of components
+`spawn` glob that the ceiling could never admit is a **spawn-time error**, not a silently empty
+scope: it means the parent asked for a scope the agent type forbids. **"Could never admit" has
+exactly one definition here — the literal-prefix test below — and it is deliberately conservative:
+it rejects only clear cases and lets anything uncertain through to the match-time conjunction.**
+There is no second, semantic notion of "matches nothing" in play, because that would need paths
+that do not exist yet: take the `spawn` glob's **literal prefix** — its longest leading run of components
 containing no metacharacter — and reject iff that prefix is non-empty and matches no path the
 ceiling admits, testing the prefix and the prefix plus `/**` against the ceiling. `src/**` under a
 ceiling of `docs/**` is rejected (`src` is admitted by neither form); `src/*.rs` under `src/**` is
@@ -1276,7 +1285,10 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    clamping or queueing — and the write-conflict policy (§6.6). **Both gates read the *caller's*
    agent type** (for a top-level `spawn`, the root's own), never the child's just-resolved one: the
    child has no children yet, so reading its type would make the concurrency gate vacuous. The
-   child's type governs the child's *own* future spawns, not this one.
+   child's type governs the child's *own* future spawns, not this one. **A root entering here from
+   `marion run` has no caller, and both gates are simply inapplicable to it**: its depth is 0 by
+   definition and it has no parent whose children could be counted. The gates constrain `spawn`
+   calls, not marion's own start-up of the tree's first node.
 3. Resolve the harness binary **through symlinks**; record path and `--version`.
 4. Create the worktree, or inherit cwd.
 5. `compile()` → argv + env + config (§6.4). **This must precede the contract**, because
