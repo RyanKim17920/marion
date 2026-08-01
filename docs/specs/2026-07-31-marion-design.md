@@ -346,7 +346,8 @@ struct Event {
     thread_id: Option<ThreadId>,  // harness-native correlation
     turn_id: Option<TurnId>,
     item_id: Option<ItemId>,
-    ts: SystemTime,               // RFC3339 with offset; display only
+    ts: SystemTime,               // RFC3339 UTC with a literal Z, 3 fractional digits (§6.7);
+                                  //   display only
     mono_ns: u64,                 // monotonic since supervisor start; aligns with pty.cast
     provenance: Provenance,
     payload: Payload,
@@ -1133,7 +1134,7 @@ one direction. The rule is therefore:
 This keeps the property that matters: **a rename can never move authority once a name is bound.**
 Before first use a name is still just a name, and `node/rename` could put a different node behind
 it — that is the unavoidable cost of late binding, and it is bounded by the fact that binding
-happens on the grantee's *first* call. **Binding is per name, not per grant**: each entry in
+happens on the grantee's first call **naming that peer**. **Binding is per name, not per grant**: each entry in
 `allow_peers` binds independently, on the first call that *successfully* resolves that particular
 name, and a call that fails to resolve binds nothing. A grantee with three peers therefore
 accumulates three bindings at three different moments rather than snapshotting all of them at its
@@ -1576,7 +1577,7 @@ copy only, after the contract is persisted:
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
 | 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
 | 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and cut **each retained path** to its **leading 256 B + `…` + trailing 256 B** when it exceeds 512 B. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
-| 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size does not depend on the input at all, a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing except `diff`, which keeps its leading bytes — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
+| 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size does not depend on the input at all, a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing, except `diff`, which keeps its leading bytes, and individual paths, which keep leading 256 B + `…` + trailing 256 B — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
 | — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
 
 All byte counts are of **raw UTF-8 field bytes before JSON escaping**, except rules 5 and 6, which
@@ -2236,9 +2237,11 @@ Extracted verbatim from the installed binaries (Claude Code 2.1.220, Codex 0.146
 > Code's Write-block telemetry. These are read from code paths, not observed firing. Treated as
 > strong design evidence, not as verified behaviour, and listed as unfixtured in §11.
 
-**No vendor *prompts* for descendant-gating, and all four tell the parent not to busy-wait** —
-Claude Code: *"do NOT sleep, poll, or proactively check on its progress"*; Codex: *"Call wait_agent
-very sparingly"*; opencode: *"DO NOT sleep, poll for progress"*.
+**No vendor *prompts* for descendant-gating, and three of the four tell the parent not to
+busy-wait** — Claude Code: *"do NOT sleep, poll, or proactively check on its progress"*; Codex:
+*"Call wait_agent very sparingly"*; opencode: *"DO NOT sleep, poll for progress"*. **Gemini carries
+no equivalent string**, which is why the count is three and not four; its grace-period turn (below)
+is a different mechanism reached by a different route.
 
 Two caveats on how far that goes, since this is prompt-string extraction:
 
