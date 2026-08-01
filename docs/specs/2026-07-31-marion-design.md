@@ -568,6 +568,17 @@ no SDK).** NDJSON on stdin:
 in **0.5 ms**; the terminal `result` follows at **1.9 ms**. `initialize` is **optional** — needed only
 to register SDK-side hooks/MCP or read the session catalogue.
 
+**⚠ Outbound `can_use_tool` frames require `--permission-prompt-tool stdio`.** Verified on
+2.1.220: without that flag a non-allowlisted tool call is **auto-denied in-process** and surfaces
+only as an `is_error` `tool_result` reading *"Claude requested permissions to use X, but you
+haven't granted it yet"* — no `control_request` reaches marion, nothing blocks, and the turn
+continues. With it, the CLI emits
+`{"type":"control_request","request":{"subtype":"can_use_tool","tool_name":…,
+"permission_suggestions":[…],"tool_use_id":…}}`. The flag is **absent from `--help`** but is what
+the official SDK passes (visible in the 2.1.220 bundle). Note this is an **argv** mechanism, not an
+`initialize` one — the "`initialize` is optional" note below concerns SDK-side hook/MCP
+registration and must not be read as "nothing further is required" for the inbound half.
+
 **The channel is bidirectional, and this is load-bearing.** The CLI emits its own outbound
 `control_request` frames — `can_use_tool`, hook callbacks, `request_user_dialog` — on the same
 stdout stream, expecting a `control_response`. So `ControlPlane` needs a
@@ -720,7 +731,7 @@ processes — confirmed by a server surviving 763 s with an idle client attached
 **`codex exec --json` is the better surface for one-shot children** — a bounded job with one
 prompt and one terminal result. It removes the handshake, thread loading, subscriptions,
 bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schema`,
-`--output-last-message`, `--cd <worktree>`, `--sandbox workspace-write`, `--ephemeral`,
+`--output-last-message`, `--cd <worktree>`, `--sandbox workspace-write`, `--ephemeral`, **stdin closed or `/dev/null`** (with a pipe, `exec` prints *"Reading additional input from stdin…"* and appends it as a `<stdin>` block),
 `--ignore-user-config`.
 
 > **⚠ `--ignore-user-config` and the config-file MCP declaration are mutually exclusive.** On
@@ -1165,8 +1176,18 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    compiled `allowed_tools`. **Child nodes only** — a root has no contract (§9), so this step is
    skipped for it.
 7. **Journal the spawn intent**, start the process, journal confirmation.
-8. `Lifecycle::Spawned` with static caps, refined if a handshake exists.
-9. Events stream into the EventLog immediately and continuously, watched or not.
+8. **Wait for injected MCP servers to connect before writing the first user frame.** For a
+   `headless` Claude Code node with an injected server, hold the prompt until a `system/init`
+   frame reports every configured server `status: "connected"`; `failed` is a spawn error.
+   **This is not optional and not merely a latency concern** — measured on 2.1.220: writing the
+   user frame immediately leaves the server `pending`, the outbound request carries `tools: []`,
+   and a call comes back `No such tool available: mcp__marion__spawn`. Worse, **losing the race
+   loses it for the whole process**: a second turn's `system/init` still reported `pending`.
+   Waiting for `system/init` alone is insufficient — that very frame is what reports `pending`.
+   M1's root would fail on its single load-bearing call, with an error naming the tool rather
+   than the real cause.
+9. `Lifecycle::Spawned` with static caps, refined if a handshake exists.
+10. Events stream into the EventLog immediately and continuously, watched or not.
 
 ### 6.2 Observe
 
@@ -2263,7 +2284,10 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     child always affords the diff, so M1 records `true` under every S6 outcome.
     **False confidence is worse than no check.**
 - **Permissions in M1** otherwise: there is no TUI to prompt, so anything genuinely requiring a
-  human blocks until the root's bound expires. **On expiry marion denies the pending permission and
+  human blocks until the root's bound expires. **This depends entirely on
+  `--permission-prompt-tool stdio`** (§5.2): without it the call never reaches marion, nothing
+  blocks, `Blocked(Permission)` is unreachable, and the root's node-level bound has nothing to
+  bound. **On expiry marion denies the pending permission and
   lets the root proceed** — it does *not* kill the root. The child rule is different (a `TimedOut`
   child is killed) because there the contract would otherwise be terminal over a live process;
   here the root is alive and answerable, and denying one tool call is the smaller, recoverable act.
@@ -2281,7 +2305,8 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     rejected on a root. Omitting a reachable verb would deny calls that then block until the root's
     bound expires.
     `--settings`,
-    **`--setting-sources ""`**, `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
+    **`--setting-sources ""`**, **`--permission-prompt-tool stdio`** (below),
+    `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
     `ANTHROPIC_API_KEY=""` (a non-empty key silently wins, §6.4). This takes **option (a)** of
     §6.4's three: the real `CLAUDE_CONFIG_DIR` is retained and never mutated, so OAuth is intact
     but unused. **`--setting-sources ""` is what keeps that from meaning "inherit everything".**
@@ -2487,9 +2512,11 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     (`tests/fixtures/s4/codex/stream-exit2-stderr.jsonl`); `s4/claude-code/stop_hook.sh` has no
     exit-2 branch, so the equivalence is asserted from nothing in this repo. Either record the
     mode or treat `decision: block` as the only verified mechanism on Claude Code.
-14. **The inbound half of Claude Code's control channel** — `can_use_tool`, hook callbacks,
+14. **The inbound half of Claude Code's control channel** — hook callbacks and
     `request_user_dialog` — is designed on decompilation, with **zero** inbound `control_request`
-    frames in `tests/fixtures/s1/stdout.jsonl`. The demux map and the entire permission path rest
+    frames in `tests/fixtures/s1/stdout.jsonl`. (The `can_use_tool` *ask* path itself is no longer
+    unverified: round 14 observed the frame under `--permission-prompt-tool stdio`, §5.2. What is
+    still owed is a **committed fixture** of a full round-trip, and the other two frame kinds.) The demux map and the entire permission path rest
     on it. Closes in M1 (§5.2).
 15. **Codex multi-client semantics are largely source-derived, not measured** (§5.2): no S5 probe
     exercises an approval, no probe issues `turn/steer`, and no probe involves a real TUI — all
@@ -2535,5 +2562,7 @@ design decision.
 | `claude -p --output-format stream-json` is the headless invocation | **CORRECTED (round 12).** Incomplete: 2.1.220 exits 1 with "requires `--verbose`". `--verbose` is mandatory for stream-json under `--print`, not merely a dependency of `--include-partial-messages` as this document previously implied. |
 | `codex exec` is one-shot, so there is no session to `continue_()` | **CORRECTED (round 12).** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0. `caps.resume` is `false` for that node because the *surface* caps it (§3.4), not because the harness cannot resume. |
 | Tool compilation targets `--tools`, with marion's MCP tools appended there | **CORRECTED (round 12).** `--tools` is the *availability* axis over built-in tools and does not gate MCP tools at all; `--allowedTools` is the *permission* axis and is where `mcp__marion__*` must go. Compiling into `--tools` alone leaves M1's root unable to call `spawn`. |
+| Starting the process and writing the prompt is enough to spawn a `headless` child | **CORRECTED (round 14).** Measured on 2.1.220: an injected MCP server is still `pending` when the first turn begins, the request carries `tools: []`, and the call fails `No such tool available` — **and it stays `pending` for the life of the process**. §6.1 gains a readiness gate. |
+| The inbound `can_use_tool` path needs nothing beyond the bidirectional stream | **CORRECTED (round 14).** It needs `--permission-prompt-tool stdio`, an argv flag absent from `--help`. Without it a non-allowlisted call is auto-denied in-process as an `is_error` `tool_result` marion never sees — so `Blocked(Permission)`, the root's bound, and M1's owed round-trip fixture were all unreachable. |
 | `GET /models` gates every Codex startup | **NARROWED (round 14).** TUI/app-server only. `codex exec` never issues it — an `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses` (0.146.0). M1's child therefore never exercises that endpoint. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
