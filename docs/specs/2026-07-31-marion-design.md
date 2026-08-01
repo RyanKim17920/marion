@@ -2075,6 +2075,13 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       mandatory after redaction, so that check currently passes vacuously. The §5.3 figures are
       nonetheless correct — they were re-derived directly from raw bytes during verification.
       Fix the tool or delete it; a silently-zeroing verifier is worse than none.
+    - **The 1478-byte `ESC[6n` stall** (§5.3). The capture that showed it was never committed, so
+      neither the byte count nor the stall is reproducible here — which matters because it is the
+      only counter-evidence against "probe answering is unnecessary" (§11 item 9 asks a reader to
+      weigh two observations, and only one is in the repo).
+    - **The `turn/steer` half of §5.2's thread-ownership claim** — a second client steering a
+      thread a live TUI owns. No committed probe issues `turn/steer` or involves a TUI. Also
+      tracked as §11 item 15, since it is an unverified *behaviour*, not merely a missing fixture.
 11. **Several headline numbers rest on a single run on one machine** and should be re-measured
     before they harden into assumptions: S1's interrupt latency (measured 0.5 ms to
     `control_response`, 1.9 ms to terminal `result`, one run, over pipes);
