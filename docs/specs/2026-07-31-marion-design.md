@@ -682,7 +682,10 @@ connections to.
 > thread emits between the `thread/read` snapshot and the moment `thread/resume` takes effect
 > appears in neither the snapshot nor the subscription. marion therefore treats the two as
 > overlapping sources — it records the snapshot's last item id, and on the first subscribed events
-> re-reads (`thread/read` again) if their ids are not contiguous with it, deduplicating by item id.
+> **re-reads unconditionally once `thread/resume` has taken effect**, merging the second snapshot
+> with the subscription and deduplicating by item id. Unconditionally, not "if the ids look
+> non-contiguous": item ids are not guaranteed dense, so a gap is not reliably detectable from the
+> ids alone, and a second read is cheap next to silently losing a turn.
 > Doing it the other way round — subscribing first, then backfilling — trades a lost-event window
 > for a duplicate window, which is why dedup by id is required either way; this order is chosen
 > because `resume` on a cold thread also *loads* it, and loading before the snapshot would change
@@ -767,7 +770,9 @@ turn, or be able to re-create it.**
 (`INITIAL_UPDATE_DELAY` 300 s, `UPDATE_INTERVAL` 3600 s) that replaces a running app-server, and
 `daemon stop` does not stop it. There is no config key or env var to disable it.
 **A bare `--listen` server marion owns is immune to every codex-rs kill path**, because the only
-killer is `app-server-daemon`'s `PidBackend::stop`, which targets solely the start-time-verified
+killer *of a server marion started* is `app-server-daemon`'s `PidBackend::stop`, — the updater above
+replaces the **daemon-managed** app-server, not an unmanaged one, since it acts through the same pid
+backend — which targets solely the start-time-verified
 pid in its own pidfile and explicitly refuses unmanaged servers. `REMOTE_CONTROL_CLIENT_IDLE_TIMEOUT`
 (600 s) is a red herring: it prunes relay *registrations* on the outbound ChatGPT transport, not
 processes — confirmed by a server surviving 763 s with an idle client attached.
@@ -1596,7 +1601,7 @@ copy only, after the contract is persisted:
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split as `floor(16 KiB / n_retained)` per outcome, and that share split again as `floor(share / 2)` to **each** of `stdout` and `stderr` — an odd byte is simply unused, since a rounding rule that hands it to one stream is a difference two implementations would have to guess at. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
 | 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
-| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and, when a retained path exceeds 512 B, replace it with its **leading 255 B + `…` (3 B) + trailing 254 B — 512 B exactly**, so the "cut" can never lengthen the value it is shortening. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
+| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and, when a retained path exceeds 512 B, replace it with its **leading ≤255 B + `…` (3 B) + trailing ≤254 B — at most 512 B**, each side being the largest whole-character prefix/suffix fitting its allowance. "At most", not "exactly", because a multi-byte character straddling either edge is dropped rather than split; what matters is that the replacement is never *longer* than the 512 B threshold that triggered it. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
 | 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size does not depend on the input at all, a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing, except `diff`, which keeps its leading bytes, and individual paths, which keep leading 255 B + `…` + trailing 254 B — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
 | — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
 
@@ -1998,8 +2003,10 @@ testable invariant is:
 > marion must still emit a terminal — testing `ProcessExit.signal` would exempt the first and not
 > the second. A `Failed` arising from a failed `verification` command, or from a non-zero exit
 > *after* the node reported or answered step 2, is **not** exempt: there the node did get to choose.
-> **So "without an observed voluntary stop" in §3.2 means without an observed *conclusion*, and a
-> `report` counts as one** — a child that reports and then dies non-zero has `died_before_gate:
+> **"Died before it could reach step 5" and "without an observed voluntary stop" are the same
+> predicate stated twice**: the gate is step 5, and a node reaches it by concluding — a `report`, or
+> an answer to step 2. So "without an observed voluntary stop" means without an observed
+> *conclusion*, and a `report` counts as one** — a child that reports and then dies non-zero has `died_before_gate:
 > false`, because the gate's question ("did this node get to decide?") was already answered yes.
 > The flag is not "did the process exit cleanly"; a node can die messily having concluded, and that
 > is a `Failed` marion is entitled to emit.
@@ -2564,7 +2571,10 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   (returning a handle) is M2+. `TaskContract.timeout` bounds the block; on expiry `spawn` returns
   the contract with `status: TimedOut` if the child was `Running`, `Unreported` with
   `held_to_timeout: true` if it was `Blocked(Descendants)`, or `Unreported` with
-  `held_to_timeout: false` if it had stopped owing no hold — and, from M4 on, `TimedOut` if it was `Blocked(Permission)`/`Blocked(Elicitation)`, which M1's `codex exec` child cannot reach since it has no approval channel (§6.7's four expiry cases).
+  `held_to_timeout: false` if it had stopped owing no hold — **that last case does not wait for the
+  bound: a node that stopped with no live descendant reaches `Exited{Unreported}` at once (§7.6
+  step 5), and `spawn` returns then, not on expiry. It appears in this list because the *status* is
+  the same, not because the timing is** — and, from M4 on, `TimedOut` if it was `Blocked(Permission)`/`Blocked(Elicitation)`, which M1's `codex exec` child cannot reach since it has no approval channel (§6.7's four expiry cases).
   **On a `TimedOut` expiry marion kills the child before `spawn` returns** — by signalling the
   process handle held in its `Session` (§5.2), since M1's child has **no `DisplayPlane`** and so no
   `kill()`; `ControlPlane::shutdown` is the *graceful* path and is deliberately not used here.
