@@ -5,6 +5,7 @@
 pub mod cap;
 pub mod contract;
 pub mod encoding;
+pub mod scope;
 
 pub use contract::{
     AgentId, Capped, ChildRef, Command, CommandOutcome, Completion, ExitStatus, Glob, Oid,
