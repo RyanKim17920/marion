@@ -185,6 +185,7 @@ round-tripping, and accurate token counts.
 | Canned model provider | `wiremock` + Codex's `core_test_support::responses` builders | 0.6.5 |
 | Expect-style CLI tests | `expectrl` | 0.9.0 |
 | PTY (Windows — deferred) | `portable-pty`, blocking only; needs a thread bridge | 0.9.0 |
+| Glob matching (writable scope) | `globset` (`literal_separator = true`; design §5.4 pins the dialect) | 0.4 |
 | Fixture format | asciicast v3 NDJSON, hand-rolled serde (the `asciicast` crate died in 2018) | — |
 | Seed VT corpus | vendor `vt100-rust` `tests/data/fixtures/` (MIT) | — |
 

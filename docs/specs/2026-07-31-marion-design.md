@@ -217,7 +217,9 @@ struct Node {
     reported_early: bool,         // §7.6's exemption flags and their evidence live on the Node,
     held_to_timeout: bool,        //   not only on the contract, so they are recordable for a
     live_descendants_at_report: Vec<AgentId>,  // root, which has no contract at all. A child's
-                                  //   Completion mirrors all three at its terminal transition.
+    narrative: Option<String>,    //   Completion mirrors all five at its terminal transition.
+    narrative_synthesized: bool,  //   The narrative pair is here for the same reason: §7.6 step 5
+                                  //   synthesizes one for a root too, and it must land somewhere.
     timeout: Duration,            // the node's bound; a contract's `timeout` mirrors it (§9)
     depth: u8,
 }
@@ -528,10 +530,18 @@ MUST replay history and `session/resume` MUST NOT — hold today; the naming is 
 
 #### claude-code
 
-`headless` uses `claude -p --output-format stream-json --input-format stream-json`;
+`headless` uses `claude -p --output-format stream-json --input-format stream-json --verbose`.
+**`--verbose` is mandatory**, not optional: without it 2.1.220 exits **1** with `When using
+--print, --output-format=stream-json requires --verbose` before emitting anything (verified). It is
+easy to omit because the only other place this document mentions the flag is as a dependency of
+`--include-partial-messages`, which M1 does not use.
+`interactive` uses
 `interactive` uses a pty plus a JSONL tail. Liveness via `claude agents --json` (no TTY needed).
-`claude attach <id>` is background-jobs-only and **exits 0** while printing `No job matching…`, so
-never branch on its exit status.
+`claude attach <id>` is background-jobs-only and **exits 1** on an unknown id while printing
+`No job matching…` — **retracted and corrected**: this document previously claimed it exits 0.
+Verified on 2.1.220. **What remains untested is the case the original claim was about**: an id that
+names a live *interactive* (non-background) session, which is not a job `attach` can find. Treat
+the exit status as usable for "unknown id" and unverified for "known id, wrong kind" (§11 item 16).
 
 **Control protocol (S1, verified against 2.1.220 by decompiling
 `@anthropic-ai/claude-agent-sdk@0.3.220`, confirming in the binary's strings, and replaying with
@@ -884,10 +894,14 @@ and a path is writable iff it matches the ceiling *and* the `spawn` request.** T
 conjunction at match time, not a set operation at spawn time — glob sets have no closed-form
 intersection, so "compute the intersection" would not be implementable as a single glob list. A
 `spawn` glob that matches nothing under the ceiling is a **spawn-time error**, not a silently empty
-scope: it means the parent asked for a scope the agent type forbids. **Emptiness is decided
-syntactically** — a `spawn` glob is an error iff no string matches both it and some ceiling glob
-(regular-language intersection over the glob alphabet, which is decidable even though the
-*intersection set* has no glob representation). **The filesystem is never consulted**, so
+scope: it means the parent asked for a scope the agent type forbids. **`Glob` is `globset::Glob` with `literal_separator = true`** — `**` crosses `/`, `*` does not,
+`{a,b}` and `[…]` are supported, negation is **not**. The dialect has to be pinned here: whether
+`src/**` matches `src/a/b.rs` or bare `src` differs between crates, and two implementations would
+otherwise produce different `scope_violations` from the same run against the same M1 criterion.
+Negation is excluded partly because it would break the emptiness check below. **Emptiness is
+decided syntactically** — a `spawn` glob is an error iff no string matches both it and some ceiling
+glob (regular-language intersection over that alphabet, decidable for this dialect even though the
+*intersection set* has no glob representation; no crate ships it, so M1 implements it). **The filesystem is never consulted**, so
 `writable_scope: ["src/generated/**"]` naming a directory the child is meant to *create* is legal;
 testing against the worktree's current contents would reject exactly that normal case. A parent can therefore only
 ever restrict what the agent type allows, never widen it. Both lists are recorded in the contract
@@ -911,8 +925,8 @@ is per verb, because reading a node and acting on one are not the same permissio
 |---|---|---|
 | `status`, `list` | descendants or parent, plus `allow_peers` siblings (`list` returns that set) | **any**, terminal included |
 | `wait` | **descendants only**, plus `allow_peers` siblings | **any** — returns immediately on a terminal node with its contract, and on a `ReapedIdle` or `Orphaned` one with its uncompleted contract (same set as the §7.6 gating rule: neither can resolve without a user act) |
-| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal and the target's process is still running** — so not `ReapedIdle`, not `Orphaned`, and **not a node held in `Blocked(Descendants)`**, whose hold belongs to marion regardless of whether its process is still running |
-| `cancel` | **descendants only — never a sibling, even under `allow_peers`** | non-terminal **and the target's process is still running** — same condition as `send`: cancelling an `Orphaned` node would write a `Cancelled` `Completion` for a process marion has already lost, which §6.7 forbids (`completion: None`), and would signal nothing |
+| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal, `Live`, and not `Blocked(Descendants)`** — the first two because the process must exist (so not `ReapedIdle`, not `Orphaned`), the third because that hold belongs to marion whether or not the process is still running |
+| `cancel` | **descendants only — never a sibling, even under `allow_peers`** | **non-terminal and `Live`** — the process must exist, since cancelling an `Orphaned` node would write a `Cancelled` `Completion` for a process marion has already lost, which §6.7 forbids (`completion: None`), and would signal nothing. Unlike `send`, `cancel` **is** permitted against a `Blocked(Descendants)` node: cancelling is marion's own lifecycle verb, not an attempt to drive the node's turn |
 | `report` | **self only**, and only on a node that **has a contract** — rejected on a root | non-terminal; **first call per `TaskContract` wins**, a second against the same contract errors. A resume opens a new contract (§6.7) and so accepts one further `report` |
 
 Three consequences worth stating, since each closes a hole the flat rule left open:
@@ -1030,6 +1044,16 @@ default topology is enforced against honest mistakes and confused-deputy routing
 are logged and surfaced, and non-marion processes on the box cannot drive the supervisor at all.
 **Isolation that must survive a hostile child requires a different uid or a sandbox, which marion
 does not yet do; until then `allow_peers` and the star topology are policy, not containment.**
+
+**The `Stop` hook is a fourth process class and needs its own wiring.** §7.6 step 2 branches the
+hook's `reason` on the live subtree, so the hook must reach the supervisor at fire time — but a
+hook command is a child of the *harness*, not of the bridge, so it inherits no `MARION_TOKEN`, and
+its stdin carries `session_id`/`cwd`, never an `AgentId`. **marion therefore writes the hook
+command with its node and socket baked in** — `marion-supervisor hook --node <AgentId> --socket
+<path>` — inside the `--settings` / `hooks.json` payload it already emits per child, and the hook
+authenticates with **the same per-node token issued at spawn**, passed the same way. Without this
+the hook cannot identify itself or find the supervisor, and §7.1's attribution guarantee has a hole
+exactly where the descendant-gating decision is made.
 
 **Token lifetime:** issued at spawn, bound to the `AgentId`, invalidated at the node's terminal
 transition, and **reissued** — not reused — on every path that starts a process again: when a
@@ -1363,7 +1387,8 @@ SIGSEGV; without them it would fall through to `Ok`.
 |---|---|---|
 | SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT | **`Failed`** (row 3) | a self-inflicted fault — the process broke |
 | SIGKILL, SIGTERM, SIGHUP from a sender marion cannot attribute | **`Killed`** (row 1) | something outside did this to the node (§7.8) — **including the OOM killer** |
-| any signal marion itself sent | **`Killed`**, or `TimedOut`/`Cancelled` per row 1 | marion's own act |
+| a signal marion sent **to terminate the node as such** — `cancel`, the `TimedOut` kill | `Cancelled` / `TimedOut` per row 1 | marion's own act, and row 1 already names the reason |
+| a signal marion sent **to clear a process whose fate was already decided** — the §7.6 step-3 expiry kill | **matches no row-1 clause**; derivation falls through to rows 2–4 | the expiry decided the outcome, so the kill must not overwrite it with `Killed` |
 | **any other signal** (SIGINT, SIGQUIT, SIGPIPE, SIGXCPU, SIGSYS, …) from a sender marion cannot attribute | **`Killed`** (row 1) | the catch-all that makes this partition **total** — without it such a death matches no row and falls through to `Ok`, contradicting §7.8's "never a normal completion" |
 
 `ProcessExit.description` **records** that classification; it is not the input to it. An OOM kill is
@@ -1421,7 +1446,10 @@ protects (a) the user's credentials, (b) the user's source, (c) nodes from each 
 - **`ReapedIdle`** — process killed to reclaim memory, transcript intact, ownership claim retained,
   resumable. Journaled **before** the kill.
 - **`Orphaned`** — process lost without a recorded reap. Marked on restart only for `Live` nodes.
-- Running nodes are never reaped.
+- Running nodes are never reaped. **Nor is a node a `spawn` is currently blocked on, nor one held
+  in `Blocked(Descendants)`** — reaping either leaves a caller unresolvable: `ReapedIdle` is not a
+  terminal state, so no `Completion` is written and no delivery fires, and the blocking `spawn`
+  could only end at its own bound, in a case §6.7's expiry table does not classify.
 
 Without this distinction a deliberately reaped node and a killed orphan are indistinguishable on
 disk after a crash, and restart recovery would mark perfectly resumable nodes dead.
@@ -1685,8 +1713,8 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    `prompt()` alone when the node's process is **still running** — `headless` Claude Code spans
    turns in one process (§5.2), and calling `continue_()` on a session marion already holds live is
    exactly what §5.1 refuses — or `continue_()` + `prompt()` atomically (§6.3) when the process has
-   exited, as for an `exec`-style child. Gated on `caps.resume`; a harness without it skips
-   straight to step 5. **It fires at most once per node** — see the budget below. Its message is
+   exited — as for a Codex app-server thread or a `claude --resume` session. Gated on `caps.resume`;
+   a harness without it skips straight to step 5. **It fires at most once per node** — see the budget below. Its message is
    branched, because two different situations arrive here:
    - *descendants completed while the node was held* → *"your children have finished: <names>;
      their results are available — report now."* This is the happy path of descendant-gating, and
@@ -1696,9 +1724,10 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    - *the node simply never answered* → **the grace turn**: a best-effort report acknowledging the
      interruption, not a request to finish the work — modelled on Gemini's grace window (below).
      Only this variant is "the grace turn". **For a root**, which cannot `report`, it asks instead
-     for a short summary of where things stand; and since step 1 already accepts a root's exit when
-     no descendants are live, **marion may skip step 4 for a root entirely** rather than spend its
-     one-shot turn.
+     for a short summary of where things stand — and since step 1 already accepts a root's exit
+     when no descendants are live, **marion skips *this variant* for a root**, going straight to
+     step 5. The descendants-completed variant above still runs for a root: a root that was told
+     "wait for them before you finish" must be told when they have finished.
 5. Still nothing → **re-run the descendant check first.** Step 4 is a real turn with the child's
    full tool surface, so it can have *created* descendants (from M2 on, a backgrounded `spawn`
    returns immediately). If any descendant is now live, re-enter step 3's hold. **Step 4 is
@@ -1995,8 +2024,12 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     schema document *is* its return channel, never to call `mcp__marion__report`.
 - **§7.6's re-prompts do not apply to M1's child, and M1 must not wait for them.** A
   `codex exec --json` child has no Stop hook marion can rely on and no `caps.resume`:
-  - **`exec` is a one-shot job, so there is no session to `continue_()`** — no `caps.resume`, which
-    is what actually removes step 4.
+  - **M1 pins `caps.resume = false` for its `exec` child as a scope choice, not a capability
+    fact.** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0 and is exactly
+    `continue_()` + `prompt()`, so the static table must not record `exec` as unresumable — that
+    would publish a false capability for every `codex exec` node through `marion doctor`. M1
+    declines to build the resume path because steps 2–3 never run for this child anyway (below), so
+    step 4 has nothing to follow.
   - Codex hooks are trust-gated and **fail silently** until trusted (§7.6). Obtaining the key and
     hash non-interactively goes through `initialize` → `initialized` → `hooks/list`, which are
     app-server methods M1 does not build. **`codex exec` does expose
@@ -2346,6 +2379,10 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     originated"); **a second client steering a thread a live TUI owns**; and a *foreign*
     (non-marion) client on a shared thread. What *is* fixtured is subscriber parity and
     non-disruption of the originator.
+16. **`claude attach` against a live *interactive* session id.** An unknown id exits 1 (verified,
+    §5.2). The original claim — exit 0 on an id that exists but is not a background job — was
+    never separately tested, and that is the only case where an exit-status branch could still
+    mislead. Cheap to settle whenever a background-session path is next touched.
 
 ---
 
