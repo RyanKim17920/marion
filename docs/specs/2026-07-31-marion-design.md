@@ -2433,7 +2433,11 @@ record. The hazards are in *interpreting* them:
   **`Exited` terminality and descendant-gating are properties of the *emission*, not standing
   properties of the tree** — assert them at the moment marion writes the terminal transition. A
   later **user**-initiated resume (§5.4, §6.3) may legitimately re-animate a node or a descendant,
-  so a tree scan would report false failures on a supported flow. Acyclicity and `seq` monotonicity
+  so a tree scan would report false failures on a supported flow. **The standing half that does
+  hold: a node leaves `Exited` only by user-initiated resume.** Any marion-initiated transition out
+  of `Exited` — a second terminal, an agent-driven `send` honoured against it, a grace turn fired
+  at it — is a violation, and the property test asserts that too. Without that clause "assert at
+  emission" would permit a node to be quietly re-animated by marion between emissions. Acyclicity and `seq` monotonicity
   are the standing ones.
 - **L2 — fixture replay.** Recorded real streams replayed into planes, asserting on the IR; also
   format-drift detection. Subject to §7.1 redaction.
