@@ -618,18 +618,19 @@ continues. With it, the CLI emits
 "permission_suggestions":[…],"tool_use_id":…}}`. **The top-level `request_id` is load-bearing and
 belongs in the envelope exactly as on the outbound direction**: the demux map below is keyed on it,
 and `control_cancel_request` names it — a frame without one could be neither answered nor cancelled.
-Its presence is inferred from those two requirements rather than read off a committed fixture,
-because the whole inbound direction is still unfixtured (§11 item 14); confirming the field name is
-part of that item's first probe. The flag is **absent from `--help`** but is what
+The **frame itself was observed live** in round 14 (above); what no *committed fixture* records is
+its exact field set, so the envelope shown here is that observation plus the two requirements above.
+Capturing it is part of §11 item 14's first probe. The flag is **absent from `--help`** but is what
 the official SDK passes (visible in the 2.1.220 bundle). Note this is an **argv** mechanism, not an
 `initialize` one — the "`initialize` is optional" note above concerns SDK-side hook/MCP
 registration and must not be read as "nothing further is required" for the inbound half.
 
 **The channel is bidirectional, and this is load-bearing.** The CLI emits its own outbound
 `control_request` frames — `can_use_tool`, hook callbacks, `request_user_dialog` — on the same
-stdout stream, expecting a `control_response`. So `ControlPlane` needs a
-`request_id -> oneshot::Sender` demux map, and **this is how Claude Code permission prompts reach
-marion's permission queue** (§5.6). Cancel with `{"type":"control_cancel_request","request_id":…}`.
+stdout stream, expecting a `control_response`. So `ControlPlane` needs **both halves**: a
+`request_id -> oneshot::Sender` map for *marion's own* outbound requests, and an **inbound handler**
+for CLI-originated ones, which correlate to nothing marion sent and so are never found in that map.
+**The inbound half is how Claude Code permission prompts reach marion's permission queue** (§5.6). Cancel with `{"type":"control_cancel_request","request_id":…}`.
 
 > **UNVERIFIED — and M1 depends on it.** This is established from the SDK source and the binary's
 > strings, **not** from the S1 replay: `tests/fixtures/s1/stdout.jsonl` contains **zero** inbound
@@ -1709,8 +1710,10 @@ Two rules make it more than bookkeeping:
   > against the scratch `GIT_INDEX_FILE`**, never the workspace's own index, so neither command can
   > disturb what the user sees.
 
-  **`--ignored` is deliberately absent, and that is a stated boundary, not an oversight**: a write
-  to a path the repo ignores (a build directory, a vendored dependency tree, a local credentials
+  **`--ignored` is deliberately absent, and that is a stated boundary, not an oversight.** It bites
+  only for **untracked** paths — ignore rules do not apply to an already-tracked file, so every
+  tracked change is covered by the `git diff` half whatever the ignore patterns say. What escapes is
+  a write creating an *untracked* file under an ignored path (a build directory, a vendored dependency tree, a local credentials
   file) does not appear in `changed_paths` and therefore cannot raise a `scope_violation`. Adding
   `--ignored` would instead report every pre-existing ignored file as if the child had touched it,
   which is worse — the check would cry wolf on every run. Detecting genuine writes to ignored paths
