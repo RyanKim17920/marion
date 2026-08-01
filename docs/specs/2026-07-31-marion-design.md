@@ -685,9 +685,12 @@ human UI is attached — **an unanswered approval hangs the turn indefinitely.**
 
 **Lifecycle (S3, 0.145.0).** Idle app-servers are **never reaped.** Six invocations were run —
 bare `--listen`, `daemon start`, orphaned, and three with live threads or held clients. Four were
-still alive at a ~17.5-minute check; the two thread-holding cases ran 703 s and 763 s; one server
-was separately observed alive at ~43 minutes by wall clock during the package-swap experiment.
-None died. `shutdown_when_no_connections` is gated to stdio only.
+still alive at a **~10.5-minute** check (630 s by the logs' own `utc=` stamps — the `t=~1050s`
+field on those lines is a recording artefact, and the stamps are authoritative); the two
+thread-holding cases ran 703 s and 763 s; and the **strongest logged lifetime is the D server at
+2442 s (~40.7 min)**, recorded `SERVER_ALIVE` in `s3/H-thread-unload-1800s.log`. A ~43-minute
+observation during the package-swap experiment was wall-clock only and has **no committed log**
+(§11 item 10). None died. `shutdown_when_no_connections` is gated to stdio only.
 **But `THREAD_UNLOADING_DELAY = 1800 s` unloads *unsubscribed* threads**, and `thread/start`
 returns a rollout `path` without creating the file — measured: `thread/read` OK at 1241 s, then
 `thread not loaded` / `no rollout found` at 1962 s, identical across a restart. Read-only probes
@@ -2375,6 +2378,10 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       mandatory after redaction, so that check currently passes vacuously. The §5.3 figures are
       nonetheless correct — they were re-derived directly from raw bytes during verification.
       Fix the tool or delete it; a silently-zeroing verifier is worse than none.
+    - **The S3 package-swap experiment** — the ~43-minute case-B lifetime, the daemon pidfile
+      contents, the `managedCodexVersion` result, and the mid-run `install.sh` swap. Observed
+      live; no log was committed, so §5.2's "`daemon start` does not arm the updater" rests on an
+      uncommitted session.
     - **The 1478-byte `ESC[6n` stall** (§5.3). The capture that showed it was never committed, so
       neither the byte count nor the stall is reproducible here — which matters because it is the
       only counter-evidence against "probe answering is unnecessary" (§11 item 9 asks a reader to
@@ -2433,7 +2440,7 @@ design decision.
 
 | claim | fate |
 |---|---|
-| Codex app-server reaped when idle at ~86–90 s; 25 s heartbeat required | **RETRACTED.** No reaper exists (six invocations; four to ~17.5 min, two thread-holding to 703/763 s, one observed at ~43 min). The phantom SIGTERM was most likely our own `codex-app-server-test-client`, which kills whatever answers on its port with no delay floor — explaining even death while SIGSTOPped. Replaced by the real hazard: `THREAD_UNLOADING_DELAY = 1800 s` on **unsubscribed threads**. |
+| Codex app-server reaped when idle at ~86–90 s; 25 s heartbeat required | **RETRACTED.** No reaper exists (six invocations; four to ~10.5 min, two thread-holding to 703/763 s, and the D server logged alive at 2442 s ≈ 40.7 min). The phantom SIGTERM was most likely our own `codex-app-server-test-client`, which kills whatever answers on its port with no delay floor — explaining even death while SIGSTOPped. Replaced by the real hazard: `THREAD_UNLOADING_DELAY = 1800 s` on **unsubscribed threads**. |
 | Scrubbing `CLAUDE_CODE_CHILD_SESSION` is required or no transcript is written | **CORRECTED.** A/B tested at 2.1.220 — transcripts written both ways. The gate also requires the interactive path, not-a-teammate, and no tmux marker. Use `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`. |
 | `vt100` loses scrollback under DECSTBM and alacritty does not | **CORRECTED.** Both drop it under a top-offset region; alacritty keeps top-anchored history. Moot in practice — every history-producing scroll is top-anchored. alacritty is the pick because vt100 retained **0** lines in every real capture — a figure that is itself unfixtured (§11 item 10). |
 | Rollout compression can replace a live `.jsonl` under a tailer | **RETIRED.** Default-off flag, 7-day age minimum, skips referenced rollouts. Not a live hazard. |

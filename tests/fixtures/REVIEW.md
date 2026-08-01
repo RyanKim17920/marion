@@ -29,7 +29,7 @@ has read it and filled in a row of the provenance table below.**
 | Email addresses | rendered in harness status/auth panels |
 | Organization / tenant names | product or workspace names baked into built-in agent descriptions |
 | API keys and tokens | `sk-ant-`, `Bearer <...>`, `ghp_`, `xox[baprs]-`, `AKIA…`, PEM blocks. Env var **names** (`ANTHROPIC_API_KEY`, `GROQ_API_KEY`) are fine; values are not |
-| Session / thread / turn ids | live `session_id`, `threadId`, `turn_id` — replace with a stable fake |
+| Session / thread / turn ids | live `session_id`, `threadId`, `turn_id` — replace with a stable fake. **Look inside OSC 777 / terminal-integration notification bodies too**: Claude Code emits a `warp://cli-agent` JSON payload carrying `session_id`, `cwd` and `project`, which no CSI-oriented scan reaches |
 | PIDs, ports, hostnames | `pid`, `*.local`, listening ports |
 | **The operator's environment** | the `initialize` / `system.init` catalogues: `commands`, `skills`, `agents`, `plugins` (with paths), `mcp_servers`, `tools` (`mcp__*` entries name the operator's MCP servers), `memory_paths`, `models` |
 | **Hook configuration and hook output** | `hook_started` / `hook_response` payloads carry the operator's SessionStart hooks verbatim, including third-party tool instructions and unrelated project context |
@@ -154,14 +154,15 @@ recorded in the **residue list**, not in the table rows.
   column-aligned panels this corpus must byte-preserve, and they name public plugins rather than
   identity. **Any re-record of S2 must use a scratch `HOME`.**
 - **`s2` account state and the operator's display name were scrubbed on 2026-08-01**, equal-length,
-  after an audit found them: the Claude welcome banner's given name (`Ryan` → `User`, 4 B), the
+  after an audit found them: the Claude welcome banner's given name (4 B → `User`), the
   Codex `/status` plan and credits (`Pro Lite` → `Plan ABC`, `1817 credits` → `0000 credits`),
   the Claude account tier (`Claude Max` → `Plan  ABC `), and the recording session's UUID
   (`8e531002-…` → `00000000-0000-4000-8000-000000000003`, including its ellipsized 34- and 14-byte
   renderings) — the same id, also scrubbed in `s5`, that `s4` had already replaced with `<UUID>`.
   All five file lengths, the `?1049h/l` offsets (67 / 1900 / 5866 / 38963 / 43372), `CSI 3J` counts
   and every DECSTBM figure re-derive unchanged.
-- **`s5` retains the operator's terminal emulator brand and build** inside six `userAgent` strings
+- **`s2` and `s5` retain the operator's terminal emulator brand and build** — `s2` in four
+  `warp://cli-agent` OSC 777 bodies (which also named the integration's `plugin_version`), `s5` inside six `userAgent` strings
   (`WarpTerminal/v…`), because the app-server echoes the launching terminal's UA and the
   `initialize` response shape is the evidence. Host fingerprinting only; no identity.
 - **`s5`'s account state was scrubbed on 2026-08-01, not accepted.** The `initialize` result and
@@ -181,7 +182,8 @@ recorded in the **residue list**, not in the table rows.
   redacted (`D=<SCRATCH>`), so neither matches the committed file
   (`3cc38359…`), and being two distinct values for two hook entries they could not both hash one
   file in any case — and the Codex tool name `create_source_repository_write_credential`
-  rendered in an `s2` `/help` panel. None are credentials.
+  rendered in the `s2` 0.146.0 14-row capture's **`/mcp`** panel, which also lists the operator's
+  MCP server name, `Auth: Bearer token`, and 35 tool names. None are credentials.
 
 ### Verification run, 2026-08-01 (re-run after the escape-sequence repair)
 

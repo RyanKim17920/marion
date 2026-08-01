@@ -51,13 +51,23 @@ different length and would shift every offset after them.
   - SECOND PASS, 2026-08-01 (audit rounds 11-12), all equal-length. These are as much a part
     of this corpus's redaction as the email and username entries, and are listed here because
     REVIEW.md sends every reader to this file for the conventions:
-      Account display name    "Ryan"       -> "User"        (4 B)  Claude welcome banner
+      Account display name    <given name> -> "User"        (4 B)  Claude welcome banner
       Codex plan tier         "Pro Lite"   -> "Plan ABC"    (8 B)  /status panel
       Codex credit balance    "1817 credits" -> "0000 credits" (12 B)
       Claude account tier     "Claude Max" -> "Plan  ABC "  (10 B)
       Recording session UUID  "8e531002-…" -> "00000000-0000-4000-8000-000000000003" (36 B),
                               including its ellipsized 34- and 14-byte renderings
     The same UUID was scrubbed from s5 in the same pass; s4 had already replaced it with <UUID>.
+  - THIRD PASS, 2026-08-01 (audit round 13), all equal-length. Four MORE live session ids were
+    still present -- two Codex /status "Session:" values and two Claude ids inside OSC 777
+    terminal-integration notification bodies, a site no CSI-oriented scan reaches:
+      e172e975-... -> 00000000-0000-4000-8000-000000000004  (36 B, Claude OSC 777)
+      d9e18c44-... -> 00000000-0000-4000-8000-000000000005  (36 B, Claude OSC 777)
+      019fb983-... -> 00000000-0000-4000-8000-000000000006  (36 B, Codex /status)
+      019fb987-... -> 00000000-0000-4000-8000-000000000007  (36 B, Codex /status)
+    Plus the account usage state the second pass missed:
+      Weekly-limit remaining  "36% left" -> "00% left"  (8 B)
+      Limit reset dates       "5 Aug"/"7 Aug" -> "1 Jan" (5 B each)
     None of these was caught by REVIEW.md's documented fast pass -- the display name in
     particular is a different string from the login name, so `grep "$(id -un)"` cannot see it.
   - Username "<name>" (7 bytes) -> "example" (7 bytes). Affects both real home paths

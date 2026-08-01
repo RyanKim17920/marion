@@ -16,12 +16,17 @@ The real hazard is one level down: an **idle thread** is unloaded at
 
 | Case | Invocation | Result |
 |---|---|---|
-| A | `codex app-server --listen ws://…`, parent alive | alive 321 s, alive at ~17.5 min |
-| B | `codex app-server daemon start` (unix://, ppid 1) | alive 321 s, alive 43 min (the only 43-min observation these logs evidence), pid never replaced |
-| C | same as A but orphaned (ppid 1, shell exited) | alive 321 s, alive at ~17.5 min |
-| D | bare ws, one client connected then dropped, 1 thread | alive 322 s, alive at ~17.5 min |
+| A | `codex app-server --listen ws://…`, parent alive | alive 321 s, alive at ~10.5 min |
+| B | `codex app-server daemon start` (unix://, ppid 1) | alive 321 s, alive at ~10.5 min; the 43-min figure is **wall-clock only, not in these logs**, pid never replaced |
+| C | same as A but orphaned (ppid 1, shell exited) | alive 321 s, alive at ~10.5 min |
+| D | bare ws, one client connected then dropped, 1 thread | alive 322 s, alive at ~10.5 min |
 | E | bare ws, one client held connected+idle, 1 thread | alive 763 s (past the 600 s client idle timeout) |
 | F | orphaned ws, client dropped, 1 thread | alive 703 s (END_OF_WATCH_STILL_ALIVE) |
+
+⚠ The `t=~1050s` field on the A-D LONG_RUN_CHECK lines is a recording artefact: the same lines'
+`start_utc=`/`utc=` stamps give 630 s (A/B/C) and 517 s (D). The stamps are authoritative. The
+longest lifetime any committed log evidences is the **D** server at 2442 s in
+`H-thread-unload-1800s.log`.
 
 Files: `{A..F}-timing.log` (5 s poll), `H-thread-unload-1800s.log`,
 `G-thread-survival-*.log`.
