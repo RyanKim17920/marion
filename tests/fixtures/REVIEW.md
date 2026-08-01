@@ -207,7 +207,9 @@ table rows.
   (`3cc38359…`), and being two distinct values for two hook entries they could not both hash one
   file in any case — and the Codex tool name `create_source_repository_write_credential`
   rendered in the `s2` 0.146.0 14-row capture's **`/mcp`** panel, which also lists the operator's
-  MCP server name, `Auth: Bearer token`, and 35 tool names. None are credentials.
+  MCP server name, `Auth: Bearer token`, and 36 tool names (28 `sites.*`, 4 `plugin_management.*`,
+  3 `codex_document_control.*`, 1 `hotline.*` — the tool spellings are fully qualified, e.g.
+  `sites.create_source_repository_write_credential`). None are credentials.
 
 ### Verification run, 2026-08-01 (re-run after the **fourth** redaction pass)
 
@@ -228,6 +230,7 @@ non-`@example.invalid` emails, the literal home path, and the username are all *
 Invariants re-derived before and after the pass are byte-identical except for the length of
 `s3/G-thread-survival-create.log` (189 → 181 bytes, the home-path substitution; no offset into that
 file is cited anywhere). In particular the design-doc §5.3 offsets **still hold exactly**:
-`ESC[?1049h` at **67** and `ESC[?1049l` at **5866** in `claude-2.1.220-boot-exit.raw.bin`,
+`ESC[?1049h` at **67** — and the `ESC[?1049l` at **5866**, which the design doc does not itself
+cite — hold exactly in `claude-2.1.220-boot-exit.raw.bin`,
 `ESC[?1049h` at **1900** in `claude-2.1.220-boot-help-status-resize.raw.bin`, and the
 `38963` / `43372` alt-screen pair in `codex-cli-0.145.0-boot-status-help-diff-resize.raw.bin`.
