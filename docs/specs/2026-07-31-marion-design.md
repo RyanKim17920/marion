@@ -1638,12 +1638,14 @@ came through verbatim; 100 KB did not). Since §9's acceptance criterion turns o
 few-tens-of-KB edit silently makes that criterion unsatisfiable, with a symptom that looks like
 marion dropped the contract. **The full, uncapped contract always remains at
 `contracts/<task_id>.json`**; only what rides back through the harness is capped. The two therefore
-differ by exactly the fields cap rules 0–5 may shorten — `narrative`, `diff`, each outcome's
+differ by exactly the fields cap rules 0–6 may shorten — `narrative`, `diff`, each outcome's
 `stdout`/`stderr`, the `evidence` list, and, if the backstop fires, `changed_paths`,
-`scope_violations`, `instructions` and `acceptance_criteria`. **Every one of them is
-self-describing** — a `Capped.truncated` flag (per stream, for `stdout`/`stderr`) or an `*_omitted`
-counter — so a consumer can always tell a shortened field from a complete one without holding the
-persisted copy. That is what §9's "modulo" clause means.
+`scope_violations`, `instructions` and `acceptance_criteria`; rule 6 replaces the whole thing with a
+stub. **Every *field* is self-describing** — a `Capped.truncated` flag (per stream, for
+`stdout`/`stderr`) or an `*_omitted` counter — so a consumer can tell a shortened field from a
+complete one without holding the persisted copy. **The one exception is an individual path inside
+`changed_paths`/`scope_violations`**, whose only signal is the embedded `…` (rule 5(d)): paths carry
+no per-entry metadata, which is why the persisted contract is authoritative for the full list. That is what §9's "modulo" clause means.
 
 **The cap is a fixed algorithm, not a budget to be invented.** It is applied once, to the returned
 copy only, after the contract is persisted:
