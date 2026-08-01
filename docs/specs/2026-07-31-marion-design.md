@@ -826,8 +826,8 @@ bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schem
 
 **Prefer `exec` for fan-out; reserve app-server for interactive children.**
 
-> **⚠ Three UNVERIFIED assumptions about `exec` — two of them M1-critical, the third (locations)
-> affecting attribution quality only, since the scope check is git-derived either way (spike S6, *not run* — started
+> **⚠ Three UNVERIFIED assumptions about `exec` — the first and third M1-critical, the second
+> (locations) affecting attribution quality only, since the scope check is git-derived either way (spike S6, *not run* — started
 > and killed mid-run 2026-07-31; no S6 fixture exists in this repo). S6 must also record two
 > encodings §5.5 needs — see §11 item 12 for the full scope:**
 > 1. **Does `exec` host MCP servers?** M1 has the child return via marion's `report` tool — on
@@ -1217,8 +1217,11 @@ token off `ps` (below). M1's Codex child takes the file placement for exactly th
 impractical. The command is `marion-supervisor mcp`, a thin stdio bridge to the supervisor socket.
 
 **The token rides the MCP server declaration's `env` block as `MARION_TOKEN`**, which marion writes at
-config-injection time — the only channel available, because **marion does not spawn the bridge:
-the harness does.** That rules out the two mechanisms one would otherwise reach for. An inherited
+config-injection time — **the only channel that is both available and not strictly worse**: an
+argv flag in the same declaration would also reach the bridge, but the placement table below rejects
+it as strictly worse for nothing gained (argv is world-readable via `ps`; `env` at least is not).
+The two mechanisms one would *otherwise* reach for are unavailable outright, because **marion does
+not spawn the bridge: the harness does.** That rules out the two mechanisms one would otherwise reach for. An inherited
 fd is impossible (marion is not the bridge's parent, extra fds are `CLOEXEC`, and no MCP client
 config has a "pass fd N" field), and the bridge's stdin is already the MCP JSON-RPC transport the
 harness writes to.
@@ -1489,7 +1492,7 @@ marion **never mutates the user's real harness config.**
 - **A real TTY is required only for terminal-driven surfaces.** With stdio as a pipe, `codex`
   errors `stdin is not a terminal` and `claude` falls back to demanding `--print`. So
   `interactive`/`opaque`/`shared`-with-attached-TUI need a pty; **`headless` does not** —
-  `claude -p --output-format stream-json --input-format stream-json --verbose` (all three flags
+  `claude -p --output-format stream-json --input-format stream-json --verbose` (all four flags
   are required — §5.2) and `codex exec --json` run over pipes, which is how S1
   was replayed and how M1 runs its root.
 
@@ -1645,7 +1648,7 @@ copy only, after the contract is persisted:
 | 1 | **Collection cap.** If `evidence.len() > 16`, retain the **first 16 in `verification` order** — the parent authored that order, so it is the parent's own priority — and set `evidence_omitted` to the number dropped. Otherwise `evidence_omitted = 0`. |
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split as `floor(16 KiB / n_retained)` per outcome, and that share split again as `floor(share / 2)` to **each** of `stdout` and `stderr` — an odd byte is simply unused, since a rounding rule that hands it to one stream is a difference two implementations would have to guess at. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
-| 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — **except individual paths inside `changed_paths`/`scope_violations`, whose shortening is signalled by the embedded `…` at exactly 512 B — an imperfect marker, since a real path may legitimately contain `…`, which is why the **persisted contract is authoritative for the full list** and the returned copy is a display artefact; these entries carry no per-entry metadata** (they are `PathBuf`s in a list, not `Capped` values) — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
+| 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — **except individual paths inside `changed_paths`/`scope_violations`, whose shortening is signalled by the embedded `…` at or just under 512 B — an imperfect marker, since a real path may legitimately contain `…`, which is why the **persisted contract is authoritative for the full list** and the returned copy is a display artefact; these entries carry no per-entry metadata** (they are `PathBuf`s in a list, not `Capped` values) — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
 | 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**, keeping its `original_bytes` at the *pre-rule-0* length so it always means "how long the child's text actually was", never "how long it was when this step found it"; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and, when a retained path exceeds 512 B, replace it with its **leading ≤255 B + `…` (3 B) + trailing ≤254 B — at most 512 B**, each side being the largest whole-character prefix/suffix fitting its allowance. "At most", not "exactly", because a multi-byte character straddling either edge is dropped rather than split; what matters is that the replacement is never *longer* than the 512 B threshold that triggered it. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
 | 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size is bounded independently of the input — its only variable
 parts are a handful of integer counters, whose decimal width is bounded by `usize` — a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing, except `diff`, which keeps its leading bytes, and individual paths, which keep leading 255 B + `…` + trailing 254 B — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
@@ -2193,7 +2196,7 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    subtree:**
    - live descendants, node owes a report → *"N of your descendants are still running: <names>. Do you
      want to wait for them, or report now with what you have?"*
-   - live descendants, node owes none (a root) → *"N of your children are still running: <names>.
+   - live descendants, node owes none (a root) → *"N of your descendants are still running: <names>.
      Wait for them before you finish."* **Not a choice**: a root has no tool with which to answer
      one — it is never given `report` (§9), and §5.4's table has no exit verb — so offering
      "wait or exit now?" would ask for an answer marion could not receive, leaving it unable to
