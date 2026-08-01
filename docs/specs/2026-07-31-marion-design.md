@@ -940,11 +940,15 @@ Three consequences worth stating, since each closes a hole the flat rule left op
   **`Orphaned` is excluded for the same reason and needs saying separately**, because an `Orphaned`
   node is neither `Exited` nor `ReapedIdle` — it would otherwise slip through both clauses and
   route `continue_()` + `prompt()` at a process marion has already lost. **So is a node held in
-  `Blocked(Descendants)`:** it is non-terminal and `Live`, but its process exited before the hold
-  began (§7.6 step 4 resumes it precisely because "the `Stop` hook is gone by now"). Honouring a
+  `Blocked(Descendants)`** — but for a different reason, and the distinction matters. Honouring a
   `send` there would let a child resume its own held parent, consuming the parent's one-shot step-4
-  turn and re-entering the procedure at an undefined point. **The condition is therefore a property
-  of the process, not a list of states**: the target must have a running process.
+  turn and re-entering the procedure at an undefined point. That is an **ownership** argument, not
+  a liveness one: a held node's process may still be running, since `headless` Claude Code spans
+  turns in **one** process (§5.2 — `system/init` is per turn, not per process).
+
+  So the condition is: the target must be **non-terminal, `Live`, and not
+  `Blocked(Descendants)`** — the first two because the process must exist, the third because the
+  hold belongs to marion.
 
 Resuming any node is therefore a **user**-initiated act (`node/prompt`, §2) or marion's own grace
 turn; it reuses the `AgentId` and re-enters `Running`, and the terminality invariant is scoped to
@@ -1360,6 +1364,7 @@ SIGSEGV; without them it would fall through to `Ok`.
 | SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT | **`Failed`** (row 3) | a self-inflicted fault — the process broke |
 | SIGKILL, SIGTERM, SIGHUP from a sender marion cannot attribute | **`Killed`** (row 1) | something outside did this to the node (§7.8) — **including the OOM killer** |
 | any signal marion itself sent | **`Killed`**, or `TimedOut`/`Cancelled` per row 1 | marion's own act |
+| **any other signal** (SIGINT, SIGQUIT, SIGPIPE, SIGXCPU, SIGSYS, …) from a sender marion cannot attribute | **`Killed`** (row 1) | the catch-all that makes this partition **total** — without it such a death matches no row and falls through to `Ok`, contradicting §7.8's "never a normal completion" |
 
 `ProcessExit.description` **records** that classification; it is not the input to it. An OOM kill is
 `Killed`, not `Failed` — marion cannot distinguish it from any other external SIGKILL, and claiming
@@ -1368,7 +1373,7 @@ otherwise would be inventing an attribution.
 **This table derives a *contract's* `status`. A node with no contract — a root — takes its
 `ExitStatus` from the same table minus row 2, and minus row 3's `verification` clause** (a root has
 no contract and therefore no verification commands): `Cancelled`/`Killed` if it was terminated,
-`Failed` on a non-zero or signalled process exit, else `Ok`. **Neither `Unreported` nor `TimedOut`
+`Failed` on a non-zero exit or a fault signal, else `Ok`. **Neither `Unreported` nor `TimedOut`
 is reachable for a root** — it owes no report, and its bound never terminates it (§7.6 step 3 gives
 it its ordinary status on expiry; §9 denies the pending permission rather than killing it).
 
@@ -1664,7 +1669,7 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      - **the bound expires first → `held_to_timeout: true`**, with the exit status split by
        whether the node owed a report: a task node becomes **`Exited{Unreported}`**; a
        contract-less root, which can never be `Unreported` (step 1), takes its ordinary derived
-       status — `Ok`, or `Failed` on a non-zero or signalled process exit (§6.7). Either way the
+       status — `Ok`, or `Failed` on a non-zero exit or a fault signal (§6.7). Either way the
        still-running descendants **outlive the parent**, their contracts landing `unclaimed`
        (§7.5). Killing them would destroy work to tidy up bookkeeping. **This is the only path to
        `Exited{Unreported}` with a live descendant, and `held_to_timeout` is what keeps it legal
@@ -1672,7 +1677,10 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
        `reported_early` instead.
    - *Stops again with no live descendants* → continue to step 4.
 4. **The second and final re-prompt.** The `Stop` hook is gone by now, so this goes through
-   `continue_()` + `prompt()` atomically (§6.3), gated on `caps.resume`; a harness without it skips
+   `prompt()` alone when the node's process is **still running** — `headless` Claude Code spans
+   turns in one process (§5.2), and calling `continue_()` on a session marion already holds live is
+   exactly what §5.1 refuses — or `continue_()` + `prompt()` atomically (§6.3) when the process has
+   exited, as for an `exec`-style child. Gated on `caps.resume`; a harness without it skips
    straight to step 5. **It fires at most once per node** — see the budget below. Its message is
    branched, because two different situations arrive here:
    - *descendants completed while the node was held* → *"your children have finished: <names>;
@@ -1682,12 +1690,18 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      order a turn it cannot comply with.
    - *the node simply never answered* → **the grace turn**: a best-effort report acknowledging the
      interruption, not a request to finish the work — modelled on Gemini's grace window (below).
-     Only this variant is "the grace turn".
+     Only this variant is "the grace turn". **For a root**, which cannot `report`, it asks instead
+     for a short summary of where things stand; and since step 1 already accepts a root's exit when
+     no descendants are live, **marion may skip step 4 for a root entirely** rather than spend its
+     one-shot turn.
 5. Still nothing → **re-run the descendant check first.** Step 4 is a real turn with the child's
    full tool surface, so it can have *created* descendants (from M2 on, a backgrounded `spawn`
-   returns immediately). If any descendant is now live, re-enter step 3's hold under the remaining
-   bound. **Step 4 is spent**, so when that hold ends — by the descendants finishing or by the
-   bound expiring — control returns *here*, not to step 4. Otherwise: synthesize from the
+   returns immediately). If any descendant is now live, re-enter step 3's hold. **Step 4 is
+   spent**, so when that hold ends **because the descendants finished**, control returns *here*,
+   not to step 4 — and **if the bound expires instead, the node terminates in step 3** with
+   `held_to_timeout: true`, which is that branch's own terminal. Returning here on expiry would
+   loop, since step 5 re-enters the hold whenever a descendant is live. (For a root, whose bound is
+   per-episode (§9), the re-entered hold starts a fresh episode.) Otherwise: synthesize from the
    transcript tail, mark `Exited{Unreported}` — or, for a root, its ordinary derived status, since
    it owed no report — and surface visibly. **Never silently promote a status message to an
    answer.**

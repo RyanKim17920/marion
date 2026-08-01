@@ -329,7 +329,7 @@
           "params": {
             "status": "disabled",
             "serverName": "mac.lan",
-            "installationId": "e8284708-4b37-48a9-9750-b0ab70385f72",
+            "installationId": "00000000-0000-4000-8000-000000000002",
             "environmentId": null
           },
           "emittedAtMs": 1785524220791
@@ -688,11 +688,11 @@
               "credits": {
                 "hasCredits": true,
                 "unlimited": false,
-                "balance": "1816.9093325000"
+                "balance": "0.0000000000"
               },
               "individualLimit": null,
               "spendControlReached": null,
-              "planType": "pro",
+              "planType": "<PLAN>",
               "rateLimitReachedType": null
             }
           },
@@ -931,11 +931,11 @@
               "credits": {
                 "hasCredits": true,
                 "unlimited": false,
-                "balance": "1816.9093325000"
+                "balance": "0.0000000000"
               },
               "individualLimit": null,
               "spendControlReached": null,
-              "planType": "pro",
+              "planType": "<PLAN>",
               "rateLimitReachedType": null
             }
           },
@@ -1222,11 +1222,11 @@
               "credits": {
                 "hasCredits": true,
                 "unlimited": false,
-                "balance": "1816.9093325000"
+                "balance": "0.0000000000"
               },
               "individualLimit": null,
               "spendControlReached": null,
-              "planType": "pro",
+              "planType": "<PLAN>",
               "rateLimitReachedType": null
             }
           },
@@ -1358,7 +1358,7 @@
           "params": {
             "status": "disabled",
             "serverName": "mac.lan",
-            "installationId": "e8284708-4b37-48a9-9750-b0ab70385f72",
+            "installationId": "00000000-0000-4000-8000-000000000002",
             "environmentId": null
           },
           "emittedAtMs": 1785524220893
@@ -1862,11 +1862,11 @@
               "credits": {
                 "hasCredits": true,
                 "unlimited": false,
-                "balance": "1816.9093325000"
+                "balance": "0.0000000000"
               },
               "individualLimit": null,
               "spendControlReached": null,
-              "planType": "pro",
+              "planType": "<PLAN>",
               "rateLimitReachedType": null
             }
           },

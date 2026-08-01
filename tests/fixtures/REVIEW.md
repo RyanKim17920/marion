@@ -126,16 +126,34 @@ below describes the 2026-07-31 pass; the `s2` row records the later repair.
 - Per-event `uuid` fields in `s1` and `s5` are random per-run identifiers with no host meaning;
   they are kept because the stream shape and event correlation depend on them.
 - `claude-501` in scratch paths is the default macOS uid, not an identity.
-- The env-var **name** `ANTHROPIC_API_KEY` appears in `s1` and `s4` as an `apiKeySource` value. No
-  values are present. (`GROQ_API_KEY` / `OPENAI_API_KEY` were listed here in an earlier pass and
-  occur nowhere in the corpus — removed 2026-08-01.)
-- **`s3` retains process pids and one listening port** (5891, 5894, 6553, 36975, 51594, 51596;
-  port 45875). Both are scan classes under §2 and both are deliberately kept: the A–H timing logs
-  correlate by pid, and substituting `424242` everywhere would merge six distinct servers into one.
-  They are ephemeral identifiers of processes that exited in July 2026.
+- The env-var **name** `ANTHROPIC_API_KEY` appears in `s4/claude-code/stream-*.jsonl` as an
+  `apiKeySource` value; **in `s1` that field is `<REDACTED>`**. No values are present anywhere.
+  (`GROQ_API_KEY` / `OPENAI_API_KEY` were listed here in an earlier pass and occur nowhere in the
+  corpus — removed 2026-08-01.)
+- **`s3` retains process pids and one listening port**: `5888, 5891, 5894, 6553, 36975, 51590,
+  51594, 51596` and port `45875`. Note the `ps=[…]` poll lines carry the *watched server's* pid,
+  which differs from the `# <case> pid=` header pid in cases A (5888) and E (51590) — an
+  enumeration that omits those two is incomplete. Both classes are scan classes under §2 and both
+  are deliberately kept: the A–H logs correlate by pid, and substituting `424242` everywhere would
+  merge six distinct servers into one. They identify processes that exited in July 2026.
+- **`s1` and `s4` retain the resolved model id** `Qwen/Qwen3.6-27B` / `qwen/qwen3.6-27b` in
+  `model`, `canonicalModel` and `modelUsage` (44 occurrences), even though `s1` redacts
+  `resolvedModel` to `<MODEL>`. Kept: the runs went through a local proxy (design §6.4), the id is
+  the evidence that they did, and §3's rule targets a model *roster* — which was stubbed — rather
+  than a single resolved id.
+- **`s2`'s 0.145.0 capture embeds ~4.4 KB of an unrelated project's file bodies** in the `/diff`
+  pager span (38963–43372): generated `.serena/*` tool boilerplate, no host or identity content.
+  Kept because that span is precisely what fixtures the transient alt-screen entry §5.3 cites.
 - **`s5` retains the operator's terminal emulator brand and build** inside six `userAgent` strings
   (`WarpTerminal/v…`), because the app-server echoes the launching terminal's UA and the
   `initialize` response shape is the evidence. Host fingerprinting only; no identity.
+- **`s5`'s account state was scrubbed on 2026-08-01, not accepted.** The `initialize` result and
+  `account/rateLimits/updated` payloads carried a **stable** `installationId`
+  (byte-identical across all three probes, so not per-run like the `msg_…`/thread ids) plus the
+  operator's `planType` and credit `balance`. Those are the operator's data, not protocol
+  evidence: `installationId` → `00000000-0000-4000-8000-000000000002`, `balance` → `0.0000000000`,
+  `planType` → `<PLAN>`. The envelope shape is preserved, and every cited figure re-derives
+  unchanged (probe3 A=93 / B=87 / `attachAtMs`=2602; probe2 `turnCount`=3).
 - `s2` retains `/Users/example/.codex/app-server-control/app-server-control.sock` — a redacted
   path, load-bearing for the Codex `/status` panel width.
 - A generic ">= 40 character token" rule fires 199 times across the tree. Every hit was read and

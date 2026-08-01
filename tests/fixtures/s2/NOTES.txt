@@ -80,6 +80,11 @@ No API keys, tokens, or credential-bearing paths were present.
       DECSTBM inside/total, 0.145.0 resize capture:   was 25/27  ->  22/24 (true value)
       DECSTBM inside/total, 0.146.0 14-row capture:   was 29/29  ->  26/26 (true value)
       DECSTBM inside/total, 0.146.0 resize capture:       16/18 (never corrupted)
+      DECSTBM inside/total, claude-boot-exit:         was  1/4   ->   0/3  (1 forged site)
+      DECSTBM inside/total, claude-boot-help-status-resize: was 2/3 -> 0/1 (2 forged sites)
+  The two Claude figures are recorded for completeness -- no design-doc figure cites them, but
+  REVIEW.md S4 makes the DECSTBM histogram a re-derive invariant for all of s2, so a reader
+  checking them needs the pre-repair baseline to diff against.
   Design doc §5.3 has been corrected to the true values. The 94-lines-scrolled figure in the
   capture list above IS reproducible — `python3 scrollattr.py
   codex-cli-0.146.0-14row-heavy-history-insert` gives 2 + 92 = 94 top-anchored scroll-up lines.
