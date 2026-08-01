@@ -76,7 +76,9 @@ independently find the supervisor its parent bound.
 `node/prompt`, `node/steer`, `node/cancel`, `node/kill`, `node/rename`, `permission/reply`,
 `elicitation/reply`, `policy/set`, `agent/spawn`, `doctor/run`.
 
-`node/rename` sets `Node.name`, which is the address other agents use with `send` (§5.4) — renaming
+`node/rename` sets `Node.name`, which is the address other agents use with `send` — **renaming a
+node never moves an `allow_peers` grant that has already bound to it, and never confers one that has
+not**: bound grants route by `AgentId`, unbound ones resolve the name at first use (§5.4) (§5.4) — renaming
 mid-run is how a user makes a tree readable without restarting anything.
 
 `elicitation/reply` exists because ACP and Codex both have structured input requests distinct from
@@ -665,6 +667,8 @@ the subscribe mechanism; there is no `thread/subscribe`. Subscribers live in
 initialize {clientInfo}  →  initialized
 thread/read   {threadId, includeTurns: true}   // backfill; does NOT subscribe
 thread/resume {threadId}                       // subscribes; additive, non-disruptive
+thread/read   {threadId, includeTurns: true}   // MANDATORY re-read on the resume response:
+                                               //   closes the read→resume window; dedupe by item id
 turn/start | turn/steer | turn/interrupt
 thread/unsubscribe {threadId}                  // clean detach, per-connection
 ```
@@ -1480,7 +1484,8 @@ marion **never mutates the user's real harness config.**
   **`OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true`** to get the full `session.next.*` family
   (`text.started/delta/ended`, `step.*`, `prompt.admitted`); without it only `agent.switched` and
   `model.switched` appear. The legacy `message.updated` / `message.part.updated` /
-  `message.part.delta` family arrives either way, interleaved 1:1 with the new one.
+  `message.part.delta` family arrives either way — interleaved 1:1 with the new family **when the
+  experimental flag is on**, and alone when it is off — with the new one.
 - **A real TTY is required only for terminal-driven surfaces.** With stdio as a pipe, `codex`
   errors `stdin is not a terminal` and `claude` falls back to demanding `--print`. So
   `interactive`/`opaque`/`shared`-with-attached-TUI need a pty; **`headless` does not** —
