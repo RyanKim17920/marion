@@ -649,7 +649,9 @@ deferred.
 handles OSC 8 and DECSET 2026, and models real scrollback history with `display_offset`.
 
 **`vt100` is disqualified** — it retained **0** scrollback lines in every real capture, against
-alacritty's 94 from a 14-row Codex run.
+alacritty's 94 from a 14-row Codex run. *(Those three figures are **unverified** — no committed
+fixture reproduces them, §11 item 10. The choice stands on `wezterm-term` being unpublished and
+alacritty modelling scrollback at all; re-measure before treating the numbers as evidence.)*
 
 **Per-harness screen model.** Established by two separate experiments — the second run
 adversarially to resolve a contradiction with an earlier one — but both on the same host and the
@@ -681,7 +683,8 @@ which is exactly the case alacritty rotates into history.
 
 **`CSI 3J` is the real hazard.** Codex emits `ESC[r ESC[0m ESC[H ESC[2J ESC[3J ESC[H` **on every
 resize**; `CSI 3J` is *erase scrollback*, which alacritty honors via `clear_history()`, taking one
-capture from 121 lines to 2. **marion intercepts `CSI 3J` and maintains its own append-only
+capture from 121 lines to 2 (**unverified**, §11 item 10 — the `CSI 3J` emission itself is
+fixtured, the line counts are not). **marion intercepts `CSI 3J` and maintains its own append-only
 history** — the harness clears scrollback because it is about to repaint a viewport, not because
 the transcript is invalid, and marion's whole value is that the transcript outlives the display.
 
@@ -796,7 +799,7 @@ type allows, so a parent cannot widen a child's reach by asking. `writable_scope
 recorded in the contract even when it is the default, so "unrestricted" is visible rather than
 implied by absence.
 
-**`report`'s payload is the child-owned part of the completion half only** — `narrative`, and
+**`report`'s payload is the child-owned part of `Completion` only** — `narrative`, and
 optionally `result_commits` (§9). marion derives every other completion field, and **a
 child-supplied value for a field it does not own is rejected, not merged**: otherwise a child
 could set its own `status` or `scope_enforced`. The contract the parent receives is nonetheless
@@ -806,20 +809,46 @@ mirror Claude Code's Agent-result shape (`totalTokens`, `totalDurationMs`, `tota
 `timestamps`, and `workspace`, but the contract is harness-independent and auditable, which
 mirroring one vendor's result struct is not.
 
-**Authorization.** Every child gets a per-node capability token bound to its `AgentId`. `send`,
-`cancel`, `status`, `wait` are permitted only to the node's **descendants or its parent**, **and
-only while the target is non-terminal**; `list` returns the same set, terminal nodes included, so
-discovery still works. `send` to an `Exited` node is denied to agents and is a **client/user**
-operation (`node/prompt` over the supervisor socket, §2).
+**Authorization.** Every child gets a per-node capability token bound to its `AgentId`. **The rule
+is per verb, because reading a node and acting on one are not the same permission:**
 
-That restriction is what keeps §7.5 true. Without it a child of an `Exited` parent could call
-`send`, §6.3 would oblige the supervisor to `continue_()` + `prompt()`, and the parent would leave
-a terminal state — contradicting both §7.5's "there is no live turn to return into" and §8/L1's
-`Exited` terminality. A resumed node is therefore always a **user**-initiated act; it reuses its
-`AgentId` and re-enters `Running`, and the terminality invariant is scoped to agent-initiated
-transitions accordingly. Sibling addressing is denied by default and requires an explicit
+| verb | permitted targets | target state |
+|---|---|---|
+| `status`, `wait`, `list` | descendants or parent (`list` returns that set) | **any**, terminal included — `wait` on an already-terminal node returns its contract immediately |
+| `send` | descendants or parent | **non-terminal and not `ReapedIdle`** |
+| `cancel` | **descendants only** | non-terminal |
+
+Three consequences worth stating, since each closes a hole the flat rule left open:
+
+- **`status`/`wait` must work against terminal targets.** `wait` is inherently a race with the
+  target finishing, and from M2 a backgrounded `spawn` returns a handle whose holder must be able
+  to `wait` a node that may already have exited. Denying that would make the handle useless.
+- **`cancel` toward an ancestor is denied and logged like lateral addressing.** The
+  descendants-or-parent set comes from the *addressing* topology (`MILESTONES.md`), and applying it
+  unchanged to a lifecycle verb would let a child terminate the node that spawned it — producing an
+  `Exited{Cancelled}` that the L1 invariant *exempts from checking*, with live siblings still
+  running and the caller self-orphaning under §7.5.
+- **`send` is denied against terminal *and* `ReapedIdle` targets.** Without the first, a child of
+  an `Exited` parent could call `send`, §6.3 would oblige `continue_()` + `prompt()`, and the parent
+  would leave a terminal state — contradicting §7.5's "no live turn to return into" and §8/L1's
+  `Exited` terminality. `ReapedIdle` is excluded for the same reason in a subtler form: such a node
+  is *idle*, so §6.3's agent-permitted `prompt` path appears to apply, but its process is gone, so
+  honouring the `send` would silently restart a harness process, re-open a session through the
+  ownership registry, and reissue a token. That is a spawn-equivalent act and belongs to the user.
+
+Resuming any node is therefore a **user**-initiated act (`node/prompt`, §2) or marion's own grace
+turn; it reuses the `AgentId` and re-enters `Running`, and the terminality invariant is scoped to
+agent-initiated transitions accordingly. Sibling addressing is denied by default and requires an explicit
 `allow_peers: [names]` grant in the agent type. Denied calls are logged and surfaced — a child
-attempting lateral addressing is worth seeing. Without this, `send` would be a peer routing table
+attempting lateral addressing is worth seeing.
+
+**`allow_peers` is resolved to `AgentId`s once, at spawn, and renames never alter authorization.**
+`Node.name` is mutable by `node/rename` (§2) and is the address `send` takes, so a late-bound grant
+would mean renaming a node *into* a peer's `allow_peers` list silently hands that peer authority it
+was never given — and renaming the intended grantee silently revokes it. Every other authorization
+surface is bound to `AgentId`; this one must be too. Correspondingly, **`Node.name` must be unique
+among live nodes**: a `send` whose name does not resolve to exactly one live node is rejected as
+ambiguous rather than delivered to an arbitrary match. Without this, `send` would be a peer routing table
 with an LLM on both ends, i.e. a prompt-injection channel between siblings and the mesh the star
 topology forbids.
 
@@ -1004,11 +1033,15 @@ struct TaskContract {
     instructions: String,
     acceptance_criteria: Vec<String>,
     allowed_tools: Vec<String>,
-    writable_scope: Vec<PathBuf>,
+    writable_scope: Vec<PathBuf>,        // resolved: agent-type ceiling ∩ spawn request (§5.4)
     timeout: Duration,                   // always set; see §9 for the default
     verification: Vec<Command>,
+    spawned_at: SystemTime,
 
-    // completed at result
+    completion: Option<Completion>,      // None iff the run has not ended, or ended
+}                                        //   unobserved (`reap_state: Orphaned`, §7.2)
+
+struct Completion {                      // written once, at result
     status: ResultStatus,                // = ExitStatus: Ok|Failed|Cancelled|Unreported|TimedOut|Killed
     reported_early: bool,                // chose to report while descendants ran (§7.6)
     held_to_timeout: bool,               // held for descendants until the bound expired (§7.6)
@@ -1016,7 +1049,8 @@ struct TaskContract {
     narrative: Option<String>,
     result_commits: Vec<Oid>,
     changed_paths: Vec<PathBuf>,
-    scope_enforced: bool,                // false when the adapter cannot extract locations
+    scope_enforced: bool,                // false only when NEITHER locations nor a diff is
+                                         //   available — never means "no violation" (§9)
     diff: Option<Patch>,
     evidence: Vec<CommandOutcome>,
     exit: ProcessExit,
@@ -1064,11 +1098,30 @@ representable contract and is never recorded as a normal completion. Two expirie
 | child still **running** when the bound expired | `TimedOut` | — |
 | child **stopped** and was held in `Blocked` on live descendants | `Unreported` | `held_to_timeout: true` |
 
-**An `Orphaned` node has no finalized contract**, and that is deliberate: `Orphaned` is a
+**An `Orphaned` node's contract has `completion: None`**, and that is deliberate: `Orphaned` is a
 `ReapState` meaning marion lost the process without observing its exit (§7.2), so no `ResultStatus`
-is knowable — inventing one would assert an outcome nobody witnessed. The contract stays open with
-its spawn half intact and the node surfaced as orphaned, until a user resolves it or a resume
-supersedes it. This is the one case where a contract may outlive its run without a `status`.
+is knowable — inventing one would assert an outcome nobody witnessed. The spawn half stays intact
+and the node is surfaced as orphaned until a user resolves it or a resume supersedes it. **This is
+why `completion` is `Option` rather than the fields being individually optional**: a contract is
+either uncompleted or completely completed, and `Option<Completion>` makes the half-written state
+unrepresentable instead of merely discouraged. `spawn` returning "the completed `TaskContract`"
+(§9) means one with `completion: Some(_)`; the blocking `spawn` cannot return an orphan, since
+marion holds the child's channel for the whole call.
+
+**How `status` is decided**, since it is the headline field a model reads and nothing else in this
+document derives it:
+
+| condition | `status` |
+|---|---|
+| a report arrived (or the `--output-schema` document parsed) **and** every `verification` command exited 0 — vacuously true when `verification` is empty | `Ok` |
+| any `verification` command exited non-zero, or the child process exited non-zero after reporting | `Failed` |
+| no report and no parseable document | `Unreported` |
+| `cancel`/`node/cancel` | `Cancelled` · timeout: `TimedOut` · external kill (§7.8): `Killed` |
+
+**`acceptance_criteria` are recorded for the reader and are never machine-evaluated** — they are
+prose, and a supervisor that scored them would be inventing a verdict. `verification` is the
+machine-checkable half, which is why it is the field `evidence` is built from and why an empty
+`verification` yields `Ok` on a bare report rather than an unfalsifiable "passed".
 
 The contract is what `spawn` returns, what the UI renders as a completed node, and what makes a run
 replayable. It is harness-independent: a Codex child and a Claude child return the same structure.
@@ -1156,7 +1209,7 @@ non-terminal descendants."**
 - A node's `Exited` is **held** while any descendant is non-terminal. The registry already knows
   this — it owns the tree — so the check is a subtree scan, not a heuristic.
 - On a stop with live descendants, marion does not accept the exit. **This is not an extra
-  re-prompt: it is the *wording* of the first `Stop`-hook fire** (step 3 below), whose `reason` is
+  re-prompt: it is the *wording* of the first `Stop`-hook fire** (step 2 below), whose `reason` is
   the descendant question when descendants are live and the generic question otherwise. There is
   exactly one hook fire either way, which is what keeps the budget at two and keeps
   `stop_hook_active` meaningful: *"N of your children are still running: <names>. Do you want to
@@ -1281,16 +1334,20 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      - descendants finish inside the bound → continue to step 4.
      - **the bound expires first → `Exited{Unreported}` with `held_to_timeout: true`**, and the
        still-running descendants **outlive the parent**, their contracts landing `unclaimed`
-       (§7.5). Killing them would destroy work to tidy up bookkeeping. **This is the only path on
-       which a node may go `Exited` with a live descendant and neither exemption flag set would be
-       a violation** — the flag is what keeps it legal under the L1 invariant.
+       (§7.5). Killing them would destroy work to tidy up bookkeeping. **This is the only path to
+       `Exited{Unreported}` with a live descendant, and `held_to_timeout` is what keeps it legal
+       under L1.** The other L1-legal case is a deliberate early report, which sets
+       `reported_early` instead.
    - *Stops again with no live descendants* → continue to step 4.
 4. **Still nothing → the second and final re-prompt, the grace turn.** The `Stop` hook is gone by
    now, so this goes through `continue_()` + `prompt()` atomically (§6.3), gated on `caps.resume`;
    a harness without it skips straight to step 5. The ask is for a best-effort report acknowledging
    the interruption, not for the work to be finished — modelled on Gemini's grace window (below).
-5. Still nothing → synthesize from the transcript tail, mark `Exited{Unreported}`, surface visibly.
-   **Never silently promote a status message to an answer.**
+5. Still nothing → **re-run the descendant check first.** The grace turn is a real turn with the
+   child's full tool surface, so it can have *created* descendants (from M2 on, a backgrounded
+   `spawn` returns immediately). If any descendant is now live, re-enter step 3's hold under the
+   remaining bound rather than exiting. Otherwise: synthesize from the transcript tail, mark
+   `Exited{Unreported}`, surface visibly. **Never silently promote a status message to an answer.**
 
 At most **two** re-prompts occur: one on the hook (step 2), one on the grace turn (step 4). The
 descendant question is carried *by* the step-2 fire, not by an extra one — otherwise a node with
@@ -1338,8 +1395,10 @@ harnesses. Hook input carries `last_assistant_message`, so no transcript parse i
 > Stop-hook input beyond `stop_hook_active` and `last_assistant_message`: `session_id`,
 > `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, plus
 > `background_tasks`/`session_crons`/`effort`/`prompt_id` (Claude Code) and `turn_id`/`model`
-> (Codex). Verified field-by-field against every record in
-> `tests/fixtures/s4/*/hook-input-*.jsonl`.
+> (Codex). Verified field-by-field against every **`Stop`** record in
+> `tests/fixtures/s4/*/hook-input-*.jsonl` — those files also carry `SessionStart` and
+> `UserPromptSubmit` records, which have different fields (`source`, `prompt`) and no
+> `stop_hook_active`, which is exactly why the `hook_event_name` branch below is mandatory.
 >
 > **`SubagentStop` is verified statically only** — it shares Claude Code's `Stop` code path in the
 > 2.1.220 bundle and adds `agent_id`, `agent_type`, `agent_transcript_path`. **A live confirmation
@@ -1583,7 +1642,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     `live_descendants_at_report`, and `scope_enforced`.
   - **The child** supplies only `narrative` and, optionally, `result_commits`.
 
-  Every field of §6.7 appears in exactly one of these three lists; that exhaustiveness is what
+  **Every field of §6.7 is owned by exactly one of these three.** `writable_scope` is the one field
+  named twice on purpose — *requested* by the parent, *resolved and owned* by marion (§5.4) — which
+  is an ownership rule, not a second author. That exhaustiveness is what
   makes the rejection rule well-defined: **a child-supplied value for any field it does not own is
   rejected, not merged** — otherwise a child can rewrite its own acceptance criteria. The property
   that matters is that criteria exist before the work and the worker cannot edit them; that does
@@ -1795,7 +1856,7 @@ design decision.
 |---|---|
 | Codex app-server reaped when idle at ~86–90 s; 25 s heartbeat required | **RETRACTED.** No reaper exists (six invocations; four to ~17.5 min, two thread-holding to 703/763 s, one observed at ~43 min). The phantom SIGTERM was most likely our own `codex-app-server-test-client`, which kills whatever answers on its port with no delay floor — explaining even death while SIGSTOPped. Replaced by the real hazard: `THREAD_UNLOADING_DELAY = 1800 s` on **unsubscribed threads**. |
 | Scrubbing `CLAUDE_CODE_CHILD_SESSION` is required or no transcript is written | **CORRECTED.** A/B tested at 2.1.220 — transcripts written both ways. The gate also requires the interactive path, not-a-teammate, and no tmux marker. Use `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`. |
-| `vt100` loses scrollback under DECSTBM and alacritty does not | **CORRECTED.** Both drop it under a top-offset region; alacritty keeps top-anchored history. Moot in practice — every history-producing scroll is top-anchored. alacritty is the pick because vt100 retained **0** lines in every real capture. |
+| `vt100` loses scrollback under DECSTBM and alacritty does not | **CORRECTED.** Both drop it under a top-offset region; alacritty keeps top-anchored history. Moot in practice — every history-producing scroll is top-anchored. alacritty is the pick because vt100 retained **0** lines in every real capture — a figure that is itself unfixtured (§11 item 10). |
 | Rollout compression can replace a live `.jsonl` under a tailer | **RETIRED.** Default-off flag, 7-day age minimum, skips referenced rollouts. Not a live hazard. |
 | Neither harness uses the alternate screen | **RETRACTED.** Claude Code uses it for its entire session; Codex uses the main screen but **does** enter it transiently for the `/diff` pager (verified, 0.145.0 capture). The original capture had stalled at the trust dialog *before* `?1049h`, which is what made it look like there was no alt screen. |
 | A dumb pty host deadlocks both harnesses; answering DA1/XTVERSION/CPR is mandatory | **RETRACTED — this was our own overcorrection, refuted by our own fixture.** `tests/fixtures/s2/ptyhost.py` answers no probes and drove complete sessions on both. One earlier capture did show Codex stalling after `ESC[6n`, but on a host that also sent no keystrokes, so input starvation is the likelier cause. marion answers probes anyway (cheap, removes a class of boot-hang) but the docs must not call it required. **Why that capture stalled is unresolved — §11.** |
@@ -1809,7 +1870,7 @@ design decision.
 | Both harnesses emit DA1, XTVERSION and CPR | **CORRECTED.** They emit different sets: Claude Code sends DA1 + XTVERSION and never CPR; Codex sends DA1 + CPR + OSC 10/11 and never XTVERSION. marion answers all of them, so no code changes — but the earlier text had it backwards in both directions. |
 | `additionalContext` emits **no stream event** on Claude Code | **CORRECTED (round 5).** Refuted by our own fixture: `s4/claude-code/stream-additionalContext.jsonl` carries the two `assistant` frames the injected turn produced. The true property is narrower — no frame is *attributable* to the injection and `num_turns` stays 1. The prohibition stands; the stated reason was wrong. |
 | The `s2` DECSTBM histogram was verified unchanged after redaction | **RETRACTED (round 5).** The redaction regex ran unanchored over raw bytes and spliced *inside* CSI sequences at 9 sites, turning `ESC[38;2;153;153;153m` and `ESC[22m` into DECSTBM — forging scroll-region commands in the L2 seed corpus. The claim was also self-refuting, since `analyze.py` cannot read `.raw.bin` at all. Repaired length-preservingly; the derived figures correct to 22/24 and 26/26 (were 25/27 and 29/29). |
-| The capability token is an argv flag, so it is not inherited | **CORRECTED (round 5).** True but insufficient: argv is world-readable to the same uid, so every sibling with `bash` could read every other sibling's token — defeating the sibling isolation the token exists to enforce. Moved to an inherited fd. |
+| The capability token is an argv flag, so it is not inherited | **CORRECTED TWICE (rounds 5 and 6).** Round 5: argv is world-readable to the same uid, so every sibling with `bash` could read every other sibling's token. Round 5's own replacement — an inherited fd — was then found **not constructible**, because the harness spawns the bridge, not marion. Settled answer: the MCP server declaration's `env` block, **plus** the honest statement that no secret-keeping scheme isolates same-uid siblings at all (§5.4, §7.1). |
 | All five spikes are resolved / M1 is unblocked | **CORRECTED (round 5).** S1–S5 are resolved; **S6 was killed mid-run and has no fixture**, and its two answers decide M1's return channel. Both branches are now specified (§9) so M1 is not blocked, but the entry docs claimed a completeness that did not exist. |
 | `src_seq: Option<u64>` gives loss detection on the day-one adapters | **CORRECTED (round 5).** Neither emits a per-event ordinal: Codex item ids are identity, Claude Code has a `parentUuid` chain, and opencode's numeric `seq` is only on the endpoint §6.4 rejects. Retyped to `Ordinal | Predecessor`, and M2's criterion restated per adapter. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |

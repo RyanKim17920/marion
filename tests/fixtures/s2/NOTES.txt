@@ -1,13 +1,27 @@
 S2 fixtures — DECSTBM shape emitted by Claude Code and Codex CLI
-Captured 2026-07-31 on macOS 25.5.0 (arm64), TERM=xterm-256color, COLORTERM=truecolor.
+Captured 2026-07-31 on macOS 26.5.1 (Darwin 25.5.0, arm64), TERM=xterm-256color,
+COLORTERM=truecolor.
 
-Each capture ships in two forms, byte-identical in content:
+Each capture ships in two forms. **`.raw.bin` is authoritative.**
   *.raw.bin  — every byte the TUI wrote to the pty master, concatenated, nothing else.
   *.cast     — asciicast v3 (ndjson). Header line, then [interval_s, code, data].
                code "o" = TUI output, "i" = keystrokes the host injected,
                "r" = pty resize, data "COLSxROWS" (TIOCSWINSZ + SIGWINCH).
                Only "o" events should be fed to a VT under test; "r" events must be
                applied as a resize, in order, or the replay diverges.
+
+  ⚠ The two forms are NOT byte-identical, and an earlier version of this file wrongly
+  said they were (found in audit round 6). `extract.py` decoded each pty read chunk
+  independently, so 12 multibyte box-drawing glyphs that straddle a chunk boundary were
+  split and became U+FFFD replacement characters in the `.cast`. Affected:
+  claude-boot-exit (+9 bytes), claude-boot-help-status-resize (+24),
+  codex-cli-0.145.0-...-diff-resize (+9); the two 0.146.0 captures are clean and match
+  exactly. The damage is TEXT-ONLY: the CSI/OSC sequence multisets derived from the two
+  encodings are identical in all five captures, so every figure the design doc cites holds
+  on either form. It is not repaired because the original chunk boundaries are not
+  recoverable unambiguously from the committed files, and guessing them would risk
+  corrupting evidence to fix a cosmetic defect. **Derive control-sequence facts from
+  `.raw.bin`; use `.cast` for timing and resize events.**
 
 Captures
   claude-2.1.220-boot-help-status-resize      120x40 -> 100x24 -> 140x45. /help, /status.

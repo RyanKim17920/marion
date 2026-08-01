@@ -207,7 +207,8 @@ mechanism, which is why the canned provider and the model-injection plane are th
 implementation:
 
 - **Every spike emits a fixture**, so answers become regression tests instead of evaporating.
-  **This rule is currently violated; the violations are enumerated in design doc §11 item 10.**
+  **This rule is currently violated; the violations are enumerated in design doc §11 items 10 and
+  12** (item 12 is S6, the missing fixture that gates M1's first task).
   Treat that list as authoritative and keep it current; do not re-enumerate it here.
 - **Fixtures contain system prompts, repo contents, and anything secret that appeared in tool
   output.** Redaction pass plus a pre-commit secret scan are mandatory; prefer recording against
