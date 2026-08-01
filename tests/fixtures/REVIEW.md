@@ -113,8 +113,8 @@ All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5
 bytes, both on 2026-08-01:** the `s2` escape-sequence repair (§3 warning), and a second redaction
 pass over `s2` and `s5` that removed the operator's account display name, plan/credit state, and
 the recording session's UUID — all found by audit, none caught by §2's original fast pass. The
-`Redaction applied` column below describes the 2026-07-31 pass; the later passes are recorded in
-the `s2`/`s5` rows and in the residue list.
+`Redaction applied` column below describes the 2026-07-31 pass **only**; the two later passes are
+recorded in the **residue list**, not in the table rows.
 
 | Dir | What was recorded | Provider | Recorded | Human read | Redaction applied |
 |---|---|---|---|---|---|

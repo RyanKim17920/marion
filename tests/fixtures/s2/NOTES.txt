@@ -48,6 +48,18 @@ different length and would shift every offset after them.
     differs between captures: "redacted@e.invalid" (18 bytes) in the Claude panels,
     "redacted@examp.invalid" (22 bytes) in the Codex /status panel. Match on
     "redacted@" and not on a fixed domain.
+  - SECOND PASS, 2026-08-01 (audit rounds 11-12), all equal-length. These are as much a part
+    of this corpus's redaction as the email and username entries, and are listed here because
+    REVIEW.md sends every reader to this file for the conventions:
+      Account display name    "Ryan"       -> "User"        (4 B)  Claude welcome banner
+      Codex plan tier         "Pro Lite"   -> "Plan ABC"    (8 B)  /status panel
+      Codex credit balance    "1817 credits" -> "0000 credits" (12 B)
+      Claude account tier     "Claude Max" -> "Plan  ABC "  (10 B)
+      Recording session UUID  "8e531002-…" -> "00000000-0000-4000-8000-000000000003" (36 B),
+                              including its ellipsized 34- and 14-byte renderings
+    The same UUID was scrubbed from s5 in the same pass; s4 had already replaced it with <UUID>.
+    None of these was caught by REVIEW.md's documented fast pass -- the display name in
+    particular is a different string from the login name, so `grep "$(id -un)"` cannot see it.
   - Username "<name>" (7 bytes) -> "example" (7 bytes). Affects both real home paths
     (/Users/<name>/.codex/... in the codex /status panel) and the path-encoded scratch
     directory (.../-Users-<name>-Desktop-CODING-marion/...). All three /Users occurrences
@@ -94,7 +106,7 @@ No API keys, tokens, or credential-bearing paths were present.
 Tools (copied from the spike scratch dir, throwaway, not workspace code)
   ptyhost.py   pty.fork host: TIOCSWINSZ, scripted keystrokes/resizes, logs all raw bytes.
   extract.py   .rec -> .raw.bin + .cast
-               ⚠ Two caveats, both found in audit round 7/9. (a) It decodes each record
+               ⚠ Three caveats, found in audit rounds 7/9/12. (a) It decodes each record
                independently for the .cast, which is what split the 9 glyphs above; .raw.bin
                is built from undecoded bytes and is unaffected. (b) Its cast header hardcodes
                cols=120 rows=40, so it cannot have produced
@@ -108,4 +120,5 @@ Tools (copied from the spike scratch dir, throwaway, not workspace code)
                set by explicit DECSTBM rather than inferred from the terminal height.
   analyze.py   distinct DECSTBM regions + counts, DECSET 2026 brackets, alt-screen, scroll prims
   scrollattr.py  VT state machine that attributes every scroll-up / scroll-down event to the
+               (see caveat (c) under extract.py: it shares the same hardcoded 40x120 replay)
                DECSTBM region active at that moment — this is what answers the S2 question.

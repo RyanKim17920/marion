@@ -533,8 +533,8 @@ MUST replay history and `session/resume` MUST NOT — hold today; the naming is 
 
 `headless` uses `claude -p --output-format stream-json --input-format stream-json --verbose`.
 **`--verbose` is mandatory**, not optional: without it 2.1.220 exits **1** with `When using
---print, --output-format=stream-json requires --verbose` before emitting anything (verified). It is
-easy to omit because the only other place this document mentions the flag is as a dependency of
+--print, --output-format=stream-json requires --verbose` before emitting anything (verified). It is easy to
+omit because this document long *explained* the flag only as a dependency of
 `--include-partial-messages`, which M1 does not use.
 `interactive` uses a pty plus a JSONL tail. Liveness via `claude agents --json` (no TTY needed).
 `claude attach <id>` is background-jobs-only and **exits 1** on an unknown id while printing
@@ -925,12 +925,12 @@ is per verb, because reading a node and acting on one are not the same permissio
 |---|---|---|
 | `status`, `list` | descendants or parent, plus `allow_peers` siblings (`list` returns that set) | **any**, terminal included |
 | `wait` | **descendants only**, plus `allow_peers` siblings | **any** — returns immediately on a terminal node with its contract, and on a `ReapedIdle` or `Orphaned` one with its uncompleted contract (same set as the §7.6 gating rule: neither can resolve without a user act) |
-| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal, `Live`, and not `Blocked(Descendants)`** — the first two because the process must exist (so not `ReapedIdle`, not `Orphaned`), the third because that hold belongs to marion whether or not the process is still running |
-| `cancel` | **descendants only — never a sibling, even under `allow_peers`** | **non-terminal and `Live`** — the process must exist, since cancelling an `Orphaned` node would write a `Cancelled` `Completion` for a process marion has already lost, which §6.7 forbids (`completion: None`), and would signal nothing. Unlike `send`, `cancel` **is** permitted against a `Blocked(Descendants)` node: cancelling is marion's own lifecycle verb, not an attempt to drive the node's turn |
+| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal, holding a live `Session.proc`, and not `Blocked(Descendants)`** — the first two because the process must actually exist (so not `ReapedIdle`, not `Orphaned`, **and not a held node whose process has already exited**, which `reap_state: Live` alone would wrongly admit), the third because that hold belongs to marion whether or not the process is still running |
+| `cancel` | **descendants only — never a sibling, even under `allow_peers`** | **non-terminal and holding a live `Session.proc`** — the process must actually exist, since cancelling a node whose process is gone (`Orphaned`, or held with an exited process) would write a `Cancelled` `Completion` for something marion can no longer signal, which §6.7 forbids (`completion: None`). Unlike `send`, `cancel` **is** permitted against a `Blocked(Descendants)` node *whose process is live*: cancelling is marion's own lifecycle verb, not an attempt to drive the node's turn. Against a held node whose process already exited, `cancel` is **rejected** — there is nothing to signal and the node's terminal is already owed to step 3 |
 | `report` | **self only**, and only on a node that **has a contract** — rejected on a root | non-terminal; **first call per `TaskContract` wins**, a second against the same contract errors. A resume opens a new contract (§6.7) and so accepts one further `report` |
-| `spawn` | **creates a new node, so it has no existing target**: any non-terminal node may call it, subject to §6.1 step 2's depth and concurrency caps. The created node becomes the **caller's direct child** — that is what makes the caller its `requester` (§6.7) and what keeps the tree a star (`MILESTONES.md`): a node can never create a sibling, a peer, or a child of another node | caller must be non-terminal and `Live`; a node held in `Blocked(Descendants)` may **not** spawn, since adding a descendant to a subtree marion is already holding open would extend the hold indefinitely |
+| `spawn` | **creates a new node, so it has no existing target**: any non-terminal node may call it, subject to §6.1 step 2's depth and concurrency caps. The created node becomes the **caller's direct child** — that is what makes the caller its `requester` (§6.7) and what keeps the tree a star (`MILESTONES.md`): a node can never create a sibling, a peer, or a child of another node | caller must be non-terminal with a live `Session.proc`; a node held in `Blocked(Descendants)` may **not** spawn, since adding a descendant to a subtree marion is already holding open would extend the hold indefinitely |
 
-Three consequences worth stating, since each closes a hole the flat rule left open:
+Four consequences worth stating, since each closes a hole the flat rule left open:
 
 - **`status`/`wait` must work against terminal targets.** `wait` is inherently a race with the
   target finishing, and from M2 a backgrounded `spawn` returns a handle whose holder must be able
@@ -939,7 +939,11 @@ Three consequences worth stating, since each closes a hole the flat rule left op
   by construction in M1: the parent is blocked inside the very `spawn` that created the caller, so
   neither can proceed until a timeout expires and both contracts land `TimedOut`/`Unreported`.
   Reading a parent's state is fine; *blocking* on it inverts the topology's direction of control.
-  (`wait` on a root would also have no contract to return.)
+  (`wait` on a root would also have no contract to return.) **Two `allow_peers` siblings can close
+  the same cycle laterally** — A waits on B while B waits on A, and both burn a full bound before
+  landing `TimedOut` — so **marion refuses any `wait` that would create a cycle in the
+  outstanding-wait graph**, and logs the refusal like any other denied call. Descendants-only makes
+  the graph acyclic over the tree; the peer grant would otherwise silently reintroduce cycles.
 - **`cancel` toward an ancestor is denied and logged, as lateral `cancel` is.** The
   descendants-or-parent set comes from the *addressing* topology (`MILESTONES.md`), and applying it
   unchanged to a lifecycle verb would let a child terminate the node that spawned it — producing an
@@ -1010,10 +1014,12 @@ arbitrary match. Without this, `send` would be a peer routing table
 with an LLM on both ends, i.e. a prompt-injection channel between siblings and the mesh the star
 topology forbids.
 
-**Wiring.** The server is registered as `marion`, producing the `mcp__marion__*` prefix. Injected
-per child by the fileless path where available (`--mcp-config` for Claude Code, `-c
-mcp_servers.marion={…}` for Codex, `OPENCODE_CONFIG_CONTENT` for opencode), else written into
-`<agent-dir>/config/`. The command is `marion-supervisor mcp`, a thin stdio bridge to the supervisor socket.
+**Wiring.** The server is registered as `marion`, producing the `mcp__marion__*` prefix. Injected per child by the fileless path **where that path is
+load-bearing** — `--mcp-config` for Claude Code, which is what keeps the real `CLAUDE_CONFIG_DIR`
+and therefore OAuth (§6.4) — and **otherwise written into `<agent-dir>/config/`**, which keeps the
+token off `ps` (below). M1's Codex child takes the file placement for exactly that reason (§9);
+`-c mcp_servers.marion={…}` and `OPENCODE_CONFIG_CONTENT` remain available where a file is
+impractical. The command is `marion-supervisor mcp`, a thin stdio bridge to the supervisor socket.
 
 **The token rides the MCP server declaration's `env` block as `MARION_TOKEN`**, which marion writes at
 config-injection time — the only channel available, because **marion does not spawn the bridge:
@@ -1051,15 +1057,17 @@ hook's `reason` on the live subtree, so the hook must reach the supervisor at fi
 hook command is a child of the *harness*, not of the bridge, so it inherits no `MARION_TOKEN`, and
 its stdin carries `session_id`/`cwd`, never an `AgentId`. **marion therefore writes the hook
 command with its node and socket baked in** — `marion-supervisor hook --node <AgentId> --socket
-<path>` — inside the `--settings` / `hooks.json` payload it already emits per child, and the hook
-authenticates with **the same per-node token, inherited from the harness process's environment** —
-which works because **marion spawns the harness itself**, so `MARION_TOKEN` is in that process's
-env and every hook it runs inherits it. (The placement table above is about the *bridge*, whose
-parent is the harness rather than marion; the hook's parent is the harness too, so it reaches the
-token by the one route the bridge cannot. A Claude Code hook entry has only `type`/`command`/
-`timeout` — no `env` block — so there is no other channel.) Without this the hook cannot identify
-itself or find the supervisor, and §7.1's attribution guarantee has a hole exactly where the
-descendant-gating decision is made.
+<path>` — inside the `--settings` / `hooks.json` payload it already emits per child, and it reads the same
+per-node token from **`--token-file <agent-dir>/hook-token`**, a 0600 file marion writes at spawn.
+
+**Not the harness's environment**, though the hook would inherit that: `MARION_TOKEN` placed there
+would also reach every tool the agent shells out to — children of the harness, exactly the leak the
+placement table above rejects env for. **Not argv either**: a Claude Code hook entry carries only
+`type`/`command`/`timeout`, so there is no per-hook `env` block, and putting the token itself on
+the command line is the `ps` exposure that table already declines. **A file path on argv is not the
+token**, so this is the one placement that reaches a process marion does not spawn without widening
+the blast radius. Without it the hook cannot identify itself or find the supervisor, and §7.1's
+attribution guarantee has a hole exactly where the descendant-gating decision is made.
 
 **Token lifetime:** issued at spawn, bound to the `AgentId`, invalidated at the node's terminal
 transition, and **reissued** — not reused — on every path that starts a process again: when a
@@ -1454,10 +1462,13 @@ protects (a) the user's credentials, (b) the user's source, (c) nodes from each 
 - **`ReapedIdle`** — process killed to reclaim memory, transcript intact, ownership claim retained,
   resumable. Journaled **before** the kill.
 - **`Orphaned`** — process lost without a recorded reap. Marked on restart only for `Live` nodes.
-- Running nodes are never reaped. **Nor is a node a `spawn` is currently blocked on, nor one held
-  in `Blocked(Descendants)`** — reaping either leaves a caller unresolvable: `ReapedIdle` is not a
-  terminal state, so no `Completion` is written and no delivery fires, and the blocking `spawn`
-  could only end at its own bound, in a case §6.7's expiry table does not classify.
+- Running nodes are never reaped. **Nor is a node a `spawn` is currently blocked on, nor one in
+  *any* `Blocked(_)` state** — `Descendants`, `Permission`, or `Elicitation` — because reaping any
+  of them strands a caller that can never be resolved: `ReapedIdle` is not a terminal state, so no
+  `Completion` is written and no delivery fires, and a blocking `spawn` could only end at its own
+  bound, in a case §6.7's expiry table does not classify. For `Permission`/`Elicitation` the harm
+  is sharper still: the queued request names a dead process, so `permission/reply` resolves to
+  nothing — and in M1 that node is the **root**, whose unanswered-permission path §9 specifies.
 
 Without this distinction a deliberately reaped node and a killed orphan are indistinguishable on
 disk after a crash, and restart recovery would mark perfectly resumable nodes dead.
@@ -2124,6 +2135,12 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   **The two bounds measure different things, and must:**
   - **A child's `TaskContract.timeout` is a total-task bound**, running from `Spawned`. It has to
     be, or a child that works forever is never `TimedOut` and the blocking `spawn` never returns.
+    **`spawn` clamps the child's `timeout` to the requester's remaining bound**, and **errors rather
+    than truncating silently** when the remainder is too small to be useful. Without the clamp,
+    nesting is broken on defaults at every depth below one: an intermediate node spawned at t=0
+    with 900 s spawns its own child at t=100 with 900 s, so the parent expires at 900 while blocked
+    in `spawn` and is killed before the grandchild's contract at 1000 could ever reach it. §6.1
+    step 2 checks `depth`, so nesting is designed, not excluded.
   - **A root's node-level bound is consumed only while the root is `Blocked`** — a §7.6 descendant
     hold or an unanswered permission — and **not** while it is working or awaiting a blocking
     `spawn`. A root is not a task and has no deliverable to bound; what needs bounding is how long
@@ -2191,9 +2208,12 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   - **root (`claude`)**: fileless config — `--mcp-config` for the control MCP with
     `--strict-mcp-config`, **`--tools ""`** (availability axis: the root's `tools:` is `[]`, so it
     gets no built-in tools) and **`--allowedTools mcp__marion__spawn,mcp__marion__status,
-    mcp__marion__wait,mcp__marion__list`** (permission axis: without `spawn` the root's one
-    load-bearing call is denied, and the other three are the verbs §5.4 lets a root use over its
-    descendants — omitting them would deny calls that then block until the root's bound expires).
+    mcp__marion__wait,mcp__marion__list`** (permission axis). Without `spawn` the root's one
+    load-bearing call is denied. The other three are the only descendant verbs an M1 root can
+    actually reach: `spawn` blocks and backgrounding is M2+, so its child is already terminal when
+    the root regains control, and §5.4 denies `send`/`cancel` against terminal targets. `report` is
+    rejected on a root. Omitting a reachable verb would deny calls that then block until the root's
+    bound expires.
     `--settings`,
     `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
     `ANTHROPIC_API_KEY=""` (a non-empty key silently wins, §6.4). This takes **option (a)** of
