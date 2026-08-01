@@ -1145,12 +1145,17 @@ struct TaskContract {
     completion: Option<Completion>,      // None iff the run has not ended, or ended
 }                                        //   unobserved (`reap_state: Orphaned`, §7.2)
 
-struct Completion {                      // written once, at result
+struct Completion {                      // assembled and written ONCE, at the node's terminal
+                                         //   transition — not at `report`, which only stages
+                                         //   the child-owned payload (§7.6 step 1)
     status: ResultStatus,                // = ExitStatus: Ok|Failed|Cancelled|Unreported|TimedOut|Killed
     reported_early: bool,                // chose to report while descendants ran (§7.6)
     held_to_timeout: bool,               // held for descendants until the bound expired (§7.6)
     live_descendants_at_report: Vec<AgentId>,
-    narrative: Option<String>,
+    narrative: Option<String>,           // marion-owned field, child-supplied source (§9):
+    narrative_synthesized: bool,         //   false = the child's own report text; true = marion
+                                         //   synthesized it from the transcript tail because no
+                                         //   report arrived (§7.6 step 5). Never conflate them.
     result_commits: Vec<Oid>,
     changed_paths: Vec<PathBuf>,
     scope_enforced: bool,                // false only when NEITHER locations nor a diff is
@@ -1477,7 +1482,7 @@ marion separates the two channels, and they have different costs:
 | | trigger | effect on the parent |
 |---|---|---|
 | **status update** | any node state change | updates the tree/UI only. **Never enters the parent's context.** |
-| **delivery** | node reaches a genuine terminal state, or reports early *by choice* | returns the `TaskContract` into the parent's turn |
+| **delivery** | node reaches a terminal state — including one it reached having *chosen* to report or exit early | returns the `TaskContract`, with its `Completion` written, into the parent's turn |
 
 **A non-terminal child never produces a delivery.** `wait` blocks, `status` polls, and neither
 wakes the parent's reasoning; only `report` — or the descendant-gated terminal transition — does.
@@ -1517,8 +1522,16 @@ status endpoint.
 
 This is the authoritative sequence; the rules above constrain it, the worked example motivates it.
 
-1. Agent types are prompted to call `mcp__marion__report`. A node that reports is done; the rest of
-   this sequence is for a node that stops without one.
+1. Agent types are prompted to call `mcp__marion__report`. **`report` stages the child-owned
+   payload; it does not itself finalize the contract.** `Completion` is assembled and written
+   **once, at the node's terminal transition**, which is the only moment marion knows `exit`,
+   `timestamps`, and — crucially — whether descendants were live *then* as well as at the report.
+   A node that reported and then does more work (creating a descendant, M2+) therefore needs no
+   mutation of a written record: nothing was written yet. Delivery to the parent likewise happens
+   at that transition, which is when a blocking `spawn` returns.
+
+   A node that has staged a report is *done in the sense that matters* — it owes nothing further,
+   and the rest of this sequence is for a node that stops without one.
 
    **A node that owes no report — one with no `TaskContract`, i.e. a root (§9) — is not in that
    category.** It is never told about `report`, `report` is rejected for it, and its stopping is
@@ -1831,13 +1844,15 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   | **no** MCP, no locations | `--output-schema` fallback | worktree diff, `scope_enforced: true` |
 
   **If S6's third answer is also no** — `--output-schema` does not bind under canned scripting, so
-  neither return channel exists — **M1 accepts the child's final message as `narrative`** and the
-  contract lands `status: Ok` with `scope_enforced: true` from the worktree diff. The acceptance
+  neither structured return channel exists — **M1 still runs, and the contract lands
+  `status: Unreported`** with the child's final message preserved as a *synthesized* `narrative`
+  and `scope_enforced: true` from the worktree diff. `Unreported` is the honest value and the one
+  §6.7 row 2 already assigns to "no report and no parseable document": promoting a scripted last
+  message to `Ok` would be exactly the silent promotion §7.6 exists to prevent. The acceptance
   criterion becomes "the parent receives a contract whose `changed_paths` and `diff` reflect the
-  child's edit", dropping only the *structured* return. That is a weaker M1 but still a real
-  cross-harness hop, and it is the one outcome that would make `mcp__marion__report` a
-  Codex-adapter debt carried into M4 rather than an M1 deliverable. **This branch does not block
-  M1** — no S6 answer does.
+  child's edit, with `status: Unreported` and a synthesized narrative" — a real cross-harness hop
+  with an honestly-marked return, and `mcp__marion__report` becomes a Codex-adapter debt carried
+  into M4. **This branch does not block M1** — no S6 answer does.
 
   **`scope_enforced: false` is reserved for an adapter that can determine changed paths by
   *neither* route.** A worktree child always affords the diff, so M1 records `true`; §6.7's
@@ -1907,10 +1922,17 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     parent's `writable_scope`; §5.4) — and *validates and freezes* the parent's criteria before the
     child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`, `exit`,
     `timestamps`, `status`, `reported_early`, `held_to_timeout`,
-    `live_descendants_at_report`, `scope_enforced`, and `scope_violations` — and owns
+    `live_descendants_at_report`, `scope_enforced`, `scope_violations`, `narrative_synthesized`,
+    and **`narrative` itself** — whose *source* is the child's report when one arrives and marion's
+    own transcript-tail synthesis when none does (§7.6 step 5), which is why the field cannot be
+    child-owned even though the child normally supplies its content — and owns
     **`completion`'s presence** (§6.7: `None` while a run has not ended or ended unobserved), so a
     child submitting a whole `completion` object is rejected like any other unowned field.
-  - **The child** supplies only `narrative` and, optionally, `result_commits`.
+  - **The child** *supplies* only the `narrative` text and, optionally, `result_commits`. It owns
+    `result_commits` outright; `narrative` it merely sources, because marion must be able to write
+    that field when no report ever arrives (above). The child can still never set
+    `narrative_synthesized`, which is what keeps "the child said this" distinguishable from
+    "marion reconstructed this".
 
   **Every field of §6.7 is owned by exactly one of these three** — verify against the struct
   field-by-field when either changes. The scope is the one case where a parent's input and
