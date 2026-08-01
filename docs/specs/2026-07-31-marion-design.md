@@ -1686,12 +1686,14 @@ so precedence is the specification, not an implementation detail:
 |---|---|---|
 | 1 | terminated by something done *to* the node | `Cancelled` (`cancel`, and `node/kill` — a user's deliberate termination, with `ProcessExit.description` recording marion as the sender) · `TimedOut` (bound expired with the node `Running`, or `Blocked(Permission)`/`Blocked(Elicitation)`) · `Killed` (external and unattributable, §7.8) |
 | 2 | no report arrived and no `--output-schema` document parsed | `Unreported` |
-| 3 | any `verification` command exited non-zero **or was signalled**, **or** the child process exited non-zero **or died on a fault signal** (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT — see the partition below; an unattributable SIGKILL/SIGTERM/SIGHUP is row 1's `Killed`, not this) | `Failed` |
+| 3 | any `verification` command exited non-zero **or was signalled by anything at all**, **or** the child process exited non-zero **or died on a fault signal** (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT — see the partition below; an unattributable SIGKILL/SIGTERM/SIGHUP *to the child* is row 1's `Killed`, not this). **The signal partition governs the child's process only**: a verification command is marion's own subprocess, never the node, so however it was signalled the result is `Failed` — a killed check is a failed check | `Failed` |
 | 4 | otherwise | `Ok` |
 
 So: a child that reports, passes verification, and *then* exits non-zero is `Failed` (row 3 precedes
 row 4). A child that never reports is `Unreported` even if its verification passed (row 2 precedes
-row 3) — the §7.6 machinery and the "never silently promoted to a result" guarantee must fire
+row 3) — where "never reports" means row 2's full condition, *neither* a `report` call *nor* a
+parseable `--output-schema` document; a parsed document is a report for every purpose here. The
+§7.6 machinery and the "never silently promoted to a result" guarantee must fire
 regardless of what the commands say. An empty `verification` list **does not match row 3** — there is no
 command to have exited non-zero — so a bare successful report falls through to row 4 and is `Ok`.
 
@@ -1720,8 +1722,11 @@ otherwise would be inventing an attribution.
 no contract and therefore no verification commands): `Cancelled`/`Killed` if it was terminated,
 `Failed` on a non-zero exit or a fault signal, else `Ok`. **Neither `Unreported` nor `TimedOut`
 is reachable for a root** — it owes no report, and its bound never gives it `TimedOut`: §7.6 step 3
-kills the held process on expiry but the *status* stays the ordinary derived one, and §9 denies an
-unanswered permission rather than terminating the root at all.
+kills the held process on expiry but that kill does **not** yield `TimedOut`. It yields
+**`Cancelled`** — row 1's marion-sent branch, with `ProcessExit.description` recording *"descendant
+hold expired"* — because the expiry kill is a deliberate termination by marion, and `TimedOut` is
+reserved for a bound that measures the node's own work, which a root's `Blocked`-only budget does
+not. §9 denies an unanswered permission rather than terminating the root at all.
 
 **`acceptance_criteria` are recorded for the reader and are never machine-evaluated** — they are
 prose, and a supervisor that scored them would be inventing a verdict. `verification` is the
@@ -1926,9 +1931,12 @@ testable invariant is:
 > falsifying L1 by design, since step 1 makes a reported node "done" and the hold never runs for
 > it. `live_descendants_at_report` records the set at whichever moment set the flag.
 >
-> **A node that never concluded on purpose never gets `reported_early`** — it takes
-> `held_to_timeout` instead, which is exactly the distinction the two flags exist to preserve: an
-> agent that *decided*, versus one that ran out of patience on its behalf.
+> **A node that never concluded on purpose never gets `reported_early`** — of the two flags only
+> `held_to_timeout` can apply to it, and even that applies **solely when the step-3 hold bound
+> actually expired**. A node that simply exited without deliberating, or died before the gate could
+> run, gets neither flag (the latter gets `died_before_gate`). The distinction the two flags exist
+> to preserve is an agent that *decided*, versus one that ran out of patience on its behalf — not
+> "deliberate" versus "everything else".
 >
 > **Both flags live on `Node` (§3.2), not only on `TaskContract`**, so the invariant is evaluable
 > for every node including a root, which has no contract. A child's contract mirrors its node's
@@ -2065,10 +2073,11 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      order a turn it cannot comply with.
    - *the node simply never answered* → **the grace turn**: a best-effort report acknowledging the
      interruption, not a request to finish the work — modelled on Gemini's grace window (below).
-     Only this variant is "the grace turn". **For a root**, which cannot `report`, it asks instead
-     for a short summary of where things stand — and since step 1 already accepts a root's exit
-     when no descendants are live, **marion skips *this variant* for a root**, going straight to
-     step 5. The descendants-completed variant above still runs for a root: a root that was told
+     Only this variant is "the grace turn". **A root never receives it**: step 1 already accepts a
+     root's exit when no descendants are live, so marion skips this variant entirely and goes
+     straight to step 5, which synthesizes the root's narrative from the transcript tail. (An
+     earlier draft also described an adapted "summarize where things stand" prompt here; that was
+     a contradiction — the variant is skipped, so no prompt is sent.) The descendants-completed variant above still runs for a root: a root that was told
      "wait for them before you finish" must be told when they have finished.
 5. Still nothing → **re-run the descendant check first.** Step 4 is a real turn with the child's
    full tool surface, so it can have *created* descendants (from M2 on, a backgrounded `spawn`
