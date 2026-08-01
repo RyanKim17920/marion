@@ -183,10 +183,18 @@ it, mirroring what every vendor does (§7.6's prior-art table):
    at compile time. Where the child can host marion's MCP server: *call marion's **`report`** tool; report files
    are not the return channel.* **The surface name differs per harness and the adapter supplies
    it** (§3.1's "tool names are marion's vocabulary"): `mcp__marion__report` on Claude Code, but on
-   **Codex** MCP tools arrive as a `type:"namespace"` tool, so the call is
-   `{"type":"function_call","name":"report","namespace":"mcp__marion",…}` and the flat name is
-   rejected `unsupported call: mcp__marion__report` — swallowed with no error the child can act on,
-   ending the run `Unreported`. **Never compile the Claude Code spelling into a Codex child's
+   **Codex 0.146.0 runs *code mode*, and both spellings are real at different layers** (S6,
+   measured — `tests/fixtures/s6/`). There is **no top-level `tools` field at all**: declarations
+   ride inside `input` as an `additional_tools` developer message, and the model's actual surface
+   is a `custom` tool named **`exec` that evaluates JavaScript in a V8 isolate**. A real model
+   therefore reaches marion by writing `await tools.mcp__marion__report({…})` — the **flat** name
+   as a JavaScript identifier — while `client_metadata.x-codex-turn-metadata.code_mode_tool_names`
+   carries the mapping `"mcp__marion__report" → {"name":"report","namespace":"mcp__marion"}` that
+   codex dispatches on internally. **For a prompt, compile the flat `mcp__marion__report`
+   identifier**; the `{name, namespace}` pair is codex's internal form, not something a child
+   types. **marion's canned scripts need not synthesise JavaScript**: a plain
+   `{"type":"function_call","name":"report","namespace":"mcp__marion",…}` item is executed
+   end to end (fixtured), which is far easier to author than a JS `exec` call. **Never compile the Claude Code spelling into a Codex child's
    prompt** — that is precisely the "tool it does not have" case this item forbids. Deliberately NOT phrased as "your final message is the return
    value" — that framing is what conflates *done* with *waiting* (§7.6), and the contract is the
    tool call, not the last thing said. **Where it cannot** (a `LaunchOnly` child on a harness with
@@ -3152,28 +3160,17 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     `CLAUDE_CODE_ATTRIBUTION_HEADER`'s 0% → 99.7% cache effect (reported upstream, not measured
     here); and the DECSET 2026 bracket discipline (five captures, one host) that §8/L4.5 gates
     commits on.
-12. **Spike S6 — the `codex exec --json` assumptions (§5.2), and the highest-value open item in
-    the repo.** Three questions: does `exec` host MCP servers; does `exec --json` emit
-    `ToolCall.locations`; and — since two of §9's four branches depend on it — **does the
-    `--output-schema` / `--output-last-message` pair actually deliver a schema document when the
-    final message is scripted by the CannedProvider?** S6 must also **record two encodings the
-    repo lacks and §5.5 needs**: a Lark-grammar `apply_patch` custom-tool call and a
-    `type:"namespace"`-wrapped MCP call, **of which only the `apply_patch` half is unknown**: the
-    namespace call shape was recovered in round 15 and is stated in §3.1 item 1 and §5.5, so what
-    S6 owes for it is a committed *fixture*, not a discovery. Authoring the canned script is
-    blocked on the Lark-grammar encoding alone. **The two have different costs, and conflating them over-scopes S6:**
-    - the **`type:"namespace"` declaration** rides the **codex→provider request**, so it is
-      readable straight from the CannedProvider's own request log with a dummy key — **no proxy
-      and no API key**. The matching *call* shape is likewise established by replaying candidates
-      against the canned provider and reading Codex's `function_call_output` back
-      (`unsupported call: …` versus a live `mcp_tool_call` item). Round 15 did exactly this and
-      recovered both.
-    - only the **Lark-grammar `apply_patch` encoding** is on the provider→codex wire and needs a
-      **record-mode HTTP proxy** at `model_providers.<non-reserved-id>.base_url` under an **API
-      key** (subscription auth cannot use a custom `base_url`, `MILESTONES.md`). Plan the proxied
-      run for that half only.
-    S6 was started and **killed mid-run** on 2026-07-31; no S6 fixture exists. All three answers change
-    what M1 builds — §9 specifies each branch, so M1 is not blocked, but **S6 runs first**.
+12. **~~Spike S6~~ — RESOLVED 2026-08-01, fixtured in `tests/fixtures/s6/`.** All three
+    questions answered against codex-cli 0.146.0 with a canned provider and a real stdio MCP
+    server; no model call, no API key. **`exec` hosts MCP servers** (a real `mcp_tool_call`
+    reached marion's server and returned its result), **`exec --json` emits `file_change` items**
+    with absolute paths and a `kind`, and **`--output-schema`/`--output-last-message` delivers the
+    document verbatim** from a canned final message. M1 therefore takes the **primary** branch.
+    The spike also recovered the `apply_patch` encoding this item called unknown — `tools.apply_patch`
+    takes a **string**, not `{input: …}` — and found *code mode* (§3.1 item 1, §5.5), which is the
+    finding that actually changed M1. What remains open from the original scope is only the
+    **Lark-grammar** form of `apply_patch` on the provider→codex wire, which needs a record-mode
+    proxy under an API key and which M1 does not use.
 13. **Claude Code's exit-code-2 Stop-hook path is unfixtured.** §7.6 calls it equivalent to
     `{"decision":"block"}`, and it is fixtured on **Codex only**
     (`tests/fixtures/s4/codex/stream-exit2-stderr.jsonl`); `s4/claude-code/stop_hook.sh` has no
@@ -3278,4 +3275,7 @@ design decision.
 | `GET /models` gates every Codex startup | **NARROWED (round 14).** TUI/app-server only. `codex exec` never issues it — an `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses` (0.146.0). M1's child therefore never exercises that endpoint. |
 | `--output-schema`'s natural spelling (`narrative` required, `result_commits` optional) is what marion should write | **CORRECTED (round 18, re-measured against the live endpoint in round 19).** `codex exec` 0.146.0 validates only JSON *syntax* locally and forwards the file with **`"strict": true`** added, under which every key in `properties` must also appear in `required`. The endpoint returns HTTP 400 `invalid_json_schema` on the natural spelling — so the failure reads as "`--output-schema` doesn't work", S6 answers question 3 *no*, and M1 builds the fifth `Unreported` branch for nothing. Express optionality as nullability instead (§9). The same shape of trap as `default_tools_approval_mode`. |
 | `Session.vendor: Box<dyn Any + Send>` and `Box<dyn ControlPlane>` are sufficient | **CORRECTED (round 18).** `#[async_trait]` desugars `async fn(&self, s: &Session, …)` into a `Send` boxed future capturing `&Session`, and `&T: Send` requires `T: Sync`. Without `+ Sync` on both, every `ControlPlane` method except `events`/`refine` fails to compile on a multi-threaded runtime — which M1 requires. A day-one compile error in a section that reasons about dyn-compatibility two lines above, which is why it read as already checked. Found with a compiler, not by eye. |
+| Codex declares tools in a top-level `tools` field, one entry per tool | **CORRECTED (S6, 2026-08-01).** 0.146.0 has **no** top-level `tools` field. Declarations ride inside `input` as an `additional_tools` developer message, and the model's surface is a `custom` tool `exec` running JavaScript in a V8 isolate — *code mode*. A real model calls `await tools.mcp__marion__report({…})`; `client_metadata` carries `code_mode_tool_names` mapping that flat identifier to `{name, namespace}`. Fixtured in `tests/fixtures/s6/provider-requests.redacted.jsonl`. |
+| On Codex the flat `mcp__marion__report` name is simply rejected | **REFINED (S6).** Both spellings are real at different layers: the flat name is the JavaScript identifier a model writes under code mode; `{name:"report", namespace:"mcp__marion"}` is codex's internal dispatch form, and a `function_call` item in that form **is executed** (fixtured). The round-15 `unsupported call` result was about a *`function_call` naming the flat string*, not about the identifier in general. |
+| `codex exec`'s MCP server is spawned once per run | **CORRECTED (S6).** The frame log shows **two** full `initialize` + `tools/list` sequences for a single `codex exec`. A bridge must be idempotent across repeated startup. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |

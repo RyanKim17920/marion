@@ -8,7 +8,7 @@ Agent(harness, model, tools, prompt, …) -> handle
 handle: observe · steer · interrupt · result
 ```
 
-**Status:** design complete, spikes S1–S5 resolved, **S6 open and owed first**, **no code yet.**
+**Status:** design complete, **spikes S1–S6 all resolved**, **no code yet.** M1 is next.
 Start at *First task*.
 
 ---
@@ -59,15 +59,15 @@ These tools auto-update and break things. In one day: Gemini moved thirteen mino
 itself when a scripted Enter hit its startup prompt, and Codex had already removed
 `wire_api = "chat"` entirely.
 
-**Design doc §12 lists thirty-seven claims that were retracted or corrected** (fifteen from the
-research itself, twenty-two more from audit rounds 5-19 that read the docs against the fixtures and
+**Design doc §12 lists forty claims that were retracted or corrected** (fifteen from the
+research itself, twenty-five more from audit rounds 5-19 and spike S6 that read the docs against the fixtures and
 against the installed binaries) — several stated
 confidently before being disproved, and one area (terminals) that was corrected, over-corrected,
 and corrected again. Treat anything marked
 **UNVERIFIED**, and everything in design doc §11 (Open questions), as a hypothesis. Re-verify with
 `claude --version`, `codex --version`, `gemini --version`, `opencode --version`.
 
-## The spikes — S1–S5 resolved 2026-07-31, S6 open
+## The spikes — S1–S5 resolved 2026-07-31, S6 resolved 2026-08-01
 
 | spike | answer |
 |---|---|
@@ -77,18 +77,17 @@ and corrected again. Treat anything marked
 | **S4** Stop-hook re-prompt | Works on both via `{"decision":"block","reason":…}`. **Codex hooks fail silently until trusted.** |
 | **S5** Late-join subscription | `thread/resume` **is** subscribe. Mid-turn attach works. Approvals fan out to all subscribers — marion must not race a human. *(The fan-out and first-answer-wins semantics are read from source, **not measured**: no probe exercises an approval. Owed when the codex adapter lands.)* |
 
-**S6 is open, and it is M1's first task.** It was started and killed mid-run. It answers three
-questions about `codex exec --json` that decide what M1 builds — does `exec` host MCP servers (if
-not, marion's `report` return path does not exist and M1 uses the `--output-schema` fallback; on
-Codex that tool is reached by the `mcp__marion` **namespace** form, never the flat name — design
-§3.1 item 1); does it emit file locations (if not, marion loses per-tool-call attribution; the scope check is git-derived either way); and does
-`--output-schema`/`--output-last-message` actually deliver a document when the final message is
-canned — **and it owes committed fixtures of two Codex encodings** (a Lark-grammar `apply_patch` call and
-the `type:"namespace"` MCP call). Only the `apply_patch` half is genuinely unknown and blocks
-authoring the canned script — the namespace call shape was recovered in round 15 and is written
-down in design §3.1 item 1 and §5.5.
-Design doc §9 specifies every branch, so M1 is not blocked — but run S6 before writing supervisor
-code. Full scope: design doc §11 item 12.
+**S6 is resolved** (`tests/fixtures/s6/`), and it answered all three questions with a canned
+provider and a real stdio MCP server — no model call, no API key. **`codex exec` hosts MCP
+servers**, so marion's `report` return path exists and **M1 takes the primary branch**; `exec --json`
+emits `file_change` items with absolute paths; and `--output-schema`/`--output-last-message`
+delivers the document verbatim, with `strict: true` added by codex.
+
+The finding that changed M1 was incidental: **Codex 0.146.0 runs *code mode*** — no top-level
+`tools` field at all, tools reaching the model as JavaScript inside a `custom` `exec` tool, so a
+real model writes `await tools.mcp__marion__report({…})`. Both the flat and namespaced spellings
+are real, at different layers (design §3.1 item 1). marion's canned scripts can still use a plain
+`function_call` with `namespace: "mcp__marion"`, which is proven to execute.
 
 The most consequential finding was incidental: **`CLAUDE_CONFIG_DIR` isolation breaks OAuth**,
 because the Keychain entry is keyed to the real config dir. Config isolation and subscription auth
@@ -96,8 +95,7 @@ are mutually exclusive for Claude Code children.
 
 ## First task: the M1 vertical slice
 
-**Run spike S6 first** (above) — it is cheap, it produces the `codex exec` fixture the repo lacks,
-and it selects M1's return channel. Then: a real `claude` root calls `mcp__marion__spawn`; a real
+S6 is done, so the return channel is settled — marion's `report` tool over MCP. Now: a real `claude` root calls `mcp__marion__spawn`; a real
 `codex` child edits a file in a worktree and reports; the parent receives a **structured task
 contract** — driven entirely by the canned provider so it costs nothing and repeats. Acceptance
 criteria and the concrete M1 decisions (marion launches the root node itself, blocking `spawn`,
