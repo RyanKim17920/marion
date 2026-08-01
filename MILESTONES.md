@@ -161,7 +161,7 @@ adapter build order: claude-code → codex → acp → opencode.)
 
 **Codex is hardest**: `wire_api="chat"` removed; sends `include:["reasoning.encrypted_content"]`
 unconditionally; `apply_patch` only as a Lark-grammar custom tool; MCP wrapped in a proprietary
-`type:"namespace"` item; startup gated on `GET /models` returning `{"models":[…]}`. Subscription
+`type:"namespace"` item; TUI/app-server startup gated on `GET /models` returning `{"models":[…]}` (**not** exercised by `codex exec` — verified 0.146.0). Subscription
 auth cannot use a custom `base_url` at all.
 
 **Amp is structurally blocked** — BYOK removed, inference runs on Sourcegraph's machines.

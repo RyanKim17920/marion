@@ -726,6 +726,12 @@ bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schem
 >    `agent_message` items — no tool calls, no file changes. If locations are absent, scope checking
 >    must diff the worktree instead, and M1's criterion changes accordingly.
 >
+> **Partial evidence already in hand for question 1** (round-13 audit, 0.146.0): `codex exec`
+> **does** launch an MCP server declared in `$CODEX_HOME/config.toml` and passes its `env` block —
+> a stub server wrote its marker during an `exec --json` run. That makes the MCP branch the likely
+> one and corroborates §9's config-file placement, but it does **not** show the model can *call*
+> the tool, which is what question 1 actually asks. S6 still runs.
+>
 > None can be settled from the desk. S6 runs them against a real model and produces the
 > `codex exec` fixture the repo currently lacks. **S6 is the first task of M1, before any
 > supervisor code** — §9 states what M1 builds under each outcome, so no answer blocks the
@@ -1098,8 +1104,11 @@ every call.
   answers (§11 item 12). Budget §5.5 accordingly.
   Port Codex's own `mock_model_server.rs` — `wiremock` + `SeqResponder` + `.expect(n)` — which is
   *already* a canned Responses server, plus `core_test_support::responses` for the event builders.
-  Codex also gates startup on `GET /models` returning `{"models":[…]}`, so the canned server must
-  answer that too.
+  Codex's **TUI/app-server** startup gates on `GET /models` returning `{"models":[…]}`, so the
+  canned server answers that too — but **`codex exec` does not issue it** (verified on 0.146.0: an
+  `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses`).
+  M1's child therefore never exercises that endpoint; do not diagnose a canned-provider failure as
+  a missing `/models` gate.
 - **ModelProxy** (late, genuinely large): translation across four wire formats for any-harness ×
   any-model. Build order by measured difficulty: opencode (needs none — speaks all four natively)
   → Claude Code → Qwen → Gemini → **Codex last** (Responses API only). Amp is structurally blocked.
@@ -1128,9 +1137,11 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
 2. Resolve agent type; check depth, concurrency caps, and write-conflict policy (§6.6).
 3. Resolve the harness binary **through symlinks**; record path and `--version`.
 4. Create the worktree, or inherit cwd.
-5. Write the task contract (§6.7) with acceptance criteria and verification commands. **Child nodes
-   only** — a root has no contract (§9), so this step is skipped for it.
-6. `compile()` → argv + env + config (§6.4).
+5. `compile()` → argv + env + config (§6.4). **This must precede the contract**, because
+   `allowed_tools` records the *compiled*, harness-native constraint (§3.1).
+6. Write the task contract (§6.7) with acceptance criteria, verification commands, and the
+   compiled `allowed_tools`. **Child nodes only** — a root has no contract (§9), so this step is
+   skipped for it.
 7. **Journal the spawn intent**, start the process, journal confirmation.
 8. `Lifecycle::Spawned` with static caps, refined if a handshake exists.
 9. Events stream into the EventLog immediately and continuously, watched or not.
@@ -1328,9 +1339,24 @@ Two rules make it more than bookkeeping:
   ["src/generated/**"]` naming a directory the child is meant to *create* is explicitly legal — so
   a diff-only check would record an out-of-scope **creation** as `changed_paths: []`,
   `scope_violations: []`, `scope_enforced: true`: a clean run, which is the false confidence the
-  two-field split exists to prevent. Therefore `changed_paths` comes from
-  `git status --porcelain -z --untracked-files=all` in the workspace, and `diff` from
-  `git diff <base_commit>` with intent-to-add for untracked paths so they appear in the patch too. **Two fields, deliberately separate:** `scope_enforced` records
+  two-field split exists to prevent. **`changed_paths` has exactly one source, and it must cover three cases** — modified, created,
+  and *committed*:
+
+  > `changed_paths` = `git diff --name-only <base_commit>` ∪ the untracked set from
+  > `git status --porcelain -z --untracked-files=all`, both taken in the workspace.
+
+  `git diff <base_commit>` alone misses an untracked file; `git status` alone misses anything the
+  child **committed** — and committing is anticipated, since `result_commits` is a child-owned
+  field. Either omission produces `changed_paths: []`, `scope_violations: []`,
+  `scope_enforced: true` for a real out-of-scope write: the false confidence the two-field split
+  exists to prevent, reached by a different route. `diff` is `git diff <base_commit>` with
+  intent-to-add for untracked paths so they appear in the patch too.
+
+  **`ToolCall.locations`, where an adapter reports them, are recorded in `evidence` and never
+  populate `changed_paths`.** Git is the authority on what changed; locations are corroboration —
+  useful for attributing *which* tool call touched a path, and for spotting a write the child made
+  and then reverted, but not a second source of truth. This is why all four S6 branches record
+  `scope_enforced: true`: the check does not depend on the locations question at all. **Two fields, deliberately separate:** `scope_enforced` records
   **whether the check ran** — `false` means neither route was available, and never means "no
   violation" — while `scope_violations` lists the offending paths. **A path is writable iff it
   matches *both* scope lists, so it is a violation if it fails *either*:**
@@ -2011,9 +2037,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 
   | S6 answer | M1's return channel | M1's scope enforcement |
   |---|---|---|
-  | `exec` hosts MCP **and** emits `ToolCall.locations` | `mcp__marion__report` (primary) | detective via `locations`, `scope_enforced: true` |
-  | hosts MCP, **no** locations | `mcp__marion__report` | detective via **worktree diff**, `scope_enforced: true` |
-  | **no** MCP, emits locations | `--output-schema` fallback (below) | detective via `locations`, `scope_enforced: true` |
+  | `exec` hosts MCP **and** emits `ToolCall.locations` | `mcp__marion__report` (primary) | worktree diff (§6.7), `scope_enforced: true`; locations add corroborating `evidence` |
+  | hosts MCP, **no** locations | `mcp__marion__report` | worktree diff, `scope_enforced: true` |
+  | **no** MCP, emits locations | `--output-schema` fallback (below) | worktree diff, `scope_enforced: true`; locations add corroborating `evidence` |
   | **no** MCP, no locations | `--output-schema` fallback | worktree diff, `scope_enforced: true` |
 
   **If S6's third answer is also no** — `--output-schema` does not bind under canned scripting, so
@@ -2191,8 +2217,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     type.)
   - **Detective** is all that `codex exec --json` allows — §5.2 chose it for M1 precisely because
     it "removes bidirectional approvals", so there is nothing to intercept. marion compares
-    **both scope lists** against observed `ToolCall.locations`, or against a **worktree diff** if
-    S6 shows `exec --json` reports no locations. Either route satisfies M1.
+    **both scope lists** against the workspace's `changed_paths` (§6.7's git-derived set).
+    `ToolCall.locations`, where reported, are recorded as corroborating `evidence` — so the
+    locations question changes what M1 can *attribute*, not whether the check runs.
   - **M1's acceptance criterion is therefore detective**: a deliberate out-of-scope write must be
     *reported* in the contract, not prevented. The preventive path lands with the app-server
     adapter in M4.
@@ -2218,10 +2245,18 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     rejected on a root. Omitting a reachable verb would deny calls that then block until the root's
     bound expires.
     `--settings`,
-    `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
+    **`--setting-sources ""`**, `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
     `ANTHROPIC_API_KEY=""` (a non-empty key silently wins, §6.4). This takes **option (a)** of
     §6.4's three: the real `CLAUDE_CONFIG_DIR` is retained and never mutated, so OAuth is intact
-    but unused.
+    but unused. **`--setting-sources ""` is what keeps that from meaning "inherit everything".**
+    Verified on 2.1.220: without it, §9's exact invocation loads the operator's 13 plugins, 100+
+    slash commands, 10 agents, and fires **nine** user `SessionStart` hooks — one injecting ~2 KB
+    into the root's context. `--settings` *merges*; it does not replace. That would contradict
+    §3.1 (the compiled prompt is persona plus marion protocol and nothing else) and §6.4
+    (`inherit_user_config` defaults off), make "repeatable" runs machine-dependent, and — worst for
+    §7.6 — put a user `Stop` hook alongside marion's, so the one-fire budget and the meaning of
+    `stop_hook_active` would not be marion's to guarantee on the one node where M1 implements that
+    path. With the flag: 0 plugins, 5 built-in agents, no user hooks, and MCP tools unaffected.
   - **child (`codex`)**: `-c model_providers.<id>` pointing at the canned server with a dummy
     `env_key`, under a **non-reserved** provider id (not `openai`/`ollama`/`lmstudio`/
     `amazon-bedrock`). **The MCP server declaration goes into `<agent-dir>/config/config.toml`, not
