@@ -1333,7 +1333,7 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    |---|---|
    | **bridge has not handshaken within 30 s** | **spawn error** — and note the process from step 7 **is** running: kill it, journal the abort against the intent record, and leave the contract `completion: None`. Otherwise marion holds a live child with no `Spawned`, no terminal and no `Completion`, which §7.2 would later mis-mark `Orphaned` — asserting marion *lost* a process it chose to abandon. No bound *of this node's own* covers the wait (its contract timeout starts at `Spawned`, step 9), which is why the 30 s cap exists; a contract-bearing **requester's** bound does run throughout |
    | **`system/init` reports a server `failed`** | **spawn error**, with the same cleanup as above — the process is running by now. The harness has given a terminal verdict; retrying the turn cannot change it |
-   | **`system/init` reports `pending`, or the `mcp__marion__*` tools are absent** | **re-issue the turn, at most once.** This state is per-turn and recovers — measured: a second frame at t=8 s saw `connected` and a scripted `mcp__marion__spawn` reached the server. If the re-issue still shows `pending`, it is a spawn error |
+   | **`system/init` reports `pending`, or the `mcp__marion__*` tools are absent** | **re-issue the turn, at most once.** This state is per-turn and recovers — measured: a second frame at t=8 s saw `connected` and a scripted `mcp__marion__spawn` reached the server. If the re-issue still shows `pending` **or the `mcp__marion__*` tools are still absent — either condition, since a `connected` server with no tools is the same failure for M1's purposes** — it is a spawn error |
 
    The distinction matters because the three produce different lifecycle states: two never reach
    `Spawned` at all, while the third has already written a turn that must not be silently
@@ -1612,11 +1612,23 @@ Two rules make it more than bookkeeping:
   ["src/generated/**"]` naming a directory the child is meant to *create* is explicitly legal — so
   a diff-only check would record an out-of-scope **creation** as `changed_paths: []`,
   `scope_violations: []`, `scope_enforced: true`: a clean run, which is the false confidence the
-  two-field split exists to prevent. **`changed_paths` has exactly one source, and it must cover three cases** — modified, created,
-  and *committed*:
+  two-field split exists to prevent. **`changed_paths` has exactly one source**, and it must cover every way the workspace can differ
+  from `base_commit`: tracked files added, modified, deleted or renamed — committed or not — plus
+  files left untracked:
 
   > `changed_paths` = `git diff --name-only <base_commit>` ∪ the untracked set from
   > `git status --porcelain -z --untracked-files=all`, both taken in the workspace.
+
+  **`--ignored` is deliberately absent, and that is a stated boundary, not an oversight**: a write
+  to a path the repo ignores (a build directory, a vendored dependency tree, a local credentials
+  file) does not appear in `changed_paths` and therefore cannot raise a `scope_violation`. Adding
+  `--ignored` would instead report every pre-existing ignored file as if the child had touched it,
+  which is worse — the check would cry wolf on every run. Detecting genuine writes to ignored paths
+  needs a pre/post filesystem snapshot, which M1 does not build; §11 item 19 records it.
+
+  Note the intent-to-add pass runs against the **scratch** index seeded from `base_commit`, so a
+  file the child created *and committed* is "untracked" from that index's point of view and is
+  picked up — which is why the union covers committed creations without a second `git diff`.
 
   `git diff <base_commit>` alone misses an untracked file; `git status` alone misses anything the
   child **committed** — and committing is anticipated, since `result_commits` is a child-owned
@@ -2924,6 +2936,14 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     a *new* group or session, `killpg` on marion's group will not reach them and the runaway
     survives. Cheap to settle in M1 — spawn a child whose tool call sleeps, expire it, and check
     the grandchild's pid and pgid.
+19. **Writes to git-ignored paths are invisible to scope enforcement.** `changed_paths` is derived
+    from `git diff` ∪ `git status --untracked-files=all` (§6.7), and neither reports ignored paths.
+    A child that writes a build directory, a vendored tree or a local credentials file therefore
+    produces `scope_violations: []` with `scope_enforced: true` — a clean-looking run. This is a
+    **stated boundary of the detective check, not a bug**: adding `--ignored` would report every
+    pre-existing ignored file as a change and make the check useless. Closing it properly needs a
+    pre/post filesystem snapshot of the workspace, which M1 does not build. Worth revisiting when
+    a child is first given a genuinely untrusted task.
 
 ---
 
