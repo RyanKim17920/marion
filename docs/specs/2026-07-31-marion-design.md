@@ -1396,7 +1396,9 @@ marion **never mutates the user's real harness config.**
 > **⚠ `CLAUDE_CONFIG_DIR` isolation breaks OAuth authentication.** The macOS Keychain entry is
 > keyed to the **real** config dir, so an isolated child cannot authenticate on a subscription —
 > spike S4 had to route through a local proxy to run at all. **Config isolation and subscription
-> auth are mutually exclusive for Claude Code children.** Options: **(a)** use the fileless path,
+> auth are mutually exclusive for Claude Code children** — meaning marion cannot have both *by
+> configuration alone*; (b) below buys auth back only by physically duplicating the credential,
+> which is a different trade (blast radius), not a refutation. Options: **(a)** use the fileless path,
 > keeping the real config dir and therefore auth — **the default**; (b) copy credential material
 > into the isolated dir, multiplying the blast radius §7.1 exists to contain; (c) run isolated
 > children on an API key or through marion's proxy, accepting different billing. Any element
@@ -1899,7 +1901,9 @@ implementer who codes it literally will hold nodes that should already be termin
 
 **Descendant-gated completion:**
 
-- A node's `Exited` is **held** while any descendant is non-terminal. The registry already knows
+- A node's `Exited` is **held** while any descendant is non-terminal — *unless* the node reported
+  early or the hold bound expired (L1's exemptions, below); those two are how a parent legitimately
+  outlives a live descendant, and this bullet is the rule they are exemptions *to*. The registry already knows
   this — it owns the tree — so the check is a subtree scan, not a heuristic.
 - On a stop with live descendants, marion does not accept the exit. **This is not an extra
   re-prompt: it is the *wording* of the first `Stop`-hook fire** (step 2 below), whose `reason` is
@@ -2830,7 +2834,10 @@ marion/
     marion-term/            # pty host + VT grid + ratatui adapter
     marion-harness/         # ControlPlane/DisplayPlane traits + per-harness impls
     marion-provider/        # canned provider; later ModelProxy
-    marion-supervisor/      # [[bin]] marion-supervisor (also `mcp`, `doctor`)
+    marion-supervisor/      # [[bin]] marion-supervisor; `mcp` and `doctor` are SUBCOMMANDS of
+                            #   this binary, not separate ones. `marion doctor` in prose is the
+                            #   user-facing spelling: the `marion` binary forwards `doctor` to the
+                            #   supervisor, which owns the registry the check reads
     marion-tui/             # [[bin]] marion
   spikes/                   # future throwaway spikes, not workspace members.
                             # S1-S5 tooling already lives beside its data in
