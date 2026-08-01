@@ -2001,7 +2001,7 @@ implementer who codes it literally will hold nodes that should already be termin
   re-prompt: it is the *wording* of the first `Stop`-hook fire** (step 2 below), whose `reason` is
   the descendant question when descendants are live and the generic question otherwise. There is
   exactly one hook fire either way, which is what keeps the budget at two and keeps
-  `stop_hook_active` meaningful: *"N of your children are still running: <names>. Do you want to
+  `stop_hook_active` meaningful: *"N of your descendants are still running: <names>. Do you want to
   wait for them, or report now with what you have?"* Both answers are legitimate — **an agent may deliberately
   report early**, e.g. it has the answer and the child is doing optional follow-up work. What is
   not legitimate is exiting *without choosing*.
