@@ -821,7 +821,12 @@ and a path is writable iff it matches the ceiling *and* the `spawn` request.** T
 conjunction at match time, not a set operation at spawn time — glob sets have no closed-form
 intersection, so "compute the intersection" would not be implementable as a single glob list. A
 `spawn` glob that matches nothing under the ceiling is a **spawn-time error**, not a silently empty
-scope: it means the parent asked for a scope the agent type forbids. A parent can therefore only
+scope: it means the parent asked for a scope the agent type forbids. **Emptiness is decided
+syntactically** — a `spawn` glob is an error iff no string matches both it and some ceiling glob
+(regular-language intersection over the glob alphabet, which is decidable even though the
+*intersection set* has no glob representation). **The filesystem is never consulted**, so
+`writable_scope: ["src/generated/**"]` naming a directory the child is meant to *create* is legal;
+testing against the worktree's current contents would reject exactly that normal case. A parent can therefore only
 ever restrict what the agent type allows, never widen it. Both lists are recorded in the contract
 even when they are the default, so "unrestricted" is visible rather than implied by absence.
 
@@ -844,7 +849,7 @@ is per verb, because reading a node and acting on one are not the same permissio
 | `wait` | **descendants only**, plus `allow_peers` siblings | **any** — on an already-terminal node it returns immediately with that node's contract |
 | `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal and not `ReapedIdle`** |
 | `cancel` | **descendants only — never a sibling, even under `allow_peers`** | non-terminal |
-| `report` | **self only** | non-terminal; **first call wins**, a second returns an error |
+| `report` | **self only**, and only on a node that **has a contract** — rejected on a root | non-terminal; **first call wins**, a second returns an error |
 
 Three consequences worth stating, since each closes a hole the flat rule left open:
 
@@ -935,9 +940,16 @@ every call.
   It must serve **two** wire formats from the start — Anthropic Messages for the Claude root and
   OpenAI Responses for the Codex child — because M1 is by definition cross-harness.
   **Canning is not translating**, and that distinction is what makes this tractable: a canned
-  provider replays *recorded* SSE for each format independently. None of what makes Codex the
-  hardest **ModelProxy** target (`reasoning.encrypted_content` round-tripping, Lark-grammar
-  `apply_patch`, `type:"namespace"` MCP wrapping) applies, because nothing is being converted.
+  provider replays *recorded* SSE for each format independently. None of the **translation**
+  difficulties that make Codex the hardest **ModelProxy** target apply, because nothing is being
+  converted.
+  **But the burden is not zero, and §9 requires the hard part.** M1's child must edit a file and
+  return, so the canned Responses script has to *contain* Codex's native encodings verbatim: a
+  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch — a `type:"namespace"`
+  wrapped `mcp__marion__report` call. Hand-authoring those is easier than translating them, but it
+  is not "small": **no fixture in this repo contains either shape** (`tests/fixtures/s4/codex/
+  stream-*.jsonl` holds only `agent_message` items), so S6 must capture both alongside its three
+  answers (§11 item 12). Budget §5.5 accordingly.
   Port Codex's own `mock_model_server.rs` — `wiremock` + `SeqResponder` + `.expect(n)` — which is
   *already* a canned Responses server, plus `core_test_support::responses` for the event builders.
   Codex also gates startup on `GET /models` returning `{"models":[…]}`, so the canned server must
@@ -1135,7 +1147,10 @@ signalled; `ProcessExit.description` carries marion's own explanation ("external
 **JSON encoding is part of the specification**, since the stated reason for pinning these types is
 that a model and a future replayer read them, and serde's defaults are not what either should see:
 `Duration` → integer seconds; `SystemTime` → RFC3339 with offset; `Oid` → its 40-character hex
-string; `Glob` → its pattern string.
+string; `Glob` → its pattern string. `AgentId` and `TaskId` are lowercase hyphenated **UUIDv7**
+strings — `AgentId` is also used verbatim as the `<agent_id>` directory component in §4.3, so it
+must stay filesystem-safe. `ResultStatus`, `Harness`, and the `Workspace` enum serialize in serde's
+default externally-tagged form (`"Ok"`, `{"Worktree":{…}}`).
 
 Two rules make it more than bookkeeping:
 
@@ -1733,7 +1748,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   (returning a handle) is M2+. `TaskContract.timeout` bounds the block; on expiry `spawn` returns
   the contract with `status: TimedOut` if the child was still running, or `Unreported` with
   `held_to_timeout: true` if it had stopped and was held on live descendants (§6.7).
-  **On a `TimedOut` expiry marion kills the child before `spawn` returns**, so the node is
+  **On a `TimedOut` expiry marion kills the child before `spawn` returns** — by signalling the
+  process handle held in its `Session` (§5.2), since M1's child has **no `DisplayPlane`** and so no
+  `kill()`; `ControlPlane::shutdown` is the *graceful* path and is deliberately not used here — so the node is
   `Exited{TimedOut}` and the contract is never terminal over a live process — which would
   contradict §8/L1's `Exited` terminality and leave M1 with an untracked runaway. `exit` records
   marion's own signal, and `ProcessExit.description` says so. This is deliberately the opposite of
@@ -1772,12 +1789,35 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   "blocks until `timeout`" needs a value to read. So every bound M1 depends on — the blocking
   `spawn`, the descendant hold (§7.6), an unanswerable permission (below) — is finite by
   construction, on the root as well as on children.
+
+  **The two bounds measure different things, and must:**
+  - **A child's `TaskContract.timeout` is a total-task bound**, running from `Spawned`. It has to
+    be, or a child that works forever is never `TimedOut` and the blocking `spawn` never returns.
+  - **A root's node-level bound is consumed only while the root is `Blocked`** — a §7.6 descendant
+    hold or an unanswered permission — and **not** while it is working or awaiting a blocking
+    `spawn`. A root is not a task and has no deliverable to bound; what needs bounding is how long
+    marion waits on an answer that may never come.
+
+  Reading the root's bound as wall-clock instead would make M1 unreachable on default settings: the
+  root's 900 s starts before it spawns anything and the child's 900 s starts later, so the root
+  would always expire first and the parent could never receive the contract as a tool result. If a
+  deployment does want a wall-clock ceiling on a root, that is `marion run --timeout` plus the
+  operator's own judgement, and marion refuses a run whose root bound is below the child default it
+  would supervise.
 - **marion launches the root node itself.** The `claude` root is not hand-started: `marion run
   <agent-type> --prompt <…>` spawns it through the same §6.1 path as any child, which is what gives
   it an `AgentId`, an agent-dir, and a capability token — without which its `spawn` call cannot be
   stamped and `TaskContract.requester` has no value. **A root has no `TaskContract`** (it has no
   requester and no acceptance criteria authored by anyone); it is a node, not a task. `requester`
-  for a top-level `spawn` is the root's `AgentId`. (Called "the root node", never "node 0" —
+  for a top-level `spawn` is the root's `AgentId`.
+
+  **So the root's compiled prompt omits the return contract entirely** (§3.1 item 1 is
+  child-only), and `mcp__marion__report` is **rejected on any node without a contract** — there is
+  no `Completion` for its payload to land in, and nobody to deliver it to. A root ends by
+  exiting, not by reporting. Its §7.6 loop still runs: the Stop hook still asks "are you reporting
+  a result, or are you waiting on something?", because the question that matters for a root is the
+  *descendant* one — whether its children are still running — and that is answered by waiting, not
+  by `report`. (Called "the root node", never "node 0" —
   `MILESTONES.md` already uses *node 0* for the graph-plan system's test-infrastructure validation
   step, and the task contract is deliberately shaped to attach to that system later.)
 - **Scope enforcement is preventive where a permission channel exists, detective where it does
@@ -1967,7 +2007,10 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     the repo.** Three questions: does `exec` host MCP servers; does `exec --json` emit
     `ToolCall.locations`; and — since two of §9's four branches depend on it — **does the
     `--output-schema` / `--output-last-message` pair actually deliver a schema document when the
-    final message is scripted by the CannedProvider?**
+    final message is scripted by the CannedProvider?** S6 must also **record two encodings the
+    repo lacks and §5.5 needs**: a Lark-grammar `apply_patch` custom-tool call and a
+    `type:"namespace"`-wrapped MCP call, without which the canned Codex script for M1 cannot be
+    authored.
     S6 was started and **killed mid-run** on 2026-07-31; no S6 fixture exists. Both answers change
     what M1 builds — §9 specifies each branch, so M1 is not blocked, but **S6 runs first**.
 13. **Claude Code's exit-code-2 Stop-hook path is unfixtured.** §7.6 calls it equivalent to
