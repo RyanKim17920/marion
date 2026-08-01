@@ -2470,9 +2470,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   in **its own process group** (`setpgid` in the pre-exec hook, which `pty-process` and
   `std::os::unix::process::CommandExt` both expose) and expires it with `killpg`. The new group is
   what makes the group kill safe: without it the child would share marion's group and `killpg`
-  would signal the supervisor itself. *(Stated from POSIX semantics and the spawn API, **not**
-  measured — an M1 probe should confirm it against a real `codex exec` running a long tool call;
-  §11 item 18.)* So the node is
+  would signal the supervisor itself. *(The **mechanism** is measured: a Rust parent using `process_group(0)` plus `killpg` reaped a
+  shell child *and its backgrounded grandchild* with no leak, and the same harness confirmed
+  `Command.timeout`'s kill yields `timed_out: true` with `exit_code: None`. What is **not** measured
+  is whether `codex exec` keeps its own tool-call children inside that group rather than calling
+  `setsid` itself — §11 item 18.)* So the node is
   `Exited{TimedOut}` and the contract is never terminal over a live process — which would
   contradict §8/L1's `Exited` terminality and leave M1 with an untracked runaway. `exit` records
   marion's own signal, and `ProcessExit.description` says so. This is deliberately the opposite of
@@ -2901,12 +2903,15 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     how it is spelled. An allowlist may be added on top later; it does not substitute. It is the one place in this design where a string from
     the agent channel reaches a shell with the user's privileges, and §3.1 item 2's rule (messages
     from other agents are data, never authority) does not currently reach it.
-18. **The `TimedOut` kill's process-group behaviour is unmeasured.** §9 specifies `setpgid` at
-    spawn plus `killpg` at expiry, reasoned from POSIX semantics: a SIGKILL to a pid does not reach
-    its descendants, so killing `codex exec` alone would leave its `exec_command` grandchildren
-    running. **No probe in this repo demonstrates it** — an attempt during the round-18 audit was
-    blocked by the sandbox, and nothing was substituted for the measurement. Cheap to settle in M1:
-    spawn a child whose tool call sleeps, expire it, and check the grandchild's pid.
+18. **Whether `codex exec` keeps its tool-call children in marion's process group is unmeasured.**
+    §9 specifies `setpgid` at spawn plus `killpg` at expiry, because a SIGKILL to a pid does not
+    reach its descendants. **The mechanism itself is now measured** (round 19): a Rust parent using
+    `process_group(0)` + `killpg` reaped a shell child and its backgrounded grandchild with no
+    leak, and `Command.timeout`'s kill produced `timed_out: true` with `exit_code: None`. **The
+    open half is the harness's own behaviour**: if `codex exec` puts its `exec_command` children in
+    a *new* group or session, `killpg` on marion's group will not reach them and the runaway
+    survives. Cheap to settle in M1 — spawn a child whose tool call sleeps, expire it, and check
+    the grandchild's pid and pgid.
 
 ---
 
