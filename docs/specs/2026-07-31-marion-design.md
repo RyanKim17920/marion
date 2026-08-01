@@ -76,9 +76,10 @@ independently find the supervisor its parent bound.
 `node/prompt`, `node/steer`, `node/cancel`, `node/kill`, `node/rename`, `permission/reply`,
 `elicitation/reply`, `policy/set`, `agent/spawn`, `doctor/run`.
 
-`node/rename` sets `Node.name`, which is the address other agents use with `send` — **renaming a
-node never moves an `allow_peers` grant that has already bound to it, and never confers one that has
-not**: bound grants route by `AgentId`, unbound ones resolve the name at first use (§5.4) (§5.4) — renaming
+`node/rename` sets `Node.name`, which is the address other agents use with `send` — **renaming a node never moves an `allow_peers` grant
+that has already bound to it**; an *unbound* grant, by contrast, resolves its name at first use, so
+renaming a node into a peer's `allow_peers` list before that peer's first call **does** confer the
+grant — the acknowledged cost of late binding (§5.4), bounded by binding happening once (§5.4) — renaming
 mid-run is how a user makes a tree readable without restarting anything.
 
 `elicitation/reply` exists because ACP and Codex both have structured input requests distinct from
@@ -702,7 +703,9 @@ connections to.
 > overlapping sources — it records the snapshot's last item id and
 > **re-reads unconditionally once `thread/resume` has taken effect** — on the resume response, not
 > on the first subscribed event, which may never arrive on a thread that has gone quiet — merging
-> the second snapshot with the subscription and deduplicating by item id. **This recovers *items*,
+> the second snapshot with the subscription and deduplicating by **(item id, event kind)** — not by
+> item id alone, since one item legitimately yields `item/started`, deltas and `item/completed`, and
+> collapsing on the id would discard the completion. **This recovers *items*,
 which is what `thread/read` returns — not the streaming `item/agentMessage/delta` events that
 occurred inside the window.** A delta lost there is invisible: the completed item carries the final
 text, so nothing is lost from the *record*, but a UI attaching mid-turn will not see the tokens it
@@ -2777,7 +2780,10 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     set", never absent, but only the step-9 value is authoritative. **And because the `<30 s` branch
     errors at step 9, the step-7 process is already running and a contract already exists: step 9
     computes the remainder first and **writes `min(requested, remainder)` to `timeout` whether or
-    not that value passes the 30 s test** — a clamp, so a child asking 60 s of a requester with
+    not the run proceeds. The 30 s floor is tested against the *remainder*, never against the
+    clamped value**: a child asking 10 s of a requester with 500 s left is fine — nothing was
+    truncated — while a requester with 12 s left cannot usefully host any child, which is the case
+    the floor exists to refuse — a clamp, so a child asking 60 s of a requester with
     500 s left keeps its 60 s — and the persisted contract therefore never retains step 6's
     provisional figure. On the error path
     that recorded value — `min(requested, remainder)`, which on this branch is under 30 s — is what *caused* the refusal — it describes the
