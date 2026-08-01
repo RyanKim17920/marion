@@ -1237,7 +1237,7 @@ token off `ps` (below). M1's Codex child takes the file placement for exactly th
 impractical. The command is `marion-supervisor mcp`, a thin stdio bridge to the supervisor socket.
 
 **The token rides the MCP server declaration's `env` block as `MARION_TOKEN`**, which marion writes at
-config-injection time — **the only channel available at all**. An argv flag in the same declaration
+config-injection time — **the placement marion chooses**. An argv flag in the same declaration
 would reach the bridge too, and the placement table below prefers `env` on principle; but note the
 ⚠ below it, which is what actually decides the matter: on the fileless path the declaration itself
 lands in argv, so `env` and an argv flag are **equally exposed to `ps`**, and the real protection is
@@ -1509,7 +1509,7 @@ marion **never mutates the user's real harness config.**
   (`text.started/delta/ended`, `step.*`, `prompt.admitted`); without it only `agent.switched` and
   `model.switched` appear. The legacy `message.updated` / `message.part.updated` /
   `message.part.delta` family arrives either way: interleaved 1:1 with the new family **when the experimental flag is on**,
-  and alone when it is off. with the new one.
+  and alone when it is off.
 - **A real TTY is required only for terminal-driven surfaces.** With stdio as a pipe, `codex`
   errors `stdin is not a terminal` and `claude` falls back to demanding `--print`. So
   `interactive`/`opaque`/`shared`-with-attached-TUI need a pty; **`headless` does not** —
@@ -1888,7 +1888,7 @@ a silent one is already caught by row 2's `Unreported`.
 | SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT | **`Failed`** (row 3) — *subject to the table's first-match order: a child that never reported is `Unreported` by row 2 before row 3 is reached, so this row describes a fault in a child that **did** report* | a self-inflicted fault — the process broke |
 | SIGKILL, SIGTERM, SIGHUP from a sender marion cannot attribute | **`Killed`** (row 1) | something outside did this to the node (§7.8) — **including the OOM killer** |
 | a signal marion sent **to terminate the node as such** — `cancel`, a user's `node/kill`, the `TimedOut` kill | `Cancelled` for `cancel` **and for `node/kill`** (both are deliberate termination, and row 1 already groups them); `TimedOut` for the expiry kill | marion's own act, and row 1 already names the reason |
-| a signal marion sent **to clear a process whose fate was already decided** — the §7.6 step-3 expiry kill | for a **contract-bearing** node: **matches no row-1 clause**, derivation falls through to rows 2–4. For a **root**, the expiry *is* the decision and lands row 1's `Cancelled` (§6.7's root paragraph) | either way the kill must not overwrite the outcome with `Killed`; the two differ because a child's expiry already produced `TimedOut`/`Unreported` from the expiry table, while a root's produced nothing else |
+| a signal marion sent **to clear a process whose fate was already decided** — the §7.6 step-3 expiry kill | for a **contract-bearing** node: **matches no row-1 clause**, so derivation continues at row 2 and lands whatever the expiry table already decided — `Unreported` for a held node, `TimedOut` reached via row 1's *bound expired* clause for a `Running` one; it never becomes `Failed` on account of the kill, which is the point. For a **root**, the expiry *is* the decision and lands row 1's `Cancelled` (§6.7's root paragraph) | either way the kill must not overwrite the outcome with `Killed`; the two differ because a child's expiry already produced `TimedOut`/`Unreported` from the expiry table, while a root's produced nothing else |
 | **any other signal** (SIGINT, SIGQUIT, SIGPIPE, SIGXCPU, SIGSYS, …) from a sender marion cannot attribute | **`Killed`** (row 1) | the catch-all that makes this partition **total** — without it such a death matches no row and falls through to `Ok`, contradicting §7.8's "never a normal completion" |
 
 `ProcessExit.description` **records** that classification; it is not the input to it. An OOM kill is
