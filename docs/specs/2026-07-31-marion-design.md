@@ -1185,8 +1185,9 @@ first-spawned node's `allow_peers` names a sibling that does not exist yet, so a
 resolution would silently produce a permanently void grant, and peer messaging would work in only
 one direction. The rule is therefore:
 
-- at the **first authorization-bearing call to a named peer — `send`, `status`, `wait`, or `list`,
-  not `send` alone** — resolve the name against **the granting node's siblings, live and terminal
+- at the **first authorization-bearing call that resolves a peer name — `send`, `status` or `wait`,
+  not `send` alone** (`list` is the exception treated below: it names nobody, so it binds nothing) —
+  resolve the name against **the granting node's siblings, live and terminal
   alike**. Reading a peer's state is authority too, so binding only on `send` would let a rename
   move it through the other three. Resolving against *live* nodes only would break the ordinary
   fan-out shape: sibling A finishes before sibling B ever addresses it, and B — explicitly granted
@@ -2276,7 +2277,10 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      **The hold is entered only if a descendant is actually non-terminal at that instant**; if none
      is — the node asked to wait for children that already finished, or the last one terminated in
      the gap — there is nothing to wait for, so marion skips both the hold and step 4 and goes
-     straight to step 5, accepting the node's own conclusion. Step 4 is still reachable without a
+     straight to step 5 — which still applies its own rules: if the node *did* conclude (a `report`, or
+     an answer at step 2) that conclusion stands; if it merely stopped, step 5 synthesizes and marks
+     `Exited{Unreported}` as always. "Skip the hold" means there is nothing to wait for, not that an
+     unreported stop becomes an answer. Step 4 is still reachable without a
      hold — step 2's *stops again with no live descendants* branch goes there directly — but its
      **descendants-completed** variant presupposes a hold, and that is the variant that would not
      fit here; the grace-turn variant is for a node that never answered, which this node did.
@@ -2829,7 +2833,7 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     the floor exists to refuse — a clamp, so a child asking 60 s of a requester with
     500 s left keeps its 60 s — and the persisted contract therefore never retains step 6's
     provisional figure. On the error path
-    that recorded value — `min(requested, remainder)`, which on this branch is under 30 s — is what *caused* the refusal — it describes the
+    that recorded value — `min(requested, remainder)` — sits beside the sub-30 s *remainder* that *caused* the refusal — it describes the
     aborted attempt, and no run ever executed under it; the abort record in the journal is what
     tells a reader so, and `completion: None` is what makes the contract unreadable as a result.
     The branch then takes step 8's cleanup verbatim: kill the process, journal the abort against
