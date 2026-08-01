@@ -1093,6 +1093,9 @@ struct Completion {                      // written once, at result
     changed_paths: Vec<PathBuf>,
     scope_enforced: bool,                // false only when NEITHER locations nor a diff is
                                          //   available — never means "no violation" (§9)
+    scope_violations: Vec<PathBuf>,      // paths in changed_paths matching neither scope list;
+                                         //   empty iff none. Meaningful only when
+                                         //   scope_enforced == true
     diff: Option<Patch>,
     evidence: Vec<CommandOutcome>,
     exit: ProcessExit,
@@ -1133,8 +1136,12 @@ Two rules make it more than bookkeeping:
   Criteria written afterward describe what happened, not what was required.
 - **The scope is checked against observed `ToolCall.locations`**, or against a worktree
   diff where the adapter reports no locations (§9). A child writing outside its declared scope is
-  reported, not silently accepted. `scope_enforced` records **whether the check ran**, not whether
-  it passed — `false` means neither route was available, and is never used to mean "no violation".
+  reported, not silently accepted. **Two fields, deliberately separate:** `scope_enforced` records
+  **whether the check ran** — `false` means neither route was available, and never means "no
+  violation" — while `scope_violations` lists the offending paths, those in `changed_paths`
+  matching neither `scope_ceiling` nor `scope_requested`. Collapsing them into one boolean is
+  precisely the false-confidence failure this section exists to prevent: "no violations found" and
+  "no check performed" must not serialize identically.
 
 **`status` covers every terminal, including involuntary ones.** `ResultStatus` is the same set as
 §3.2's `ExitStatus`, `Killed` included, so an externally terminated child (§7.8) has a
@@ -1732,7 +1739,7 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     parent's `writable_scope`; §5.4) — and *validates and freezes* the parent's criteria before the
     child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`, `exit`,
     `timestamps`, `status`, `reported_early`, `held_to_timeout`,
-    `live_descendants_at_report`, and `scope_enforced`.
+    `live_descendants_at_report`, `scope_enforced`, and `scope_violations`.
   - **The child** supplies only `narrative` and, optionally, `result_commits`.
 
   **Every field of §6.7 is owned by exactly one of these three** — verify against the struct
@@ -1801,9 +1808,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `tool_result` for the `spawn` call deserializes to the persisted `contract.json`. Asserting that
   the root's *next turn* "references the child's output" would be vacuous — that text is scripted
   SSE, fixed before the run, and would pass against a marion that dropped the contract entirely.
-- `writable_scope` is enforced **detectively**: a deliberate out-of-scope write appears in the
-  contract's `changed_paths` with the violation flagged, and `scope_enforced` is `true` — by
-  `ToolCall.locations` or by worktree diff, whichever S6 leaves available.
+- The scope is enforced **detectively**: a deliberate out-of-scope write appears in the contract's
+  `changed_paths`, is listed in **`scope_violations`**, and `scope_enforced` is `true` — by
+  `ToolCall.locations` or by worktree diff, whichever S6 leaves available. A run with no
+  out-of-scope write yields `scope_enforced: true` with `scope_violations: []`, which is
+  distinguishable from an unchecked run (`scope_enforced: false`).
 - The whole run is driven by the CannedProvider — no paid tokens, repeatable.
 - Owed here: spike **S6** with its fixture (§5.2, run first), plus all three M1 debts — the live
   `SubagentStop` confirmation (§7.6), the pty re-confirmation of S1, and **a real `can_use_tool`
@@ -1874,8 +1883,18 @@ marion/
 
 `marion-core` stays free of process spawning and filesystem side effects so L1 tests are pure.
 `marion-harness` depends on `marion-core` and `marion-term`, never the reverse. The user-facing
-command is **`marion`**; `marion-supervisor` starts on demand and also hosts the per-child `mcp`
-bridge and `doctor`.
+command is **`marion`**.
+
+**Who owns the socket, per milestone** — this moves once, and only once:
+
+| | socket owner | `marion-supervisor mcp` dials |
+|---|---|---|
+| **M1** | the **`marion`** process itself; the supervisor runs in-process (§9's "no *detached* daemon") | that same `marion` process |
+| **M2+** | a detached **`marion-supervisor`**, which `marion` starts on demand | the detached supervisor |
+
+The socket **path** is identical in both (§2), so the bridge resolves it the same way and never
+needs to know which milestone it is running under — which is what makes M2's split invisible to
+children. `marion-supervisor` also hosts `doctor`.
 
 ---
 

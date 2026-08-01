@@ -105,8 +105,10 @@ Add a row to the table below. A fixture with no row is not reviewed and must not
 
 ## Provenance
 
-All five spikes were recorded on the same host, macOS 26.5.1 (arm64), `TERM=xterm-256color`.
-Redaction pass applied 2026-07-31.
+All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
+`TERM=xterm-256color`. Redaction pass applied 2026-07-31; **`s2` additionally repaired 2026-08-01**
+(§3 warning), which is the only change to any fixture byte since. The `Redaction applied` column
+below describes the 2026-07-31 pass; the `s2` row records the later repair.
 
 | Dir | What was recorded | Provider | Recorded | Human read | Redaction applied |
 |---|---|---|---|---|---|
@@ -132,7 +134,14 @@ Redaction pass applied 2026-07-31.
   committed alongside), and the Codex tool name `create_source_repository_write_credential`
   rendered in an `s2` `/help` panel. None are credentials.
 
-### Verification run, 2026-07-31
+### Verification run, 2026-08-01 (re-run after the escape-sequence repair)
+
+**This is the authoritative run.** The original pass was dated 2026-07-31 and therefore described
+the *pre-repair* bytes; the `s2` captures changed on 2026-08-01 (§3 warning), so every scan and
+invariant below was re-derived against the currently committed corpus rather than carried forward.
+Result: identical to the original run except for the `s2` DECSTBM figures, which the repair
+corrected (22/24 and 26/26, replacing 25/27 and 29/29), and the `.cast`/`.raw.bin` non-identity
+recorded in `s2/NOTES.txt`. All five file lengths and every cited byte offset are unchanged.
 
 Scans over all 59 files (binaries included): `sk-ant-`, `Bearer <token>`, `ghp_`/`xox*`/`AKIA`/PEM,
 non-`@example.invalid` emails, the literal home path, and the username are all **CLEAN**.
