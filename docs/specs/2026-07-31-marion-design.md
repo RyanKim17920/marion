@@ -588,7 +588,7 @@ marion's permission queue** (§5.6). Cancel with `{"type":"control_cancel_reques
 > **UNVERIFIED — and M1 depends on it.** This is established from the SDK source and the binary's
 > strings, **not** from the S1 replay: `tests/fixtures/s1/stdout.jsonl` contains **zero** inbound
 > `control_request` frames, because the run used `--allowed-tools ""` so `can_use_tool` could never
-> fire. The demux map and the whole permission path are designed on decompilation. **M1 must
+> fire. The demux map, the response half, and the hook-callback / `request_user_dialog` frames are designed on decompilation — the `can_use_tool` **ask** frame itself was observed in round 14 (above, and §11 item 14). **M1 must
 > exercise a real `can_use_tool` round-trip and emit a fixture** — it is the third M1 debt
 > alongside the pty re-confirmation and `SubagentStop`.
 
@@ -1185,7 +1185,10 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    loses it for the whole process**: a second turn's `system/init` still reported `pending`.
    Waiting for `system/init` alone is insufficient — that very frame is what reports `pending`.
    M1's root would fail on its single load-bearing call, with an error naming the tool rather
-   than the real cause.
+   than the real cause. **The gate is bounded**: wait at most **30 s**; a server still `pending`
+   at expiry is a spawn error exactly like `failed`. No other bound is running here — the child's
+   contract timeout starts at `Spawned` (step 9) and a root's bound only runs while `Blocked` — so
+   without this the one unbounded wait in M1 would sit on its most load-bearing path.
 9. `Lifecycle::Spawned` with static caps, refined if a handshake exists.
 10. Events stream into the EventLog immediately and continuously, watched or not.
 
@@ -1424,14 +1427,16 @@ Two rules make it more than bookkeeping:
 
 **`status` covers every terminal, including involuntary ones.** `ResultStatus` is the same set as
 §3.2's `ExitStatus`, `Killed` included, so an externally terminated child (§7.8) has a
-representable contract and is never recorded as a normal completion. Two expiries of the same
-`timeout` are distinguished, because §7.6's invariant turns on it:
+representable contract and is never recorded as a normal completion. **Four** expiries of the same
+`timeout` are distinguished **by the node's `NodeState`** — not by whether a process exists, since
+§7.6 notes a held node's process is often still alive — because §7.6's invariant turns on it:
 
 | situation at expiry | `status` | flags |
 |---|---|---|
 | node was **`Running`** (a turn in flight) when the bound expired | `TimedOut` | — |
-| node was **`Blocked(Descendants)`** when the bound expired — *regardless of whether its process was still alive*, which §7.6 says it often is | `Unreported` | `held_to_timeout: true` |
+| node was **`Blocked(Descendants)`** when the bound expired — *regardless of whether its process was still alive*, which §7.6 says it often is | `Unreported` — or, for a **root**, its ordinary derived status, since `Unreported` is unreachable for it (§7.6 step 3) | `held_to_timeout: true` |
 | node had **stopped and was not held** (between steps 2 and 5, no live descendants) | `Unreported` | `held_to_timeout: false` |
+| node was **`Blocked(Permission)` or `Blocked(Elicitation)`** — waiting on an answer that never came. **marion kills the process first**, as in the `Blocked(Descendants)` case: it is provably alive and mid-turn, and emitting `Exited` over it would break §8/L1's terminality | `TimedOut` | `held_to_timeout: false` |
 
 **An `Orphaned` node's contract has `completion: None`**, and that is deliberate: `Orphaned` is a
 `ReapState` meaning marion lost the process without observing its exit (§7.2), so no `ResultStatus`
@@ -1450,8 +1455,10 @@ for the resumed run; the original stays immutable with its `Completion` intact.
 and `scope_requested` verbatim from the superseded one** — a user resume authors none of them,
 which is what preserves "criteria exist before the work and the worker cannot edit them" on a path
 that has no requesting agent and no `spawn` payload. `base_commit` and `timestamps.spawned` are
-taken fresh. If the original `requester` is itself terminal, the resumed `Completion` is surfaced
-**unclaimed** per §7.5. The audit trail is
+taken fresh. **A resumed `Completion` is surfaced *unclaimed* regardless of the requester's state** (§7.5): a
+resume is a `node/prompt`, not a `spawn`, so there is no outstanding tool call to return into —
+the original `spawn` already returned the first contract — and emitting a tool result with no
+pending call id is not constructible on either M1 harness. The audit trail is
 therefore append-only across resumes — a run that was reported, resumed, and reported again shows
 both, rather than the first result being silently overwritten by the second.
 
@@ -1461,7 +1468,7 @@ so precedence is the specification, not an implementation detail:
 
 | # | condition | `status` |
 |---|---|---|
-| 1 | terminated by something done *to* the node | `Cancelled` (`cancel`) · `TimedOut` (bound expired with the node `Running`) · `Killed` (external, §7.8) |
+| 1 | terminated by something done *to* the node | `Cancelled` (`cancel`, and `node/kill` — a user's deliberate termination, with `ProcessExit.description` recording marion as the sender) · `TimedOut` (bound expired with the node `Running`) · `Killed` (external and unattributable, §7.8) |
 | 2 | no report arrived and no `--output-schema` document parsed | `Unreported` |
 | 3 | any `verification` command exited non-zero **or was signalled**, **or** the child process exited non-zero **or died on a fault signal** (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT — see the partition below; an unattributable SIGKILL/SIGTERM/SIGHUP is row 1's `Killed`, not this) | `Failed` |
 | 4 | otherwise | `Ok` |
@@ -1866,8 +1873,10 @@ node's timeout, so the whole procedure is finite on every branch.
 `held_to_timeout` is set. *Reaching* step 5 with live descendants is normal — that is what the
 re-check above exists for. Any other **agent-initiated** route to an `Exited{Unreported}` that has
 a non-terminal descendant is a bug in the implementation, and §8/L1 tests exactly that — with the
-one exemption above for a node that never entered step 2 at all (a crash), which is not
-agent-initiated in any meaningful sense even though its status lands in L1's constrained set.
+one exemption above for a node whose process died before it could reach step 5 (a crash), which
+is not agent-initiated in any meaningful sense even though its status lands in L1's constrained
+set. **A node that merely *skipped* steps 2–4 for want of a hook is not exempt** — it reaches
+step 5 and is gated there.
 
 **Do not use `additionalContext`.** On Claude Code it produces a turn, but the injected text has
 **no stream frame of its own**: it is delivered as a system-reminder, so the turn appears as
@@ -2177,7 +2186,7 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   (returning a handle) is M2+. `TaskContract.timeout` bounds the block; on expiry `spawn` returns
   the contract with `status: TimedOut` if the child was `Running`, `Unreported` with
   `held_to_timeout: true` if it was `Blocked(Descendants)`, or `Unreported` with
-  `held_to_timeout: false` if it had stopped owing no hold (§6.7's three expiry cases).
+  `held_to_timeout: false` if it had stopped owing no hold (§6.7's four expiry cases, the fourth being an unanswered permission).
   **On a `TimedOut` expiry marion kills the child before `spawn` returns** — by signalling the
   process handle held in its `Session` (§5.2), since M1's child has **no `DisplayPlane`** and so no
   `kill()`; `ControlPlane::shutdown` is the *graceful* path and is deliberately not used here — so the node is
@@ -2232,8 +2241,12 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   **The two bounds measure different things, and must:**
   - **A child's `TaskContract.timeout` is a total-task bound**, running from `Spawned`. It has to
     be, or a child that works forever is never `TimedOut` and the blocking `spawn` never returns.
-    **`spawn` clamps the child's `timeout` to the requester's remaining bound**, and **errors rather
-    than truncating silently** when the remainder is too small to be useful. Without the clamp,
+    **`spawn` clamps the child's `timeout` to the requester's remaining bound — but only when the
+    requester *has* one**, i.e. a node with a `TaskContract`, and **errors rather than truncating
+    silently** when the remainder is under **30 s**. **A root is never clamped against**: its bound
+    is a per-episode `Blocked`-only budget, not a remaining wall-clock allowance (below), so
+    `marion run --timeout 60` — which §9 blesses — must not truncate or refuse M1's single
+    `spawn`. Without the clamp,
     nesting is broken on defaults at every depth below one: an intermediate node spawned at t=0
     with 900 s spawns its own child at t=100 with 900 s, so the parent expires at 900 while blocked
     in `spawn` and is killed before the grandchild's contract at 1000 could ever reach it. §6.1
@@ -2574,6 +2587,7 @@ design decision.
 | `codex exec` is one-shot, so there is no session to `continue_()` | **CORRECTED (round 12).** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0. `caps.resume` is `false` for that node because the *surface* caps it (§3.4), not because the harness cannot resume. |
 | Tool compilation targets `--tools`, with marion's MCP tools appended there | **CORRECTED (round 12).** `--tools` is the *availability* axis over built-in tools and does not gate MCP tools at all; `--allowedTools` is the *permission* axis and is where `mcp__marion__*` must go. Compiling into `--tools` alone leaves M1's root unable to call `spawn`. |
 | Starting the process and writing the prompt is enough to spawn a `headless` child | **CORRECTED (round 14).** Measured on 2.1.220: an injected MCP server is still `pending` when the first turn begins, the request carries `tools: []`, and the call fails `No such tool available` — **and it stays `pending` for the life of the process**. §6.1 gains a readiness gate. |
+| The expiry table's three cases are exhaustive | **CORRECTED (round 15).** A node whose bound expires in `Blocked(Permission)`/`Blocked(Elicitation)` matched none of them — a case whose process is provably alive, so writing `Exited` over it would break terminality. Fourth row added, with the kill-first rule. |
 | The L1 exemption covers any node that never entered step 2 | **NARROWED (round 15).** Too broad: M1's `codex exec` child deliberately skips step 2, so that wording exempted its ordinary *voluntary* unreported exit and would have let an implementation violate descendant-gating while passing the L1 test. The exemption is now about lost opportunity — a process that died before it could reach step 5. |
 | The inbound `can_use_tool` path needs nothing beyond the bidirectional stream | **CORRECTED (round 14).** It needs `--permission-prompt-tool stdio`, an argv flag absent from `--help`. Without it a non-allowlisted call is auto-denied in-process as an `is_error` `tool_result` marion never sees — so `Blocked(Permission)`, the root's bound, and M1's owed round-trip fixture were all unreachable. |
 | `GET /models` gates every Codex startup | **NARROWED (round 14).** TUI/app-server only. `codex exec` never issues it — an `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses` (0.146.0). M1's child therefore never exercises that endpoint. |

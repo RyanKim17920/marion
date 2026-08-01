@@ -125,7 +125,7 @@ bytes, all on 2026-08-01:**
 
 Every one was found by audit; **none was caught by §2's original fast pass**, which is why §2 now
 carries the display-name and OSC-777 rows. The `Redaction applied` column below describes the
-2026-07-31 pass **only**; all three later passes are recorded in the **residue list**, not in the
+2026-07-31 pass **only**; all four later passes are recorded in the **residue list**, not in the
 table rows.
 
 | Dir | What was recorded | Provider | Recorded | Human read | Redaction applied |
@@ -178,6 +178,12 @@ table rows.
   a site no CSI-oriented scan reaches) → stable fakes; weekly-limit remaining (8 B) and the two
   reset dates (5 B each) → fixed placeholders. Same re-derivation: nothing cited changed. Lengths
   and replacements only — never the original values (see `s2/NOTES.txt`).
+- **Fourth pass, 2026-08-01 (round 14), equal-length**: the `s2` `/status` **usage bar** (7 of 20
+  glyphs filled → 20 empty, 60 B — the bar still drew the real percentage beside the text the
+  third pass had replaced) and the **reset times** beside the already-scrubbed dates (5 B each).
+  In `s5` the same facts were carried as `usedPercent` and `resetsAt`, both zeroed. Nothing cited
+  changed: all five s2 lengths, the `?1049h/l` offsets, `CSI 3J` counts, every DECSTBM figure, and
+  probe3 A=93 / B=87 / probe2 `turnCount`=3 all re-derive.
 - **`s5`'s host `serverName` was scrubbed** to `host.invalid` in the fourth pass — a `*.local`
   hostname is a §2 scan class and was in none of the earlier records.
 - **`s2` and `s5` retain the operator's terminal emulator brand and build** — `s2` in four
@@ -204,7 +210,7 @@ table rows.
   rendered in the `s2` 0.146.0 14-row capture's **`/mcp`** panel, which also lists the operator's
   MCP server name, `Auth: Bearer token`, and 35 tool names. None are credentials.
 
-### Verification run, 2026-08-01 (re-run after the third redaction pass)
+### Verification run, 2026-08-01 (re-run after the **fourth** redaction pass)
 
 **This is the authoritative run.** The original pass was dated 2026-07-31 and therefore described
 the *pre-repair* bytes; the `s2` captures changed on 2026-08-01 (§3 warning), so every scan and
