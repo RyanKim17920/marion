@@ -2011,7 +2011,7 @@ implementer who codes it literally will hold nodes that should already be termin
   wait for them, or report now with what you have?"* Both answers are legitimate — **an agent may deliberately
   report early**, e.g. it has the answer and the child is doing optional follow-up work. What is
   not legitimate is exiting *without choosing*.
-- Choosing to report early marks the contract `reported_early: true` and lists the still-running
+- Choosing to report early marks **both `Node.reported_early` and the contract's** `reported_early: true` (§3.2 keeps the flags on the node so a contract-less root is still evaluable, though a root can never *set* this one — it cannot `report` at all, and its exemption is `held_to_timeout`) and lists the still-running
   descendants, so a reader can tell "done" from "done for now".
 - If the agent neither waits nor reports, marion holds the node in `Blocked` — but **the hold is
   bounded by the node's own timeout** — `TaskContract.timeout` for a task node, the node-level
@@ -2299,7 +2299,12 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    it is not a fresh one. The node never left `Blocked`, so there was no exit to discard the
    episode, and granting a full fresh bound on each re-entry would let a descendant that keeps
    producing live grandchildren pin a root open one episode at a time: the unbounded ancestor hold
-   this whole procedure exists to kill.) Otherwise: synthesize from the
+   this whole procedure exists to kill.) Otherwise: **confirm the process is actually gone before emitting anything.** Step 5 is reachable
+   with a live process — a headless Claude Code node spans turns in one process (§5.2), and the
+   no-hold path added for a node whose descendants had already finished arrives here directly — and
+   emitting `Exited` over a running process breaks §8/L1's terminality exactly as it would in the
+   `Blocked` cases. So: if the process is still alive, marion kills it first, as §6.7's expiry rows
+   do, and records that in `ProcessExit.description`. Then synthesize from the
    transcript tail, mark `Exited{Unreported}` — or, for a root, its ordinary derived status, since
    it owed no report — and surface visibly. **Never silently promote a status message to an
    answer.**
