@@ -157,7 +157,7 @@ recorded in the **residue list**, not in the table rows.
   after an audit found them: the Claude welcome banner's given name (4 B → `User`), the
   Codex `/status` plan and credits (`Pro Lite` → `Plan ABC`, `1817 credits` → `0000 credits`),
   the Claude account tier (`Claude Max` → `Plan  ABC `), and the recording session's UUID
-  (`8e531002-…` → `00000000-0000-4000-8000-000000000003`, including its ellipsized 34- and 14-byte
+  (36 B → `00000000-0000-4000-8000-000000000003`, including its ellipsized 34- and 14-byte
   renderings) — the same id, also scrubbed in `s5`, that `s4` had already replaced with `<UUID>`.
   All five file lengths, the `?1049h/l` offsets (67 / 1900 / 5866 / 38963 / 43372), `CSI 3J` counts
   and every DECSTBM figure re-derive unchanged.
