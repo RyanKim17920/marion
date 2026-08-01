@@ -683,8 +683,9 @@ connections to.
 > thread emits between the `thread/read` snapshot and the moment `thread/resume` takes effect
 > appears in neither the snapshot nor the subscription. marion therefore treats the two as
 > overlapping sources — it records the snapshot's last item id, and on the first subscribed events
-> **re-reads unconditionally once `thread/resume` has taken effect**, merging the second snapshot
-> with the subscription and deduplicating by item id. Unconditionally, not "if the ids look
+> **re-reads unconditionally once `thread/resume` has taken effect** — on the resume response, not
+> on the first subscribed event, which may never arrive on a thread that has gone quiet — merging
+> the second snapshot with the subscription and deduplicating by item id. Unconditionally, not "if the ids look
 > non-contiguous": item ids are not guaranteed dense, so a gap is not reliably detectable from the
 > ids alone, and a second read is cheap next to silently losing a turn.
 > Doing it the other way round — subscribing first, then backfilling — trades a lost-event window
@@ -1653,7 +1654,9 @@ Two rules make it more than bookkeeping:
   files left untracked:
 
   > `changed_paths` = `git diff --name-only <base_commit>` ∪ the untracked set from
-  > `git status --porcelain -z --untracked-files=all`, both taken in the workspace.
+  > `git status --porcelain -z --untracked-files=all`, both taken in the workspace — and **both
+  > against the scratch `GIT_INDEX_FILE`**, never the workspace's own index, so neither command can
+  > disturb what the user sees.
 
   **`--ignored` is deliberately absent, and that is a stated boundary, not an oversight**: a write
   to a path the repo ignores (a build directory, a vendored dependency tree, a local credentials
@@ -2008,8 +2011,11 @@ testable invariant is:
 > the second. A `Failed` arising from a failed `verification` command, or from a non-zero exit
 > *after* the node reported or answered step 2, is **not** exempt: there the node did get to choose.
 > **"Died before it could reach step 5" and "without an observed voluntary stop" are the same
-> predicate stated twice**: the gate is step 5, and a node reaches it by concluding — a `report`, or
-> an answer to step 2. So "without an observed voluntary stop" means without an observed
+> predicate stated twice**: the flag asks whether marion observed the node *stop of its own accord*
+> — a `report`, an answer to step 2, or (for a hookless child) simply an orderly end of turn that
+> marion saw. Any of those means the node was not robbed of the chance, so `died_before_gate` is
+> `false` **even though step 5 may then hold it** — reaching the gate is not the same as passing
+> through it, and a hookless voluntary stop reaches it (above). So "without an observed voluntary stop" means without an observed
 > *conclusion*, and a `report` counts as one** — a child that reports and then dies non-zero has `died_before_gate:
 > false`, because the gate's question ("did this node get to decide?") was already answered yes.
 > The flag is not "did the process exit cleanly"; a node can die messily having concluded, and that
@@ -2158,8 +2164,10 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      **The hold is entered only if a descendant is actually non-terminal at that instant**; if none
      is — the node asked to wait for children that already finished, or the last one terminated in
      the gap — there is nothing to wait for, so marion skips both the hold and step 4 and goes
-     straight to step 5, accepting the node's own conclusion. Step 4's two branches both presuppose
-     a hold that really happened, and neither would fit here.
+     straight to step 5, accepting the node's own conclusion. Step 4 is still reachable without a
+     hold — step 2's *stops again with no live descendants* branch goes there directly — but its
+     **descendants-completed** variant presupposes a hold, and that is the variant that would not
+     fit here; the grace-turn variant is for a node that never answered, which this node did.
      (`TaskContract.timeout`, or the root's node-level bound — §9).
      - descendants finish inside the bound → continue to step 4.
      - **the bound expires first → `held_to_timeout: true`**. **marion first terminates the held
