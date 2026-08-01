@@ -668,7 +668,7 @@ Order matters: resume delivers **no replay**, so `thread/read` must come first. 
 joiner with `thread/read` alone received only 2 `thread/status/changed` events and zero `item/*`; after `thread/resume`,
 full parity with the originator, who was undisturbed. Fanout re-reads the subscriber set per
 event, so **mid-turn attach works** — a client joining 2602 ms into a streaming turn received
-**87 of the originator's 93** events, including live deltas, without interrupting the turn.
+**87 events against the originator's 93** — 86 of the originator's, plus one `remoteControl/status/changed` of its own (93 − 7 pre-attach + 1) — including live deltas, without interrupting the turn.
 Multiple concurrent subscribers work, including after the originator disconnects — fixtured:
 probe2's clients resume thread `019fb989-737f-…`, which probe1 created and then closed both of its
 connections to.
@@ -1947,7 +1947,8 @@ implementer who codes it literally will hold nodes that should already be termin
 
 - A node's `Exited` is **held** while any descendant is non-terminal — *unless* the node reported
   early or the hold bound expired (L1's exemptions, below); those two are how a parent legitimately
-  outlives a live descendant, and this bullet is the rule they are exemptions *to*. The registry already knows
+  terminates while a descendant is still running — the descendants outlive the *parent*, not the
+  other way round (§7.5) — and this bullet is the rule those two are exemptions *to*. The registry already knows
   this — it owns the tree — so the check is a subtree scan, not a heuristic.
 - On a stop with live descendants, marion does not accept the exit. **This is not an extra
   re-prompt: it is the *wording* of the first `Stop`-hook fire** (step 2 below), whose `reason` is
@@ -2014,7 +2015,8 @@ testable invariant is:
 > skips step 2 (no usable hook, §9), so that wording exempted its ordinary voluntary unreported
 > exit and would have let an implementation violate descendant-gating while passing the L1 test.
 > **A hookless node that stops voluntarily is not exempt**: it goes to step 5, whose descendant
-> re-check and bounded hold apply to it exactly as to any other node. Skipping steps 2–4 for want
+> re-check sends it into **step 3's** bounded hold exactly as for any other node — step 5 re-checks,
+> step 3 holds; naming the hold as step 5's is shorthand for that loop. Skipping steps 2–4 for want
 > of a mechanism never skips the gate.
 >
 > **Both status values are needed, because §6.7's row 2 precedes row 3.** A child that segfaults
