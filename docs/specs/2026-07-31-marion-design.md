@@ -504,7 +504,7 @@ trait ControlPlane {           // any surface with an event source (typed or deg
 ```
 
 **`compile()` lives on `HarnessAdapter`, not `ControlPlane`**, because `opaque` has no `ControlPlane` yet
-still needs an `Invocation` for `DisplayPlane::spawn_pty` — and §6.1 step 6 compiles on every spawn
+still needs an `Invocation` for `DisplayPlane::spawn_pty` — and §6.1 step 5 compiles on every spawn
 without exception.
 
 **`live_channel` is the authorization predicate**, not `proc.is_some()`: for a surface marion
@@ -1645,7 +1645,17 @@ testable invariant is:
 > (`reported_early == true`) or was held to its timeout bound (`held_to_timeout == true`)**.
 > Involuntary terminals are exempt throughout, since they describe things done *to* a node:
 > `Exited{Killed}`, `Exited{Cancelled}`, `Exited{TimedOut}`, **and any `Exited{Failed}` *or*
-> `Exited{Unreported}` on a node that never entered step 2** — no `Stop`-hook fire and no report.
+> `Exited{Unreported}` on a node whose process died before it could reach step 5** — a crash, an
+> abort, an OOM: the node never got the chance to choose, and marion never got the chance to run
+> the descendant check.
+>
+> **The exemption is about lost opportunity, not about which steps ran.** An earlier phrasing —
+> "a node that never entered step 2" — was too broad: M1's own `codex exec` child *deliberately*
+> skips step 2 (no usable hook, §9), so that wording exempted its ordinary voluntary unreported
+> exit and would have let an implementation violate descendant-gating while passing the L1 test.
+> **A hookless node that stops voluntarily is not exempt**: it goes to step 5, whose descendant
+> re-check and bounded hold apply to it exactly as to any other node. Skipping steps 2–4 for want
+> of a mechanism never skips the gate.
 >
 > **Both status values are needed, because §6.7's row 2 precedes row 3.** A child that segfaults
 > without reporting matches row 2 first, so its status is `Unreported`, not `Failed` — exempting
@@ -2148,18 +2158,19 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   skipped (no usable hook), so step 3 is never entered *from an answer*, and step 4 by its own
   `caps.resume` gate. **Step 3's hold is still reachable from step 5** if the descendant re-check
   finds a live descendant, and behaves exactly as §7.6 specifies: it is a marion-side hold and
-  needs no harness mechanism at all. Step 5's
-  descendant re-check still runs; with no live descendant it proceeds immediately to
+  needs no harness mechanism at all — with no live descendant it proceeds immediately to
   `Exited{Unreported}`.
-  This is a property of the surface, not a weakening of §7.6: the descendant-gating and re-prompt
-  machinery lands with the app-server adapter in M4, where a child has a hook and a session.
-  Hook-driven re-prompting is *implemented* in M1 on the **root**, which is Claude Code and has
-  both. But: with `spawn` blocking and backgrounding deferred to M2, a passing M1 run never
-  fires it.
+
+  **This is a property of the surface, not a weakening of §7.6, and specifically not a weakening
+  of descendant-gating**, which applies to this child in full through step 5. What M4's app-server
+  adapter adds is the *re-prompt* machinery — steps 2–4 — which needs a hook and a session this
+  surface does not have. Hook-driven re-prompting is *implemented* in M1 on the **root**, which is
+  Claude Code and has both; but with `spawn` blocking and backgrounding deferred to M2, a passing
+  M1 run never fires it.
 - **`CODEX_HOME` for the child is `<agent-dir>/config/`**, created by marion and deleted with the
-  node (§6.4). M1 sets it even though it injects configuration by `-c` flags, so that the child
-  cannot read or write the user's real `~/.codex` — §6.4's "marion never mutates the user's real
-  harness config" would otherwise rest on the `-c` flags alone. This costs nothing here because
+  node (§6.4). It is doing two jobs: it keeps the child out of the user's real `~/.codex`, and it
+  is **where the MCP declaration lives** (above), which is why `--ignore-user-config` must not be
+  passed. This costs nothing here because
   the child authenticates against the canned provider, so the `CLAUDE_CONFIG_DIR`-style auth
   coupling (§11 item 3) does not bind.
 - **`spawn` blocks** and returns the completed `TaskContract` as its tool result. Backgrounding
@@ -2563,6 +2574,7 @@ design decision.
 | `codex exec` is one-shot, so there is no session to `continue_()` | **CORRECTED (round 12).** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0. `caps.resume` is `false` for that node because the *surface* caps it (§3.4), not because the harness cannot resume. |
 | Tool compilation targets `--tools`, with marion's MCP tools appended there | **CORRECTED (round 12).** `--tools` is the *availability* axis over built-in tools and does not gate MCP tools at all; `--allowedTools` is the *permission* axis and is where `mcp__marion__*` must go. Compiling into `--tools` alone leaves M1's root unable to call `spawn`. |
 | Starting the process and writing the prompt is enough to spawn a `headless` child | **CORRECTED (round 14).** Measured on 2.1.220: an injected MCP server is still `pending` when the first turn begins, the request carries `tools: []`, and the call fails `No such tool available` — **and it stays `pending` for the life of the process**. §6.1 gains a readiness gate. |
+| The L1 exemption covers any node that never entered step 2 | **NARROWED (round 15).** Too broad: M1's `codex exec` child deliberately skips step 2, so that wording exempted its ordinary *voluntary* unreported exit and would have let an implementation violate descendant-gating while passing the L1 test. The exemption is now about lost opportunity — a process that died before it could reach step 5. |
 | The inbound `can_use_tool` path needs nothing beyond the bidirectional stream | **CORRECTED (round 14).** It needs `--permission-prompt-tool stdio`, an argv flag absent from `--help`. Without it a non-allowlisted call is auto-denied in-process as an `is_error` `tool_result` marion never sees — so `Blocked(Permission)`, the root's bound, and M1's owed round-trip fixture were all unreachable. |
 | `GET /models` gates every Codex startup | **NARROWED (round 14).** TUI/app-server only. `codex exec` never issues it — an `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses` (0.146.0). M1's child therefore never exercises that endpoint. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
