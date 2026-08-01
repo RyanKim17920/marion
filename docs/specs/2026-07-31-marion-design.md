@@ -1233,11 +1233,12 @@ token off `ps` (below). M1's Codex child takes the file placement for exactly th
 impractical. The command is `marion-supervisor mcp`, a thin stdio bridge to the supervisor socket.
 
 **The token rides the MCP server declaration's `env` block as `MARION_TOKEN`**, which marion writes at
-config-injection time — **the only channel that is both available and not strictly worse**: an
-argv flag in the same declaration would also reach the bridge, but the placement table below rejects
-it as strictly worse for nothing gained (argv is world-readable via `ps`; `env` at least is not).
-The two mechanisms one would *otherwise* reach for are unavailable outright, because **marion does
-not spawn the bridge: the harness does.** That rules out the two mechanisms one would otherwise reach for. An inherited
+config-injection time — **the only channel available at all**. An argv flag in the same declaration
+would reach the bridge too, and the placement table below prefers `env` on principle; but note the
+⚠ below it, which is what actually decides the matter: on the fileless path the declaration itself
+lands in argv, so `env` and an argv flag are **equally exposed to `ps`**, and the real protection is
+writing the declaration to `<agent-dir>/config/` instead. The two mechanisms one would *otherwise*
+reach for are unavailable outright, because **marion does not spawn the bridge: the harness does.** That rules out the two mechanisms one would otherwise reach for. An inherited
 fd is impossible (marion is not the bridge's parent, extra fds are `CLOEXEC`, and no MCP client
 config has a "pass fd N" field), and the bridge's stdin is already the MCP JSON-RPC transport the
 harness writes to.
@@ -1718,10 +1719,19 @@ Two rules make it more than bookkeeping:
   exclusion): tracked files added, modified, deleted or renamed — committed or not — plus
   files left untracked:
 
-  > `changed_paths` = `git diff --name-only --no-renames <base_commit>` ∪ the untracked set from
-  > `git status --porcelain -z --untracked-files=all`, both taken in the workspace — and **both
-  > against the scratch `GIT_INDEX_FILE`**, never the workspace's own index, so neither command can
-  > disturb what the user sees.
+  > `changed_paths` =
+  > `git diff --name-only --no-renames <base_commit> HEAD`   *(what the child committed)*
+  > ∪ `git diff --name-only --no-renames HEAD`               *(uncommitted, tracked)*
+  > ∪ the untracked set from `git status --porcelain -z --untracked-files=all`
+  >
+  > all taken in the workspace, and the last two **against the scratch `GIT_INDEX_FILE`**, never the
+  > workspace's own index, so neither can disturb what the user sees.
+
+  **Three terms, not two, and the split is deliberate.** Diffing `<base_commit>` straight against
+  the *worktree* makes the result depend on what the scratch index happens to contain, which is
+  exactly the kind of subtlety that hides a committed creation under an ignored path. Comparing
+  `<base_commit>..HEAD` for committed work and `HEAD..worktree` for the rest keeps each term's
+  meaning independent of index state.
 
   **`--ignored` is deliberately absent, and that is a stated boundary, not an oversight.** It bites
   only for **untracked** paths — ignore rules do not apply to an already-tracked file, so every
