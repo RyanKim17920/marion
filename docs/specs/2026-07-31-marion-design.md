@@ -1135,8 +1135,8 @@ Four consequences worth stating, since each closes a hole the flat rule left ope
   `Unreported`); the point is that a full bound is burned on a deadlock marion can refuse up front.
   Reading a parent's state is fine; *blocking* on it inverts the topology's direction of control.
   (`wait` on a root would also have no contract to return.) **Two `allow_peers` siblings can close
-  the same cycle laterally** — A waits on B while B waits on A, and both burn a full bound before
-  landing `TimedOut` — so **marion refuses any `wait` that would create a cycle in the
+  the same cycle laterally** — A waits on B while B waits on A, which without the refusal below
+  would burn a full bound on each before landing `TimedOut` — so **marion refuses any `wait` that would create a cycle in the
   outstanding-wait graph**, and logs the refusal like any other denied call. Descendants-only makes
   the graph acyclic over the tree; the peer grant would otherwise silently reintroduce cycles.
 - **`cancel` toward an ancestor is denied and logged, as lateral `cancel` is.** The
@@ -1574,7 +1574,8 @@ struct Completion {                      // assembled and written ONCE, at the n
     narrative: Option<Capped<String>>,   // marion-owned field, child-supplied source (§9) — and
                                          //   the ONLY contract field a foreign agent's text
                                          //   fills, hence Capped (cap rule 0 below):
-    narrative_synthesized: bool,         //   false = the child's own report text; true = marion
+    narrative_synthesized: bool,         //   meaningful only when narrative is Some: false = the
+                                         //   child's own report text; true = marion
                                          //   synthesized it from the transcript tail because no
                                          //   report arrived (§7.6 step 5). Never conflate them.
     result_commits: Vec<Oid>,
@@ -2475,7 +2476,10 @@ flagged and its cached caps invalidated.
 
 `claude daemon stop` terminates background sessions and has `--any` / `--keep-workers`. marion does
 not depend on it but must tolerate it acting on marion's children: an unexplained child death is
-`Exited{Killed}` with "external termination", never a normal completion.
+`Exited{Killed}` with "external termination", never a normal completion — and, being involuntary,
+it also sets `died_before_gate` if the node had not already concluded (§7.6). The two are not
+alternatives: `Killed` is the *status*, `died_before_gate` the *exemption flag* that keeps L1 from
+faulting on a terminal the node never chose.
 
 ### 7.9 Transcript hazards
 
