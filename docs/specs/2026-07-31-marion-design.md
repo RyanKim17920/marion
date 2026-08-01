@@ -2419,7 +2419,17 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `held_to_timeout: false` if it had stopped owing no hold — and, from M4 on, `TimedOut` if it was `Blocked(Permission)`/`Blocked(Elicitation)`, which M1's `codex exec` child cannot reach since it has no approval channel (§6.7's four expiry cases).
   **On a `TimedOut` expiry marion kills the child before `spawn` returns** — by signalling the
   process handle held in its `Session` (§5.2), since M1's child has **no `DisplayPlane`** and so no
-  `kill()`; `ControlPlane::shutdown` is the *graceful* path and is deliberately not used here — so the node is
+  `kill()`; `ControlPlane::shutdown` is the *graceful* path and is deliberately not used here.
+  **Signal the process *group*, not the pid.** `codex exec` runs tool calls as its own child
+  processes, and on POSIX a SIGKILL delivered to a pid is not delivered to its descendants — so
+  killing the pid alone leaves the child's own `exec_command` grandchildren running, which is
+  precisely the untracked runaway this rule exists to prevent. marion therefore starts every child
+  in **its own process group** (`setpgid` in the pre-exec hook, which `pty-process` and
+  `std::os::unix::process::CommandExt` both expose) and expires it with `killpg`. The new group is
+  what makes the group kill safe: without it the child would share marion's group and `killpg`
+  would signal the supervisor itself. *(Stated from POSIX semantics and the spawn API, **not**
+  measured — an M1 probe should confirm it against a real `codex exec` running a long tool call;
+  §11 item 18.)* So the node is
   `Exited{TimedOut}` and the contract is never terminal over a live process — which would
   contradict §8/L1's `Exited` terminality and leave M1 with an untracked runaway. `exit` records
   marion's own signal, and `ProcessExit.description` says so. This is deliberately the opposite of
@@ -2841,6 +2851,12 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     how it is spelled. An allowlist may be added on top later; it does not substitute. It is the one place in this design where a string from
     the agent channel reaches a shell with the user's privileges, and §3.1 item 2's rule (messages
     from other agents are data, never authority) does not currently reach it.
+18. **The `TimedOut` kill's process-group behaviour is unmeasured.** §9 specifies `setpgid` at
+    spawn plus `killpg` at expiry, reasoned from POSIX semantics: a SIGKILL to a pid does not reach
+    its descendants, so killing `codex exec` alone would leave its `exec_command` grandchildren
+    running. **No probe in this repo demonstrates it** — an attempt during the round-18 audit was
+    blocked by the sandbox, and nothing was substituted for the measurement. Cheap to settle in M1:
+    spawn a child whose tool call sleeps, expire it, and check the grandchild's pid.
 
 ---
 
