@@ -181,7 +181,7 @@ struct Capabilities {
     usage: bool,          // reports token/cost accounting
 }
 
-fn static_caps(harness: &Harness, version: &str, s: &ExecutionSurfaces) -> Capabilities;
+fn static_caps(harness: Harness, version: &str, s: &ExecutionSurfaces) -> Capabilities;
 fn refine(&self, session: &Session, base: Capabilities) -> Capabilities;
 ```
 
@@ -391,7 +391,8 @@ trait DisplayPlane {           // any surface with a terminal
     fn kill(&self, h: &PtyHandle) -> Result<()>;
 }
 
-trait Harness {                // every surface, including launch-only and opaque
+trait HarnessAdapter {         // every surface, including launch-only and opaque
+                               // (named to avoid colliding with the `Harness` enum on Node)
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation>;
     fn surfaces(&self, spec: &LaunchSpec) -> ExecutionSurfaces;
 }
@@ -409,7 +410,7 @@ trait ControlPlane {           // any surface with an event source (typed or deg
 }
 ```
 
-**`compile()` lives on `Harness`, not `ControlPlane`**, because `opaque` has no `ControlPlane` yet
+**`compile()` lives on `HarnessAdapter`, not `ControlPlane`**, because `opaque` has no `ControlPlane` yet
 still needs an `Invocation` for `DisplayPlane::spawn_pty` — and §6.1 step 6 compiles on every spawn
 without exception.
 
@@ -981,6 +982,27 @@ struct TaskContract {
 }
 ```
 
+The field types that **cross the wire** — the contract is `spawn`'s tool result and is persisted as
+`contract.json` (§4.3), so these are read by a language model and by a future replayer, and are
+therefore specified rather than left to the implementer:
+
+```rust
+struct RepoIdentity  { git_common_dir: PathBuf, head_branch: Option<String> }
+enum   Workspace     { Worktree { path: PathBuf, branch: String }, SharedCwd { path: PathBuf } }
+struct Command       { program: String, args: Vec<String>, cwd: PathBuf }
+struct CommandOutcome{ command: Command, exit_code: Option<i32>, stdout: String,
+                       stderr: String, duration: Duration, truncated: bool }
+struct ProcessExit   { code: Option<i32>, signal: Option<i32>, description: String }
+struct TaskTimestamps{ spawned: SystemTime, first_output: Option<SystemTime>,
+                       reported: Option<SystemTime>, exited: Option<SystemTime> }
+type   Patch         = String;   // unified diff, as produced by `git diff`
+```
+
+`stdout`/`stderr` are truncated to a per-run byte cap with `truncated: true` set, because a
+verification command's output enters an LLM's context. `exit_code: None` means the command was
+signalled; `ProcessExit.description` carries marion's own explanation ("external termination",
+§7.8) rather than being derived from the numbers.
+
 Two rules make it more than bookkeeping:
 
 - **`acceptance_criteria` and `verification` are authored at spawn, before the child runs.**
@@ -1434,9 +1456,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 
 *Decisions M1 needs that the rest of this document does not otherwise pin down:*
 
-- **"No daemon" means no *detached* supervisor.** The registry, event log, and control MCP run
-  in-process in the `marion` binary, which listens on the unix socket; `marion-supervisor mcp
-  --token …` is still a separate short-lived process (Claude Code spawns MCP servers as child
+- **"No daemon" means no *detached* supervisor.** The registry, the task audit trail, and the
+  control MCP run in-process in the `marion` binary, which listens on the unix socket;
+  `marion-supervisor mcp` is still a separate short-lived process (Claude Code spawns MCP servers as child
   processes with their own stdio, so there is no contention with the root's `stream-json` pipes)
   and it dials that socket. Splitting the supervisor out is M2's job.
 - **The Codex child uses `codex exec --json`**, not app-server. M1 proves the hop, not the
