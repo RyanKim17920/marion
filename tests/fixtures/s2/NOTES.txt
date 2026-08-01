@@ -26,7 +26,10 @@ rendered panels are column-aligned, so every substitution here MUST preserve byt
 Do not use the <HOME>/<USER> placeholders used elsewhere in tests/fixtures — they are a
 different length and would shift every offset after them.
 
-  - Email addresses -> equal-length placeholder ("redacted@example.invalid...").
+  - Email addresses -> equal-length placeholder. The placeholder is sized per site, so it
+    differs between captures: "redacted@e.invalid" (18 bytes) in the Claude panels,
+    "redacted@examp.invalid" (22 bytes) in the Codex /status panel. Match on
+    "redacted@" and not on a fixed domain.
   - Username "<name>" (7 bytes) -> "example" (7 bytes). Affects both real home paths
     (/Users/<name>/.codex/... in the codex /status panel) and the path-encoded scratch
     directory (.../-Users-<name>-Desktop-CODING-marion/...). All three /Users occurrences
@@ -34,8 +37,33 @@ different length and would shift every offset after them.
     length-changing substitution would have broken the cited offsets.
 
 Verified after redaction: file lengths, ESC[?1049h/l offsets, CSI 3J and CSI 2J counts,
-DECSET 2026 bracket counts and the DECSTBM region histogram are all unchanged.
+DECSET 2026 bracket counts, the probe sets (DA1/XTVERSION/CPR/OSC 10/11) and the DECSTBM
+region histogram are all unchanged.
 No API keys, tokens, or credential-bearing paths were present.
+
+  ⚠ CORRECTION, 2026-08-01 (audit round 5). The claim above was FALSE when first written,
+  for the DECSTBM histogram only. The original redaction ran an email regex over raw bytes
+  without anchoring to escape-sequence boundaries, so at 9 sites the match began *inside* a
+  CSI sequence and consumed its parameter bytes and terminator:
+      Claude: ESC[38;2;153;153;153m<email>  ->  ESC[38;2;153;153;r...  (SGR became DECSTBM)
+      Codex:  ESC[22m<email>                ->  ESC[r...              (SGR became DECSTBM)
+  A VT replaying the committed bytes therefore executed 3 scroll-region ops per affected
+  Codex capture that the harness never emitted, and the "histogram unchanged" line was
+  self-refuting: analyze.py cannot read .raw.bin at all (it parses an uncommitted .rec
+  format and silently returns zeros), so nothing had actually re-derived it.
+
+  Repaired 2026-08-01, length-preserving, in both .raw.bin and .cast. The eaten SGRs were
+  recoverable from context — the Claude line's next value uses an intact
+  ESC[38;2;153;153;153m, and Codex wraps every /status value in ESC[22m...ESC[2m — so the
+  control sequences are restored EXACTLY; only the email text is a placeholder, shortened
+  to keep each splice byte-for-byte the same length. Post-repair, re-derived:
+      offsets 67 / 1900 / 5866 / 38963 / 43372 and all five file lengths: unchanged
+      CSI 3J, CSI 2J, DECSET 2026 brackets, probe sets:                 unchanged
+      DECSTBM inside/total, 0.145.0 resize capture:   was 25/27  ->  22/24 (true value)
+      DECSTBM inside/total, 0.146.0 14-row capture:   was 29/29  ->  26/26 (true value)
+      DECSTBM inside/total, 0.146.0 resize capture:       16/18 (never corrupted)
+  Design doc §5.3 has been corrected to the true values. The 94-lines-scrolled figure on
+  line 18 above is NOT reproducible from this repo — see design doc §11 item 10.
 
 Tools (copied from the spike scratch dir, throwaway, not workspace code)
   ptyhost.py   pty.fork host: TIOCSWINSZ, scripted keystrokes/resizes, logs all raw bytes.

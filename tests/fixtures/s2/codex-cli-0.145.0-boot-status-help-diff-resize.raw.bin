@@ -31,7 +31,7 @@
 [39;49m[K[2m│  Directory:                          [22m/private/tmp/claude-501/-Users-example-Desktop-CODING-marion/…/s2/work[2m  │[39m[49m[0m
 [39;49m[K[2m│  Permissions:                        [22mWorkspace (Ask for approval)[2m                                            │[39m[49m[0m
 [39;49m[K[2m│  Agents.md:                          [22m<none>[2m                                                                  │[39m[49m[0m
-[39;49m[K[2m│  Account:                            [redacted@example.invalidx (Pro Lite)[2m                                       │[39m[49m[0m
+[39;49m[K[2m│  Account:                            [22mredacted@examp.invalid (Pro Lite)[2m                                       │[39m[49m[0m
 [39;49m[K[2m│  Collaboration mode:                 [22mDefault[2m                                                                 │[39m[49m[0m
 [39;49m[K[2m│  Session:                            [22m019fb983-2f58-7111-b730-853578128a6d[2m                                    │[39m[49m[0m
 [39;49m[K[2m│                                                                                                              │[39m[49m[0m
@@ -72,7 +72,7 @@
 [39;49m[K[2m│  Directory:                          [22m/private/tmp/claude-501/…/scratchpad/s2/work[2m                │[39m[49m[0m
 [39;49m[K[2m│  Permissions:                        [22mWorkspace (Ask for approval)[2m                                │[39m[49m[0m
 [39;49m[K[2m│  Agents.md:                          [22m<none>[2m                                                      │[39m[49m[0m
-[39;49m[K[2m│  Account:                            [redacted@example.invalidx (Pro Lite)[2m                           │[39m[49m[0m
+[39;49m[K[2m│  Account:                            [22mredacted@examp.invalid (Pro Lite)[2m                           │[39m[49m[0m
 [39;49m[K[2m│  Collaboration mode:                 [22mDefault[2m                                                     │[39m[49m[0m
 [39;49m[K[2m│  Session:                            [22m019fb983-2f58-7111-b730-853578128a6d[2m                        │[39m[49m[0m
 [39;49m[K[2m│                                                                                                  │[39m[49m[0m
@@ -113,7 +113,7 @@
 [39;49m[K[2m│  Directory:                          [22m/private/tmp/claude-501/-Users-example-Desktop-CODING-marion/…/scratchpad/s2/work[2m  │[39m[49m[0m
 [39;49m[K[2m│  Permissions:                        [22mWorkspace (Ask for approval)[2m                                                       │[39m[49m[0m
 [39;49m[K[2m│  Agents.md:                          [22m<none>[2m                                                                             │[39m[49m[0m
-[39;49m[K[2m│  Account:                            [redacted@example.invalidx (Pro Lite)[2m                                                  │[39m[49m[0m
+[39;49m[K[2m│  Account:                            [22mredacted@examp.invalid (Pro Lite)[2m                                                  │[39m[49m[0m
 [39;49m[K[2m│  Collaboration mode:                 [22mDefault[2m                                                                            │[39m[49m[0m
 [39;49m[K[2m│  Session:                            [22m019fb983-2f58-7111-b730-853578128a6d[2m                                               │[39m[49m[0m
 [39;49m[K[2m│                                                                                                                         │[39m[49m[0m

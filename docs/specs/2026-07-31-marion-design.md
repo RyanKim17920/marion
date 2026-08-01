@@ -677,8 +677,8 @@ byte 0.
 captures, `h`/`l` alternation is strict with **zero violations and zero unclosed brackets**.
 **Not every frame contains a CUP** — measured, `claude-boot-exit` has 1 of 8 without one and
 `claude-boot-help-status-resize` 3 of 19 — so an assertion harness must key on the bracket, never
-on cursor movement. In Codex, most DECSTBM changes fall inside a bracket (16/18 and 25/27 in the
-resize captures, 29/29 in the no-resize one); the ones outside are the `ESC[r` resets in the resize
+on cursor movement. In Codex, most DECSTBM changes fall inside a bracket (16/18 and 22/24 in the
+resize captures, 26/26 in the no-resize one); the ones outside are the `ESC[r` resets in the resize
 sequence, which sits between `?2026l` and `?2026h`. So the useful conclusion holds — a
 synchronized-output boundary never observes a half-applied scroll region — but the guarantee is
 about bracket placement, not CUP presence.

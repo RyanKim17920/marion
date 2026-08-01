@@ -39,7 +39,7 @@ Fast pass (run from the repo root):
 
 ```sh
 grep -rIonE 'sk-ant-[A-Za-z0-9_-]+|Bearer [A-Za-z0-9._-]{8,}|ghp_[A-Za-z0-9]+|xox[baprs]-|AKIA[0-9A-Z]{16}|-----BEGIN' tests/fixtures/
-grep -rIonE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' tests/fixtures/   # expect only *@example.invalid
+grep -rIonE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' tests/fixtures/   # expect only redacted@*.invalid
 grep -rIn  "$HOME" tests/fixtures/
 grep -rIn  "$(id -un)" tests/fixtures/
 ```
@@ -64,7 +64,16 @@ or a Python pass.
 offsets into those files (§5.3: `ESC[?1049h` at 67 and 1900; the 0.145.0 alt-screen pair at 38963
 and 43372), and the captured panels are column-aligned. In `s2/` a substitution **must be
 byte-for-byte the same length**, so the table above does not apply: emails became an equal-length
-`redacted@example.invalid…`, and the 7-byte username became `example` (7 bytes). See `s2/NOTES.txt`.
+placeholder sized per site (`redacted@e.invalid` in the Claude panels,
+`redacted@examp.invalid` in the Codex `/status` panel — match on `redacted@`, not on a fixed
+domain), and the 7-byte username became `example` (7 bytes). See `s2/NOTES.txt`.
+
+> **⚠ Never run a redaction regex over raw terminal bytes unanchored.** This rule was learned by
+> breaking it: the original `s2` pass matched an email *inside* a CSI sequence at 9 sites, eating
+> the SGR parameters and terminator and silently converting `ESC[38;2;153;153;153m` / `ESC[22m`
+> into a **DECSTBM scroll-region command**. Equal length is necessary but not sufficient — a
+> substitution must also begin and end outside any escape sequence. Repaired 2026-08-01; see
+> `s2/NOTES.txt` for the correction and the two design-doc figures it changed.
 
 ## 4. Preserve — what makes the fixture a fixture
 
@@ -98,7 +107,7 @@ Redaction pass applied 2026-07-31.
 | Dir | What was recorded | Provider | Recorded | Human read | Redaction applied |
 |---|---|---|---|---|---|
 | `s1` | Claude Code 2.1.220 headless (`-p --output-format stream-json --input-format stream-json`) interrupt protocol: `initialize`, a long turn, `interrupt`, and a follow-up turn. `stdin.jsonl` / `stdout.jsonl` (with `initialize`) / `stdout_noinit.jsonl` (without) / `summary.json`. | **Real** (`total_cost_usd` 0.093935 on the follow-up turn) | 2026-07-31 | 2026-07-31 | `argv` home path → `<HOME>`; session ids → stable fakes; `pid` → `424242`. `initialize` response: the 145-entry `commands` catalogue, 10-entry `agents` catalogue and 5-entry `models` roster replaced with minimal illustrative stubs. `system.init`: `slash_commands`, `skills`, `agents`, `plugins`, `mcp_servers` stubbed, `mcp__*` entries dropped from `tools`, `memory_paths` → `<HOME>`. All 9 `hook_started`/`hook_response` pairs kept (envelope shape is the evidence) with `output`/`stdout`/`stderr` bodies replaced by `<REDACTED_HOOK_OUTPUT>`. Org name → `<ORG>`. `summary.json` 66 KB → 5.7 KB. |
-| `s2` | pty captures of Claude Code 2.1.220 and Codex CLI 0.145.0/0.146.0 booting and running local slash commands (`/help`, `/status`, `/diff`, `/exit`) across resizes. Five captures, each as `.raw.bin` + asciicast v3 `.cast`. | **None** — no model calls; only local slash commands were driven | 2026-07-31 | 2026-07-31 | **Equal-length only** (see §3 exception and `s2/NOTES.txt`): emails → `redacted@example.invalid…`; the username → `example`. Byte offsets, `CSI 3J`/`2J` counts, DECSET 2026 brackets and DECSTBM histogram verified unchanged. |
+| `s2` | pty captures of Claude Code 2.1.220 and Codex CLI 0.145.0/0.146.0 booting and running local slash commands (`/help`, `/status`, `/diff`, `/exit`) across resizes. Five captures, each as `.raw.bin` + asciicast v3 `.cast`. | **None** — no model calls; only local slash commands were driven | 2026-07-31 | 2026-07-31 | **Equal-length only** (see §3 exception and `s2/NOTES.txt`): emails → per-site placeholder; the username → `example`. Byte offsets, `CSI 3J`/`2J` counts, DECSET 2026 brackets and probe sets verified unchanged. **The DECSTBM histogram was *not* unchanged and the original claim that it was is retracted** — 9 splices landed inside CSI sequences and forged scroll-region commands; repaired 2026-08-01 and re-derived (§3 warning, `s2/NOTES.txt`). |
 | `s3` | `codex app-server` (codex-cli 0.145.0) lifecycle probes A–H: idle survival under six invocations, thread survival across restart, and the 1800 s thread-unload timer. Poll logs only. | **None** — lifecycle/timing probes, no turns run | 2026-07-31 | 2026-07-31 | `G-thread-survival-create.log` rollout path `/Users/<name>/.codex/...` → `<HOME>/.codex/...`. No other host data present; `README.md` references only `~/`-relative paths and upstream source lines. |
 | `s4` | Stop / SubagentStop hook behaviour for Claude Code 2.1.220 and Codex, across four hook modes (`none`, `block`, `additionalContext`, `exit2`): hook stdin payloads, resulting stream-json, transcripts, and the hook config that produced them. | **Real** (short scripted turns, "say the word alpha") | 2026-07-31 | 2026-07-31 | Already recorded in an isolated scratch `HOME`, so `<SCRATCH>` / `<UUID>` placeholders were applied at capture time and the enumerated command/skill/agent sets are the built-in defaults, not the operator's. This pass removed the residual username inside path-encoded project slugs (`-Users-<name>-Desktop-...` → `-Users-<USER>-Desktop-...`) and the org name in built-in agent descriptions → `<ORG>`. |
 | `s5` | `codex app-server` 0.146.0 (`--listen ws://`) multi-client probes: late join (probe1), per-connection `thread/unsubscribe` isolation (probe2), mid-turn attach with full event capture for both clients (probe3), plus the method-list error dump. | **Real** (probes run turns; probe3 captures live `item/agentMessage/delta`) | 2026-07-31 | 2026-07-31 | Username inside the path-encoded scratch cwd / `runtimeWorkspaceRoots` → `<USER>`. Event counts (93 / 87), `attachAtMs`, and method histograms verified unchanged. Message ids (`msg_…`) and thread ids are per-run server-side identifiers, kept because probe1/2/3 correlate events by them. |
