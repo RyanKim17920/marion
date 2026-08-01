@@ -577,7 +577,8 @@ bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schem
 `--output-last-message`, `--cd <worktree>`, `--sandbox workspace-write`, `--ephemeral`,
 `--ignore-user-config`. **Prefer it for fan-out; reserve app-server for interactive children.**
 
-> **⚠ Two M1-critical assumptions about `exec`, both UNVERIFIED (spike S6, running):**
+> **⚠ Two M1-critical assumptions about `exec`, both UNVERIFIED (spike S6, *not run* — started
+> and killed mid-run 2026-07-31; no S6 fixture exists in this repo):**
 > 1. **Does `exec` host MCP servers?** M1 has the child return via `mcp__marion__report`, injected
 >    with `-c mcp_servers.marion={…}`. But `exec`'s whole selling point is removing the machinery
 >    MCP rides on. **If it does not host MCP, M1's return path does not exist** and the fallback is
@@ -589,7 +590,9 @@ bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schem
 >    must diff the worktree instead, and M1's criterion changes accordingly.
 >
 > Neither can be settled from the desk. S6 runs both against a real model and produces the
-> `codex exec` fixture the repo currently lacks.
+> `codex exec` fixture the repo currently lacks. **S6 is the first task of M1, before any
+> supervisor code** — §9 states what M1 builds under each outcome, so neither answer blocks the
+> milestone, but the answers change what is built. Tracked as §11 item 12.
 
 ### 5.3 Display plane: pty + VT
 
@@ -738,8 +741,11 @@ them" — marion authors `task_id`, `requester`, `repo`, `base_commit`, `workspa
 That preserves the property that matters (criteria exist before the work and the worker cannot edit
 them) without pretending the supervisor knows the task.
 
-`report`'s payload is the **completion half** of the `TaskContract` (§6.7) — it deliberately
-supersedes rev-2's plan to
+**`report`'s payload is the child-owned part of the completion half only** — `narrative`, and
+optionally `result_commits` (§9). marion derives every other completion field, and **a
+child-supplied value for a field it does not own is rejected, not merged**: otherwise a child
+could set its own `status` or `scope_enforced`. The contract the parent receives is nonetheless
+complete, because marion fills the rest. This deliberately supersedes rev-2's plan to
 mirror Claude Code's Agent-result shape (`totalTokens`, `totalDurationMs`, `totalToolUseCount`,
 `usage`, `toolStats`, `worktreePath`). Those fields survive inside the contract's `evidence`,
 `timestamps`, and `workspace`, but the contract is harness-independent and auditable, which
@@ -907,11 +913,11 @@ struct TaskContract {
     acceptance_criteria: Vec<String>,
     allowed_tools: Vec<String>,
     writable_scope: Vec<PathBuf>,
-    timeout: Option<Duration>,
+    timeout: Duration,                   // always set; see §9 for the default
     verification: Vec<Command>,
 
     // completed at result
-    status: ResultStatus,                // Ok|Failed|Cancelled|Unreported|TimedOut
+    status: ResultStatus,                // = ExitStatus: Ok|Failed|Cancelled|Unreported|TimedOut|Killed
     reported_early: bool,                // chose to report while descendants ran (§7.6)
     held_to_timeout: bool,               // held for descendants until the bound expired (§7.6)
     live_descendants_at_report: Vec<AgentId>,
@@ -930,8 +936,20 @@ Two rules make it more than bookkeeping:
 
 - **`acceptance_criteria` and `verification` are authored at spawn, before the child runs.**
   Criteria written afterward describe what happened, not what was required.
-- **`writable_scope` is checked against observed `ToolCall.locations`.** A child writing outside
-  its declared scope is reported, not silently accepted.
+- **`writable_scope` is checked against observed `ToolCall.locations`**, or against a worktree
+  diff where the adapter reports no locations (§9). A child writing outside its declared scope is
+  reported, not silently accepted. `scope_enforced` records **whether the check ran**, not whether
+  it passed — `false` means neither route was available, and is never used to mean "no violation".
+
+**`status` covers every terminal, including involuntary ones.** `ResultStatus` is the same set as
+§3.2's `ExitStatus`, `Killed` included, so an externally terminated child (§7.8) has a
+representable contract and is never recorded as a normal completion. Two expiries of the same
+`timeout` are distinguished, because §7.6's invariant turns on it:
+
+| situation at expiry | `status` | flags |
+|---|---|---|
+| child still **running** when the bound expired | `TimedOut` | — |
+| child **stopped** and was held in `Blocked` on live descendants | `Unreported` | `held_to_timeout: true` |
 
 The contract is what `spawn` returns, what the UI renders as a completed node, and what makes a run
 replayable. It is harness-independent: a Codex child and a Claude child return the same structure.
@@ -1338,26 +1356,66 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 - **The Codex child uses `codex exec --json`**, not app-server. M1 proves the hop, not the
   lifecycle: `exec` removes the handshake, thread loading, subscriptions, approval round-trips, and
   server lifetime. It is a `LaunchOnly` control transport with `ProtocolEvents` observation — a
-  legitimate `ExecutionSurfaces` combination, not a fifth preset — and its result is read from
-  `--output-last-message` plus the JSONL stream. app-server arrives in M4, where interactive
-  children matter.
+  legitimate `ExecutionSurfaces` combination, not a fifth preset. app-server arrives in M4, where
+  interactive children matter.
+- **M1's first task is spike S6**, because two `exec` facts (§5.2) decide what M1 builds, and
+  neither can be settled from the desk. **Run S6 before writing supervisor code**, commit its
+  fixture, then build the branch it selects. Both branches are specified here, so M1 is not
+  blocked either way:
+
+  | S6 answer | M1's return channel | M1's scope enforcement |
+  |---|---|---|
+  | `exec` hosts MCP **and** emits `ToolCall.locations` | `mcp__marion__report` (primary) | detective via `locations`, `scope_enforced: true` |
+  | hosts MCP, **no** locations | `mcp__marion__report` | detective via **worktree diff**, `scope_enforced: true` |
+  | **no** MCP, emits locations | `--output-schema` fallback (below) | detective via `locations`, `scope_enforced: true` |
+  | **no** MCP, no locations | `--output-schema` fallback | worktree diff, `scope_enforced: true` |
+
+  **`scope_enforced: false` is reserved for an adapter that can determine changed paths by
+  *neither* route.** A worktree child always affords the diff, so M1 records `true`; §6.7's
+  `false` case is for future non-worktree or remote surfaces. **False confidence is worse than no
+  check** — the flag records whether the check ran, not whether it passed.
+
+- **The `--output-schema` fallback, specified.** If `exec` cannot host MCP, marion passes
+  `--output-schema <file>` whose JSON Schema is exactly the **child-owned** fields below
+  (`narrative` required, `result_commits` optional), and reads the document from
+  `--output-last-message`. The differences from the MCP path, which is why MCP is preferred:
+  - the return is **not required** the way a tool call is — a child can simply not emit it;
+  - so a missing, unparseable, or schema-invalid document is **not** an error but
+    `status: Unreported` with the raw last message preserved as `narrative` and the contract
+    surfaced visibly (§7.6 step 5). It is never silently promoted to a result.
+  - marion still authors every other field, so the contract is complete either way.
 - **`spawn` blocks** and returns the completed `TaskContract` as its tool result. Backgrounding
   (returning a handle) is M2+. `TaskContract.timeout` bounds the block; on expiry `spawn` returns
-  the contract with `status: TimedOut`.
+  the contract with `status: TimedOut` if the child was still running, or `Unreported` with
+  `held_to_timeout: true` if it had stopped and was held on live descendants (§6.7).
 - **Contract field ownership** (three authors, not two — see §5.4):
   - **The requesting parent** supplies `acceptance_criteria` and `verification` through `spawn`;
     both are `required` in its schema. marion cannot invent criteria for a task it does not
     understand.
-  - **marion** authors `task_id`, `requester`, `repo`, `base_commit`, `workspace`, `allowed_tools`,
+  - **marion** authors `task_id`, `requester`, `child`, `repo`, `base_commit`, `workspace`,
+    `instructions` (the parent's `spawn.prompt`, recorded verbatim), `allowed_tools`,
     `writable_scope`, `timeout` — and *validates and freezes* the parent's criteria before the
     child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`, `exit`,
-    `timestamps`, `status`, `reported_early`, and `held_to_timeout`.
+    `timestamps`, `status`, `reported_early`, `held_to_timeout`,
+    `live_descendants_at_report`, and `scope_enforced`.
   - **The child** supplies only `narrative` and, optionally, `result_commits`.
 
-  **A child-supplied value for any field it does not own is rejected, not merged** — otherwise a
-  child can rewrite its own acceptance criteria. The property that matters is that criteria exist
-  before the work and the worker cannot edit them; that does not require the *supervisor* to have
-  written them.
+  Every field of §6.7 appears in exactly one of these three lists; that exhaustiveness is what
+  makes the rejection rule well-defined: **a child-supplied value for any field it does not own is
+  rejected, not merged** — otherwise a child can rewrite its own acceptance criteria. The property
+  that matters is that criteria exist before the work and the worker cannot edit them; that does
+  not require the *supervisor* to have written them.
+- **`timeout` always has a value.** `spawn`'s `timeout_secs` is optional, but
+  `TaskContract.timeout` is not: absent an explicit value marion authors the agent type's
+  `timeout_secs`, else a **900 s** default. `timeout: None` is unrepresentable in a contract, so
+  every bound M1 depends on — the blocking `spawn`, the descendant hold (§7.6), an unanswerable
+  permission (below) — is finite by construction.
+- **marion launches the root as node 0.** The `claude` root is not hand-started: `marion run
+  <agent-type> --prompt <…>` spawns it through the same §6.1 path as any child, which is what gives
+  it an `AgentId`, an agent-dir, and a capability token — without which its `spawn` call cannot be
+  stamped and `TaskContract.requester` has no value. **A root has no `TaskContract`** (it has no
+  requester and no acceptance criteria authored by anyone); it is a node, not a task. `requester`
+  for a top-level `spawn` is node 0's `AgentId`.
 - **Scope enforcement is preventive where a permission channel exists, detective where it does
   not — and M1's child has none.** The two modes are not alternatives, they are what each surface
   affords:
@@ -1366,22 +1424,44 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     `writable_scope`, auto-denies outside it, and logs every decision to `evidence`.
   - **Detective** is all that `codex exec --json` allows — §5.2 chose it for M1 precisely because
     it "removes bidirectional approvals", so there is nothing to intercept. marion compares
-    observed `ToolCall.locations` against `writable_scope` after the fact.
+    `writable_scope` against observed `ToolCall.locations`, or against a **worktree diff** if S6
+    shows `exec --json` reports no locations. Either route satisfies M1.
   - **M1's acceptance criterion is therefore detective**: a deliberate out-of-scope write must be
     *reported* in the contract, not prevented. The preventive path lands with the app-server
     adapter in M4.
-  - Where an adapter cannot extract locations at all, the contract records `scope_enforced: false`
-    rather than silently passing. **False confidence is worse than no check.**
+  - `scope_enforced: false` is reserved for an adapter affording **neither** route. A worktree
+    child always affords the diff, so M1 records `true` under every S6 outcome.
+    **False confidence is worse than no check.**
 - **Permissions in M1** otherwise: there is no TUI to prompt, so anything genuinely requiring a
   human blocks until `timeout` and is recorded.
+- **Both processes are pointed at the CannedProvider, which is what makes §6.4's OAuth constraint
+  moot for M1.** Neither process authenticates against a real endpoint, so nothing here depends on
+  subscription auth:
+  - **root (`claude`)**: fileless config — `--mcp-config` for the control MCP, `--settings`,
+    `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
+    `ANTHROPIC_API_KEY=""` (a non-empty key silently wins, §6.4). This takes **option (a)** of
+    §6.4's three: the real `CLAUDE_CONFIG_DIR` is retained and never mutated, so OAuth is intact
+    but unused.
+  - **child (`codex`)**: `-c model_providers.<id>` pointing at the canned server with a dummy
+    `env_key`, under a **non-reserved** provider id (not `openai`/`ollama`/`lmstudio`/
+    `amazon-bedrock`), plus `-c mcp_servers.marion={…}`. Codex subscription auth cannot use a
+    custom `base_url` at all (`MILESTONES.md`), which is why the dummy key is required rather than
+    optional.
+  - The endpoint override is carried by `SpawnCtx`, not by agent-type frontmatter — it is a
+    property of the run, not of the agent.
 - A real `claude` root (headless) calls `mcp__marion__spawn` for a `codex` agent type.
-- A real `codex` child starts in a worktree, edits a file, and calls `mcp__marion__report`.
+- A real `codex` child starts in a worktree, edits a file, and returns through the channel S6
+  selects — `mcp__marion__report` if `exec` hosts MCP, else the `--output-schema` document.
 - The parent receives the **structured task contract** as a tool result, and its next turn
   references the child's output.
 - `writable_scope` is enforced **detectively**: a deliberate out-of-scope write appears in the
-  contract's `changed_paths` with the violation flagged, and `scope_enforced` is `true`.
+  contract's `changed_paths` with the violation flagged, and `scope_enforced` is `true` — by
+  `ToolCall.locations` or by worktree diff, whichever S6 leaves available.
 - The whole run is driven by the CannedProvider — no paid tokens, repeatable.
-- Owed here: the live `SubagentStop` confirmation (§7.6) and the pty re-confirmation of S1.
+- Owed here: spike **S6** with its fixture (§5.2, run first), plus all three M1 debts — the live
+  `SubagentStop` confirmation (§7.6), the pty re-confirmation of S1, and **a real `can_use_tool`
+  round-trip with a committed fixture** (§5.2), the inbound half of Claude Code's control channel,
+  which the whole permission path is designed on and which no committed fixture exercises.
 
 **M2 — supervisor split.**
 - `marion-tui` SIGKILLed mid-run; agents keep running; a new TUI shows the full tree.
