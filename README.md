@@ -59,8 +59,8 @@ These tools auto-update and break things. In one day: Gemini moved thirteen mino
 itself when a scripted Enter hit its startup prompt, and Codex had already removed
 `wire_api = "chat"` entirely.
 
-**Design doc §12 lists twenty-four claims that were retracted or corrected** (fifteen from the
-research itself, nine more from audit rounds 5-12 that read the docs against the fixtures and
+**Design doc §12 lists twenty-five claims that were retracted or corrected** (fifteen from the
+research itself, ten more from audit rounds 5-14 that read the docs against the fixtures and
 against the installed binaries) — several stated
 confidently before being disproved, and one area (terminals) that was corrected, over-corrected,
 and corrected again. Treat anything marked
@@ -80,7 +80,7 @@ and corrected again. Treat anything marked
 **S6 is open, and it is M1's first task.** It was started and killed mid-run. It answers three
 questions about `codex exec --json` that decide what M1 builds — does `exec` host MCP servers (if
 not, the `mcp__marion__report` return path does not exist and M1 uses the `--output-schema`
-fallback); does it emit file locations (if not, scope enforcement diffs the worktree); and does
+fallback); does it emit file locations (if not, marion loses per-tool-call attribution; the scope check is git-derived either way); and does
 `--output-schema`/`--output-last-message` actually deliver a document when the final message is
 canned — **and it records two Codex encodings the repo lacks** (a Lark-grammar `apply_patch` call
 and a `type:"namespace"` MCP call), without which M1's canned Codex script cannot be written.

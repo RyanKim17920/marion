@@ -52,9 +52,9 @@ different length and would shift every offset after them.
     of this corpus's redaction as the email and username entries, and are listed here because
     REVIEW.md sends every reader to this file for the conventions:
       Account display name    <given name> -> "User"        (4 B)  Claude welcome banner
-      Codex plan tier         "Pro Lite"   -> "Plan ABC"    (8 B)  /status panel
-      Codex credit balance    "1817 credits" -> "0000 credits" (12 B)
-      Claude account tier     "Claude Max" -> "Plan  ABC "  (10 B)
+      Codex plan tier         <plan>       -> "Plan ABC"    (8 B)  /status panel
+      Codex credit balance    <credits>    -> "0000 credits" (12 B)
+      Claude account tier     <tier>       -> "Plan  ABC "  (10 B)
       Recording session UUID  <run uuid>   -> "00000000-0000-4000-8000-000000000003" (36 B),
                               including its ellipsized 34- and 14-byte renderings
     The same UUID was scrubbed from s5 in the same pass; s4 had already replaced it with <UUID>.
@@ -66,7 +66,7 @@ different length and would shift every offset after them.
       <session id C> -> 00000000-0000-4000-8000-000000000006  (36 B, Codex /status)
       <session id D> -> 00000000-0000-4000-8000-000000000007  (36 B, Codex /status)
     Plus the account usage state the second pass missed:
-      Weekly-limit remaining  "36% left" -> "00% left"  (8 B)
+      Weekly-limit remaining  <pct left>   -> "00% left"    (8 B)
       Limit reset dates       "5 Aug"/"7 Aug" -> "1 Jan" (5 B each)
     None of these was caught by REVIEW.md's documented fast pass -- the display name in
     particular is a different string from the login name, so `grep "$(id -un)"` cannot see it.

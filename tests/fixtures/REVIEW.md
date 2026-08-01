@@ -109,16 +109,23 @@ Add a row to the table below. A fixture with no row is not reviewed and must not
 ## Provenance
 
 All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
-`TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Two later passes changed fixture
-bytes, both on 2026-08-01:** the `s2` escape-sequence repair (§3 warning), and a second redaction
-pass over `s2` and `s5` that removed the operator's account display name, plan/credit state, and
-the recording session's UUID — all found by audit, none caught by §2's original fast pass. The
-`Redaction applied` column below describes the 2026-07-31 pass **only**; the two later passes are
-recorded in the **residue list**, not in the table rows.
+`TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Three later passes changed fixture
+bytes, all on 2026-08-01:**
+
+1. the `s2` escape-sequence repair (§3 warning);
+2. a redaction pass over `s2` and `s5` removing the operator's account display name, plan and
+   credit state, and the recording session's UUID;
+3. a further pass removing four more live session ids — two of them inside **OSC 777**
+   notification bodies — and the account's weekly-limit usage and reset dates.
+
+Every one was found by audit; **none was caught by §2's original fast pass**, which is why §2 now
+carries the display-name and OSC-777 rows. The `Redaction applied` column below describes the
+2026-07-31 pass **only**; all three later passes are recorded in the **residue list**, not in the
+table rows.
 
 | Dir | What was recorded | Provider | Recorded | Human read | Redaction applied |
 |---|---|---|---|---|---|
-| `s1` | Claude Code 2.1.220 headless (`-p --output-format stream-json --input-format stream-json`) interrupt protocol: `initialize`, a long turn, `interrupt`, and a follow-up turn. `stdin.jsonl` / `stdout.jsonl` (with `initialize`) / `stdout_noinit.jsonl` (without) / `summary.json`. | **Real** (`total_cost_usd` 0.093935 on the follow-up turn) | 2026-07-31 | 2026-07-31 | `argv` home path → `<HOME>`; session ids → stable fakes; `pid` → `424242`. `initialize` response: the 145-entry `commands` catalogue, 10-entry `agents` catalogue and 5-entry `models` roster replaced with minimal illustrative stubs. `system.init`: `slash_commands`, `skills`, `agents`, `plugins`, `mcp_servers` stubbed, `mcp__*` entries dropped from `tools`, `memory_paths` → `<HOME>`. All 9 `hook_started`/`hook_response` pairs kept (envelope shape is the evidence) with `output`/`stdout`/`stderr` bodies replaced by `<REDACTED_HOOK_OUTPUT>`. Org name → `<ORG>`. `summary.json` 66 KB → 5.7 KB. |
+| `s1` | Claude Code 2.1.220 headless — **recorded argv verbatim**: `-p --output-format stream-json --input-format stream-json --include-partial-messages --verbose --model haiku --allowed-tools ""` (`--verbose` is mandatory, §5.2; `--allowed-tools ""` is why `can_use_tool` never fires, §11 item 14) — interrupt protocol: `initialize`, a long turn, `interrupt`, and a follow-up turn. `stdin.jsonl` / `stdout.jsonl` (with `initialize`) / `stdout_noinit.jsonl` (without) / `summary.json`. | **Real** (`total_cost_usd` 0.093935 on the follow-up turn) | 2026-07-31 | 2026-07-31 | `argv` home path → `<HOME>`; session ids → stable fakes; `pid` → `424242`. `initialize` response: the 145-entry `commands` catalogue, 10-entry `agents` catalogue and 5-entry `models` roster replaced with minimal illustrative stubs. `system.init`: `slash_commands`, `skills`, `agents`, `plugins`, `mcp_servers` stubbed, `mcp__*` entries dropped from `tools`, `memory_paths` → `<HOME>`. All 9 `hook_started`/`hook_response` pairs kept (envelope shape is the evidence) with `output`/`stdout`/`stderr` bodies replaced by `<REDACTED_HOOK_OUTPUT>`. Org name → `<ORG>`. `summary.json` 66 KB → 5.7 KB. |
 | `s2` | pty captures of Claude Code 2.1.220 and Codex CLI 0.145.0/0.146.0 booting and running local slash commands (`/help`, `/status`, `/diff`, `/exit`) across resizes. Five captures, each as `.raw.bin` + asciicast v3 `.cast`. | **None** — no model calls; only local slash commands were driven | 2026-07-31 | 2026-07-31 | **Equal-length only** (see §3 exception and `s2/NOTES.txt`): emails → per-site placeholder; the username → `example`. Byte offsets, `CSI 3J`/`2J` counts, DECSET 2026 brackets and probe sets verified unchanged. **The DECSTBM histogram was *not* unchanged and the original claim that it was is retracted** — 9 splices landed inside CSI sequences and forged scroll-region commands; repaired 2026-08-01 and re-derived (§3 warning, `s2/NOTES.txt`). |
 | `s3` | `codex app-server` (codex-cli 0.145.0) lifecycle probes A–H: idle survival under six invocations, thread survival across restart, and the 1800 s thread-unload timer. Poll logs only. | **None** — lifecycle/timing probes, no turns run | 2026-07-31 | 2026-07-31 | `G-thread-survival-create.log` rollout path `/Users/<name>/.codex/...` → `<HOME>/.codex/...`. **Process pids (5888, 5891, 5894, 6553, 36975, 51590, 51594, 51596) and case D's listening port 45875 are retained** (see the residue bullet for what each is) — ephemeral, and load-bearing for correlating the A–H logs, so the `pid` → `424242` convention was deliberately *not* applied here (see residue below). `README.md` references only `~/`-relative paths and upstream source lines. |
 | `s4` | Stop / SubagentStop hook behaviour for Claude Code 2.1.220 and Codex. **Four modes for Codex** (`none`, `block`, `additionalContext`, `exit2`); **three for Claude Code** — `exit2` was not recorded and `claude-code/stop_hook.sh` has no exit-2 branch, so the design doc's exit-2 equivalence claim is unfixtured on Claude Code (design §11 item 13). Hook stdin payloads, resulting stream-json, transcripts, and the hook config that produced them. | **Real** (short scripted turns, "say the word alpha") | 2026-07-31 | 2026-07-31 | Already recorded in an isolated scratch `HOME`, so `<SCRATCH>` / `<UUID>` placeholders were applied at capture time and the enumerated command/skill/agent sets are the built-in defaults, not the operator's. This pass removed the residual username inside path-encoded project slugs (`-Users-<name>-Desktop-...` → `-Users-<USER>-Desktop-...`) and the org name in built-in agent descriptions → `<ORG>`. |
@@ -155,12 +162,17 @@ recorded in the **residue list**, not in the table rows.
   identity. **Any re-record of S2 must use a scratch `HOME`.**
 - **`s2` account state and the operator's display name were scrubbed on 2026-08-01**, equal-length,
   after an audit found them: the Claude welcome banner's given name (4 B → `User`), the
-  Codex `/status` plan and credits (`Pro Lite` → `Plan ABC`, `1817 credits` → `0000 credits`),
-  the Claude account tier (`Claude Max` → `Plan  ABC `), and the recording session's UUID
+  Codex `/status` plan tier (8 B → `Plan ABC`) and credit balance (12 B → `0000 credits`),
+  the Claude account tier (10 B → `Plan  ABC `), and the recording session's UUID
   (36 B → `00000000-0000-4000-8000-000000000003`, including its ellipsized 34- and 14-byte
   renderings) — the same id, also scrubbed in `s5`, that `s4` had already replaced with `<UUID>`.
   All five file lengths, the `?1049h/l` offsets (67 / 1900 / 5866 / 38963 / 43372), `CSI 3J` counts
   and every DECSTBM figure re-derive unchanged.
+- **Third pass, 2026-08-01 (round 13), equal-length**: four further live session ids (36 B each —
+  two Codex `/status` values, two inside Claude **OSC 777** `warp://cli-agent` notification bodies,
+  a site no CSI-oriented scan reaches) → stable fakes; weekly-limit remaining (8 B) and the two
+  reset dates (5 B each) → fixed placeholders. Same re-derivation: nothing cited changed. Lengths
+  and replacements only — never the original values (see `s2/NOTES.txt`).
 - **`s2` and `s5` retain the operator's terminal emulator brand and build** — `s2` in four
   `warp://cli-agent` OSC 777 bodies (which also named the integration's `plugin_version`), `s5` inside six `userAgent` strings
   (`WarpTerminal/v…`), because the app-server echoes the launching terminal's UA and the
@@ -185,7 +197,7 @@ recorded in the **residue list**, not in the table rows.
   rendered in the `s2` 0.146.0 14-row capture's **`/mcp`** panel, which also lists the operator's
   MCP server name, `Auth: Bearer token`, and 35 tool names. None are credentials.
 
-### Verification run, 2026-08-01 (re-run after the escape-sequence repair)
+### Verification run, 2026-08-01 (re-run after the third redaction pass)
 
 **This is the authoritative run.** The original pass was dated 2026-07-31 and therefore described
 the *pre-repair* bytes; the `s2` captures changed on 2026-08-01 (§3 warning), so every scan and

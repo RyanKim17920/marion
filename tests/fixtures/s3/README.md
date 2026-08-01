@@ -19,7 +19,7 @@ The real hazard is one level down: an **idle thread** is unloaded at
 | A | `codex app-server --listen ws://…`, parent alive | alive 321 s, alive at ~10.5 min |
 | B | `codex app-server daemon start` (unix://, ppid 1) | alive 321 s, alive at ~10.5 min; the 43-min figure is **wall-clock only, not in these logs**, pid never replaced |
 | C | same as A but orphaned (ppid 1, shell exited) | alive 321 s, alive at ~10.5 min |
-| D | bare ws, one client connected then dropped, 1 thread | alive 322 s, alive at ~10.5 min |
+| D | bare ws, one client connected then dropped, 1 thread | alive 322 s, alive at 517 s (8.6 min — D started later than A-C) |
 | E | bare ws, one client held connected+idle, 1 thread | alive 763 s (past the 600 s client idle timeout) |
 | F | orphaned ws, client dropped, 1 thread | alive 703 s (END_OF_WATCH_STILL_ALIVE) |
 

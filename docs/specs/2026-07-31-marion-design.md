@@ -423,6 +423,7 @@ the spec forbids custom root fields.
                                       #   than overwriting the first (§6.7)
     events.jsonl                      # IR, append-only
     pty.cast                          # asciicast v3, surfaces with a pty
+    hook-token                        # 0600, per-node Stop-hook token (§5.4)
     config/                           # isolated harness config dir, if any (§6.4)
     worktree                          # symlink, when isolation: worktree
 ```
@@ -478,7 +479,9 @@ trait HarnessAdapter {         // every surface, including launch-only and opaqu
 struct Session {               // marion's handle on a running child, for EVERY surface
     agent_id: AgentId,
     harness_ref: Option<HarnessSessionRef>,  // the harness's own id, where one exists (§3.2)
-    proc: Option<ProcessHandle>,             // Some for any surface marion spawned directly —
+    proc: Option<ProcessHandle>,             // Some for any surface marion spawned a process
+                                             //   FOR; None for an app-server-hosted node, whose
+                                             //   thread shares one marion-owned server process —
                                              //   this is what §9's TimedOut kill signals, and
                                              //   why it works for a child with no DisplayPlane
     vendor: Box<dyn Any + Send>,             // per-harness state (a WebSocket + threadId for
@@ -503,6 +506,12 @@ trait ControlPlane {           // any surface with an event source (typed or deg
 **`compile()` lives on `HarnessAdapter`, not `ControlPlane`**, because `opaque` has no `ControlPlane` yet
 still needs an `Invocation` for `DisplayPlane::spawn_pty` — and §6.1 step 6 compiles on every spawn
 without exception.
+
+**`live_channel` is the authorization predicate**, not `proc.is_some()`: for a surface marion
+spawned a process for, it means that process is alive; for an app-server **thread** it means the
+thread is resident and subscribed (`notLoaded` is not live, §5.2). A `shared` codex node has
+`proc: None` — many nodes share one server — so keying on `proc` would deny `send`/`cancel`/`spawn`
+across the whole preferred surface, and signalling `proc` there would kill every sibling thread.
 
 **The supervisor reads `agent_id` and `proc` directly** — that is what lets it kill a `TimedOut`
 child (§9) without a `DisplayPlane::kill`, from behind `Box<dyn ControlPlane>`, where an opaque
@@ -685,7 +694,8 @@ human UI is attached — **an unanswered approval hangs the turn indefinitely.**
 
 **Lifecycle (S3, 0.145.0).** Idle app-servers are **never reaped.** Six invocations were run —
 bare `--listen`, `daemon start`, orphaned, and three with live threads or held clients. Four were
-still alive at a **~10.5-minute** check (630 s by the logs' own `utc=` stamps — the `t=~1050s`
+still alive at a single check **630 s after A started** (517 s for D, which started later) — by
+the logs' own `utc=` stamps ( — the `t=~1050s`
 field on those lines is a recording artefact, and the stamps are authoritative); the two
 thread-holding cases ran 703 s and 763 s; and the **strongest logged lifetime is the D server at
 2442 s (~40.7 min)**, recorded `SERVER_ALIVE` in `s3/H-thread-unload-1800s.log`. A ~43-minute
@@ -731,10 +741,12 @@ bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schem
 >    MCP rides on. **If it does not host MCP, M1's return path does not exist** and the fallback is
 >    `--output-schema` + `--output-last-message`, which can carry a contract but cannot be
 >    *required* the way a tool call can.
-> 2. **Does `exec --json` emit file locations?** `scope_enforced: true` needs `ToolCall.locations`.
+> 2. **Does `exec --json` emit file locations?** Not for enforcement — `changed_paths` is
+>    git-derived on every branch (§6.7) — but for **attribution**: locations are what let marion
+>    say *which tool call* touched a path, and spot a write the child made and then reverted.
 >    The only committed exec streams (`tests/fixtures/s4/codex/stream-*.jsonl`) contain **only**
->    `agent_message` items — no tool calls, no file changes. If locations are absent, scope checking
->    must diff the worktree instead, and M1's criterion changes accordingly.
+>    `agent_message` items — no tool calls, no file changes. If locations are absent, marion loses per-tool-call attribution;
+>    **no M1 branch and no acceptance criterion depends on this answer.**
 >
 > **Partial evidence already in hand for question 1** (round-13 audit, 0.146.0): `codex exec`
 > **does** launch an MCP server declared in `$CODEX_HOME/config.toml` and passes its `env` block —
@@ -944,10 +956,10 @@ is per verb, because reading a node and acting on one are not the same permissio
 |---|---|---|
 | `status`, `list` | descendants or parent, plus `allow_peers` siblings (`list` returns that set) | **any**, terminal included |
 | `wait` | **descendants only**, plus `allow_peers` siblings | **any** — returns immediately on a terminal node with its contract, and on a `ReapedIdle` or `Orphaned` one with its uncompleted contract (same set as the §7.6 gating rule: neither can resolve without a user act) |
-| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal, holding a live `Session.proc`, and not `Blocked(Descendants)`** — the first two because the process must actually exist (so not `ReapedIdle`, not `Orphaned`, **and not a held node whose process has already exited**, which `reap_state: Live` alone would wrongly admit), the third because that hold belongs to marion whether or not the process is still running |
-| `cancel` | **descendants only — never a sibling, even under `allow_peers`** | **non-terminal and holding a live `Session.proc`** — the process must actually exist, since cancelling a node whose process is gone (`Orphaned`, or held with an exited process) would write a `Cancelled` `Completion` for something marion can no longer signal, which §6.7 forbids (`completion: None`). Unlike `send`, `cancel` **is** permitted against a `Blocked(Descendants)` node *whose process is live*: cancelling is marion's own lifecycle verb, not an attempt to drive the node's turn. Against a held node whose process already exited, `cancel` is **rejected** — there is nothing to signal and the node's terminal is already owed to step 3 |
+| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal, `live_channel`, and not `Blocked(Descendants)`** — the first two because the node's execution context must actually exist (so not `ReapedIdle`, not `Orphaned`, **and not a held node whose process has already exited**, which `reap_state: Live` alone would wrongly admit), the third because that hold belongs to marion whether or not the process is still running |
+| `cancel` | **descendants only — never a sibling, even under `allow_peers`** | **non-terminal and `live_channel`** — the execution context must actually exist, since cancelling a node whose process is gone (`Orphaned`, or held with an exited process) would write a `Cancelled` `Completion` for something marion can no longer signal, which §6.7 forbids (`completion: None`). Unlike `send`, `cancel` **is** permitted against a `Blocked(Descendants)` node *whose process is live*: cancelling is marion's own lifecycle verb, not an attempt to drive the node's turn. Against a held node whose process already exited, `cancel` is **rejected** — there is nothing to signal and the node's terminal is already owed to step 3 |
 | `report` | **self only**, and only on a node that **has a contract** — rejected on a root | non-terminal; **first call per `TaskContract` wins**, a second against the same contract errors. A resume opens a new contract (§6.7) and so accepts one further `report` |
-| `spawn` | **creates a new node, so it has no existing target**: any non-terminal node may call it, subject to §6.1 step 2's depth and concurrency caps. The created node becomes the **caller's direct child** — that is what makes the caller its `requester` (§6.7) and what keeps the tree a star (`MILESTONES.md`): a node can never create a sibling, a peer, or a child of another node | caller must be non-terminal with a live `Session.proc`; a node held in `Blocked(Descendants)` may **not** spawn, since adding a descendant to a subtree marion is already holding open would extend the hold indefinitely |
+| `spawn` | **creates a new node, so it has no existing target**: any non-terminal node may call it, subject to §6.1 step 2's depth and concurrency caps. The created node becomes the **caller's direct child** — that is what makes the caller its `requester` (§6.7) and what keeps the tree a star (`MILESTONES.md`): a node can never create a sibling, a peer, or a child of another node | caller must be non-terminal and `live_channel`; a node held in `Blocked(Descendants)` may **not** spawn, since adding a descendant to a subtree marion is already holding open would extend the hold indefinitely |
 
 Four consequences worth stating, since each closes a hole the flat rule left open:
 
@@ -1176,7 +1188,11 @@ held the channel since `t=0`, so the double-open hazard is structurally unreacha
 marion **never mutates the user's real harness config.**
 
 - **Fileless preferred and now load-bearing:** Claude Code `--agents '<json>'`, `--mcp-config`,
-  `--settings`; Codex `-c key=value`; opencode `OPENCODE_CONFIG_CONTENT`.
+  `--settings`, **and `--setting-sources ""`** — `--settings` *merges*, it does not replace, so
+  without that flag the fileless path inherits the operator's plugins, agents, slash commands and
+  hooks (§9 records the measured effect: 13 plugins and nine user `SessionStart` hooks). A user
+  `Stop` hook alongside marion's would make `stop_hook_active` unguaranteeable on every node, not
+  just the root; Codex `-c key=value`; opencode `OPENCODE_CONFIG_CONTENT`.
 - **Isolated dir otherwise:** `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GEMINI_CLI_HOME` under
   `<agent-dir>/config/`, deleted with the node.
 - **Seeding from the user's real config is opt-in** (`inherit_user_config`, default off) — those
@@ -1284,8 +1300,8 @@ struct Completion {                      // assembled and written ONCE, at the n
                                          //   report arrived (§7.6 step 5). Never conflate them.
     result_commits: Vec<Oid>,
     changed_paths: Vec<PathBuf>,
-    scope_enforced: bool,                // false only when NEITHER locations nor a diff is
-                                         //   available — never means "no violation" (§9)
+    scope_enforced: bool,                // false only when the workspace affords no git-derived
+                                         //   changed_paths — never means "no violation" (§9)
     scope_violations: Vec<PathBuf>,      // paths in changed_paths that FAIL EITHER scope list:
                                          //   !matches(ceiling) || !matches(requested).
                                          //   Empty iff none. Meaningful only when
@@ -1340,8 +1356,7 @@ Two rules make it more than bookkeeping:
 
 - **`acceptance_criteria` and `verification` are authored at spawn, before the child runs.**
   Criteria written afterward describe what happened, not what was required.
-- **The scope is checked against observed `ToolCall.locations`**, or against a worktree
-  diff where the adapter reports no locations (§9). A child writing outside its declared scope is
+- **The scope is checked against `changed_paths`** — §6.7's git-derived set, on every surface. A child writing outside its declared scope is
   reported, not silently accepted.
 
   **The diff route must include untracked files, or it is blind to exactly the case §5.4
@@ -1393,8 +1408,9 @@ representable contract and is never recorded as a normal completion. Two expirie
 
 | situation at expiry | `status` | flags |
 |---|---|---|
-| child still **running** when the bound expired | `TimedOut` | — |
-| child **stopped** and was held in `Blocked` on live descendants | `Unreported` | `held_to_timeout: true` |
+| node was **`Running`** (a turn in flight) when the bound expired | `TimedOut` | — |
+| node was **`Blocked(Descendants)`** when the bound expired — *regardless of whether its process was still alive*, which §7.6 says it often is | `Unreported` | `held_to_timeout: true` |
+| node had **stopped and was not held** (between steps 2 and 5, no live descendants) | `Unreported` | `held_to_timeout: false` |
 
 **An `Orphaned` node's contract has `completion: None`**, and that is deliberate: `Orphaned` is a
 `ReapState` meaning marion lost the process without observing its exit (§7.2), so no `ResultStatus`
@@ -1408,7 +1424,13 @@ marion holds the child's channel for the whole call.
 
 **A resume never rewrites a completed contract.** `Completion` is write-once, so when a user
 resumes a node that already reached a terminal state (§6.3), marion opens a **new `TaskContract`**
-for the resumed run; the original stays immutable with its `Completion` intact. The audit trail is
+for the resumed run; the original stays immutable with its `Completion` intact.
+**The resumed contract copies `requester`, `acceptance_criteria`, `verification`, `scope_ceiling`
+and `scope_requested` verbatim from the superseded one** — a user resume authors none of them,
+which is what preserves "criteria exist before the work and the worker cannot edit them" on a path
+that has no requesting agent and no `spawn` payload. `base_commit` and `timestamps.spawned` are
+taken fresh. If the original `requester` is itself terminal, the resumed `Completion` is surfaced
+**unclaimed** per §7.5. The audit trail is
 therefore append-only across resumes — a run that was reported, resumed, and reported again shows
 both, rather than the first result being silently overwritten by the second.
 
@@ -1418,7 +1440,7 @@ so precedence is the specification, not an implementation detail:
 
 | # | condition | `status` |
 |---|---|---|
-| 1 | terminated by something done *to* the node | `Cancelled` (`cancel`) · `TimedOut` (bound expired with the child still running) · `Killed` (external, §7.8) |
+| 1 | terminated by something done *to* the node | `Cancelled` (`cancel`) · `TimedOut` (bound expired with the node `Running`) · `Killed` (external, §7.8) |
 | 2 | no report arrived and no `--output-schema` document parsed | `Unreported` |
 | 3 | any `verification` command exited non-zero **or was signalled**, **or** the child process exited non-zero **or died on a fault signal** (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT — see the partition below; an unattributable SIGKILL/SIGTERM/SIGHUP is row 1's `Killed`, not this) | `Failed` |
 | 4 | otherwise | `Ok` |
@@ -1532,8 +1554,8 @@ recoverable rather than producing an untracked live process.
 ### 7.5 Parent exits while a child lives
 
 `parent_id` is **immutable** — the tree never silently re-parents. A child whose parent has
-`Exited` keeps its edge, is marked `orphaned_report: true`, and on `report` has its contract stored
-and surfaced as **unclaimed** rather than delivered, since there is no live turn to return into.
+`Exited` keeps its edge, is marked `orphaned_report: true`, and **at its terminal transition** has its
+`Completion` written and surfaced as **unclaimed** rather than delivered, since there is no live turn to return into.
 Re-parenting on request is a future affordance, never automatic.
 
 ### 7.6 Agent stops without reporting
@@ -2101,8 +2123,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     check on scripts marion writes into a child's config, is not something to adopt for a
     convenience M1 does not need.
 
-  Therefore M1's child goes **straight to §7.6 step 5** when no report arrives — steps 2–3 are
-  skipped for the surface reasons just given, and step 4 by its own `caps.resume` gate. Step 5's
+  Therefore M1's child goes **straight to §7.6 step 5** when no report arrives — **step 2** is
+  skipped (no usable hook), so step 3 is never entered *from an answer*, and step 4 by its own
+  `caps.resume` gate. **Step 3's hold is still reachable from step 5** if the descendant re-check
+  finds a live descendant, and behaves exactly as §7.6 specifies: it is a marion-side hold and
+  needs no harness mechanism at all. Step 5's
   descendant re-check still runs; with no live descendant it proceeds immediately to
   `Exited{Unreported}`.
   This is a property of the surface, not a weakening of §7.6: the descendant-gating and re-prompt
@@ -2118,8 +2143,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   coupling (§11 item 3) does not bind.
 - **`spawn` blocks** and returns the completed `TaskContract` as its tool result. Backgrounding
   (returning a handle) is M2+. `TaskContract.timeout` bounds the block; on expiry `spawn` returns
-  the contract with `status: TimedOut` if the child was still running, or `Unreported` with
-  `held_to_timeout: true` if it had stopped and was held on live descendants (§6.7).
+  the contract with `status: TimedOut` if the child was `Running`, `Unreported` with
+  `held_to_timeout: true` if it was `Blocked(Descendants)`, or `Unreported` with
+  `held_to_timeout: false` if it had stopped owing no hold (§6.7's three expiry cases).
   **On a `TimedOut` expiry marion kills the child before `spawn` returns** — by signalling the
   process handle held in its `Session` (§5.2), since M1's child has **no `DisplayPlane`** and so no
   `kill()`; `ControlPlane::shutdown` is the *graceful* path and is deliberately not used here — so the node is
@@ -2509,4 +2535,5 @@ design decision.
 | `claude -p --output-format stream-json` is the headless invocation | **CORRECTED (round 12).** Incomplete: 2.1.220 exits 1 with "requires `--verbose`". `--verbose` is mandatory for stream-json under `--print`, not merely a dependency of `--include-partial-messages` as this document previously implied. |
 | `codex exec` is one-shot, so there is no session to `continue_()` | **CORRECTED (round 12).** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0. `caps.resume` is `false` for that node because the *surface* caps it (§3.4), not because the harness cannot resume. |
 | Tool compilation targets `--tools`, with marion's MCP tools appended there | **CORRECTED (round 12).** `--tools` is the *availability* axis over built-in tools and does not gate MCP tools at all; `--allowedTools` is the *permission* axis and is where `mcp__marion__*` must go. Compiling into `--tools` alone leaves M1's root unable to call `spawn`. |
+| `GET /models` gates every Codex startup | **NARROWED (round 14).** TUI/app-server only. `codex exec` never issues it — an `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses` (0.146.0). M1's child therefore never exercises that endpoint. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
