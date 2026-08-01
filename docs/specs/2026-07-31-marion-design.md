@@ -143,7 +143,10 @@ struct Node {
     surfaces: ExecutionSurfaces,  // §3.4
     isolation: Isolation,         // Worktree | SharedCwd | Remote
     caps: Capabilities,
-    state: NodeState,             // Spawning|Ready|Running|Idle|Blocked|Exited(ExitStatus)
+    state: NodeState,             // Spawning|Ready|Running|Idle|Blocked(BlockReason)|Exited(ExitStatus)
+                                  // BlockReason = Descendants | Permission | Elicitation
+                                  //   Descendants: the §7.6 hold, resolved by a re-prompt or timeout
+                                  //   Permission/Elicitation: awaiting an answer, resolved by one
                                   // ExitStatus = Ok|Failed|Cancelled|Unreported|TimedOut|Killed
                                   // written elsewhere as Exited{Unreported}, Exited{Killed}
     reap_state: ReapState,        // Live | ReapedIdle | Orphaned  (§7.2)
@@ -1033,9 +1036,12 @@ non-terminal descendants."**
 
 - A node's `Exited` is **held** while any descendant is non-terminal. The registry already knows
   this — it owns the tree — so the check is a subtree scan, not a heuristic.
-- On a stop with live descendants, marion does not accept the exit. It re-prompts (same mechanism
-  as below): *"N of your children are still running: <names>. Do you want to wait for them, or
-  report now with what you have?"* Both answers are legitimate — **an agent may deliberately
+- On a stop with live descendants, marion does not accept the exit. **This is not an extra
+  re-prompt: it is the *wording* of the first `Stop`-hook fire** (step 3 below), whose `reason` is
+  the descendant question when descendants are live and the generic question otherwise. There is
+  exactly one hook fire either way, which is what keeps the budget at two and keeps
+  `stop_hook_active` meaningful: *"N of your children are still running: <names>. Do you want to
+  wait for them, or report now with what you have?"* Both answers are legitimate — **an agent may deliberately
   report early**, e.g. it has the answer and the child is doing optional follow-up work. What is
   not legitimate is exiting *without choosing*.
 - Choosing to report early marks the contract `reported_early: true` and lists the still-running
@@ -1071,8 +1077,10 @@ testable invariant is:
 > marion never emits an **agent-initiated** `Exited` (`Ok` / `Failed` / `Unreported`) for a node
 > with a non-terminal descendant, **unless the node either chose to report early
 > (`reported_early == true`) or was held to its timeout bound (`held_to_timeout == true`)**.
-> Involuntary terminals — `Killed`, `Cancelled`, `TimedOut`, `Orphaned` — are exempt throughout,
-> since they describe things done *to* a node.
+> Involuntary terminals are exempt throughout, since they describe things done *to* a node:
+> `Exited{Killed}`, `Exited{Cancelled}`, `Exited{TimedOut}`, and any node carrying
+> `reap_state: Orphaned` — which is a `ReapState`, not an `ExitStatus` (§3.2), so a property test
+> must look for it on the reap field rather than in the exit status.
 >
 > The second exemption is not a loophole; it is the bounded-hold path above. Without it the
 > invariant forbids the very behaviour §7.6 specifies, and a property test written to it fails
@@ -1133,27 +1141,55 @@ status endpoint.
 
 This is the authoritative sequence; the rules above constrain it, the worked example motivates it.
 
-1. Agent types are prompted to call `mcp__marion__report`.
-2. **If the node has non-terminal descendants**, marion holds it and asks whether to wait or report
-   early (descendant-gating, above). A node with no live descendants skips straight to step 3.
-3. On a stop with no report, marion re-prompts via a `Stop` hook returning
-   **`{"decision":"block","reason":"are you reporting a result, or are you waiting on something?"}`**
-   — **verified working on both Claude Code and Codex.** On Claude Code the reason arrives as a
-   real `user` message (`Stop hook feedback:\n<reason>`), `num_turns` goes 1→2, and it is
-   **observable in `stream-json`**; exit-code-2-plus-stderr is equivalent.
-4. **Still nothing → a second and final re-prompt, the grace turn.** The `Stop` hook is gone by
+1. Agent types are prompted to call `mcp__marion__report`. A node that reports is done; the rest of
+   this sequence is for a node that stops without one.
+2. **On a stop with no report, marion re-prompts once via a `Stop` hook** returning
+   `{"decision":"block","reason":…}`. **This is the only hook fire, and its `reason` depends on the
+   subtree:**
+   - live descendants → *"N of your children are still running: <names>. Do you want to wait for
+     them, or report now with what you have?"*
+   - none → *"are you reporting a result, or are you waiting on something?"*
+
+   **Verified working on both Claude Code and Codex.** On Claude Code the reason arrives as a real
+   `user` message (`Stop hook feedback:\n<reason>`), `num_turns` goes 1→2, and it is **observable
+   in `stream-json`**. (Exit-code-2-plus-stderr is the equivalent mechanism; fixtured on Codex
+   only — §11 item 13.)
+3. **Resolve the answer.**
+   - *Reports* → done. With live descendants this sets `reported_early: true` and records them.
+   - *Chooses to wait*, **or answers nothing while descendants are live** → **hold the node in
+     `Blocked`** until either every descendant is terminal, or `TaskContract.timeout` expires.
+     - descendants finish inside the bound → continue to step 4.
+     - **the bound expires first → `Exited{Unreported}` with `held_to_timeout: true`**, and the
+       still-running descendants **outlive the parent**, their contracts landing `unclaimed`
+       (§7.5). Killing them would destroy work to tidy up bookkeeping. **This is the only path on
+       which a node may go `Exited` with a live descendant and neither exemption flag set would be
+       a violation** — the flag is what keeps it legal under the L1 invariant.
+   - *Stops again with no live descendants* → continue to step 4.
+4. **Still nothing → the second and final re-prompt, the grace turn.** The `Stop` hook is gone by
    now, so this goes through `continue_()` + `prompt()` atomically (§6.3), gated on `caps.resume`;
-   a harness without it skips this step. The ask is for a best-effort report acknowledging the
-   interruption, not for the work to be finished — modelled on Gemini's grace window (below).
+   a harness without it skips straight to step 5. The ask is for a best-effort report acknowledging
+   the interruption, not for the work to be finished — modelled on Gemini's grace window (below).
 5. Still nothing → synthesize from the transcript tail, mark `Exited{Unreported}`, surface visibly.
    **Never silently promote a status message to an answer.**
 
-At most **two** re-prompts occur: one on the hook, one on the grace turn. `stop_hook_active` guards
-the first against looping; `caps.resume` bounds the second to harnesses that can be resumed at all.
+At most **two** re-prompts occur: one on the hook (step 2), one on the grace turn (step 4). The
+descendant question is carried *by* the step-2 fire, not by an extra one — otherwise a node with
+live descendants would take three, and the second would be suppressed by the very guard that
+protects the first. `stop_hook_active` guards step 2 against looping; `caps.resume` bounds step 4 to
+harnesses that can be resumed at all.
 
-**Do not use `additionalContext`.** On Claude Code it produces a turn but is delivered as a
-system-reminder emitting **no stream event**, leaving `num_turns` at 1 — marion would have to diff
-the transcript to know it landed. On **Codex it does not exist**: `stop.command.output` is
+**Reaching step 5 with a live descendant is only legal via the step-3 timeout**, where
+`held_to_timeout` is set. Any other route to `Exited{Unreported}` with a non-terminal descendant is
+a bug in the implementation, and §8/L1 tests exactly that.
+
+**Do not use `additionalContext`.** On Claude Code it produces a turn, but the injected text has
+**no stream frame of its own**: it is delivered as a system-reminder, so the turn appears as
+ordinary `assistant` events indistinguishable from normal output, and `num_turns` stays at **1**.
+Contrast the `block` path, which emits an identifiable `{"type":"user", … "Stop hook feedback:…"}`
+frame and moves `num_turns` to 2. marion would have to infer delivery rather than observe it.
+(`tests/fixtures/s4/claude-code/stream-additionalContext.jsonl` does carry the two extra
+`assistant` frames the injected turn produced — what is missing is any frame attributable to the
+injection.) On **Codex it does not exist**: `stop.command.output` is
 `additionalProperties:false` over `{continue, decision:["block"], reason, stopReason,
 suppressOutput, systemMessage}`.
 
