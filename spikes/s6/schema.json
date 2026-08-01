@@ -1,0 +1,1 @@
+{"type": "object", "properties": {"narrative": {"type": "string"}, "result_commits": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]}}, "required": ["narrative", "result_commits"], "additionalProperties": false}

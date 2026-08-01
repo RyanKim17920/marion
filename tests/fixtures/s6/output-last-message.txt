@@ -1,0 +1,1 @@
+{"narrative": "s6 probe: schema document via final message", "result_commits": []}
