@@ -248,7 +248,8 @@ struct Event {
     parent_id: Option<AgentId>,
     global_seq: u64,              // supervisor-assigned total order
     agent_seq: u64,               // per-agent receive order
-    src_seq: Option<u64>,         // source-side sequence, where the harness provides one
+    src_seq: Option<SrcSeq>,      // source-side ordering evidence; see §4.2
+                                  // enum SrcSeq { Ordinal(u64), Predecessor(EventId) }
     caused_by: Option<EventId>,   // explicit causal edge
     thread_id: Option<ThreadId>,  // harness-native correlation
     turn_id: Option<TurnId>,
@@ -300,9 +301,22 @@ a parent's spawn against its child's `Spawned`. `mono_ns` exists to align `event
 
 **`agent_seq` records marion's observation order and nothing more.** A notification dropped and
 never redelivered simply never gets a number, leaving the sequence gapless — so continuity is
-*not* proof of completeness. Loss detection requires `src_seq`, populated where the harness
-supplies one (Codex `item/*` ids, Claude transcript `uuid` chains). **Where `src_seq` is `None`,
-marion cannot detect loss and the UI must not imply otherwise.**
+*not* proof of completeness. Loss detection requires `src_seq` — and **it takes two forms, because
+no day-one harness emits a per-event ordinal**:
+
+| form | detects loss by | who supplies it |
+|---|---|---|
+| `Ordinal(u64)` | gap in the sequence | opencode, but **only** on `/api/event`, which §6.4 rejects for suppressing heartbeats — so unavailable in practice |
+| `Predecessor(EventId)` | broken chain (an event whose predecessor never arrived) | **Claude Code** transcripts, via `uuid`/`parentUuid` |
+| `None` | not detectable | **Codex app-server** |
+
+Codex supplies neither: its `item/*` ids (`msg_09cb…`, verified in
+`tests/fixtures/s5/probe3-midturn-attach.json`) are *identity*, already carried in `item_id`, and
+imply no order — a walk of every key in that capture finds no per-event ordinal. **So on the two
+day-one adapters, loss detection is chain-continuity on Claude Code and unavailable on Codex.**
+Typing this field as a bare `u64` would have made the check unsatisfiable on both.
+
+**Where `src_seq` is `None`, marion cannot detect loss and the UI must not imply otherwise.**
 
 **Granularity is chunks, not messages** — opencode emits token-level deltas, Amp whole messages.
 A message-granular IR would force buffering and lose live typing.
@@ -755,8 +769,17 @@ mirror Claude Code's Agent-result shape (`totalTokens`, `totalDurationMs`, `tota
 mirroring one vendor's result struct is not.
 
 **Authorization.** Every child gets a per-node capability token bound to its `AgentId`. `send`,
-`cancel`, `status`, `wait` are permitted only to the node's **descendants or its parent**; `list`
-returns the same set. Sibling addressing is denied by default and requires an explicit
+`cancel`, `status`, `wait` are permitted only to the node's **descendants or its parent**, **and
+only while the target is non-terminal**; `list` returns the same set, terminal nodes included, so
+discovery still works. `send` to an `Exited` node is denied to agents and is a **client/user**
+operation (`node/prompt` over the supervisor socket, §2).
+
+That restriction is what keeps §7.5 true. Without it a child of an `Exited` parent could call
+`send`, §6.3 would oblige the supervisor to `continue_()` + `prompt()`, and the parent would leave
+a terminal state — contradicting both §7.5's "there is no live turn to return into" and §8/L1's
+`Exited` terminality. A resumed node is therefore always a **user**-initiated act; it reuses its
+`AgentId` and re-enters `Running`, and the terminality invariant is scoped to agent-initiated
+transitions accordingly. Sibling addressing is denied by default and requires an explicit
 `allow_peers: [names]` grant in the agent type. Denied calls are logged and surfaced — a child
 attempting lateral addressing is worth seeing. Without this, `send` would be a peer routing table
 with an LLM on both ends, i.e. a prompt-injection channel between siblings and the mesh the star
@@ -765,10 +788,27 @@ topology forbids.
 **Wiring.** The server is registered as `marion`, producing the `mcp__marion__*` prefix. Injected
 per child by the fileless path where available (`--mcp-config` for Claude Code, `-c
 mcp_servers.marion={…}` for Codex, `OPENCODE_CONFIG_CONTENT` for opencode), else written into
-`<agent-dir>/config/`. The command is `marion-supervisor mcp --token <tok>`, a thin stdio bridge
-to the supervisor socket. **The token is an argv flag on the bridge, not an env var**, so it is not
-inherited by grandchildren or by tools the agent shells out to. The bridge resolves the token to an
-`AgentId` and stamps every call.
+`<agent-dir>/config/`. The command is `marion-supervisor mcp`, a thin stdio bridge to the supervisor socket.
+
+**The token is delivered to the bridge on an inherited fd, never in argv and never in the
+environment.** All three placements were considered and only the fd is safe:
+
+| placement | leaks to | verdict |
+|---|---|---|
+| env var | every grandchild and every tool the agent shells out to | rejected |
+| **argv flag** | **any same-uid process via `ps -axo args` — i.e. every sibling with `bash`** | **rejected** |
+| inherited fd / bridge stdin | nothing; not inherited by grandchildren | **chosen** |
+
+The argv form was this document's earlier answer and it was wrong: it fixes grandchild inheritance
+while leaving the token world-readable to exactly the siblings the authorization model exists to
+separate. An agent type with `tools: [read, edit, bash]` — §3.1's own example — could enumerate
+every live sibling's bridge argv and stamp calls as that sibling, which is the prompt-injection
+channel between siblings this section forbids.
+
+**Token lifetime:** issued at spawn, bound to the `AgentId`, invalidated at the node's terminal
+transition, and **reissued** — not reused — when a `ReapedIdle` node is resumed (§7.2) or when the
+§7.6 grace turn starts a new process. The bridge resolves the token to an `AgentId` and stamps
+every call.
 
 ### 5.5 Canned provider and model proxy — two components
 
@@ -825,8 +865,11 @@ held the channel since `t=0`, so the double-open hazard is structurally unreacha
 
 - **`node/steer`** — mid-flight injection into a **running** node. Requires `caps.steer`.
 - **`node/prompt`** — a new turn on an **idle** node.
-- **`send` to a finished node** — the supervisor performs `continue_()` then `prompt()` as one
-  atomic registry operation, so there is no race between them.
+- **Resuming a finished node** — the supervisor performs `continue_()` then `prompt()` as one
+  atomic registry operation, so there is no race between them. Two callers reach this path, and
+  **an agent is not one of them**: the user, via `node/prompt` (§2); and marion itself, for §7.6's
+  grace turn. Agent-callable `send` is denied against terminal targets (§5.4) — otherwise a child
+  could resurrect its own `Exited` parent and falsify §7.5.
 
 ### 6.4 Config injection and isolation
 
@@ -1060,7 +1103,7 @@ non-terminal descendants."**
 - **The second re-prompt needs a mechanism, because the `Stop` hook is long gone by then.** The
   first re-prompt rides the hook (`decision: block`) while the process still exists. The second
   happens after the process has exited, so marion performs `continue_()` then `prompt()` as one
-  atomic registry operation (§6.3) — the same path as `send`-to-a-finished-node. On a harness
+  atomic registry operation (§6.3) — the same path a user's `node/prompt` takes. On a harness
   lacking `caps.resume`, there is no second re-prompt: marion goes straight to
   `Exited{Unreported}`. Hook execution is itself bounded; a hook that does not return within its
   timeout is treated as no answer.
@@ -1501,10 +1544,13 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 
 **M2 — supervisor split.**
 - `marion-tui` SIGKILLed mid-run; agents keep running; a new TUI shows the full tree.
-- `src_seq` gap-free where the harness supplies one. **Not** `agent_seq` contiguity — §4.2 says
-  that proves nothing, since a dropped notification simply never gets a number. Where `src_seq` is
-  absent, assert instead that the replayed tree is structurally identical to the pre-kill tree
-  (same nodes, same parent edges, same terminal states).
+- `src_seq` intact per its form (§4.2), **not** `agent_seq` contiguity — §4.2 says that proves
+  nothing, since a dropped notification simply never gets a number. Concretely, for the day-one
+  adapters this means: **Claude Code** — the `parentUuid` chain is unbroken across the kill
+  (`Predecessor`); **Codex** — no ordering evidence exists, so assert instead that the replayed
+  tree is structurally identical to the pre-kill tree (same nodes, same parent edges, same terminal
+  states). The structural assertion is the *primary* criterion for Codex, not a fallback, and an
+  `Ordinal` gap check runs on no adapter M2 ships.
 - Supervisor SIGKILL → journal replay leaves `ReapedIdle` resumable, `Live` → `Orphaned`, and no
   untracked live process.
 
