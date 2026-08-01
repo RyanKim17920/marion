@@ -608,8 +608,13 @@ to register SDK-side hooks/MCP or read the session catalogue.
 only as an `is_error` `tool_result` reading *"Claude requested permissions to use X, but you
 haven't granted it yet"* — no `control_request` reaches marion, nothing blocks, and the turn
 continues. With it, the CLI emits
-`{"type":"control_request","request":{"subtype":"can_use_tool","tool_name":…,
-"permission_suggestions":[…],"tool_use_id":…}}`. The flag is **absent from `--help`** but is what
+`{"type":"control_request","request_id":…,"request":{"subtype":"can_use_tool","tool_name":…,
+"permission_suggestions":[…],"tool_use_id":…}}`. **The top-level `request_id` is load-bearing and
+belongs in the envelope exactly as on the outbound direction**: the demux map below is keyed on it,
+and `control_cancel_request` names it — a frame without one could be neither answered nor cancelled.
+Its presence is inferred from those two requirements rather than read off a committed fixture,
+because the whole inbound direction is still unfixtured (§11 item 14); confirming the field name is
+part of that item's first probe. The flag is **absent from `--help`** but is what
 the official SDK passes (visible in the 2.1.220 bundle). Note this is an **argv** mechanism, not an
 `initialize` one — the "`initialize` is optional" note above concerns SDK-side hook/MCP
 registration and must not be read as "nothing further is required" for the inbound half.
@@ -744,7 +749,13 @@ approvals only on threads it originated. On attached threads it renders them rea
 the owning UI decide** — otherwise marion races a human for their own prompt. Use
 `approvalsReviewer` on turns marion originates. Like the Claude adapter, this needs a continuously
 serviced bidirectional reader and an id→pending-decision map, plus a stated policy for when no
-human UI is attached — **an unanswered approval hangs the turn indefinitely.**
+human UI is attached — **an unanswered approval hangs the turn indefinitely.** **The policy is
+marion's existing bound, not a new one**: with no UI attached the request simply stays pending until
+the node's bound expires, and expiry then does what §6.7's fourth expiry row and §9 already
+specify — a contract-bearing node is killed and lands `TimedOut`; a root has the request **denied**
+and proceeds, with the denial journaled. marion never auto-approves, and never silently
+auto-denies before the bound: a policy that answered on the user's behalf would be indistinguishable
+from the user having answered.
 
 > **UNVERIFIED:** no S5 probe exercises an approval (probe3's turn is `agentMessage/delta` only),
 > and no probe involves a real TUI — all three are WebSocket clients. The fan-out and
