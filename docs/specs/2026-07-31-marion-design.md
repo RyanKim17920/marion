@@ -724,10 +724,11 @@ The choice stands on `wezterm-term` being unpublished and alacritty modelling sc
 adversarially to resolve a contradiction with an earlier one — but both on the same host and the
 same binaries, so this is *reproduced*, not independently confirmed on other machines:
 
-- **Claude Code 2.1.220 uses the alternate screen for its entire session.** Exactly one
-  `?1049h`/`?1049l` pair per session, `?1049h` at byte offset 67 in a trusted directory (~1900 in
-  an untrusted one, after the trust dialog), the whole REPL between them, ending in the alt screen
-  unless cleanly exited. All painting afterward is absolute addressing plus `\x1b[K` — a fixed
+- **Claude Code 2.1.220 uses the alternate screen for its entire session.** **At most** one
+  `?1049h`/`?1049l` pair per session, never nested and never repeated: `?1049h` at byte offset 67
+  in a trusted directory (1900 in an untrusted one, after the trust dialog), the whole REPL between
+  them, and the closing `?1049l` present **only when the session exited cleanly** — the
+  boot-help-status-resize capture has the `h` at 1900 and no `l` at all. All painting afterward is absolute addressing plus `\x1b[K` — a fixed
   viewport. It emits **no `ESC[3J`** and no legacy `?47`/`?1047`. **So Claude Code needs no
   scrollback handling**; `renderable_content()` (viewport-only) is sufficient for that path.
   **For the Codex path it is not.** `renderable_content()` delegates to `display_iter`, which runs
