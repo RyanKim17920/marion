@@ -2503,6 +2503,9 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       contents, the `managedCodexVersion` result, and the mid-run `install.sh` swap. Observed
       live; no log was committed, so §5.2's "`daemon start` does not arm the updater" rests on an
       uncommitted session.
+    - **The round-14 `can_use_tool` observation** (§5.2) — the `ask` frame and the without-flag
+      auto-deny were seen live on 2.1.220 but no fixture was committed. §11 item 14 owes the
+      round-trip capture.
     - **The 1478-byte `ESC[6n` stall** (§5.3). The capture that showed it was never committed, so
       neither the byte count nor the stall is reproducible here — which matters because it is the
       only counter-evidence against "probe answering is unnecessary" (§11 item 9 asks a reader to

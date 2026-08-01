@@ -186,8 +186,8 @@ table rows.
   probe3 A=93 / B=87 / probe2 `turnCount`=3 all re-derive.
 - **`s5`'s host `serverName` was scrubbed** to `host.invalid` in the fourth pass — a `*.local`
   hostname is a §2 scan class and was in none of the earlier records.
-- **`s2` and `s5` retain the operator's terminal emulator brand and build** — `s2` in four
-  `warp://cli-agent` OSC 777 bodies (which also named the integration's `plugin_version`), `s5` inside six `userAgent` strings
+- **`s2` and `s5` retain the operator's terminal emulator brand and build** — `s2` in two
+  `warp://cli-agent` OSC 777 bodies (one per Claude capture) (which also named the integration's `plugin_version`), `s5` inside six `userAgent` strings
   (`WarpTerminal/v…`), because the app-server echoes the launching terminal's UA and the
   `initialize` response shape is the evidence. Host fingerprinting only; no identity.
 - **`s5`'s account state was scrubbed on 2026-08-01, not accepted.** The `remoteControl/status/changed` and
@@ -212,14 +212,18 @@ table rows.
 
 ### Verification run, 2026-08-01 (re-run after the **fourth** redaction pass)
 
-**This is the authoritative run.** The original pass was dated 2026-07-31 and therefore described
+**This is the authoritative run**, re-derived against the currently committed bytes after the
+fourth pass. The original pass was dated 2026-07-31 and therefore described
 the *pre-repair* bytes; the `s2` captures changed on 2026-08-01 (§3 warning), so every scan and
 invariant below was re-derived against the currently committed corpus rather than carried forward.
 Result: identical to the original run except for the `s2` DECSTBM figures, which the repair
 corrected (22/24, 26/26, 0/3 and 0/1, replacing 25/27, 29/29, 1/4 and 2/3 — see `s2/NOTES.txt`), and the `.cast`/`.raw.bin` non-identity
 recorded in `s2/NOTES.txt`. All five file lengths and every cited byte offset are unchanged.
 
-Scans over all 59 files (binaries included): `sk-ant-`, `Bearer <token>`, `ghp_`/`xox*`/`AKIA`/PEM,
+**Grep-based scans cannot see everything.** The fourth pass's usage-bar residue survived in the
+`.cast` files precisely because the glyph is stored there as a `\uXXXX` escape, invisible to a
+byte-level pass and to every scan below. **Any future verification must also render the panels**
+from *both* encodings and compare, not only grep. Scans over all 59 files (binaries included): `sk-ant-`, `Bearer <token>`, `ghp_`/`xox*`/`AKIA`/PEM,
 non-`@example.invalid` emails, the literal home path, and the username are all **CLEAN**.
 
 Invariants re-derived before and after the pass are byte-identical except for the length of

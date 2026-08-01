@@ -69,8 +69,10 @@ different length and would shift every offset after them.
       Weekly-limit remaining  <pct left>   -> "00% left"    (8 B)
   - FOURTH PASS, 2026-08-01 (audit round 14), all equal-length. The third pass scrubbed the
     usage TEXT and left two things that still encoded the same fact:
-      Usage bar glyphs        7 filled of 20 -> 20 empty  (60 B; the bar tracked the real
-                              percentage, so "00% left" sat beside a bar still drawing ~35%)
+      Usage bar glyphs        20 glyphs    -> 20 empty     (60 B; the bar tracked the
+                              percentage the text scrub had already replaced. Applied in BOTH
+                              encodings -- the .cast stores each glyph as a 6-char \uXXXX escape,
+                              so a byte-level pass over the raw file misses it entirely.)
       Limit reset times       <hh:mm> x3   -> "00:00"     (5 B each; the third pass replaced
                               the reset DATES but not the times beside them)
       Limit reset dates       <date>/<date> -> "1 Jan"   (5 B each)
