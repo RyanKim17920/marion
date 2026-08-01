@@ -1008,24 +1008,21 @@ not widen a narrower agent type: `**` contributes nothing to a conjunction. The 
 conjunction at match time, not a set operation at spawn time — glob sets have no closed-form
 intersection, so "compute the intersection" would not be implementable as a single glob list. A
 `spawn` glob that the ceiling could never admit is a **spawn-time error**, not a silently empty
-scope: it means the parent asked for a scope the agent type forbids. **"Could never admit" has
-exactly one definition here — the literal-prefix test below — and it is deliberately conservative:
-it rejects only clear cases and lets anything uncertain through to the match-time conjunction.**
-There is no second, semantic notion of "matches nothing" in play, because that would need paths
-that do not exist yet: take the `spawn` glob's **literal prefix** — its longest leading run of components
-containing no metacharacter — and reject iff that prefix is non-empty and matches no path the
-ceiling admits, testing the prefix and the prefix plus `/**` against the ceiling. `src/**` under a
-ceiling of `docs/**` is rejected (`src` is admitted by neither form); `src/*.rs` under `src/**` is
-accepted. A glob with an empty literal prefix (`**/*.rs`) is always accepted, and any residual
-mismatch is caught by the match-time conjunction — the spawn-time check is a cheap early error, not
-the enforcement mechanism. **`Glob` is `globset::Glob` with `literal_separator = true`** — `**` crosses `/`, `*` does not,
+scope: it means the parent asked for a scope the agent type forbids. **"Could never admit" is
+defined once, below, as language-intersection emptiness over the pinned glob dialect** — never as
+"matches no file present right now", which would reject a scope naming a directory the child is
+meant to create. **`Glob` is `globset::Glob` with `literal_separator = true`** — `**` crosses `/`, `*` does not,
 `{a,b}` and `[…]` are supported, negation is **not**. The dialect has to be pinned here: whether
 `src/**` matches `src/a/b.rs` or bare `src` differs between crates, and two implementations would
 otherwise produce different `scope_violations` from the same run against the same M1 criterion.
 Negation is excluded partly because it would break the emptiness check below. **Emptiness is
 decided syntactically** — a `spawn` glob is an error iff no string matches both it and some ceiling
 glob (regular-language intersection over that alphabet, decidable for this dialect even though the
-*intersection set* has no glob representation; no crate ships it, so M1 implements it). **The filesystem is never consulted**, so
+*intersection set* has no glob representation; no crate ships it, so M1 implements it — globs
+compile to regexes, and emptiness of the product automaton is the whole test). **This is the single
+definition of the spawn-time error above**: `foo/{a,b}` under a ceiling of `foo/c` is rejected here
+and would survive any cheaper prefix-based approximation, which is why no such approximation is
+offered as an alternative. **The filesystem is never consulted**, so
 `writable_scope: ["src/generated/**"]` naming a directory the child is meant to *create* is legal;
 testing against the worktree's current contents would reject exactly that normal case. A parent can therefore only
 ever restrict what the agent type allows, never widen it. Both lists are recorded in the contract
@@ -1188,7 +1185,11 @@ another's environment and argv, so **no secret-keeping scheme isolates siblings 
 same user.** §7.1 already says children are not a trust boundary, and this is where that bites.
 What the token does buy is real but narrower — every call is *attributable* to an `AgentId`, the
 default topology is enforced against honest mistakes and confused-deputy routing, lateral attempts
-are logged and surfaced, and non-marion processes on the box cannot drive the supervisor at all.
+are logged and surfaced, and a process **holding no valid token** cannot drive the supervisor at
+all. That last clause is deliberately narrow: a same-uid process can lift a token from another
+process's argv or environment, or read the 0600 hook-token file, and then it *is* indistinguishable
+from the node it stole from. The token excludes the unprivileged and the accidental, not a local
+attacker already running as the user.
 **Isolation that must survive a hostile child requires a different uid or a sandbox, which marion
 does not yet do; until then `allow_peers` and the star topology are policy, not containment.**
 
