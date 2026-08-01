@@ -12,11 +12,15 @@ Each capture ships in two forms. **`.raw.bin` is authoritative.**
 
   ⚠ The two forms are NOT byte-identical, and an earlier version of this file wrongly
   said they were (found in audit round 6). `extract.py` decoded each pty read chunk
-  independently, so 12 multibyte box-drawing glyphs that straddle a chunk boundary were
-  split and became U+FFFD replacement characters in the `.cast`. Affected:
-  claude-boot-exit (+9 bytes), claude-boot-help-status-resize (+24),
-  codex-cli-0.145.0-...-diff-resize (+9); the two 0.146.0 captures are clean and match
-  exactly. The damage is TEXT-ONLY: the CSI/OSC sequence multisets derived from the two
+  independently, so multibyte box-drawing glyphs that straddle a chunk boundary were split
+  and became U+FFFD replacement characters in the `.cast`. Exactly 9 damaged regions, 23
+  U+FFFD characters, in three files:
+      claude-2.1.220-boot-exit                        2 regions, +9 bytes
+      claude-2.1.220-boot-help-status-resize          5 regions, +24 bytes
+      codex-cli-0.145.0-boot-status-help-diff-resize  2 regions, +9 bytes
+  The two 0.146.0 captures are clean and match their .raw.bin exactly (delta 0). (A round-6
+  note said "12 glyphs"; re-derived in round 7, the count is 9 — do not confuse it with the
+  9 CSI splice sites of the separate round-5 redaction bug below, which is a coincidence.) The damage is TEXT-ONLY: the CSI/OSC sequence multisets derived from the two
   encodings are identical in all five captures, so every figure the design doc cites holds
   on either form. It is not repaired because the original chunk boundaries are not
   recoverable unambiguously from the committed files, and guessing them would risk
@@ -76,8 +80,8 @@ No API keys, tokens, or credential-bearing paths were present.
       DECSTBM inside/total, 0.145.0 resize capture:   was 25/27  ->  22/24 (true value)
       DECSTBM inside/total, 0.146.0 14-row capture:   was 29/29  ->  26/26 (true value)
       DECSTBM inside/total, 0.146.0 resize capture:       16/18 (never corrupted)
-  Design doc §5.3 has been corrected to the true values. The 94-lines-scrolled figure on
-  line 18 above is NOT reproducible from this repo — see design doc §11 item 10.
+  Design doc §5.3 has been corrected to the true values. The 94-lines-scrolled figure in the
+  capture list above is NOT reproducible from this repo — see design doc §11 item 10.
 
 Tools (copied from the spike scratch dir, throwaway, not workspace code)
   ptyhost.py   pty.fork host: TIOCSWINSZ, scripted keystrokes/resizes, logs all raw bytes.

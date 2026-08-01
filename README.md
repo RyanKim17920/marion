@@ -92,7 +92,7 @@ are mutually exclusive for Claude Code children.
 and it selects M1's return channel. Then: a real `claude` root calls `mcp__marion__spawn`; a real
 `codex` child edits a file in a worktree and reports; the parent receives a **structured task
 contract** — driven entirely by the canned provider so it costs nothing and repeats. Acceptance
-criteria and the concrete M1 decisions (marion launches the root as node 0, blocking `spawn`,
+criteria and the concrete M1 decisions (marion launches the root node itself, blocking `spawn`,
 three-way contract field ownership, detective scope enforcement, `codex exec --json` as the child
 surface, and the canned-provider wiring for both processes): design doc §9. Repo layout: §10.
 

@@ -63,8 +63,12 @@ process that can enforce session ownership (§5.1).
 
 **Keying.** Both the supervisor and its state are keyed on the **project root** (git common-dir,
 falling back to cwd) — not cwd, since worktree children (§6.6) have different cwds and would
-otherwise hash to different supervisors. The socket path is length-checked against the 104-byte
-`sun_path` limit, falling back to `/tmp/marion-<uid>/<12-hex>.sock`.
+otherwise hash to different supervisors. **The socket is
+`<state>/<project-hash>/supervisor.sock`** (§4.3), length-checked against the 104-byte `sun_path`
+limit and falling back to `/tmp/marion-<uid>/<12-hex>.sock` when it does not fit — which a long
+`$HOME` under `$XDG_STATE_HOME` makes a normal case, not an exotic one. **The per-child MCP bridge
+derives this path by the same rule**, since the harness spawns it as a separate process and it must
+independently find the supervisor its parent bound.
 
 **Client↔supervisor methods:** `tree/subscribe`, `node/get`, `node/attach`, `node/detach`,
 `node/prompt`, `node/steer`, `node/cancel`, `node/kill`, `node/rename`, `permission/reply`,
@@ -175,6 +179,9 @@ struct Node {
                                   // written elsewhere as Exited{Unreported}, Exited{Killed}
     reap_state: ReapState,        // Live | ReapedIdle | Orphaned  (§7.2)
     orphaned_report: bool,        // parent exited before this node reported (§7.5)
+    reported_early: bool,         // §7.6 exemption flags live on the Node, not only on the
+    held_to_timeout: bool,        //   contract, so L1 is evaluable for a root (which has none)
+    timeout: Duration,            // the node's bound; a contract's `timeout` mirrors it (§9)
     depth: u8,
 }
 ```
@@ -369,7 +376,8 @@ the spec forbids custom root fields.
   snapshot.json                       # opportunistic journal compaction
   agents/<agent_id>/                  # = <agent-dir>
     meta.json                         # compiled spec, caps, harness ref, binary path + version
-    contract.json                     # the task contract (§6.7)
+    contract.json                     # the task contract (§6.7) — child nodes only; a root
+                                      #   has none (§9)
     events.jsonl                      # IR, append-only
     pty.cast                          # asciicast v3, surfaces with a pty
     config/                           # isolated harness config dir, if any (§6.4)
@@ -776,7 +784,9 @@ a 53 MB Codex child.
   "agent_type":  "codex-impl",        // required; resolved per §3.1
   "prompt":      "…",                 // required; the task
   "acceptance_criteria": ["…"],       // required — see ownership note
-  "verification":        ["cargo test -p foo"],   // optional but strongly encouraged
+  "verification":        ["cargo test -p foo"],   // optional but strongly encouraged; each entry
+                                      //   runs as `sh -c "<entry>"` with cwd = the child's
+                                      //   Workspace path, recorded as the contract's Command
   "writable_scope": ["src/**"],       // optional; repo-relative globs. Default: the whole
                                       //   workspace. Narrows the agent type's own
                                       //   writable_scope; may never widen it.
@@ -798,12 +808,15 @@ them.** The full field-by-field ownership table is in §9 and is not restated he
 authoritative, and an earlier duplicate of it in this section had already drifted two fields out
 of date.
 
-**`writable_scope` resolution**, since three sources can name one: the agent type may declare a
-ceiling, `spawn` may narrow it, and the default is the whole workspace. marion takes the
-**intersection** and never the union — a `spawn` argument can only ever restrict what the agent
-type allows, so a parent cannot widen a child's reach by asking. `writable_scope` is always
-recorded in the contract even when it is the default, so "unrestricted" is visible rather than
-implied by absence.
+**`writable_scope` resolution**, since two sources can name one: the agent type may declare a
+ceiling, `spawn` may narrow it, and the default is the whole workspace. **Both lists are stored,
+and a path is writable iff it matches the ceiling *and* the `spawn` request.** The check is
+conjunction at match time, not a set operation at spawn time — glob sets have no closed-form
+intersection, so "compute the intersection" would not be implementable as a single glob list. A
+`spawn` glob that matches nothing under the ceiling is a **spawn-time error**, not a silently empty
+scope: it means the parent asked for a scope the agent type forbids. A parent can therefore only
+ever restrict what the agent type allows, never widen it. Both lists are recorded in the contract
+even when they are the default, so "unrestricted" is visible rather than implied by absence.
 
 **`report`'s payload is the child-owned part of `Completion` only** — `narrative`, and
 optionally `result_commits` (§9). marion derives every other completion field, and **a
@@ -820,16 +833,23 @@ is per verb, because reading a node and acting on one are not the same permissio
 
 | verb | permitted targets | target state |
 |---|---|---|
-| `status`, `wait`, `list` | descendants or parent (`list` returns that set) | **any**, terminal included — `wait` on an already-terminal node returns its contract immediately |
-| `send` | descendants or parent | **non-terminal and not `ReapedIdle`** |
-| `cancel` | **descendants only** | non-terminal |
+| `status`, `list` | descendants or parent, plus `allow_peers` siblings (`list` returns that set) | **any**, terminal included |
+| `wait` | **descendants only**, plus `allow_peers` siblings | **any** — on an already-terminal node it returns immediately with that node's contract |
+| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal and not `ReapedIdle`** |
+| `cancel` | **descendants only — never a sibling, even under `allow_peers`** | non-terminal |
+| `report` | **self only** | non-terminal; **first call wins**, a second returns an error |
 
 Three consequences worth stating, since each closes a hole the flat rule left open:
 
 - **`status`/`wait` must work against terminal targets.** `wait` is inherently a race with the
   target finishing, and from M2 a backgrounded `spawn` returns a handle whose holder must be able
   to `wait` a node that may already have exited. Denying that would make the handle useless.
-- **`cancel` toward an ancestor is denied and logged like lateral addressing.** The
+- **`wait` is descendants-only, unlike `status`.** A child waiting on its *parent* would deadlock
+  by construction in M1: the parent is blocked inside the very `spawn` that created the caller, so
+  neither can proceed until a timeout expires and both contracts land `TimedOut`/`Unreported`.
+  Reading a parent's state is fine; *blocking* on it inverts the topology's direction of control.
+  (`wait` on a root would also have no contract to return.)
+- **`cancel` toward an ancestor is denied and logged, as lateral `cancel` is.** The
   descendants-or-parent set comes from the *addressing* topology (`MILESTONES.md`), and applying it
   unchanged to a lifecycle verb would let a child terminate the node that spawned it — producing an
   `Exited{Cancelled}` that the L1 invariant *exempts from checking*, with live siblings still
@@ -848,12 +868,23 @@ agent-initiated transitions accordingly. Sibling addressing is denied by default
 `allow_peers: [names]` grant in the agent type. Denied calls are logged and surfaced — a child
 attempting lateral addressing is worth seeing.
 
-**`allow_peers` is resolved to `AgentId`s once, at spawn, and renames never alter authorization.**
-`Node.name` is mutable by `node/rename` (§2) and is the address `send` takes, so a late-bound grant
-would mean renaming a node *into* a peer's `allow_peers` list silently hands that peer authority it
-was never given — and renaming the intended grantee silently revokes it. Every other authorization
-surface is bound to `AgentId`; this one must be too. Correspondingly, **`Node.name` must be unique
-among live nodes**: a `send` whose name does not resolve to exactly one live node is rejected as
+**`allow_peers` names are bound to an `AgentId` on first use, and never re-bound.** The naive rule
+— resolve everything at spawn — does not work, because siblings are spawned in sequence: the
+first-spawned node's `allow_peers` names a sibling that does not exist yet, so an at-spawn
+resolution would silently produce a permanently void grant, and peer messaging would work in only
+one direction. The rule is therefore:
+
+- at the **first** `send` to a named peer, resolve the name against the live node set;
+- **pin** the resulting `AgentId` for the rest of the granting node's life;
+- a name that does not resolve to exactly one live node is **denied, logged, and surfaced** — never
+  queued, never silently dropped.
+
+This keeps the property that matters: **a rename can never move authority.** `Node.name` is mutable
+via `node/rename` (§2) and is the address `send` takes, so late binding *per call* would mean
+renaming a node into a peer's `allow_peers` hands that peer authority it was never granted, and
+renaming the grantee silently revokes it. Binding once, on first use, defeats both while still
+working for siblings that appear in any order. Correspondingly, **`Node.name` must be unique among
+live nodes** — a `send` whose name does not resolve to exactly one live node is rejected as
 ambiguous rather than delivered to an arbitrary match. Without this, `send` would be a peer routing table
 with an LLM on both ends, i.e. a prompt-injection channel between siblings and the mesh the star
 topology forbids.
@@ -863,7 +894,7 @@ per child by the fileless path where available (`--mcp-config` for Claude Code, 
 mcp_servers.marion={…}` for Codex, `OPENCODE_CONFIG_CONTENT` for opencode), else written into
 `<agent-dir>/config/`. The command is `marion-supervisor mcp`, a thin stdio bridge to the supervisor socket.
 
-**The token rides the MCP server declaration's `env` block**, which marion writes at
+**The token rides the MCP server declaration's `env` block as `MARION_TOKEN`**, which marion writes at
 config-injection time — the only channel available, because **marion does not spawn the bridge:
 the harness does.** That rules out the two mechanisms one would otherwise reach for. An inherited
 fd is impossible (marion is not the bridge's parent, extra fds are `CLOEXEC`, and no MCP client
@@ -927,11 +958,13 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
 
 ### 6.1 Spawn
 
-1. Parent calls `mcp__marion__spawn`; token checked (§5.4).
+1. Parent calls `mcp__marion__spawn`; token checked (§5.4). **Child nodes only — a root started by
+   `marion run` has no requester and enters at step 2.**
 2. Resolve agent type; check depth, concurrency caps, and write-conflict policy (§6.6).
 3. Resolve the harness binary **through symlinks**; record path and `--version`.
 4. Create the worktree, or inherit cwd.
-5. Write the task contract (§6.7) with acceptance criteria and verification commands.
+5. Write the task contract (§6.7) with acceptance criteria and verification commands. **Child nodes
+   only** — a root has no contract (§9), so this step is skipped for it.
 6. `compile()` → argv + env + config (§6.4).
 7. **Journal the spawn intent**, start the process, journal confirmation.
 8. `Lifecycle::Spawned` with static caps, refined if a handshake exists.
@@ -1039,10 +1072,12 @@ struct TaskContract {
     instructions: String,
     acceptance_criteria: Vec<String>,
     allowed_tools: Vec<String>,
-    writable_scope: Vec<PathBuf>,        // resolved: agent-type ceiling ∩ spawn request (§5.4)
+    scope_ceiling: Vec<Glob>,            // from the agent type; default: whole workspace
+    scope_requested: Vec<Glob>,          // from spawn; default: whole workspace
+                                         //   writable iff a path matches BOTH (§5.4)
     timeout: Duration,                   // always set; see §9 for the default
     verification: Vec<Command>,
-    spawned_at: SystemTime,
+    timestamps: TaskTimestamps,          // partial from spawn onward; `spawned` set here
 
     completion: Option<Completion>,      // None iff the run has not ended, or ended
 }                                        //   unobserved (`reap_state: Orphaned`, §7.2)
@@ -1060,8 +1095,9 @@ struct Completion {                      // written once, at result
     diff: Option<Patch>,
     evidence: Vec<CommandOutcome>,
     exit: ProcessExit,
-    timestamps: TaskTimestamps,
-}
+}                                        // timestamps live on TaskContract, not here: they are
+                                         //   partial from spawn onward and must be readable
+                                         //   before completion exists
 ```
 
 The field types that **cross the wire** — the contract is `spawn`'s tool result and is persisted as
@@ -1085,11 +1121,16 @@ verification command's output enters an LLM's context. `exit_code: None` means t
 signalled; `ProcessExit.description` carries marion's own explanation ("external termination",
 §7.8) rather than being derived from the numbers.
 
+**JSON encoding is part of the specification**, since the stated reason for pinning these types is
+that a model and a future replayer read them, and serde's defaults are not what either should see:
+`Duration` → integer seconds; `SystemTime` → RFC3339 with offset; `Oid` → its 40-character hex
+string; `Glob` → its pattern string.
+
 Two rules make it more than bookkeeping:
 
 - **`acceptance_criteria` and `verification` are authored at spawn, before the child runs.**
   Criteria written afterward describe what happened, not what was required.
-- **`writable_scope` is checked against observed `ToolCall.locations`**, or against a worktree
+- **The scope is checked against observed `ToolCall.locations`**, or against a worktree
   diff where the adapter reports no locations (§9). A child writing outside its declared scope is
   reported, not silently accepted. `scope_enforced` records **whether the check ran**, not whether
   it passed — `false` means neither route was available, and is never used to mean "no violation".
@@ -1115,14 +1156,21 @@ unrepresentable instead of merely discouraged. `spawn` returning "the completed 
 marion holds the child's channel for the whole call.
 
 **How `status` is decided**, since it is the headline field a model reads and nothing else in this
-document derives it:
+document derives it. **Evaluated top-down, first match wins** — the rows overlap by construction,
+so precedence is the specification, not an implementation detail:
 
-| condition | `status` |
-|---|---|
-| a report arrived (or the `--output-schema` document parsed) **and** every `verification` command exited 0 — vacuously true when `verification` is empty | `Ok` |
-| any `verification` command exited non-zero, or the child process exited non-zero after reporting | `Failed` |
-| no report and no parseable document | `Unreported` |
-| `cancel`/`node/cancel` | `Cancelled` · timeout: `TimedOut` · external kill (§7.8): `Killed` |
+| # | condition | `status` |
+|---|---|---|
+| 1 | terminated by something done *to* the node | `Cancelled` (`cancel`) · `TimedOut` (bound expired with the child still running) · `Killed` (external, §7.8) |
+| 2 | no report arrived and no `--output-schema` document parsed | `Unreported` |
+| 3 | any `verification` command exited non-zero, **or** the child process exited non-zero | `Failed` |
+| 4 | otherwise | `Ok` |
+
+So: a child that reports, passes verification, and *then* exits non-zero is `Failed` (row 3 precedes
+row 4). A child that never reports is `Unreported` even if its verification passed (row 2 precedes
+row 3) — the §7.6 machinery and the "never silently promoted to a result" guarantee must fire
+regardless of what the commands say. Empty `verification` satisfies row 3 vacuously, so a bare
+successful report is `Ok`.
 
 **`acceptance_criteria` are recorded for the reader and are never machine-evaluated** — they are
 prose, and a supervisor that scored them would be inventing a verdict. `verification` is the
@@ -1154,7 +1202,8 @@ protects (a) the user's credentials, (b) the user's source, (c) nodes from each 
   recording, fixtures in `tests/fixtures/` with a `REVIEW.md` checklist, and a **pre-commit secret
   scan** blocking any fixture that fails. **Fixtures recorded against a real provider are never
   committed without a human read.** Prefer recording against the canned provider.
-- **Control MCP** is scoped per node (§5.4): descendants and parent only. **That scoping is
+- **Control MCP** is scoped per node (§5.4): descendants and parent, narrowing to descendants only
+  for `cancel` and `wait`. **That scoping is
   attribution and policy, not containment** — same-uid siblings can read each other's tokens, so a
   hostile child is out of scope until marion runs children under separate uids or a sandbox. Say
   this rather than implying the token is a security boundary.
@@ -1225,7 +1274,8 @@ non-terminal descendants."**
 - Choosing to report early marks the contract `reported_early: true` and lists the still-running
   descendants, so a reader can tell "done" from "done for now".
 - If the agent neither waits nor reports, marion holds the node in `Blocked` — but **the hold is
-  bounded by the node's own `TaskContract.timeout`**, not by its descendants. Two outcomes:
+  bounded by the node's own timeout** — `TaskContract.timeout` for a task node, the node-level
+  bound for a contract-less root (§9) — **not** by its descendants. Two outcomes:
   - Descendants finish inside the bound → re-prompt once more (mechanism below) → resolve normally.
   - The bound expires first → `Exited{Unreported}` with **`held_to_timeout: true`**, and **the
     still-running descendants outlive the parent**, their contracts landing `unclaimed` (§7.5).
@@ -1256,9 +1306,19 @@ testable invariant is:
 > with a non-terminal descendant, **unless the node either chose to report early
 > (`reported_early == true`) or was held to its timeout bound (`held_to_timeout == true`)**.
 > Involuntary terminals are exempt throughout, since they describe things done *to* a node:
-> `Exited{Killed}`, `Exited{Cancelled}`, `Exited{TimedOut}`, and any node carrying
-> `reap_state: Orphaned` — which is a `ReapState`, not an `ExitStatus` (§3.2), so a property test
-> must look for it on the reap field rather than in the exit status.
+> `Exited{Killed}`, `Exited{Cancelled}`, `Exited{TimedOut}`.
+>
+> **`Orphaned` is not in that list, because it is not an exit at all** — it is a `ReapState`
+> (§3.2) applied to a node marion lost without observing its exit, so such a node never emits an
+> `Exited` for L1 to constrain. It matters on the *other* side of the invariant: **an `Orphaned`
+> descendant counts as terminal for descendant-gating.** Its outcome is unknowable and will never
+> arrive, so holding an ancestor on it would pin that ancestor open forever — the failure the
+> bounded hold exists to prevent, reintroduced by a node that can never resolve. Its contract still
+> stays `completion: None` (§6.7): unknowable is recorded as unknowable, not as success.
+>
+> **Both flags live on `Node` (§3.2), not only on `TaskContract`**, so the invariant is evaluable
+> for every node including a root, which has no contract. A child's contract mirrors its node's
+> flags at completion.
 >
 > The second exemption is not a loophole; it is the bounded-hold path above. Without it the
 > invariant forbids the very behaviour §7.6 specifies, and a property test written to it fails
@@ -1336,7 +1396,8 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
 3. **Resolve the answer.**
    - *Reports* → done. With live descendants this sets `reported_early: true` and records them.
    - *Chooses to wait*, **or answers nothing while descendants are live** → **hold the node in
-     `Blocked`** until either every descendant is terminal, or `TaskContract.timeout` expires.
+     `Blocked`** until either every descendant is terminal, or the node's timeout expires
+     (`TaskContract.timeout`, or the root's node-level bound — §9).
      - descendants finish inside the bound → continue to step 4.
      - **the bound expires first → `Exited{Unreported}` with `held_to_timeout: true`**, and the
        still-running descendants **outlive the parent**, their contracts landing `unclaimed`
@@ -1345,25 +1406,36 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
        under L1.** The other L1-legal case is a deliberate early report, which sets
        `reported_early` instead.
    - *Stops again with no live descendants* → continue to step 4.
-4. **Still nothing → the second and final re-prompt, the grace turn.** The `Stop` hook is gone by
-   now, so this goes through `continue_()` + `prompt()` atomically (§6.3), gated on `caps.resume`;
-   a harness without it skips straight to step 5. The ask is for a best-effort report acknowledging
-   the interruption, not for the work to be finished — modelled on Gemini's grace window (below).
-5. Still nothing → **re-run the descendant check first.** The grace turn is a real turn with the
-   child's full tool surface, so it can have *created* descendants (from M2 on, a backgrounded
-   `spawn` returns immediately). If any descendant is now live, re-enter step 3's hold under the
-   remaining bound rather than exiting. Otherwise: synthesize from the transcript tail, mark
-   `Exited{Unreported}`, surface visibly. **Never silently promote a status message to an answer.**
+4. **The second and final re-prompt.** The `Stop` hook is gone by now, so this goes through
+   `continue_()` + `prompt()` atomically (§6.3), gated on `caps.resume`; a harness without it skips
+   straight to step 5. **It fires at most once per node** — see the budget below. Its message is
+   branched, because two different situations arrive here:
+   - *descendants completed while the node was held* → *"your children have finished: <names>;
+     their results are available — report now."* This is the happy path of descendant-gating, and
+     nothing was interrupted.
+   - *the node simply never answered* → **the grace turn**: a best-effort report acknowledging the
+     interruption, not a request to finish the work — modelled on Gemini's grace window (below).
+     Only this variant is "the grace turn".
+5. Still nothing → **re-run the descendant check first.** Step 4 is a real turn with the child's
+   full tool surface, so it can have *created* descendants (from M2 on, a backgrounded `spawn`
+   returns immediately). If any descendant is now live, re-enter step 3's hold under the remaining
+   bound. **Step 4 is spent**, so when that hold ends — by the descendants finishing or by the
+   bound expiring — control returns *here*, not to step 4. Otherwise: synthesize from the
+   transcript tail, mark `Exited{Unreported}`, surface visibly. **Never silently promote a status
+   message to an answer.**
 
-At most **two** re-prompts occur: one on the hook (step 2), one on the grace turn (step 4). The
-descendant question is carried *by* the step-2 fire, not by an extra one — otherwise a node with
-live descendants would take three, and the second would be suppressed by the very guard that
-protects the first. `stop_hook_active` guards step 2 against looping; `caps.resume` bounds step 4 to
-harnesses that can be resumed at all.
+At most **two** re-prompts occur per node: one on the hook (step 2), one at step 4. The descendant
+question is carried *by* the step-2 fire, not by an extra one — otherwise a node with live
+descendants would take three, and the second would be suppressed by the very guard that protects
+the first. `stop_hook_active` guards step 2 against looping; `caps.resume` bounds step 4 to
+harnesses that can be resumed at all; and **step 4's one-shot guard is what makes the 4→5→3 path
+terminate** rather than cycling a resumed process indefinitely. The step-3 hold is bounded by the
+node's timeout, so the whole procedure is finite on every branch.
 
-**Reaching step 5 with a live descendant is only legal via the step-3 timeout**, where
-`held_to_timeout` is set. Any other route to `Exited{Unreported}` with a non-terminal descendant is
-a bug in the implementation, and §8/L1 tests exactly that.
+**Exiting at step 5 with a live descendant is only legal via the step-3 timeout**, where
+`held_to_timeout` is set. *Reaching* step 5 with live descendants is normal — that is what the
+re-check above exists for. Any other route to an `Exited{Unreported}` that has a non-terminal
+descendant is a bug in the implementation, and §8/L1 tests exactly that.
 
 **Do not use `additionalContext`.** On Claude Code it produces a turn, but the injected text has
 **no stream frame of its own**: it is delivered as a system-reminder, so the turn appears as
@@ -1599,7 +1671,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `false` case is for future non-worktree or remote surfaces. **False confidence is worse than no
   check** — the flag records whether the check ran, not whether it passed.
 
-- **The `--output-schema` fallback, specified.** If `exec` cannot host MCP, marion passes
+- **The `--output-schema` fallback, specified — and itself UNVERIFIED (§11 item 12).** No fixture
+  in this repo exercises either flag, and two of its mechanics are open: whether `--output-schema`
+  binds at all when the CannedProvider is *scripting* the final message, and whether
+  `--output-last-message` receives the schema document or the raw prose. S6 must answer these too,
+  since two of the four branches route M1's entire return channel through them. If `exec` cannot host MCP, marion passes
   `--output-schema <file>` whose JSON Schema is exactly the **child-owned** fields below
   (`narrative` required, `result_commits` optional), and reads the document from
   `--output-last-message`. The differences from the MCP path, which is why MCP is preferred:
@@ -1616,8 +1692,10 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     fetch a hash would contradict this milestone's own scope.
   - `exec` is a one-shot job, so there is no session to `continue_()` for a grace turn.
 
-  Therefore M1's child goes **directly to `Exited{Unreported}`** when no report arrives — §7.6
-  steps 2–4 are skipped, which the procedure already permits (step 4 is gated on `caps.resume`).
+  Therefore M1's child goes **straight to §7.6 step 5** when no report arrives — steps 2–4 are
+  skipped, which the procedure already permits (step 4 is gated on `caps.resume`). Step 5's
+  descendant re-check still runs; with no live descendant it proceeds immediately to
+  `Exited{Unreported}`.
   This is a property of the surface, not a weakening of §7.6: the descendant-gating and re-prompt
   machinery lands with the app-server adapter in M4, where a child has a hook and a session.
   Hook-driven re-prompting *is* exercised in M1 — on the **root**, which is Claude Code and does
@@ -1632,6 +1710,12 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   (returning a handle) is M2+. `TaskContract.timeout` bounds the block; on expiry `spawn` returns
   the contract with `status: TimedOut` if the child was still running, or `Unreported` with
   `held_to_timeout: true` if it had stopped and was held on live descendants (§6.7).
+  **On a `TimedOut` expiry marion kills the child before `spawn` returns**, so the node is
+  `Exited{TimedOut}` and the contract is never terminal over a live process — which would
+  contradict §8/L1's `Exited` terminality and leave M1 with an untracked runaway. `exit` records
+  marion's own signal, and `ProcessExit.description` says so. This is deliberately the opposite of
+  §7.6's descendant rule, where live *descendants* outlive a parent: there the work belongs to
+  another node that marion still owns and tracks, whereas here nothing would own the process.
 - **Contract field ownership** (three authors, not two — see §5.4):
   - **The requesting parent** supplies `acceptance_criteria`, `verification`, and `writable_scope`
     through `spawn`. marion cannot invent criteria for a task it does not understand.
@@ -1641,16 +1725,18 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     in the contract rather than implying the work was verified.
   - **marion** authors `task_id`, `requester`, `child`, `repo`, `base_commit`, `workspace`,
     `instructions` (the parent's `spawn.prompt`, recorded verbatim), `allowed_tools`,
-    `timeout` — and *resolves* `writable_scope` to the intersection of the agent type's ceiling and
-    the parent's request (§5.4) — and *validates and freezes* the parent's criteria before the
+    `timeout`, `scope_ceiling` (from the agent type) and `scope_requested` (validated from the
+    parent's `writable_scope`; §5.4) — and *validates and freezes* the parent's criteria before the
     child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`, `exit`,
     `timestamps`, `status`, `reported_early`, `held_to_timeout`,
     `live_descendants_at_report`, and `scope_enforced`.
   - **The child** supplies only `narrative` and, optionally, `result_commits`.
 
-  **Every field of §6.7 is owned by exactly one of these three.** `writable_scope` is the one field
-  named twice on purpose — *requested* by the parent, *resolved and owned* by marion (§5.4) — which
-  is an ownership rule, not a second author. That exhaustiveness is what
+  **Every field of §6.7 is owned by exactly one of these three** — verify against the struct
+  field-by-field when either changes. The scope is the one case where a parent's input and
+  marion's field differ in name: the parent *requests* `writable_scope` through `spawn`, and marion
+  owns both stored fields (`scope_ceiling`, `scope_requested`). That is an ownership rule, not a
+  second author. That exhaustiveness is what
   makes the rejection rule well-defined: **a child-supplied value for any field it does not own is
   rejected, not merged** — otherwise a child can rewrite its own acceptance criteria. The property
   that matters is that criteria exist before the work and the worker cannot edit them; that does
@@ -1838,8 +1924,11 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     `CLAUDE_CODE_ATTRIBUTION_HEADER`'s 0% → 99.7% cache effect (reported upstream, not measured
     here); and the DECSET 2026 bracket discipline (five captures, one host) that §8/L4.5 gates
     commits on.
-12. **Spike S6 — the two `codex exec --json` assumptions (§5.2), and the highest-value open item
-    in the repo.** Does `exec` host MCP servers, and does `exec --json` emit `ToolCall.locations`?
+12. **Spike S6 — the `codex exec --json` assumptions (§5.2), and the highest-value open item in
+    the repo.** Three questions: does `exec` host MCP servers; does `exec --json` emit
+    `ToolCall.locations`; and — since two of §9's four branches depend on it — **does the
+    `--output-schema` / `--output-last-message` pair actually deliver a schema document when the
+    final message is scripted by the CannedProvider?**
     S6 was started and **killed mid-run** on 2026-07-31; no S6 fixture exists. Both answers change
     what M1 builds — §9 specifies each branch, so M1 is not blocked, but **S6 runs first**.
 13. **Claude Code's exit-code-2 Stop-hook path is unfixtured.** §7.6 calls it equivalent to

@@ -86,9 +86,9 @@ Redaction must not touch the evidence the docs rely on. After redacting, re-deri
 - **s2** — file length, `ESC[?1049h`/`ESC[?1049l` offsets, `CSI 3J` / `CSI 2J` counts,
   DECSET 2026 bracket counts, the DECSTBM region histogram, and the `.cast` resize sequence.
   **Derive all of these from `.raw.bin`, which is authoritative** — the `.cast` of three captures
-  lost 12 box-drawing glyphs to a chunk-boundary decoding bug at capture time and is *not*
-  byte-identical to the `.raw.bin` (text only; control sequences are identical). See
-  `s2/NOTES.txt`.
+  lost box-drawing glyphs to a chunk-boundary decoding bug at capture time (9 damaged regions,
+  2/5/2, byte deltas +9/+24/+9) and is *not* byte-identical to the `.raw.bin` (text only; control
+  sequences are identical). See `s2/NOTES.txt`.
 - **s3** — timing-log line counts and the observed lifetimes.
 - **s4** — hook payload fields (`stop_hook_active`, `hook_event_name`, `decision`,
   `hookSpecificOutput`) and the per-mode stream differences.
