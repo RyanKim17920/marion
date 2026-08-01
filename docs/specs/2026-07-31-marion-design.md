@@ -454,7 +454,11 @@ the spec forbids custom root fields.
 **Durability is group-commit.** Append without fsync; fsync on a ~50 ms timer *and*
 unconditionally at each state transition that must survive a crash — `Spawned`, `Exited`,
 `ReapedIdle`, and every journal write. **Order within the barrier: append the record, fsync it,
-*then* perform and announce the transition.** An fsync issued before its own record is written
+*then* perform and announce the transition.** For a transition that *reports* an act marion cannot
+undo — `Spawned` above all, where the process must exist before there is anything to record — that
+ordering applies to §4.3's **intent** record: fsync the intent, do the act, then append and fsync
+the confirmation. The barrier's guarantee is that no act is performed with nothing durable
+describing it, not the impossible one that its outcome is recorded before it happens. An fsync issued before its own record is written
 guarantees nothing; the point is that the record is durable before anything observable depends on
 it. Losing trailing content deltas costs a slightly truncated
 replay; losing a lifecycle record costs an untracked live process. Only the latter pays for a
@@ -1380,7 +1384,7 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    | condition | action |
    |---|---|
    | **bridge has not handshaken within 30 s** | **spawn error** — and note the process from step 7 **is** running: kill it, journal the abort against the intent record, and leave the contract `completion: None`. Otherwise marion holds a live child with no `Spawned`, no terminal and no `Completion`, which §7.2 would later mis-mark `Orphaned` — asserting marion *lost* a process it chose to abandon. No bound *of this node's own* covers the wait (its contract timeout starts at `Spawned`, step 9), which is why the 30 s cap exists; a contract-bearing **requester's** bound does run throughout |
-   | **`system/init` reports a server `failed`** | **spawn error**, with the same cleanup as above — the process is running by now. The harness has given a terminal verdict; retrying the turn cannot change it |
+   | **`system/init` reports a server `failed`** (evaluated **first** — a `failed` server usually also leaves the tools absent, and this row wins over the retry row below, since retrying a server the CLI has already given up on only burns the bound) | **spawn error**, with the same cleanup as above — the process is running by now. The harness has given a terminal verdict; retrying the turn cannot change it |
    | **`system/init` reports `pending`, or the `mcp__marion__*` tools are absent** | **re-issue the turn, at most once.** This state is per-turn and recovers — measured: a second frame at t=8 s saw `connected` and a scripted `mcp__marion__spawn` reached the server. If the re-issue still shows `pending` **or the `mcp__marion__*` tools are still absent — either condition, since a `connected` server with no tools is the same failure for M1's purposes** — it is a spawn error |
 
    The distinction matters because the three produce different lifecycle states: two never reach
