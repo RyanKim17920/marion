@@ -951,11 +951,12 @@ one direction. The rule is therefore:
   access — could then never read A's result, which is precisely what `wait`'s "terminal included"
   row exists to allow;
 - **pin** the resulting `AgentId` for the rest of the granting node's life;
-- an **unpinned** name that does not resolve to exactly one live node is **denied, logged, and
-  surfaced** — never queued, never silently dropped. **`list` is the exception**: it names no
-  specific peer, so it pins every `allow_peers` name that currently resolves to exactly one live
-  node and simply **omits the rest from its result without a denial** — a sibling not yet spawned
-  is not an error to a caller that asked "who can I reach?";
+- an **unpinned** name that does not resolve to exactly one node **in that same live-and-terminal
+  sibling set** is **denied, logged, and surfaced** — never queued, never silently dropped. (One
+  candidate set throughout: a peer that has merely finished is resolvable, a peer never spawned is
+  not.) **`list` is the exception**: it names no specific peer, so it pins every `allow_peers` name
+  that resolves in that set and simply **omits the rest from its result without a denial** — a
+  sibling not yet spawned is not an error to a caller that asked "who can I reach?";
 - **once pinned, the `AgentId` is used directly**, so `status`/`wait` keep working against a peer
   that has since terminated — which the verb table requires, and which name resolution alone could
   not deliver, since uniqueness is guaranteed only among *live* nodes.
@@ -1302,7 +1303,7 @@ so precedence is the specification, not an implementation detail:
 |---|---|---|
 | 1 | terminated by something done *to* the node | `Cancelled` (`cancel`) · `TimedOut` (bound expired with the child still running) · `Killed` (external, §7.8) |
 | 2 | no report arrived and no `--output-schema` document parsed | `Unreported` |
-| 3 | any `verification` command exited non-zero **or was signalled**, **or** the child process exited non-zero **or was terminated by a signal marion did not send** | `Failed` |
+| 3 | any `verification` command exited non-zero **or was signalled**, **or** the child process exited non-zero **or died on a fault signal** (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT — see the partition below; an unattributable SIGKILL/SIGTERM/SIGHUP is row 1's `Killed`, not this) | `Failed` |
 | 4 | otherwise | `Ok` |
 
 So: a child that reports, passes verification, and *then* exits non-zero is `Failed` (row 3 precedes
@@ -1636,7 +1637,9 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    branched, because two different situations arrive here:
    - *descendants completed while the node was held* → *"your children have finished: <names>;
      their results are available — report now."* This is the happy path of descendant-gating, and
-     nothing was interrupted.
+     nothing was interrupted. **For a root, which cannot `report`**, the same branch instead says
+     *"…their results are available; finish when you are ready."* — telling it to report would
+     order a turn it cannot comply with.
    - *the node simply never answered* → **the grace turn**: a best-effort report acknowledging the
      interruption, not a request to finish the work — modelled on Gemini's grace window (below).
      Only this variant is "the grace turn".
