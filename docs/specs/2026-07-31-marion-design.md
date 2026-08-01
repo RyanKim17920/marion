@@ -33,10 +33,12 @@ captures** (the local install moved mid-session; per-claim stamps appear inline 
 **Fixture-backed vs not.** S1–S5 have committed fixtures in `tests/fixtures/`; **S6 was killed
 mid-run and has none** (§11 item 12). The **Gemini and opencode launcher findings (§6.4) and the
 entire resource model (`MILESTONES.md`) have no committed fixture** — they rest on single
-uncommitted sessions and should be re-measured before they harden into assumptions — **and three
-further claim families are equally unfixtured, all listed in §11 item 10**: the vt100-vs-alacritty
-scrollback comparison, the entire vendor prior-art body (§7.6), and `s2/analyze.py`, which cannot
-read the committed captures at all. That violates this project's own "every spike emits a fixture"
+uncommitted sessions and should be re-measured before they harden into assumptions — **and further
+claim families are unfixtured, all listed in §11 item 10**: the vt100-vs-alacritty scrollback
+comparison **in part** (what either emulator *retained*; the 94 scrolled-up lines *are*
+reproducible), the entire vendor prior-art body (§7.6), `s2/analyze.py`, which cannot read the
+committed captures at all, the 1478-byte `ESC[6n` stall (§5.3), and the `turn/steer` half of §5.2's
+thread-ownership claim. That violates this project's own "every spike emits a fixture"
 rule and is recorded as such rather than glossed.
 
 ---
@@ -563,7 +565,8 @@ Multiple concurrent subscribers work, including after the originator disconnects
 > `item/completed`) — i.e. everything emitted before B attached, consistent with resume delivering
 > no replay. B additionally received its own connection-scoped `remoteControl/status/changed` at
 > attach; **A received one too, at `t = 29`** — before `thread/start`, so it falls outside the 93
-> the probe records (A's raw inbound count in `logs.A` is 94 for this reason). 93 − 7 + 1 = 87. **A late joiner misses only pre-attach
+> the probe records. (A's inbound *notification* count in `logs.A` is 94 for this reason: 101
+> entries, 97 inbound, of which 3 are responses to A's own requests.) 93 − 7 + 1 = 87. **A late joiner misses only pre-attach
 > events, which is why `thread/read {includeTurns:true}` backfill must precede `thread/resume`.**
 
 `thread/resume` is a **load-from-persisted-history** operation: correct for cold threads, and an
@@ -588,10 +591,16 @@ verdict: `active` | `idle` | `systemError` | `notLoaded`.
 
 **Ownership in `shared` mode.** Multiple marion-owned client connections on one app-server thread
 is **not** the double-open hazard of §5.1: there is exactly one writing process — the app-server.
-**The ownership registry therefore tracks the thread, not each client connection.** Verified: a
-second independent JSON-RPC client steered a thread owned by a live TUI, with the TUI rendering the
-result and remaining undisturbed. **UNVERIFIED:** a *foreign* (non-marion) client on the same
-thread.
+**The ownership registry therefore tracks the thread, not each client connection.**
+
+> **UNVERIFIED — the steering half of this has no committed fixture.** The claim that a second
+> client can *steer* a thread a live TUI owns, with the TUI undisturbed, comes from an uncommitted
+> session: **no S5 probe issues `turn/steer` at all** (it appears in `tests/fixtures/s5/` only
+> inside an error message enumerating valid methods), and no probe involves a real TUI — all three
+> are WebSocket clients. What the fixtures *do* show is weaker and still useful: a second
+> subscriber reaching full event parity with the originator, which stayed undisturbed
+> (probe1, probe3). A *foreign* (non-marion) client on the same thread is likewise unverified.
+> §11 item 15.
 
 **`turn/completed` is the authoritative turn terminator.** `item/completed` ends one item of many;
 an `error` event is diagnostic; `thread/status/changed → idle` is thread-level and can lag, race,
@@ -731,7 +740,8 @@ text had it backwards in both directions and is corrected here.
 both harnesses (19,373 bytes of Codex boot + `/status` + `/help` + two resizes; Claude through the
 trust dialog, alt-screen entry at 1900, `/help`, `/status`, two resizes; a separate trusted-dir capture entered at 67 and exited cleanly). One earlier
 capture *did* show Codex stalling at 1478 bytes after `ESC[6n` on a host that answered nothing and
-**sent no keystrokes**, which suggests the stall is an input-starvation artifact rather than a
+**sent no keystrokes** — *(that capture is **uncommitted**; the byte count is not reproducible from
+this repo, and none of the five committed captures truncates there)* — which suggests the stall is an input-starvation artifact rather than a
 probe dependency — but that is inference, and the two observations are not reconciled.
 
 **Decision: answer DA1, XTVERSION, CPR/DSR, and OSC 10/11 anyway.** It is a few lines, it removes a
@@ -2090,10 +2100,13 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     `request_user_dialog` — is designed on decompilation, with **zero** inbound `control_request`
     frames in `tests/fixtures/s1/stdout.jsonl`. The demux map and the entire permission path rest
     on it. Closes in M1 (§5.2).
-15. **Codex approval semantics are source-derived, not measured** (§5.2): no S5 probe exercises an
-    approval, and no probe involves a real TUI. Both the fan-out to all subscribers and
-    first-answer-wins — which together justify "marion answers approvals only on threads it
-    originated" — are unverified, as is a *foreign* (non-marion) client on a shared thread.
+15. **Codex multi-client semantics are largely source-derived, not measured** (§5.2): no S5 probe
+    exercises an approval, no probe issues `turn/steer`, and no probe involves a real TUI — all
+    three are WebSocket clients. Unverified: the approval fan-out to all subscribers and
+    first-answer-wins (which together justify "marion answers approvals only on threads it
+    originated"); **a second client steering a thread a live TUI owns**; and a *foreign*
+    (non-marion) client on a shared thread. What *is* fixtured is subscriber parity and
+    non-disruption of the originator.
 
 ---
 

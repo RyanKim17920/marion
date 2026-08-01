@@ -130,8 +130,11 @@ below describes the 2026-07-31 pass; the `s2` row records the later repair.
 - A generic ">= 40 character token" rule fires 199 times across the tree. Every hit was read and
   is benign: server-side `msg_…` item ids and `rollout-<timestamp>-<uuid>.jsonl` filenames in
   `s3`/`s5` (needed to correlate events across clients), the two `trusted_hash` sha256 values in
-  `s4/codex/config.toml.hooks-state.snippet` (they hash `s4/codex/stop_hook.sh`, which is
-  committed alongside), and the Codex tool name `create_source_repository_write_credential`
+  `s4/codex/config.toml.hooks-state.snippet` — Codex hook-trust digests, not credentials, and
+  **not reproducible from the committed bytes**: they were recorded before `stop_hook.sh` was
+  redacted (`D=<SCRATCH>`), so neither matches the committed file
+  (`3cc38359…`), and being two distinct values for two hook entries they could not both hash one
+  file in any case — and the Codex tool name `create_source_repository_write_credential`
   rendered in an `s2` `/help` panel. None are credentials.
 
 ### Verification run, 2026-08-01 (re-run after the escape-sequence repair)
