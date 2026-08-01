@@ -649,8 +649,9 @@ marion's permission queue** (§5.6). Cancel with `{"type":"control_cancel_reques
 #### codex
 
 `shared` mode: one `codex app-server --listen ws://IP:PORT` that **marion owns**. `--listen`
-requires a literal `SocketAddr` — a hostname is a hard `InvalidWebSocketListenUrl` and `wss://` is
-rejected; `unix://` needs its own directory. `codex --remote` attaches a TUI in a pty on demand
+requires a literal `SocketAddr` **for the `ws://` form** — a hostname is a hard
+`InvalidWebSocketListenUrl` and `wss://` is rejected. `unix://` is a **separate accepted form**,
+taking a filesystem path rather than a `SocketAddr`, and needs its own directory. `codex --remote` attaches a TUI in a pty on demand
 (interactive subcommands only).
 
 **Attach sequence (S5, verified on 0.146.0 and in `rust-v0.146.0` source).** `thread/resume` **is**
@@ -757,7 +758,8 @@ approvals only on threads it originated. On attached threads it renders them rea
 the owning UI decide** — otherwise marion races a human for their own prompt. Use
 `approvalsReviewer` on turns marion originates. Like the Claude adapter, this needs a continuously
 serviced bidirectional reader and an id→pending-decision map, plus a stated policy for when no
-human UI is attached — **an unanswered approval hangs the turn indefinitely.** **The policy is
+human UI is attached — **an unanswered approval hangs the turn until the node's bound expires**,
+which on a long bound is indistinguishable from a hang to anyone watching. **The policy is
 marion's existing bound, not a new one**: with no UI attached the request simply stays pending until
 the node's bound expires, and expiry then does what §6.7's fourth expiry row and §9 already
 specify — a contract-bearing node is killed and lands `TimedOut`; a root has the request **denied**
@@ -884,7 +886,9 @@ same binaries, so this is *reproduced*, not independently confirmed on other mac
   tracking. It paints full-screen on the **main** screen via `?2026h` + `\x1b[1;1H\x1b[J` +
   absolute rows. **All scrollback work is a Codex concern.**
   It **does** enter the alt screen **transiently for full-screen overlays**, properly paired —
-  verified in `tests/fixtures/s2/codex-cli-0.145.0-boot-status-help-diff-resize.raw.bin`: exactly
+  verified on **0.145.0**, in `tests/fixtures/s2/codex-cli-0.145.0-boot-status-help-diff-resize.raw.bin`
+  (the two committed 0.146.0 captures contain no `?1049h` at all, because neither drove an overlay
+  — so the overlay behaviour is carried forward from 0.145.0, not observed on 0.146.0): exactly
   one `ESC[?1049h` at byte 38963 and one `ESC[?1049l` at 43372, bracketing the `/diff` pager. So
   the emulator must handle **buffer switching mid-session on the same node**, and marion must not
   treat "no alt screen" as a static per-harness property.
@@ -1629,7 +1633,7 @@ copy only, after the contract is persisted:
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split as `floor(16 KiB / n_retained)` per outcome, and that share split again as `floor(share / 2)` to **each** of `stdout` and `stderr` — an odd byte is simply unused, since a rounding rule that hands it to one stream is a difference two implementations would have to guess at. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
 | 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — **except individual paths inside `changed_paths`/`scope_violations`, whose shortening is signalled by the embedded `…` at exactly 512 B — an imperfect marker, since a real path may legitimately contain `…`, which is why the **persisted contract is authoritative for the full list** and the returned copy is a display artefact; these entries carry no per-entry metadata** (they are `PathBuf`s in a list, not `Capped` values) — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
-| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and, when a retained path exceeds 512 B, replace it with its **leading ≤255 B + `…` (3 B) + trailing ≤254 B — at most 512 B**, each side being the largest whole-character prefix/suffix fitting its allowance. "At most", not "exactly", because a multi-byte character straddling either edge is dropped rather than split; what matters is that the replacement is never *longer* than the 512 B threshold that triggered it. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
+| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**, keeping its `original_bytes` at the *pre-rule-0* length so it always means "how long the child's text actually was", never "how long it was when this step found it"; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and, when a retained path exceeds 512 B, replace it with its **leading ≤255 B + `…` (3 B) + trailing ≤254 B — at most 512 B**, each side being the largest whole-character prefix/suffix fitting its allowance. "At most", not "exactly", because a multi-byte character straddling either edge is dropped rather than split; what matters is that the replacement is never *longer* than the 512 B threshold that triggered it. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
 | 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size is bounded independently of the input — its only variable
 parts are a handful of integer counters, whose decimal width is bounded by `usize` — a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing, except `diff`, which keeps its leading bytes, and individual paths, which keep leading 255 B + `…` + trailing 254 B — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
 | — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
@@ -1694,8 +1698,8 @@ Two rules make it more than bookkeeping:
   file the child created *and committed* is "untracked" from that index's point of view and is
   picked up — which is why the union covers committed creations without a second `git diff`.
 
-  `git diff <base_commit>` alone misses an untracked file; `git status` alone misses anything the
-  child **committed** — and committing is anticipated, since `result_commits` is a child-owned
+  `git diff <base_commit>` alone misses an untracked file; `git status` against the *workspace's own*
+  index misses anything the child **committed** — and committing is anticipated, since `result_commits` is a child-owned
   field. Either omission produces `changed_paths: []`, `scope_violations: []`,
   `scope_enforced: true` for a real out-of-scope write: the false confidence the two-field split
   exists to prevent, reached by a different route. `diff` is `git diff <base_commit>` with
@@ -1801,7 +1805,7 @@ so precedence is the specification, not an implementation detail:
 
 So: a child that reports, passes verification, and *then* exits non-zero is `Failed` (row 3 precedes
 row 4). A child that never reports is `Unreported` even if its verification passed (row 2 precedes
-row 3) — where "never reports" means row 2's full condition, *neither* a `report` call *nor* a
+row 3) — assuming rows 1's terminated cases did not fire first, since row 1 precedes row 2; "never reports" means row 2's full condition, *neither* a `report` call *nor* a
 parseable `--output-schema` document; a parsed document is a report for every purpose here. The
 §7.6 machinery and the "never silently promoted to a result" guarantee must fire
 regardless of what the commands say. An empty `verification` list **does not match row 3** — there is no
@@ -2174,7 +2178,7 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
 2. **On a stop with no report, marion re-prompts once via a `Stop` hook** returning
    `{"decision":"block","reason":…}`. **This is the only hook fire, and its `reason` depends on the
    subtree:**
-   - live descendants, node owes a report → *"N of your children are still running: <names>. Do you
+   - live descendants, node owes a report → *"N of your descendants are still running: <names>. Do you
      want to wait for them, or report now with what you have?"*
    - live descendants, node owes none (a root) → *"N of your children are still running: <names>.
      Wait for them before you finish."* **Not a choice**: a root has no tool with which to answer
