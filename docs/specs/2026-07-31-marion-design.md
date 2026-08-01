@@ -1933,7 +1933,10 @@ Say so plainly rather than implying a guarantee the process model does not deliv
   may be gone, or it may still be running with marion no longer attached to it (a supervisor that
   died holding a `Live` node). Both are "marion does not know", both require the same user
   resolution, and neither is a reap — which always has an explanation on record before the fact.
-- **`Orphaned`** — process lost without a recorded reap. Marked on restart only for `Live` nodes.
+- **`Orphaned`** — marion has **no record of deciding this node's fate**: no reap intent, no
+  observed exit. The process may be gone *or still running with marion no longer attached* (below);
+  both are the same unknown and need the same user resolution. Marked on restart only for `Live`
+  nodes — an unconfirmed reap intent resolves to `ReapedIdle` instead, never here.
 - Running nodes are never reaped. **Nor is a node a `spawn` is currently blocked on, nor one in
   *any* `Blocked(_)` state** — `Descendants`, `Permission`, or `Elicitation` — because reaping any
   of them strands a caller that can never be resolved: `ReapedIdle` is not a terminal state, so no
