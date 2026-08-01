@@ -828,7 +828,10 @@ The choice stands on `wezterm-term` being unpublished and alacritty modelling sc
 adversarially to resolve a contradiction with an earlier one — but both on the same host and the
 same binaries, so this is *reproduced*, not independently confirmed on other machines:
 
-- **Claude Code 2.1.220 uses the alternate screen for its entire session.** **At most** one
+- **Claude Code 2.1.220 uses the alternate screen for its entire session** — meaning from the
+  moment it enters (byte 67 in a trusted directory, 1900 when a trust dialog runs first) to exit,
+  never leaving and re-entering mid-session. It is not on the alt screen for the handful of boot
+  bytes before `?1049h`. **At most** one
   `?1049h`/`?1049l` pair per session, never nested and never repeated: `?1049h` at byte offset 67
   in a trusted directory (1900 in an untrusted one, after the trust dialog), the whole REPL between
   them, and the closing `?1049l` present **only when the session exited cleanly** — the
@@ -1794,7 +1797,13 @@ replayable. It is harness-independent: a Codex child and a Claude child return t
 ### 7.1 Security model
 
 **Threat model.** Children run arbitrary code by design; they are not a trust boundary. marion
-protects (a) the user's credentials, (b) the user's source, (c) nodes from each other.
+protects (a) the user's credentials, (b) the user's source, (c) nodes from each other's *state* —
+their workspaces, transcripts, tokens and tool surfaces. **(c) is emphatically not OS-level
+isolation from a hostile sibling**: every node runs as the same uid, so one can read another's
+environment and argv whenever it chooses to look. What marion prevents is a node *accidentally* or
+*routinely* reaching another's state through the surfaces marion itself provides; what it cannot
+prevent is a deliberately hostile child, and no scheme short of separate uids or containers would.
+Say so plainly rather than implying a guarantee the process model does not deliver.
 
 - **Model traffic:** the proxy and canned provider bind **loopback only**, ephemeral port, per-run
   bearer token in the child's env. Never `0.0.0.0`.
@@ -1831,7 +1840,7 @@ protects (a) the user's credentials, (b) the user's source, (c) nodes from each 
 Without this distinction a deliberately reaped node and a killed orphan are indistinguishable on
 disk after a crash, and restart recovery would mark perfectly resumable nodes dead.
 
-**SIGSTOP is not used as hibernation** — measured, it saves no memory (footprints unchanged across
+**SIGSTOP is not used as hibernation *for memory*** — measured, it saves no memory (footprints unchanged across
 a 175 s stop, zero swapouts). It buys CPU only, and idle Claude already costs 0.33% of a core. Sole
 exception worth the complexity: `opencode serve` busy-polls at **1.15%/core while idle**.
 
