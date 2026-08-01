@@ -284,7 +284,8 @@ and is the same code path (§8).
 
 ### 3.4 Execution surfaces (spawn modes are presets over these)
 
-The four familiar mode names are a **cross-product of three independent properties**. Encoding
+The four familiar mode names are **presets over a cross-product of three independent properties** —
+the space is the cross-product; the four names are the useful points in it, not an enumeration of it. Encoding
 them as a flat enum makes valid combinations unrepresentable.
 
 ```rust
@@ -1075,7 +1076,9 @@ Four consequences worth stating, since each closes a hole the flat rule left ope
   ancestors, not as excluding peers: the peer grant is what makes the cycle rule below live rather
   than dead.) A child waiting on its *parent* would deadlock
   by construction in M1: the parent is blocked inside the very `spawn` that created the caller, so
-  neither can proceed until a timeout expires and both contracts land `TimedOut`/`Unreported`.
+  neither can proceed until a timeout expires — the parent's bound is what breaks it, and the two
+  contracts land whatever §6.7's table gives them (typically the parent `TimedOut`, the child
+  `Unreported`); the point is that a full bound is burned on a deadlock marion can refuse up front.
   Reading a parent's state is fine; *blocking* on it inverts the topology's direction of control.
   (`wait` on a root would also have no contract to return.) **Two `allow_peers` siblings can close
   the same cycle laterally** — A waits on B while B waits on A, and both burn a full bound before
@@ -1751,7 +1754,8 @@ budget (§9) — the two measure different things and are not comparable, so sou
 other would give every resumed child a wall-clock deadline §9 says the flag cannot impose. Copying it instead would carry a dead requester's clamp forward, and
 `node/prompt` (§2) takes no timeout argument, so the user cannot supply one either. **A resumed `Completion` is surfaced *unclaimed* regardless of the requester's state** (§7.5): a
 resume is a `node/prompt`, not a `spawn`, so there is no outstanding tool call to return into —
-the original `spawn` already returned the first contract — and emitting a tool result with no
+the original `spawn` either already returned the first contract or, for an orphan, died with the
+supervisor that was holding it (§7.2) — and emitting a tool result with no
 pending call id is not constructible on either M1 harness. The audit trail is
 therefore append-only across resumes — a run that was reported, resumed, and reported again shows
 both, rather than the first result being silently overwritten by the second.
@@ -1780,7 +1784,7 @@ Row 3's signal clauses matter because `exit_code`/`code` is `None` for a signall
 SIGSEGV; without them a *reporting* child that then died on a fault would fall through to `Ok` —
 a silent one is already caught by row 2's `Unreported`.
 
-**Which signal means which status is decided by the signal itself, not by prose**, since rows 1 and
+**Which signal means which status is decided by the signal *and its attributable sender*, not by prose**, since rows 1 and
 3 would otherwise both claim every uncaught signal and first-match-wins would silently pick
 `Killed`:
 
@@ -2388,9 +2392,9 @@ record. The hazards are in *interpreting* them:
 
 ## 8. Testing
 
-**E2E through real harnesses is the test.** Only inference is canned — in L1–L4.5; **L5 runs
-  against real models by design** (below), which is what makes it the layer that catches a provider
-  changing under us.
+**E2E through real harnesses is the test.** Only inference is canned — in L1–L4.5 and L6; **L5
+  alone runs against real models by design** (below), which is what makes it the layer that catches
+  a provider changing under us.
 
 - **L1 — pure units.** Spec compilation, IR normalization, journal replay, capability resolution,
   ownership, ordering. Most of the code. **Includes the tree invariants** — per-agent `seq`
