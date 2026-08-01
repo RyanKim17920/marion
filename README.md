@@ -76,11 +76,15 @@ and corrected again. Treat anything marked
 | **S4** Stop-hook re-prompt | Works on both via `{"decision":"block","reason":…}`. **Codex hooks fail silently until trusted.** |
 | **S5** Late-join subscription | `thread/resume` **is** subscribe. Mid-turn attach works. Approvals fan out to all subscribers — marion must not race a human. *(The fan-out and first-answer-wins semantics are read from source, **not measured**: no probe exercises an approval. Owed when the codex adapter lands.)* |
 
-**S6 is open, and it is M1's first task.** It was started and killed mid-run, and it tests two
-things about `codex exec --json` that decide what M1 builds: does `exec` host MCP servers (if not,
-the `mcp__marion__report` return path does not exist and M1 uses the `--output-schema` fallback),
-and does it emit file locations (if not, scope enforcement diffs the worktree). Design doc §9
-specifies both branches, so M1 is not blocked — but run S6 before writing supervisor code.
+**S6 is open, and it is M1's first task.** It was started and killed mid-run. It answers three
+questions about `codex exec --json` that decide what M1 builds — does `exec` host MCP servers (if
+not, the `mcp__marion__report` return path does not exist and M1 uses the `--output-schema`
+fallback); does it emit file locations (if not, scope enforcement diffs the worktree); and does
+`--output-schema`/`--output-last-message` actually deliver a document when the final message is
+canned — **and it records two Codex encodings the repo lacks** (a Lark-grammar `apply_patch` call
+and a `type:"namespace"` MCP call), without which M1's canned Codex script cannot be written.
+Design doc §9 specifies every branch, so M1 is not blocked — but run S6 before writing supervisor
+code. Full scope: design doc §11 item 12.
 
 The most consequential finding was incidental: **`CLAUDE_CONFIG_DIR` isolation breaks OAuth**,
 because the Keychain entry is keyed to the real config dir. Config isolation and subscription auth

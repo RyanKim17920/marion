@@ -187,7 +187,9 @@ round-tripping, and accurate token counts.
 | Seed VT corpus | vendor `vt100-rust` `tests/data/fixtures/` (MIT) | — |
 
 `wezterm-term` is **not on crates.io**. `vt100` retained **0** scrollback lines in every real
-capture and is disqualified.
+capture and is disqualified — but that retention figure is **unverified**: no committed fixture
+reproduces what either emulator retained, since no Rust exists yet (design doc §11 item 10). The
+choice rests on `wezterm-term` being unpublished and alacritty modelling scrollback at all.
 
 **Prior art to port** (read-and-port, not dependencies): `openai/codex` →
 `codex-rs/app-server/tests/common/mock_model_server.rs` (the canned provider) and
