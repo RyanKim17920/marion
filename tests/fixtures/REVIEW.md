@@ -17,7 +17,7 @@ has read it and filled in a row of the provenance table below.**
   A canned recording needs a scan; a real-provider recording needs a scan *and* a human read.
 - Record in a **scratch directory**, not in a real project tree. Point `HOME`/`CLAUDE_CONFIG_DIR`/
   `CODEX_HOME` at the scratch dir too, so the harness enumerates an empty command/skill/plugin set
-  instead of the operator's. (S4 did this; S1 did not, which is why S1 needed surgery.)
+  instead of the operator's. (S4 did this; **S1 and S2 did not** — which is why S1 needed surgery and why S2 still renders the operator's plugin catalogue.)
 - Drive only what the experiment needs. Don't let a real conversation into the transcript.
 
 ## 2. Scan for — every file, every time
@@ -25,7 +25,7 @@ has read it and filled in a row of the provenance table below.**
 | Class | Examples seen in this repo |
 |---|---|
 | Absolute home paths | `/Users/<name>/...`, and **path-encoded** forms like `-Users-<name>-Desktop-...` |
-| Usernames | bare `<name>` inside socket paths, rollout paths, project-dir slugs |
+| Usernames **and account display names** | bare `<name>` inside socket paths, rollout paths, project-dir slugs — **and the account's *display* name, which is a different string**: Claude Code's welcome banner renders "Welcome back &lt;Given Name&gt;". `grep "$(id -un)"` cannot catch it, and `grep -I` skips the binaries where it lives |
 | Email addresses | rendered in harness status/auth panels |
 | Organization / tenant names | product or workspace names baked into built-in agent descriptions |
 | API keys and tokens | `sk-ant-`, `Bearer <...>`, `ghp_`, `xox[baprs]-`, `AKIA…`, PEM blocks. Env var **names** (`ANTHROPIC_API_KEY`, `GROQ_API_KEY`) are fine; values are not |
@@ -109,15 +109,18 @@ Add a row to the table below. A fixture with no row is not reviewed and must not
 ## Provenance
 
 All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
-`TERM=xterm-256color`. Redaction pass applied 2026-07-31; **`s2` additionally repaired 2026-08-01**
-(§3 warning), which is the only change to any fixture byte since. The `Redaction applied` column
-below describes the 2026-07-31 pass; the `s2` row records the later repair.
+`TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Two later passes changed fixture
+bytes, both on 2026-08-01:** the `s2` escape-sequence repair (§3 warning), and a second redaction
+pass over `s2` and `s5` that removed the operator's account display name, plan/credit state, and
+the recording session's UUID — all found by audit, none caught by §2's original fast pass. The
+`Redaction applied` column below describes the 2026-07-31 pass; the later passes are recorded in
+the `s2`/`s5` rows and in the residue list.
 
 | Dir | What was recorded | Provider | Recorded | Human read | Redaction applied |
 |---|---|---|---|---|---|
 | `s1` | Claude Code 2.1.220 headless (`-p --output-format stream-json --input-format stream-json`) interrupt protocol: `initialize`, a long turn, `interrupt`, and a follow-up turn. `stdin.jsonl` / `stdout.jsonl` (with `initialize`) / `stdout_noinit.jsonl` (without) / `summary.json`. | **Real** (`total_cost_usd` 0.093935 on the follow-up turn) | 2026-07-31 | 2026-07-31 | `argv` home path → `<HOME>`; session ids → stable fakes; `pid` → `424242`. `initialize` response: the 145-entry `commands` catalogue, 10-entry `agents` catalogue and 5-entry `models` roster replaced with minimal illustrative stubs. `system.init`: `slash_commands`, `skills`, `agents`, `plugins`, `mcp_servers` stubbed, `mcp__*` entries dropped from `tools`, `memory_paths` → `<HOME>`. All 9 `hook_started`/`hook_response` pairs kept (envelope shape is the evidence) with `output`/`stdout`/`stderr` bodies replaced by `<REDACTED_HOOK_OUTPUT>`. Org name → `<ORG>`. `summary.json` 66 KB → 5.7 KB. |
 | `s2` | pty captures of Claude Code 2.1.220 and Codex CLI 0.145.0/0.146.0 booting and running local slash commands (`/help`, `/status`, `/diff`, `/exit`) across resizes. Five captures, each as `.raw.bin` + asciicast v3 `.cast`. | **None** — no model calls; only local slash commands were driven | 2026-07-31 | 2026-07-31 | **Equal-length only** (see §3 exception and `s2/NOTES.txt`): emails → per-site placeholder; the username → `example`. Byte offsets, `CSI 3J`/`2J` counts, DECSET 2026 brackets and probe sets verified unchanged. **The DECSTBM histogram was *not* unchanged and the original claim that it was is retracted** — 9 splices landed inside CSI sequences and forged scroll-region commands; repaired 2026-08-01 and re-derived (§3 warning, `s2/NOTES.txt`). |
-| `s3` | `codex app-server` (codex-cli 0.145.0) lifecycle probes A–H: idle survival under six invocations, thread survival across restart, and the 1800 s thread-unload timer. Poll logs only. | **None** — lifecycle/timing probes, no turns run | 2026-07-31 | 2026-07-31 | `G-thread-survival-create.log` rollout path `/Users/<name>/.codex/...` → `<HOME>/.codex/...`. **Process pids (5891, 5894, 6553, 36975, 51594, 51596) and case D's listening port 45875 are retained** — ephemeral, and load-bearing for correlating the A–H logs, so the `pid` → `424242` convention was deliberately *not* applied here (see residue below). `README.md` references only `~/`-relative paths and upstream source lines. |
+| `s3` | `codex app-server` (codex-cli 0.145.0) lifecycle probes A–H: idle survival under six invocations, thread survival across restart, and the 1800 s thread-unload timer. Poll logs only. | **None** — lifecycle/timing probes, no turns run | 2026-07-31 | 2026-07-31 | `G-thread-survival-create.log` rollout path `/Users/<name>/.codex/...` → `<HOME>/.codex/...`. **Process pids (5888, 5891, 5894, 6553, 36975, 51590, 51594, 51596) and case D's listening port 45875 are retained** (see the residue bullet for what each is) — ephemeral, and load-bearing for correlating the A–H logs, so the `pid` → `424242` convention was deliberately *not* applied here (see residue below). `README.md` references only `~/`-relative paths and upstream source lines. |
 | `s4` | Stop / SubagentStop hook behaviour for Claude Code 2.1.220 and Codex. **Four modes for Codex** (`none`, `block`, `additionalContext`, `exit2`); **three for Claude Code** — `exit2` was not recorded and `claude-code/stop_hook.sh` has no exit-2 branch, so the design doc's exit-2 equivalence claim is unfixtured on Claude Code (design §11 item 13). Hook stdin payloads, resulting stream-json, transcripts, and the hook config that produced them. | **Real** (short scripted turns, "say the word alpha") | 2026-07-31 | 2026-07-31 | Already recorded in an isolated scratch `HOME`, so `<SCRATCH>` / `<UUID>` placeholders were applied at capture time and the enumerated command/skill/agent sets are the built-in defaults, not the operator's. This pass removed the residual username inside path-encoded project slugs (`-Users-<name>-Desktop-...` → `-Users-<USER>-Desktop-...`) and the org name in built-in agent descriptions → `<ORG>`. |
 | `s5` | `codex app-server` 0.146.0 (`--listen ws://`) multi-client probes: late join (probe1), per-connection `thread/unsubscribe` isolation (probe2), mid-turn attach with full event capture for both clients (probe3), plus the method-list error dump. | **Real** (probes run turns; probe3 captures live `item/agentMessage/delta`) | 2026-07-31 | 2026-07-31 | Username inside the path-encoded scratch cwd / `runtimeWorkspaceRoots` → `<USER>`. Event counts (93 / 87), `attachAtMs`, and method histograms verified unchanged. Message ids (`msg_…`) and thread ids are per-run server-side identifiers, kept because probe1/2/3 correlate events by them. |
 
@@ -131,19 +134,33 @@ below describes the 2026-07-31 pass; the `s2` row records the later repair.
   (`GROQ_API_KEY` / `OPENAI_API_KEY` were listed here in an earlier pass and occur nowhere in the
   corpus — removed 2026-08-01.)
 - **`s3` retains process pids and one listening port**: `5888, 5891, 5894, 6553, 36975, 51590,
-  51594, 51596` and port `45875`. Note the `ps=[…]` poll lines carry the *watched server's* pid,
-  which differs from the `# <case> pid=` header pid in cases A (5888) and E (51590) — an
-  enumeration that omits those two is incomplete. Both classes are scan classes under §2 and both
+  51594, 51596` and port `45875`. Note the `ps=[…]` poll lines carry the watched process's **parent** pid — `1` in the
+  daemonized and orphaned cases B/C/D/F after reparenting, and `5888`/`51590` in A/E — so it
+  differs from the `# <case> pid=` header pid in every case, and is not a second server. Both classes are scan classes under §2 and both
   are deliberately kept: the A–H logs correlate by pid, and substituting `424242` everywhere would
   merge six distinct servers into one. They identify processes that exited in July 2026.
 - **`s1` and `s4` retain the resolved model id** `Qwen/Qwen3.6-27B` / `qwen/qwen3.6-27b` in
-  `model`, `canonicalModel` and `modelUsage` (44 occurrences), even though `s1` redacts
+  `model`, `canonicalModel` and `modelUsage` (43 occurrences), even though `s1` redacts
   `resolvedModel` to `<MODEL>`. Kept: the runs went through a local proxy (design §6.4), the id is
   the evidence that they did, and §3's rule targets a model *roster* — which was stubbed — rather
   than a single resolved id.
 - **`s2`'s 0.145.0 capture embeds ~4.4 KB of an unrelated project's file bodies** in the `/diff`
   pager span (38963–43372): generated `.serena/*` tool boilerplate, no host or identity content.
   Kept because that span is precisely what fixtures the transient alt-screen entry §5.3 cites.
+- **`s2` renders the operator's installed plugin/skill catalogue and MCP state** — the `/help` and
+  boot panels list plugin-scoped command names and an "N MCP server needs authentication" line.
+  **`s2` was not recorded under an isolated `HOME`** (§1's parenthetical named only S1; S2 also did
+  not), so these are the operator's real entries. Kept: they are variable-length inside
+  column-aligned panels this corpus must byte-preserve, and they name public plugins rather than
+  identity. **Any re-record of S2 must use a scratch `HOME`.**
+- **`s2` account state and the operator's display name were scrubbed on 2026-08-01**, equal-length,
+  after an audit found them: the Claude welcome banner's given name (`Ryan` → `User`, 4 B), the
+  Codex `/status` plan and credits (`Pro Lite` → `Plan ABC`, `1817 credits` → `0000 credits`),
+  the Claude account tier (`Claude Max` → `Plan  ABC `), and the recording session's UUID
+  (`8e531002-…` → `00000000-0000-4000-8000-000000000003`, including its ellipsized 34- and 14-byte
+  renderings) — the same id, also scrubbed in `s5`, that `s4` had already replaced with `<UUID>`.
+  All five file lengths, the `?1049h/l` offsets (67 / 1900 / 5866 / 38963 / 43372), `CSI 3J` counts
+  and every DECSTBM figure re-derive unchanged.
 - **`s5` retains the operator's terminal emulator brand and build** inside six `userAgent` strings
   (`WarpTerminal/v…`), because the app-server echoes the launching terminal's UA and the
   `initialize` response shape is the evidence. Host fingerprinting only; no identity.
@@ -172,7 +189,7 @@ below describes the 2026-07-31 pass; the `s2` row records the later repair.
 the *pre-repair* bytes; the `s2` captures changed on 2026-08-01 (§3 warning), so every scan and
 invariant below was re-derived against the currently committed corpus rather than carried forward.
 Result: identical to the original run except for the `s2` DECSTBM figures, which the repair
-corrected (22/24 and 26/26, replacing 25/27 and 29/29), and the `.cast`/`.raw.bin` non-identity
+corrected (22/24, 26/26, 0/3 and 0/1, replacing 25/27, 29/29, 1/4 and 2/3 — see `s2/NOTES.txt`), and the `.cast`/`.raw.bin` non-identity
 recorded in `s2/NOTES.txt`. All five file lengths and every cited byte offset are unchanged.
 
 Scans over all 59 files (binaries included): `sk-ant-`, `Bearer <token>`, `ghp_`/`xox*`/`AKIA`/PEM,

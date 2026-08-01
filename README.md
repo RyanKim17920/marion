@@ -59,8 +59,9 @@ These tools auto-update and break things. In one day: Gemini moved thirteen mino
 itself when a scripted Enter hit its startup prompt, and Codex had already removed
 `wire_api = "chat"` entirely.
 
-**Design doc §12 lists twenty claims that were retracted or corrected** (fifteen from the research
-itself, five more from a fifth audit round that read the docs against the fixtures) — several stated
+**Design doc §12 lists twenty-four claims that were retracted or corrected** (fifteen from the
+research itself, nine more from audit rounds 5-12 that read the docs against the fixtures and
+against the installed binaries) — several stated
 confidently before being disproved, and one area (terminals) that was corrected, over-corrected,
 and corrected again. Treat anything marked
 **UNVERIFIED**, and everything in design doc §11 (Open questions), as a hypothesis. Re-verify with

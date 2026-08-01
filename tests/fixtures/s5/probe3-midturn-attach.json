@@ -236,7 +236,7 @@
           "id": 2,
           "method": "thread/start",
           "params": {
-            "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/8e531002-42eb-4f12-ae9a-487f9a52672c/scratchpad/s5/work"
+            "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s5/work"
           }
         }
       },
@@ -278,7 +278,7 @@
                 "type": "idle"
               },
               "path": "<HOME>/.codex/sessions/2026/07/31/rollout-2026-07-31T13-59-53-019fb98c-1809-7f02-b4e6-9a0e01be3378.jsonl",
-              "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/8e531002-42eb-4f12-ae9a-487f9a52672c/scratchpad/s5/work",
+              "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s5/work",
               "cliVersion": "0.146.0",
               "source": "vscode",
               "canAcceptDirectInput": true,
@@ -292,9 +292,9 @@
             "model": "gpt-5.6-sol",
             "modelProvider": "openai",
             "serviceTier": null,
-            "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/8e531002-42eb-4f12-ae9a-487f9a52672c/scratchpad/s5/work",
+            "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s5/work",
             "runtimeWorkspaceRoots": [
-              "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/8e531002-42eb-4f12-ae9a-487f9a52672c/scratchpad/s5/work"
+              "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s5/work"
             ],
             "instructionSources": [],
             "approvalPolicy": "on-request",
@@ -354,7 +354,7 @@
                 "type": "idle"
               },
               "path": "<HOME>/.codex/sessions/2026/07/31/rollout-2026-07-31T13-59-53-019fb98c-1809-7f02-b4e6-9a0e01be3378.jsonl",
-              "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/8e531002-42eb-4f12-ae9a-487f9a52672c/scratchpad/s5/work",
+              "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s5/work",
               "cliVersion": "0.146.0",
               "source": "vscode",
               "canAcceptDirectInput": true,
@@ -1854,7 +1854,7 @@
                 "activeFlags": []
               },
               "path": "<HOME>/.codex/sessions/2026/07/31/rollout-2026-07-31T13-59-53-019fb98c-1809-7f02-b4e6-9a0e01be3378.jsonl",
-              "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/8e531002-42eb-4f12-ae9a-487f9a52672c/scratchpad/s5/work",
+              "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s5/work",
               "cliVersion": "0.146.0",
               "source": "vscode",
               "canAcceptDirectInput": true,
@@ -1892,9 +1892,9 @@
             "model": "gpt-5.6-sol",
             "modelProvider": "openai",
             "serviceTier": null,
-            "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/8e531002-42eb-4f12-ae9a-487f9a52672c/scratchpad/s5/work",
+            "cwd": "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s5/work",
             "runtimeWorkspaceRoots": [
-              "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/8e531002-42eb-4f12-ae9a-487f9a52672c/scratchpad/s5/work"
+              "/private/tmp/claude-501/-Users-<USER>-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s5/work"
             ],
             "instructionSources": [],
             "approvalPolicy": "on-request",

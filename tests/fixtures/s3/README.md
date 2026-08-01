@@ -16,12 +16,12 @@ The real hazard is one level down: an **idle thread** is unloaded at
 
 | Case | Invocation | Result |
 |---|---|---|
-| A | `codex app-server --listen ws://…`, parent alive | alive 321 s, alive 43 min |
-| B | `codex app-server daemon start` (unix://, ppid 1) | alive 321 s, alive 43 min, pid never replaced |
-| C | same as A but orphaned (ppid 1, shell exited) | alive 321 s, alive 43 min |
-| D | bare ws, one client connected then dropped, 1 thread | alive 322 s, alive 43 min |
+| A | `codex app-server --listen ws://…`, parent alive | alive 321 s, alive at ~17.5 min |
+| B | `codex app-server daemon start` (unix://, ppid 1) | alive 321 s, alive 43 min (the only 43-min observation these logs evidence), pid never replaced |
+| C | same as A but orphaned (ppid 1, shell exited) | alive 321 s, alive at ~17.5 min |
+| D | bare ws, one client connected then dropped, 1 thread | alive 322 s, alive at ~17.5 min |
 | E | bare ws, one client held connected+idle, 1 thread | alive 763 s (past the 600 s client idle timeout) |
-| F | orphaned ws, client dropped, 1 thread | alive 703 s, alive 43 min |
+| F | orphaned ws, client dropped, 1 thread | alive 703 s (END_OF_WATCH_STILL_ALIVE) |
 
 Files: `{A..F}-timing.log` (5 s poll), `H-thread-unload-1800s.log`,
 `G-thread-survival-*.log`.

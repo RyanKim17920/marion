@@ -102,6 +102,10 @@ Tools (copied from the spike scratch dir, throwaway, not workspace code)
                100x14. Trust the committed headers, not the tool: an L2/L4.5 replay sized from
                extract.py's default would diverge on exactly the capture the scrollback
                argument rests on. Parameterize cols/rows before regenerating anything.
+               (c) scrollattr.py has the SAME hardcode -- it ends with replay(ev, 40, 120) and
+               ignores the cast header too, so its "of N rows" annotation is wrong for the
+               14-row capture. The 2 + 92 = 94 total is unaffected, because both regions are
+               set by explicit DECSTBM rather than inferred from the terminal height.
   analyze.py   distinct DECSTBM regions + counts, DECSET 2026 brackets, alt-screen, scroll prims
   scrollattr.py  VT state machine that attributes every scroll-up / scroll-down event to the
                DECSTBM region active at that moment — this is what answers the S2 question.

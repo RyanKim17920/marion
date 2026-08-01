@@ -136,7 +136,8 @@ error surfaced by `marion doctor`, never silently last-wins.
 uses marion's lowercase names; each adapter translates them to its harness's own — for Claude Code
 2.1.220, `read`→`Read`, `edit`→`Edit`, `bash`→`Bash`, and so on. **`TaskContract.allowed_tools`
 records the compiled, harness-native constraint — or the harness's coarsest equivalent where it has
-no per-tool allowlist at all.** `codex exec` is the latter: it exposes only
+no per-tool allowlist at all** — **the permission axis where the two differ** (§3.1), since that is
+what actually constrained the run. `codex exec` is the latter: it exposes only
 `--sandbox <read-only|workspace-write|danger-full-access>` and `--add-dir`, so its contract records
 e.g. `["sandbox:workspace-write"]`. Echoing marion's own vocabulary there would make the field
 claim a constraint that never existed.
@@ -535,7 +536,6 @@ MUST replay history and `session/resume` MUST NOT — hold today; the naming is 
 --print, --output-format=stream-json requires --verbose` before emitting anything (verified). It is
 easy to omit because the only other place this document mentions the flag is as a dependency of
 `--include-partial-messages`, which M1 does not use.
-`interactive` uses
 `interactive` uses a pty plus a JSONL tail. Liveness via `claude agents --json` (no TTY needed).
 `claude attach <id>` is background-jobs-only and **exits 1** on an unknown id while printing
 `No job matching…` — **retracted and corrected**: this document previously claimed it exits 0.
@@ -1051,9 +1051,14 @@ hook command is a child of the *harness*, not of the bridge, so it inherits no `
 its stdin carries `session_id`/`cwd`, never an `AgentId`. **marion therefore writes the hook
 command with its node and socket baked in** — `marion-supervisor hook --node <AgentId> --socket
 <path>` — inside the `--settings` / `hooks.json` payload it already emits per child, and the hook
-authenticates with **the same per-node token issued at spawn**, passed the same way. Without this
-the hook cannot identify itself or find the supervisor, and §7.1's attribution guarantee has a hole
-exactly where the descendant-gating decision is made.
+authenticates with **the same per-node token, inherited from the harness process's environment** —
+which works because **marion spawns the harness itself**, so `MARION_TOKEN` is in that process's
+env and every hook it runs inherits it. (The placement table above is about the *bridge*, whose
+parent is the harness rather than marion; the hook's parent is the harness too, so it reaches the
+token by the one route the bridge cannot. A Claude Code hook entry has only `type`/`command`/
+`timeout` — no `env` block — so there is no other channel.) Without this the hook cannot identify
+itself or find the supervisor, and §7.1's attribution guarantee has a hole exactly where the
+descendant-gating decision is made.
 
 **Token lifetime:** issued at spawn, bound to the `AgentId`, invalidated at the node's terminal
 transition, and **reissued** — not reused — on every path that starts a process again: when a
@@ -1399,8 +1404,9 @@ otherwise would be inventing an attribution.
 `ExitStatus` from the same table minus row 2, and minus row 3's `verification` clause** (a root has
 no contract and therefore no verification commands): `Cancelled`/`Killed` if it was terminated,
 `Failed` on a non-zero exit or a fault signal, else `Ok`. **Neither `Unreported` nor `TimedOut`
-is reachable for a root** — it owes no report, and its bound never terminates it (§7.6 step 3 gives
-it its ordinary status on expiry; §9 denies the pending permission rather than killing it).
+is reachable for a root** — it owes no report, and its bound never gives it `TimedOut`: §7.6 step 3
+kills the held process on expiry but the *status* stays the ordinary derived one, and §9 denies an
+unanswered permission rather than terminating the root at all.
 
 **`acceptance_criteria` are recorded for the reader and are never machine-evaluated** — they are
 prose, and a supervisor that scored them would be inventing a verdict. `verification` is the
@@ -1521,8 +1527,11 @@ non-terminal descendants."**
 
 - **The second re-prompt needs a mechanism, because the `Stop` hook is long gone by then.** The
   first re-prompt rides the hook (`decision: block`) while the process still exists. The second
-  happens after the process has exited, so marion performs `continue_()` then `prompt()` as one
-  atomic registry operation (§6.3) — the same path a user's `node/prompt` takes. On a harness
+  happens after the *turn* ended, which is not the same as after the *process* ended: marion sends
+  **`prompt()` alone if the process survives** (headless Claude Code spans turns in one process), or
+  `continue_()` + `prompt()` as one atomic registry operation (§6.3) if it has exited — step 4
+  states the rule and §5.1 is why it matters, since `continue_()` on a session marion already holds
+  live is refused. On a harness
   lacking `caps.resume`, there is no second re-prompt: marion **skips straight to step 5**, whose
   terminal already distinguishes a node that owed a report from a root that did not. Hook execution is itself bounded; a hook that does not return within its
   timeout is treated as no answer.
@@ -2024,12 +2033,14 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     schema document *is* its return channel, never to call `mcp__marion__report`.
 - **§7.6's re-prompts do not apply to M1's child, and M1 must not wait for them.** A
   `codex exec --json` child has no Stop hook marion can rely on and no `caps.resume`:
-  - **M1 pins `caps.resume = false` for its `exec` child as a scope choice, not a capability
-    fact.** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0 and is exactly
-    `continue_()` + `prompt()`, so the static table must not record `exec` as unresumable — that
-    would publish a false capability for every `codex exec` node through `marion doctor`. M1
-    declines to build the resume path because steps 2–3 never run for this child anyway (below), so
-    step 4 has nothing to follow.
+  - **`caps.resume` is `false` for this node because the *surface* caps it there — not because
+    the harness cannot resume.** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0 and is
+    exactly `continue_()` + `prompt()`, but §3.4's `LaunchOnly` + `ProtocolEvents` derivation makes
+    `continue_` `Unsupported` on the degenerate `ControlPlane`, and §3.3 allows caps only at or
+    below the surface ceiling — so `static_caps` returns `false` here correctly. **`marion doctor`
+    keys on `(harness, version, surfaces)`, the same key `static_caps` uses**, so it never publishes
+    "codex cannot resume"; it publishes "codex *on this surface* cannot". Choosing the app-server
+    surface (M4) lifts the ceiling.
   - Codex hooks are trust-gated and **fail silently** until trusted (§7.6). Obtaining the key and
     hash non-interactively goes through `initialize` → `initialized` → `hooks/list`, which are
     app-server methods M1 does not build. **`codex exec` does expose
@@ -2176,15 +2187,22 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   moot for M1.** Neither process authenticates against a real endpoint, so nothing here depends on
   subscription auth:
   - **root (`claude`)**: fileless config — `--mcp-config` for the control MCP with
-    `--strict-mcp-config`, **`--allowedTools mcp__marion__spawn`** (without it the root's one
-    load-bearing call is denied — §3.1's two axes), `--settings`,
+    `--strict-mcp-config`, **`--tools ""`** (availability axis: the root's `tools:` is `[]`, so it
+    gets no built-in tools) and **`--allowedTools mcp__marion__spawn,mcp__marion__status,
+    mcp__marion__wait,mcp__marion__list`** (permission axis: without `spawn` the root's one
+    load-bearing call is denied, and the other three are the verbs §5.4 lets a root use over its
+    descendants — omitting them would deny calls that then block until the root's bound expires).
+    `--settings`,
     `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
     `ANTHROPIC_API_KEY=""` (a non-empty key silently wins, §6.4). This takes **option (a)** of
     §6.4's three: the real `CLAUDE_CONFIG_DIR` is retained and never mutated, so OAuth is intact
     but unused.
   - **child (`codex`)**: `-c model_providers.<id>` pointing at the canned server with a dummy
     `env_key`, under a **non-reserved** provider id (not `openai`/`ollama`/`lmstudio`/
-    `amazon-bedrock`), plus `-c mcp_servers.marion={…}`. Codex subscription auth cannot use a
+    `amazon-bedrock`). **The MCP server declaration goes into `<agent-dir>/config/config.toml`, not
+    `-c mcp_servers.marion={…}`** — M1 already sets `CODEX_HOME` there, and §5.4 notes that `-c`
+    puts the whole declaration (token included) on argv where any same-uid process can read it. The
+    fileless path buys nothing here, so M1 takes the placement that keeps the token off `ps`. Codex subscription auth cannot use a
     custom `base_url` at all (`MILESTONES.md`), which is why the dummy key is required rather than
     optional.
   - The endpoint override is carried by `SpawnCtx`, not by agent-type frontmatter — it is a
@@ -2412,4 +2430,8 @@ design decision.
 | The capability token is an argv flag, so it is not inherited | **CORRECTED TWICE (rounds 5 and 6).** Round 5: argv is world-readable to the same uid, so every sibling with `bash` could read every other sibling's token. Round 5's own replacement — an inherited fd — was then found **not constructible**, because the harness spawns the bridge, not marion. Settled answer: the MCP server declaration's `env` block, **plus** the honest statement that no secret-keeping scheme isolates same-uid siblings at all (§5.4, §7.1). |
 | All five spikes are resolved / M1 is unblocked | **CORRECTED (round 5).** S1–S5 are resolved; **S6 was killed mid-run and has no fixture**, and its answers decide M1's return channel. Both branches are now specified (§9) so M1 is not blocked, but the entry docs claimed a completeness that did not exist. |
 | `src_seq: Option<u64>` gives loss detection on the day-one adapters | **CORRECTED (round 5).** Neither emits a per-event ordinal: Codex item ids are identity, Claude Code has a `parentUuid` chain, and opencode's numeric `seq` is only on the endpoint §6.4 rejects. Retyped to `Ordinal | Predecessor`, and M2's criterion restated per adapter. |
+| `claude attach` exits 0 on an unknown id, so never branch on its exit status | **CORRECTED (round 12).** It exits **1**, verified on 2.1.220. The case the original claim was about — an id naming a live *interactive* session rather than a background job — was never separately tested and is now §11 item 16. |
+| `claude -p --output-format stream-json` is the headless invocation | **CORRECTED (round 12).** Incomplete: 2.1.220 exits 1 with "requires `--verbose`". `--verbose` is mandatory for stream-json under `--print`, not merely a dependency of `--include-partial-messages` as this document previously implied. |
+| `codex exec` is one-shot, so there is no session to `continue_()` | **CORRECTED (round 12).** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0. `caps.resume` is `false` for that node because the *surface* caps it (§3.4), not because the harness cannot resume. |
+| Tool compilation targets `--tools`, with marion's MCP tools appended there | **CORRECTED (round 12).** `--tools` is the *availability* axis over built-in tools and does not gate MCP tools at all; `--allowedTools` is the *permission* axis and is where `mcp__marion__*` must go. Compiling into `--tools` alone leaves M1's root unable to call `spawn`. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
