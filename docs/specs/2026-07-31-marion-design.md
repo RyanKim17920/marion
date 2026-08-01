@@ -1055,7 +1055,10 @@ Four consequences worth stating, since each closes a hole the flat rule left ope
 - **`status`/`wait` must work against terminal targets.** `wait` is inherently a race with the
   target finishing, and from M2 a backgrounded `spawn` returns a handle whose holder must be able
   to `wait` a node that may already have exited. Denying that would make the handle useless.
-- **`wait` is descendants-only, unlike `status`.** A child waiting on its *parent* would deadlock
+- **`wait` never points at an ancestor, unlike `status`** — its target set is descendants **plus
+  `allow_peers` siblings**, exactly as the table above says. (Read "descendants-only" as excluding
+  ancestors, not as excluding peers: the peer grant is what makes the cycle rule below live rather
+  than dead.) A child waiting on its *parent* would deadlock
   by construction in M1: the parent is blocked inside the very `spawn` that created the caller, so
   neither can proceed until a timeout expires and both contracts land `TimedOut`/`Unreported`.
   Reading a parent's state is fine; *blocking* on it inverts the topology's direction of control.
@@ -1864,7 +1867,10 @@ state rather than an error.
 
 **Both observed instances share a root cause: the agent stopped while its own children were still
 running.** So the rule is not only "report explicitly" but **"a node is not terminal while it has
-non-terminal descendants."**
+non-terminal descendants."** *(That sentence is the motivation, not the testable statement — read
+it with the three exemptions L1 carries below: `reported_early`, `held_to_timeout`, and
+`died_before_gate`. Taken unconditionally it is falsified on purpose by §7.5 and §7.8, and an
+implementer who codes it literally will hold nodes that should already be terminal.)*
 
 **Descendant-gated completion:**
 
