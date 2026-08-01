@@ -1057,10 +1057,12 @@ as a milestone gate in §11, not as a nice-to-have: it is the one place where a 
 agent channel reaches a shell with the user's privileges.
 
 **Who authors the criteria.** marion cannot invent acceptance criteria for a task it does not
-understand, so **the requesting parent is the only party that can supply `acceptance_criteria`,
-`verification` and `writable_scope`, and does so through `spawn`** — "supplies" as in *is the sole
-source of*, not *must always provide*: only `acceptance_criteria` is required, the other two being
-optional with the defaults stated in the schema above — the same argument applies to all three: a path list is as
+understand, so **the requesting parent supplies `acceptance_criteria`, `verification` and
+`writable_scope` through `spawn`** — with two qualifications. *Supplies* means the parent is the
+only party that may **narrow** these, not that it must always provide them: only
+`acceptance_criteria` is required, the other two defaulting per the schema above. And for
+`writable_scope` the parent is not the sole *source* — the agent type declares the **ceiling**, and
+the effective scope is the conjunction of the two (below) — the same argument applies to all three: a path list is as
 task-specific as a criterion, and a supervisor that guesses it either forbids legitimate work or
 permits everything. marion then *validates, freezes, and owns* them: they are written into the
 contract before the child starts and are immutable thereafter. **The child may supply none of
