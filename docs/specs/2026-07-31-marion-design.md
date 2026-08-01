@@ -1690,6 +1690,16 @@ unrepresentable instead of merely discouraged. `spawn` returning "the completed 
 (§9) means one with `completion: Some(_)`; the blocking `spawn` cannot return an orphan, since
 marion holds the child's channel for the whole call.
 
+**Which is exactly why an orphan never has a `spawn` call waiting on it, and why its resume is
+surfaced *unclaimed* (§6.7).** The two statements only look contradictory. While marion is running
+and holding the channel, it observes the exit — so `Orphaned` is not reachable. `Orphaned` arises
+only where marion *stopped holding*: the supervisor died and journal replay found a `Live` node
+with no process (§7.2, §8). That same death took the outstanding `spawn` with it — the tool call
+belonged to a process marion is no longer driving, and on neither M1 harness can a tool result be
+delivered to a call id from a previous supervisor. So there is no pending call for a resumed
+completion to satisfy, and none to cancel: the requester, if it still exists at all, was left
+holding a dead call by the crash, not by the resume.
+
 **A resume never rewrites a completed contract.** `Completion` is write-once, so when a user
 resumes a node that already reached a terminal state (§6.3), marion opens a **new `TaskContract`**
 for the resumed run; the original stays immutable with its `Completion` intact.
