@@ -711,7 +711,17 @@ processes — confirmed by a server surviving 763 s with an idle client attached
 prompt and one terminal result. It removes the handshake, thread loading, subscriptions,
 bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schema`,
 `--output-last-message`, `--cd <worktree>`, `--sandbox workspace-write`, `--ephemeral`,
-`--ignore-user-config`. **Prefer it for fan-out; reserve app-server for interactive children.**
+`--ignore-user-config`.
+
+> **⚠ `--ignore-user-config` and the config-file MCP declaration are mutually exclusive.** On
+> 0.146.0 the flag means *"Do not load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`"* —
+> and §9 puts M1's `mcp_servers.marion` declaration in exactly that file. Passing both would
+> silently remove the child's return path. **M1 therefore does not pass `--ignore-user-config`**:
+> its isolation comes from pointing `CODEX_HOME` at `<agent-dir>/config/`, which already excludes
+> the user's real config, so the flag would add nothing and cost the MCP server. Pass it only with
+> the `-c` injection form, where there is no file to lose.
+
+**Prefer `exec` for fan-out; reserve app-server for interactive children.**
 
 > **⚠ Three M1-critical assumptions about `exec`, all UNVERIFIED (spike S6, *not run* — started
 > and killed mid-run 2026-07-31; no S6 fixture exists in this repo). S6 must also record two
@@ -2278,8 +2288,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   the root's *next turn* "references the child's output" would be vacuous — that text is scripted
   SSE, fixed before the run, and would pass against a marion that dropped the contract entirely.
 - The scope is enforced **detectively**: a deliberate out-of-scope write appears in the contract's
-  `changed_paths`, is listed in **`scope_violations`**, and `scope_enforced` is `true` — by
-  `ToolCall.locations` or by worktree diff, whichever S6 leaves available. A run with no
+  `changed_paths`, is listed in **`scope_violations`**, and `scope_enforced` is `true` — from the
+  git-derived `changed_paths` of §6.7, on **every** S6 branch; `ToolCall.locations` never populate
+  it and are corroborating `evidence` only. A run with no
   out-of-scope write yields `scope_enforced: true` with `scope_violations: []`, which is
   distinguishable from an unchecked run (`scope_enforced: false`).
 - The whole run is driven by the CannedProvider — no paid tokens, repeatable.
