@@ -678,6 +678,15 @@ connections to.
 > the probe records. (A's inbound *notification* count in `logs.A` is 94 for this reason: 101
 > entries, 97 inbound, of which 3 are responses to A's own requests.) 93 − 7 + 1 = 87. **A late joiner misses only pre-attach
 > events, which is why `thread/read {includeTurns:true}` backfill must precede `thread/resume`.**
+> **This ordering leaves a window and the backfill must be reconciled, not trusted**: anything the
+> thread emits between the `thread/read` snapshot and the moment `thread/resume` takes effect
+> appears in neither the snapshot nor the subscription. marion therefore treats the two as
+> overlapping sources — it records the snapshot's last item id, and on the first subscribed events
+> re-reads (`thread/read` again) if their ids are not contiguous with it, deduplicating by item id.
+> Doing it the other way round — subscribing first, then backfilling — trades a lost-event window
+> for a duplicate window, which is why dedup by id is required either way; this order is chosen
+> because `resume` on a cold thread also *loads* it, and loading before the snapshot would change
+> what the snapshot contains.
 
 `thread/resume` is a **load-from-persisted-history** operation: correct for cold threads, and an
 additive subscribe on **loaded** ones. `notLoaded` is a **residency** status, not a persistence
@@ -1829,7 +1838,12 @@ Say so plainly rather than implying a guarantee the process model does not deliv
 ### 7.2 Reaping, orphans, and supervisor restart
 
 - **`ReapedIdle`** — process killed to reclaim memory, transcript intact, ownership claim retained,
-  resumable. Journaled **before** the kill.
+  resumable. Journaled **before** the kill, as an *intent* record, and confirmed after the process
+  is observed dead — the same intent-then-confirm shape as `Spawned` (§4.3), and for the same
+  reason. A single record written before the kill would leave a crash window in which restart reads
+  `ReapedIdle`, skips the `Orphaned` marking (which considers only `Live` nodes), and a live process
+  survives untracked and unkillable. On restart an **unconfirmed** reap intent is therefore treated
+  exactly like a `Live` node: check for the process, and mark `Orphaned` if it is gone.
 - **`Orphaned`** — process lost without a recorded reap. Marked on restart only for `Live` nodes.
 - Running nodes are never reaped. **Nor is a node a `spawn` is currently blocked on, nor one in
   *any* `Blocked(_)` state** — `Descendants`, `Permission`, or `Elicitation` — because reaping any
@@ -1963,6 +1977,11 @@ testable invariant is:
 > marion must still emit a terminal — testing `ProcessExit.signal` would exempt the first and not
 > the second. A `Failed` arising from a failed `verification` command, or from a non-zero exit
 > *after* the node reported or answered step 2, is **not** exempt: there the node did get to choose.
+> **So "without an observed voluntary stop" in §3.2 means without an observed *conclusion*, and a
+> `report` counts as one** — a child that reports and then dies non-zero has `died_before_gate:
+> false`, because the gate's question ("did this node get to decide?") was already answered yes.
+> The flag is not "did the process exit cleanly"; a node can die messily having concluded, and that
+> is a `Failed` marion is entitled to emit.
 > `ProcessExit.description` records which case applied.
 >
 > **`Orphaned` is not in that list, because it is not an exit at all** — it is a `ReapState`
@@ -2592,10 +2611,13 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     provisionally** (the unclamped figure) **and step 9 finalizes it** — the field is still "always
     set", never absent, but only the step-9 value is authoritative. **And because the `<30 s` branch
     errors at step 9, the step-7 process is already running and a contract already exists: step 9
-    therefore writes the finalized `timeout` **before** evaluating the clamp error — so the
-    persisted contract always carries the authoritative value, never a provisional one a reader
-    would have to know to distrust — and the branch then takes step 8's cleanup verbatim: kill the
-    process, journal the abort against the intent record, leave the contract `completion: None`** — or marion leaks a live child with a written
+    computes the remainder first and **writes it to `timeout` whether or not it passes the 30 s
+    test**, so the persisted contract never retains step 6's provisional figure. On the error path
+    that recorded value is the sub-30 s remainder that *caused* the refusal — it describes the
+    aborted attempt, and no run ever executed under it; the abort record in the journal is what
+    tells a reader so, and `completion: None` is what makes the contract unreadable as a result.
+    The branch then takes step 8's cleanup verbatim: kill the process, journal the abort against
+    the intent record, leave the contract `completion: None`** — or marion leaks a live child with a written
     contract and no terminal, which §7.2 would later mis-mark `Orphaned`. **A root is never clamped against**: its bound
     is a per-episode `Blocked`-only budget, not a remaining wall-clock allowance (below), so
     `marion run --timeout 60` — which §9 blesses — must not truncate or refuse M1's single
