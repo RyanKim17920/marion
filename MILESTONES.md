@@ -73,8 +73,9 @@ Version-stamped. **Re-verify before relying on anything here** — these tools a
 things. In one day of research, Gemini moved 0.40.1 → 0.53.0, Codex 0.145.0 → 0.146.0 (a scripted
 Enter hit its update prompt mid-experiment), and Codex removed `wire_api = "chat"` outright.
 
-Baseline: **Claude Code 2.1.220 · opencode 1.17.3 · Gemini CLI 0.53.0 · Codex CLI 0.145.0 (S3) and
-0.146.0 (S5, alt-screen)**. Qwen Code and Amp claims are **unstamped and unverified locally**.
+Baseline: **Claude Code 2.1.220 · opencode 1.17.3 · Gemini CLI 0.53.0 · Codex CLI — 0.145.0 for S3
+and the alt-screen/`/diff` capture, 0.146.0 for S5**. (The 0.146.0 captures contain no `?1049h` at
+all; the alt-screen evidence is the 0.145.0 file.) Qwen Code and Amp claims are **unstamped and unverified locally**.
 
 **Session ownership.** Neither Codex nor Claude Code locks a session. Two concurrent `codex resume`
 processes on one id both start and neither is refused; writes are `O_APPEND` so records survive,
@@ -89,8 +90,9 @@ surface, observation sources). `shared` is preferred wherever it exists.
 scrollback handling. Codex uses the main screen — so all scrollback work is a Codex concern — and
 erases scrollback (`CSI 3J`) on every resize, which marion must intercept. Codex does enter the alt
 screen transiently for full-screen overlays (the `/diff` pager), so buffer switching mid-session is
-required. Both harnesses emit terminal probes (DA1, XTVERSION, CPR); marion answers them, but our
-own fixtures show both proceeding without answers, so this is prudence, not a requirement.
+required. Both harnesses emit terminal probes but **different sets** — Claude Code sends DA1 and
+XTVERSION; Codex sends DA1, CPR, and OSC 10/11. marion answers all of them, but our own fixtures
+show both proceeding without any answer, so this is prudence, not a requirement.
 
 **Codex app-servers are never reaped**, but **unsubscribed threads unload after 30 minutes** and
 `thread/start` does not materialize a rollout. `thread/resume` is the subscribe mechanism.
@@ -217,8 +219,8 @@ implementation:
 ## Milestones
 
 **All five spikes are resolved** (design doc §12). Build **M1 disposably** — prove the delegation
-core before anything that displays it: no detached daemon, no VT emulator, no model proxy, no event
-log beyond the task audit trail.
+core before anything that displays it: no *detached* daemon — the registry, event log and control
+MCP run in-process — no VT emulator, no model proxy.
 
 - **M1** — one real cross-harness hop over the direct-MCP path, returning a task contract, driven
   entirely by the canned provider.
@@ -261,7 +263,7 @@ an explicit north-star goal. The resolution is sequencing, not amputation.
 second pass Codex sharpened this and we accept the sharpening: **the TUI and model plane are not
 what will sink this — the adapter layer is.** The TUI is largely bounded work once the adapters
 exist; the model proxy is substitutable (LiteLLM). Sustaining N adapters against tools that update
-weekly is the unbounded cost, and twelve corrections in one day of research is the evidence.
+weekly is the unbounded cost, and fifteen corrections in one day of research is the evidence.
 
 Mitigations: `marion doctor --adapter` (behavioral contract tests, not just capability probes),
 version-stamped claims, pinned binary paths, fixture-based drift detection. **The trigger for

@@ -43,6 +43,11 @@ Each was learned the hard way. Full detail in `MILESTONES.md`.
 7. **The supervisor outlives the UI.**
 8. **Delegation must be auditable** — every hop produces a task contract, with acceptance criteria
    authored *before* the run.
+9. **A node is not done while its children run, and a status update is not a delivery.** A
+   non-terminal child never enters the parent's context. This is the bug that makes a subagent
+   waiting on *its* children ping its parent with a non-answer.
+10. **Never hand back something that needs a monitor to interpret.** A task handle plus "go poll"
+    means the supervisor lost ownership — fix it there, don't add a status endpoint.
 
 ## Trust the docs, but check the version
 
@@ -53,8 +58,9 @@ These tools auto-update and break things. In one day: Gemini moved thirteen mino
 itself when a scripted Enter hit its startup prompt, and Codex had already removed
 `wire_api = "chat"` entirely.
 
-**Design doc §12 lists twelve claims that were retracted or corrected** — several stated
-confidently before being disproved, including one that was wrong *twice*. Treat anything marked
+**Design doc §12 lists fifteen claims that were retracted or corrected** — several stated
+confidently before being disproved, and one area (terminals) that was corrected, over-corrected,
+and corrected again. Treat anything marked
 **UNVERIFIED**, and everything in design doc §11 (Open questions), as a hypothesis. Re-verify with
 `claude --version`, `codex --version`, `gemini --version`, `opencode --version`.
 
@@ -62,7 +68,7 @@ confidently before being disproved, including one that was wrong *twice*. Treat 
 
 | spike | answer |
 |---|---|
-| **S1** Claude Code from raw Rust | Drivable, interrupt included (`control_response` in 1 ms). **No TS sidecar.** The channel is bidirectional — that is how permission prompts arrive. *(Proven over pipes; pty re-confirmation owed in M1.)* |
+| **S1** Claude Code from raw Rust | Drivable, interrupt included (`control_response` in 0.5 ms). **No TS sidecar.** The channel is bidirectional — that is how permission prompts arrive. *(Proven over pipes; pty re-confirmation and a real `can_use_tool` round-trip both owed in M1.)* |
 | **S2** Terminals and scrollback | Claude Code uses the **alt screen** for its whole session (so needs no scrollback). Codex uses the main screen, entering alt only for the `/diff` pager. Real hazard is `CSI 3J` on every Codex resize — marion intercepts it. |
 | **S3** Codex app-server lifecycle | Never reaped; the earlier "reaping" was most likely our own tooling. But **unsubscribed threads unload after 30 min.** |
 | **S4** Stop-hook re-prompt | Works on both via `{"decision":"block","reason":…}`. **Codex hooks fail silently until trusted.** |
@@ -81,8 +87,8 @@ provider so it costs nothing and repeats. Acceptance criteria and the concrete M
 child surface): design doc §9. Repo layout: §10.
 
 **Build it disposably.** The independent Codex review argued persuasively that the delegation core
-should be proven before anything that displays it: no daemon, no VT emulator, no model proxy, no
-event log beyond the task audit trail. Only once that hop works do the supervisor split (M2) and
+should be proven before anything that displays it: no *detached* daemon (the registry, log and MCP
+run in-process), no VT emulator, no model proxy. Only once that hop works do the supervisor split (M2) and
 the tree UI (M3) go in.
 
 Three debts fall due in M1, all things currently designed on decompilation rather than measurement:
