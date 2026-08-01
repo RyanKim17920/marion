@@ -2514,6 +2514,30 @@ newline and never parse the final partial line — the same rule §4.3 states fo
 - **L5 — live smoke.** Nightly, real models, structural assertions only, never on text.
 - **L6 — agent-driven acceptance.** Against the canned provider so only the tester is stochastic.
   Cross-checks **screen against IR log** (needs `mono_ns`) and attaches artifacts as evidence.
+- **L7 — real-terminal harness (VM / computer-use), nightly and opt-in.** A full OS image with a
+  real terminal emulator, real fonts and a real pty, driven by screen capture. **Deliberately
+  narrow**, because it is the slowest and least deterministic layer and buys nothing the layers
+  above already cover:
+  - **pty fidelity of the S1 control protocol.** S1 was proven over *pipes*; §11 item 1 owes the
+    pty re-confirmation, and a real terminal is the honest place to take it.
+  - **keystroke-injection submit**, which §8's `--adapter` micro-contract already calls the most
+    version-fragile mechanism in the system. A pty host can send bytes; only a real terminal
+    settles whether a harness's submit handling agrees.
+  - **the `ESC[6n` stall (§11 item 9)**, captured on a host that answered no probes. A real
+    terminal answers them, which distinguishes input starvation from probe dependency.
+  - **M3 TUI smoke** — `TestBackend` proves the grid is correct, not that the tree UI is usable at
+    a real size with real fonts and a real resize.
+
+  **What L7 must not become.** It is not the E2E layer and must never gate a commit. marion *is*
+  the terminal emulator (`alacritty_terminal`), so wrapping it in a second emulator makes a failure
+  ambiguous between marion's VT, the VM's, and the font stack — L4.5 asserts the grid directly and
+  in milliseconds. Nor can screen capture assert what marion's invariants are actually about: a
+  `tool_result` deserializing to the persisted contract, `seq` monotonicity, a `CSI 3J` intercepted
+  before it reaches a parent's scrollback. And a VM image pins harness versions, against tools that
+  moved three releases during one day of research (§12) — so L7 inherits the drift problem that
+  §8's "known limitation" already names, with a slower re-record loop. **Assertions in L7 are
+  coarse by design: does it boot, does it submit, does the tree render, is the screen free of
+  garbage.** Anything finer belongs upstream.
 
 **`marion doctor`** probes each installed harness and produces the static capability table (§3.3) —
 the same code as runtime resolution. It has **two modes**, and the second matters more:
@@ -3145,6 +3169,13 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     pre-existing ignored file as a change and make the check useless. Closing it properly needs a
     pre/post filesystem snapshot of the workspace, which M1 does not build. Worth revisiting when
     a child is first given a genuinely untrusted task.
+20. **No real-terminal coverage exists, and three debts sit behind it.** §8's L7 is specified but
+    unbuilt: every fixture in this repo was captured through `s2/ptyhost.py`, which answers no
+    terminal probes and renders nothing. That leaves §11 item 1 (S1 over a pty rather than pipes),
+    the keystroke-injection submit check `marion doctor --adapter` is required to include, and
+    item 9's `ESC[6n` stall all unmeasurable with what is committed here. **Not a blocker for M1**
+    — L4 drives real binaries over a real pty already — but the cheapest way to close three items
+    at once, and the only layer that would catch a harness changing how it reads a terminal.
 
 ---
 
