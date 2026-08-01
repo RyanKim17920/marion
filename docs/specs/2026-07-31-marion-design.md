@@ -928,6 +928,7 @@ is per verb, because reading a node and acting on one are not the same permissio
 | `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal, `Live`, and not `Blocked(Descendants)`** — the first two because the process must exist (so not `ReapedIdle`, not `Orphaned`), the third because that hold belongs to marion whether or not the process is still running |
 | `cancel` | **descendants only — never a sibling, even under `allow_peers`** | **non-terminal and `Live`** — the process must exist, since cancelling an `Orphaned` node would write a `Cancelled` `Completion` for a process marion has already lost, which §6.7 forbids (`completion: None`), and would signal nothing. Unlike `send`, `cancel` **is** permitted against a `Blocked(Descendants)` node: cancelling is marion's own lifecycle verb, not an attempt to drive the node's turn |
 | `report` | **self only**, and only on a node that **has a contract** — rejected on a root | non-terminal; **first call per `TaskContract` wins**, a second against the same contract errors. A resume opens a new contract (§6.7) and so accepts one further `report` |
+| `spawn` | **creates a new node, so it has no existing target**: any non-terminal node may call it, subject to §6.1 step 2's depth and concurrency caps. The created node becomes the **caller's direct child** — that is what makes the caller its `requester` (§6.7) and what keeps the tree a star (`MILESTONES.md`): a node can never create a sibling, a peer, or a child of another node | caller must be non-terminal and `Live`; a node held in `Blocked(Descendants)` may **not** spawn, since adding a descendant to a subtree marion is already holding open would extend the hold indefinitely |
 
 Three consequences worth stating, since each closes a hole the flat rule left open:
 
@@ -1189,7 +1190,8 @@ marion **never mutates the user's real harness config.**
 - **A real TTY is required only for terminal-driven surfaces.** With stdio as a pipe, `codex`
   errors `stdin is not a terminal` and `claude` falls back to demanding `--print`. So
   `interactive`/`opaque`/`shared`-with-attached-TUI need a pty; **`headless` does not** —
-  `claude -p --output-format stream-json` and `codex exec --json` run over pipes, which is how S1
+  `claude -p --output-format stream-json --input-format stream-json --verbose` (all three flags
+  are required — §5.2) and `codex exec --json` run over pipes, which is how S1
   was replayed and how M1 runs its root.
 
 ### 6.5 Result
@@ -1377,8 +1379,8 @@ so precedence is the specification, not an implementation detail:
 So: a child that reports, passes verification, and *then* exits non-zero is `Failed` (row 3 precedes
 row 4). A child that never reports is `Unreported` even if its verification passed (row 2 precedes
 row 3) — the §7.6 machinery and the "never silently promoted to a result" guarantee must fire
-regardless of what the commands say. Empty `verification` satisfies row 3 vacuously, so a bare
-successful report is `Ok`.
+regardless of what the commands say. An empty `verification` list **does not match row 3** — there is no
+command to have exited non-zero — so a bare successful report falls through to row 4 and is `Ok`.
 
 Row 3's signal clauses matter because `exit_code`/`code` is `None` for a signalled process, so
 "exited non-zero" is literally false for a child — or a `verification` command — that crashed on
