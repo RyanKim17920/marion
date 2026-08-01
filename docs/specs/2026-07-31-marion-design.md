@@ -135,15 +135,29 @@ error surfaced by `marion doctor`, never silently last-wins.
 **Tool names are marion's vocabulary, and the mapping is part of the adapter contract.** `tools:`
 uses marion's lowercase names; each adapter translates them to its harness's own — for Claude Code
 2.1.220, `read`→`Read`, `edit`→`Edit`, `bash`→`Bash`, and so on. **`TaskContract.allowed_tools`
-records the compiled, harness-native list**, since that is what actually constrained the run.
+records the compiled, harness-native constraint — or the harness's coarsest equivalent where it has
+no per-tool allowlist at all.** `codex exec` is the latter: it exposes only
+`--sandbox <read-only|workspace-write|danger-full-access>` and `--add-dir`, so its contract records
+e.g. `["sandbox:workspace-write"]`. Echoing marion's own vocabulary there would make the field
+claim a constraint that never existed.
 
-**marion's own `mcp__marion__*` tools are always appended to the compiled allowlist and are not
-expressible in `tools:`.** They are protocol, not capability: a root whose `tools:` is the default
-`[]` must still be able to call `mcp__marion__spawn`, or M1 fails with no diagnostic. Conversely a
-child cannot grant itself marion tools by naming them.
+**Availability and permission are two different axes, and Claude Code has a separate flag for
+each.** Conflating them silently breaks M1:
 
-**Tool compilation uses allowlists.** Claude Code ships `--tools <tools...>`. Never compile to
-`--disallowedTools`: a denylist requires enumerating the complement of the built-in set and
+| axis | Claude Code flag | what marion compiles into it |
+|---|---|---|
+| **availability** — which built-in tools exist | `--tools <tools...>` | the agent type's `tools:` list, mapped to harness-native names |
+| **permission** — which tool calls are allowed without a prompt | `--allowedTools <tools...>` | the same list, **plus marion's own `mcp__marion__*`** |
+
+**`--tools` does not gate MCP tools at all** (it selects from the *built-in* set), and
+`--allowedTools` is what a denied `mcp__marion__spawn` call turns on. So marion appends its tools to
+the **permission** axis — a root whose `tools:` is the default `[]` must still be able to call
+`mcp__marion__spawn`, or M1 fails on its single most important call, and under §9's
+no-TUI permission rule that failure looks like a *designed* path rather than a bug. Conversely a
+child cannot grant itself marion tools by naming them in `tools:`.
+
+**Tool compilation uses allowlists.** Never compile to `--disallowedTools` — the denylist
+counterpart on the *permission* axis: it requires enumerating the complement of the built-in set and
 re-deriving it each release, which silently escalates privilege the first time a tool is added.
 
 **Tool declarations are only authoritative if the config is minimal**, so seeding a child from the
@@ -991,9 +1005,17 @@ harness writes to.
 
 | placement | reaches | verdict |
 |---|---|---|
-| **`env` on the server declaration** | the bridge process and its descendants — **not** the agent's own tools, which are children of the *harness*, not of the bridge | **chosen** |
+| **`env` on the server declaration** | the bridge process and its descendants — **not** the agent's own tools, which are children of the *harness*, not of the bridge | **chosen** — but see the fileless caveat below |
 | argv flag | the same, **plus** any same-uid process running a bare `ps` | rejected — strictly worse for free |
 | inherited fd / bridge stdin | — | **not constructible**: marion does not spawn the bridge |
+
+**⚠ The fileless injection path puts the `env` block on argv anyway, on both M1 harnesses.**
+`--mcp-config` accepts a JSON *string* and `-c mcp_servers.marion={…}` is a `-c` value, so the whole
+server declaration — `env` included — lands in the child's argv and is visible to `ps`. On Claude
+Code and Codex the "chosen" row therefore buys nothing over an argv flag. **Writing the declaration
+to `<agent-dir>/config/` (§6.4's non-fileless path) is the only placement that keeps the token off
+`ps`** — which is a real reason to prefer it wherever the fileless path is not load-bearing, and
+which §6.4's OAuth constraint does not forbid for a *Codex* child.
 
 **What this does and does not buy, stated plainly.** A token in `env` is *not* a defence against a
 determined same-uid sibling: on the platforms marion targets, one same-uid process can read
@@ -1253,17 +1275,29 @@ Two rules make it more than bookkeeping:
   Criteria written afterward describe what happened, not what was required.
 - **The scope is checked against observed `ToolCall.locations`**, or against a worktree
   diff where the adapter reports no locations (§9). A child writing outside its declared scope is
-  reported, not silently accepted. **Two fields, deliberately separate:** `scope_enforced` records
+  reported, not silently accepted.
+
+  **The diff route must include untracked files, or it is blind to exactly the case §5.4
+  blesses.** `git diff` reports nothing for a newly created file, while `writable_scope:
+  ["src/generated/**"]` naming a directory the child is meant to *create* is explicitly legal — so
+  a diff-only check would record an out-of-scope **creation** as `changed_paths: []`,
+  `scope_violations: []`, `scope_enforced: true`: a clean run, which is the false confidence the
+  two-field split exists to prevent. Therefore `changed_paths` comes from
+  `git status --porcelain -z --untracked-files=all` in the workspace, and `diff` from
+  `git diff <base_commit>` with intent-to-add for untracked paths so they appear in the patch too. **Two fields, deliberately separate:** `scope_enforced` records
   **whether the check ran** — `false` means neither route was available, and never means "no
   violation" — while `scope_violations` lists the offending paths. **A path is writable iff it
   matches *both* scope lists, so it is a violation if it fails *either*:**
   `!matches(scope_ceiling) || !matches(scope_requested)`. **Both the globs and `changed_paths` are
-  normalized to *repo*-relative form before matching** — repo-relative, not workspace-relative,
-  because a `SharedCwd` workspace may sit below the repo root (§2 keys on the project root
-  precisely because the two differ), and re-rooting `src/**` at `<repo>/crates/foo` would either
-  match nothing or need `../..`, which no glob crate handles uniformly. The globs are already
-  declared repo-relative (§5.4); observed paths are canonicalized and made repo-relative, which is
-  also required because §3.1 item 5 tells children to use absolute paths. The negation matters — "matches neither"
+  normalized against the workspace's own *tree root* before matching** — the **worktree root** for
+  `Workspace::Worktree`, the **repo root** for `SharedCwd`. Neither "always repo-relative" nor
+  "always workspace-relative" works: a linked worktree lives under `<state>/…/worktree` (§4.3), so
+  re-rooting its paths at the repo root yields `../../..` and matches nothing; while a `SharedCwd`
+  child may sit *below* the repo root (§2 keys on the project root precisely because the two
+  differ), so using its cwd would drop the prefix the globs are written against. The globs are
+  declared repo-relative (§5.4) and are interpreted against that tree root; observed paths are
+  canonicalized and made relative to it, which §3.1 item 5 requires anyway since children emit
+  absolute paths. The negation matters — "matches neither"
   would silently permit a path inside the agent type's ceiling but outside the narrower scope the
   parent asked for, which is exactly the case a parent narrows the scope to catch.
   Collapsing the two fields into one boolean is
@@ -1942,11 +1976,15 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     schema document *is* its return channel, never to call `mcp__marion__report`.
 - **§7.6's re-prompts do not apply to M1's child, and M1 must not wait for them.** A
   `codex exec --json` child has no Stop hook marion can rely on and no `caps.resume`:
-  - Codex hooks are trust-gated and **fail silently** until trusted (§7.6), and the only
-    non-interactive way to obtain the trust key and hash is `initialize` → `initialized` →
-    `hooks/list` — **app-server methods, which M1 does not build.** Bootstrapping trust just to
-    fetch a hash would contradict this milestone's own scope.
-  - `exec` is a one-shot job, so there is no session to `continue_()` for a grace turn.
+  - **`exec` is a one-shot job, so there is no session to `continue_()`** — no `caps.resume`, which
+    is what actually removes step 4.
+  - Codex hooks are trust-gated and **fail silently** until trusted (§7.6). Obtaining the key and
+    hash non-interactively goes through `initialize` → `initialized` → `hooks/list`, which are
+    app-server methods M1 does not build. **`codex exec` does expose
+    `--dangerously-bypass-hook-trust`** (verified on 0.146.0), so this is a choice, not a missing
+    mechanism: **M1 declines it.** A flag whose own name says `dangerously`, disabling the trust
+    check on scripts marion writes into a child's config, is not something to adopt for a
+    convenience M1 does not need.
 
   Therefore M1's child goes **straight to §7.6 step 5** when no report arrives — steps 2–3 are
   skipped for the surface reasons just given, and step 4 by its own `caps.resume` gate. Step 5's
@@ -2024,7 +2062,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   - **A root's node-level bound is consumed only while the root is `Blocked`** — a §7.6 descendant
     hold or an unanswered permission — and **not** while it is working or awaiting a blocking
     `spawn`. A root is not a task and has no deliverable to bound; what needs bounding is how long
-    marion waits on an answer that may never come.
+    marion waits on an answer that may never come. **It is a per-episode limit**: it starts at each
+    entry into `Blocked` and is discarded on exit, so a root that survives a denied permission gets
+    a full bound for its next block. A lifetime budget would make every permission after the first
+    deny instantly and would collapse the §7.6 hold into an immediate expiry — and since a root
+    outlives many blocks by design, repeated blocking is the normal path, not a corner case.
 
   Reading the root's bound as wall-clock instead would make M1 unreachable on default settings: the
   root's 900 s starts before it spawns anything and the child's 900 s starts later, so the root
@@ -2081,7 +2123,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 - **Both processes are pointed at the CannedProvider, which is what makes §6.4's OAuth constraint
   moot for M1.** Neither process authenticates against a real endpoint, so nothing here depends on
   subscription auth:
-  - **root (`claude`)**: fileless config — `--mcp-config` for the control MCP, `--settings`,
+  - **root (`claude`)**: fileless config — `--mcp-config` for the control MCP with
+    `--strict-mcp-config`, **`--allowedTools mcp__marion__spawn`** (without it the root's one
+    load-bearing call is denied — §3.1's two axes), `--settings`,
     `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
     `ANTHROPIC_API_KEY=""` (a non-empty key silently wins, §6.4). This takes **option (a)** of
     §6.4's three: the real `CLAUDE_CONFIG_DIR` is retained and never mutated, so OAuth is intact
