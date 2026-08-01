@@ -30,11 +30,14 @@ Out of scope: the graph-plan system, mesh routing, remote hosting, the north sta
 Codex CLI — **0.145.0 for S3 and the alt-screen/`/diff` capture, 0.146.0 for S5 and the main-screen
 captures** (the local install moved mid-session; per-claim stamps appear inline where it matters).
 
-**Fixture-backed vs not.** S1–S5 have committed fixtures in `tests/fixtures/`. The **Gemini and
-opencode launcher findings (§6.4) and the entire resource model (`MILESTONES.md`) have no
-committed fixture** — they rest on single uncommitted sessions and should be re-measured before
-they harden into assumptions. That violates this project's own "every spike emits a fixture" rule
-and is recorded as such rather than glossed.
+**Fixture-backed vs not.** S1–S5 have committed fixtures in `tests/fixtures/`; **S6 was killed
+mid-run and has none** (§11 item 12). The **Gemini and opencode launcher findings (§6.4) and the
+entire resource model (`MILESTONES.md`) have no committed fixture** — they rest on single
+uncommitted sessions and should be re-measured before they harden into assumptions — **and three
+further claim families are equally unfixtured, all listed in §11 item 10**: the vt100-vs-alacritty
+scrollback comparison, the entire vendor prior-art body (§7.6), and `s2/analyze.py`, which cannot
+read the committed captures at all. That violates this project's own "every spike emits a fixture"
+rule and is recorded as such rather than glossed.
 
 ---
 
@@ -1195,8 +1198,9 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
 
    **Verified working on both Claude Code and Codex.** On Claude Code the reason arrives as a real
    `user` message (`Stop hook feedback:\n<reason>`), `num_turns` goes 1→2, and it is **observable
-   in `stream-json`**. (Exit-code-2-plus-stderr is the equivalent mechanism; fixtured on Codex
-   only — §11 item 13.)
+   in `stream-json`**. (Exit-code-2-plus-stderr is believed equivalent, but it is fixtured on
+   **Codex only** — `s4/claude-code/stop_hook.sh` has no exit-2 branch, so on Claude Code
+   `decision: block` is the only mechanism this repo verifies. **UNVERIFIED**, §11 item 13.)
 3. **Resolve the answer.**
    - *Reports* → done. With live descendants this sets `reported_early: true` and records them.
    - *Chooses to wait*, **or answers nothing while descendants are live** → **hold the node in
@@ -1260,7 +1264,9 @@ harnesses. Hook input carries `last_assistant_message`, so no transcript parse i
 >
 > Stop-hook input beyond `stop_hook_active` and `last_assistant_message`: `session_id`,
 > `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, plus
-> `background_tasks`/`session_crons` (Claude Code) and `turn_id`/`model` (Codex).
+> `background_tasks`/`session_crons`/`effort`/`prompt_id` (Claude Code) and `turn_id`/`model`
+> (Codex). Verified field-by-field against every record in
+> `tests/fixtures/s4/*/hook-input-*.jsonl`.
 >
 > **`SubagentStop` is verified statically only** — it shares Claude Code's `Stop` code path in the
 > 2.1.220 bundle and adds `agent_id`, `agent_type`, `agent_transcript_path`. **A live confirmation
@@ -1608,7 +1614,11 @@ bridge and `doctor`.
 
 ## 11. Open questions
 
-Everything here is genuinely open. Nothing else in this document is.
+Everything here is genuinely open. **So is every inline `UNVERIFIED` marker** — items 12–15 below
+were added in audit round 5 precisely because this section had claimed to be the sole index while
+four inline markers sat outside it, including the two that decide what M1 builds. When you add an
+`UNVERIFIED` marker anywhere in this document, add it here too; that pairing is what makes this
+list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
 1. **S1's pty re-confirmation.** The interrupt protocol was proven over pipes, not a pty. If the
    CLI does isatty-conditional line buffering, framing may differ under `pty-process`. Closes in M1.
@@ -1650,6 +1660,23 @@ Everything here is genuinely open. Nothing else in this document is.
     `CLAUDE_CODE_ATTRIBUTION_HEADER`'s 0% → 99.7% cache effect (reported upstream, not measured
     here); and the DECSET 2026 bracket discipline (five captures, one host) that §8/L4.5 gates
     commits on.
+12. **Spike S6 — the two `codex exec --json` assumptions (§5.2), and the highest-value open item
+    in the repo.** Does `exec` host MCP servers, and does `exec --json` emit `ToolCall.locations`?
+    S6 was started and **killed mid-run** on 2026-07-31; no S6 fixture exists. Both answers change
+    what M1 builds — §9 specifies each branch, so M1 is not blocked, but **S6 runs first**.
+13. **Claude Code's exit-code-2 Stop-hook path is unfixtured.** §7.6 calls it equivalent to
+    `{"decision":"block"}`, and it is fixtured on **Codex only**
+    (`tests/fixtures/s4/codex/stream-exit2-stderr.jsonl`); `s4/claude-code/stop_hook.sh` has no
+    exit-2 branch, so the equivalence is asserted from nothing in this repo. Either record the
+    mode or treat `decision: block` as the only verified mechanism on Claude Code.
+14. **The inbound half of Claude Code's control channel** — `can_use_tool`, hook callbacks,
+    `request_user_dialog` — is designed on decompilation, with **zero** inbound `control_request`
+    frames in `tests/fixtures/s1/stdout.jsonl`. The demux map and the entire permission path rest
+    on it. Closes in M1 (§5.2).
+15. **Codex approval semantics are source-derived, not measured** (§5.2): no S5 probe exercises an
+    approval, and no probe involves a real TUI. Both the fan-out to all subscribers and
+    first-answer-wins — which together justify "marion answers approvals only on threads it
+    originated" — are unverified, as is a *foreign* (non-marion) client on a shared thread.
 
 ---
 
