@@ -1355,7 +1355,8 @@ non-terminal descendants."**
   bounded by the node's own timeout** — `TaskContract.timeout` for a task node, the node-level
   bound for a contract-less root (§9) — **not** by its descendants. Two outcomes:
   - Descendants finish inside the bound → re-prompt once more (mechanism below) → resolve normally.
-  - The bound expires first → `Exited{Unreported}` with **`held_to_timeout: true`**, and **the
+  - The bound expires first → **`held_to_timeout: true`** — `Exited{Unreported}` for a node that
+    owed a report, or a root's ordinary derived status (it can never be `Unreported`) — and **the
     still-running descendants outlive the parent**, their contracts landing `unclaimed` (§7.5).
     Killing them would destroy work to tidy up bookkeeping. The flag is what keeps this case legal
     under the L1 invariant below, and distinguishable from a deliberate early report.
@@ -1502,7 +1503,10 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      `Blocked`** until either every descendant is terminal, or the node's timeout expires
      (`TaskContract.timeout`, or the root's node-level bound — §9).
      - descendants finish inside the bound → continue to step 4.
-     - **the bound expires first → `Exited{Unreported}` with `held_to_timeout: true`**, and the
+     - **the bound expires first → `held_to_timeout: true`**, with the exit status split by
+       whether the node owed a report: a task node becomes **`Exited{Unreported}`**; a
+       contract-less root, which can never be `Unreported` (step 1), takes its ordinary derived
+       status — `Ok`, or `Failed` on a non-zero or signalled process exit (§6.7). Either way the
        still-running descendants **outlive the parent**, their contracts landing `unclaimed`
        (§7.5). Killing them would destroy work to tidy up bookkeeping. **This is the only path to
        `Exited{Unreported}` with a live descendant, and `held_to_timeout` is what keeps it legal
@@ -1524,8 +1528,9 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    returns immediately). If any descendant is now live, re-enter step 3's hold under the remaining
    bound. **Step 4 is spent**, so when that hold ends — by the descendants finishing or by the
    bound expiring — control returns *here*, not to step 4. Otherwise: synthesize from the
-   transcript tail, mark `Exited{Unreported}`, surface visibly. **Never silently promote a status
-   message to an answer.**
+   transcript tail, mark `Exited{Unreported}` — or, for a root, its ordinary derived status, since
+   it owed no report — and surface visibly. **Never silently promote a status message to an
+   answer.**
 
 At most **two** re-prompts occur per node: one on the hook (step 2), one at step 4. The descendant
 question is carried *by* the step-2 fire, not by an extra one — otherwise a node with live
