@@ -862,7 +862,7 @@ is per verb, because reading a node and acting on one are not the same permissio
 | verb | permitted targets | target state |
 |---|---|---|
 | `status`, `list` | descendants or parent, plus `allow_peers` siblings (`list` returns that set) | **any**, terminal included |
-| `wait` | **descendants only**, plus `allow_peers` siblings | **any** — returns immediately on a terminal node with its contract, and on an `Orphaned` one with its uncompleted contract |
+| `wait` | **descendants only**, plus `allow_peers` siblings | **any** — returns immediately on a terminal node with its contract, and on a `ReapedIdle` or `Orphaned` one with its uncompleted contract (same set as the §7.6 gating rule: neither can resolve without a user act) |
 | `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal and `reap_state == Live`** (so neither `ReapedIdle` nor `Orphaned`) |
 | `cancel` | **descendants only — never a sibling, even under `allow_peers`** | non-terminal |
 | `report` | **self only**, and only on a node that **has a contract** — rejected on a root | non-terminal; **first call wins**, a second returns an error |
@@ -1810,8 +1810,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `Exited{Unreported}`.
   This is a property of the surface, not a weakening of §7.6: the descendant-gating and re-prompt
   machinery lands with the app-server adapter in M4, where a child has a hook and a session.
-  Hook-driven re-prompting *is* exercised in M1 — on the **root**, which is Claude Code and does
-  have both.
+  Hook-driven re-prompting is *implemented* in M1 on the **root**, which is Claude Code and has
+  both — but see §9: with `spawn` blocking and backgrounding deferred to M2, a passing M1 run never
+  fires it.
 - **`CODEX_HOME` for the child is `<agent-dir>/config/`**, created by marion and deleted with the
   node (§6.4). M1 sets it even though it injects configuration by `-c` flags, so that the child
   cannot read or write the user's real `~/.codex` — §6.4's "marion never mutates the user's real
@@ -1876,10 +1877,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 
   Reading the root's bound as wall-clock instead would make M1 unreachable on default settings: the
   root's 900 s starts before it spawns anything and the child's 900 s starts later, so the root
-  would always expire first and the parent could never receive the contract as a tool result. If a
-  deployment does want a wall-clock ceiling on a root, that is `marion run --timeout` plus the
-  operator's own judgement, and marion refuses a run whose root bound is below the child default it
-  would supervise.
+  would always expire first and the parent could never receive the contract as a tool result.
+  **marion therefore offers no wall-clock ceiling on a root at all** — `marion run --timeout` sets
+  only the `Blocked` bound. marion refuses a run whose root bound is below the child default it
+  would supervise, since a root that gives up waiting sooner than its children can finish would
+  abandon them by construction.
 - **marion launches the root node itself.** The `claude` root is not hand-started: `marion run
   <agent-type> --prompt <…>` spawns it through the same §6.1 path as any child, which is what gives
   it an `AgentId`, an agent-dir, and a capability token — without which its `spawn` call cannot be
@@ -1893,11 +1895,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   exiting, not by reporting — a root that stops with no live descendants is simply **accepted as
   complete** (§7.6 step 1), and `Unreported` is not reachable for it. §7.6 still governs its
   *descendants*: if children are live when it stops, the hook fires with the descendant question
-  minus the report option. **In M1 that is the only hook fire on the happy path**, since the root's
-  `spawn` blocks and its child is already terminal when the root stops — so M1's acceptance
-  criteria do not depend on the hook firing at all, and §9's claim that hook-driven re-prompting is
-  "exercised in M1" means only that the path exists and is reachable, not that a passing M1 run
-  must traverse it. (Called "the root node", never "node 0" —
+  minus the report option. **In M1 the hook never fires at all**: `spawn` blocks and backgrounding
+  is M2+, so the root's child is always terminal by the time the root stops, and step 2's
+  "owes no report, no live descendants" branch fires nothing. The hook path is *implemented* in M1
+  and **first exercised in M2**, when a backgrounded `spawn` can leave a descendant live. No M1
+  acceptance criterion depends on it — do not write one that waits for a fire that cannot happen. (Called "the root node", never "node 0" —
   `MILESTONES.md` already uses *node 0* for the graph-plan system's test-infrastructure validation
   step, and the task contract is deliberately shaped to attach to that system later.)
 - **Scope enforcement is preventive where a permission channel exists, detective where it does
