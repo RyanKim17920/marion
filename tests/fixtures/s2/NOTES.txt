@@ -89,6 +89,14 @@ No API keys, tokens, or credential-bearing paths were present.
 Tools (copied from the spike scratch dir, throwaway, not workspace code)
   ptyhost.py   pty.fork host: TIOCSWINSZ, scripted keystrokes/resizes, logs all raw bytes.
   extract.py   .rec -> .raw.bin + .cast
+               ⚠ Two caveats, both found in audit round 7/9. (a) It decodes each record
+               independently for the .cast, which is what split the 9 glyphs above; .raw.bin
+               is built from undecoded bytes and is unaffected. (b) Its cast header hardcodes
+               cols=120 rows=40, so it cannot have produced
+               codex-cli-0.146.0-14row-heavy-history-insert.cast, whose header correctly reads
+               100x14. Trust the committed headers, not the tool: an L2/L4.5 replay sized from
+               extract.py's default would diverge on exactly the capture the scrollback
+               argument rests on. Parameterize cols/rows before regenerating anything.
   analyze.py   distinct DECSTBM regions + counts, DECSET 2026 brackets, alt-screen, scroll prims
   scrollattr.py  VT state machine that attributes every scroll-up / scroll-down event to the
                DECSTBM region active at that moment — this is what answers the S2 question.

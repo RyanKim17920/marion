@@ -557,7 +557,9 @@ joiner with `thread/read` alone received only 2 `thread/status/changed` events a
 full parity with the originator, who was undisturbed. Fanout re-reads the subscriber set per
 event, so **mid-turn attach works** — a client joining 2602 ms into a streaming turn received
 **87 of the originator's 93** events, including live deltas, without interrupting the turn.
-Multiple concurrent subscribers work, including after the originator disconnects.
+Multiple concurrent subscribers work, including after the originator disconnects — fixtured:
+probe2's clients resume thread `019fb989-737f-…`, which probe1 created and then closed both of its
+connections to.
 `thread/unsubscribe` is per-connection and leaves other subscribers and the thread untouched.
 
 > **The 87-vs-93 difference is fully accounted for — nothing was lost.** From

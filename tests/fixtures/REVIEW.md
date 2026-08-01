@@ -86,7 +86,10 @@ Redaction must not touch the evidence the docs rely on. After redacting, re-deri
 - **s2** — file length, `ESC[?1049h`/`ESC[?1049l` offsets, `CSI 3J` / `CSI 2J` counts,
   DECSET 2026 bracket counts, the DECSTBM region histogram, and the `.cast` resize sequence.
   **Derive all of these from `.raw.bin`, which is authoritative** — the `.cast` of three captures
-  lost box-drawing glyphs to a chunk-boundary decoding bug at capture time (9 damaged regions,
+  lost box-drawing glyphs to a chunk-boundary decoding bug **in `extract.py`, during `.rec` →
+  `.cast` conversion** (not at capture: `extract.py` builds `.raw.bin` from undecoded bytes and
+  only the `.cast` path decodes per record, which is why the `.raw.bin` is intact) — 9 damaged
+  regions,
   2/5/2, byte deltas +9/+24/+9) and is *not* byte-identical to the `.raw.bin` (text only; control
   sequences are identical). See `s2/NOTES.txt`.
 - **s3** — timing-log line counts and the observed lifetimes.
