@@ -90,7 +90,7 @@ Redaction must not touch the evidence the docs rely on. After redacting, re-deri
   `.cast` conversion** (not at capture: `extract.py` builds `.raw.bin` from undecoded bytes and
   only the `.cast` path decodes per record, which is why the `.raw.bin` is intact) — 9 damaged
   regions,
-  2/5/2, byte deltas +9/+24/+9) and is *not* byte-identical to the `.raw.bin` (text only; control
+  2/5/2, byte deltas +9/+24/+9 — and is *not* byte-identical to the `.raw.bin` (text only; control
   sequences are identical). See `s2/NOTES.txt`.
 - **s3** — timing-log line counts and the observed lifetimes.
 - **s4** — hook payload fields (`stop_hook_active`, `hook_event_name`, `decision`,
