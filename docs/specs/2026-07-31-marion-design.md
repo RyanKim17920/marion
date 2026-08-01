@@ -8,7 +8,7 @@
 > tell surviving statements from overturned ones. Everything below is stated as **current fact**.
 > Corrections and retractions live in one place: §12.
 >
-> All five spikes (S1–S5) are resolved. Claims are stamped; anything not independently verified
+> Spikes S1–S5 are resolved; **S6 is open** (§11 item 12). Claims are stamped; anything not independently verified
 > is marked **UNVERIFIED**.
 
 ---
@@ -1424,7 +1424,8 @@ outcome if churn proves unmanageable.
 
 ## 9. Milestones
 
-All five spikes are resolved (§12). Fixtures in `tests/fixtures/s1..s5/` are the seed of L2.
+Spikes S1–S5 are resolved (§12); **S6 is open and is M1's first task** (§11 item 12). Fixtures in
+`tests/fixtures/s1..s5/` are the seed of L2.
 
 Build **M1 disposably**: prove the delegation core before anything that displays it. No daemon, no
 VT emulator, no model proxy, no event log beyond the task audit trail.

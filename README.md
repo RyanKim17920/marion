@@ -8,7 +8,8 @@ Agent(harness, model, tools, prompt, …) -> handle
 handle: observe · steer · interrupt · result
 ```
 
-**Status:** design complete, all five spikes resolved, **no code yet.** Start at *First task*.
+**Status:** design complete, spikes S1–S5 resolved, **S6 open and owed first**, **no code yet.**
+Start at *First task*.
 
 ---
 
@@ -64,7 +65,7 @@ and corrected again. Treat anything marked
 **UNVERIFIED**, and everything in design doc §11 (Open questions), as a hypothesis. Re-verify with
 `claude --version`, `codex --version`, `gemini --version`, `opencode --version`.
 
-## The five spikes — all resolved 2026-07-31
+## The spikes — S1–S5 resolved 2026-07-31, S6 open
 
 | spike | answer |
 |---|---|
@@ -72,7 +73,13 @@ and corrected again. Treat anything marked
 | **S2** Terminals and scrollback | Claude Code uses the **alt screen** for its whole session (so needs no scrollback). Codex uses the main screen, entering alt only for the `/diff` pager. Real hazard is `CSI 3J` on every Codex resize — marion intercepts it. |
 | **S3** Codex app-server lifecycle | Never reaped; the earlier "reaping" was most likely our own tooling. But **unsubscribed threads unload after 30 min.** |
 | **S4** Stop-hook re-prompt | Works on both via `{"decision":"block","reason":…}`. **Codex hooks fail silently until trusted.** |
-| **S5** Late-join subscription | `thread/resume` **is** subscribe. Mid-turn attach works. Approvals fan out to all subscribers — marion must not race a human. |
+| **S5** Late-join subscription | `thread/resume` **is** subscribe. Mid-turn attach works. Approvals fan out to all subscribers — marion must not race a human. *(The fan-out and first-answer-wins semantics are read from source, **not measured**: no probe exercises an approval. Owed when the codex adapter lands.)* |
+
+**S6 is open, and it is M1's first task.** It was started and killed mid-run, and it tests two
+things about `codex exec --json` that decide what M1 builds: does `exec` host MCP servers (if not,
+the `mcp__marion__report` return path does not exist and M1 uses the `--output-schema` fallback),
+and does it emit file locations (if not, scope enforcement diffs the worktree). Design doc §9
+specifies both branches, so M1 is not blocked — but run S6 before writing supervisor code.
 
 The most consequential finding was incidental: **`CLAUDE_CONFIG_DIR` isolation breaks OAuth**,
 because the Keychain entry is keyed to the real config dir. Config isolation and subscription auth
@@ -80,16 +87,18 @@ are mutually exclusive for Claude Code children.
 
 ## First task: the M1 vertical slice
 
-A real `claude` root calls `mcp__marion__spawn`; a real `codex` child edits a file in a worktree
-and reports; the parent receives a **structured task contract** — driven entirely by the canned
-provider so it costs nothing and repeats. Acceptance criteria and the concrete M1 decisions
-(blocking `spawn`, three-way contract field ownership, detective scope enforcement,
-`codex exec --json` as the child surface): design doc §9. Repo layout: §10.
+**Run spike S6 first** (above) — it is cheap, it produces the `codex exec` fixture the repo lacks,
+and it selects M1's return channel. Then: a real `claude` root calls `mcp__marion__spawn`; a real
+`codex` child edits a file in a worktree and reports; the parent receives a **structured task
+contract** — driven entirely by the canned provider so it costs nothing and repeats. Acceptance
+criteria and the concrete M1 decisions (marion launches the root as node 0, blocking `spawn`,
+three-way contract field ownership, detective scope enforcement, `codex exec --json` as the child
+surface, and the canned-provider wiring for both processes): design doc §9. Repo layout: §10.
 
 **Build it disposably.** The independent Codex review argued persuasively that the delegation core
-should be proven before anything that displays it: no *detached* daemon (the registry, log and MCP
-run in-process), no VT emulator, no model proxy. Only once that hop works do the supervisor split (M2) and
-the tree UI (M3) go in.
+should be proven before anything that displays it: no *detached* daemon (the registry, the task
+audit trail and the control MCP run in-process), no VT emulator, no model proxy. Only once that hop
+works do the supervisor split (M2) and the tree UI (M3) go in.
 
 Three debts fall due in M1, all things currently designed on decompilation rather than measurement:
 the pty re-confirmation of S1's protocol, a live `SubagentStop` check, and **a real `can_use_tool`
