@@ -331,8 +331,14 @@ no day-one harness emits a per-event ordinal**:
 | form | detects loss by | who supplies it |
 |---|---|---|
 | `Ordinal(u64)` | gap in the sequence | opencode, but **only** on `/api/event`, which §6.4 rejects for suppressing heartbeats — so unavailable in practice |
-| `Predecessor(EventId)` | broken chain (an event whose predecessor never arrived) | **Claude Code** transcripts, via `uuid`/`parentUuid` |
-| `None` | not detectable | **Codex app-server** |
+| `Predecessor(EventId)` | broken chain (an event whose predecessor never arrived) | **Claude Code `TranscriptRecords` only**, via `uuid`/`parentUuid` — i.e. the `interactive` surface |
+| `None` | not detectable | **Codex app-server**, and **Claude Code `headless`** |
+
+**Headless Claude Code has no predecessor pointer.** Verified against `tests/fixtures/s1/`: the
+`stream-json` records carry `uuid` (93 of 95) and `parent_tool_use_id`, but **`parentUuid` appears
+zero times** — it exists only in the on-disk transcript, which `headless` does not read. `uuid`
+alone is identity, not order, exactly as Codex's `item/*` ids are (below). So a node's loss
+detection depends on its *surface*, not merely on its harness.
 
 Codex supplies neither: its `item/*` ids (`msg_09cb…`, verified in
 `tests/fixtures/s5/probe3-midturn-attach.json`) are *identity*, already carried in `item_id`, and
@@ -1718,12 +1724,17 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 **M2 — supervisor split.**
 - `marion-tui` SIGKILLed mid-run; agents keep running; a new TUI shows the full tree.
 - `src_seq` intact per its form (§4.2), **not** `agent_seq` contiguity — §4.2 says that proves
-  nothing, since a dropped notification simply never gets a number. Concretely, for the day-one
-  adapters this means: **Claude Code** — the `parentUuid` chain is unbroken across the kill
-  (`Predecessor`); **Codex** — no ordering evidence exists, so assert instead that the replayed
-  tree is structurally identical to the pre-kill tree (same nodes, same parent edges, same terminal
-  states). The structural assertion is the *primary* criterion for Codex, not a fallback, and an
-  `Ordinal` gap check runs on no adapter M2 ships.
+  nothing, since a dropped notification simply never gets a number. **Which form applies is a
+  property of the surface, so M2's criterion is stated per node:**
+  - a node on `interactive` Claude Code (transcript-sourced) → the `uuid`/`parentUuid` chain is
+    unbroken across the kill;
+  - **every other node M2 ships — including the headless Claude root and any Codex node — has no
+    ordering evidence at all**, so the criterion is that the replayed tree is **structurally
+    identical** to the pre-kill tree: same nodes, same parent edges, same terminal states, same
+    contracts.
+
+  The structural assertion is M2's *primary* criterion, not a fallback: an `Ordinal` gap check runs
+  on no adapter M2 ships, and a `Predecessor` check runs only if M2 includes an `interactive` node.
 - Supervisor SIGKILL → journal replay leaves `ReapedIdle` resumable, `Live` → `Orphaned`, and no
   untracked live process.
 
