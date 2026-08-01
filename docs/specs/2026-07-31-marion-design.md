@@ -1404,8 +1404,10 @@ struct Completion {                      // assembled and written ONCE, at the n
                                          //   !matches(ceiling) || !matches(requested).
                                          //   Empty iff none. Meaningful only when
                                          //   scope_enforced == true
-    diff: Option<Patch>,
+    diff: Option<Capped<Patch>>,         // Capped, not bare: a consumer must be able to tell a
+                                         //   complete diff from a prefix (see the cap rule below)
     evidence: Vec<CommandOutcome>,
+    evidence_omitted: usize,             // outcomes dropped by the collection cap; 0 iff none
     exit: ProcessExit,
 }                                        // timestamps live on TaskContract, not here: they are
                                          //   partial from spawn onward and must be readable
@@ -1427,6 +1429,9 @@ struct ProcessExit   { code: Option<i32>, signal: Option<i32>, description: Stri
 struct TaskTimestamps{ spawned: SystemTime, first_output: Option<SystemTime>,
                        reported: Option<SystemTime>, exited: Option<SystemTime> }
 type   Patch         = String;   // unified diff, as produced by `git diff`
+struct Capped<T>     { value: T, truncated: bool, original_bytes: usize }
+                                 // JSON: a named object, never a bare string. `original_bytes`
+                                 //   is the pre-cap length, so a reader can size what it lost
 ```
 
 **Every `verification` command is itself bounded** — `Command.timeout`, default **300 s**, killed on
@@ -1435,15 +1440,32 @@ child exits, so neither `TaskContract.timeout` (which bounds the child) nor the 
 covers it; without a per-command bound a hanging `cargo test` would block `spawn`'s tool result
 forever and §9's "every bound is finite by construction" would be false.
 
-**`stdout`, `stderr` *and* `diff` are truncated to a per-run byte cap** with `truncated: true`
-set, because they enter an LLM's context — and because the harness will otherwise truncate them
-*for* marion, worse. **Measured on Claude Code 2.1.220: an MCP tool result over ~64–100 KB is
+**`stdout`, `stderr`, `diff` and the `evidence` list itself are capped**, because they enter an
+LLM's context — and because the harness will otherwise truncate them *for* marion, worse.
+**Measured on Claude Code 2.1.220: an MCP tool result over ~64–100 KB is
 replaced wholesale by a `<persisted-output>` stub** — a short preview plus a filesystem path (40 KB
 came through verbatim; 100 KB did not). Since §9's acceptance criterion turns on the returned
 `tool_result` deserializing to the persisted contract, an uncapped `diff` from an ordinary
 few-tens-of-KB edit silently makes that criterion unsatisfiable, with a symptom that looks like
 marion dropped the contract. **The full, uncapped contract always remains at
-`contracts/<task_id>.json`**; only what rides back through the harness is capped. `exit_code: None` means the command was
+`contracts/<task_id>.json`**; only what rides back through the harness is capped, and the two
+therefore differ by exactly these fields — which is what §9's "modulo" clause means.
+
+**The cap is a fixed algorithm, not a budget to be invented.** It is applied once, to the returned
+copy only, after the contract is persisted:
+
+| # | rule |
+|---|---|
+| 1 | **Collection cap.** If `evidence.len() > 16`, retain the **first 16 in `verification` order** — the parent authored that order, so it is the parent's own priority — and set `evidence_omitted` to the number dropped. Otherwise `evidence_omitted = 0`. |
+| 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split evenly as `floor(16 KiB / n_retained)` per outcome and again in half between that outcome's `stdout` and `stderr`. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
+| 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
+| 4 | **Flags.** Any field shortened by rules 2–3 sets its `truncated: true` — `CommandOutcome.truncated` if either of its streams was cut, `Capped.truncated` for `diff`, whose `original_bytes` records the pre-cap length. |
+| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count — set `diff.value` to `""` (keeping `truncated: true` and `original_bytes`) and re-serialize; if it *still* exceeds 48 KiB, drop every outcome, folding them into `evidence_omitted`. Two deterministic steps, and the result is bounded by construction. |
+
+All byte counts are of **raw UTF-8 field bytes before JSON escaping**, except rule 5, which is
+measured on the encoded document. 48 KiB is chosen below the measured 64 KB floor with room for the
+contract's other fields; the 40 KB that came through verbatim is the evidence that it is not
+over-tight. `exit_code: None` means the command was
 signalled; `ProcessExit.description` carries marion's own explanation ("external termination",
 §7.8) rather than being derived from the numbers.
 
@@ -2294,7 +2316,8 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     `instructions` (the parent's `spawn.prompt`, recorded verbatim), `allowed_tools`,
     `timeout`, `scope_ceiling` (from the agent type) and `scope_requested` (validated from the
     parent's `writable_scope`; §5.4) — and *validates and freezes* the parent's criteria before the
-    child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`, `exit`,
+    child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`,
+    `evidence_omitted` (§6.7's cap rule 1, and rule 5 may raise it after the fact), `exit`,
     `timestamps`, `status`, `reported_early`, `held_to_timeout`,
     `live_descendants_at_report`, `died_before_gate`, `scope_enforced`, `scope_violations`,
     `narrative_synthesized`,
