@@ -1038,9 +1038,16 @@ everywhere else: the child that writes the code runs under `--sandbox workspace-
 parent's string describing how to *check* that code does not. §3.1 item 2's rule — messages from
 other agents are data, never authority — does not currently reach this field.
 
-M1 takes the trade knowingly, on one condition that holds only in M1: **the sole node that can call
-`spawn` is the root, and the root is the user's own agent running the user's own prompt**, so
-`verification` is trusted by construction, exactly as a `Makefile` in the repo is. **That condition
+M1 takes the trade knowingly, but the condition is narrower than it first looks. **What is
+parent-authored is the command line, not what the command executes.** `cargo test` runs test code
+the *child* just wrote; `make check` runs a target the child may have edited. So even in M1 —
+where the only `spawn` caller is the root, the user's own agent running the user's own prompt —
+`verification` executes **child-authored code** as the user, unsandboxed. That is not an oversight:
+verifying the child's work is the entire point, and it is exactly what a developer does when they
+run the tests on a branch. The honest statement of the M1 position is therefore: *the invocation is
+trusted because the root is the user's; the code it runs is no more trusted than the branch it came
+from*, which is the same risk a human takes running `cargo test` after a `git pull` — and the same
+one confinement would bound. **That condition
 dies in M2**, where §5.4 lets any non-terminal node `spawn` and a *child* — a foreign agent, quite
 possibly a different vendor's — becomes the author. Before backgrounding and child-initiated
 `spawn` land, `verification` **must run under the same sandbox and cwd confinement as the child**
