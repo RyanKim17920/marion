@@ -1652,7 +1652,7 @@ signalled; `ProcessExit.description` carries marion's own explanation ("external
 **JSON encoding is part of the specification**, since the stated reason for pinning these types is
 that a model and a future replayer read them, and serde's defaults are not what either should see:
 `Duration` → integer **seconds** where it is a *bound* (`TaskContract.timeout`, `Command.timeout`)
-and integer **milliseconds** where it is a *measurement* (`CommandOutcome.duration`) — a
+and integer **milliseconds** where it is a *measurement* (`CommandOutcome.duration`) — **bounds round *up* to the next whole second and measurements round *down* to the whole millisecond**, so a bound is never silently shortened and a measurement never claims time it did not take — a
 sub-second check would otherwise serialize as `0`, and a model reading the contract could not tell
 a fast pass from a command that never ran; `SystemTime` → RFC3339 **in UTC, with a literal `Z`, and exactly three fractional digits**
 (`2026-08-01T09:04:11.000Z`) — "with offset" alone would leave each implementation to pick a local
@@ -1682,7 +1682,7 @@ Two rules make it more than bookkeeping:
   exclusion): tracked files added, modified, deleted or renamed — committed or not — plus
   files left untracked:
 
-  > `changed_paths` = `git diff --name-only <base_commit>` ∪ the untracked set from
+  > `changed_paths` = `git diff --name-only --no-renames <base_commit>` ∪ the untracked set from
   > `git status --porcelain -z --untracked-files=all`, both taken in the workspace — and **both
   > against the scratch `GIT_INDEX_FILE`**, never the workspace's own index, so neither command can
   > disturb what the user sees.
@@ -2230,7 +2230,11 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    exactly what §5.1 refuses — or `continue_()` + `prompt()` atomically (§6.3) when the process has
    exited — as for a Codex app-server thread or a `claude --resume` session. Gated on `caps.resume`;
    a harness without it skips straight to step 5. **It fires at most once per node** — see the budget below. Its message is
-   branched, because two different situations arrive here:
+   branched, because two different situations arrive here. **The branches are ordered, and the
+   first match wins**: a node that answered nothing *and* was then held until its descendants
+   finished satisfies both descriptions, and it takes the first — its children's results are the
+   more useful thing to tell it, and the grace turn's "you were interrupted" framing would be
+   simply false for a node whose wait completed normally.
    - *descendants completed while the node was held* → *"your children have finished: <names>;
      their results are available — report now."* This is the happy path of descendant-gating, and
      nothing was interrupted. **For a root, which cannot `report`**, the same branch instead says
@@ -2709,8 +2713,10 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     provisionally** (the unclamped figure) **and step 9 finalizes it** — the field is still "always
     set", never absent, but only the step-9 value is authoritative. **And because the `<30 s` branch
     errors at step 9, the step-7 process is already running and a contract already exists: step 9
-    computes the remainder first and **writes it to `timeout` whether or not it passes the 30 s
-    test**, so the persisted contract never retains step 6's provisional figure. On the error path
+    computes the remainder first and **writes `min(requested, remainder)` to `timeout` whether or
+    not that value passes the 30 s test** — a clamp, so a child asking 60 s of a requester with
+    500 s left keeps its 60 s — and the persisted contract therefore never retains step 6's
+    provisional figure. On the error path
     that recorded value is the sub-30 s remainder that *caused* the refusal — it describes the
     aborted attempt, and no run ever executed under it; the abort record in the journal is what
     tells a reader so, and `completion: None` is what makes the contract unreadable as a result.
