@@ -911,7 +911,7 @@ is per verb, because reading a node and acting on one are not the same permissio
 |---|---|---|
 | `status`, `list` | descendants or parent, plus `allow_peers` siblings (`list` returns that set) | **any**, terminal included |
 | `wait` | **descendants only**, plus `allow_peers` siblings | **any** — returns immediately on a terminal node with its contract, and on a `ReapedIdle` or `Orphaned` one with its uncompleted contract (same set as the §7.6 gating rule: neither can resolve without a user act) |
-| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal and the target's process is still running** — so not `ReapedIdle`, not `Orphaned`, and **not a node held in `Blocked(Descendants)`**, whose process has already exited (§7.6 step 4) |
+| `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal and the target's process is still running** — so not `ReapedIdle`, not `Orphaned`, and **not a node held in `Blocked(Descendants)`**, whose hold belongs to marion regardless of whether its process is still running |
 | `cancel` | **descendants only — never a sibling, even under `allow_peers`** | non-terminal **and the target's process is still running** — same condition as `send`: cancelling an `Orphaned` node would write a `Cancelled` `Completion` for a process marion has already lost, which §6.7 forbids (`completion: None`), and would signal nothing |
 | `report` | **self only**, and only on a node that **has a contract** — rejected on a root | non-terminal; **first call per `TaskContract` wins**, a second against the same contract errors. A resume opens a new contract (§6.7) and so accepts one further `report` |
 
@@ -1666,10 +1666,15 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      `Blocked`** until either every descendant is terminal, or the node's timeout expires
      (`TaskContract.timeout`, or the root's node-level bound — §9).
      - descendants finish inside the bound → continue to step 4.
-     - **the bound expires first → `held_to_timeout: true`**, with the exit status split by
-       whether the node owed a report: a task node becomes **`Exited{Unreported}`**; a
-       contract-less root, which can never be `Unreported` (step 1), takes its ordinary derived
-       status — `Ok`, or `Failed` on a non-zero exit or a fault signal (§6.7). Either way the
+     - **the bound expires first → `held_to_timeout: true`**. **marion first terminates the held
+       node's process if it is still running** — a held node's process may well be live (§5.4), and
+       emitting `Exited` over a running process would break §8/L1's terminality exactly as it would
+       for a `TimedOut` child (§9) — then records the status, split by whether the node owed a
+       report: a task node becomes **`Exited{Unreported}`**; a contract-less root, which can never
+       be `Unreported` (step 1), takes its ordinary derived status — `Ok`, or `Failed` on a
+       non-zero exit or a fault signal (§6.7). marion's own kill does **not** make it `Killed`:
+       the node's fate was decided by the expiry, and `ProcessExit.description` records the
+       signal. Either way the
        still-running descendants **outlive the parent**, their contracts landing `unclaimed`
        (§7.5). Killing them would destroy work to tidy up bookkeeping. **This is the only path to
        `Exited{Unreported}` with a live descendant, and `held_to_timeout` is what keeps it legal
