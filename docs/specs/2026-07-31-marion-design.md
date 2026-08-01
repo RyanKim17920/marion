@@ -745,7 +745,7 @@ processes — confirmed by a server surviving 763 s with an idle client attached
 **`codex exec --json` is the better surface for one-shot children** — a bounded job with one
 prompt and one terminal result. It removes the handshake, thread loading, subscriptions,
 bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schema`,
-`--output-last-message`, `--cd <worktree>`, `--sandbox workspace-write`, `--ephemeral`, **stdin closed or `/dev/null`** (with a pipe, `exec` prints *"Reading additional input from stdin…"* and appends it as a `<stdin>` block),
+`--output-last-message`, `--cd <worktree>`, `--sandbox workspace-write`, `--ephemeral`, **stdin closed or `/dev/null`** — `exec` prints *"Reading additional input from stdin…"* on stderr **either way**, so that line is not a symptom; with `/dev/null` nothing is appended, and only a real pipe appends the content as a `<stdin>` block,
 `--ignore-user-config`.
 
 > **⚠ `--ignore-user-config` and the config-file MCP declaration are mutually exclusive.** On
@@ -1156,7 +1156,7 @@ every call.
   converted.
   **But the burden is not zero, and §9 requires the hard part.** M1's child must edit a file and
   return, so the canned Responses script has to *contain* Codex's native encodings verbatim: a
-  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch — and — on the MCP branch — a
+  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch — a
   `function_call` with `name: "report"` and `namespace: "mcp__marion"`, **not** a call named
   `mcp__marion__report`, which Codex rejects as `unsupported call` (§3.1 item 1). **The
   `type:"namespace"` *declaration* is not authored here**: it travels the other way, arriving on
@@ -1167,6 +1167,20 @@ every call.
   answers (§11 item 12). Budget §5.5 accordingly.
   Port Codex's own `mock_model_server.rs` — `wiremock` + `SeqResponder` + `.expect(n)` — which is
   *already* a canned Responses server, plus `core_test_support::responses` for the event builders.
+
+  > **⚠ Dispatch on request *shape*, never on arrival order.** `SeqResponder` is positional and
+  > `.expect(n)` is a request counter, and that is exactly the recipe that breaks on Claude Code:
+  > 2.1.220 issues a **session-title generation request to the same `ANTHROPIC_BASE_URL`
+  > concurrently with the first real turn** — measured 8 ms apart, so on a threaded provider the
+  > order is a race. The auxiliary request is identifiable: `tools: []` and
+  > `output_config.format` a `json_schema` with a `{title}` property. A positional script hands
+  > M1's scripted turn to *that* request, the root then emits plain text, `mcp__marion__spawn` is
+  > never called, and **nothing anywhere reports an error** — §9's headline acceptance criterion
+  > simply fails. Route requests with a **non-empty `tools` array** to the scripted turn sequence
+  > and answer the title request with a fixed stub. Not suppressed by `--setting-sources ""` or
+  > `--no-session-persistence`. (Dispatching on shape fixed the hop first try: `tool_use
+  > mcp__marion__spawn` → `tool_result` → `num_turns: 2`.) This is the Claude-side counterpart of
+  > the Codex `GET /models` note above.
   Codex's **TUI/app-server** startup gates on `GET /models` returning `{"models":[…]}`, so the
   canned server answers that too — but **`codex exec` does not issue it** (verified on 0.146.0: an
   `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses`).
@@ -1421,8 +1435,15 @@ child exits, so neither `TaskContract.timeout` (which bounds the child) nor the 
 covers it; without a per-command bound a hanging `cargo test` would block `spawn`'s tool result
 forever and §9's "every bound is finite by construction" would be false.
 
-`stdout`/`stderr` are truncated to a per-run byte cap with `truncated: true` set, because a
-verification command's output enters an LLM's context. `exit_code: None` means the command was
+**`stdout`, `stderr` *and* `diff` are truncated to a per-run byte cap** with `truncated: true`
+set, because they enter an LLM's context — and because the harness will otherwise truncate them
+*for* marion, worse. **Measured on Claude Code 2.1.220: an MCP tool result over ~64–100 KB is
+replaced wholesale by a `<persisted-output>` stub** — a short preview plus a filesystem path (40 KB
+came through verbatim; 100 KB did not). Since §9's acceptance criterion turns on the returned
+`tool_result` deserializing to the persisted contract, an uncapped `diff` from an ordinary
+few-tens-of-KB edit silently makes that criterion unsatisfiable, with a symptom that looks like
+marion dropped the contract. **The full, uncapped contract always remains at
+`contracts/<task_id>.json`**; only what rides back through the harness is capped. `exit_code: None` means the command was
 signalled; `ProcessExit.description` carries marion's own explanation ("external termination",
 §7.8) rather than being derived from the numbers.
 
@@ -2445,7 +2466,10 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `status: Unreported`.
 - The parent receives the **structured task contract** as a tool result. **Asserted on the request
   side, not on the reply**: the canned provider records a subsequent request from the root whose
-  `tool_result` for the `spawn` call deserializes to the persisted `contracts/<task_id>.json`. Asserting that
+  `tool_result` for the `spawn` call deserializes to the persisted `contracts/<task_id>.json`,
+  **modulo the capped `diff`/`evidence` fields** (§6.7) — which the cap exists to keep true, since
+  an over-large result is replaced by a `<persisted-output>` stub before it ever reaches the
+  provider. Asserting that
   the root's *next turn* "references the child's output" would be vacuous — that text is scripted
   SSE, fixed before the run, and would pass against a marion that dropped the contract entirely.
 - The scope is enforced **detectively**: a deliberate out-of-scope write appears in the contract's
@@ -2683,6 +2707,8 @@ design decision.
 | `codex exec` is one-shot, so there is no session to `continue_()` | **CORRECTED (round 12).** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0. `caps.resume` is `false` for that node because the *surface* caps it (§3.4), not because the harness cannot resume. |
 | Tool compilation targets `--tools`, with marion's MCP tools appended there | **CORRECTED (round 12).** `--tools` is the *availability* axis over built-in tools and does not gate MCP tools at all; `--allowedTools` is the *permission* axis and is where `mcp__marion__*` must go. Compiling into `--tools` alone leaves M1's root unable to call `spawn`. |
 | Starting the process and writing the prompt is enough to spawn a `headless` child | **CORRECTED (round 14).** Measured on 2.1.220: an injected MCP server is still `pending` when the first turn begins, the request carries `tools: []`, and the call fails `No such tool available`. §6.1 gains a readiness gate. **Round 15 corrected two things this row originally claimed:** the state is *per-turn and recoverable*, not permanent, and the gate cannot key on `system/init` at all — see the round-15 row below. |
+| A canned Anthropic provider can replay turns positionally | **CORRECTED (round 16).** Claude Code 2.1.220 issues a session-title request to the same base URL **concurrently** with the first real turn (8 ms apart), so a positional `SeqResponder` hands M1's scripted turn to it, the root emits plain text, `spawn` is never called, and nothing reports an error. Dispatch on request *shape* (`tools` non-empty). |
+| An MCP tool result of any size reaches the model | **CORRECTED (round 16).** Over ~64–100 KB, Claude Code 2.1.220 replaces it with a `<persisted-output>` stub — a preview plus a path. M1's contract-delivery criterion is unsatisfiable for an ordinary few-tens-of-KB diff unless `diff`/`evidence` are capped. |
 | L1's third exemption can be stated in prose | **CORRECTED (round 16).** "Died before it could reach step 5" has no computable discriminator — and read literally it is satisfied by every `codex exec` child, whose process always dies when its turn ends. Recorded as `Node.died_before_gate`, set only when marion observes death *without* an observed voluntary stop. |
 | `codex exec` hosting an MCP server is enough for the child to call it | **CORRECTED (round 15).** The declaration must also set `default_tools_approval_mode = "approve"`, or every call is cancelled `user cancelled MCP tool call` with no `tools/call` reaching the server — deterministic under every sandbox and approval policy short of `danger-full-access`. This is a trap for S6 itself: without the key the spike answers question 1 "no" and M1 builds the wrong branch. |
 | marion's tools are `mcp__marion__*` on every harness | **CORRECTED (round 15).** On Codex they arrive as a `type:"namespace"` tool; the flat name is rejected `unsupported call`, silently. The prompt must carry the per-harness spelling. |
