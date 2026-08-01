@@ -961,8 +961,8 @@ a 53 MB Codex child.
 ```
 
 **`verification` is an arbitrary-command sink, and M1 accepts it deliberately.** Every entry is a
-shell string authored by a *model* and executed by marion itself — in-process, as the user,
-unsandboxed, with no allowlist, and `sh -c` free to `cd` anywhere. That inverts §7.1's posture
+shell string authored by a *model* and launched by marion itself as an unsandboxed subprocess,
+running as the user, with no allowlist, and `sh -c` free to `cd` anywhere. That inverts §7.1's posture
 everywhere else: the child that writes the code runs under `--sandbox workspace-write`, while the
 parent's string describing how to *check* that code does not. §3.1 item 2's rule — messages from
 other agents are data, never authority — does not currently reach this field.
@@ -972,8 +972,9 @@ M1 takes the trade knowingly, on one condition that holds only in M1: **the sole
 `verification` is trusted by construction, exactly as a `Makefile` in the repo is. **That condition
 dies in M2**, where §5.4 lets any non-terminal node `spawn` and a *child* — a foreign agent, quite
 possibly a different vendor's — becomes the author. Before backgrounding and child-initiated
-`spawn` land, `verification` must either run under the same sandbox and cwd confinement as the
-child, or be restricted to an allowlist resolved from the agent type rather than the call. Tracked
+`spawn` land, `verification` **must run under the same sandbox and cwd confinement as the child**
+(§11 item 17 records the decision and why an agent-type allowlist was rejected as the primary
+mechanism). Tracked
 as a milestone gate in §11, not as a nice-to-have: it is the one place where a string from the
 agent channel reaches a shell with the user's privileges.
 
@@ -1450,7 +1451,14 @@ struct Completion {                      // assembled and written ONCE, at the n
                                          //   report arrived (§7.6 step 5). Never conflate them.
     result_commits: Vec<Oid>,
     changed_paths: Vec<PathBuf>,
-    acceptance_criteria_omitted: usize,  // entries dropped by cap rule 5(e); 0 iff none
+    acceptance_criteria_omitted: usize,  // entries dropped by cap rule 5(e); 0 iff none.
+                                         //   NOTE it describes a TaskContract field, yet lives
+                                         //   here: ALL cap metadata lives on Completion, because
+                                         //   the cap runs only when the contract is returned, and
+                                         //   that happens only at the terminal transition, where
+                                         //   a Completion always exists. Putting it on the
+                                         //   TaskContract would make a frozen, parent-authored
+                                         //   struct carry a value marion writes later.
     changed_paths_omitted: usize,        // elided by cap rule 5 only; 0 iff none
     scope_violations_omitted: usize,     // likewise. scope_violations is DERIVED from the full
                                          //   changed_paths before any elision, so a cap can never
@@ -1481,9 +1489,13 @@ therefore specified rather than left to the implementer:
 struct RepoIdentity  { git_common_dir: PathBuf, head_branch: Option<String> }
 enum   Workspace     { Worktree { path: PathBuf, branch: String }, SharedCwd { path: PathBuf } }
 struct Command       { program: String, args: Vec<String>, cwd: PathBuf, timeout: Duration }
-struct CommandOutcome{ command: Command, exit_code: Option<i32>, stdout: String,
-                       stderr: String, duration: Duration, truncated: bool,
+struct CommandOutcome{ command: Command, exit_code: Option<i32>, stdout: Capped<String>,
+                       stderr: Capped<String>, duration: Duration,
                        timed_out: bool }
+                                 // stdout and stderr are capped INDEPENDENTLY (rule 2), so each
+                                 //   carries its own flag. A single outcome-level `truncated`
+                                 //   could not say WHICH stream was cut, which is the thing a
+                                 //   reader needs to know.
 struct ProcessExit   { code: Option<i32>, signal: Option<i32>, description: String }
 struct TaskTimestamps{ spawned: SystemTime, first_output: Option<SystemTime>,
                        reported: Option<SystemTime>, exited: Option<SystemTime> }
@@ -1511,7 +1523,7 @@ marion dropped the contract. **The full, uncapped contract always remains at
 differ by exactly the fields cap rules 0–5 may shorten — `narrative`, `diff`, each outcome's
 `stdout`/`stderr`, the `evidence` list, and, if the backstop fires, `changed_paths`,
 `scope_violations`, `instructions` and `acceptance_criteria`. **Every one of them is
-self-describing** — a `Capped.truncated` flag, a `CommandOutcome.truncated` flag, or an `*_omitted`
+self-describing** — a `Capped.truncated` flag (per stream, for `stdout`/`stderr`) or an `*_omitted`
 counter — so a consumer can always tell a shortened field from a complete one without holding the
 persisted copy. That is what §9's "modulo" clause means.
 
@@ -1524,13 +1536,17 @@ copy only, after the contract is persisted:
 | 1 | **Collection cap.** If `evidence.len() > 16`, retain the **first 16 in `verification` order** — the parent authored that order, so it is the parent's own priority — and set `evidence_omitted` to the number dropped. Otherwise `evidence_omitted = 0`. |
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split as `floor(16 KiB / n_retained)` per outcome, and that share split again as `floor(share / 2)` to **each** of `stdout` and `stderr` — an odd byte is simply unused, since a rounding rule that hands it to one stream is a difference two implementations would have to guess at. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
-| 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its `truncated: true` — `CommandOutcome.truncated` if either of its streams was cut, `Capped.truncated` for `diff`, whose `original_bytes` records the pre-cap length. |
-| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and cut **each retained path** to its trailing **512 B** (a basename is what identifies a file; a long prefix is not); (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
-| 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size does not depend on the input at all, a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing except `diff`, which keeps its leading bytes — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
+| 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
+| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and cut **each retained path** to its **leading 256 B + `…` + trailing 256 B** when it exceeds 512 B. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
+| 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size does not depend on the input at all, a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing except `diff`, which keeps its leading bytes — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
 | — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
 
-All byte counts are of **raw UTF-8 field bytes before JSON escaping**, except rule 5, which is
-measured on the encoded document. 48 KiB is chosen below the measured 64 KB floor with room for the
+All byte counts are of **raw UTF-8 field bytes before JSON escaping**, except rules 5 and 6, which
+are measured on the encoded document. **That split is deliberate, and only rules 5–6 carry the
+guarantee**: rules 0–4 are a cheap raw-byte pre-trim that fits the common case in one pass, but
+JSON escaping can expand control-heavy output several-fold, so no raw-byte budget can bound the
+encoded size on its own. The encoded-size promise rests entirely on rule 5's re-serialize-and-check
+loop and rule 6's input-independent terminal. 48 KiB is chosen below the measured 64 KB floor with room for the
 contract's other fields; the 40 KB that came through verbatim is the evidence that it is not
 over-tight. `exit_code: None` means the command was
 signalled; `ProcessExit.description` carries marion's own explanation ("external termination",
@@ -1679,7 +1695,7 @@ SIGSEGV; without them it would fall through to `Ok`.
 |---|---|---|
 | SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT | **`Failed`** (row 3) | a self-inflicted fault — the process broke |
 | SIGKILL, SIGTERM, SIGHUP from a sender marion cannot attribute | **`Killed`** (row 1) | something outside did this to the node (§7.8) — **including the OOM killer** |
-| a signal marion sent **to terminate the node as such** — `cancel`, a user's `node/kill`, the `TimedOut` kill | `Cancelled` / `TimedOut` per row 1 | marion's own act, and row 1 already names the reason |
+| a signal marion sent **to terminate the node as such** — `cancel`, a user's `node/kill`, the `TimedOut` kill | `Cancelled` for `cancel` **and for `node/kill`** (both are deliberate termination, and row 1 already groups them); `TimedOut` for the expiry kill | marion's own act, and row 1 already names the reason |
 | a signal marion sent **to clear a process whose fate was already decided** — the §7.6 step-3 expiry kill | **matches no row-1 clause**; derivation falls through to rows 2–4 | the expiry decided the outcome, so the kill must not overwrite it with `Killed` |
 | **any other signal** (SIGINT, SIGQUIT, SIGPIPE, SIGXCPU, SIGSYS, …) from a sender marion cannot attribute | **`Killed`** (row 1) | the catch-all that makes this partition **total** — without it such a death matches no row and falls through to `Ok`, contradicting §7.8's "never a normal completion" |
 
@@ -2467,9 +2483,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     level: exactly the failure the clamp exists to prevent. **So step 6 writes `timeout`
     provisionally** (the unclamped figure) **and step 9 finalizes it** — the field is still "always
     set", never absent, but only the step-9 value is authoritative. **And because the `<30 s` branch
-    errors at step 9, the step-7 process is already running and a contract already exists: that
-    branch takes step 8's cleanup verbatim — kill the process, journal the abort against the intent
-    record, leave the contract `completion: None`** — or marion leaks a live child with a written
+    errors at step 9, the step-7 process is already running and a contract already exists: step 9
+    therefore writes the finalized `timeout` **before** evaluating the clamp error — so the
+    persisted contract always carries the authoritative value, never a provisional one a reader
+    would have to know to distrust — and the branch then takes step 8's cleanup verbatim: kill the
+    process, journal the abort against the intent record, leave the contract `completion: None`** — or marion leaks a live child with a written
     contract and no terminal, which §7.2 would later mis-mark `Orphaned`. **A root is never clamped against**: its bound
     is a per-episode `Blocked`-only budget, not a remaining wall-clock allowance (below), so
     `marion run --timeout 60` — which §9 blesses — must not truncate or refuse M1's single
@@ -2601,8 +2619,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 - The parent receives the **structured task contract** as a tool result. **Asserted on the request
   side, not on the reply**: the canned provider records a subsequent request from the root whose
   `tool_result` for the `spawn` call deserializes to the persisted `contracts/<task_id>.json`,
-  **modulo the fields §6.7's cap rules 0–5 may shorten**, each of which is self-describing
-  (a `Capped.truncated` flag or an `*_omitted` counter) — which the cap exists to keep true, since
+  **modulo the fields §6.7's cap rules 0–6 may shorten *and* the cap metadata that records the
+  shortening** — every `Capped.truncated`/`original_bytes` pair and every `*_omitted` counter may
+  differ between the two copies, and in the persisted copy they read `false`/`0` throughout, since
+  nothing there was ever capped. The comparison normalizes both the shortened fields and their
+  metadata; it is not an equality over the metadata — which the cap exists to keep true, since
   an over-large result is replaced by a `<persisted-output>` stub before it ever reaches the
   provider. Asserting that
   the root's *next turn* "references the child's output" would be vacuous — that text is scripted
@@ -2813,8 +2834,11 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     own agent running the user's own prompt. **This is a milestone gate, not a nice-to-have: before
     backgrounding or child-initiated `spawn` lands in M2** — at which point a foreign agent, quite
     possibly another vendor's, authors the string — `verification` must either run under the same
-    sandbox and cwd confinement as the child, or be restricted to an allowlist resolved from the
-    agent type rather than from the call. It is the one place in this design where a string from
+    sandbox and cwd confinement as the child. **That is the decision, not a menu**: an allowlist
+    resolved from the agent type was the alternative considered and rejected, because it fails
+    open on exactly the case that matters — a permitted program (`make`, `npm`, `cargo`) invoked
+    with hostile arguments — whereas confinement bounds what any command can reach regardless of
+    how it is spelled. An allowlist may be added on top later; it does not substitute. It is the one place in this design where a string from
     the agent channel reaches a shell with the user's privileges, and §3.1 item 2's rule (messages
     from other agents are data, never authority) does not currently reach it.
 
