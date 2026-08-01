@@ -621,7 +621,7 @@ marion's permission queue** (§5.6). Cancel with `{"type":"control_cancel_reques
 
 > **UNVERIFIED — and M1 depends on it.** This is established from the SDK source and the binary's
 > strings, **not** from the S1 replay: `tests/fixtures/s1/stdout.jsonl` contains **zero** inbound
-> `control_request` frames, because the run used `--allowed-tools ""` so `can_use_tool` could never
+> `control_request` frames, because that run omitted `--permission-prompt-tool stdio`, so `can_use_tool` could never
 > fire. The demux map, the response half, and the hook-callback / `request_user_dialog` frames are designed on decompilation — the `can_use_tool` **ask** frame itself was observed in round 14 (above, and §11 item 14). **M1 must
 > exercise a real `can_use_tool` round-trip and emit a fixture** — it is the third M1 debt
 > alongside the pty re-confirmation and `SubagentStop`.
@@ -1946,7 +1946,10 @@ implementer who codes it literally will hold nodes that should already be termin
   `continue_()` + `prompt()` as one atomic registry operation (§6.3) if it has exited — step 4
   states the rule and §5.1 is why it matters, since `continue_()` on a session marion already holds
   live is refused. On a harness
-  lacking `caps.resume`, there is no second re-prompt: marion **skips straight to step 5**, whose
+  lacking `caps.resume`, there is no second re-prompt **for a node whose process has exited** —
+  `caps.resume` gates only the `continue_()` half. A *surviving* process needs `prompt()` alone,
+  which no capability gates, so step 4 still runs for it on every harness. Where the process is gone
+  and resume is unavailable, marion **skips straight to step 5**, whose
   terminal already distinguishes a node that owed a report from a root that did not. Hook execution is itself bounded; a hook that does not return within its
   timeout is treated as no answer.
 
@@ -2809,7 +2812,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   - **every other node M2 ships — including the headless Claude root and any Codex node — has no
     ordering evidence at all**, so the criterion is that the replayed tree is **structurally
     identical** to the pre-kill tree: same nodes, same parent edges, same terminal states, same
-    contracts.
+    contracts. **Compared against the journal as of the replay's own read, not against a live tree
+    that kept moving** — agents keep running while the TUI is dead, so nodes may appear, terminate
+    and gain contracts in between. The assertion is that replay reconstructs exactly what the
+    journal records, which is what "lossless" can mean here; a diff against the concurrently-evolving
+    process tree would fail for reasons that have nothing to do with replay.
 
   The structural assertion is M2's *primary* criterion, not a fallback: an `Ordinal` gap check runs
   on no adapter M2 ships, and a `Predecessor` check runs only if M2 includes an `interactive` node.
