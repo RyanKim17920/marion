@@ -552,8 +552,9 @@ Multiple concurrent subscribers work, including after the originator disconnects
 > B did not are **exactly** the 7 with `t < 2602 ms` (`thread/started`,
 > `mcpServer/startupStatus/updated` ×2, `thread/status/changed`, `turn/started`, `item/started`,
 > `item/completed`) — i.e. everything emitted before B attached, consistent with resume delivering
-> no replay. B additionally received 1 connection-scoped event A could not
-> (`remoteControl/status/changed`). 93 − 7 + 1 = 87. **A late joiner misses only pre-attach
+> no replay. B additionally received its own connection-scoped `remoteControl/status/changed` at
+> attach; **A received one too, at `t = 29`** — before `thread/start`, so it falls outside the 93
+> the probe records (A's raw inbound count in `logs.A` is 94 for this reason). 93 − 7 + 1 = 87. **A late joiner misses only pre-attach
 > events, which is why `thread/read {includeTurns:true}` backfill must precede `thread/resume`.**
 
 `thread/resume` is a **load-from-persisted-history** operation: correct for cold threads, and an
@@ -1474,9 +1475,11 @@ harnesses. Hook input carries `last_assistant_message`, so no transcript parse i
 > `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, plus
 > `background_tasks`/`session_crons`/`effort`/`prompt_id` (Claude Code) and `turn_id`/`model`
 > (Codex). Verified field-by-field against every **`Stop`** record in
-> `tests/fixtures/s4/*/hook-input-*.jsonl` — those files also carry `SessionStart` and
-> `UserPromptSubmit` records, which have different fields (`source`, `prompt`) and no
-> `stop_hook_active`, which is exactly why the `hook_event_name` branch below is mandatory.
+> `tests/fixtures/s4/*/hook-input-*.jsonl`. **`s4/codex/hook-input-none.jsonl` and
+> `hook-input-block.jsonl` additionally carry `SessionStart` and `UserPromptSubmit` records**,
+> which have different fields (`source`, `prompt`) and no `stop_hook_active` — which is exactly
+> why the `hook_event_name` branch below is mandatory. The Claude Code captures contain `Stop`
+> records only, so that multi-event shape is fixtured on Codex alone.
 >
 > **`SubagentStop` is verified statically only** — it shares Claude Code's `Stop` code path in the
 > 2.1.220 bundle and adds `agent_id`, `agent_type`, `agent_transcript_path`. **A live confirmation
@@ -1905,10 +1908,14 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 10. **Claims with no committed fixture**, contrary to this project's own rule:
     - The Gemini and opencode launcher findings (§6.4).
     - The entire resource model (`MILESTONES.md`).
-    - The `vt100`-vs-`alacritty` scrollback comparison (94 / 0 / 121→2 lines). Only the 94-line
-      figure is asserted in `s2/NOTES.txt`; none is reproducible from the repo, since no Rust
-      exists yet and `s2/scrollattr.py` hardcodes a 40×120 replay that does not match the 14-row
-      capture.
+    - The `vt100`-vs-`alacritty` scrollback comparison — **but only partly, and the distinction
+      matters.** *How many lines the 14-row Codex run scrolled up* is a property of the byte
+      stream and **is reproducible**: `python3 s2/scrollattr.py
+      codex-cli-0.146.0-14row-heavy-history-insert` reports 2 + 92 = **94** top-anchored
+      scroll-up lines. What is **not** reproducible is what either emulator *retained* — the
+      vt100 `0` and the `121 → 2` collapse — because no Rust exists yet to run them. (The tool
+      hardcodes a 40×120 replay, which is cosmetically wrong for a 14-row capture but does not
+      change the partition; replaying at the true 14×100 yields the same 94.)
     - **The entire vendor prior-art body (§7.6)** — prompt strings plus behavioural inferences
       about Gemini's grace window, its non-compliance terminal, and Claude Code's Write-block
       telemetry.

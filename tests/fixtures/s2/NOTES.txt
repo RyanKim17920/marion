@@ -81,7 +81,10 @@ No API keys, tokens, or credential-bearing paths were present.
       DECSTBM inside/total, 0.146.0 14-row capture:   was 29/29  ->  26/26 (true value)
       DECSTBM inside/total, 0.146.0 resize capture:       16/18 (never corrupted)
   Design doc §5.3 has been corrected to the true values. The 94-lines-scrolled figure in the
-  capture list above is NOT reproducible from this repo — see design doc §11 item 10.
+  capture list above IS reproducible — `python3 scrollattr.py
+  codex-cli-0.146.0-14row-heavy-history-insert` gives 2 + 92 = 94 top-anchored scroll-up lines.
+  What is not reproducible from this repo is what an emulator *retains* of them (alacritty 94
+  vs vt100 0, and the 121->2 collapse), since no Rust exists yet — design doc §11 item 10.
 
 Tools (copied from the spike scratch dir, throwaway, not workspace code)
   ptyhost.py   pty.fork host: TIOCSWINSZ, scripted keystrokes/resizes, logs all raw bytes.
