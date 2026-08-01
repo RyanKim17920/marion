@@ -189,8 +189,9 @@ it, mirroring what every vendor does (§7.6's prior-art table):
    the user's consent. marion needs this more than any single harness does, because its children
    receive text from agents in other vendors' harnesses.
 3. **The child's own identity and position** — its node id, its parent, and its canonical path.
-4. **Sibling-collision guidance** (child nodes only), for any child sharing a cwd with a live sibling — which by
-   default is only under `allow_concurrent_writes` (§6.6): you are not alone in this tree, do not
+4. **Sibling-collision guidance** (child nodes only), for any child sharing a cwd with a live
+   sibling — which, for two *write-capable* siblings, is only under `allow_concurrent_writes`
+   (§6.6); a read-only sibling sharing a cwd is permitted by default: you are not alone in this tree, do not
    revert others' edits, here is your declared writable scope.
 5. **Absolute-paths-only**, since a child's cwd may be a worktree that differs from its parent's.
 
@@ -231,7 +232,8 @@ struct Node {
     reported_early: bool,         // §7.6's exemption flags and their evidence live on the Node,
     held_to_timeout: bool,        //   not only on the contract, so they are recordable for a
     live_descendants_at_report: Vec<AgentId>,  // root, which has no contract at all. A child's
-    narrative: Option<String>,    //   Completion mirrors all five at its terminal transition.
+    narrative: Option<String>,    //   Completion mirrors all six at its terminal transition
+                                  //   (counting died_before_gate above).
     narrative_synthesized: bool,  //   The narrative pair is here for the same reason: §7.6 step 5
                                   //   synthesizes one for a root too, and it must land somewhere.
     timeout: Duration,            // the node's bound; a contract's `timeout` mirrors it (§9)
@@ -1014,7 +1016,9 @@ Four consequences worth stating, since each closes a hole the flat rule left ope
   unchanged to a lifecycle verb would let a child terminate the node that spawned it — producing an
   `Exited{Cancelled}` that the L1 invariant *exempts from checking*, with live siblings still
   running and the caller self-orphaning under §7.5.
-- **`send` is denied unless the target is non-terminal *and* `Live`.** Without the terminal half, a child of
+- **`send` is denied unless the target is non-terminal *and* `live_channel` (§5.2).** Note the
+  predicate: `live_channel`, never `reap_state == Live`, which would wrongly admit a held node whose
+  process has already exited. Without the terminal half, a child of
   an `Exited` parent could call `send`, §6.3 would oblige `continue_()` + `prompt()`, and the parent
   would leave a terminal state — contradicting §7.5's "no live turn to return into" and §8/L1's
   `Exited` terminality. `ReapedIdle` is excluded for the same reason in a subtler form: such a node
@@ -1030,9 +1034,12 @@ Four consequences worth stating, since each closes a hole the flat rule left ope
   a liveness one: a held node's process may still be running, since `headless` Claude Code spans
   turns in **one** process (§5.2 — `system/init` is per turn, not per process).
 
-  So the condition is: the target must be **non-terminal, `Live`, and not
-  `Blocked(Descendants)`** — the first two because the process must exist, the third because the
-  hold belongs to marion.
+  So the condition is: the target must be **non-terminal, `live_channel`, and not
+  `Blocked(Descendants)`** — the first two because the execution context must actually exist, the
+  third because the hold belongs to marion. `live_channel` and not `reap_state == Live`: the two
+  diverge for an `Idle` node between §7.6 steps 2 and 5 whose process has already exited — the
+  ordinary state of a `codex exec` child that stopped without reporting — and it is exactly there
+  that the weaker predicate would admit the silent restart this bullet argues belongs to the user.
 
 Resuming any node is therefore a **user**-initiated act (`node/prompt`, §2) or marion's own grace
 turn; it reuses the `AgentId` and re-enters `Running`, and the terminality invariant is scoped to
@@ -1560,7 +1567,11 @@ which is what preserves "criteria exist before the work and the worker cannot ed
 that has no requesting agent and no `spawn` payload. `instructions` records **the user's resume prompt** verbatim — marion-authored, as on the spawn
 path; carrying the superseded instructions forward would misdescribe what the resumed run was
 asked to do. `base_commit`, `timestamps.spawned`, `child`, `allowed_tools`, `workspace` and
-`repo` are re-resolved fresh, and a changed `child` version is flagged per §7.7. **A resumed `Completion` is surfaced *unclaimed* regardless of the requester's state** (§7.5): a
+`repo` are re-resolved fresh, and a changed `child` version is flagged per §7.7. **`timeout` is
+re-resolved fresh too** — from `marion run --timeout`, else the agent type, else the 900 s default —
+and is **never clamped**, because a user resume has no requesting agent and therefore no remaining
+bound to clamp against (§9). Copying it instead would carry a dead requester's clamp forward, and
+`node/prompt` (§2) takes no timeout argument, so the user cannot supply one either. **A resumed `Completion` is surfaced *unclaimed* regardless of the requester's state** (§7.5): a
 resume is a `node/prompt`, not a `spawn`, so there is no outstanding tool call to return into —
 the original `spawn` already returned the first contract — and emitting a tool result with no
 pending call id is not constructible on either M1 harness. The audit trail is
@@ -1596,7 +1607,7 @@ SIGSEGV; without them it would fall through to `Ok`.
 |---|---|---|
 | SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT | **`Failed`** (row 3) | a self-inflicted fault — the process broke |
 | SIGKILL, SIGTERM, SIGHUP from a sender marion cannot attribute | **`Killed`** (row 1) | something outside did this to the node (§7.8) — **including the OOM killer** |
-| a signal marion sent **to terminate the node as such** — `cancel`, the `TimedOut` kill | `Cancelled` / `TimedOut` per row 1 | marion's own act, and row 1 already names the reason |
+| a signal marion sent **to terminate the node as such** — `cancel`, a user's `node/kill`, the `TimedOut` kill | `Cancelled` / `TimedOut` per row 1 | marion's own act, and row 1 already names the reason |
 | a signal marion sent **to clear a process whose fate was already decided** — the §7.6 step-3 expiry kill | **matches no row-1 clause**; derivation falls through to rows 2–4 | the expiry decided the outcome, so the kill must not overwrite it with `Killed` |
 | **any other signal** (SIGINT, SIGQUIT, SIGPIPE, SIGXCPU, SIGSYS, …) from a sender marion cannot attribute | **`Killed`** (row 1) | the catch-all that makes this partition **total** — without it such a death matches no row and falls through to `Ok`, contradicting §7.8's "never a normal completion" |
 
@@ -1966,7 +1977,11 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    not to step 4 — and **if the bound expires instead, the node terminates in step 3** with
    `held_to_timeout: true`, which is that branch's own terminal. Returning here on expiry would
    loop, since step 5 re-enters the hold whenever a descendant is live. (For a root, whose bound is
-   per-episode (§9), the re-entered hold starts a fresh episode.) Otherwise: synthesize from the
+   per-episode (§9), a step-5 re-entry **continues the current episode on its remaining budget** —
+   it is not a fresh one. The node never left `Blocked`, so there was no exit to discard the
+   episode, and granting a full fresh bound on each re-entry would let a descendant that keeps
+   producing live grandchildren pin a root open one episode at a time: the unbounded ancestor hold
+   this whole procedure exists to kill.) Otherwise: synthesize from the
    transcript tail, mark `Exited{Unreported}` — or, for a root, its ordinary derived status, since
    it owed no report — and surface visibly. **Never silently promote a status message to an
    answer.**
@@ -1977,7 +1992,9 @@ descendants would take three, and the second would be suppressed by the very gua
 the first. `stop_hook_active` guards step 2 against looping; `caps.resume` bounds step 4 to
 harnesses that can be resumed at all; and **step 4's one-shot guard is what makes the 4→5→3 path
 terminate** rather than cycling a resumed process indefinitely. The step-3 hold is bounded by the
-node's timeout, so the whole procedure is finite on every branch.
+node's timeout — and for a root, by the *current episode's remaining* budget, since a step-5
+re-entry continues that episode rather than starting a fresh one (step 5) — so the whole procedure
+is finite on every branch, including the 3→5→3 cycle on a root.
 
 **Exiting at step 5 with a live descendant is only legal via the step-3 timeout**, where
 `held_to_timeout` is set. *Reaching* step 5 with live descendants is normal — that is what the
@@ -2359,7 +2376,13 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     (`Spawned`), not at step 6** — step 8's readiness gate can burn up to 30 s while a
     contract-bearing requester's own bound is already running, so clamping against the step-6
     figure would let the child's deadline exceed its parent's by one gate-length per nesting
-    level: exactly the failure the clamp exists to prevent. **A root is never clamped against**: its bound
+    level: exactly the failure the clamp exists to prevent. **So step 6 writes `timeout`
+    provisionally** (the unclamped figure) **and step 9 finalizes it** — the field is still "always
+    set", never absent, but only the step-9 value is authoritative. **And because the `<30 s` branch
+    errors at step 9, the step-7 process is already running and a contract already exists: that
+    branch takes step 8's cleanup verbatim — kill the process, journal the abort against the intent
+    record, leave the contract `completion: None`** — or marion leaks a live child with a written
+    contract and no terminal, which §7.2 would later mis-mark `Orphaned`. **A root is never clamped against**: its bound
     is a per-episode `Blocked`-only budget, not a remaining wall-clock allowance (below), so
     `marion run --timeout 60` — which §9 blesses — must not truncate or refuse M1's single
     `spawn`. Without the clamp,
