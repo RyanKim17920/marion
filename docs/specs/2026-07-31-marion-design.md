@@ -1022,6 +1022,12 @@ representable contract and is never recorded as a normal completion. Two expirie
 | child still **running** when the bound expired | `TimedOut` | — |
 | child **stopped** and was held in `Blocked` on live descendants | `Unreported` | `held_to_timeout: true` |
 
+**An `Orphaned` node has no finalized contract**, and that is deliberate: `Orphaned` is a
+`ReapState` meaning marion lost the process without observing its exit (§7.2), so no `ResultStatus`
+is knowable — inventing one would assert an outcome nobody witnessed. The contract stays open with
+its spawn half intact and the node surfaced as orphaned, until a user resolves it or a resume
+supersedes it. This is the one case where a contract may outlive its run without a `status`.
+
 The contract is what `spawn` returns, what the UI renders as a completed node, and what makes a run
 replayable. It is harness-independent: a Codex child and a Claude child return the same structure.
 
@@ -1497,9 +1503,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   the contract with `status: TimedOut` if the child was still running, or `Unreported` with
   `held_to_timeout: true` if it had stopped and was held on live descendants (§6.7).
 - **Contract field ownership** (three authors, not two — see §5.4):
-  - **The requesting parent** supplies `acceptance_criteria` and `verification` through `spawn`;
-    both are `required` in its schema. marion cannot invent criteria for a task it does not
-    understand.
+  - **The requesting parent** supplies `acceptance_criteria` and `verification` through `spawn`.
+    marion cannot invent criteria for a task it does not understand. **`acceptance_criteria` is
+    `required` in the schema; `verification` is optional but strongly encouraged** — matching
+    §5.4, since not every task has a runnable check. An empty `verification` yields an empty
+    `evidence` list, which is visible in the contract rather than implying the work was verified.
   - **marion** authors `task_id`, `requester`, `child`, `repo`, `base_commit`, `workspace`,
     `instructions` (the parent's `spawn.prompt`, recorded verbatim), `allowed_tools`,
     `writable_scope`, `timeout` — and *validates and freezes* the parent's criteria before the
