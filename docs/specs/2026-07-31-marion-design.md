@@ -1028,7 +1028,7 @@ is per verb, because reading a node and acting on one are not the same permissio
 | `send` | descendants or parent, plus `allow_peers` siblings | **non-terminal, `live_channel`, and not `Blocked(Descendants)`** — the first two because the node's execution context must actually exist (so not `ReapedIdle`, not `Orphaned`, **and not a held node whose process has already exited**, which `reap_state: Live` alone would wrongly admit), the third because that hold belongs to marion whether or not the process is still running |
 | `cancel` | **descendants only — never a sibling, even under `allow_peers`** | **non-terminal and `live_channel`** — the execution context must actually exist, since cancelling a node whose process is gone (`Orphaned`, or held with an exited process) would write a `Cancelled` `Completion` for something marion can no longer signal, which §6.7 forbids (`completion: None`). Unlike `send`, `cancel` **is** permitted against a `Blocked(Descendants)` node *whose process is live*: cancelling is marion's own lifecycle verb, not an attempt to drive the node's turn. Against a held node whose process already exited, `cancel` is **rejected** — there is nothing to signal and the node's terminal is already owed to step 3 |
 | `report` | **self only**, and only on a node that **has a contract** — rejected on a root | non-terminal; **first call per `TaskContract` wins**, a second against the same contract errors. A resume opens a new contract (§6.7) and so accepts one further `report` |
-| `spawn` | **creates a new node, so it has no existing target**: any non-terminal node may call it, subject to §6.1 step 2's depth and concurrency caps. The created node becomes the **caller's direct child** — that is what makes the caller its `requester` (§6.7) and what keeps the tree a star (`MILESTONES.md`): a node can never create a sibling, a peer, or a child of another node | caller must be non-terminal and `live_channel`; a node held in `Blocked(Descendants)` may **not** spawn, since adding a descendant to a subtree marion is already holding open would extend the hold indefinitely |
+| `spawn` | **creates a new node, so it has no existing target**: the caller must be **non-terminal, `live_channel`, and not `Blocked(Descendants)`** (the same predicate as the right-hand column, stated here so the two cannot drift apart), subject to §6.1 step 2's depth and concurrency caps. The created node becomes the **caller's direct child** — that is what makes the caller its `requester` (§6.7): a node can never create a sibling, a peer, or a child of another node. **"Star" (`MILESTONES.md`) describes the *control* topology, not the delegation tree** — every node's control channel terminates at marion, which is the hub, and no node ever holds a channel to another. The delegation tree itself is a genuine bounded-depth tree (`max_depth`, §3.1), which is why grandchildren exist and §7.6 has to gate on descendants at all; reading "star" as a one-level process tree contradicts both | caller must be non-terminal and `live_channel`; a node held in `Blocked(Descendants)` may **not** spawn, since adding a descendant to a subtree marion is already holding open would extend the hold indefinitely |
 
 Four consequences worth stating, since each closes a hole the flat rule left open:
 
@@ -1107,7 +1107,12 @@ one direction. The rule is therefore:
 This keeps the property that matters: **a rename can never move authority once a name is bound.**
 Before first use a name is still just a name, and `node/rename` could put a different node behind
 it — that is the unavoidable cost of late binding, and it is bounded by the fact that binding
-happens on the grantee's *first* call. `Node.name` is mutable
+happens on the grantee's *first* call. **Binding is per name, not per grant**: each entry in
+`allow_peers` binds independently, on the first call that *successfully* resolves that particular
+name, and a call that fails to resolve binds nothing. A grantee with three peers therefore
+accumulates three bindings at three different moments rather than snapshotting all of them at its
+first call — which matters because siblings appear in any order, and an atomic snapshot would
+permanently fail every name that did not yet exist. `Node.name` is mutable
 via `node/rename` (§2) and is the address `send` takes, so late binding *per call* would mean
 renaming a node into a peer's `allow_peers` hands that peer authority it was never granted, and
 renaming the grantee silently revokes it. Binding once, on first use, defeats both while still
@@ -1178,7 +1183,11 @@ the blast radius. Without it the hook cannot identify itself or find the supervi
 attribution guarantee has a hole exactly where the descendant-gating decision is made.
 
 **Token lifetime:** issued at spawn, bound to the `AgentId`, invalidated at the node's terminal
-transition, and **reissued** — not reused — on every path that starts a process again: when a
+transition, and **reissued** — not reused — on every path that starts a process again. **Reissue
+atomically invalidates every prior token for that `AgentId`, and must complete before the
+replacement process starts**, so there is never a window in which two tokens for one node are
+accepted, and a stale token held by a process marion has already killed is dead the moment the
+successor is issued. The paths: when a
 `ReapedIdle` node is resumed (§7.2), when the §7.6 grace turn starts a new process, and **when a
 user resumes a node from a terminal state** (§6.3). Omitting the last would leave a resumed node
 `Running` with an invalidated token, so every `spawn`, `report`, and `send` it made would be
@@ -1557,7 +1566,10 @@ that a model and a future replayer read them, and serde's defaults are not what 
 `Duration` → integer **seconds** where it is a *bound* (`TaskContract.timeout`, `Command.timeout`)
 and integer **milliseconds** where it is a *measurement* (`CommandOutcome.duration`) — a
 sub-second check would otherwise serialize as `0`, and a model reading the contract could not tell
-a fast pass from a command that never ran; `SystemTime` → RFC3339 with offset; `Oid` → its 40-character hex
+a fast pass from a command that never ran; `SystemTime` → RFC3339 **in UTC, with a literal `Z`, and exactly three fractional digits**
+(`2026-08-01T09:04:11.000Z`) — "with offset" alone would leave each implementation to pick a local
+offset and a precision, so the same instant would pin to different bytes and no replayer could diff
+two contracts; `Oid` → its 40-character hex
 string; `Glob` → its pattern string; `child: (Harness, String)` → a **named object**
 `{"harness": …, "version": …}`, not serde's default two-element array, since a model reads it.
 `AgentId` and `TaskId` are lowercase hyphenated **UUIDv7**
