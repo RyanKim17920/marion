@@ -100,6 +100,27 @@ maxTurns: 40
 You implement changes precisely and do not expand scope…
 ```
 
+The example above is a *subset*. **The full key set, which is what a deserializer accepts:**
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `name` | string | — | required; the key, `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` |
+| `description` | string | — | required; shown in pickers |
+| `harness` | enum | — | required |
+| `model` | string | harness default | — |
+| `effort` | enum | harness default | — |
+| `mode` | preset | `opaque` | resolves to `ExecutionSurfaces` (§3.4) |
+| `tools` | list | `[]` | allowlist; never a denylist |
+| `isolation` | enum | `shared-cwd` | `worktree` \| `shared-cwd` \| `remote` |
+| `maxTurns` | int | unbounded | passed through where the harness supports it |
+| `timeout_secs` | int | 900 | the node's bound (§9) |
+| `writable_scope` | list of globs | whole workspace | ceiling; `spawn` may narrow, never widen (§5.4) |
+| `inherit_user_config` | bool | `false` | §6.4; seeds only the named keys |
+| `allow_peers` | list of names | `[]` | grants sibling addressing (§5.4) |
+
+Unknown keys are a load error surfaced by `marion doctor`, not silently ignored — the failure mode
+Codex's `hooks.json` has (§7.6) and which this project has already been bitten by.
+
 **Discovery and precedence**, later overriding earlier: `$XDG_CONFIG_HOME/marion/agents/*.md` →
 `<project>/.marion/agents/*.md` → programmatic definitions. `name:` is the key and must match
 `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; the filename is not significant. Duplicate names are a load
@@ -397,16 +418,18 @@ trait HarnessAdapter {         // every surface, including launch-only and opaqu
     fn surfaces(&self, spec: &LaunchSpec) -> ExecutionSurfaces;
 }
 
+#[async_trait]                 // dyn-compatible: the supervisor holds Box<dyn ControlPlane>
 trait ControlPlane {           // any surface with an event source (typed or degenerate)
-    fn open(&self, inv: Invocation) -> Result<Session>;
-    fn events(&self, s: &Session) -> impl Stream<Item = Event>;
-    fn prompt(&self, s: &Session, p: Prompt) -> Result<()>;
-    fn steer(&self, s: &Session, p: Prompt) -> Result<()>;   // caps.steer
-    fn interrupt(&self, s: &Session) -> Result<()>;
-    fn view(&self, id: &SessionId) -> Result<Session>;       // replays history
-    fn continue_(&self, id: &SessionId) -> Result<Session>;  // does not replay
+    async fn open(&self, inv: Invocation) -> Result<Session>;
+    fn events(&self, s: &Session) -> BoxStream<'static, Event>;   // NOT impl Stream — RPITIT
+                                                                  // would make this non-dyn
+    async fn prompt(&self, s: &Session, p: Prompt) -> Result<()>;
+    async fn steer(&self, s: &Session, p: Prompt) -> Result<()>;  // caps.steer
+    async fn interrupt(&self, s: &Session) -> Result<()>;
+    async fn view(&self, id: &SessionId) -> Result<Session>;      // replays history
+    async fn continue_(&self, id: &SessionId) -> Result<Session>; // does not replay
     fn refine(&self, s: &Session, base: Capabilities) -> Capabilities;
-    fn shutdown(&self, s: &Session) -> Result<()>;
+    async fn shutdown(&self, s: &Session) -> Result<()>;
 }
 ```
 
@@ -745,6 +768,9 @@ a 53 MB Codex child.
   "prompt":      "…",                 // required; the task
   "acceptance_criteria": ["…"],       // required — see ownership note
   "verification":        ["cargo test -p foo"],   // optional but strongly encouraged
+  "writable_scope": ["src/**"],       // optional; repo-relative globs. Default: the whole
+                                      //   workspace. Narrows the agent type's own
+                                      //   writable_scope; may never widen it.
   "name":        "impl-auth",         // optional; addressable name
   "isolation":   "worktree",          // optional; overrides the agent type
   "timeout_secs": 900,                // optional
@@ -754,13 +780,21 @@ a 53 MB Codex child.
 ```
 
 **Who authors the criteria.** marion cannot invent acceptance criteria for a task it does not
-understand, so **the requesting parent supplies `acceptance_criteria` and `verification` through
-`spawn`**. marion then *validates, freezes, and owns* them: they are written into the contract
-before the child starts and are immutable thereafter. So the rule is narrower than "marion authors
-them" — marion authors `task_id`, `requester`, `repo`, `base_commit`, `workspace`, `allowed_tools`,
-`writable_scope`, and `timeout`; the parent authors the intent; **the child may supply neither.**
-That preserves the property that matters (criteria exist before the work and the worker cannot edit
-them) without pretending the supervisor knows the task.
+understand, so **the requesting parent supplies `acceptance_criteria`, `verification`, and
+`writable_scope` through `spawn`** — the same argument applies to all three: a path list is as
+task-specific as a criterion, and a supervisor that guesses it either forbids legitimate work or
+permits everything. marion then *validates, freezes, and owns* them: they are written into the
+contract before the child starts and are immutable thereafter. **The child may supply none of
+them.** The full field-by-field ownership table is in §9 and is not restated here — §9 is
+authoritative, and an earlier duplicate of it in this section had already drifted two fields out
+of date.
+
+**`writable_scope` resolution**, since three sources can name one: the agent type may declare a
+ceiling, `spawn` may narrow it, and the default is the whole workspace. marion takes the
+**intersection** and never the union — a `spawn` argument can only ever restrict what the agent
+type allows, so a parent cannot widen a child's reach by asking. `writable_scope` is always
+recorded in the contract even when it is the default, so "unrestricted" is visible rather than
+implied by absence.
 
 **`report`'s payload is the child-owned part of the completion half only** — `narrative`, and
 optionally `result_commits` (§9). marion derives every other completion field, and **a
@@ -794,20 +828,28 @@ per child by the fileless path where available (`--mcp-config` for Claude Code, 
 mcp_servers.marion={…}` for Codex, `OPENCODE_CONFIG_CONTENT` for opencode), else written into
 `<agent-dir>/config/`. The command is `marion-supervisor mcp`, a thin stdio bridge to the supervisor socket.
 
-**The token is delivered to the bridge on an inherited fd, never in argv and never in the
-environment.** All three placements were considered and only the fd is safe:
+**The token rides the MCP server declaration's `env` block**, which marion writes at
+config-injection time — the only channel available, because **marion does not spawn the bridge:
+the harness does.** That rules out the two mechanisms one would otherwise reach for. An inherited
+fd is impossible (marion is not the bridge's parent, extra fds are `CLOEXEC`, and no MCP client
+config has a "pass fd N" field), and the bridge's stdin is already the MCP JSON-RPC transport the
+harness writes to.
 
-| placement | leaks to | verdict |
+| placement | reaches | verdict |
 |---|---|---|
-| env var | every grandchild and every tool the agent shells out to | rejected |
-| **argv flag** | **any same-uid process via `ps -axo args` — i.e. every sibling with `bash`** | **rejected** |
-| inherited fd / bridge stdin | nothing; not inherited by grandchildren | **chosen** |
+| **`env` on the server declaration** | the bridge process and its descendants — **not** the agent's own tools, which are children of the *harness*, not of the bridge | **chosen** |
+| argv flag | the same, **plus** any same-uid process running a bare `ps` | rejected — strictly worse for free |
+| inherited fd / bridge stdin | — | **not constructible**: marion does not spawn the bridge |
 
-The argv form was this document's earlier answer and it was wrong: it fixes grandchild inheritance
-while leaving the token world-readable to exactly the siblings the authorization model exists to
-separate. An agent type with `tools: [read, edit, bash]` — §3.1's own example — could enumerate
-every live sibling's bridge argv and stamp calls as that sibling, which is the prompt-injection
-channel between siblings this section forbids.
+**What this does and does not buy, stated plainly.** A token in `env` is *not* a defence against a
+determined same-uid sibling: on the platforms marion targets, one same-uid process can read
+another's environment and argv, so **no secret-keeping scheme isolates siblings that run as the
+same user.** §7.1 already says children are not a trust boundary, and this is where that bites.
+What the token does buy is real but narrower — every call is *attributable* to an `AgentId`, the
+default topology is enforced against honest mistakes and confused-deputy routing, lateral attempts
+are logged and surfaced, and non-marion processes on the box cannot drive the supervisor at all.
+**Isolation that must survive a hostile child requires a different uid or a sandbox, which marion
+does not yet do; until then `allow_peers` and the star topology are policy, not containment.**
 
 **Token lifetime:** issued at spawn, bound to the `AgentId`, invalidated at the node's terminal
 transition, and **reissued** — not reused — when a `ReapedIdle` node is resumed (§7.2) or when the
@@ -1053,7 +1095,10 @@ protects (a) the user's credentials, (b) the user's source, (c) nodes from each 
   recording, fixtures in `tests/fixtures/` with a `REVIEW.md` checklist, and a **pre-commit secret
   scan** blocking any fixture that fails. **Fixtures recorded against a real provider are never
   committed without a human read.** Prefer recording against the canned provider.
-- **Control MCP** is scoped per node (§5.4): descendants and parent only.
+- **Control MCP** is scoped per node (§5.4): descendants and parent only. **That scoping is
+  attribution and policy, not containment** — same-uid siblings can read each other's tokens, so a
+  hostile child is out of scope until marion runs children under separate uids or a sandbox. Say
+  this rather than implying the token is a security boundary.
 - **Supply chain:** if LiteLLM is ever used, pin by hash and run out-of-process — it shipped
   credential-stealing malware on PyPI 1.82.7/1.82.8, so pinning alone is not an answer for a
   component in the credential path. Default is marion's own canned provider.
@@ -1496,21 +1541,43 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   - the return is **not required** the way a tool call is — a child can simply not emit it;
   - so a missing, unparseable, or schema-invalid document is **not** an error but
     `status: Unreported` with the raw last message preserved as `narrative` and the contract
-    surfaced visibly (§7.6 step 5). It is never silently promoted to a result.
+    surfaced visibly. It is never silently promoted to a result.
   - marion still authors every other field, so the contract is complete either way.
+- **§7.6's re-prompts do not apply to M1's child, and M1 must not wait for them.** A
+  `codex exec --json` child has no Stop hook marion can rely on and no `caps.resume`:
+  - Codex hooks are trust-gated and **fail silently** until trusted (§7.6), and the only
+    non-interactive way to obtain the trust key and hash is `initialize` → `initialized` →
+    `hooks/list` — **app-server methods, which M1 does not build.** Bootstrapping trust just to
+    fetch a hash would contradict this milestone's own scope.
+  - `exec` is a one-shot job, so there is no session to `continue_()` for a grace turn.
+
+  Therefore M1's child goes **directly to `Exited{Unreported}`** when no report arrives — §7.6
+  steps 2–4 are skipped, which the procedure already permits (step 4 is gated on `caps.resume`).
+  This is a property of the surface, not a weakening of §7.6: the descendant-gating and re-prompt
+  machinery lands with the app-server adapter in M4, where a child has a hook and a session.
+  Hook-driven re-prompting *is* exercised in M1 — on the **root**, which is Claude Code and does
+  have both.
+- **`CODEX_HOME` for the child is `<agent-dir>/config/`**, created by marion and deleted with the
+  node (§6.4). M1 sets it even though it injects configuration by `-c` flags, so that the child
+  cannot read or write the user's real `~/.codex` — §6.4's "marion never mutates the user's real
+  harness config" would otherwise rest on the `-c` flags alone. This costs nothing here because
+  the child authenticates against the canned provider, so the `CLAUDE_CONFIG_DIR`-style auth
+  coupling (§11 item 3) does not bind.
 - **`spawn` blocks** and returns the completed `TaskContract` as its tool result. Backgrounding
   (returning a handle) is M2+. `TaskContract.timeout` bounds the block; on expiry `spawn` returns
   the contract with `status: TimedOut` if the child was still running, or `Unreported` with
   `held_to_timeout: true` if it had stopped and was held on live descendants (§6.7).
 - **Contract field ownership** (three authors, not two — see §5.4):
-  - **The requesting parent** supplies `acceptance_criteria` and `verification` through `spawn`.
-    marion cannot invent criteria for a task it does not understand. **`acceptance_criteria` is
-    `required` in the schema; `verification` is optional but strongly encouraged** — matching
-    §5.4, since not every task has a runnable check. An empty `verification` yields an empty
-    `evidence` list, which is visible in the contract rather than implying the work was verified.
+  - **The requesting parent** supplies `acceptance_criteria`, `verification`, and `writable_scope`
+    through `spawn`. marion cannot invent criteria for a task it does not understand.
+    **`acceptance_criteria` is `required` in the schema; `verification` and `writable_scope` are
+    optional** — matching §5.4, since not every task has a runnable check and the scope defaults to
+    the whole workspace. An empty `verification` yields an empty `evidence` list, which is visible
+    in the contract rather than implying the work was verified.
   - **marion** authors `task_id`, `requester`, `child`, `repo`, `base_commit`, `workspace`,
     `instructions` (the parent's `spawn.prompt`, recorded verbatim), `allowed_tools`,
-    `writable_scope`, `timeout` — and *validates and freezes* the parent's criteria before the
+    `timeout` — and *resolves* `writable_scope` to the intersection of the agent type's ceiling and
+    the parent's request (§5.4) — and *validates and freezes* the parent's criteria before the
     child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`, `exit`,
     `timestamps`, `status`, `reported_early`, `held_to_timeout`,
     `live_descendants_at_report`, and `scope_enforced`.
@@ -1521,17 +1588,22 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   rejected, not merged** — otherwise a child can rewrite its own acceptance criteria. The property
   that matters is that criteria exist before the work and the worker cannot edit them; that does
   not require the *supervisor* to have written them.
-- **`timeout` always has a value.** `spawn`'s `timeout_secs` is optional, but
+- **Every node carries a timeout, contract or not.** `spawn`'s `timeout_secs` is optional, but
   `TaskContract.timeout` is not: absent an explicit value marion authors the agent type's
-  `timeout_secs`, else a **900 s** default. `timeout: None` is unrepresentable in a contract, so
-  every bound M1 depends on — the blocking `spawn`, the descendant hold (§7.6), an unanswerable
-  permission (below) — is finite by construction.
-- **marion launches the root as node 0.** The `claude` root is not hand-started: `marion run
+  `timeout_secs`, else a **900 s** default. **The root has no contract but still has a
+  node-level timeout** — `marion run --timeout`, else its agent type's `timeout_secs`, else the
+  same 900 s — because the root is the only M1 node that can raise a permission request, and
+  "blocks until `timeout`" needs a value to read. So every bound M1 depends on — the blocking
+  `spawn`, the descendant hold (§7.6), an unanswerable permission (below) — is finite by
+  construction, on the root as well as on children.
+- **marion launches the root node itself.** The `claude` root is not hand-started: `marion run
   <agent-type> --prompt <…>` spawns it through the same §6.1 path as any child, which is what gives
   it an `AgentId`, an agent-dir, and a capability token — without which its `spawn` call cannot be
   stamped and `TaskContract.requester` has no value. **A root has no `TaskContract`** (it has no
   requester and no acceptance criteria authored by anyone); it is a node, not a task. `requester`
-  for a top-level `spawn` is node 0's `AgentId`.
+  for a top-level `spawn` is the root's `AgentId`. (Called "the root node", never "node 0" —
+  `MILESTONES.md` already uses *node 0* for the graph-plan system's test-infrastructure validation
+  step, and the task contract is deliberately shaped to attach to that system later.)
 - **Scope enforcement is preventive where a permission channel exists, detective where it does
   not — and M1's child has none.** The two modes are not alternatives, they are what each surface
   affords:
@@ -1568,8 +1640,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 - A real `claude` root (headless) calls `mcp__marion__spawn` for a `codex` agent type.
 - A real `codex` child starts in a worktree, edits a file, and returns through the channel S6
   selects — `mcp__marion__report` if `exec` hosts MCP, else the `--output-schema` document.
-- The parent receives the **structured task contract** as a tool result, and its next turn
-  references the child's output.
+- The parent receives the **structured task contract** as a tool result. **Asserted on the request
+  side, not on the reply**: the canned provider records a subsequent request from the root whose
+  `tool_result` for the `spawn` call deserializes to the persisted `contract.json`. Asserting that
+  the root's *next turn* "references the child's output" would be vacuous — that text is scripted
+  SSE, fixed before the run, and would pass against a marion that dropped the contract entirely.
 - `writable_scope` is enforced **detectively**: a deliberate out-of-scope write appears in the
   contract's `changed_paths` with the violation flagged, and `scope_enforced` is `true` — by
   `ToolCall.locations` or by worktree diff, whichever S6 leaves available.
