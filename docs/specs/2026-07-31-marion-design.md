@@ -1151,7 +1151,10 @@ renaming a node into a peer's `allow_peers` hands that peer authority it was nev
 renaming the grantee silently revokes it. Binding once, on first use, defeats both while still
 working for siblings that appear in any order. Correspondingly, **`Node.name` must be unique among
 live nodes plus any terminal node still named by an unpinned `allow_peers` grant** — so a finished
-sibling's name cannot be reused out from under a grant not yet exercised. A call whose name does
+sibling's name cannot be reused out from under a grant not yet exercised. **Name resolution applies only to a name that is not yet bound**: once a grant is pinned, calls
+under it route by the bound `AgentId` and the name is never re-resolved — otherwise a live node that
+later took the finished sibling's name would silently inherit the grant, which is precisely the
+rename-moves-authority failure pinning exists to prevent. For an unbound name, a call whose name does
 not resolve to exactly one node in that set is rejected as ambiguous rather than delivered to an
 arbitrary match. Without this, `send` would be a peer routing table
 with an LLM on both ends, i.e. a prompt-injection channel between siblings and the mesh the star
@@ -2140,7 +2143,12 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
 3. **Resolve the answer.**
    - *Reports* → done. With live descendants this sets `reported_early: true` and records them.
    - *Chooses to wait*, **or answers nothing while descendants are live** → **hold the node in
-     `Blocked`** until either every descendant is terminal, or the node's timeout expires
+     `Blocked`** until either every descendant is terminal, or the node's timeout expires.
+     **The hold is entered only if a descendant is actually non-terminal at that instant**; if none
+     is — the node asked to wait for children that already finished, or the last one terminated in
+     the gap — there is nothing to wait for, so marion skips both the hold and step 4 and goes
+     straight to step 5, accepting the node's own conclusion. Step 4's two branches both presuppose
+     a hold that really happened, and neither would fit here.
      (`TaskContract.timeout`, or the root's node-level bound — §9).
      - descendants finish inside the bound → continue to step 4.
      - **the bound expires first → `held_to_timeout: true`**. **marion first terminates the held
