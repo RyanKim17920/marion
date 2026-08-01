@@ -2391,10 +2391,17 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `--output-last-message`.
 
   **Write that schema in strict form, or the spike answers its own question wrong.** Measured on
-  0.146.0: `codex exec` performs **no local validation** and forwards the file verbatim inside
-  `text.format` with **`"strict": true`** added. Under strict Structured Outputs every key in
-  `properties` must also appear in `required`, so the natural spelling — `narrative` required,
-  `result_commits` optional — is rejected **by the endpoint, not by the mechanism under test**. The
+  0.146.0, end to end against the real endpoint: `codex exec` validates only that the file is
+  **syntactically** JSON (a malformed file is refused locally with *"Output schema file … is not
+  valid JSON"*), performs **no schema-semantic validation**, and forwards it inside `text.format`
+  with **`"strict": true`** added. Under strict Structured Outputs every key in `properties` must
+  also appear in `required`, so the natural spelling — `narrative` required, `result_commits`
+  optional — comes back as an HTTP **400**:
+  > `invalid_json_schema` — *"Invalid schema for response_format 'codex_output_schema': In
+  > context=(), 'required' is required to be supplied and to be an array including every key in
+  > properties. Missing 'result_commits'."*
+
+  The rejection is **by the endpoint, not by the mechanism under test**. The
   failure reads as "`--output-schema` doesn't work", S6 answers question 3 *no*, and M1 builds the
   fifth `Unreported` branch for no reason. So: `"required": ["narrative", "result_commits"]`, with
   optionality expressed as nullability —
@@ -2944,6 +2951,6 @@ design decision.
 | The L1 exemption covers any node that never entered step 2 | **NARROWED (round 15).** Too broad: M1's `codex exec` child deliberately skips step 2, so that wording exempted its ordinary *voluntary* unreported exit and would have let an implementation violate descendant-gating while passing the L1 test. The exemption is now about lost opportunity — a process that died before it could reach step 5. |
 | The inbound `can_use_tool` path needs nothing beyond the bidirectional stream | **CORRECTED (round 14).** It needs `--permission-prompt-tool stdio`, an argv flag absent from `--help`. Without it a non-allowlisted call is auto-denied in-process as an `is_error` `tool_result` marion never sees — so `Blocked(Permission)`, the root's bound, and M1's owed round-trip fixture were all unreachable. |
 | `GET /models` gates every Codex startup | **NARROWED (round 14).** TUI/app-server only. `codex exec` never issues it — an `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses` (0.146.0). M1's child therefore never exercises that endpoint. |
-| `--output-schema`'s natural spelling (`narrative` required, `result_commits` optional) is what marion should write | **CORRECTED (round 18).** Measured on 0.146.0: `codex exec` does no local validation and forwards the file with **`"strict": true`** added, under which every key in `properties` must also appear in `required`. The endpoint rejects the natural spelling — so the failure reads as "`--output-schema` doesn't work", S6 answers question 3 *no*, and M1 builds the fifth `Unreported` branch for nothing. Express optionality as nullability instead (§9). The same shape of trap as `default_tools_approval_mode`. |
+| `--output-schema`'s natural spelling (`narrative` required, `result_commits` optional) is what marion should write | **CORRECTED (round 18, re-measured against the live endpoint in round 19).** `codex exec` 0.146.0 validates only JSON *syntax* locally and forwards the file with **`"strict": true`** added, under which every key in `properties` must also appear in `required`. The endpoint returns HTTP 400 `invalid_json_schema` on the natural spelling — so the failure reads as "`--output-schema` doesn't work", S6 answers question 3 *no*, and M1 builds the fifth `Unreported` branch for nothing. Express optionality as nullability instead (§9). The same shape of trap as `default_tools_approval_mode`. |
 | `Session.vendor: Box<dyn Any + Send>` and `Box<dyn ControlPlane>` are sufficient | **CORRECTED (round 18).** `#[async_trait]` desugars `async fn(&self, s: &Session, …)` into a `Send` boxed future capturing `&Session`, and `&T: Send` requires `T: Sync`. Without `+ Sync` on both, every `ControlPlane` method except `events`/`refine` fails to compile on a multi-threaded runtime — which M1 requires. A day-one compile error in a section that reasons about dyn-compatibility two lines above, which is why it read as already checked. Found with a compiler, not by eye. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
