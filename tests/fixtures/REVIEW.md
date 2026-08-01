@@ -109,14 +109,19 @@ Add a row to the table below. A fixture with no row is not reviewed and must not
 ## Provenance
 
 All five spikes were recorded on the same host, macOS 26.5.1 (arm64, Darwin 25.5.0),
-`TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Three later passes changed fixture
+`TERM=xterm-256color`. Redaction pass applied 2026-07-31. **Four later passes changed fixture
 bytes, all on 2026-08-01:**
 
 1. the `s2` escape-sequence repair (§3 warning);
 2. a redaction pass over `s2` and `s5` removing the operator's account display name, plan and
    credit state, and the recording session's UUID;
 3. a further pass removing four more live session ids — two of them inside **OSC 777**
-   notification bodies — and the account's weekly-limit usage and reset dates.
+   notification bodies — and the account's weekly-limit usage and reset dates;
+4. a fourth pass removing what the third one had left *encoding the same facts*: the `/status`
+   usage **bar glyphs** (which still drew the real percentage next to the scrubbed text), the
+   reset **times** beside the scrubbed dates, and — in `s5` — `usedPercent`, `resetsAt` and the
+   host's `serverName`, which carried the identical usage and reset values the `s2` pass had just
+   removed.
 
 Every one was found by audit; **none was caught by §2's original fast pass**, which is why §2 now
 carries the display-name and OSC-777 rows. The `Redaction applied` column below describes the
@@ -173,11 +178,13 @@ table rows.
   a site no CSI-oriented scan reaches) → stable fakes; weekly-limit remaining (8 B) and the two
   reset dates (5 B each) → fixed placeholders. Same re-derivation: nothing cited changed. Lengths
   and replacements only — never the original values (see `s2/NOTES.txt`).
+- **`s5`'s host `serverName` was scrubbed** to `host.invalid` in the fourth pass — a `*.local`
+  hostname is a §2 scan class and was in none of the earlier records.
 - **`s2` and `s5` retain the operator's terminal emulator brand and build** — `s2` in four
   `warp://cli-agent` OSC 777 bodies (which also named the integration's `plugin_version`), `s5` inside six `userAgent` strings
   (`WarpTerminal/v…`), because the app-server echoes the launching terminal's UA and the
   `initialize` response shape is the evidence. Host fingerprinting only; no identity.
-- **`s5`'s account state was scrubbed on 2026-08-01, not accepted.** The `initialize` result and
+- **`s5`'s account state was scrubbed on 2026-08-01, not accepted.** The `remoteControl/status/changed` and
   `account/rateLimits/updated` payloads carried a **stable** `installationId`
   (byte-identical across all three probes, so not per-run like the `msg_…`/thread ids) plus the
   operator's `planType` and credit `balance`. Those are the operator's data, not protocol

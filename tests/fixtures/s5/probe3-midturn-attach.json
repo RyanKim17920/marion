@@ -247,7 +247,7 @@
           "method": "remoteControl/status/changed",
           "params": {
             "status": "disabled",
-            "serverName": "mac.lan",
+            "serverName": "host.invalid",
             "installationId": "00000000-0000-4000-8000-000000000002",
             "environmentId": null
           },
@@ -1702,9 +1702,9 @@
               "limitId": "codex",
               "limitName": null,
               "primary": {
-                "usedPercent": 64,
+                "usedPercent": 0,
                 "windowDurationMins": 10080,
-                "resetsAt": 1785906724
+                "resetsAt": 0
               },
               "secondary": null,
               "credits": {
@@ -1822,7 +1822,7 @@
           "method": "remoteControl/status/changed",
           "params": {
             "status": "disabled",
-            "serverName": "mac.lan",
+            "serverName": "host.invalid",
             "installationId": "00000000-0000-4000-8000-000000000002",
             "environmentId": null
           },
@@ -3113,9 +3113,9 @@
               "limitId": "codex",
               "limitName": null,
               "primary": {
-                "usedPercent": 64,
+                "usedPercent": 0,
                 "windowDurationMins": 10080,
-                "resetsAt": 1785906724
+                "resetsAt": 0
               },
               "secondary": null,
               "credits": {

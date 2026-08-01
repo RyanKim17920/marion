@@ -694,9 +694,9 @@ human UI is attached — **an unanswered approval hangs the turn indefinitely.**
 
 **Lifecycle (S3, 0.145.0).** Idle app-servers are **never reaped.** Six invocations were run —
 bare `--listen`, `daemon start`, orphaned, and three with live threads or held clients. Four were
-still alive at a single check **630 s after A started** (517 s for D, which started later) — by
-the logs' own `utc=` stamps ( — the `t=~1050s`
-field on those lines is a recording artefact, and the stamps are authoritative); the two
+still alive at a single check **630 s after A started** (609 s for B, 629 s for C, 517 s for D,
+which started later) — by the logs' own `utc=` stamps; the `t=~1050s`
+field on those lines is a recording artefact, and the stamps are authoritative. The two
 thread-holding cases ran 703 s and 763 s; and the **strongest logged lifetime is the D server at
 2442 s (~40.7 min)**, recorded `SERVER_ALIVE` in `s3/H-thread-unload-1800s.log`. A ~43-minute
 observation during the package-swap experiment was wall-clock only and has **no committed log**

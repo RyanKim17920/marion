@@ -67,7 +67,13 @@ different length and would shift every offset after them.
       <session id D> -> 00000000-0000-4000-8000-000000000007  (36 B, Codex /status)
     Plus the account usage state the second pass missed:
       Weekly-limit remaining  <pct left>   -> "00% left"    (8 B)
-      Limit reset dates       "5 Aug"/"7 Aug" -> "1 Jan" (5 B each)
+  - FOURTH PASS, 2026-08-01 (audit round 14), all equal-length. The third pass scrubbed the
+    usage TEXT and left two things that still encoded the same fact:
+      Usage bar glyphs        7 filled of 20 -> 20 empty  (60 B; the bar tracked the real
+                              percentage, so "00% left" sat beside a bar still drawing ~35%)
+      Limit reset times       <hh:mm> x3   -> "00:00"     (5 B each; the third pass replaced
+                              the reset DATES but not the times beside them)
+      Limit reset dates       <date>/<date> -> "1 Jan"   (5 B each)
     None of these was caught by REVIEW.md's documented fast pass -- the display name in
     particular is a different string from the login name, so `grep "$(id -un)"` cannot see it.
     RULE, learned by breaking it: record the LENGTH and the REPLACEMENT here, never the original

@@ -24,7 +24,8 @@ The real hazard is one level down: an **idle thread** is unloaded at
 | F | orphaned ws, client dropped, 1 thread | alive 703 s (END_OF_WATCH_STILL_ALIVE) |
 
 ⚠ The `t=~1050s` field on the A-D LONG_RUN_CHECK lines is a recording artefact: the same lines'
-`start_utc=`/`utc=` stamps give 630 s (A/B/C) and 517 s (D). The stamps are authoritative. The
+`start_utc=`/`utc=` stamps give 630 s (A), 609 s (B), 629 s (C) and 517 s (D — it started
+later). The stamps are authoritative. The
 longest lifetime any committed log evidences is the **D** server at 2442 s in
 `H-thread-unload-1800s.log`.
 
