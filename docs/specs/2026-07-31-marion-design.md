@@ -395,7 +395,7 @@ a parent's spawn against its child's `Spawned`. `mono_ns` exists to align `event
 **`agent_seq` records marion's observation order and nothing more.** A notification dropped and
 never redelivered simply never gets a number, leaving the sequence gapless — so continuity is
 *not* proof of completeness. Loss detection requires `src_seq` — and **it takes two forms, because
-no day-one harness emits a per-event ordinal**:
+no day-one harness emits a per-event ordinal *on a surface marion can use***:
 
 | form | detects loss by | who supplies it |
 |---|---|---|
@@ -610,7 +610,7 @@ continues. With it, the CLI emits
 `{"type":"control_request","request":{"subtype":"can_use_tool","tool_name":…,
 "permission_suggestions":[…],"tool_use_id":…}}`. The flag is **absent from `--help`** but is what
 the official SDK passes (visible in the 2.1.220 bundle). Note this is an **argv** mechanism, not an
-`initialize` one — the "`initialize` is optional" note below concerns SDK-side hook/MCP
+`initialize` one — the "`initialize` is optional" note above concerns SDK-side hook/MCP
 registration and must not be read as "nothing further is required" for the inbound half.
 
 **The channel is bidirectional, and this is load-bearing.** The CLI emits its own outbound
@@ -1233,7 +1233,8 @@ every call.
 
 ### 5.5 Canned provider and model proxy — two components
 
-- **CannedProvider** (early, small, unblocking): replays scripted SSE for §8/L4. **Lands in M1.**
+- **CannedProvider** (early, *simple*, unblocking — simple in mechanism, not necessarily small in
+  the fixture corpus it replays): replays scripted SSE for §8/L4. **Lands in M1.**
   It must serve **two** wire formats from the start — Anthropic Messages for the Claude root and
   OpenAI Responses for the Codex child — because M1 is by definition cross-harness.
   **Canning is not translating**, and that distinction is what makes this tractable: a canned
@@ -1488,7 +1489,10 @@ struct TaskContract {
 struct Completion {                      // assembled and written ONCE, at the node's terminal
                                          //   transition — not at `report`, which only stages
                                          //   the child-owned payload (§7.6 step 1)
-    status: ResultStatus,                // = ExitStatus: Ok|Failed|Cancelled|Unreported|TimedOut|Killed
+    status: ResultStatus,                // a type ALIAS for ExitStatus (§3.2), not a second enum:
+                                         //   Ok|Failed|Cancelled|Unreported|TimedOut|Killed. Two
+                                         //   names for one type, kept because a *node* exits and a
+                                         //   *contract* results
     died_before_gate: bool,              // mirrors Node's flag: the process died before the
                                          //   descendant gate could run (§7.6's third exemption)
     reported_early: bool,                // chose to report while descendants ran (§7.6)
@@ -1588,7 +1592,7 @@ copy only, after the contract is persisted:
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split as `floor(16 KiB / n_retained)` per outcome, and that share split again as `floor(share / 2)` to **each** of `stdout` and `stderr` — an odd byte is simply unused, since a rounding rule that hands it to one stream is a difference two implementations would have to guess at. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
 | 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
-| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and cut **each retained path** to its **leading 256 B + `…` + trailing 256 B** when it exceeds 512 B. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
+| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and, when a retained path exceeds 512 B, replace it with its **leading 255 B + `…` (3 B) + trailing 254 B — 512 B exactly**, so the "cut" can never lengthen the value it is shortening. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
 | 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size does not depend on the input at all, a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing, except `diff`, which keeps its leading bytes, and individual paths, which keep leading 256 B + `…` + trailing 256 B — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
 | — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
 
@@ -1632,7 +1636,8 @@ Two rules make it more than bookkeeping:
   a diff-only check would record an out-of-scope **creation** as `changed_paths: []`,
   `scope_violations: []`, `scope_enforced: true`: a clean run, which is the false confidence the
   two-field split exists to prevent. **`changed_paths` has exactly one source**, and it must cover every way the workspace can differ
-  from `base_commit`: tracked files added, modified, deleted or renamed — committed or not — plus
+  from `base_commit` **in git's view** (the ignored-path boundary below is the one deliberate
+  exclusion): tracked files added, modified, deleted or renamed — committed or not — plus
   files left untracked:
 
   > `changed_paths` = `git diff --name-only <base_commit>` ∪ the untracked set from
@@ -1763,7 +1768,8 @@ command to have exited non-zero — so a bare successful report falls through to
 
 Row 3's signal clauses matter because `exit_code`/`code` is `None` for a signalled process, so
 "exited non-zero" is literally false for a child — or a `verification` command — that crashed on
-SIGSEGV; without them it would fall through to `Ok`.
+SIGSEGV; without them a *reporting* child that then died on a fault would fall through to `Ok` —
+a silent one is already caught by row 2's `Unreported`.
 
 **Which signal means which status is decided by the signal itself, not by prose**, since rows 1 and
 3 would otherwise both claim every uncaught signal and first-match-wins would silently pick
@@ -2356,7 +2362,9 @@ record. The hazards are in *interpreting* them:
 
 ## 8. Testing
 
-**E2E through real harnesses is the test.** Only inference is canned.
+**E2E through real harnesses is the test.** Only inference is canned — in L1–L4.5; **L5 runs
+  against real models by design** (below), which is what makes it the layer that catches a provider
+  changing under us.
 
 - **L1 — pure units.** Spec compilation, IR normalization, journal replay, capability resolution,
   ownership, ordering. Most of the code. **Includes the tree invariants** — per-agent `seq`
@@ -2386,7 +2394,9 @@ record. The hazards are in *interpreting* them:
 **`marion doctor`** probes each installed harness and produces the static capability table (§3.3) —
 the same code as runtime resolution. It has **two modes**, and the second matters more:
 `--capabilities` asks what a harness *advertises*; **`--adapter` runs a micro-contract test**
-(spawn → prompt → assert response shape → interrupt → assert clean termination → kill) against the
+(spawn → prompt → assert response shape → interrupt → assert clean termination → kill *if it is
+still alive*, since a clean termination means it usually is not — the step is a leak check, not a
+sequenced expectation) against the
 installed binary. Feature flags drift less than behavior does, and every retraction in §12 was a
 behavioral surprise, not a missing capability. Run `--adapter` in CI. Port probe logic from
 `agentclientprotocol/registry/.github/workflows/protocol_matrix.py` (supported if status ∈
