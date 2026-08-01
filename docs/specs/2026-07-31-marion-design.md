@@ -1037,8 +1037,10 @@ as a milestone gate in §11, not as a nice-to-have: it is the one place where a 
 agent channel reaches a shell with the user's privileges.
 
 **Who authors the criteria.** marion cannot invent acceptance criteria for a task it does not
-understand, so **the requesting parent supplies `acceptance_criteria`, `verification`, and
-`writable_scope` through `spawn`** — the same argument applies to all three: a path list is as
+understand, so **the requesting parent is the only party that can supply `acceptance_criteria`,
+`verification` and `writable_scope`, and does so through `spawn`** — "supplies" as in *is the sole
+source of*, not *must always provide*: only `acceptance_criteria` is required, the other two being
+optional with the defaults stated in the schema above — the same argument applies to all three: a path list is as
 task-specific as a criterion, and a supervisor that guesses it either forbids legitimate work or
 permits everything. marion then *validates, freezes, and owns* them: they are written into the
 contract before the child starts and are immutable thereafter. **The child may supply none of
@@ -1831,7 +1833,7 @@ a silent one is already caught by row 2's `Unreported`.
 | SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT | **`Failed`** (row 3) — *subject to the table's first-match order: a child that never reported is `Unreported` by row 2 before row 3 is reached, so this row describes a fault in a child that **did** report* | a self-inflicted fault — the process broke |
 | SIGKILL, SIGTERM, SIGHUP from a sender marion cannot attribute | **`Killed`** (row 1) | something outside did this to the node (§7.8) — **including the OOM killer** |
 | a signal marion sent **to terminate the node as such** — `cancel`, a user's `node/kill`, the `TimedOut` kill | `Cancelled` for `cancel` **and for `node/kill`** (both are deliberate termination, and row 1 already groups them); `TimedOut` for the expiry kill | marion's own act, and row 1 already names the reason |
-| a signal marion sent **to clear a process whose fate was already decided** — the §7.6 step-3 expiry kill | **matches no row-1 clause**; derivation falls through to rows 2–4 | the expiry decided the outcome, so the kill must not overwrite it with `Killed` |
+| a signal marion sent **to clear a process whose fate was already decided** — the §7.6 step-3 expiry kill | for a **contract-bearing** node: **matches no row-1 clause**, derivation falls through to rows 2–4. For a **root**, the expiry *is* the decision and lands row 1's `Cancelled` (§6.7's root paragraph) | either way the kill must not overwrite the outcome with `Killed`; the two differ because a child's expiry already produced `TimedOut`/`Unreported` from the expiry table, while a root's produced nothing else |
 | **any other signal** (SIGINT, SIGQUIT, SIGPIPE, SIGXCPU, SIGSYS, …) from a sender marion cannot attribute | **`Killed`** (row 1) | the catch-all that makes this partition **total** — without it such a death matches no row and falls through to `Ok`, contradicting §7.8's "never a normal completion" |
 
 `ProcessExit.description` **records** that classification; it is not the input to it. An OOM kill is
@@ -2435,7 +2437,9 @@ not depend on it but must tolerate it acting on marion's children: an unexplaine
 
 **Read-only tailing is safe**, which is what makes the `interactive` surface's `events()` viable:
 the writer never learns of the reader, and records are whole-line, `O_APPEND`, and flushed per
-record. The hazards are in *interpreting* them:
+record. **That guarantees no interleaving, not that a reader never sees a partial line**: a tail
+can read mid-write and observe an incomplete trailing record, so a reader must buffer until a
+newline and never parse the final partial line — the same rule §4.3 states for journal replay. The hazards are in *interpreting* them:
 
 - Claude Code transcripts are mostly non-conversation (`queue-operation`, `attachment`, `mode`,
   `ai-title`, `file-history-*`) — filter by `type`, follow `parentUuid`, never read linearly.
