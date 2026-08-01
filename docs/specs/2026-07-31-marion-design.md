@@ -749,9 +749,15 @@ finished.
 **Server-initiated approvals are blocking JSON-RPC requests, not notifications** —
 `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
 `item/permissions/requestApproval`, plus `item/tool/requestUserInput`,
-`mcpServer/elicitation/request`, and `item/tool/call`. Respond with the same id:
-`{"id":41,"result":{"decision":"accept"}}` (also `acceptForSession`, `decline`, `cancel`);
-`serverRequest/resolved` follows. The turn hangs until answered.
+`mcpServer/elicitation/request`, and `item/tool/call`. All are answered by responding with the
+**same JSON-RPC id**, and `serverRequest/resolved` follows; the turn hangs until answered. **The
+`result` body differs by request type, and only the three `*requestApproval` methods take a
+decision**: `{"id":41,"result":{"decision":"accept"}}` (also `acceptForSession`, `decline`,
+`cancel`). `item/tool/requestUserInput` and `mcpServer/elicitation/request` carry the user's
+supplied content instead, and `item/tool/call` is a tool invocation whose result is the tool's
+output — **their exact bodies are unfixtured in this repo (§11 item 15) and M1 does not answer
+them**, since M1's Codex child is `exec`, not app-server. Do not read the decision shape as
+universal.
 
 **Approvals fan out to *all* subscribers, first answer wins.** Therefore: **marion answers
 approvals only on threads it originated. On attached threads it renders them read-only and lets
