@@ -701,7 +701,12 @@ connections to.
 > overlapping sources — it records the snapshot's last item id and
 > **re-reads unconditionally once `thread/resume` has taken effect** — on the resume response, not
 > on the first subscribed event, which may never arrive on a thread that has gone quiet — merging
-> the second snapshot with the subscription and deduplicating by item id. Unconditionally, not "if the ids look
+> the second snapshot with the subscription and deduplicating by item id. **This recovers *items*,
+which is what `thread/read` returns — not the streaming `item/agentMessage/delta` events that
+occurred inside the window.** A delta lost there is invisible: the completed item carries the final
+text, so nothing is lost from the *record*, but a UI attaching mid-turn will not see the tokens it
+missed animate. That is the accepted cost of attach, and §5.6 renders from items for exactly this
+reason. Unconditionally, not "if the ids look
 > non-contiguous": item ids are not guaranteed dense, so a gap is not reliably detectable from the
 > ids alone, and a second read is cheap next to silently losing a turn.
 > Doing it the other way round — subscribing first, then backfilling — trades a lost-event window
@@ -1671,7 +1676,8 @@ that a model and a future replayer read them, and serde's defaults are not what 
 and integer **milliseconds** where it is a *measurement* (`CommandOutcome.duration`) — **bounds round *up* to the next whole second and measurements round *down* to the whole millisecond**, so a bound is never silently shortened and a measurement never claims time it did not take — a
 sub-second check would otherwise serialize as `0`, and a model reading the contract could not tell
 a fast pass from a command that never ran; `SystemTime` → RFC3339 **in UTC, with a literal `Z`, and exactly three fractional digits**
-(`2026-08-01T09:04:11.000Z`) — "with offset" alone would leave each implementation to pick a local
+(`2026-08-01T09:04:11.000Z`), **sub-millisecond precision truncated, never rounded** — a timestamp
+must never round forward past an event that followed it — "with offset" alone would leave each implementation to pick a local
 offset and a precision, so the same instant would pin to different bytes and no replayer could diff
 two contracts; `Oid` → its 40-character hex
 string; `Glob` → its pattern string; `child: (Harness, String)` → a **named object**
@@ -1917,8 +1923,11 @@ Say so plainly rather than implying a guarantee the process model does not deliv
   removed it, since the intent record already establishes that marion wanted it gone and every
   branch ends in the same state — so marion writes the confirmation; still alive means the supervisor died before the kill
   landed, so marion kills it now and then confirms. **It is never marked `Orphaned`** — marion knows what it
-  *intended* for this process, which is what `Orphaned` is actually about: an unexplained
-  disappearance, not an unattributed one. A reap has an explanation on record before the fact.
+  *intended* for this process, and `Orphaned` is for a node whose fate marion has **no record of
+  deciding**. Note that covers two physically different situations, which is deliberate: the process
+  may be gone, or it may still be running with marion no longer attached to it (a supervisor that
+  died holding a `Live` node). Both are "marion does not know", both require the same user
+  resolution, and neither is a reap — which always has an explanation on record before the fact.
 - **`Orphaned`** — process lost without a recorded reap. Marked on restart only for `Live` nodes.
 - Running nodes are never reaped. **Nor is a node a `spawn` is currently blocked on, nor one in
   *any* `Blocked(_)` state** — `Descendants`, `Permission`, or `Elicitation` — because reaping any
@@ -1952,7 +1961,11 @@ recoverable rather than producing an untracked live process.
 
 `parent_id` is **immutable** — the tree never silently re-parents. A child whose parent has
 `Exited` keeps its edge, is marked `orphaned_report: true`, and **at its terminal transition** has its
-`Completion` written and surfaced as **unclaimed** rather than delivered, since there is no live turn to return into.
+`Completion` written and surfaced as **unclaimed** rather than delivered, since there is no live turn
+to return into. **"Parent" here means the node's own `parent_id`, not any exited ancestor**: a
+grandchild whose parent is still live delivers to that parent normally, even if the *grand*parent
+has exited — the parent's own `Completion` is what becomes unclaimed in that case. Routing follows
+one edge, never the whole ancestor chain.
 Re-parenting on request is a future affordance, never automatic.
 
 ### 7.6 Agent stops without reporting
