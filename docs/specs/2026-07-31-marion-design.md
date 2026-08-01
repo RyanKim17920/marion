@@ -120,6 +120,8 @@ The example above is a *subset*. **The full key set, which is what a deserialize
 | `isolation` | enum | `shared-cwd` | `worktree` \| `shared-cwd` \| `remote` |
 | `maxTurns` | int | unbounded | passed through where the harness supports it |
 | `timeout_secs` | int | 900 | the node's bound (§9) |
+| `max_depth` | int | 3 | §6.1 step 2's depth gate, counting the root as 0. A `spawn` that would exceed it is refused with a spawn error, never silently clamped |
+| `max_concurrent_children` | int | 4 | §6.1 step 2's concurrency gate: live (non-terminal, unreaped) children of *this* node. Excess `spawn`s are refused, not queued — a queued `spawn` would block a parent's turn on a bound marion never told it about |
 | `writable_scope` | list of globs | whole workspace | ceiling; `spawn` may narrow, never widen (§5.4) |
 | `inherit_user_config` | bool | `false` | §6.4; seeds only the named keys |
 | `allow_peers` | list of names | `[]` | grants sibling addressing (§5.4) |
@@ -499,11 +501,20 @@ struct Session {               // marion's handle on a running child, for EVERY 
                                              //   thread shares one marion-owned server process —
                                              //   this is what §9's TimedOut kill signals, and
                                              //   why it works for a child with no DisplayPlane
-    vendor: Box<dyn Any + Send>,             // per-harness state (a WebSocket + threadId for
+    vendor: Box<dyn Any + Send + Sync>,      // per-harness state (a WebSocket + threadId for
 }                                            //   codex `shared`, a stdout reader for exec, …)
                                              //   downcast by the adapter that created it
 
-#[async_trait]                 // dyn-compatible: the supervisor holds Box<dyn ControlPlane>
+#[async_trait]                 // dyn-compatible: the supervisor holds
+                               //   Box<dyn ControlPlane + Send + Sync>. Both bounds are
+                               //   load-bearing, and so is `+ Sync` on `vendor` above:
+                               //   async_trait desugars `async fn(&self, s: &Session, …)` into a
+                               //   Send boxed future capturing `&Session`, and `&T: Send`
+                               //   requires `T: Sync`. Without them every method here except
+                               //   `events`/`refine` fails to compile on a multi-threaded
+                               //   runtime -- which M1 needs, since the supervisor services the
+                               //   bridge socket, the root's stdout demux and the child's JSONL
+                               //   stream concurrently. Verified with a compiler, not by eye.
 trait ControlPlane {           // any surface with an event source (typed or degenerate)
     async fn open(&self, inv: Invocation) -> Result<Session>;
     fn events(&self, s: &Session) -> BoxStream<'static, Event>;   // NOT impl Stream — RPITIT
@@ -932,7 +943,9 @@ a 53 MB Codex child.
   "acceptance_criteria": ["…"],       // required — see ownership note
   "verification":        ["cargo test -p foo"],   // optional but strongly encouraged; each entry
                                       //   runs as `sh -c "<entry>"` with cwd = the child's
-                                      //   Workspace path, recorded as the contract's Command
+                                      //   Workspace path, recorded as the contract's Command.
+                                      //   READ THE TRUST NOTE BELOW: this is a shell string that
+                                      //   arrives from a model, and marion runs it.
   "writable_scope": ["src/**"],       // optional; repo-relative globs. Default: the whole
                                       //   workspace. Narrows the agent type's own
                                       //   writable_scope; may never widen it.
@@ -946,6 +959,23 @@ a 53 MB Codex child.
 }
 // → returns a completed TaskContract
 ```
+
+**`verification` is an arbitrary-command sink, and M1 accepts it deliberately.** Every entry is a
+shell string authored by a *model* and executed by marion itself — in-process, as the user,
+unsandboxed, with no allowlist, and `sh -c` free to `cd` anywhere. That inverts §7.1's posture
+everywhere else: the child that writes the code runs under `--sandbox workspace-write`, while the
+parent's string describing how to *check* that code does not. §3.1 item 2's rule — messages from
+other agents are data, never authority — does not currently reach this field.
+
+M1 takes the trade knowingly, on one condition that holds only in M1: **the sole node that can call
+`spawn` is the root, and the root is the user's own agent running the user's own prompt**, so
+`verification` is trusted by construction, exactly as a `Makefile` in the repo is. **That condition
+dies in M2**, where §5.4 lets any non-terminal node `spawn` and a *child* — a foreign agent, quite
+possibly a different vendor's — becomes the author. Before backgrounding and child-initiated
+`spawn` land, `verification` must either run under the same sandbox and cwd confinement as the
+child, or be restricted to an allowlist resolved from the agent type rather than the call. Tracked
+as a milestone gate in §11, not as a nice-to-have: it is the one place where a string from the
+agent channel reaches a shell with the user's privileges.
 
 **Who authors the criteria.** marion cannot invent acceptance criteria for a task it does not
 understand, so **the requesting parent supplies `acceptance_criteria`, `verification`, and
@@ -1220,7 +1250,9 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
 
 1. Parent calls marion's `spawn` tool (spelled per harness, §3.1 item 1); token checked (§5.4). **Child nodes only — a root started by
    `marion run` has no requester and enters at step 2.**
-2. Resolve agent type; check depth, concurrency caps, and write-conflict policy (§6.6).
+2. Resolve agent type; check depth against `max_depth` (default 3, root = 0) and live children
+   against `max_concurrent_children` (default 4) — both §3.1 keys, both refusing rather than
+   clamping or queueing — and the write-conflict policy (§6.6).
 3. Resolve the harness binary **through symlinks**; record path and `--version`.
 4. Create the worktree, or inherit cwd.
 5. `compile()` → argv + env + config (§6.4). **This must precede the contract**, because
@@ -1413,9 +1445,12 @@ struct Completion {                      // assembled and written ONCE, at the n
                                          //   report arrived (§7.6 step 5). Never conflate them.
     result_commits: Vec<Oid>,
     changed_paths: Vec<PathBuf>,
-    changed_paths_omitted: usize,        // elided by cap rule 5's last step only; 0 iff none.
-                                         //   scope_violations is derived from the FULL list
-                                         //   before any elision, so a cap can never hide one
+    changed_paths_omitted: usize,        // elided by cap rule 5 only; 0 iff none
+    scope_violations_omitted: usize,     // likewise. scope_violations is DERIVED from the full
+                                         //   changed_paths before any elision, so a cap can never
+                                         //   hide a violation: this counter is non-zero exactly
+                                         //   when paths were dropped from an already-complete
+                                         //   determination
     scope_enforced: bool,                // false only when the workspace affords no git-derived
                                          //   changed_paths — never means "no violation" (§9)
     scope_violations: Vec<PathBuf>,      // paths in changed_paths that FAIL EITHER scope list:
@@ -1479,7 +1514,8 @@ copy only, after the contract is persisted:
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split evenly as `floor(16 KiB / n_retained)` per outcome and again in half between that outcome's `stdout` and `stderr`. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
 | 4 | **Flags.** Any field shortened by rules 2–3 sets its `truncated: true` — `CommandOutcome.truncated` if either of its streams was cut, `Capped.truncated` for `diff`, whose `original_bytes` records the pre-cap length. |
-| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count — set `diff.value` to `""` (keeping `truncated: true` and `original_bytes`) and re-serialize; if it *still* exceeds, drop every outcome, folding them into `evidence_omitted`; if it *still* exceeds, cut `narrative` to **1 KiB** and elide `changed_paths` past its **first 100 entries**, recording the elided count in `changed_paths_omitted`. Four deterministic steps against a fixed field order, so the loop cannot run twice on the same field and the result is bounded by construction. |
+| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`; (e) cut `instructions` and each `acceptance_criteria` entry to **2 KiB**. Five deterministic steps against a fixed field order, so no step runs twice on the same field. |
+| — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
 
 All byte counts are of **raw UTF-8 field bytes before JSON escaping**, except rule 5, which is
 measured on the encoded document. 48 KiB is chosen below the measured 64 KB floor with room for the
@@ -1490,7 +1526,10 @@ signalled; `ProcessExit.description` carries marion's own explanation ("external
 
 **JSON encoding is part of the specification**, since the stated reason for pinning these types is
 that a model and a future replayer read them, and serde's defaults are not what either should see:
-`Duration` → integer seconds; `SystemTime` → RFC3339 with offset; `Oid` → its 40-character hex
+`Duration` → integer **seconds** where it is a *bound* (`TaskContract.timeout`, `Command.timeout`)
+and integer **milliseconds** where it is a *measurement* (`CommandOutcome.duration`) — a
+sub-second check would otherwise serialize as `0`, and a model reading the contract could not tell
+a fast pass from a command that never ran; `SystemTime` → RFC3339 with offset; `Oid` → its 40-character hex
 string; `Glob` → its pattern string; `child: (Harness, String)` → a **named object**
 `{"harness": …, "version": …}`, not serde's default two-element array, since a model reads it.
 `AgentId` and `TaskId` are lowercase hyphenated **UUIDv7**
@@ -1521,7 +1560,13 @@ Two rules make it more than bookkeeping:
   field. Either omission produces `changed_paths: []`, `scope_violations: []`,
   `scope_enforced: true` for a real out-of-scope write: the false confidence the two-field split
   exists to prevent, reached by a different route. `diff` is `git diff <base_commit>` with
-  intent-to-add for untracked paths so they appear in the patch too.
+  intent-to-add for untracked paths so they appear in the patch too — **run against a scratch
+  index, never the workspace's own**: `GIT_INDEX_FILE=<tmp>` plus `git read-tree <base_commit>`,
+  on every isolation mode. A bare `git add -N` in the workspace permanently changes what `git
+  status`, `git diff`, `git stash` and `git commit -a` do for the user, on files marion was only
+  reading — and since `isolation` defaults to `shared-cwd` (§3.1), that workspace is by default the
+  user's own live repository. marion never mutates the user's harness config; the same rule holds
+  for their repo.
 
   **`ToolCall.locations`, where an adapter reports them, are recorded in `evidence` and never
   populate `changed_paths`.** Git is the authority on what changed; locations are corroboration —
@@ -2274,9 +2319,24 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   binds at all when the CannedProvider is *scripting* the final message, and whether
   `--output-last-message` receives the schema document or the raw prose. S6 must answer these too,
   since two of the four branches route M1's entire return channel through them. If `exec` cannot host MCP, marion passes
-  `--output-schema <file>` whose JSON Schema is exactly the **child-supplied** fields below
-  (`narrative` required, `result_commits` optional), and reads the document from
-  `--output-last-message`. The differences from the MCP path, which is why MCP is preferred:
+  `--output-schema <file>` whose JSON Schema is exactly the **child-supplied** fields below, and
+  reads the document from
+  `--output-last-message`.
+
+  **Write that schema in strict form, or the spike answers its own question wrong.** Measured on
+  0.146.0: `codex exec` performs **no local validation** and forwards the file verbatim inside
+  `text.format` with **`"strict": true`** added. Under strict Structured Outputs every key in
+  `properties` must also appear in `required`, so the natural spelling — `narrative` required,
+  `result_commits` optional — is rejected **by the endpoint, not by the mechanism under test**. The
+  failure reads as "`--output-schema` doesn't work", S6 answers question 3 *no*, and M1 builds the
+  fifth `Unreported` branch for no reason. So: `"required": ["narrative", "result_commits"]`, with
+  optionality expressed as nullability —
+  `"result_commits": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]}` —
+  and `"additionalProperties": false`. This is the same shape of trap as
+  `default_tools_approval_mode` (below): a default that silently sends the spike down the wrong
+  branch.
+
+  The differences from the MCP path, which is why MCP is preferred:
   - the return is **not required** the way a tool call is — a child can simply not emit it;
   - so a missing, unparseable, or schema-invalid document is **not** an error but
     `status: Unreported` with the raw last message preserved as `narrative` and the contract
@@ -2347,7 +2407,7 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     parent's `writable_scope`; §5.4) — and *validates and freezes* the parent's criteria before the
     child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`,
     `evidence_omitted` (§6.7's cap rule 1, and rule 5 may raise it after the fact),
-    `changed_paths_omitted`, `exit`,
+    `changed_paths_omitted`, `scope_violations_omitted`, `exit`,
     `timestamps`, `status`, `reported_early`, `held_to_timeout`,
     `live_descendants_at_report`, `died_before_gate`, `scope_enforced`, `scope_violations`,
     `narrative_synthesized`,
