@@ -703,9 +703,11 @@ connections to.
 > overlapping sources — it records the snapshot's last item id and
 > **re-reads unconditionally once `thread/resume` has taken effect** — on the resume response, not
 > on the first subscribed event, which may never arrive on a thread that has gone quiet — merging
-> the second snapshot with the subscription and deduplicating by **(item id, event kind)** — not by
-> item id alone, since one item legitimately yields `item/started`, deltas and `item/completed`, and
-> collapsing on the id would discard the completion. **This recovers *items*,
+> the second snapshot with the subscription. **Dedup applies to *items*, and only to items**: the
+> re-read returns item records, so marion drops a re-read item whose id it has already materialised
+> from the subscription, and vice versa. Streaming events are never deduped — the snapshot contains
+> no `item/agentMessage/delta`, so there is nothing for a delta to collide with, and keying on
+> (id, kind) would be wrong in the other direction, discarding every delta of an item but one. **This recovers *items*,
 which is what `thread/read` returns — not the streaming `item/agentMessage/delta` events that
 occurred inside the window.** A delta lost there is invisible: the completed item carries the final
 text, so nothing is lost from the *record*, but a UI attaching mid-turn will not see the tokens it
