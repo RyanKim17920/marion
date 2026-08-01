@@ -990,11 +990,22 @@ of date.
 
 **`writable_scope` resolution**, since two sources can name one: the agent type may declare a
 ceiling, `spawn` may narrow it, and the default is the whole workspace. **Both lists are stored,
-and a path is writable iff it matches the ceiling *and* the `spawn` request.** The check is
+and a path is writable iff it matches the ceiling *and* the `spawn` request.** **An omitted list —
+either one — is stored as `["**"]`, never as absent**, so the conjunction still evaluates and an
+omitted `spawn` scope simply yields the ceiling. That is why "default: the whole workspace" does
+not widen a narrower agent type: `**` contributes nothing to a conjunction. The check is
 conjunction at match time, not a set operation at spawn time — glob sets have no closed-form
 intersection, so "compute the intersection" would not be implementable as a single glob list. A
 `spawn` glob that matches nothing under the ceiling is a **spawn-time error**, not a silently empty
-scope: it means the parent asked for a scope the agent type forbids. **`Glob` is `globset::Glob` with `literal_separator = true`** — `**` crosses `/`, `*` does not,
+scope: it means the parent asked for a scope the agent type forbids. **The test is decidable and
+specified, since "matches nothing" is not otherwise checkable without enumerating paths that do not
+exist yet**: take the `spawn` glob's **literal prefix** — its longest leading run of components
+containing no metacharacter — and reject iff that prefix is non-empty and matches no path the
+ceiling admits, testing the prefix and the prefix plus `/**` against the ceiling. `src/**` under a
+ceiling of `docs/**` is rejected (`src` is admitted by neither form); `src/*.rs` under `src/**` is
+accepted. A glob with an empty literal prefix (`**/*.rs`) is always accepted, and any residual
+mismatch is caught by the match-time conjunction — the spawn-time check is a cheap early error, not
+the enforcement mechanism. **`Glob` is `globset::Glob` with `literal_separator = true`** — `**` crosses `/`, `*` does not,
 `{a,b}` and `[…]` are supported, negation is **not**. The dialect has to be pinned here: whether
 `src/**` matches `src/a/b.rs` or bare `src` differs between crates, and two implementations would
 otherwise produce different `scope_violations` from the same run against the same M1 criterion.
@@ -2126,7 +2137,11 @@ injection.) On **Codex it does not exist**: `stop.command.output` is
 suppressOutput, systemMessage}`.
 
 **`stop_hook_active`** is the loop guard — `false` on first fire, `true` on the second, on both
-harnesses. Hook input carries `last_assistant_message`, so no transcript parse is needed.
+harnesses. **On any fire with `stop_hook_active: true`, marion never blocks again**: it returns an
+empty decision and lets the stop proceed into step 3's hold (or, after step 4, into step 5). "The
+only hook fire" means *the only fire marion blocks on*, not that the harness cannot fire again —
+a re-prompted CLI that decides to stop a second time is expected, and blocking it again is exactly
+the loop this flag exists to prevent. Hook input carries `last_assistant_message`, so no transcript parse is needed.
 
 > **⚠ Codex hooks are trust-gated and fail *silently*** — no warning, no log — until trusted.
 > marion must bootstrap trust by writing `$CODEX_HOME/config.toml`:
@@ -2588,7 +2603,11 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `--permission-prompt-tool stdio`** (§5.2): without it the call never reaches marion, nothing
   blocks, `Blocked(Permission)` is unreachable, and the root's node-level bound has nothing to
   bound. **On expiry marion denies the pending permission and
-  lets the root proceed** — it does *not* kill the root. The child rule is different (a `TimedOut`
+  lets the root proceed** — it does *not* kill the root. **The bound being consumed here is the
+  permission's, not the root's life**: a root's budget is per-episode and `Blocked`-only (below),
+  so expiry ends *that episode* by denying the request, and the root resumes with a fresh budget
+  the next time it blocks. marion offers no wall-clock ceiling on a root at all, which is why
+  "expired" and "terminated" are different events for it and the same event for a child. The child rule is different (a `TimedOut`
   child is killed) because there the contract would otherwise be terminal over a live process;
   here the root is alive and answerable, and denying one tool call is the smaller, recoverable act.
   The denial is recorded in the **journal** (§4.3), not in a contract — a root has none.
@@ -2654,9 +2673,12 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   shortening** — every `Capped.truncated`/`original_bytes` pair and every `*_omitted` counter may
   differ between the two copies, and in the persisted copy they read `false`/`0` throughout, since
   nothing there was ever capped. The comparison normalizes both the shortened fields and their
-  metadata; it is not an equality over the metadata — which the cap exists to keep true, since
-  an over-large result is replaced by a `<persisted-output>` stub before it ever reaches the
-  provider. Asserting that
+  metadata; it is not an equality over the metadata. **The test therefore asserts two things, and
+  the second is what makes the first meaningful: that the recorded `tool_result` is *not* a
+  `<persisted-output>` stub, and that it deserializes.** A stubbed result cannot deserialize to the
+  contract at all, so without the first assertion the criterion would simply fail with a confusing
+  message; with it, the failure names the cause. Keeping the result under the stub threshold is
+  exactly what §6.7's cap rules exist to guarantee. Asserting that
   the root's *next turn* "references the child's output" would be vacuous — that text is scripted
   SSE, fixed before the run, and would pass against a marion that dropped the contract entirely.
 - The scope is enforced **detectively**: a deliberate out-of-scope write appears in the contract's
