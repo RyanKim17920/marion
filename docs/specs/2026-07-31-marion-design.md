@@ -1615,7 +1615,7 @@ copy only, after the contract is persisted:
 | 1 | **Collection cap.** If `evidence.len() > 16`, retain the **first 16 in `verification` order** — the parent authored that order, so it is the parent's own priority — and set `evidence_omitted` to the number dropped. Otherwise `evidence_omitted = 0`. |
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split as `floor(16 KiB / n_retained)` per outcome, and that share split again as `floor(share / 2)` to **each** of `stdout` and `stderr` — an odd byte is simply unused, since a rounding rule that hands it to one stream is a difference two implementations would have to guess at. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
-| 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
+| 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — **except individual paths inside `changed_paths`/`scope_violations`, whose shortening is self-evident from the embedded `…` and which carry no per-entry metadata** (they are `PathBuf`s in a list, not `Capped` values) — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
 | 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and, when a retained path exceeds 512 B, replace it with its **leading ≤255 B + `…` (3 B) + trailing ≤254 B — at most 512 B**, each side being the largest whole-character prefix/suffix fitting its allowance. "At most", not "exactly", because a multi-byte character straddling either edge is dropped rather than split; what matters is that the replacement is never *longer* than the 512 B threshold that triggered it. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes every shortened path self-evident; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
 | 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size does not depend on the input at all, a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing, except `diff`, which keeps its leading bytes, and individual paths, which keep leading 255 B + `…` + trailing 254 B — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
 | — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
@@ -1804,7 +1804,7 @@ a silent one is already caught by row 2's `Unreported`.
 
 | signal | status | reading |
 |---|---|---|
-| SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT | **`Failed`** (row 3) | a self-inflicted fault — the process broke |
+| SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT | **`Failed`** (row 3) — *subject to the table's first-match order: a child that never reported is `Unreported` by row 2 before row 3 is reached, so this row describes a fault in a child that **did** report* | a self-inflicted fault — the process broke |
 | SIGKILL, SIGTERM, SIGHUP from a sender marion cannot attribute | **`Killed`** (row 1) | something outside did this to the node (§7.8) — **including the OOM killer** |
 | a signal marion sent **to terminate the node as such** — `cancel`, a user's `node/kill`, the `TimedOut` kill | `Cancelled` for `cancel` **and for `node/kill`** (both are deliberate termination, and row 1 already groups them); `TimedOut` for the expiry kill | marion's own act, and row 1 already names the reason |
 | a signal marion sent **to clear a process whose fate was already decided** — the §7.6 step-3 expiry kill | **matches no row-1 clause**; derivation falls through to rows 2–4 | the expiry decided the outcome, so the kill must not overwrite it with `Killed` |
@@ -1878,8 +1878,10 @@ Say so plainly rather than implying a guarantee the process model does not deliv
   reason. A single record written before the kill would leave a crash window in which restart reads
   `ReapedIdle`, skips the `Orphaned` marking (which considers only `Live` nodes), and a live process
   survives untracked and unkillable. On restart an **unconfirmed** reap intent is resolved by checking for the
-  process, and it lands on `ReapedIdle` either way: gone means the kill (or the crash) already did
-  the job, so marion writes the confirmation; still alive means the supervisor died before the kill
+  process, and it lands on `ReapedIdle` either way: gone means the process is simply no longer
+  there — marion does **not** try to infer whether its own kill, a crash, or something external
+  removed it, since the intent record already establishes that marion wanted it gone and every
+  branch ends in the same state — so marion writes the confirmation; still alive means the supervisor died before the kill
   landed, so marion kills it now and then confirms. **It is never marked `Orphaned`** — marion knows
   exactly what happened to this process because it is the one that intended it, which is the whole
   difference between a reap and a loss.
@@ -2148,7 +2150,9 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    normal completion: **accept the exit** with the `ExitStatus` §6.7 derives, provided it has no
    live descendants. `Unreported` applies only to nodes that owed a result and did not deliver one.
    The rest of this procedure still governs its *descendants* — steps 2–5 run for it only when the
-   subtree check finds live children, and then only the descendant question is asked.
+   subtree check finds a live **descendant** (the whole subtree, not just direct children: a live
+   grandchild holds the root exactly as a live child does), and then only the descendant question is
+   asked.
 2. **On a stop with no report, marion re-prompts once via a `Stop` hook** returning
    `{"decision":"block","reason":…}`. **This is the only hook fire, and its `reason` depends on the
    subtree:**
@@ -2180,7 +2184,9 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
      **descendants-completed** variant presupposes a hold, and that is the variant that would not
      fit here; the grace-turn variant is for a node that never answered, which this node did.
      (`TaskContract.timeout`, or the root's node-level bound — §9).
-     - descendants finish inside the bound → continue to step 4.
+     - descendants finish inside the bound → continue to step 4 (which, on a harness that cannot
+       re-prompt this node — process gone and no `caps.resume` — falls through to step 5 as step 4
+       itself specifies, rather than promising a prompt that cannot be sent).
      - **the bound expires first → `held_to_timeout: true`**. **marion first terminates the held
        node's process if it is still running** — a held node's process may well be live (§5.4), and
        emitting `Exited` over a running process would break §8/L1's terminality exactly as it would
