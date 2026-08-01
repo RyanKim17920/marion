@@ -1561,7 +1561,13 @@ struct TaskContract {
     verification: Vec<Command>,
     timestamps: TaskTimestamps,          // partial from spawn onward; `spawned` set here
 
-    completion: Option<Completion>,      // None iff the run has not ended, or ended
+    completion: Option<Completion>,      // Some iff a terminal transition was emitted for this
+                                         //   node. None while the run is live, and None if it
+                                         //   ended unobserved — see below. "Ended" here means
+                                         //   marion emitted the terminal, not that the process
+                                         //   stopped: an Orphaned node's process may be gone
+                                         //   without any terminal ever being written. None iff
+                                         //   the run has not ended, or ended
 }                                        //   unobserved (`reap_state: Orphaned`, §7.2)
 
 struct Completion {                      // assembled and written ONCE, at the node's terminal
@@ -1913,7 +1919,9 @@ replayable. It is harness-independent: a Codex child and a Claude child return t
 ### 7.1 Security model
 
 **Threat model.** Children run arbitrary code by design; they are not a trust boundary. marion
-protects (a) the user's credentials, (b) the user's source, (c) nodes from each other's *state* —
+protects (a) the user's credentials, (b) the user's source **from accidental damage — scope is
+detective, not preventive: marion records an out-of-scope write, it does not stop one** (§6.7), and
+a child with a shell can reach anything the user can, and (c) nodes from each other's *state* —
 their workspaces, transcripts, tokens and tool surfaces. **(c) is emphatically not OS-level
 isolation from a hostile sibling**: every node runs as the same uid, so one can read another's
 environment and argv whenever it chooses to look. What marion prevents is a node *accidentally* or
