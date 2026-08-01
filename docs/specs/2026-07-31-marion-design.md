@@ -1660,10 +1660,15 @@ came through verbatim; 100 KB did not). Since §9's acceptance criterion turns o
 few-tens-of-KB edit silently makes that criterion unsatisfiable, with a symptom that looks like
 marion dropped the contract. **The full, uncapped contract always remains at
 `contracts/<task_id>.json`**; only what rides back through the harness is capped. The two therefore
-differ by exactly the fields cap rules 0–6 may shorten — `narrative`, `diff`, each outcome's
-`stdout`/`stderr`, the `evidence` list, and, if the backstop fires, `changed_paths`,
-`scope_violations`, `instructions` and `acceptance_criteria`; rule 6 replaces the whole thing with a
-stub. **Every *field* is self-describing** — a `Capped.truncated` flag (per stream, for
+differ by **one of two things**. Normally, only the fields cap rules 0–5 may shorten — `narrative`,
+`diff`, each outcome's `stdout`/`stderr`, the `evidence` list, and, if the backstop fires,
+`changed_paths`, `scope_violations`, `instructions` and `acceptance_criteria`. **In rule 6's
+terminal case the returned value is not a shortened contract at all but a stub**, and no
+field-by-field comparison applies to it: it is recognisable by every text field being empty with
+non-zero `*_omitted` counters, and it carries the `contracts/<task_id>.json` path precisely so a
+reader goes there instead. §9's acceptance criterion is written against the normal case; a run that
+reaches rule 6 fails that criterion by construction, which is correct — it means the contract did
+not fit and the test should say so. **Every *field* is self-describing** — a `Capped.truncated` flag (per stream, for
 `stdout`/`stderr`) or an `*_omitted` counter — so a consumer can tell a shortened field from a
 complete one without holding the persisted copy. **The one exception is an individual path inside
 `changed_paths`/`scope_violations`**, whose only signal is the embedded `…` (rule 5(d)): paths carry
