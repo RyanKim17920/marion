@@ -83,8 +83,8 @@ are mutually exclusive for Claude Code children.
 A real `claude` root calls `mcp__marion__spawn`; a real `codex` child edits a file in a worktree
 and reports; the parent receives a **structured task contract** — driven entirely by the canned
 provider so it costs nothing and repeats. Acceptance criteria and the concrete M1 decisions
-(blocking `spawn`, contract field ownership, the M1 permission policy, `codex exec --json` as the
-child surface): design doc §9. Repo layout: §10.
+(blocking `spawn`, three-way contract field ownership, detective scope enforcement,
+`codex exec --json` as the child surface): design doc §9. Repo layout: §10.
 
 **Build it disposably.** The independent Codex review argued persuasively that the delegation core
 should be proven before anything that displays it: no *detached* daemon (the registry, log and MCP

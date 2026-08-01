@@ -207,9 +207,11 @@ mechanism, which is why the canned provider and the model-injection plane are th
 implementation:
 
 - **Every spike emits a fixture**, so answers become regression tests instead of evaporating.
-  **This rule is currently violated and the violations are known:** the Gemini and opencode
-  launcher findings and this document's entire resource model rest on uncommitted single sessions.
-  Re-measure them, with fixtures, before treating them as settled.
+  **This rule is currently violated and the violations are enumerated in design doc §11 item 10** —
+  the Gemini and opencode launcher findings, this document's resource model, the vt100-vs-alacritty
+  scrollback comparison, the vendor prior-art extraction, and a fixture tool (`s2/analyze.py`) that
+  silently returns zeros against the committed captures. Treat that list as authoritative and keep
+  it current; do not re-enumerate it here.
 - **Fixtures contain system prompts, repo contents, and anything secret that appeared in tool
   output.** Redaction pass plus a pre-commit secret scan are mandatory; prefer recording against
   the canned provider.
@@ -219,8 +221,8 @@ implementation:
 ## Milestones
 
 **All five spikes are resolved** (design doc §12). Build **M1 disposably** — prove the delegation
-core before anything that displays it: no *detached* daemon — the registry, event log and control
-MCP run in-process — no VT emulator, no model proxy.
+core before anything that displays it: no *detached* daemon (the registry, the task audit trail and
+the control MCP run in-process), no VT emulator, no model proxy.
 
 - **M1** — one real cross-harness hop over the direct-MCP path, returning a task contract, driven
   entirely by the canned provider.
