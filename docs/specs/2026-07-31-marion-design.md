@@ -171,8 +171,14 @@ it, mirroring what every vendor does (§7.6's prior-art table):
 1. **The return contract — child nodes only, and surface-dependent.** A **root has no contract and
    cannot `report`** (§9), so this element is omitted from its compiled prompt entirely; telling it
    to call a tool marion rejects would guarantee a dead end. For a child, marion knows the surface
-   at compile time. Where the child can host marion's MCP server: *call `mcp__marion__report`; report files
-   are not the return channel.* Deliberately NOT phrased as "your final message is the return
+   at compile time. Where the child can host marion's MCP server: *call marion's **`report`** tool; report files
+   are not the return channel.* **The surface name differs per harness and the adapter supplies
+   it** (§3.1's "tool names are marion's vocabulary"): `mcp__marion__report` on Claude Code, but on
+   **Codex** MCP tools arrive as a `type:"namespace"` tool, so the call is
+   `{"type":"function_call","name":"report","namespace":"mcp__marion",…}` and the flat name is
+   rejected `unsupported call: mcp__marion__report` — swallowed with no error the child can act on,
+   ending the run `Unreported`. **Never compile the Claude Code spelling into a Codex child's
+   prompt** — that is precisely the "tool it does not have" case this item forbids. Deliberately NOT phrased as "your final message is the return
    value" — that framing is what conflates *done* with *waiting* (§7.6), and the contract is the
    tool call, not the last thing said. **Where it cannot** (a `LaunchOnly` child on a harness with
    no MCP, e.g. M1's fallback branch, §9): the instruction instead names the schema document as the
@@ -1130,8 +1136,10 @@ every call.
   converted.
   **But the burden is not zero, and §9 requires the hard part.** M1's child must edit a file and
   return, so the canned Responses script has to *contain* Codex's native encodings verbatim: a
-  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch — a `type:"namespace"`
-  wrapped `mcp__marion__report` call. Hand-authoring those is easier than translating them, but it
+  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch — a `type:"namespace"` tool declaration whose
+  `tools` array contains `report`, and — for the call — a `function_call` with
+  `name: "report"` and `namespace: "mcp__marion"`, **not** a call named `mcp__marion__report`,
+  which Codex rejects as `unsupported call` (§3.1 item 1). Hand-authoring those is easier than translating them, but it
   is not "small": **no fixture in this repo contains either shape** (`tests/fixtures/s4/codex/
   stream-*.jsonl` holds only `agent_message` items), so S6 must capture both alongside its three
   answers (§11 item 12). Budget §5.5 accordingly.
@@ -1176,19 +1184,34 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    compiled `allowed_tools`. **Child nodes only** — a root has no contract (§9), so this step is
    skipped for it.
 7. **Journal the spawn intent**, start the process, journal confirmation.
-8. **Wait for injected MCP servers to connect before writing the first user frame.** For a
-   `headless` Claude Code node with an injected server, hold the prompt until a `system/init`
-   frame reports every configured server `status: "connected"`; `failed` is a spawn error.
-   **This is not optional and not merely a latency concern** — measured on 2.1.220: writing the
-   user frame immediately leaves the server `pending`, the outbound request carries `tools: []`,
-   and a call comes back `No such tool available: mcp__marion__spawn`. Worse, **losing the race
-   loses it for the whole process**: a second turn's `system/init` still reported `pending`.
-   Waiting for `system/init` alone is insufficient — that very frame is what reports `pending`.
-   M1's root would fail on its single load-bearing call, with an error naming the tool rather
-   than the real cause. **The gate is bounded**: wait at most **30 s**; a server still `pending`
-   at expiry is a spawn error exactly like `failed`. No other bound is running here — the child's
-   contract timeout starts at `Spawned` (step 9) and a root's bound only runs while `Blocked` — so
-   without this the one unbounded wait in M1 would sit on its most load-bearing path.
+8. **Wait for the injected MCP bridge to be ready before writing the first user frame** — and
+   **observe that on marion's own side, not on the harness's stream.**
+
+   *Why it is needed:* measured on 2.1.220, writing the user frame immediately leaves the server
+   `pending`, the outbound request carries `tools: []`, and the call comes back
+   `No such tool available: mcp__marion__spawn` — M1's root failing its single load-bearing call,
+   with an error naming the tool rather than the cause.
+
+   *Why the obvious gate does not work:* **Claude Code emits no `system/init` until after the
+   first user frame is written** — measured: stdin held open 8 s produced nothing on stdout, and
+   the frame arrived 70 ms *after* the write. Gating on `system/init` would wait for a signal only
+   the withheld prompt can produce, and deadlock until the bound below expires.
+
+   *The gate:* marion spawns the `marion-supervisor mcp` bridge's peer — the supervisor socket —
+   so it **watches for the bridge to complete its MCP `initialize` / `tools/list` handshake**, which
+   is entirely marion-side and observable without the harness. Write the first user frame once
+   that lands. The `system/init` frame is then a **post-hoc assertion** — every configured server
+   `connected`, the `mcp__marion__*` tools present — not the gate.
+
+   *Bounded:* wait at most **30 s**; a bridge that has not handshaken by then is a spawn error, as
+   is a `system/init` reporting `failed`. No other bound is running here — the child's contract
+   timeout starts at `Spawned` (step 9), and a root's bound only runs while `Blocked` — so without
+   this the one unbounded wait in M1 would sit on its most load-bearing path.
+
+   *Recovery:* the `pending` state is **per-turn and recoverable** — a later turn's `system/init`
+   reports `connected` and the tools work (measured: a second frame at t=8 s saw `connected` and a
+   scripted `mcp__marion__spawn` reached the server). So if the assertion fails, **re-issue the
+   turn** rather than failing the node.
 9. `Lifecycle::Spawned` with static caps, refined if a handshake exists.
 10. Events stream into the EventLog immediately and continuously, watched or not.
 
@@ -1773,7 +1796,7 @@ status endpoint.
 
 This is the authoritative sequence; the rules above constrain it, the worked example motivates it.
 
-1. Agent types are prompted to call `mcp__marion__report`. **`report` stages the child-owned
+1. Agent types are prompted to call marion's `report` tool — spelled per harness (§3.1 item 1). **`report` stages the child-owned
    payload; it does not itself finalize the contract.** `Completion` is assembled and written
    **once, at the node's terminal transition**, which is the only moment marion knows `exit`,
    `timestamps`, and — crucially — whether descendants were live *then* as well as at the report.
@@ -2345,9 +2368,23 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   - **child (`codex`)**: `-c model_providers.<id>` pointing at the canned server with a dummy
     `env_key`, under a **non-reserved** provider id (not `openai`/`ollama`/`lmstudio`/
     `amazon-bedrock`). **The MCP server declaration goes into `<agent-dir>/config/config.toml`, not
-    `-c mcp_servers.marion={…}`** — M1 already sets `CODEX_HOME` there, and §5.4 notes that `-c`
+    `-c mcp_servers.marion={…}`**, and it **must set
+    `default_tools_approval_mode = "approve"`** — M1 already sets `CODEX_HOME` there, and §5.4 notes that `-c`
     puts the whole declaration (token included) on argv where any same-uid process can read it. The
-    fileless path buys nothing here, so M1 takes the placement that keeps the token off `ps`. Codex subscription auth cannot use a
+    fileless path buys nothing here, so M1 takes the placement that keeps the token off `ps`.
+
+    > **⚠ Without `default_tools_approval_mode = "approve"`, every marion tool call is silently
+    > cancelled.** Measured on 0.146.0: with `command`/`args`/`env` alone under
+    > `--sandbox workspace-write`, the child's `report` call comes back
+    > `{"type":"mcp_tool_call","status":"failed","error":{"message":"user cancelled MCP tool
+    > call"}}` and the server receives **no `tools/call` at all** — deterministic, and identical
+    > under `read-only` and under every `approval_policy`. The accepted values are `auto`,
+    > `prompt`, `writes`, `approve`; only `approve` works headlessly. **This is a trap for S6
+    > itself**: an engineer running the spike with the declaration as previously written observes
+    > the cancellation, answers question 1 "no, `exec` does not usefully host MCP", and builds the
+    > `--output-schema` fallback — the wrong branch on the decision §5.2 calls the one that
+    > "decides what M1 builds". `danger-full-access` and
+    > `--dangerously-bypass-approvals-and-sandbox` also work; M1 declines both. Codex subscription auth cannot use a
     custom `base_url` at all (`MILESTONES.md`), which is why the dummy key is required rather than
     optional.
   - The endpoint override is carried by `SpawnCtx`, not by agent-type frontmatter — it is a
@@ -2526,12 +2563,17 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     final message is scripted by the CannedProvider?** S6 must also **record two encodings the
     repo lacks and §5.5 needs**: a Lark-grammar `apply_patch` custom-tool call and a
     `type:"namespace"`-wrapped MCP call, without which the canned Codex script for M1 cannot be
-    authored. **Those two live on the provider→codex wire, not in `exec --json` output** — which is
-    codex's own normalized item stream, and is why the committed `s4/codex/stream-*.jsonl` contain
-    only `agent_message` items. Capturing them therefore requires S6 to run through a **record-mode
-    HTTP proxy** set as `model_providers.<non-reserved-id>.base_url`, under an **API key**:
-    subscription auth cannot use a custom `base_url` at all (`MILESTONES.md`). Plan S6 as a
-    proxied run, not a bare `codex exec`.
+    authored. **The two have different costs, and conflating them over-scopes S6:**
+    - the **`type:"namespace"` declaration** rides the **codex→provider request**, so it is
+      readable straight from the CannedProvider's own request log with a dummy key — **no proxy
+      and no API key**. The matching *call* shape is likewise established by replaying candidates
+      against the canned provider and reading Codex's `function_call_output` back
+      (`unsupported call: …` versus a live `mcp_tool_call` item). Round 15 did exactly this and
+      recovered both.
+    - only the **Lark-grammar `apply_patch` encoding** is on the provider→codex wire and needs a
+      **record-mode HTTP proxy** at `model_providers.<non-reserved-id>.base_url` under an **API
+      key** (subscription auth cannot use a custom `base_url`, `MILESTONES.md`). Plan the proxied
+      run for that half only.
     S6 was started and **killed mid-run** on 2026-07-31; no S6 fixture exists. All three answers change
     what M1 builds — §9 specifies each branch, so M1 is not blocked, but **S6 runs first**.
 13. **Claude Code's exit-code-2 Stop-hook path is unfixtured.** §7.6 calls it equivalent to
@@ -2590,6 +2632,9 @@ design decision.
 | `codex exec` is one-shot, so there is no session to `continue_()` | **CORRECTED (round 12).** `codex exec resume [SESSION_ID] [PROMPT]` exists on 0.146.0. `caps.resume` is `false` for that node because the *surface* caps it (§3.4), not because the harness cannot resume. |
 | Tool compilation targets `--tools`, with marion's MCP tools appended there | **CORRECTED (round 12).** `--tools` is the *availability* axis over built-in tools and does not gate MCP tools at all; `--allowedTools` is the *permission* axis and is where `mcp__marion__*` must go. Compiling into `--tools` alone leaves M1's root unable to call `spawn`. |
 | Starting the process and writing the prompt is enough to spawn a `headless` child | **CORRECTED (round 14).** Measured on 2.1.220: an injected MCP server is still `pending` when the first turn begins, the request carries `tools: []`, and the call fails `No such tool available` — **and it stays `pending` for the life of the process**. §6.1 gains a readiness gate. |
+| `codex exec` hosting an MCP server is enough for the child to call it | **CORRECTED (round 15).** The declaration must also set `default_tools_approval_mode = "approve"`, or every call is cancelled `user cancelled MCP tool call` with no `tools/call` reaching the server — deterministic under every sandbox and approval policy short of `danger-full-access`. This is a trap for S6 itself: without the key the spike answers question 1 "no" and M1 builds the wrong branch. |
+| marion's tools are `mcp__marion__*` on every harness | **CORRECTED (round 15).** On Codex they arrive as a `type:"namespace"` tool; the flat name is rejected `unsupported call`, silently. The prompt must carry the per-harness spelling. |
+| A `headless` child's MCP readiness is observable from `system/init` | **CORRECTED (round 15).** Claude Code emits no `system/init` until *after* the first user frame, so that gate waits on a signal only the withheld prompt produces. marion watches its own bridge's MCP handshake instead. The `pending` state is also per-turn and recoverable, not permanent. |
 | The expiry table's three cases are exhaustive | **CORRECTED (round 15).** A node whose bound expires in `Blocked(Permission)`/`Blocked(Elicitation)` matched none of them — a case whose process is provably alive, so writing `Exited` over it would break terminality. Fourth row added, with the kill-first rule. |
 | The L1 exemption covers any node that never entered step 2 | **NARROWED (round 15).** Too broad: M1's `codex exec` child deliberately skips step 2, so that wording exempted its ordinary *voluntary* unreported exit and would have let an implementation violate descendant-gating while passing the L1 test. The exemption is now about lost opportunity — a process that died before it could reach step 5. |
 | The inbound `can_use_tool` path needs nothing beyond the bidirectional stream | **CORRECTED (round 14).** It needs `--permission-prompt-tool stdio`, an argv flag absent from `--help`. Without it a non-allowlisted call is auto-denied in-process as an `is_error` `tool_result` marion never sees — so `Blocked(Permission)`, the root's bound, and M1's owed round-trip fixture were all unreachable. |
