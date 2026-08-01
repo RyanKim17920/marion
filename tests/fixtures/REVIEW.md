@@ -161,8 +161,7 @@ table rows.
   Kept because that span is precisely what fixtures the transient alt-screen entry §5.3 cites.
 - **`s2` renders the operator's installed plugin/skill catalogue and MCP state** — the `/help` and
   boot panels list plugin-scoped command names and an "N MCP server needs authentication" line.
-  **`s2` was not recorded under an isolated `HOME`** (§1's parenthetical named only S1; S2 also did
-  not), so these are the operator's real entries. Kept: they are variable-length inside
+  **`s2` was not recorded under an isolated `HOME`** (§1), so these are the operator's real entries. Kept: they are variable-length inside
   column-aligned panels this corpus must byte-preserve, and they name public plugins rather than
   identity. **Any re-record of S2 must use a scratch `HOME`.**
 - **`s2` account state and the operator's display name were scrubbed on 2026-08-01**, equal-length,

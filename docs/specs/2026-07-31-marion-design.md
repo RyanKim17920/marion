@@ -1252,7 +1252,10 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    `marion run` has no requester and enters at step 2.**
 2. Resolve agent type; check depth against `max_depth` (default 3, root = 0) and live children
    against `max_concurrent_children` (default 4) — both §3.1 keys, both refusing rather than
-   clamping or queueing — and the write-conflict policy (§6.6).
+   clamping or queueing — and the write-conflict policy (§6.6). **Both gates read the *caller's*
+   agent type** (for a top-level `spawn`, the root's own), never the child's just-resolved one: the
+   child has no children yet, so reading its type would make the concurrency gate vacuous. The
+   child's type governs the child's *own* future spawns, not this one.
 3. Resolve the harness binary **through symlinks**; record path and `--version`.
 4. Create the worktree, or inherit cwd.
 5. `compile()` → argv + env + config (§6.4). **This must precede the contract**, because
@@ -1413,8 +1416,10 @@ struct TaskContract {
     repo: RepoIdentity,                  // git common-dir
     base_commit: Oid,
     workspace: Workspace,                // worktree path + branch, or shared-cwd
-    instructions: String,
-    acceptance_criteria: Vec<String>,
+    instructions: Capped<String>,        // Capped because cap rule 5(e) may shorten both, and
+    acceptance_criteria: Vec<Capped<String>>,  // these are the FROZEN, authoritative fields a
+                                         //   worker may not edit: a silently-clipped criterion
+                                         //   would be indistinguishable from the criterion
     allowed_tools: Vec<String>,
     scope_ceiling: Vec<Glob>,            // from the agent type; default stored as ["**"]
     scope_requested: Vec<Glob>,          // from spawn; default stored as ["**"]
@@ -1501,8 +1506,13 @@ came through verbatim; 100 KB did not). Since §9's acceptance criterion turns o
 `tool_result` deserializing to the persisted contract, an uncapped `diff` from an ordinary
 few-tens-of-KB edit silently makes that criterion unsatisfiable, with a symptom that looks like
 marion dropped the contract. **The full, uncapped contract always remains at
-`contracts/<task_id>.json`**; only what rides back through the harness is capped, and the two
-therefore differ by exactly these fields — which is what §9's "modulo" clause means.
+`contracts/<task_id>.json`**; only what rides back through the harness is capped. The two therefore
+differ by exactly the fields cap rules 0–5 may shorten — `narrative`, `diff`, each outcome's
+`stdout`/`stderr`, the `evidence` list, and, if the backstop fires, `changed_paths`,
+`scope_violations`, `instructions` and `acceptance_criteria`. **Every one of them is
+self-describing** — a `Capped.truncated` flag, a `CommandOutcome.truncated` flag, or an `*_omitted`
+counter — so a consumer can always tell a shortened field from a complete one without holding the
+persisted copy. That is what §9's "modulo" clause means.
 
 **The cap is a fixed algorithm, not a budget to be invented.** It is applied once, to the returned
 copy only, after the contract is persisted:
@@ -1513,7 +1523,7 @@ copy only, after the contract is persisted:
 | 1 | **Collection cap.** If `evidence.len() > 16`, retain the **first 16 in `verification` order** — the parent authored that order, so it is the parent's own priority — and set `evidence_omitted` to the number dropped. Otherwise `evidence_omitted = 0`. |
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split evenly as `floor(16 KiB / n_retained)` per outcome and again in half between that outcome's `stdout` and `stderr`. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
-| 4 | **Flags.** Any field shortened by rules 2–3 sets its `truncated: true` — `CommandOutcome.truncated` if either of its streams was cut, `Capped.truncated` for `diff`, whose `original_bytes` records the pre-cap length. |
+| 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its `truncated: true` — `CommandOutcome.truncated` if either of its streams was cut, `Capped.truncated` for `diff`, whose `original_bytes` records the pre-cap length. |
 | 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`; (e) cut `instructions` and each `acceptance_criteria` entry to **2 KiB**. Five deterministic steps against a fixed field order, so no step runs twice on the same field. |
 | — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
 
@@ -1625,9 +1635,12 @@ that has no requesting agent and no `spawn` payload. `instructions` records **th
 path; carrying the superseded instructions forward would misdescribe what the resumed run was
 asked to do. `base_commit`, `timestamps.spawned`, `child`, `allowed_tools`, `workspace` and
 `repo` are re-resolved fresh, and a changed `child` version is flagged per §7.7. **`timeout` is
-re-resolved fresh too** — from `marion run --timeout`, else the agent type, else the 900 s default —
-and is **never clamped**, because a user resume has no requesting agent and therefore no remaining
-bound to clamp against (§9). Copying it instead would carry a dead requester's clamp forward, and
+re-resolved fresh too** — the agent type's `timeout_secs`, else the 900 s default — and is **never
+clamped**, because a user resume has no requesting agent and therefore no remaining bound to clamp
+against (§9). **Not from `marion run --timeout`**: a resumed contract belongs to a *child*, whose
+`timeout` is a total-task bound, whereas that flag sets only a *root's* `Blocked`-only per-episode
+budget (§9) — the two measure different things and are not comparable, so sourcing one from the
+other would give every resumed child a wall-clock deadline §9 says the flag cannot impose. Copying it instead would carry a dead requester's clamp forward, and
 `node/prompt` (§2) takes no timeout argument, so the user cannot supply one either. **A resumed `Completion` is surfaced *unclaimed* regardless of the requester's state** (§7.5): a
 resume is a `node/prompt`, not a `spawn`, so there is no outstanding tool call to return into —
 the original `spawn` already returned the first contract — and emitting a tool result with no
@@ -2586,7 +2599,8 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 - The parent receives the **structured task contract** as a tool result. **Asserted on the request
   side, not on the reply**: the canned provider records a subsequent request from the root whose
   `tool_result` for the `spawn` call deserializes to the persisted `contracts/<task_id>.json`,
-  **modulo the capped `diff`/`evidence` fields** (§6.7) — which the cap exists to keep true, since
+  **modulo the fields §6.7's cap rules 0–5 may shorten**, each of which is self-describing
+  (a `Capped.truncated` flag or an `*_omitted` counter) — which the cap exists to keep true, since
   an over-large result is replaced by a `<persisted-output>` stub before it ever reaches the
   provider. Asserting that
   the root's *next turn* "references the child's output" would be vacuous — that text is scripted
@@ -2792,6 +2806,15 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     §5.2). The original claim — exit 0 on an id that exists but is not a background job — was
     never separately tested, and that is the only case where an exit-status branch could still
     mislead. Cheap to settle whenever a background-session path is next touched.
+17. **`verification` commands run unsandboxed, as the user, from a model-authored string**
+    (§5.4). Safe in M1 only because the root is the sole `spawn` caller and the root is the user's
+    own agent running the user's own prompt. **This is a milestone gate, not a nice-to-have: before
+    backgrounding or child-initiated `spawn` lands in M2** — at which point a foreign agent, quite
+    possibly another vendor's, authors the string — `verification` must either run under the same
+    sandbox and cwd confinement as the child, or be restricted to an allowlist resolved from the
+    agent type rather than from the call. It is the one place in this design where a string from
+    the agent channel reaches a shell with the user's privileges, and §3.1 item 2's rule (messages
+    from other agents are data, never authority) does not currently reach it.
 
 ---
 
@@ -2836,4 +2859,6 @@ design decision.
 | The L1 exemption covers any node that never entered step 2 | **NARROWED (round 15).** Too broad: M1's `codex exec` child deliberately skips step 2, so that wording exempted its ordinary *voluntary* unreported exit and would have let an implementation violate descendant-gating while passing the L1 test. The exemption is now about lost opportunity — a process that died before it could reach step 5. |
 | The inbound `can_use_tool` path needs nothing beyond the bidirectional stream | **CORRECTED (round 14).** It needs `--permission-prompt-tool stdio`, an argv flag absent from `--help`. Without it a non-allowlisted call is auto-denied in-process as an `is_error` `tool_result` marion never sees — so `Blocked(Permission)`, the root's bound, and M1's owed round-trip fixture were all unreachable. |
 | `GET /models` gates every Codex startup | **NARROWED (round 14).** TUI/app-server only. `codex exec` never issues it — an `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses` (0.146.0). M1's child therefore never exercises that endpoint. |
+| `--output-schema`'s natural spelling (`narrative` required, `result_commits` optional) is what marion should write | **CORRECTED (round 18).** Measured on 0.146.0: `codex exec` does no local validation and forwards the file with **`"strict": true`** added, under which every key in `properties` must also appear in `required`. The endpoint rejects the natural spelling — so the failure reads as "`--output-schema` doesn't work", S6 answers question 3 *no*, and M1 builds the fifth `Unreported` branch for nothing. Express optionality as nullability instead (§9). The same shape of trap as `default_tools_approval_mode`. |
+| `Session.vendor: Box<dyn Any + Send>` and `Box<dyn ControlPlane>` are sufficient | **CORRECTED (round 18).** `#[async_trait]` desugars `async fn(&self, s: &Session, …)` into a `Send` boxed future capturing `&Session`, and `&T: Send` requires `T: Sync`. Without `+ Sync` on both, every `ControlPlane` method except `events`/`refine` fails to compile on a multi-threaded runtime — which M1 requires. A day-one compile error in a section that reasons about dyn-compatibility two lines above, which is why it read as already checked. Found with a compiler, not by eye. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
