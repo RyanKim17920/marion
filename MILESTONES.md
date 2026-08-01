@@ -46,7 +46,9 @@ If a milestone doesn't make that primitive better, it isn't a milestone.
     result.
 11. **A node is not done while its children are running, and a status update is not a delivery.**
     Completion is explicit *and* descendant-gated: an agent may deliberately report early (marked
-    as such, with the still-live children listed), but it may not exit without choosing. Crucially,
+    as such, with the still-live children listed), but it may not exit without choosing. *This
+    binds nodes that **owe a result**. A root owes none — no requester, no contract — so its exit
+    is accepted directly and it is never given a report tool at all (design §7.6 step 1).* Crucially,
     a non-terminal child **never enters the parent's context** — status flows to the tree/UI only.
     The harm this prevents is real and observed: in Claude Code a subagent waiting on its own
     children stops its turn, a completion notification fires, and the parent reasons over a status

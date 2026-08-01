@@ -187,7 +187,8 @@ struct Node {
     harness: Harness,
     harness_version: String,      // resolved at spawn
     binary_path: PathBuf,         // resolved through symlinks (§7.7)
-    session: Option<HarnessSessionRef>,   // None for launch-only surfaces
+    harness_session: Option<HarnessSessionRef>,  // None for launch-only surfaces; named to
+                                  //   avoid reading as the `Session` type of §5.2
     surfaces: ExecutionSurfaces,  // §3.4
     isolation: Isolation,         // Worktree | SharedCwd | Remote
     caps: Capabilities,
@@ -475,8 +476,8 @@ trait ControlPlane {           // any surface with an event source (typed or deg
     async fn prompt(&self, s: &Session, p: Prompt) -> Result<()>;
     async fn steer(&self, s: &Session, p: Prompt) -> Result<()>;  // caps.steer
     async fn interrupt(&self, s: &Session) -> Result<()>;
-    async fn view(&self, id: &SessionId) -> Result<Session>;      // replays history
-    async fn continue_(&self, id: &SessionId) -> Result<Session>; // does not replay
+    async fn view(&self, id: &HarnessSessionRef) -> Result<Session>;      // replays history
+    async fn continue_(&self, id: &HarnessSessionRef) -> Result<Session>; // does not replay
     fn refine(&self, s: &Session, base: Capabilities) -> Capabilities;
     async fn shutdown(&self, s: &Session) -> Result<()>;
 }
@@ -1472,8 +1473,13 @@ testable invariant is:
 > with a non-terminal descendant, **unless the node either chose to report early
 > (`reported_early == true`) or was held to its timeout bound (`held_to_timeout == true`)**.
 > Involuntary terminals are exempt throughout, since they describe things done *to* a node:
-> `Exited{Killed}`, `Exited{Cancelled}`, `Exited{TimedOut}`, **and any `Exited{Failed}` on a node
-> that never entered step 2** — no `Stop`-hook fire and no report.
+> `Exited{Killed}`, `Exited{Cancelled}`, `Exited{TimedOut}`, **and any `Exited{Failed}` *or*
+> `Exited{Unreported}` on a node that never entered step 2** — no `Stop`-hook fire and no report.
+>
+> **Both status values are needed, because §6.7's row 2 precedes row 3.** A child that segfaults
+> without reporting matches row 2 first, so its status is `Unreported`, not `Failed` — exempting
+> only `Failed` would miss the very case this exemption exists for. (Row 3's `Failed` binds a crash
+> only on a node that *did* report and then died.)
 >
 > That last exemption is keyed on **whether the node ever got the chance to choose**, not on the
 > signal field. A child that segfaults *and* a harness that aborts non-zero on a provider or config
@@ -1662,8 +1668,10 @@ node's timeout, so the whole procedure is finite on every branch.
 
 **Exiting at step 5 with a live descendant is only legal via the step-3 timeout**, where
 `held_to_timeout` is set. *Reaching* step 5 with live descendants is normal — that is what the
-re-check above exists for. Any other route to an `Exited{Unreported}` that has a non-terminal
-descendant is a bug in the implementation, and §8/L1 tests exactly that.
+re-check above exists for. Any other **agent-initiated** route to an `Exited{Unreported}` that has
+a non-terminal descendant is a bug in the implementation, and §8/L1 tests exactly that — with the
+one exemption above for a node that never entered step 2 at all (a crash), which is not
+agent-initiated in any meaningful sense even though its status lands in L1's constrained set.
 
 **Do not use `additionalContext`.** On Claude Code it produces a turn, but the injected text has
 **no stream frame of its own**: it is delivered as a system-reminder, so the turn appears as
@@ -1821,7 +1829,7 @@ record. The hazards are in *interpreting* them:
 - **L1 — pure units.** Spec compilation, IR normalization, journal replay, capability resolution,
   ownership, ordering. Most of the code. **Includes the tree invariants** — per-agent `seq`
   monotonicity, `Exited` terminality, acyclicity, and the descendant-gating invariant stated in
-  §7.6 — with its `reported_early` / `held_to_timeout` exemptions *and* its by-cause exemption for involuntary terminals, including a crash-`Failed`.
+  §7.6 — with its `reported_early` / `held_to_timeout` exemptions *and* its by-cause exemption for involuntary terminals, including a crash terminal, which lands `Unreported` or `Failed` depending on whether the node had reported.
   **`Exited` terminality and descendant-gating are properties of the *emission*, not standing
   properties of the tree** — assert them at the moment marion writes the terminal transition. A
   later **user**-initiated resume (§5.4, §6.3) may legitimately re-animate a node or a descendant,
@@ -1890,7 +1898,7 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   legitimate `ExecutionSurfaces` combination, not a fifth preset. app-server arrives in M4, where
   interactive children matter.
 - **M1's first task is spike S6**, because three `exec` facts (§5.2) decide what M1 builds, and
-  neither can be settled from the desk. **Run S6 before writing supervisor code**, commit its
+  none of them can be settled from the desk. **Run S6 before writing supervisor code**, commit its
   fixture, then build the branch it selects. Both branches are specified here, so M1 is not
   blocked either way:
 
@@ -1940,14 +1948,14 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     fetch a hash would contradict this milestone's own scope.
   - `exec` is a one-shot job, so there is no session to `continue_()` for a grace turn.
 
-  Therefore M1's child goes **straight to §7.6 step 5** when no report arrives — steps 2–4 are
-  skipped, which the procedure already permits (step 4 is gated on `caps.resume`). Step 5's
+  Therefore M1's child goes **straight to §7.6 step 5** when no report arrives — steps 2–3 are
+  skipped for the surface reasons just given, and step 4 by its own `caps.resume` gate. Step 5's
   descendant re-check still runs; with no live descendant it proceeds immediately to
   `Exited{Unreported}`.
   This is a property of the surface, not a weakening of §7.6: the descendant-gating and re-prompt
   machinery lands with the app-server adapter in M4, where a child has a hook and a session.
   Hook-driven re-prompting is *implemented* in M1 on the **root**, which is Claude Code and has
-  both — but see §9: with `spawn` blocking and backgrounding deferred to M2, a passing M1 run never
+  both. But: with `spawn` blocking and backgrounding deferred to M2, a passing M1 run never
   fires it.
 - **`CODEX_HOME` for the child is `<agent-dir>/config/`**, created by marion and deleted with the
   node (§6.4). M1 sets it even though it injects configuration by `-c` flags, so that the child
@@ -2257,7 +2265,7 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     HTTP proxy** set as `model_providers.<non-reserved-id>.base_url`, under an **API key**:
     subscription auth cannot use a custom `base_url` at all (`MILESTONES.md`). Plan S6 as a
     proxied run, not a bare `codex exec`.
-    S6 was started and **killed mid-run** on 2026-07-31; no S6 fixture exists. Both answers change
+    S6 was started and **killed mid-run** on 2026-07-31; no S6 fixture exists. All three answers change
     what M1 builds — §9 specifies each branch, so M1 is not blocked, but **S6 runs first**.
 13. **Claude Code's exit-code-2 Stop-hook path is unfixtured.** §7.6 calls it equivalent to
     `{"decision":"block"}`, and it is fixtured on **Codex only**
@@ -2302,6 +2310,6 @@ design decision.
 | `additionalContext` emits **no stream event** on Claude Code | **CORRECTED (round 5).** Refuted by our own fixture: `s4/claude-code/stream-additionalContext.jsonl` carries the two `assistant` frames the injected turn produced. The true property is narrower — no frame is *attributable* to the injection and `num_turns` stays 1. The prohibition stands; the stated reason was wrong. |
 | The `s2` DECSTBM histogram was verified unchanged after redaction | **RETRACTED (round 5).** The redaction regex ran unanchored over raw bytes and spliced *inside* CSI sequences at 9 sites, turning `ESC[38;2;153;153;153m` and `ESC[22m` into DECSTBM — forging scroll-region commands in the L2 seed corpus. The claim was also self-refuting, since `analyze.py` cannot read `.raw.bin` at all. Repaired length-preservingly; the derived figures correct to 22/24 and 26/26 (were 25/27 and 29/29). |
 | The capability token is an argv flag, so it is not inherited | **CORRECTED TWICE (rounds 5 and 6).** Round 5: argv is world-readable to the same uid, so every sibling with `bash` could read every other sibling's token. Round 5's own replacement — an inherited fd — was then found **not constructible**, because the harness spawns the bridge, not marion. Settled answer: the MCP server declaration's `env` block, **plus** the honest statement that no secret-keeping scheme isolates same-uid siblings at all (§5.4, §7.1). |
-| All five spikes are resolved / M1 is unblocked | **CORRECTED (round 5).** S1–S5 are resolved; **S6 was killed mid-run and has no fixture**, and its two answers decide M1's return channel. Both branches are now specified (§9) so M1 is not blocked, but the entry docs claimed a completeness that did not exist. |
+| All five spikes are resolved / M1 is unblocked | **CORRECTED (round 5).** S1–S5 are resolved; **S6 was killed mid-run and has no fixture**, and its answers decide M1's return channel. Both branches are now specified (§9) so M1 is not blocked, but the entry docs claimed a completeness that did not exist. |
 | `src_seq: Option<u64>` gives loss detection on the day-one adapters | **CORRECTED (round 5).** Neither emits a per-event ordinal: Codex item ids are identity, Claude Code has a `parentUuid` chain, and opencode's numeric `seq` is only on the endpoint §6.4 rejects. Retyped to `Ordinal | Predecessor`, and M2's criterion restated per adapter. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
