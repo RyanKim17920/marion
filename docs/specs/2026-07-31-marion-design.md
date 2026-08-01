@@ -1431,9 +1431,12 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    | **`system/init` reports a server `failed`** (evaluated **first** — a `failed` server usually also leaves the tools absent, and this row wins over the retry row below, since retrying a server the CLI has already given up on only burns the bound) | **spawn error**, with the same cleanup as above — the process is running by now. The harness has given a terminal verdict; retrying the turn cannot change it |
    | **`system/init` reports `pending`, or the `mcp__marion__*` tools are absent** | **re-issue the turn, at most once.** This state is per-turn and recovers — measured: a second frame at t=8 s saw `connected` and a scripted `mcp__marion__spawn` reached the server. If the re-issue still shows `pending` **or the `mcp__marion__*` tools are still absent — either condition, since a `connected` server with no tools is the same failure for M1's purposes** — it is a spawn error |
 
-   The distinction matters because the three produce different lifecycle states: two never reach
-   `Spawned` at all, while the third has already written a turn that must not be silently
-   duplicated — hence the single retry.
+   The distinction is not about the eventual lifecycle state — **every row that ends in a spawn
+   error aborts before step 9, so none of the three reaches `Spawned`**. It is about what has
+   already happened at the moment the row fires: the first two abort having written nothing to the
+   child, while the third has **already written a turn** that must not be silently duplicated —
+   hence a single retry there and none for the others. (An exhausted retry on the third row is
+   likewise a spawn error, and likewise never `Spawned`.)
 9. `Lifecycle::Spawned` with static caps, refined if a handshake exists.
 10. Events stream into the EventLog immediately and continuously, watched or not.
 
