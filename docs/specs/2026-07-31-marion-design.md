@@ -699,7 +699,9 @@ connections to.
 > what the snapshot contains.
 
 `thread/resume` is a **load-from-persisted-history** operation: correct for cold threads, and an
-additive subscribe on **loaded** ones. `notLoaded` is a **residency** status, not a persistence
+additive subscribe on **loaded ones that still have at least one subscriber** — a loaded thread
+whose subscriber count has fallen to zero and is idle-and-not-running is torn down and cold-resumed
+instead (below), which is the case this summary must not be read as covering. `notLoaded` is a **residency** status, not a persistence
 verdict: `active` | `idle` | `systemError` | `notLoaded`.
 
 **Five caveats marion must encode:**
@@ -1302,8 +1304,11 @@ every call.
   → Claude Code → Qwen → Gemini → **Codex last** (Responses API only). Amp is structurally blocked.
   **Post-M5.**
 
-marion need not write the translation — LiteLLM, Vercel AI Gateway, and OpenRouter do. marion owns
-the launcher primitives and the canned mode. Security constraints in §7.1.
+**marion need not write the translation itself** — LiteLLM, Vercel AI Gateway and OpenRouter
+already do, and pointing `base_url` at one of them is the expected deployment. The `ModelProxy`
+entry above is the *build order marion would follow if it ever did* own translation, which is why
+it is marked Post-M5 and last: it is a contingency, not a commitment. What marion owns in every
+case is the launcher primitives and the canned mode. Security constraints in §7.1.
 
 ### 5.6 TUI client
 
