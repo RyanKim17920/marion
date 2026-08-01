@@ -37,7 +37,7 @@ If a milestone doesn't make that primitive better, it isn't a milestone.
    spawn. "Opening" a running subagent is a view switch, never a connection event.
    *Deliberately reaping an **idle** node is the one sanctioned exception: the process dies, the
    ownership claim is retained, the node stays resumable.*
-9. **Direct-MCP spawn is the primary delegation path.** The parent calls `mcp__marion__spawn` and
+9. **Direct-MCP spawn is the primary delegation path.** The parent calls marion's `spawn` tool (spelled per harness; design §3.1 item 1) and
    receives a structured task contract. The Claude Code Agent-tool shim is optional sugar — it
    launders results through an extra LLM turn and costs a full ~462 MB process per child.
 10. **Delegation must be auditable.** Every hop produces a task contract: ownership, base commit,

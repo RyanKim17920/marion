@@ -29,16 +29,23 @@ Each capture ships in two forms. **`.raw.bin` is authoritative.**
 
 Captures
   claude-2.1.220-boot-help-status-resize      120x40 -> 100x24 -> 140x45. /help; /status was
-               typed but produced NO panel (swallowed) -- this capture contains no account state.
+               typed but produced NO panel (swallowed). It still carries account state: the
+               account tier appears in the BOOT BANNER, independently of any panel, and was
+               scrubbed -- see the SECOND PASS list below. "No panel" never implies "no account
+               state"; that inference is how earlier passes missed residue.
   claude-2.1.220-boot-exit                    120x40. Boot then /exit (clean alt-screen exit).
-  codex-cli-0.145.0-boot-status-help-diff-resize  120x40 -> 100x24 -> 140x45. /status (3 panels --
-               the ONLY capture with account state), /diff (the alt-screen pager), and /help,
-               which Codex answers 'Unrecognized command'.
+               Carries the same boot-banner account tier.
+  codex-cli-0.145.0-boot-status-help-diff-resize  120x40 -> 100x24 -> 140x45. /status (3 panels),
+               /diff (the alt-screen pager), and /help, which Codex answers 'Unrecognized command'.
   codex-cli-0.146.0-boot-status-help-resize   120x40 -> 100x24 -> 140x45. /status typed but
                swallowed by the boot modal; /help 'Unrecognized command'. No panels rendered.
   codex-cli-0.146.0-14row-heavy-history-insert 100x14, no resize. Four slash commands on a short
-               terminal: the densest history-insert traffic of the set (94 lines scrolled into
-               scrollback, no CSI 3J).
+               terminal (/status, /mcp, /status, /status): the densest history-insert traffic of
+               the set (94 lines scrolled into scrollback, no CSI 3J). This capture DOES render
+               3 /status panels -- the same account state as the 0.145.0 capture, scrubbed in the
+               same passes. An earlier version of this file called 0.145.0 "the ONLY capture with
+               account state"; that was wrong, and it is the kind of error that scopes a
+               re-scan too narrowly.
 
 No paid model calls were made; only local slash commands were driven.
 

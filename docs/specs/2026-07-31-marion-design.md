@@ -858,8 +858,10 @@ text had it backwards in both directions and is corrected here.
 both harnesses (19,373 bytes of Codex boot and two resizes — its `/status` was swallowed by the boot modal
 and Codex answers `/help` with *Unrecognized command*; Claude through the trust dialog, alt-screen
 entry at 1900, `/help`, two resizes, its `/status` likewise producing no panel; a separate
-trusted-dir capture entered at 67 and exited cleanly. **Only the 0.145.0 capture renders `/status`
-panels** — 3 of them). One earlier
+trusted-dir capture entered at 67 and exited cleanly. **Two captures render `/status` panels — the
+0.145.0 one and the 0.146.0 14-row one, 3 each**; the other three render none. Note that "no panel"
+is *not* "no account state": both Claude captures carry the account tier in their boot banner
+regardless, which is why the redaction passes had to scrub it there too). One earlier
 capture *did* show Codex stalling at 1478 bytes after `ESC[6n` on a host that answered nothing and
 **sent no keystrokes** — *(that capture is **uncommitted**; the byte count is not reproducible from
 this repo, and none of the five committed captures truncates there)* — which suggests the stall is an input-starvation artifact rather than a
@@ -902,7 +904,7 @@ detected from screen state.
 
 ### 5.4 Control MCP — direct spawn is the primary path
 
-**The parent calls `mcp__marion__spawn` directly and receives the task contract as a genuine tool
+**The parent calls marion's `spawn` tool (spelled per harness, §3.1 item 1) directly and receives the task contract as a genuine tool
 result.** One turn, no retyping, no extra process, full fidelity.
 
 The Claude Code Agent-tool shim — registering marion agent types that the built-in Agent tool
@@ -1216,7 +1218,7 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
 
 ### 6.1 Spawn
 
-1. Parent calls `mcp__marion__spawn`; token checked (§5.4). **Child nodes only — a root started by
+1. Parent calls marion's `spawn` tool (spelled per harness, §3.1 item 1); token checked (§5.4). **Child nodes only — a root started by
    `marion run` has no requester and enters at step 2.**
 2. Resolve agent type; check depth, concurrency caps, and write-conflict policy (§6.6).
 3. Resolve the harness binary **through symlinks**; record path and `--version`.
@@ -1240,7 +1242,11 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    *Why it is needed:* measured on 2.1.220, writing the user frame immediately leaves the server
    `pending`, the outbound request carries `tools: []`, and the call comes back
    `No such tool available: mcp__marion__spawn` — M1's root failing its single load-bearing call,
-   with an error naming the tool rather than the cause.
+   with an error naming the tool rather than the cause. **That measurement predates §5.5's
+   dispatch-on-shape rule**, under which an ungated first turn carries `tools: []` and is therefore
+   answered with the *title stub*, so the model never attempts the call and this error never
+   appears at all. The gate is what §6.1 specifies; the quoted symptom is only how it was found,
+   and a reader who removes the gate to reproduce it will get a title document instead.
 
    *Why the obvious gate does not work:* **Claude Code emits no `system/init` until after the
    first user frame is written** — measured: stdin held open 8 s produced nothing on stdout, and
@@ -1399,12 +1405,17 @@ struct Completion {                      // assembled and written ONCE, at the n
     reported_early: bool,                // chose to report while descendants ran (§7.6)
     held_to_timeout: bool,               // held for descendants until the bound expired (§7.6)
     live_descendants_at_report: Vec<AgentId>,
-    narrative: Option<String>,           // marion-owned field, child-supplied source (§9):
+    narrative: Option<Capped<String>>,   // marion-owned field, child-supplied source (§9) — and
+                                         //   the ONLY contract field a foreign agent's text
+                                         //   fills, hence Capped (cap rule 0 below):
     narrative_synthesized: bool,         //   false = the child's own report text; true = marion
                                          //   synthesized it from the transcript tail because no
                                          //   report arrived (§7.6 step 5). Never conflate them.
     result_commits: Vec<Oid>,
     changed_paths: Vec<PathBuf>,
+    changed_paths_omitted: usize,        // elided by cap rule 5's last step only; 0 iff none.
+                                         //   scope_violations is derived from the FULL list
+                                         //   before any elision, so a cap can never hide one
     scope_enforced: bool,                // false only when the workspace affords no git-derived
                                          //   changed_paths — never means "no violation" (§9)
     scope_violations: Vec<PathBuf>,      // paths in changed_paths that FAIL EITHER scope list:
@@ -1463,11 +1474,12 @@ copy only, after the contract is persisted:
 
 | # | rule |
 |---|---|
+| 0 | **`narrative` cap: 8 KiB, trailing bytes, as `Capped<String>`.** It is listed first because it is the only field in the contract whose content a *foreign agent* chooses (§5.4's `report` payload), so it is the one field an uncapped algorithm cannot bound at all. |
 | 1 | **Collection cap.** If `evidence.len() > 16`, retain the **first 16 in `verification` order** — the parent authored that order, so it is the parent's own priority — and set `evidence_omitted` to the number dropped. Otherwise `evidence_omitted = 0`. |
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split evenly as `floor(16 KiB / n_retained)` per outcome and again in half between that outcome's `stdout` and `stderr`. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
 | 4 | **Flags.** Any field shortened by rules 2–3 sets its `truncated: true` — `CommandOutcome.truncated` if either of its streams was cut, `Capped.truncated` for `diff`, whose `original_bytes` records the pre-cap length. |
-| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count — set `diff.value` to `""` (keeping `truncated: true` and `original_bytes`) and re-serialize; if it *still* exceeds 48 KiB, drop every outcome, folding them into `evidence_omitted`. Two deterministic steps, and the result is bounded by construction. |
+| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count — set `diff.value` to `""` (keeping `truncated: true` and `original_bytes`) and re-serialize; if it *still* exceeds, drop every outcome, folding them into `evidence_omitted`; if it *still* exceeds, cut `narrative` to **1 KiB** and elide `changed_paths` past its **first 100 entries**, recording the elided count in `changed_paths_omitted`. Four deterministic steps against a fixed field order, so the loop cannot run twice on the same field and the result is bounded by construction. |
 
 All byte counts are of **raw UTF-8 field bytes before JSON escaping**, except rule 5, which is
 measured on the encoded document. 48 KiB is chosen below the measured 64 KB floor with room for the
@@ -2334,7 +2346,8 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     `timeout`, `scope_ceiling` (from the agent type) and `scope_requested` (validated from the
     parent's `writable_scope`; §5.4) — and *validates and freezes* the parent's criteria before the
     child starts, owning them thereafter. It derives `changed_paths`, `diff`, `evidence`,
-    `evidence_omitted` (§6.7's cap rule 1, and rule 5 may raise it after the fact), `exit`,
+    `evidence_omitted` (§6.7's cap rule 1, and rule 5 may raise it after the fact),
+    `changed_paths_omitted`, `exit`,
     `timestamps`, `status`, `reported_early`, `held_to_timeout`,
     `live_descendants_at_report`, `died_before_gate`, `scope_enforced`, `scope_violations`,
     `narrative_synthesized`,
@@ -2414,7 +2427,7 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   for a top-level `spawn` is the root's `AgentId`.
 
   **So the root's compiled prompt omits the return contract entirely** (§3.1 item 1 is
-  child-only), and `mcp__marion__report` is **rejected on any node without a contract** — there is
+  child-only), and marion's `report` tool (spelled per harness, §3.1 item 1) is **rejected on any node without a contract** — there is
   no `Completion` for its payload to land in, and nobody to deliver it to. A root ends by
   exiting, not by reporting — a root that stops with no live descendants is simply **accepted as
   complete** (§7.6 step 1), and `Unreported` is not reachable for it. §7.6 still governs its
