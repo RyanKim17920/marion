@@ -115,6 +115,41 @@ every seeded node holds a live copy of the user's OAuth tokens: per-node dirs ar
 uploaded or archived, and shredded on teardown. Still open: refresh-token rotation across copies,
 and `GEMINI_CLI_HOME`, which may behave like Claude Code rather than like Codex.
 
+**⚠ Claude Code connects `--mcp-config` servers asynchronously and does not hold the first turn
+for them.** *(Claude Code 2.1.220, macOS darwin 25.5.0, measured 2026-08-02 during M1.)* Its own
+debug log says so. Against a **real** endpoint the race never shows — the model takes seconds, the
+connect ~70 ms. Against a **canned or otherwise fast** endpoint the reply returns in microseconds,
+the first request goes out with `tools: []`, `mcp__marion__spawn` is never offered, the provider
+correctly reads a toolless request as the session-title request, and the root emits a title and
+**exits 0 in 63 ms with no error anywhere** — a silent success that does nothing. This is a
+property of the launch protocol, not of the canned provider, so **any launcher driving Claude Code
+headlessly against a fast or mocked endpoint MUST gate the prompt**: withhold it until the bridge
+has *flushed* its `tools/list` reply (the marker is written after the flush, not at process start),
+then complete a `control_request`/`control_response` `initialize` round trip so the harness's event
+loop has demonstrably run since — **no sleeps** — and refuse the run with a named error if the
+marker never appears. Design doc §6.1 step 8.
+
+**⚠ `codex exec` 0.146.0 leaks a background `git fetch` that outlives the process.** *(codex-cli
+0.146.0, macOS darwin 25.5.0, measured 2026-08-02 during M1.)* It starts a curated-plugin-
+marketplace clone into `$CODEX_HOME/.tmp/plugins-clone-*`; the fetch **survives the exec process**,
+reparents to pid 1, keeps writing into the agent dir being torn down, and reaches the network on a
+run premised on making no network calls. **It is not reapable after the fact** — the descendant
+sweep enumerates before the child dies, and this is already an orphan by then — so a launcher
+isolating `CODEX_HOME` **MUST** write `[features] plugins = false` into the child's `config.toml`.
+Related to but **distinct from** the `setsid` tool-call escape (design doc §11 item 18): that one
+is a tool-call child escaping the process group during a run; this one outlives the run entirely.
+
+**`--setting-sources ""` suppresses plugins and user hooks — not slash commands, agents or
+skills.** *(Claude Code 2.1.220, macOS darwin 25.5.0, measured 2026-08-02 during M1.)* With the
+flag set, `system/init` still listed 15 slash commands, 5 agents and 15 skills, but **0 plugins and
+no user hooks**. That is the pair that matters for isolation and cost, and MCP tools and the turn
+were unaffected — but the design doc previously implied a clean sweep. **The counts are this
+machine's configuration and are illustrative**; the durable finding is qualitative.
+
+**`codex exec` resends the conversation: the Responses `input` grows with prior turns** — measured
+`ninput = 7 → 9 → 11` across a three-turn child *(codex-cli 0.146.0, 2026-08-02)*. Not settleable
+from `tests/fixtures/s6/`, whose request log is reduced and strips `input`.
+
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
 ---

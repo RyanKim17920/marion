@@ -1363,6 +1363,15 @@ every call.
   would need a record-mode proxy under an API key to capture. No other fixture holds either shape
   (`tests/fixtures/s4/codex/stream-*.jsonl` holds only `agent_message` items). Budget §5.5
   accordingly.
+  **`codex exec`'s Responses `input` *does* grow with prior turns** — measured 2026-08-02 on
+  codex-cli 0.146.0 (macOS darwin 25.5.0) at `ninput = 7 → 9 → 11` across the M1 child's three
+  turns, i.e. `exec` resends the accumulated conversation rather than relying on server-side
+  threading. This **could not be settled from committed evidence**: S6's
+  `tests/fixtures/s6/provider-requests.redacted.jsonl` is *reduced*, not merely scrubbed, and
+  strips `input` entirely. It matters to the canned provider because a script that dispatches on
+  request shape must expect the *same* request body to keep growing turn over turn, and must not
+  key on `input` length or content position.
+
   Port Codex's own `mock_model_server.rs` — `wiremock` + `SeqResponder` + `.expect(n)` — which is
   *already* a canned Responses server, plus `core_test_support::responses` for the event builders.
 
@@ -1433,11 +1442,27 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    **observe that on marion's own side, not on the harness's stream.**
 
    **This step binds only surfaces whose prompt is written *after* launch** — `headless` Claude
-   Code. A `LaunchOnly` child whose prompt rides argv, which is M1's `codex exec --json` child
+   Code, **including M1's root**, which is launched exactly that way. A `LaunchOnly` child whose
+   prompt rides argv, which is M1's `codex exec --json` child
    (§5.2), has no frame to withhold and no `system/init` to read: its MCP readiness is not
    observable before the turn, and is asserted *post hoc* from the `mcp_tool_call` items in its
    JSONL stream. That is also why the `default_tools_approval_mode` trap (§9) bites there and not
    here.
+
+   > **⚠ Claude Code connects `--mcp-config` servers *asynchronously* and does not hold the first
+   > turn for them.** 2.1.220's own debug log states this outright, and M1 measured the
+   > consequence (2026-08-02, Claude Code 2.1.220, macOS darwin 25.5.0). **Against a real endpoint
+   > the race is invisible**: the model takes seconds while the MCP connect takes ~70 ms, so the
+   > tools are always there by the time the request is built. **Against a canned or otherwise fast
+   > endpoint the ordering inverts** — the reply returns in microseconds, the first request goes
+   > out with `tools: []`, `mcp__marion__spawn` is never offered, §5.5's dispatch-on-shape rule
+   > correctly classifies a toolless request as the *session-title* request, and the root emits a
+   > session title and **exits 0 in 63 ms with no error anywhere**. A silent success that does
+   > nothing.
+   >
+   > **This is a property of the launch protocol, not of the canned provider.** Any fast or mocked
+   > endpoint hits it, so the gate below is normative for **every** launcher that drives Claude
+   > Code headlessly, not merely for M1's fixture harness.
 
    *Why it is needed:* measured on 2.1.220, writing the user frame immediately leaves the server
    `pending`, the outbound request carries `tools: []`, and the call comes back
@@ -1458,6 +1483,26 @@ UI shows **"possibly blocked, no permission channel"** with elapsed time, never 
    is entirely marion-side and observable without the harness. Write the first user frame once
    that lands. The `system/init` frame is then a **post-hoc assertion** — every configured server
    `connected`, the `mcp__marion__*` tools present — not the gate.
+
+   *The gate, stated normatively — binding on **any** launcher driving Claude Code headlessly
+   against a fast or mocked endpoint, not only on marion:*
+
+   - The launcher **MUST** withhold the first user frame until marion has observed its own bridge
+     **flush its `tools/list` reply** — not until the bridge *process* starts, and not until it has
+     merely *received* `tools/list`. The bridge therefore **MUST** signal readiness (M1: touching a
+     marker file) **after** the reply is flushed, because the flush is the event that matters.
+   - After the readiness signal, the launcher **MUST** perform a `control_request` /
+     `control_response` `initialize` round trip before writing the prompt, so that the harness's
+     event loop has **demonstrably run** since the tool list reached it. Observing the bridge's own
+     side proves the tools were *sent*; only a completed round trip proves the harness has
+     processed anything since.
+   - The launcher **MUST NOT** substitute a sleep for either step. A sleep encodes the very race it
+     is covering, and the failure it permits is silent.
+   - If the readiness signal never appears within the bound, the run **MUST** be refused with an
+     error naming the cause. It **MUST NOT** be allowed to end as plain text: a toolless first turn
+     terminates `exit 0` with no diagnostic anywhere, which is indistinguishable from success. This
+     is the same obligation the 30 s row of the failure table below already carries, restated
+     because the *silent* failure mode is what makes it load-bearing.
 
    *Three failure conditions, one action each — they are not interchangeable:*
 
@@ -1568,7 +1613,15 @@ marion **never mutates the user's real harness config.**
   0% → 99.7%); `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` on `interactive` children.
 - **Codex (0.145.0 / 0.146.0):** `127.0.0.1` literal, reserved provider ids
   `openai`/`ollama`/`lmstudio`/`amazon-bedrock`, and **hook trust must be bootstrapped** (§7.6) or
-  hooks silently never run.
+  hooks silently never run. **A launcher that isolates `CODEX_HOME` MUST also write
+  `[features] plugins = false` into the child's `config.toml`** — measured on 0.146.0
+  (2026-08-02, macOS darwin 25.5.0), `codex exec` otherwise starts a curated-plugin-marketplace
+  clone into `$CODEX_HOME/.tmp/plugins-clone-*` whose `git fetch` **outlives the exec process**,
+  reparents to pid 1, writes into the agent dir after teardown begins, and makes a network call on
+  a run specified to make none. **It cannot be reaped after the fact** — §11 item 18's sweep
+  enumerates descendants before the child dies, and this process is already an orphan by then — so
+  suppressing it at config time is the only remedy. Distinct from item 18's `setsid` tool-call
+  escape (§9).
 - **Gemini 0.53.0:** must write
   `<GEMINI_CLI_HOME>/.gemini/settings.json` = `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`
   — an API key alone now fails with `Invalid auth method selected.` and there is no env-var
@@ -3059,20 +3112,55 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     the root regains control, and §5.4 denies `send`/`cancel` against terminal targets. `report` is
     rejected on a root. Omitting a reachable verb would deny calls that then block until the root's
     bound expires.
+
+    > **Note, measured 2026-08-02 (Claude Code 2.1.220): the allowlist is presently *wider* than
+    > the implemented surface.** M1's bridge declares only `spawn` and `report`, so the root's
+    > turns carry `ntools=2` while `--allowedTools` names four verbs. This is **not a bug** and not
+    > an M1 acceptance criterion — an allowlist entry for a tool that is not declared is inert, and
+    > the four-verb list is what the root will need the moment `status`/`wait`/`list` are declared.
+    > Recorded so a later reader does not diagnose `ntools=2` on the wire as a tool-compilation
+    > failure.
+
     `--settings`,
     **`--setting-sources ""`**, **`--permission-prompt-tool stdio`** (below),
     `ANTHROPIC_BASE_URL` at the canned server, `ANTHROPIC_AUTH_TOKEN=<per-run token>`, and
     `ANTHROPIC_API_KEY=""` (a non-empty key silently wins, §6.4). This takes **option (a)** of
     §6.4's three: the real `CLAUDE_CONFIG_DIR` is retained and never mutated, so OAuth is intact
-    but unused. **`--setting-sources ""` is what keeps that from meaning "inherit everything".**
-    Verified on 2.1.220: without it, §9's exact invocation loads the operator's 13 plugins, 100+
-    slash commands, 10 agents, and fires **nine** user `SessionStart` hooks — one injecting ~2 KB
-    into the root's context. `--settings` *merges*; it does not replace. That would contradict
+    but unused. **`--setting-sources ""` is what keeps that from meaning "inherit everything" —
+    but it does not suppress everything, and this document previously implied it did.**
+    Verified on 2.1.220: **without** the flag, §9's exact invocation loads the operator's 13
+    plugins, 100+ slash commands, 10 agents, and fires **nine** user `SessionStart` hooks — one
+    injecting ~2 KB into the root's context.
+
+    **Re-measured 2026-08-02 on Claude Code 2.1.220 (macOS darwin 25.5.0) *with* the flag set**,
+    the root's `system/init` still listed **15 slash commands, 5 agents and 15 skills** — but **0
+    plugins and no user hooks**. So the precise statement is:
+
+    | | suppressed by `--setting-sources ""`? |
+    |---|---|
+    | plugins | **yes** — 13 → 0 |
+    | user hooks (incl. `SessionStart`) | **yes** — 9 → none |
+    | slash commands | **no** — still 15 |
+    | agents | **no** — still 5 |
+    | skills | **no** — still 15 |
+
+    **The flag suppresses the two things that actually matter here**: plugins (cost, and arbitrary
+    third-party surface) and user hooks (which is what makes `stop_hook_active` marion's to
+    guarantee). What survives was **harmless for M1** — the residue is inert unless invoked, the
+    root's MCP tools and its turn were unaffected, and the hop passed with it present. It is
+    recorded because the earlier wording implied a clean sweep, and a reader who audits isolation
+    by re-running this invocation will see a non-empty `system/init` and think something is wrong.
+
+    **The counts are this machine's configuration and are illustrative, not universal** — another
+    operator's `system/init` will list different numbers, and 13/100+/10/9 and 15/5/15 are two
+    measurements of *one* config. **The durable, configuration-independent finding is the
+    qualitative one: plugins and user hooks are suppressed; slash commands, agents and skills are
+    not.** `--settings` *merges*; it does not replace. Inheriting the rest would contradict
     §3.1 (the compiled prompt is persona plus marion protocol and nothing else) and §6.4
     (`inherit_user_config` defaults off), make "repeatable" runs machine-dependent, and — worst for
     §7.6 — put a user `Stop` hook alongside marion's, so the one-fire budget and the meaning of
     `stop_hook_active` would not be marion's to guarantee on the one node where M1 implements that
-    path. With the flag: 0 plugins, 5 built-in agents, no user hooks, and MCP tools unaffected.
+    path. With the flag: the table above — and MCP tools unaffected either way.
   - **child (`codex`)**: `-c model_providers.<id>` pointing at the canned server with a dummy
     `env_key`, under a **non-reserved** provider id (not `openai`/`ollama`/`lmstudio`/
     `amazon-bedrock`). **The MCP server declaration goes into `<agent-dir>/config/config.toml`, not
@@ -3080,6 +3168,30 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     `default_tools_approval_mode = "approve"`** — M1 already sets `CODEX_HOME` there, and §5.4 notes that `-c`
     puts the whole declaration (token included) on argv where any same-uid process can read it. The
     fileless path buys nothing here, so M1 takes the placement that keeps the token off `ps`.
+
+    > **⚠ `codex exec` 0.146.0 leaks a background `git fetch` that outlives the process. The same
+    > `config.toml` MUST set `[features] plugins = false`.** Measured 2026-08-02, codex-cli
+    > 0.146.0, macOS darwin 25.5.0. On startup `exec` kicks off a clone of the curated
+    > plugin marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`. That `git fetch` **survives the
+    > `exec` process**, reparents to pid 1, keeps writing into the agent dir marion is about to
+    > delete, and **reaches the network on a run whose entire premise is that it makes no network
+    > calls**.
+    >
+    > **It is not reapable after the fact, and that is why the remedy is prevention.** §11 item
+    > 18's kill rule enumerates the child's descendants *before* the child dies; by the time
+    > `codex exec` has exited normally, this process is **already** an orphan with no ancestry path
+    > back to the child. The pgid sweep does not save us here. So: marion **MUST NOT** start it.
+    >
+    > **Related to, but distinct from, §11 item 18 (S7).** Item 18 is about *tool-call* children
+    > escaping the process group via `setsid` during a run that marion then has to kill. This is a
+    > **harness-initiated background task** that outlives the run entirely and is unreachable by
+    > any kill rule. They share a symptom — a pid reparented to 1 — and share nothing else. Do not
+    > conflate them; fixing either does not fix the other.
+    >
+    > **Two M1 e2e runs failed on this before it was found**, and what found it was the
+    > agent-dir leak sweep. That sweep is therefore an **assertion in the test**, not a manual
+    > step: a leak this shape produces no error in the child's stream, no non-zero exit, and no
+    > entry in any log marion writes.
 
     > **⚠ Without `default_tools_approval_mode = "approve"`, every marion tool call is silently
     > cancelled.** Measured on 0.146.0: with `command`/`args`/`env` alone under
@@ -3480,9 +3592,16 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
 ## 12. History: what was retracted or corrected
 
-Recorded so it is not rediscovered. The 42 rows below come from eight spikes — S1–S5 on
-2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02 — and from audit rounds 5–19; every spike
-passed, and seven of the eight corrected a design decision.
+Recorded so it is not rediscovered. The 45 rows below come from eight spikes — S1–S5 on
+2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02 — from audit rounds 5–19, and from **M1's
+own build**; every spike passed, and seven of the eight corrected a design decision.
+
+**Stamps.** A spike row is stamped with its spike and date (`S8, 2026-08-02`); an audit row with
+its round (`round 15`). The three rows stamped **`M1, 2026-08-02`** were measured while building
+M1 rather than by a spike or an audit — they get a milestone stamp for the same reason spikes get
+one: the reader needs to know *what kind of evidence* produced the correction, and "measured
+against a running M1 on Claude Code 2.1.220 / codex-cli 0.146.0 / macOS darwin 25.5.0" is a
+different provenance from either. No row is renumbered and no spike is invented for them.
 
 | claim | fate |
 |---|---|
@@ -3527,4 +3646,7 @@ passed, and seven of the eight corrected a design decision.
 | `codex exec`'s MCP server is spawned once per run | **CORRECTED (S6).** The frame log shows **two** full `initialize` + `tools/list` sequences for a single `codex exec`. A bridge must be idempotent across repeated startup. |
 | `setpgid` at spawn plus `killpg` at expiry is enough to kill a timed-out child and its tool-call descendants | **CORRECTED (S7, 2026-08-01).** `codex exec` calls **`setsid`** for each tool-call command, so that child is a session leader in its own group; `killpg` on marion's group kills codex (which does *not* setsid) and leaves every tool-call subprocess alive, reparented to pid 1 — the exact untracked runaway the rule existed to prevent. Only case B leaks (command still running when `exec` yields); case A, a completed command, is reaped by codex itself, which is why a case-A-only probe reports a false clean. Seatbelt is not the cause. §9 now requires enumerating the descendants' distinct pgids **before** signalling, then `killpg`ing marion's group and each of them — ordering load-bearing, since the descendants reparent to pid 1 the moment codex dies. Fixtured in `tests/fixtures/s7/`. |
 | Pointing `CODEX_HOME` at `<agent-dir>/config/` costs nothing, and whether it breaks auth is unverified | **CORRECTED (S8, 2026-08-02).** It **does** break auth: an isolated `CODEX_HOME` starts "Not logged in" (exit 1) on 0.146.0 under ChatGPT auth. But the Claude Code precedent does not transfer — Codex stores its credential in a plain `0600` `auth.json`, **not the macOS Keychain** (seven codex-shaped service names probed, all absent; the `Claude Code-credentials` control found), so copying that one file restores auth completely and the fileless path is **not** load-bearing for Codex. There is no env-only substitute (`OPENAI_API_KEY` and `CODEX_AUTH` both fail; `CODEX_ACCESS_TOKEN` is a separate agent-identity channel). §6.4 and §9 now carry the seeding MUSTs plus the `0700`/no-upload/shred obligation the copy creates. **Not a full close of §11 item 3** — refresh-token rotation, symlink write-through, and the whole `GEMINI_CLI_HOME` half remain open. Fixtured in `spikes/s8/`. |
+| Watching marion's own bridge complete its MCP handshake is a sufficient readiness gate for a headless Claude Code root | **CORRECTED (M1, 2026-08-02).** Claude Code 2.1.220 connects `--mcp-config` servers **asynchronously and does not hold the first turn for them** — its own debug log says so. Against a real endpoint this is invisible (model seconds vs. ~70 ms connect); against a canned/fast endpoint the first request goes out with `tools: []`, §5.5's dispatch-on-shape rule correctly reads it as the session-title request, and the root **emits a title and exits 0 in 63 ms with no error anywhere**. A property of the launch protocol, not of the canned provider. §6.1 step 8 now requires the marker to be written **after the bridge flushes its `tools/list` reply**, plus a `control_request`/`control_response` `initialize` round trip proving the harness's event loop has run since — no sleeps — and a refusal naming the cause if the marker never lands. |
+| `setpgid` + the §11 item 18 pgid sweep account for every process a `codex exec` run can leave behind | **CORRECTED (M1, 2026-08-02).** `codex exec` 0.146.0 starts a curated-plugin-marketplace clone into `$CODEX_HOME/.tmp/plugins-clone-*` whose `git fetch` **outlives the exec process**, reparents to pid 1, keeps writing into the agent dir marion is deleting, and makes a network call on a run premised on making none. **Not reapable after the fact** — item 18's sweep enumerates descendants *before* the child dies, and this is already an orphan by then. Distinct from item 18 (a *tool-call* child escaping via `setsid`), and fixing either does not fix the other. Remedy: `[features] plugins = false` in the child's `config.toml`, with a regression test. Two e2e runs failed on this first; the leak sweep found it, and is now an assertion rather than a manual step. |
+| `--setting-sources ""` suppresses the plugins, slash commands, agents and user hooks §9 enumerates | **NARROWED (M1, 2026-08-02).** Measured on 2.1.220 **with** the flag set, the root's `system/init` still listed **15 slash commands, 5 agents and 15 skills** — but **0 plugins and no user hooks**. The flag does suppress the two things isolation and cost actually turn on; it is not the clean sweep the earlier wording implied. Harmless for M1 (MCP tools and the turn were unaffected), but an auditor re-running the invocation will see a non-empty `system/init`. The counts are **this machine's config** and illustrative; the durable finding is qualitative — plugins and user hooks suppressed, commands/agents/skills not. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
