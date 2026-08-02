@@ -8,7 +8,8 @@
 > tell surviving statements from overturned ones. Everything below is stated as **current fact**.
 > Corrections and retractions live in one place: §12.
 >
-> Spikes S1–S5 are resolved; **S6 is open** (§11 item 12). Claims are stamped; anything not independently verified
+> Spikes S1–S7 are resolved; **S6 closed 2026-08-01** and is fixtured in `tests/fixtures/s6/`
+> (§11 item 12). Claims are stamped; anything not independently verified
 > is marked **UNVERIFIED**.
 
 ---
@@ -28,10 +29,12 @@ Out of scope: the graph-plan system, mesh routing, remote hosting, the north sta
 
 **Verification baseline.** Claude Code **2.1.220** · opencode **1.17.3** · Gemini CLI **0.53.0** ·
 Codex CLI — **0.145.0 for S3 and the alt-screen/`/diff` capture, 0.146.0 for S5 and the main-screen
-captures** (the local install moved mid-session; per-claim stamps appear inline where it matters).
+captures, 0.146.0 for S6 and S7** (the local install moved mid-session; per-claim stamps appear
+inline where it matters).
 
-**Fixture-backed vs not.** S1–S5 have committed fixtures in `tests/fixtures/`; **S6 was killed
-mid-run and has none** (§11 item 12). The **Gemini and opencode launcher findings (§6.4) and the
+**Fixture-backed vs not.** S1–S7 have committed fixtures in `tests/fixtures/` — S6's arrived when
+the spike was re-run and resolved (§11 item 12, after an earlier run was killed mid-run leaving
+none), S7's with the process-group measurement (§11 item 18). The **Gemini and opencode launcher findings (§6.4) and the
 entire resource model (`MILESTONES.md`) have no committed fixture** — they rest on single
 uncommitted sessions and should be re-measured before they harden into assumptions — **and further
 claim families are unfixtured, all listed in §11 item 10**: the vt100-vs-alacritty scrollback
@@ -845,36 +848,43 @@ bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schem
 
 **Prefer `exec` for fan-out; reserve app-server for interactive children.**
 
-> **⚠ Three UNVERIFIED assumptions about `exec` — the first and third M1-critical, the second
-> (locations) affecting attribution quality only, since the scope check is git-derived either way (spike S6, *not run* — started
-> and killed mid-run 2026-07-31; no S6 fixture exists in this repo). S6 must also record two
-> encodings §5.5 needs — see §11 item 12 for the full scope:**
-> 1. **Does `exec` host MCP servers?** M1 has the child return via marion's `report` tool — on
->    Codex the `mcp__marion` **namespace** form, never the flat name (§3.1 item 1) — injected
->    by the **`config.toml` declaration** §9 specifies (with
->    `default_tools_approval_mode = "approve"`), **not** by `-c mcp_servers.marion={…}` — the
->    inline form puts the token on argv, which §9 declines. But `exec`'s whole selling point is removing the machinery
->    MCP rides on. **If it does not host MCP, M1's return path does not exist** and the fallback is
->    `--output-schema` + `--output-last-message`, which can carry a contract but cannot be
->    *required* the way a tool call can.
-> 2. **Does `exec --json` emit file locations?** Not for enforcement — `changed_paths` is
->    git-derived on every branch (§6.7) — but for **attribution**: locations are what let marion
->    say *which tool call* touched a path, and spot a write the child made and then reverted.
->    The only committed exec streams (`tests/fixtures/s4/codex/stream-*.jsonl`) contain **only**
->    `agent_message` items — no tool calls, no file changes. If locations are absent, marion loses per-tool-call attribution;
->    **no M1 branch and no acceptance criterion depends on this answer.**
+> **⚠ Three assumptions about `exec`, all three now ANSWERED — spike S6, run and resolved
+> 2026-08-01 against codex-cli 0.146.0, fixtured in `tests/fixtures/s6/`** (an earlier run was
+> started and killed mid-run 2026-07-31 leaving no fixture; §11 item 12 records the answers in
+> full, together with the two encodings §5.5 depends on). **Questions 1 and 3 were the
+> M1-critical pair** — between them they decide M1's return channel — **and question 2 affects
+> attribution quality only, since the scope check is git-derived either way (§6.7). All three
+> came back *yes*:**
+> 1. **Does `exec` host MCP servers? — YES.** A real `mcp_tool_call` reached marion's stdio server
+>    and returned its result. **M1 therefore takes the primary branch**: the child returns via
+>    marion's own `report` tool over MCP — on Codex the `mcp__marion` **namespace** form, never the
+>    flat name (§3.1 item 1) — injected by the **`config.toml` declaration** §9 specifies (with
+>    `default_tools_approval_mode = "approve"`), **not** by `-c mcp_servers.marion={…}`, whose
+>    inline form puts the token on argv and which §9 declines. The `--output-schema` +
+>    `--output-last-message` fallback — which can carry a contract but cannot be *required* the way
+>    a tool call can — is **not** what M1 builds. The question was live because `exec`'s whole
+>    selling point is removing the machinery MCP rides on.
+> 2. **Does `exec --json` emit file locations? — YES**: `file_change` items carrying absolute paths
+>    and a `kind`. Never for enforcement — `changed_paths` is git-derived on every branch (§6.7),
+>    which is why this answer changed no branch — but for **attribution**: locations are what let
+>    marion say *which tool call* touched a path, and spot a write the child made and then
+>    reverted. They are therefore **corroboration only**, and **no M1 branch and no acceptance
+>    criterion depends on this answer.** The only exec streams committed before S6
+>    (`tests/fixtures/s4/codex/stream-*.jsonl`) contain **only** `agent_message` items — no tool
+>    calls, no file changes — which is why the question could not be settled from them.
+> 3. **Do `--output-schema` / `--output-last-message` deliver the document? — YES**, verbatim, from
+>    a canned final message. The fallback channel exists and works; M1 simply does not need it,
+>    question 1 having come back yes.
 >
-> **Partial evidence already in hand for question 1** (round-13 audit, 0.146.0): `codex exec`
+> **The prior partial evidence for question 1** (round-13 audit, 0.146.0) was that `codex exec`
 > **does** launch an MCP server declared in `$CODEX_HOME/config.toml` and passes its `env` block —
-> a stub server wrote its marker during an `exec --json` run. That makes the MCP branch the likely
-> one and corroborates §9's config-file placement, but it does **not** show the model can *call*
-> the tool, which is what question 1 actually asks. S6 still runs.
+> a stub server wrote its marker during an `exec --json` run. That corroborated §9's config-file
+> placement but did **not** show the model could *call* the tool, which is what question 1 actually
+> asked; S6 closed exactly that gap.
 >
-> None can be settled from the desk. S6 runs them against a real model and produces the
-> `codex exec` fixture the repo currently lacks. **S6 is the first task of M1, before any
-> supervisor code** — §9 states what M1 builds under each outcome, so no answer blocks the
-> milestone, but the answers change what is built. Full scope, including the third question and
-> the two recordings §5.5 depends on: §11 item 12.
+> None of the three could be settled from the desk, which is why **S6 ran before any supervisor
+> code**. §9 states what M1 builds under each outcome, so no answer would have blocked the
+> milestone; the answers decided what is built.
 
 ### 5.3 Display plane: pty + VT
 
@@ -1326,15 +1336,25 @@ every call.
   converted.
   **But the burden is not zero, and §9 requires the hard part.** M1's child must edit a file and
   return, so the canned Responses script has to *contain* Codex's native encodings verbatim: a
-  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch — a
+  Lark-grammar `apply_patch` custom-tool call, and — on the MCP branch, which is the branch M1
+  takes (§9) — a
   `function_call` with `name: "report"` and `namespace: "mcp__marion"`, **not** a call named
   `mcp__marion__report`, which Codex rejects as `unsupported call` (§3.1 item 1). **The
   `type:"namespace"` *declaration* is not authored here**: it travels the other way, arriving on
   Codex's own request, and is read from the provider's request log (§11 item 12). A canned provider
   serves responses; it does not emit tool declarations. Hand-authoring those is easier than translating them, but it
-  is not "small": **no fixture in this repo contains either shape** (`tests/fixtures/s4/codex/
-  stream-*.jsonl` holds only `agent_message` items), so S6 must capture both alongside its three
-  answers (§11 item 12). Budget §5.5 accordingly.
+  is not "small", and **S6 supplied one of the two shapes, not both** (§11 item 12). The `report`
+  side is now fixtured end to end: a plain
+  `{"type":"function_call","name":"report","namespace":"mcp__marion"}` item **is executed** by
+  0.146.0 — `tests/fixtures/s6/exec-mcp-report.stream.jsonl` plus the server's own frames in
+  `mcp-server-frames.jsonl` — so a canned script does **not** have to synthesise the code-mode
+  JavaScript to reach marion. The **Lark-grammar `apply_patch`** form on the provider→codex wire
+  is still uncaptured: S6 ran under *code mode*, where the edit is made by
+  `await tools.apply_patch("*** Begin Patch…")` taking a **string**
+  (`tests/fixtures/s6/exec-codemode-apply-patch.stream.jsonl`), and the older custom-tool grammar
+  would need a record-mode proxy under an API key to capture. No other fixture holds either shape
+  (`tests/fixtures/s4/codex/stream-*.jsonl` holds only `agent_message` items). Budget §5.5
+  accordingly.
   Port Codex's own `mock_model_server.rs` — `wiremock` + `SeqResponder` + `.expect(n)` — which is
   *already* a canned Responses server, plus `core_test_support::responses` for the event builders.
 
@@ -1789,8 +1809,11 @@ Two rules make it more than bookkeeping:
   **`ToolCall.locations`, where an adapter reports them, are recorded in `evidence` and never
   populate `changed_paths`.** Git is the authority on what changed; locations are corroboration —
   useful for attributing *which* tool call touched a path, and for spotting a write the child made
-  and then reverted, but not a second source of truth. This is why all four S6 branches record
-  `scope_enforced: true`: the check does not depend on the locations question at all. **Two fields, deliberately separate:** `scope_enforced` records
+  and then reverted, but not a second source of truth. This is why the check was designed to be
+  **S6-branch-independent**: all four candidate branches recorded `scope_enforced: true`, because
+  the check does not depend on the locations question at all. S6 answered *yes* to locations and
+  M1 took the primary branch (§9, §11 item 12), so the corroborating `evidence` is available — but
+  the enforcement claim never rested on it. **Two fields, deliberately separate:** `scope_enforced` records
   **whether the check ran** — `false` means neither route was available, and never means "no
   violation" — while `scope_violations` lists the offending paths. **A path is writable iff it
   matches *both* scope lists, so it is a violation if it fails *either*:**
@@ -1822,6 +1845,13 @@ representable contract and is never recorded as a normal completion. **Four** ex
 | node was **`Blocked(Descendants)`** when the bound expired — *regardless of whether its process was still alive*, which §7.6 says it often is | `Unreported` — or, for a **root**, its ordinary derived status, since `Unreported` is unreachable for it (§7.6 step 3) | `held_to_timeout: true` |
 | node had **stopped and was not held** (between steps 2 and 5, no live descendants) | `Unreported` | `held_to_timeout: false` |
 | node was **`Blocked(Permission)` or `Blocked(Elicitation)`** — waiting on an answer that never came. For a **contract-bearing node**, marion kills the process first, as in the `Blocked(Descendants)` case: it is provably alive and mid-turn, and emitting `Exited` over it would break §8/L1's terminality. **For a root, marion instead denies the pending request and lets it proceed** — it is not killed, not terminated, and the episode bound is discarded (§9); in M1 the root is the *only* node that can be in this state | `TimedOut` — **not reached for a root**, which stays alive | `held_to_timeout: false` |
+
+**Wherever this document says marion "kills" a node — these expiry rows, §7.6's step-3 kill, and
+`node/kill` — it means §9's two-step group kill: enumerate the descendants and their distinct pgids
+*first*, then `killpg` marion's group and each collected pgid.** A single `killpg` on marion's own
+group is **not** sufficient: measured, it leaves `codex exec`'s tool-call children alive and
+orphaned to pid 1, because `codex exec` `setsid`s each of them (§11 item 18,
+`tests/fixtures/s7/`).
 
 **An `Orphaned` node's contract has `completion: None`**, and that is deliberate: `Orphaned` is a
 `ReapState` meaning marion lost the process without observing its exit (§7.2), so no `ResultStatus`
@@ -2628,8 +2658,9 @@ outcome if churn proves unmanageable.
 
 ## 9. Milestones
 
-Spikes S1–S5 are resolved (§12); **S6 is open and is M1's first task** (§11 item 12). Fixtures in
-`tests/fixtures/s1..s5/` are the seed of L2.
+Spikes S1–S7 are resolved (§12); **S6 ran and closed 2026-08-01**, before any supervisor code, and
+is fixtured in `tests/fixtures/s6/` (§11 item 12). Fixtures in `tests/fixtures/s1..s7/` are the
+seed of L2.
 
 Build **M1 disposably**: prove the delegation core before anything that displays it. No daemon, no
 VT emulator, no model proxy, no event log beyond the task audit trail.
@@ -2648,44 +2679,60 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   server lifetime. It is a `LaunchOnly` control transport with `ProtocolEvents` observation — a
   legitimate `ExecutionSurfaces` combination, not a fifth preset. app-server arrives in M4, where
   interactive children matter.
-- **M1's first task is spike S6**, because three `exec` facts (§5.2) decide what M1 builds, and
-  none of them can be settled from the desk. **Run S6 before writing supervisor code**, commit its
-  fixture, then build the branch it selects. Both branches are specified here, so M1 is not
-  blocked either way:
+- **M1's first task *was* spike S6**, because three `exec` facts (§5.2) decided what M1 builds and
+  none of them could be settled from the desk. It ran before any supervisor code was written,
+  2026-08-01 against codex-cli 0.146.0 under a canned provider (no model call, no API key), and its
+  fixture is committed at `tests/fixtures/s6/`. **All three questions came back *yes* (§11 item
+  12), so M1 builds row 1 — the primary branch: marion's own `report` tool over MCP.**
 
-  | S6 answer | M1's return channel | M1's scope enforcement |
-  |---|---|---|
-  | `exec` hosts MCP **and** emits `ToolCall.locations` | marion's `report` tool, namespace form (primary) | worktree diff (§6.7), `scope_enforced: true`; locations add corroborating `evidence` |
-  | hosts MCP, **no** locations | marion's `report` tool, namespace form | worktree diff, `scope_enforced: true` |
-  | **no** MCP, emits locations | `--output-schema` fallback (below) | worktree diff, `scope_enforced: true`; locations add corroborating `evidence` |
-  | **no** MCP, no locations | `--output-schema` fallback | worktree diff, `scope_enforced: true` |
+  The branch table is retained below as the **decision record**, not as a menu of live options.
+  Rows 2–4 record what M1 would have built under answers that did not occur; they are kept because
+  the reasoning — in particular that *every* row lands `scope_enforced: true` — is what shows the
+  scope check never depended on the answer. **Exactly one row is live:**
 
-  **If S6's third answer is also no** — `--output-schema` does not bind under canned scripting, so
-  neither structured return channel exists — **M1 still runs, and the contract lands
-  `status: Unreported`** with the child's final message preserved as a *synthesized* `narrative`
-  and `scope_enforced: true` from the worktree diff. `Unreported` is the honest value and the one
+  | | S6 answer | M1's return channel | M1's scope enforcement |
+  |---|---|---|---|
+  | **► TAKEN** (measured, `tests/fixtures/s6/`) | `exec` hosts MCP **and** emits `ToolCall.locations` | marion's `report` tool, namespace form (primary) | worktree diff (§6.7), `scope_enforced: true`; locations add corroborating `evidence` |
+  | *not taken* | hosts MCP, **no** locations | marion's `report` tool, namespace form | worktree diff, `scope_enforced: true` |
+  | *not taken* | **no** MCP, emits locations | `--output-schema` fallback (below) | worktree diff, `scope_enforced: true` |
+  | *not taken* | **no** MCP, no locations | `--output-schema` fallback | worktree diff, `scope_enforced: true` |
+
+  **There was a fifth row, and it is also not taken.** Had S6's third answer *also* been no —
+  `--output-schema` not binding under canned scripting, so neither structured return channel
+  existing — **M1 would still have run, with the contract landing
+  `status: Unreported`**, the child's final message preserved as a *synthesized* `narrative`, and
+  `scope_enforced: true` from the worktree diff. `Unreported` is the honest value and the one
   §6.7 row 2 already assigns to "no report and no parseable document": promoting a scripted last
   message to `Ok` would be exactly the silent promotion §7.6 exists to prevent. The acceptance
-  criterion becomes "the parent receives a contract whose `changed_paths` and `diff` reflect the
-  child's edit, with `status: Unreported` and a synthesized narrative" — a real cross-harness hop
-  with an honestly-marked return, and marion's `report` tool becomes a Codex-adapter debt carried
-  into M4. **This branch does not block M1** — no S6 answer does.
+  criterion would have become "the parent receives a contract whose `changed_paths` and `diff`
+  reflect the child's edit, with `status: Unreported` and a synthesized narrative" — a real
+  cross-harness hop with an honestly-marked return, and marion's `report` tool would have become a
+  Codex-adapter debt carried into M4. **That branch would not have blocked M1** — no S6 answer
+  would have. The `Unreported` status itself is **not** dead reasoning: §6.7 row 2 still assigns
+  it whenever a child returns no usable report, which the primary branch does not make impossible.
 
   **`scope_enforced: false` is reserved for an adapter that can determine changed paths by
   *neither* route.** A worktree child always affords the diff, so M1 records `true`; §6.7's
   `false` case is for future non-worktree or remote surfaces. **False confidence is worse than no
   check** — the flag records whether the check ran, not whether it passed.
 
-- **The `--output-schema` fallback, specified — and itself UNVERIFIED (§11 item 12).** No fixture
-  in this repo exercises either flag, and two of its mechanics are open: whether `--output-schema`
-  binds at all when the CannedProvider is *scripting* the final message, and whether
-  `--output-last-message` receives the schema document or the raw prose. S6 must answer these too,
-  since two of the four branches route M1's entire return channel through them. If `exec` cannot host MCP, marion passes
+- **The `--output-schema` fallback, specified — and now VERIFIED, though M1 does not build it
+  (§11 item 12).** S6 exercised both flags, because two of the four branches would have routed
+  M1's entire return channel through them. Both mechanics that were open came back *yes*:
+  `--output-schema` **does** bind when the CannedProvider is *scripting* the final message — the
+  schema is forwarded as `text.format = {type: json_schema, strict: true, …}`
+  (`tests/fixtures/s6/provider-requests.redacted.jsonl`) — and `--output-last-message` receives
+  **the schema document verbatim**, not the raw prose (`tests/fixtures/s6/output-last-message.txt`).
+  The channel exists and works; M1 simply does not need it, question 1 having come back yes. The
+  specification below therefore stands as a **verified** fallback for a harness or version where
+  `exec` cannot host MCP: on that path marion passes
   `--output-schema <file>` whose JSON Schema is exactly the **child-supplied** fields below, and
   reads the document from
   `--output-last-message`.
 
-  **Write that schema in strict form, or the spike answers its own question wrong.** Measured on
+  **Any such schema MUST be written in strict form.** This was the trap that would have made S6
+  answer its own question wrong, and it is why S6's committed schema expresses optionality as
+  nullability; it remains normative for anyone authoring a schema against this flag. Measured on
   0.146.0, end to end against the real endpoint: `codex exec` validates only that the file is
   **syntactically** JSON (a malformed file is refused locally with *"Output schema file … is not
   valid JSON"*), performs **no schema-semantic validation**, and forwards it inside `text.format`
@@ -2696,14 +2743,15 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   > context=(), 'required' is required to be supplied and to be an array including every key in
   > properties. Missing 'result_commits'."*
 
-  The rejection is **by the endpoint, not by the mechanism under test**. The
-  failure reads as "`--output-schema` doesn't work", S6 answers question 3 *no*, and M1 builds the
-  fifth `Unreported` branch for no reason. So: `"required": ["narrative", "result_commits"]`, with
+  The rejection is **by the endpoint, not by the mechanism under test**. Had the spike hit it, the
+  failure would have read as "`--output-schema` doesn't work", S6 would have answered question 3
+  *no*, and M1 would have built the fifth `Unreported` branch for no reason. So:
+  `"required": ["narrative", "result_commits"]`, with
   optionality expressed as nullability —
   `"result_commits": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]}` —
   and `"additionalProperties": false`. This is the same shape of trap as
-  `default_tools_approval_mode` (below): a default that silently sends the spike down the wrong
-  branch.
+  `default_tools_approval_mode` (below): a default that silently sends a spike down the wrong
+  branch. Both were avoided (§12, rounds 15 and 18/19).
 
   The differences from the MCP path, which is why MCP is preferred:
   - the return is **not required** the way a tool call is — a child can simply not emit it;
@@ -2770,9 +2818,27 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   what makes the group kill safe: without it the child would share marion's group and `killpg`
   would signal the supervisor itself. *(The **mechanism** is measured: a Rust parent using `process_group(0)` plus `killpg` reaped a
   shell child *and its backgrounded grandchild* with no leak, and the same harness confirmed
-  `Command.timeout`'s kill yields `timed_out: true` with `exit_code: None`. What is **not** measured
-  is whether `codex exec` keeps its own tool-call children inside that group rather than calling
-  `setsid` itself — §11 item 18.)* So the node is
+  `Command.timeout`'s kill yields `timed_out: true` with `exit_code: None`.)*
+
+  **But the group kill alone is not sufficient, and this document previously assumed it was.**
+  Spike S7 measured it: **`codex exec` calls `setsid` for every tool-call command**, so each
+  tool-call child is a session leader in its own session and its own process group. A `killpg` on
+  marion's group kills `codex exec` itself — which does *not* setsid, and does sit in marion's
+  group — while every tool-call subprocess survives and reparents to pid 1. That is exactly the
+  untracked runaway the previous paragraph exists to prevent (§11 item 18, fixtured in
+  `tests/fixtures/s7/`). marion's expiry kill therefore **MUST**, in this order:
+
+  1. **enumerate the child's descendants first**, while the child is still alive — a
+     `ps -e -o pid=,ppid=,pgid=` sweep plus ancestry closure is enough — and collect every
+     **distinct pgid** among them;
+  2. `killpg` **marion's own group *and* each collected pgid**.
+
+  **The ordering is load-bearing and is the whole rule**: once `codex exec` dies its descendants
+  reparent to pid 1, and no ancestry walk can find them afterwards. A single `killpg` issued first
+  destroys the only evidence of what to kill next. *(The sweep is measured to leave zero survivors —
+  once, in one probe; §11 item 18 states precisely what that probe did and did not cover.)*
+
+  So the node is
   `Exited{TimedOut}` and the contract is never terminal over a live process — which would
   contradict §8/L1's `Exited` terminality and leave M1 with an untracked runaway. `exit` records
   marion's own signal, and `ProcessExit.description` says so. This is deliberately the opposite of
@@ -2911,7 +2977,8 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     *reported* in the contract, not prevented. The preventive path lands with the app-server
     adapter in M4.
   - `scope_enforced: false` is reserved for an adapter affording **neither** route. A worktree
-    child always affords the diff, so M1 records `true` under every S6 outcome.
+    child always affords the diff, so M1 records `true` — a value that was designed to hold under
+    every S6 outcome and does hold on the branch taken (§9).
     **False confidence is worse than no check.**
 - **Permissions in M1** otherwise: there is no TUI to prompt, so anything genuinely requiring a
   human blocks until the root's bound expires. **This depends entirely on
@@ -2966,11 +3033,13 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     > `{"type":"mcp_tool_call","status":"failed","error":{"message":"user cancelled MCP tool
     > call"}}` and the server receives **no `tools/call` at all** — deterministic, and identical
     > under `read-only` and under every `approval_policy`. The accepted values are `auto`,
-    > `prompt`, `writes`, `approve`; only `approve` works headlessly. **This is a trap for S6
+    > `prompt`, `writes`, `approve`; only `approve` works headlessly. **This was the trap for S6
     > itself**: an engineer running the spike with the declaration as previously written observes
     > the cancellation, answers question 1 "no, `exec` does not usefully host MCP", and builds the
     > `--output-schema` fallback — the wrong branch on the decision §5.2 calls the one that
-    > "decides what M1 builds". `danger-full-access` and
+    > "decides what M1 builds". S6 ran with the key set and question 1 came back *yes*
+    > (`tests/fixtures/s6/mcp-server-frames.jsonl` shows the `tools/call` arriving), so the trap
+    > was avoided; the key remains **required** in M1's declaration. `danger-full-access` and
     > `--dangerously-bypass-approvals-and-sandbox` also work; M1 declines both. Codex subscription auth cannot use a
     custom `base_url` at all (`MILESTONES.md`), which is why the dummy key is required rather than
     optional.
@@ -2978,9 +3047,10 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     property of the run, not of the agent.
 - A real `claude` root (headless) calls `mcp__marion__spawn` for a `codex` agent type.
 - A real `codex` child starts in a worktree, edits a file, and returns through the channel S6
-  selects — marion's `report` tool (namespace form on Codex) if `exec` hosts MCP, else the `--output-schema` document, or on
-  the fifth branch (above) its final message as a synthesized `narrative` with
-  `status: Unreported`.
+  selected — **marion's `report` tool** (namespace form on Codex), `exec` having been measured to
+  host MCP (§11 item 12). The `--output-schema` document and the fifth branch's synthesized
+  `narrative` with `status: Unreported` are **not** M1's acceptance path; §9's branch table above
+  retains them as the decision record.
 - The parent receives the **structured task contract** as a tool result. **Asserted on the request
   side, not on the reply**: the canned provider records a subsequent request from the root whose
   `tool_result` for the `spawn` call deserializes to the persisted `contracts/<task_id>.json`,
@@ -2998,15 +3068,32 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   SSE, fixed before the run, and would pass against a marion that dropped the contract entirely.
 - The scope is enforced **detectively**: a deliberate out-of-scope write appears in the contract's
   `changed_paths`, is listed in **`scope_violations`**, and `scope_enforced` is `true` — from the
-  git-derived `changed_paths` of §6.7, on **every** S6 branch; `ToolCall.locations` never populate
+  git-derived `changed_paths` of §6.7 — a criterion deliberately written to hold on **every** S6
+  branch, and which holds on the primary branch taken; `ToolCall.locations` never populate
   it and are corroborating `evidence` only. A run with no
   out-of-scope write yields `scope_enforced: true` with `scope_violations: []`, which is
   distinguishable from an unchecked run (`scope_enforced: false`).
 - The whole run is driven by the CannedProvider — no paid tokens, repeatable.
-- Owed here: spike **S6** with its fixture (§5.2, run first), plus all three M1 debts — the live
+- **A timed-out child leaves no surviving tool-call descendant.** A `codex` child is given a
+  deliberately short `timeout` bound and a tool call that is **still running when `exec` yields**
+  — §11 item 18's **case B**, the only case that leaks, and the shape a case-A-only test would
+  pass against a broken implementation. After marion expires the node, the assertion is over the
+  descendant set marion enumerated in **step 1** of this section's two-step group kill, which the
+  test reads back: `kill(pid, 0)` returns **`ESRCH`** for **every** pid in that set. **Asserting
+  that the child's own process died is not this criterion and does not imply it** — that is
+  exactly what a naive `killpg`-only implementation satisfies while leaving every `setsid`-ed
+  tool-call process alive and reparented to pid 1, with the node reading `Exited{TimedOut}` and
+  nothing in the journal to show the leak. Silent failure is why the criterion exists rather than
+  being left to the kill code's own tests (§11 item 18, spike S7, fixtured in
+  `tests/fixtures/s7/`). A non-empty enumerated set is part of the criterion: an empty one would
+  make the `ESRCH` check vacuous.
+- Owed here: all three M1 debts — the live
   `SubagentStop` confirmation (§7.6), the pty re-confirmation of S1, and **a real `can_use_tool`
   round-trip with a committed fixture** (§5.2), the inbound half of Claude Code's control channel,
   which the whole permission path is designed on and which no committed fixture exercises.
+  **Spike S6 is no longer owed here** — it was run and resolved 2026-08-01 and is fixtured in
+  `tests/fixtures/s6/` (§5.2, §11 item 12); it is named only because earlier revisions listed it
+  first in this line.
 
 **M2 — supervisor split.**
 - `marion-tui` SIGKILLed mid-run; agents keep running; a new TUI shows the full tree.
@@ -3205,15 +3292,44 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     how it is spelled. An allowlist may be added on top later; it does not substitute. It is the one place in this design where a string from
     the agent channel reaches a shell with the user's privileges, and §3.1 item 2's rule (messages
     from other agents are data, never authority) does not currently reach it.
-18. **Whether `codex exec` keeps its tool-call children in marion's process group is unmeasured.**
-    §9 specifies `setpgid` at spawn plus `killpg` at expiry, because a SIGKILL to a pid does not
-    reach its descendants. **The mechanism itself is now measured** (round 19): a Rust parent using
-    `process_group(0)` + `killpg` reaped a shell child and its backgrounded grandchild with no
-    leak, and `Command.timeout`'s kill produced `timed_out: true` with `exit_code: None`. **The
-    open half is the harness's own behaviour**: if `codex exec` puts its `exec_command` children in
-    a *new* group or session, `killpg` on marion's group will not reach them and the runaway
-    survives. Cheap to settle in M1 — spawn a child whose tool call sleeps, expire it, and check
-    the grandchild's pid and pgid.
+18. **~~Whether `codex exec` keeps its tool-call children in marion's process group~~ — RESOLVED
+    2026-08-01 (spike S7), fixtured in `tests/fixtures/s7/`.** **It does not, and the answer is
+    NO.** Measured twice, identical both times, against codex-cli 0.146.0 on macOS (darwin 25.5.0)
+    with a canned provider — no model call, no API key. **`codex exec` calls `setsid` for each
+    tool-call command**, so the tool-call child is a **session leader in its own session and its own
+    process group**. The measured tree, with the parent having spawned codex under
+    `setpgid(0, 0)` exactly as §9 specifies: codex itself at pgid 55091 (marion's group) and sid
+    55049 — it inherits the parent's session, so **codex does not setsid itself**;
+    `codex-code-mode-host`, the V8 isolate host, already at its own pgid 55296; the tool-call child
+    and its own grandchild at pgid == sid == 55386. After `killpg(55091, SIGKILL)`: codex is gone,
+    both sleepers are alive with ppid 1, and `kill(pid, 0)` returns success rather than `ESRCH`.
+    **`setpgid` at spawn plus `killpg` at expiry is therefore necessary but not sufficient**, and
+    §9 and §6.7 are corrected accordingly.
+
+    **The two-case subtlety, which nearly hid the leak** — a first probe drove only case A and
+    reported a misleading "no survivors". **Case A**, the tool command *completes*, leaving
+    backgrounded orphans: nothing leaks, because codex reaps its own command's session on
+    completion — all four pids were already dead 1.63 s in, before the kill. **Case B**, the tool
+    command is *still running* when `exec` yields (`yield_time_ms: 250`, returning a `session_id`):
+    **both pids survive the `killpg`.** Case B is the shape of a runaway tool call at timeout
+    expiry — the only case marion's timeout exists for — so a probe that exercises only case A
+    answers this item wrongly.
+
+    **Seatbelt is not the cause.** `sandbox_mode = "workspace-write"` was active, but the seatbelt
+    profile governs filesystem and network, not process-group placement; the leaked pids were
+    visible in `ps` and died to an ordinary SIGKILL issued from outside. The `setsid` is codex's own
+    behaviour.
+
+    **The remedy, measured in the same probe with zero survivors:** enumerate codex's descendants
+    *before* signalling, collect every distinct pgid among them (here `[55091, 55296, 55386]`), then
+    `killpg` marion's own group **and** each collected pgid. **The ordering is load-bearing** —
+    once codex dies its descendants reparent to pid 1 and no ancestry walk recovers them, so the
+    sweep must precede the first signal. What remains open is the strength of that last claim: the
+    remedy was measured **once, in one probe, on one machine, at one harness version, over a single
+    tool call**. Unmeasured: several concurrent tool-call sessions, a tool-call child that
+    `setsid`s again *after* the enumeration and before the signal (a race this design does not
+    close), and the equivalent behaviour on Claude Code, whose tool-call children were never
+    probed. Reproduce with `cd spikes/s7 && python3 run_probe.py`.
 19. **Writes to git-ignored paths are invisible to scope enforcement.** `changed_paths` is derived
     from `git diff` ∪ `git status --untracked-files=all` (§6.7), and neither reports ignored paths.
     A child that writes a build directory, a vendored tree or a local credentials file therefore
@@ -3234,8 +3350,9 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
 ## 12. History: what was retracted or corrected
 
-Recorded so it is not rediscovered. Five spikes ran 2026-07-31; all passed, and four corrected a
-design decision.
+Recorded so it is not rediscovered. The 41 rows below come from seven spikes — S1–S5 on
+2026-07-31, S6 and S7 on 2026-08-01 — and from audit rounds 5–19; every spike passed, and six of
+the seven corrected a design decision.
 
 | claim | fate |
 |---|---|
@@ -3278,4 +3395,5 @@ design decision.
 | Codex declares tools in a top-level `tools` field, one entry per tool | **CORRECTED (S6, 2026-08-01).** 0.146.0 has **no** top-level `tools` field. Declarations ride inside `input` as an `additional_tools` developer message, and the model's surface is a `custom` tool `exec` running JavaScript in a V8 isolate — *code mode*. A real model calls `await tools.mcp__marion__report({…})`; `client_metadata` carries `code_mode_tool_names` mapping that flat identifier to `{name, namespace}`. Fixtured in `tests/fixtures/s6/provider-requests.redacted.jsonl`. |
 | On Codex the flat `mcp__marion__report` name is simply rejected | **REFINED (S6).** Both spellings are real at different layers: the flat name is the JavaScript identifier a model writes under code mode; `{name:"report", namespace:"mcp__marion"}` is codex's internal dispatch form, and a `function_call` item in that form **is executed** (fixtured). The round-15 `unsupported call` result was about a *`function_call` naming the flat string*, not about the identifier in general. |
 | `codex exec`'s MCP server is spawned once per run | **CORRECTED (S6).** The frame log shows **two** full `initialize` + `tools/list` sequences for a single `codex exec`. A bridge must be idempotent across repeated startup. |
+| `setpgid` at spawn plus `killpg` at expiry is enough to kill a timed-out child and its tool-call descendants | **CORRECTED (S7, 2026-08-01).** `codex exec` calls **`setsid`** for each tool-call command, so that child is a session leader in its own group; `killpg` on marion's group kills codex (which does *not* setsid) and leaves every tool-call subprocess alive, reparented to pid 1 — the exact untracked runaway the rule existed to prevent. Only case B leaks (command still running when `exec` yields); case A, a completed command, is reaped by codex itself, which is why a case-A-only probe reports a false clean. Seatbelt is not the cause. §9 now requires enumerating the descendants' distinct pgids **before** signalling, then `killpg`ing marion's group and each of them — ordering load-bearing, since the descendants reparent to pid 1 the moment codex dies. Fixtured in `tests/fixtures/s7/`. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |

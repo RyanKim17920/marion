@@ -214,8 +214,9 @@ mechanism, which is why the canned provider and the model-injection plane are th
 implementation:
 
 - **Every spike emits a fixture**, so answers become regression tests instead of evaporating.
-  **This rule is currently violated; the violations are enumerated in design doc §11 items 10 and
-  12** (item 12 is S6, the missing fixture that gates M1's first task).
+  **This rule is currently violated; the violations are enumerated in design doc §11 item 10**
+  (item 12, S6, is closed — its fixture is committed at `tests/fixtures/s6/`; item 18, S7, is
+  closed the same way, at `tests/fixtures/s7/`).
   Treat that list as authoritative and keep it current; do not re-enumerate it here.
 - **Fixtures contain system prompts, repo contents, and anything secret that appeared in tool
   output.** Redaction pass plus a pre-commit secret scan are mandatory; prefer recording against
@@ -225,10 +226,16 @@ implementation:
 
 ## Milestones
 
-**Spikes S1–S5 are resolved** (design doc §12). **S6 is open and is M1's first task** — it decides
-whether M1's `report` return path exists at all (on Codex that tool is reached by the
-`mcp__marion` **namespace** form, never the flat name — design §3.1 item 1), and design doc §9 specifies what M1
-builds under each answer. Build **M1 disposably** — prove the delegation core before anything that
+**Spikes S1–S7 are resolved** (design doc §12), each with a committed fixture. **S7 answered NO** —
+`codex exec` does **not** keep its tool-call children in marion's process group; it `setsid`s each
+one, so a single `killpg` at timeout expiry leaks every runaway tool-call subprocess to pid 1.
+marion's timeout kill must sweep the child's descendants for their process groups *before*
+signalling. That is a requirement on M1's kill path, not a change to any milestone's scope; the
+mechanism is design doc §9 and §11 item 18. **S6 answered YES on all three questions** — `codex
+exec` does host MCP servers, so M1's `report` return path exists and M1 takes the **primary branch**
+(marion's own `report` tool over MCP) rather than the `--output-schema` fallback. On Codex that tool
+is reached by the `mcp__marion` **namespace** form, never the flat name (design §3.1 item 1).
+Design doc §9 specifies what M1 builds. Build **M1 disposably** — prove the delegation core before anything that
 displays it: no *detached* daemon (the registry, the task audit trail and the control MCP run
 in-process), no VT emulator, no model proxy.
 
