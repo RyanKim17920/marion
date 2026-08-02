@@ -9,3 +9,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 globset = "0.4"
+# §4.3's `<project-hash>` is defined as BLAKE3; nothing else in the tree needs a hash, so this is
+# the one dependency it buys.
+blake3 = "1"
