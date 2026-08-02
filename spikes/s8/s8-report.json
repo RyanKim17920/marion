@@ -1,0 +1,116 @@
+{
+  "spike": "s8",
+  "question": "design 11.3 -- does CODEX_HOME / GEMINI_CLI_HOME isolation break auth the way CLAUDE_CONFIG_DIR does?",
+  "answer": "YES for CODEX_HOME, but unlike Claude Code it is fully recoverable by copying auth.json, because Codex stores credentials in a plain file and does NOT use the macOS Keychain.",
+  "measured_at": "2026-08-02",
+  "env": {
+    "codex_version": "codex-cli 0.146.0",
+    "codex_binary": "~/.codex/packages/standalone/releases/0.146.0-aarch64-apple-darwin/bin/codex",
+    "gemini_version": "0.53.0",
+    "platform": "darwin 25.5.0 arm64"
+  },
+  "credential_storage": {
+    "location": "~/.codex/auth.json",
+    "mode": "0600 regular file, ~4.7 KB",
+    "keychain_used": false,
+    "keychain_evidence": {
+      "probed_services": ["codex", "Codex", "codex-cli", "OpenAI", "openai", "com.openai.codex", "ChatGPT"],
+      "found": [],
+      "control_claude_code": "FOUND service=Claude Code-credentials",
+      "binary_links_security_framework": true,
+      "security_framework_is_credential_storage": false,
+      "note": "codex links Security.framework and vendors the security-framework crate, but the only matching strings are os/macos/keychain*.rs paths from the crate used for TLS root certs. No generic-password item exists for any codex-shaped service name."
+    },
+    "auth_json_shape": {
+      "auth_mode": "chatgpt",
+      "OPENAI_API_KEY": null,
+      "tokens.id_token": "JWT, iss=https://auth.openai.com",
+      "tokens.access_token": "JWT, aud=https://api.openai.com/v1",
+      "tokens.refresh_token": "JWT",
+      "tokens.account_id": "uuid",
+      "last_refresh": "RFC3339 timestamp"
+    },
+    "token_lifetime": {
+      "access_token_iat_to_exp_days": 10,
+      "id_token_iat_to_exp_hours": 1,
+      "observed_last_refresh_age_days": 10,
+      "implication": "a copied auth.json carries an access token good for at most ~10 days from its issue time; after that the copy must refresh on its own."
+    }
+  },
+  "cases": [
+    {
+      "id": "A",
+      "setup": "real CODEX_HOME inherited",
+      "cmd": "codex login status",
+      "exit": 0,
+      "stdout": "Logged in using ChatGPT",
+      "verdict": "baseline authenticated"
+    },
+    {
+      "id": "B",
+      "setup": "CODEX_HOME=<fresh empty dir>",
+      "cmd": "codex login status",
+      "exit": 1,
+      "stdout": "Not logged in",
+      "verdict": "ISOLATION BREAKS AUTH"
+    },
+    {
+      "id": "C",
+      "setup": "CODEX_HOME=<isolated> with auth.json copied in, no config.toml",
+      "cmd": "codex login status",
+      "exit": 0,
+      "stdout": "Logged in using ChatGPT",
+      "verdict": "RECOVERED -- auth.json alone is sufficient"
+    },
+    {
+      "id": "D",
+      "setup": "CODEX_HOME=<isolated>, auth.json is a symlink to another copy",
+      "cmd": "codex login status",
+      "exit": 0,
+      "stdout": "Logged in using ChatGPT",
+      "verdict": "symlink is followed on READ; write-through on refresh is UNMEASURED"
+    },
+    {
+      "id": "E",
+      "setup": "CODEX_HOME=<isolated>, credential supplied only via env",
+      "cmd": "OPENAI_API_KEY=... / CODEX_AUTH=<auth.json contents> codex login status",
+      "exit": "nonzero",
+      "stdout": "Not logged in / 'agent identity JWT payload is not valid JSON' (CODEX_ACCESS_TOKEN)",
+      "verdict": "NO env-only path. CODEX_ACCESS_TOKEN is an agent-identity channel, not the ChatGPT OAuth path."
+    },
+    {
+      "id": "F",
+      "setup": "marion-shaped CODEX_HOME: copied auth.json + config.toml declaring the marion MCP server",
+      "cmd": "codex mcp list; codex exec --skip-git-repo-check 'Reply with exactly the word: pong'",
+      "exit": 0,
+      "stdout": "pong (3596 tokens); mcp list shows marion enabled with MARION_NODE_TOKEN masked as *****",
+      "verdict": "END-TO-END OK -- one real model call, isolated CODEX_HOME, real auth",
+      "note": "an earlier attempt pinned model='gpt-5.1-codex' and got HTTP 400 'not supported when using Codex with a ChatGPT account'. That is a MODEL error, not an auth error -- the credential was accepted. Do not pin an API-only model in a ChatGPT-auth child."
+    }
+  ],
+  "safety_postcheck": {
+    "real_auth_json_sha256_prefix_before": "8da4f39233e58383",
+    "real_auth_json_sha256_prefix_after": "8da4f39233e58383",
+    "real_auth_json_mtime_changed": false,
+    "real_login_status_after": "Logged in using ChatGPT",
+    "isolated_copy_diverged_during_real_call": false,
+    "note": "no write of any kind to ~/.codex during this spike"
+  },
+  "marion_implications": {
+    "verdict": "CODEX_HOME isolation is KEEPABLE. Unlike the Claude Code / CLAUDE_CONFIG_DIR case, it does not force a fileless launch path.",
+    "required_step": "the child launcher must seed <agent-dir>/config/auth.json by copying ~/.codex/auth.json (or $CODEX_HOME/auth.json of the parent) before exec'ing the child.",
+    "security_cost": "this duplicates a live OAuth refresh+access token into every per-node agent dir. N nodes = N copies of a credential that can mint API calls on the user's ChatGPT account. Per-node dirs must be 0700, must be excluded from any archive/upload/artifact path, and should be shredded on node teardown.",
+    "codex_writes_into_codex_home": [
+      "auth.json", "cache", "config.toml", "goals_1.sqlite", "installation_id",
+      "logs_2.sqlite", "memories_1.sqlite", "models_cache.json", "plugins",
+      "sessions", "shell_snapshots", "skills", "state_5.sqlite", "tmp"
+    ],
+    "note_on_config_toml": "config.toml in the isolated CODEX_HOME was parsed correctly and the marion MCP server env token was masked in `codex mcp list` output, so the design's off-ps reason for using config.toml survives isolation intact."
+  },
+  "unmeasured": [
+    "refresh-token rotation: whether a per-node copy that refreshes on its own rotates/invalidates the parent's refresh token. The access token was still valid during the spike so no refresh was triggered. Testing it requires either waiting out the ~10-day access-token lifetime or forcing a refresh, which risks invalidating the user's real session.",
+    "symlink write-through: whether Codex's refresh writes through a symlinked auth.json or replaces it via atomic tmp+rename (which would break the link and strand a stale copy). Codex does create a tmp/ dir under CODEX_HOME, which is consistent with rename-based writes, but this was not directly observed.",
+    "long-running nodes: whether a node alive past the access-token expiry recovers cleanly by refreshing its own copy.",
+    "GEMINI_CLI_HOME: gemini 0.53.0 IS installed and GEMINI_CLI_HOME is a real referenced env var in its bundle. Credentials live at ~/.gemini/oauth_creds.json (0600). A generic-password keychain item for service=gemini DOES exist, so the Gemini answer may differ from the Codex one and CANNOT be assumed. Gemini is not on M1's path, so this half remains unmeasured."
+  ]
+}

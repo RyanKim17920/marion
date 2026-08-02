@@ -452,7 +452,8 @@ the spec forbids custom root fields.
   supervisor.sock                     # unix socket (§2); /tmp fallback when sun_path overflows
   journal.jsonl                       # append-only registry journal
   snapshot.json                       # opportunistic journal compaction
-  agents/<agent_id>/                  # = <agent-dir>
+  agents/<agent_id>/                  # = <agent-dir>, MUST be 0700 (§6.4: config/ may hold a
+                                      #   seeded copy of the user's real OAuth credential)
     meta.json                         # compiled spec, caps, harness ref, binary path + version
     contracts/<task_id>.json          # task contracts (§6.7) — child nodes only; a root has
                                       #   none (§9). One per run: a node with no resume has
@@ -461,7 +462,9 @@ the spec forbids custom root fields.
     events.jsonl                      # IR, append-only
     pty.cast                          # asciicast v3, surfaces with a pty
     hook-token                        # 0600, per-node Stop-hook token (§5.4)
-    config/                           # isolated harness config dir, if any (§6.4)
+    config/                           # isolated harness config dir, if any (§6.4). For a Codex
+                                      #   child on real auth this holds a seeded 0600 auth.json —
+                                      #   never archived or uploaded, shredded on teardown (§6.4)
     worktree                          # symlink, when isolation: worktree
 ```
 
@@ -1278,7 +1281,12 @@ server declaration — `env` included — lands in the child's argv and is visib
 Code and Codex the "chosen" row therefore buys nothing over an argv flag. **Writing the declaration
 to `<agent-dir>/config/` (§6.4's non-fileless path) is the only placement that keeps the token off
 `ps`** — which is a real reason to prefer it wherever the fileless path is not load-bearing, and
-which §6.4's OAuth constraint does not forbid for a *Codex* child.
+which §6.4's OAuth constraint does not forbid for a *Codex* child — **now measured rather than
+assumed**: an isolated `CODEX_HOME` carrying a copied `auth.json` *and* a `config.toml` declaring
+the marion server authenticated, listed the server with its `MARION_NODE_TOKEN` masked, and
+completed a real turn (S8, §11 item 3). The off-`ps` placement therefore survives isolation. What
+isolation does cost for a real-auth Codex child is the credential-seeding obligation in §6.4, not
+the file placement.
 
 **What this does and does not buy, stated plainly.** A token in `env` is *not* a defence against a
 determined same-uid sibling: on the platforms marion targets, one same-uid process can read
@@ -1498,7 +1506,8 @@ marion **never mutates the user's real harness config.**
   `Stop` hook alongside marion's would make `stop_hook_active` unguaranteeable on every node, not
   just the root; Codex `-c key=value`; opencode `OPENCODE_CONFIG_CONTENT`.
 - **Isolated dir otherwise:** `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GEMINI_CLI_HOME` under
-  `<agent-dir>/config/`, deleted with the node.
+  `<agent-dir>/config/`, deleted with the node. **For a Codex child that must authenticate against
+  a real endpoint this is not free — see the credential-seeding MUSTs below.**
 - **Seeding from the user's real config is opt-in** (`inherit_user_config`, default off) — those
   directories hold OAuth tokens and API keys, and inherited MCP servers defeat `tools:` (§3.1).
   When on, marion copies **only the keys the agent type names**, never the directory wholesale.
@@ -1513,7 +1522,43 @@ marion **never mutates the user's real harness config.**
 > into the isolated dir, multiplying the blast radius §7.1 exists to contain; (c) run isolated
 > children on an API key or through marion's proxy, accepting different billing. Any element
 > requiring an isolated `CLAUDE_CONFIG_DIR` must state which it takes.
-> **UNVERIFIED:** whether `CODEX_HOME` / `GEMINI_CLI_HOME` share the coupling.
+
+> **⚠ `CODEX_HOME` isolation also breaks auth — but Codex's credential is a file, so isolation is
+> keepable at a price.** Measured 2026-08-02, spike S8, codex-cli 0.146.0 on macOS, **ChatGPT
+> (subscription) auth** (§11 item 3, fixture `spikes/s8/`). An isolated `CODEX_HOME` starts
+> unauthenticated — `codex login status` exits 1, "Not logged in" — but Codex stores its credential
+> in a **plain `0600` file, `$CODEX_HOME/auth.json`, and not in the macOS Keychain** (seven
+> codex-shaped service names probed, all absent; the `Claude Code-credentials` control was found).
+> Copying that one file into the isolated dir restores auth completely. **There is no env-only
+> path**: `OPENAI_API_KEY` and `CODEX_AUTH` both leave the child unauthenticated, and
+> `CODEX_ACCESS_TOKEN` is a separate agent-identity channel, not the ChatGPT OAuth path.
+> **Therefore the fileless launch path is load-bearing for Claude Code only. It is not
+> load-bearing for Codex, and this document must not be read as saying otherwise.**
+>
+> **Normative, for any Codex child that authenticates against a real endpoint:**
+> - marion **MUST** seed `<agent-dir>/config/auth.json` by copying the parent's
+>   `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) **before** exec'ing the child. Nothing
+>   else in `~/.codex` is required for auth.
+> - The seeded copy **MUST** be created mode `0600` inside an agent dir created mode `0700`.
+> - Agent dirs holding a seeded credential **MUST** be excluded from every archive, artifact,
+>   upload and bug-report path (§7.1), and **MUST** be shredded — not merely unlinked — on node
+>   teardown.
+> - marion **MUST NOT** seed a Codex child that does not need real auth. M1's child runs against
+>   the canned provider and therefore **MUST NOT** be seeded (§9).
+> - marion **MUST NOT** substitute a symlink for the copy until §11 item 3(b) is measured: a
+>   symlinked `auth.json` is followed on *read*, but whether a token refresh writes through it or
+>   replaces it by tmp+rename is unobserved.
+>
+> **The cost, stated plainly:** seeding duplicates a live OAuth refresh+access token into every
+> per-node agent dir — N nodes, N copies of a credential that can mint calls on the user's account.
+> That is the blast radius §7.1 exists to contain, and it is why seeding is conditional on the
+> child actually needing real auth. **Still open (§11 item 3):** whether an independently
+> refreshing copy rotates and invalidates the parent's refresh token — the access token's life is
+> ~10 days, so long-lived nodes will eventually refresh.
+>
+> **UNVERIFIED:** whether `GEMINI_CLI_HOME` shares the coupling, and if so in which form. It must
+> **not** be assumed to match Codex — a generic-password Keychain item for `service=gemini` **does**
+> exist, so Gemini may behave like Claude Code.
 
 **Verified launcher requirements:**
 
@@ -2795,9 +2840,17 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
 - **`CODEX_HOME` for the child is `<agent-dir>/config/`**, created by marion and deleted with the
   node (§6.4). It is doing two jobs: it keeps the child out of the user's real `~/.codex`, and it
   is **where the MCP declaration lives** (above), which is why `--ignore-user-config` must not be
-  passed. This costs nothing here because
-  the child authenticates against the canned provider, so the `CLAUDE_CONFIG_DIR`-style auth
-  coupling (§11 item 3) does not bind.
+  passed. **The auth coupling is real but does not bind in M1.** S8 measured it: an isolated
+  `CODEX_HOME` *does* start unauthenticated (§11 item 3, §6.4), so this is not the free move the
+  earlier text implied. It costs nothing **here** only because M1's child authenticates against the
+  canned provider and needs no real credential. Accordingly, for M1: marion **MUST NOT** seed
+  `auth.json` into this directory, and the agent dir **MUST** still be created `0700` so the
+  invariant does not have to be introduced later alongside the credential it protects. **From the
+  first milestone whose Codex child talks to a real endpoint, §6.4's seeding MUSTs apply in
+  full** — copy `$CODEX_HOME/auth.json` in at `0600` before exec, keep the dir out of every
+  archive/upload path, shred it on teardown, and do not substitute a symlink. Unlike the Claude
+  Code case, this does **not** force the fileless path: a seeded isolated `CODEX_HOME` was measured
+  driving a real turn with the marion MCP declaration in place.
 - **`spawn` blocks** and returns the completed `TaskContract` as its tool result. Backgrounding
   (returning a handle) is M2+. `TaskContract.timeout` bounds the block; on expiry `spawn` returns
   the contract with `status: TimedOut` if the child was `Running`, `Unreported` with
@@ -2995,7 +3048,8 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   The denial is recorded in the **journal** (§4.3), not in a contract — a root has none.
 - **Both processes are pointed at the CannedProvider, which is what makes §6.4's OAuth constraint
   moot for M1.** Neither process authenticates against a real endpoint, so nothing here depends on
-  subscription auth:
+  subscription auth — and neither the root's real `CLAUDE_CONFIG_DIR` nor the child's isolated
+  `CODEX_HOME` is seeded with credential material:
   - **root (`claude`)**: fileless config — `--mcp-config` for the control MCP with
     `--strict-mcp-config`, **`--tools ""`** (availability axis: the root's `tools:` is `[]`, so it
     gets no built-in tools) and **`--allowedTools mcp__marion__spawn,mcp__marion__status,
@@ -3193,6 +3247,82 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
    CLI does isatty-conditional line buffering, framing may differ under `pty-process`. Closes in M1.
 2. **`SubagentStop` live confirmation** — static-only so far (§7.6). Closes in M1.
 3. **Do `CODEX_HOME` / `GEMINI_CLI_HOME` isolation break auth** the way `CLAUDE_CONFIG_DIR` does?
+    **PARTIALLY RESOLVED 2026-08-02 (spike S8), fixtured in `spikes/s8/`. The Codex half is
+    answered; the Gemini half is not, and two Codex sub-questions remain open. Do not read this
+    item as closed.**
+
+    **Codex: YES, isolation breaks auth — and unlike Claude Code it is cleanly and fully
+    recoverable.** Measured against codex-cli 0.146.0 on macOS (darwin 25.5.0), on **one machine,
+    one harness version, and one account type — ChatGPT (subscription) auth, not API-key auth**.
+    `CODEX_HOME=<fresh empty dir>` → `codex login status` exits **1**, "Not logged in". Copy
+    `auth.json` in → exits **0**, "Logged in using ChatGPT". That is the entire remedy.
+
+    **The reason the Claude Code precedent does not transfer is the storage mechanism.** Codex
+    keeps its credential in a **plain file** — `~/.codex/auth.json`, mode `0600`, holding
+    `auth_mode: "chatgpt"`, `OPENAI_API_KEY: null`, and a `tokens` object with
+    `id_token`/`access_token`/`refresh_token`/`account_id` plus `last_refresh` — **not in the macOS
+    Keychain**. Seven codex-shaped Keychain service names were probed (`codex`, `Codex`,
+    `codex-cli`, `OpenAI`, `openai`, `com.openai.codex`, `ChatGPT`); **all absent**, while the
+    control `Claude Code-credentials` was **found**. The codex binary does link
+    `Security.framework`, but its only keychain-matching strings are `security-framework-3.5.1`
+    crate paths — the TLS root-certificate path, not credential storage. Claude Code's breakage is
+    unfixable-by-copy precisely because the secret is *not in the config dir at all*; Codex's is a
+    file, so copying it suffices. **§6.4's conclusion that `CLAUDE_CONFIG_DIR` isolation makes the
+    fileless launch path load-bearing stands for Claude Code and explicitly does not generalize to
+    Codex.**
+
+    **There is no env-only path.** `OPENAI_API_KEY` alone → "Not logged in". `CODEX_AUTH` carrying
+    the whole `auth.json` document → "Not logged in". `CODEX_ACCESS_TOKEN` → `agent identity JWT
+    payload is not valid JSON`, i.e. a **separate agent-identity channel**, not the ChatGPT OAuth
+    path. **Seeding the file is the only remedy**, which is why §6.4 and §9 now state it as a MUST
+    on the launcher rather than an option.
+
+    **Verified in marion's actual shape**, not just in the abstract: an isolated `CODEX_HOME`
+    holding both a copied `auth.json` **and** a `config.toml` declaring the marion MCP server —
+    `codex mcp list` showed the server enabled with `MARION_NODE_TOKEN` masked, and `codex exec`
+    completed a real turn (one real model call, the only one in the spike). **So §5.4's rationale
+    for putting the MCP declaration in `config.toml` — keeping the per-node token off `ps` —
+    survives isolation intact.** The spike wrote nothing to the real `~/.codex`: the real
+    `auth.json`'s digest and mtime were unchanged afterwards and `login status` still reported
+    logged in.
+
+    **Security obligation, stated here rather than buried: the remedy duplicates a live OAuth
+    refresh+access token into every per-node agent dir.** N nodes means N copies of a credential
+    that can mint calls on the user's ChatGPT account. Per-node dirs **MUST** be `0700`, **MUST**
+    be excluded from any archive/artifact/upload path, and **MUST** be shredded on teardown. This
+    is a new obligation on §4.3's agent-dir layout and §7.1's blast-radius accounting, and it is
+    the price of keeping `CODEX_HOME` isolation at all.
+
+    **A trap worth recording:** pinning `model = "gpt-5.1-codex"` under ChatGPT auth returns HTTP
+    400 `not supported when using Codex with a ChatGPT account` — a **model** error that
+    superficially reads as an auth failure. An engineer re-running this spike with a pinned
+    API-only model will conclude the credential was rejected when it was accepted.
+
+    **Zero-cost note:** `codex login status` reports auth state **without a model call**, so
+    `marion doctor` can check a seeded node's credential for free.
+
+    **What remains open:**
+    - **(a) Refresh-token rotation — the open risk for long-lived nodes.** Access-token lifetime is
+      ~10 days (`iat`→`exp`) and the observed `last_refresh` was already 10 days old, so a copy goes
+      stale. **Whether a per-node copy that refreshes independently rotates and invalidates the
+      parent's refresh token is unresolved.** No refresh fired during the spike, and forcing one
+      risks invalidating the user's real session. Whether a node alive past expiry recovers by
+      refreshing its own copy is equally unmeasured.
+    - **(b) Symlink write-through.** A symlinked `auth.json` **is** followed on read (measured),
+      which would be the elegant fix — one credential, refreshes flowing back to the parent. But
+      whether a refresh writes *through* the symlink or replaces it via atomic tmp+rename —
+      breaking the link and stranding a stale copy — is **unobserved**. Codex creates a `tmp/`
+      directory under `CODEX_HOME`, which is consistent with rename-based writes. **Do not adopt
+      the symlink remedy without measuring this.**
+    - **(c) The Gemini half is entirely unmeasured and MUST NOT be assumed to match Codex.**
+      `gemini` 0.53.0 is installed, `GEMINI_CLI_HOME` is a real referenced env var, and credentials
+      sit at `~/.gemini/oauth_creds.json` (`0600`) — but a generic-password **Keychain item for
+      `service=gemini` does exist**, so Gemini may behave like Claude Code rather than like Codex.
+      Gemini is not on M1's path, which is why the spike stopped here.
+
+    Re-run with `S8_REAL_CALL=1 spikes/s8/probe.sh`; without that variable every case is an
+    auth-state check and costs nothing. `spikes/s8/s8-report.json` records structural facts only —
+    key names, file modes, exit codes — and carries no token material.
 4. **How does Codex's transient `/diff` alt-screen entry interact with retained scrollback?** The
    entry itself is verified (§5.3); what is unproven is whether main-screen history survives the
    round trip intact once marion is also intercepting `CSI 3J`.
@@ -3350,9 +3480,9 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
 ## 12. History: what was retracted or corrected
 
-Recorded so it is not rediscovered. The 41 rows below come from seven spikes — S1–S5 on
-2026-07-31, S6 and S7 on 2026-08-01 — and from audit rounds 5–19; every spike passed, and six of
-the seven corrected a design decision.
+Recorded so it is not rediscovered. The 42 rows below come from eight spikes — S1–S5 on
+2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02 — and from audit rounds 5–19; every spike
+passed, and seven of the eight corrected a design decision.
 
 | claim | fate |
 |---|---|
@@ -3396,4 +3526,5 @@ the seven corrected a design decision.
 | On Codex the flat `mcp__marion__report` name is simply rejected | **REFINED (S6).** Both spellings are real at different layers: the flat name is the JavaScript identifier a model writes under code mode; `{name:"report", namespace:"mcp__marion"}` is codex's internal dispatch form, and a `function_call` item in that form **is executed** (fixtured). The round-15 `unsupported call` result was about a *`function_call` naming the flat string*, not about the identifier in general. |
 | `codex exec`'s MCP server is spawned once per run | **CORRECTED (S6).** The frame log shows **two** full `initialize` + `tools/list` sequences for a single `codex exec`. A bridge must be idempotent across repeated startup. |
 | `setpgid` at spawn plus `killpg` at expiry is enough to kill a timed-out child and its tool-call descendants | **CORRECTED (S7, 2026-08-01).** `codex exec` calls **`setsid`** for each tool-call command, so that child is a session leader in its own group; `killpg` on marion's group kills codex (which does *not* setsid) and leaves every tool-call subprocess alive, reparented to pid 1 — the exact untracked runaway the rule existed to prevent. Only case B leaks (command still running when `exec` yields); case A, a completed command, is reaped by codex itself, which is why a case-A-only probe reports a false clean. Seatbelt is not the cause. §9 now requires enumerating the descendants' distinct pgids **before** signalling, then `killpg`ing marion's group and each of them — ordering load-bearing, since the descendants reparent to pid 1 the moment codex dies. Fixtured in `tests/fixtures/s7/`. |
+| Pointing `CODEX_HOME` at `<agent-dir>/config/` costs nothing, and whether it breaks auth is unverified | **CORRECTED (S8, 2026-08-02).** It **does** break auth: an isolated `CODEX_HOME` starts "Not logged in" (exit 1) on 0.146.0 under ChatGPT auth. But the Claude Code precedent does not transfer — Codex stores its credential in a plain `0600` `auth.json`, **not the macOS Keychain** (seven codex-shaped service names probed, all absent; the `Claude Code-credentials` control found), so copying that one file restores auth completely and the fileless path is **not** load-bearing for Codex. There is no env-only substitute (`OPENAI_API_KEY` and `CODEX_AUTH` both fail; `CODEX_ACCESS_TOKEN` is a separate agent-identity channel). §6.4 and §9 now carry the seeding MUSTs plus the `0700`/no-upload/shred obligation the copy creates. **Not a full close of §11 item 3** — refresh-token rotation, symlink write-through, and the whole `GEMINI_CLI_HOME` half remain open. Fixtured in `spikes/s8/`. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |

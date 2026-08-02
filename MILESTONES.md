@@ -108,6 +108,13 @@ show both proceeding without any answer, so this is prudence, not a requirement.
 config dir. Config isolation and subscription auth are mutually exclusive for Claude Code children,
 which makes the fileless launch path load-bearing rather than merely preferred.
 
+**⚠ `CODEX_HOME` isolation breaks auth too, but is recoverable.** Codex keeps its credential in a
+plain `0600` `auth.json`, **not** the Keychain, so copying that one file into the isolated dir
+restores auth completely — the fileless path is **not** load-bearing for Codex. The price is that
+every seeded node holds a live copy of the user's OAuth tokens: per-node dirs are `0700`, never
+uploaded or archived, and shredded on teardown. Still open: refresh-token rotation across copies,
+and `GEMINI_CLI_HOME`, which may behave like Claude Code rather than like Codex.
+
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
 ---
@@ -153,7 +160,7 @@ routing third-party clients through Pro/Max OAuth — is prohibited and enforced
 | Claude Code | `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` | `--settings` + `--setting-sources ""` / env (**not** `CLAUDE_CONFIG_DIR` — breaks OAuth) | Anthropic Messages, SSE mandatory | easy |
 | Qwen Code † | `OPENAI_BASE_URL/_API_KEY/_MODEL` | `QWEN_HOME` | OpenAI Chat Completions | easy |
 | Gemini CLI | `GOOGLE_GEMINI_BASE_URL` | `GEMINI_CLI_HOME` | Gemini `v1beta` + mandatory `:countTokens`, `:embedContent` | medium |
-| Codex | `[model_providers.X]` | `CODEX_HOME` / `-c` inline / `-p` profile | **OpenAI Responses ONLY** | hardest |
+| Codex | `[model_providers.X]` | `CODEX_HOME` / `-c` inline / `-p` profile (isolating `CODEX_HOME` **also** breaks auth — but copying `auth.json` in fully restores it) | **OpenAI Responses ONLY** | hardest |
 | Amp † | — | — | — | **blocked** |
 
 † unverified locally.
@@ -216,7 +223,9 @@ implementation:
 - **Every spike emits a fixture**, so answers become regression tests instead of evaporating.
   **This rule is currently violated; the violations are enumerated in design doc §11 item 10**
   (item 12, S6, is closed — its fixture is committed at `tests/fixtures/s6/`; item 18, S7, is
-  closed the same way, at `tests/fixtures/s7/`).
+  closed the same way, at `tests/fixtures/s7/`; item 3's Codex half is closed by S8, fixtured at
+  `spikes/s8/`, whose report carries structural facts only — key names, file modes, exit codes —
+  because the spike touched real OAuth credentials).
   Treat that list as authoritative and keep it current; do not re-enumerate it here.
 - **Fixtures contain system prompts, repo contents, and anything secret that appeared in tool
   output.** Redaction pass plus a pre-commit secret scan are mandatory; prefer recording against
@@ -226,7 +235,16 @@ implementation:
 
 ## Milestones
 
-**Spikes S1–S7 are resolved** (design doc §12), each with a committed fixture. **S7 answered NO** —
+**Spikes S1–S7 are resolved** (design doc §12), each with a committed fixture; **S8 is
+*partially* resolved** and is the one spike that did not close its question outright. **S8 answered
+the Codex half of "does config-dir isolation break auth"** — it does, but Codex's credential is a
+plain file rather than a Keychain entry, so seeding a copied `auth.json` fully restores it and
+`CODEX_HOME` isolation is keepable. That is a new **requirement on the launcher** for any Codex
+child talking to a real endpoint (seed the credential; `0700` dirs; never upload; shred on
+teardown) and a new **open risk** for long-lived nodes (refresh-token rotation across copies).
+Nothing here changes a milestone's scope — M1's child runs against the canned provider and is
+deliberately **not** seeded. Still open and not to be assumed: `GEMINI_CLI_HOME`. Mechanism and the
+MUSTs are design doc §6.4, §9 and §11 item 3. **S7 answered NO** —
 `codex exec` does **not** keep its tool-call children in marion's process group; it `setsid`s each
 one, so a single `killpg` at timeout expiry leaks every runaway tool-call subprocess to pid 1.
 marion's timeout kill must sweep the child's descendants for their process groups *before*
