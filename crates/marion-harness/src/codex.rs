@@ -64,6 +64,16 @@ pub fn config_toml(bridge: &str, bridge_args: &[&str], base_url: &str) -> String
 approval_policy = "never"
 sandbox_mode = "workspace-write"
 
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
+
 [model_providers.canned]
 name = "canned"
 base_url = "{base_url}"
@@ -121,6 +131,21 @@ mod tests {
         assert!(
             t.contains(r#"default_tools_approval_mode = "approve""#),
             "without it every marion tool call is cancelled with no error the child can see"
+        );
+    }
+
+    /// Measured on 0.146.0 through the M1 end-to-end run: with the plugin feature left on, every
+    /// `codex exec` leaves a `git fetch https://github.com/openai/plugins.git` running **after it
+    /// has exited**, reparented to pid 1, writing into the agent-dir marion is deleting. It is not
+    /// reapable after the fact — §9's kill rule turns on enumerating descendants *before* the
+    /// child dies — so the only remedy is not to start it.
+    #[test]
+    fn the_background_plugin_fetch_that_outlives_exec_is_disabled() {
+        let t = config_toml("/bin/marion-supervisor", &["mcp"], "http://x/v1");
+        assert!(t.contains("[features]"));
+        assert!(
+            t.contains("plugins = false"),
+            "otherwise every child leaves a network fetch behind it"
         );
     }
 

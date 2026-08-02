@@ -149,6 +149,7 @@ version = "0.1.0"
 dependencies = [
  "marion-core",
  "marion-harness",
+ "marion-provider",
  "serde",
  "serde_json",
  "thiserror",

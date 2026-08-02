@@ -49,15 +49,15 @@ pub struct Env {
     pub base_url: String,
 }
 
-struct CommandOutput {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    code: Option<i32>,
-    signal: Option<i32>,
-    timed_out: bool,
+pub struct CommandOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+    pub timed_out: bool,
     /// A pipe was still open when the drain bound expired, so the captured bytes are a prefix of
     /// what the child wrote. Recorded, never silent (design §6.7).
-    capture_truncated: bool,
+    pub capture_truncated: bool,
 }
 
 unsafe extern "C" {
@@ -276,7 +276,12 @@ fn kill_process_tree(child_pid: i32) {
     }
 }
 
-fn run_bounded(
+/// Run `command` to completion or to `timeout`, whichever comes first, killing its whole
+/// descendant tree on expiry. Public because the end-to-end test bounds a real `marion run` with
+/// it: a test that leaked a `claude`, a `codex` and their tool-call grandchildren would be the
+/// very failure S7 exists for, and this is the one implementation in the workspace that has been
+/// measured to leave no survivors.
+pub fn run_bounded(
     command: &mut SysCommand,
     timeout: StdDuration,
 ) -> Result<CommandOutput, SpawnError> {
@@ -338,13 +343,15 @@ fn note_truncated_capture(description: &str) -> String {
     )
 }
 
-fn entropy() -> Result<[u8; RAND_BYTES], SpawnError> {
+/// Fresh entropy for an id. Shared with `root`, which mints the root's `AgentId` the same way.
+pub fn entropy() -> std::io::Result<[u8; RAND_BYTES]> {
     let mut bytes = [0; RAND_BYTES];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes)
 }
 
-fn unix_millis() -> u64 {
+/// Wall-clock milliseconds, the timestamp half of a UUIDv7.
+pub fn unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

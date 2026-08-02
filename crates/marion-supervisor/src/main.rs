@@ -8,10 +8,8 @@ use std::io::{BufRead, Read, Write};
 
 use marion_core::ids::{RAND_BYTES, new_task_id as core_new_task_id};
 use marion_core::paths::{ProjectDir, state_dir};
-
-mod bridge;
-mod run;
-mod spawn;
+use marion_supervisor::root::{AGENT_ID_ENV, READY_FILE_ENV};
+use marion_supervisor::{bridge, run};
 
 fn usage() -> ! {
     eprintln!("usage: marion-supervisor <mcp|doctor>");
@@ -72,7 +70,7 @@ fn handle_tool_call(
             let Ok(task_id) = new_task_id() else {
                 return bridge::tool_result(id, "marion: could not generate task id", true);
             };
-            match run::run_spawn(&env, &req, &task_id, "root") {
+            match run::run_spawn(&env, &req, &task_id, &requester()) {
                 Ok(contract) => {
                     let json = serde_json::to_string_pretty(&contract)
                         .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
@@ -82,6 +80,28 @@ fn handle_tool_call(
             }
         }
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
+    }
+}
+
+/// The node this bridge instance is serving, which becomes `TaskContract.requester`.
+///
+/// §9: *"`requester` for a top-level `spawn` is the root's `AgentId`."* marion is not this
+/// process's parent — the harness is — so the id rides the server declaration marion wrote
+/// (`root::mcp_config_json`) rather than an inherited fd. The literal fallback is what a
+/// hand-started bridge gets: honest about being unattributed rather than inventing a uuid that
+/// names no agent-dir.
+fn requester() -> String {
+    std::env::var(AGENT_ID_ENV).unwrap_or_else(|_| "unattributed-root".into())
+}
+
+/// Tell marion the harness now has our tool list.
+///
+/// The harness connects `--mcp-config` servers **asynchronously and non-blockingly** (measured on
+/// 2.1.220), so without this the root's first turn can go out before `mcp__marion__spawn` exists
+/// and end in plain text with no error anywhere. See `root`'s module docs.
+fn signal_ready() {
+    if let Ok(path) = std::env::var(READY_FILE_ENV) {
+        let _ = std::fs::write(path, b"ready\n");
     }
 }
 
@@ -129,9 +149,13 @@ fn run_bridge() {
         let Some(req) = bridge::parse(line) else {
             continue;
         };
+        let mut answered_tools_list = false;
         let reply = match req {
             bridge::Request::Initialize { id } => Some(bridge::initialize_result(&id)),
-            bridge::Request::ToolsList { id } => Some(bridge::tools_list_result(&id)),
+            bridge::Request::ToolsList { id } => {
+                answered_tools_list = true;
+                Some(bridge::tools_list_result(&id))
+            }
             bridge::Request::ToolsCall {
                 id,
                 name,
@@ -143,6 +167,10 @@ fn run_bridge() {
         if let Some(r) = reply {
             let _ = writeln!(stdout, "{r}");
             let _ = stdout.flush();
+        }
+        // After the flush, never before: the marker means "the harness has been sent the list".
+        if answered_tools_list {
+            signal_ready();
         }
     }
 }
