@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"<UUID>"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -c '/bin/sh <HOME>/Desktop/CODING/marion/spikes/s7/spawn.sh <HOME>/Desktop/CODING/marion/spikes/s7/wt/pids-orphan.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -c '/bin/sh <HOME>/Desktop/CODING/marion/spikes/s7/spawn.sh <HOME>/Desktop/CODING/marion/spikes/s7/wt/pids-orphan.txt'","aggregated_output":"","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/sh -c '/bin/sh <HOME>/Desktop/CODING/marion/spikes/s7/runaway.sh <HOME>/Desktop/CODING/marion/spikes/s7/wt/pids-runaway.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
