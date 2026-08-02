@@ -91,7 +91,14 @@ fn civil_from_unix(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d, (rem / 3600) as u32, ((rem % 3600) / 60) as u32, (rem % 60) as u32)
+    (
+        y,
+        m,
+        d,
+        (rem / 3600) as u32,
+        ((rem % 3600) / 60) as u32,
+        (rem % 60) as u32,
+    )
 }
 
 impl Serialize for SystemTime {
@@ -138,9 +145,17 @@ mod tests {
     #[test]
     fn bounds_round_up_measurements_round_down() {
         let bound = Duration(StdDuration::from_millis(1500));
-        assert_eq!(serde_json::to_string(&bound).unwrap(), "2", "a bound must never shorten");
+        assert_eq!(
+            serde_json::to_string(&bound).unwrap(),
+            "2",
+            "a bound must never shorten"
+        );
         let measure = Millis(StdDuration::from_micros(1500));
-        assert_eq!(serde_json::to_string(&measure).unwrap(), "1", "a measurement must not inflate");
+        assert_eq!(
+            serde_json::to_string(&measure).unwrap(),
+            "1",
+            "a measurement must not inflate"
+        );
     }
 
     #[test]
@@ -148,7 +163,10 @@ mod tests {
         // 999_999 ns is 0.999 ms; rounding would push it to the next millisecond and could
         // order this timestamp after an event that actually followed it.
         let t = SystemTime(UNIX_EPOCH + StdDuration::from_nanos(1_999_999));
-        assert_eq!(serde_json::to_string(&t).unwrap(), "\"1970-01-01T00:00:00.001Z\"");
+        assert_eq!(
+            serde_json::to_string(&t).unwrap(),
+            "\"1970-01-01T00:00:00.001Z\""
+        );
     }
 
     #[test]

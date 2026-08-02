@@ -21,8 +21,11 @@ pub struct ExecSpec {
 }
 
 pub fn compile_exec(spec: &ExecSpec) -> Invocation {
-    let mut args: Vec<String> =
-        vec!["exec".into(), "--json".into(), "--skip-git-repo-check".into()];
+    let mut args: Vec<String> = vec![
+        "exec".into(),
+        "--json".into(),
+        "--skip-git-repo-check".into(),
+    ];
     if let Some(s) = &spec.output_schema {
         args.push("--output-schema".into());
         args.push(s.to_string_lossy().into_owned());
@@ -38,7 +41,10 @@ pub fn compile_exec(spec: &ExecSpec) -> Invocation {
     Invocation {
         program: "codex".into(),
         args,
-        env: vec![("CODEX_HOME".into(), spec.codex_home.to_string_lossy().into_owned())],
+        env: vec![(
+            "CODEX_HOME".into(),
+            spec.codex_home.to_string_lossy().into_owned(),
+        )],
         cwd: spec.cwd.clone(),
     }
 }
@@ -97,13 +103,21 @@ mod tests {
     #[test]
     fn codex_home_is_set_in_env_not_argv() {
         let inv = compile_exec(&spec());
-        assert!(inv.env.iter().any(|(k, v)| k == "CODEX_HOME" && v == "/tmp/ch"));
+        assert!(
+            inv.env
+                .iter()
+                .any(|(k, v)| k == "CODEX_HOME" && v == "/tmp/ch")
+        );
         assert!(!inv.args.iter().any(|a| a.contains("CODEX_HOME")));
     }
 
     #[test]
     fn the_approval_mode_that_silently_cancels_everything_is_always_written() {
-        let t = config_toml("/bin/marion-supervisor", &["mcp"], "http://127.0.0.1:8099/v1");
+        let t = config_toml(
+            "/bin/marion-supervisor",
+            &["mcp"],
+            "http://127.0.0.1:8099/v1",
+        );
         assert!(
             t.contains(r#"default_tools_approval_mode = "approve""#),
             "without it every marion tool call is cancelled with no error the child can see"

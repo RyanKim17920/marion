@@ -24,7 +24,11 @@ pub struct Capped<T> {
 
 impl<T> Capped<T> {
     pub fn complete(value: T, len: usize) -> Self {
-        Self { value, truncated: false, original_bytes: len }
+        Self {
+            value,
+            truncated: false,
+            original_bytes: len,
+        }
     }
 }
 

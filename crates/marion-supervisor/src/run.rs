@@ -568,7 +568,10 @@ mod tests {
     fn every_pgid_a_setsid_tool_call_child_escaped_into_is_collected() {
         // The measured remedy set. 55296 and 55386 are outside codex's group and are exactly what a
         // single killpg on 55091 leaves running.
-        assert_eq!(descendant_pgids(&s7_tree(), 55091), vec![55091, 55296, 55386]);
+        assert_eq!(
+            descendant_pgids(&s7_tree(), 55091),
+            vec![55091, 55296, 55386]
+        );
     }
 
     #[test]
@@ -595,7 +598,10 @@ mod tests {
 
     #[test]
     fn negative_and_duplicate_pgids_are_dropped_before_signalling() {
-        assert_eq!(signal_targets(&[-1, -55386, 55386, 55386], 4242), vec![55386]);
+        assert_eq!(
+            signal_targets(&[-1, -55386, 55386, 55386], 4242),
+            vec![55386]
+        );
     }
 
     #[test]
@@ -768,7 +774,10 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
 
-        assert!(!complete, "the pipe was still open, so the capture is short");
+        assert!(
+            !complete,
+            "the pipe was still open, so the capture is short"
+        );
         assert_eq!(String::from_utf8_lossy(&bytes), "drained\n");
         assert!(
             stop.load(Ordering::Relaxed),
@@ -799,8 +808,10 @@ mod tests {
     #[test]
     fn output_larger_than_the_pipe_buffer_is_drained_whole() {
         let out = run_bounded(
-            SysCommand::new("sh")
-                .args(["-c", "yes 0123456789012345678901234567890123456789 | head -n 12800"]),
+            SysCommand::new("sh").args([
+                "-c",
+                "yes 0123456789012345678901234567890123456789 | head -n 12800",
+            ]),
             StdDuration::from_secs(30),
         )
         .unwrap();

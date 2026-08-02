@@ -20,14 +20,25 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 /// A decoded inbound request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
-    Initialize { id: Value },
-    ToolsList { id: Value },
-    ToolsCall { id: Value, name: String, arguments: Value },
+    Initialize {
+        id: Value,
+    },
+    ToolsList {
+        id: Value,
+    },
+    ToolsCall {
+        id: Value,
+        name: String,
+        arguments: Value,
+    },
     /// Notifications carry no id and expect no reply.
     Notification,
     /// Anything else with an id: answered with method-not-found rather than ignored, so a client
     /// waiting on it is never left hanging.
-    Unknown { id: Value, method: String },
+    Unknown {
+        id: Value,
+        method: String,
+    },
 }
 
 pub fn parse(line: &str) -> Option<Request> {
@@ -44,10 +55,16 @@ pub fn parse(line: &str) -> Option<Request> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            arguments: v.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({})),
+            arguments: v
+                .pointer("/params/arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
         },
         (m, _) if m.starts_with("notifications/") => Request::Notification,
-        (m, Some(id)) => Request::Unknown { id, method: m.to_string() },
+        (m, Some(id)) => Request::Unknown {
+            id,
+            method: m.to_string(),
+        },
         (_, None) => Request::Notification,
     })
 }
@@ -133,7 +150,9 @@ mod tests {
 
         let called = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"report","arguments":{"narrative":"s6 probe"}}}"#;
         match parse(called) {
-            Some(Request::ToolsCall { name, arguments, .. }) => {
+            Some(Request::ToolsCall {
+                name, arguments, ..
+            }) => {
                 assert_eq!(name, "report");
                 assert_eq!(arguments["narrative"], "s6 probe");
             }
@@ -156,8 +175,12 @@ mod tests {
     #[test]
     fn tool_declarations_use_bare_names_not_harness_spellings() {
         let t = tools();
-        let names: Vec<&str> =
-            t.as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = t
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, vec!["spawn", "report"]);
         let s = t.to_string();
         assert!(
@@ -170,7 +193,10 @@ mod tests {
     fn report_says_the_final_message_is_not_the_return_value() {
         let t = tools();
         let desc = t[1]["description"].as_str().unwrap();
-        assert!(desc.contains("NOT the return value"), "this is the confusion 7.6 exists for");
+        assert!(
+            desc.contains("NOT the return value"),
+            "this is the confusion 7.6 exists for"
+        );
     }
 
     #[test]
