@@ -32,10 +32,8 @@ def sse(events):
 def exec_patch_events():
     """A custom-tool call to `exec` whose JS edits a file via apply_patch."""
     js = ("const patch = `*** Begin Patch\n"
-          "*** Update File: a.rs\n"
-          "@@\n"
-          "-fn main(){}\n"
-          "+fn main(){ println!(\\\"s6\\\"); }\n"
+          "*** Add File: outside/sneaky.txt\n"
+          "+out of scope\n"
           "*** End Patch`;\n"
           "const r = await tools.apply_patch(patch);\n"
           "text(JSON.stringify(r));")
@@ -99,6 +97,13 @@ class Handler(BaseHTTPRequestHandler):
                 "narrative": "s6 probe: schema document via final message",
                 "result_commits": [],
             }))
+        elif SCRIPT == "child":
+            if _turn["n"] == 1:
+                events = exec_patch_events()
+            elif _turn["n"] == 2:
+                events = call_report_events()
+            else:
+                events = final_text_events("done")
         elif SCRIPT == "patch":
             events = exec_patch_events() if _turn["n"] == 1 else final_text_events("patched")
         elif _turn["n"] == 1:

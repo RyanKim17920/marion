@@ -12,3 +12,5 @@ path = "src/main.rs"
 marion-core = { path = "../marion-core" }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+marion-harness = { path = "../marion-harness" }
