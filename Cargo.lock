@@ -57,6 +57,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "marion-harness"
+version = "0.1.0"
+dependencies = [
+ "marion-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "marion-provider"
 version = "0.1.0"
 dependencies = [

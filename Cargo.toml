@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/marion-core", "crates/marion-provider", "crates/marion-supervisor"]
+members = ["crates/marion-core", "crates/marion-provider", "crates/marion-supervisor", "crates/marion-harness"]
 
 [workspace.package]
 edition = "2024"
