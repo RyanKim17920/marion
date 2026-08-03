@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use crate::invocation::Invocation;
+use crate::stream::{StreamOutcome, json_frames};
 
 #[derive(Debug, Clone)]
 pub struct ExecSpec {
@@ -46,7 +47,54 @@ pub fn compile_exec(spec: &ExecSpec) -> Invocation {
             spec.codex_home.to_string_lossy().into_owned(),
         )],
         cwd: spec.cwd.clone(),
+        // **Not a gap.** `codex exec` takes no model argument here at all — the model comes from
+        // `$CODEX_HOME/config.toml`'s provider selection — so there is no model on this wire to
+        // record, and `ExecSpec` deliberately has no field for one. A contract naming the model a
+        // caller *asked* for would be the same lie `child.harness` was sourced from the adapter to
+        // stop telling.
+        model: None,
     }
+}
+
+/// Parse a `codex exec --json` stream.
+///
+/// **Moved, not rewritten.** This is `marion-supervisor::spawn::parse_child_stream` verbatim, down
+/// to the match arms and the order of the two cases; only the framing call at the top and the
+/// outcome type changed. `marion-supervisor::spawn`'s equivalence test replays a corpus through a
+/// preserved copy of the pre-move function and asserts the two agree, because "it looks the same"
+/// is not the standard this seam's Phase 1 set for itself.
+///
+/// `report` arrives as an `mcp_tool_call` item whose `server` is marion — the shape S6 fixtured.
+/// `file_change` items are recorded as corroborating evidence only: **git is the authority** for
+/// `changed_paths`, so a child that edits without emitting one is still caught.
+///
+/// **Success is not decided here.** codex emits a terminal item but no verdict marion reads, so
+/// `failure` is always `None` and the contract's status comes from the reported narrative and the
+/// exit code, exactly as it always has. That is a statement about codex, not a default: gemini and
+/// opencode both do make failure claims in-stream, and theirs are read.
+pub fn parse_stream(s: &str) -> StreamOutcome {
+    let mut out = StreamOutcome::default();
+    for v in json_frames(s) {
+        let item = &v["item"];
+        match item["type"].as_str() {
+            Some("mcp_tool_call") if item["server"] == "marion" && item["tool"] == "report" => {
+                if let Some(n) = item["arguments"]["narrative"].as_str() {
+                    out.narrative = Some(n.to_string());
+                }
+            }
+            Some("file_change") => {
+                if let Some(cs) = item["changes"].as_array() {
+                    for c in cs {
+                        if let Some(p) = c["path"].as_str() {
+                            out.file_change_paths.push(PathBuf::from(p));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The `$CODEX_HOME/config.toml` marion writes for a child.

@@ -10,6 +10,7 @@ use marion_core::contract::AgentId;
 use serde_json::{Value, json};
 
 use crate::invocation::Invocation;
+use crate::stream::{StreamOutcome, first_string, json_frames};
 
 /// Env var naming the file the bridge touches once it has answered `tools/list`.
 pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
@@ -80,7 +81,55 @@ pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
         args,
         env,
         cwd: spec.cwd.clone(),
+        // Exactly what `--model` carries above, including its absence: 2.1.220 without `--model`
+        // picks its own, and marion has no way to name that from here.
+        model: spec.model.clone(),
     }
+}
+
+/// Parse a `--output-format stream-json` stream.
+///
+/// The frame shapes are the ones `tests/fixtures/s1/` and `tests/fixtures/s9/` recorded off a real
+/// 2.1.220: an `assistant` frame wraps `message.content[]` blocks, and a call to marion is a block
+/// of `{"type":"tool_use","name":"mcp__marion__report","input":{…}}`. The run's terminal frame is
+/// `{"type":"result", …}`, whose `is_error`/`subtype` is the harness's own verdict.
+///
+/// **This is the child path, and marion has no Claude Code child yet.** `marion-supervisor::root`
+/// drives the *root*'s conversation itself, because a root is steered turn by turn over a typed
+/// control plane rather than parsed after the fact, and it keeps the whole transcript rather than
+/// this outcome. So the two are not duplicates of one another: this is the `LaunchOnly`-shaped read
+/// the seam requires of every harness, written against the same measured frames, and the day a
+/// `claude` agent type is spawnable as a child it is what will read it.
+///
+/// `file_change_paths` stays empty: Claude Code's edits arrive as `tool_use` blocks for its own
+/// built-in tools, whose argument shapes are per-tool and unmeasured here. Guessing them would put
+/// invented paths into the audit record, and git is the authority for `changed_paths` anyway.
+pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
+    let mut out = StreamOutcome::default();
+    for v in json_frames(s) {
+        match v["type"].as_str() {
+            Some("assistant") => {
+                for block in v["message"]["content"].as_array().into_iter().flatten() {
+                    if block["type"].as_str() == Some("tool_use")
+                        && block["name"].as_str() == Some(report_tool)
+                        && let Some(n) = block["input"]["narrative"].as_str()
+                    {
+                        out.narrative = Some(n.to_string());
+                    }
+                }
+            }
+            Some("result") => {
+                let errored = v["is_error"].as_bool() == Some(true)
+                    || v["subtype"].as_str().is_some_and(|s| s != "success");
+                if errored {
+                    out.failure = first_string(&v, &["/result", "/subtype"])
+                        .or_else(|| Some("the run's result frame reported an error".into()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// `ANTHROPIC_BASE_URL` from the provider base URL marion carries.

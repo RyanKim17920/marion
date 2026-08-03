@@ -19,6 +19,24 @@ pub const DEFAULT_MAX_DEPTH: u32 = 3;
 /// §3.1/§6.1 step 2: live (non-terminal, unreaped) children of *this* node.
 pub const DEFAULT_MAX_CONCURRENT_CHILDREN: u32 = 4;
 
+/// The `gemini` built-in's default model.
+///
+/// The one id S12 exercised end to end against a canned endpoint. It is a *default*, not a claim
+/// about which model runs: S12 measured 0.53.0 rewriting an explicit `-m gemini-2.5-flash` to
+/// `gemini-3.5-flash` in the request path, which is precisely why the contract records what the
+/// adapter compiled rather than treating the request as an outcome.
+pub const GEMINI_DEFAULT_MODEL: &str = "gemini-2.5-flash";
+
+/// The `opencode` built-in's default model, in the `provider/model` form that is the only spelling
+/// `-m` accepts (S13: there is no `OPENCODE_MODEL` env var, so argv and the generated config are
+/// the only two channels).
+///
+/// Both halves name marion's own plumbing rather than a vendor's catalogue: the adapter *generates*
+/// the provider block for whatever provider id this names, pointing it at marion's base URL, so the
+/// id is marion's to choose; the model id is what marion's endpoint is then asked for. An operator
+/// pointing a node at a real endpoint overrides both through `spawn`'s `model`.
+pub const OPENCODE_DEFAULT_MODEL: &str = "marion/default";
+
 /// §5.4/§6.7: an omitted `writable_scope` is **stored** as `["**"]`, never absent, so the
 /// conjunction in `scope::Scope` has two lists to work with in every case.
 pub fn default_scope_ceiling() -> Vec<Glob> {
@@ -35,6 +53,16 @@ pub struct AgentType {
     /// selected from this value (`marion_harness::adapter_for`), which a `String` could never do
     /// without re-parsing it at every call site.
     pub harness: Harness,
+    /// §3.1's `model` key: the type's **default** model, in marion's request vocabulary, which the
+    /// harness's adapter maps to that harness's own spelling. `spawn`'s own `model` overrides it.
+    ///
+    /// Optional rather than required, and `None` on the two harnesses that already run without
+    /// one. `codex exec` takes no model argument at all and Claude Code's `--model` is legitimately
+    /// omissible, so a default there would either be inert or would change an argv that is
+    /// currently measured. The two new harnesses genuinely cannot launch without one — gemini's
+    /// `auto` router hung against a canned endpoint, and opencode has no `OPENCODE_MODEL` env var
+    /// — so their built-ins state one and their adapters refuse when none arrives.
+    pub model: Option<String>,
     /// Ceiling only. `spawn` may narrow it and never widen it (§5.4).
     pub scope_ceiling: Vec<Glob>,
     pub timeout: Duration,
@@ -49,6 +77,9 @@ impl AgentType {
             name: name.into(),
             description: description.into(),
             harness,
+            // Stated by the types that need one; see the field's doc comment for why the default
+            // is an absence rather than a guess.
+            model: None,
             scope_ceiling: default_scope_ceiling(),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             max_depth: DEFAULT_MAX_DEPTH,
@@ -93,16 +124,22 @@ pub fn builtin(name: &str) -> Option<AgentType> {
         // that is all they are: the same defaults, dispatched elsewhere. Without a built-in name a
         // harness with a working adapter is still unreachable from `spawn`, which resolves an
         // agent *type*, never a harness.
-        "gemini" => Some(AgentType::defaults(
-            "gemini",
-            "Implements a well-specified change on the Gemini CLI.",
-            Harness::Gemini,
-        )),
-        "opencode" => Some(AgentType::defaults(
-            "opencode",
-            "Implements a well-specified change on opencode.",
-            Harness::OpenCode,
-        )),
+        "gemini" => Some(AgentType {
+            model: Some(GEMINI_DEFAULT_MODEL.into()),
+            ..AgentType::defaults(
+                "gemini",
+                "Implements a well-specified change on the Gemini CLI.",
+                Harness::Gemini,
+            )
+        }),
+        "opencode" => Some(AgentType {
+            model: Some(OPENCODE_DEFAULT_MODEL.into()),
+            ..AgentType::defaults(
+                "opencode",
+                "Implements a well-specified change on opencode.",
+                Harness::OpenCode,
+            )
+        }),
         _ => None,
     }
 }
@@ -210,6 +247,31 @@ mod tests {
             builtin_names().len(),
             5,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
+        );
+    }
+
+    /// The two harnesses whose adapters refuse without a model must carry one, and the two that
+    /// have always run without one must keep carrying none: a default on `codex` would be inert
+    /// (`codex exec` takes no model argument) and one on `claude` would change a measured argv.
+    #[test]
+    fn only_the_harnesses_that_cannot_launch_without_a_model_state_a_default() {
+        assert_eq!(builtin("claude").unwrap().model, None);
+        assert_eq!(builtin("codex").unwrap().model, None);
+        assert_eq!(builtin("codex-impl").unwrap().model, None);
+        assert_eq!(
+            builtin("gemini").unwrap().model.as_deref(),
+            Some(GEMINI_DEFAULT_MODEL)
+        );
+        assert_eq!(
+            builtin("opencode").unwrap().model.as_deref(),
+            Some(OPENCODE_DEFAULT_MODEL)
+        );
+        // opencode's `-m` accepts nothing else, and the generated provider block has to repeat it.
+        assert!(
+            OPENCODE_DEFAULT_MODEL
+                .split_once('/')
+                .is_some_and(|(p, m)| !p.is_empty() && !m.is_empty() && !m.contains('/')),
+            "the opencode default must be in `provider/model` form"
         );
     }
 

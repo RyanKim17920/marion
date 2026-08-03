@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 // The bridge's env contract, imported for the same reason gemini imports it: one spelling.
 use crate::claude_code::{AGENT_ID_ENV, READY_FILE_ENV};
 use crate::invocation::Invocation;
+use crate::stream::{StreamOutcome, first_string, json_frames};
 
 /// The MCP server alias. opencode exposes MCP tools to the model as `<serverName>_<toolName>`, so
 /// this alias is literally half of `marion_report`.
@@ -156,7 +157,68 @@ pub fn compile_run(spec: &RunSpec) -> Invocation {
         args,
         env: isolation_env(&spec.sandbox),
         cwd: spec.cwd.clone(),
+        // The `provider/model` pair `-m` carries, which is also the config's `model` key.
+        model: Some(spec.model.qualified()),
     }
+}
+
+/// Parse an `opencode run --pure --format json` stream.
+///
+/// The event set is closed and measured (`tests/fixtures/s13/`): `step_start | step_finish | text |
+/// reasoning | tool_use | error`. Every line carries `{type, timestamp, sessionID, …}`.
+///
+/// **There is no terminal frame, and this parser must never wait for one.** S13: *"There is no
+/// init, result or usage summary event. The stream simply ends when `session.status === "idle"`. A
+/// reader must terminate on stdout close, not on a terminal frame — the contrast with codex and
+/// gemini, which both emit one."* That property is honoured in two places and both matter: this
+/// function is a fold over however many frames arrived and has no notion of a last one, and
+/// [`crate::stream::FrameSplitter::finish`] delivers a trailing unterminated frame at close. The
+/// supervisor's own drain already ends on EOF, so nothing upstream waits either.
+///
+/// The two evidence-bearing shapes, verbatim from S13:
+///
+/// - `tool_use` fires **only on terminal states** (`completed` / `error`) — there are no streaming
+///   partials — and carries the call's `input` under `part.state.input`. So a report's narrative is
+///   read there, from the call marion's own bridge was handed;
+/// - `error` carries `{name, data:{message, statusCode, …}}`, which S13 measured arriving with
+///   **exit 1 and an empty stderr**, so the stream is the only place that failure is described.
+///
+/// `file_change_paths` stays empty: opencode announces no file-change event at all, and git is the
+/// authority for `changed_paths` regardless.
+pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
+    let mut out = StreamOutcome::default();
+    for v in json_frames(s) {
+        match v["type"].as_str() {
+            Some("tool_use") if v["part"]["tool"].as_str() == Some(report_tool) => {
+                let state = &v["part"]["state"];
+                match state["status"].as_str() {
+                    Some("completed") => {
+                        if let Some(n) = state["input"]["narrative"].as_str() {
+                            out.narrative = Some(n.to_string());
+                        }
+                    }
+                    // The measured rejection shape: `{"status":"error","error":"The user rejected
+                    // permission…"}`. The run continues and exits 0, so without this the contract
+                    // would record a clean run in which marion's tool was refused.
+                    Some("error") => {
+                        out.failure = Some(format!(
+                            "the child's {report_tool} call ended in error: {}",
+                            state["error"].as_str().unwrap_or("no message")
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            Some("error") => {
+                out.failure = out.failure.take().or_else(|| {
+                    first_string(&v, &["/error/data/message", "/error/name"])
+                        .or_else(|| Some("the child's stream carried an error frame".into()))
+                });
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The values [`config_json`] writes into the MCP declaration.

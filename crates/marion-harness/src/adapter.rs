@@ -21,6 +21,7 @@ use crate::codex::{self, ExecSpec, compile_exec};
 use crate::gemini;
 use crate::invocation::Invocation;
 use crate::opencode;
+use crate::stream::{ChildExit, StreamOutcome};
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
 /// Whether marion's control MCP is injected into this node, and how much of it.
@@ -136,6 +137,24 @@ pub trait HarnessAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError>;
 
+    /// Read this harness's own output stream (§6.1 step 9).
+    ///
+    /// Behind the seam for the same reason `compile` is: the four harnesses emit four different
+    /// event vocabularies, and until this method existed the supervisor read every child as codex
+    /// JSONL — so a gemini child's report was simply invisible, and its contract said `Unreported`
+    /// about a run that had reported. That is the §12 silent-failure shape again, not a missing
+    /// feature.
+    ///
+    /// `exit` is passed rather than consulted by the caller so each harness can state its own
+    /// success rule. It is genuinely per-harness: gemini documents 0/1/42/53 **and** returns 0 with
+    /// a JSON error body on an auth failure (S12), while opencode returns 1 with an empty stderr
+    /// and its only description in-stream (S13). Nothing here is obliged to *use* it — codex does
+    /// not — but nothing else is in a position to decide.
+    ///
+    /// A pure function of bytes: it must never block, and in particular must never wait for a
+    /// terminal frame, because opencode emits none at all (`tests/fixtures/s13/`).
+    fn parse_stream(&self, stdout: &str, exit: ChildExit) -> StreamOutcome;
+
     /// This harness's spelling of one of marion's tools, for **compiling into a prompt**
     /// (§3.1 item 1).
     ///
@@ -225,6 +244,13 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         )])
     }
 
+    /// Failure comes off the run's own `result` frame; the exit code is not consulted, because on
+    /// this surface a non-zero exit is already the supervisor's to record and 2.1.220 reports its
+    /// own errors in-band as `is_error`.
+    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
+        claude_code::parse_stream(stdout, &self.marion_tool_name("report"))
+    }
+
     fn marion_tool_name(&self, tool: &str) -> String {
         format!("mcp__marion__{tool}")
     }
@@ -284,6 +310,13 @@ impl HarnessAdapter for CodexAdapter {
             Self::config_path(spec),
             codex::config_toml(&ctx.bridge.to_string_lossy(), &args, base_url),
         )])
+    }
+
+    /// The pre-seam behaviour, unchanged: `report` off an `mcp_tool_call` item, `file_change`
+    /// items as corroboration, and **no failure claim of its own** — codex's status has always come
+    /// from the narrative and the exit code, so `exit` is deliberately unused here.
+    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
+        codex::parse_stream(stdout)
     }
 
     fn marion_tool_name(&self, tool: &str) -> String {
@@ -374,6 +407,15 @@ impl HarnessAdapter for GeminiAdapter {
         )])
     }
 
+    /// **The exit code is not trusted on its own here, and that is measured.** S12 recorded an auth
+    /// failure exiting **0** with a JSON error body, so the stream's own error and `result` frames
+    /// decide, and a non-zero exit that says nothing in-stream is left to the supervisor's existing
+    /// exit-code rule. A documented code that arrives *with* a failure body is therefore recorded
+    /// once, with the harness's own words, rather than twice.
+    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
+        gemini::parse_stream(stdout, &self.marion_tool_name("report"))
+    }
+
     fn marion_tool_name(&self, tool: &str) -> String {
         // `mcp_<server>_<tool>`, single underscores — **not** Claude Code's `mcp__marion__report`.
         // §3.1 makes the mapping part of the adapter contract precisely because it differs, and
@@ -455,6 +497,15 @@ impl HarnessAdapter for OpenCodeAdapter {
             opencode::config_path(&spec.config_dir),
             serde_json::to_string_pretty(&json).expect("a Value always serialises"),
         )])
+    }
+
+    /// **No terminal frame exists to wait for** (S13, `tests/fixtures/s13/`): opencode's stream
+    /// ends when the session goes idle, so this is a fold over whatever arrived before stdout
+    /// closed and has no concept of a last event. Failure comes from an `error` frame or from a
+    /// terminal-state `tool_use` that ended in error — the exit code is not consulted, because S13
+    /// measured exit 1 with an **empty stderr** and the description only in-stream.
+    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
+        opencode::parse_stream(stdout, &self.marion_tool_name("report"))
     }
 
     fn marion_tool_name(&self, tool: &str) -> String {
@@ -952,6 +1003,248 @@ mod tests {
                 HarnessError::Unimplemented(h),
                 "the refusal carries the harness that was asked for, not a placeholder"
             );
+        }
+    }
+
+    /// A gemini `stream-json` run, verbatim from `tests/fixtures/s12/` — every event type the CLI
+    /// emits, in the order it emitted them, warnings and all.
+    const GEMINI_STREAM: &str = concat!(
+        "Warning: Basic terminal detected. Some features may not work.\n",
+        r#"{"type":"init","timestamp":"<TS>","session_id":"<UUID-1>","model":"gemini-2.5-flash"}"#,
+        "\n",
+        r#"{"type":"message","timestamp":"<TS>","role":"user","content":"call the report tool"}"#,
+        "\n[STARTUP] Phase 2\n",
+        r#"{"type":"tool_use","timestamp":"<TS>","tool_name":"mcp_marion_report","tool_id":"mcp_marion_report__mcp_marion_report_1_0","parameters":{"narrative":"did the work"}}"#,
+        "\n",
+        r#"{"type":"tool_result","timestamp":"<TS>","tool_id":"<TOOL-ID-1>","status":"success","output":"MARION_REPORT_OK"}"#,
+        "\n",
+        r#"{"type":"message","timestamp":"<TS>","role":"assistant","content":"DONE_AFTER_TOOL","delta":true}"#,
+        "\n",
+        r#"{"type":"result","timestamp":"<TS>","status":"success","stats":{"total_tokens":16,"tool_calls":1}}"#,
+        "\n",
+    );
+
+    /// An opencode `run --format json` stream, verbatim from `tests/fixtures/s13/` — and note what
+    /// is *not* here: no init, no result, no usage summary, and no trailing newline.
+    const OPENCODE_STREAM: &str = concat!(
+        r#"{"type":"tool_use","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"type":"tool","tool":"marion_report","callID":"call_1","state":{"status":"completed","input":{"narrative":"did the work"},"output":"MCP_CALLED","metadata":{"truncated":false},"title":"","time":{}},"id":"<PART-1>","sessionID":"<SESSION-1>","messageID":"<MESSAGE-1>"}}"#,
+        "\n",
+        r#"{"type":"text","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"id":"<PART-2>","messageID":"<MESSAGE-1>","type":"text","text":"CANNED_OK","time":{"start":"<TS>","end":"<TS>"}}}"#,
+        "\n",
+        r#"{"type":"step_finish","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"reason":"stop","type":"step-finish","tokens":{"input":0,"output":0},"cost":0}}"#,
+    );
+
+    #[test]
+    fn a_gemini_report_is_read_from_the_tool_use_frame_in_geminis_own_spelling() {
+        let out = GeminiAdapter.parse_stream(GEMINI_STREAM, ChildExit::default());
+        assert_eq!(out.narrative.as_deref(), Some("did the work"));
+        assert_eq!(out.failure, None, "status was success");
+        assert!(
+            out.file_change_paths.is_empty(),
+            "gemini has no file_change event; git is the authority and this stays empty"
+        );
+        // The spelling is load-bearing: codex's `mcp__marion__report` names no gemini tool.
+        assert!(!GEMINI_STREAM.contains("mcp__marion__report"));
+    }
+
+    /// **S12's headline hazard**: an auth failure returned **exit 0** with a JSON error body. A
+    /// reader that trusted the exit code would record a clean run that did nothing.
+    #[test]
+    fn a_gemini_failure_that_exits_zero_is_still_a_failure() {
+        let exit_zero = ChildExit {
+            code: Some(0),
+            ..ChildExit::default()
+        };
+        // The measured body, verbatim from `tests/fixtures/s12/`.
+        let out = GeminiAdapter.parse_stream(
+            r#"{"error":{"type":"Error","message":"Invalid auth method selected.","code":41}}"#,
+            exit_zero,
+        );
+        assert_eq!(
+            out.failure.as_deref(),
+            Some("Invalid auth method selected."),
+            "exit 0 with an error body must not read as success"
+        );
+        // And the typed `error` frame of the stream-json event set, which is the other shape.
+        let framed = GeminiAdapter.parse_stream(
+            r#"{"type":"error","timestamp":"<TS>","error":{"message":"api error"}}"#,
+            exit_zero,
+        );
+        assert_eq!(framed.failure.as_deref(), Some("api error"));
+        // As is a result frame that says anything but success.
+        let bad_result = GeminiAdapter.parse_stream(
+            r#"{"type":"result","timestamp":"<TS>","status":"cancelled","stats":{}}"#,
+            exit_zero,
+        );
+        assert!(
+            bad_result
+                .failure
+                .as_deref()
+                .is_some_and(|f| f.contains("cancelled"))
+        );
+    }
+
+    #[test]
+    fn an_opencode_report_is_read_from_the_terminal_tool_use_state() {
+        let out = OpenCodeAdapter.parse_stream(OPENCODE_STREAM, ChildExit::default());
+        assert_eq!(out.narrative.as_deref(), Some("did the work"));
+        assert_eq!(out.failure, None);
+        assert!(out.file_change_paths.is_empty(), "opencode announces none");
+    }
+
+    /// **S13's headline framing property**: the stream has no init, result or usage event and
+    /// simply ends when the session goes idle. Nothing in the read may wait for a terminal frame —
+    /// and the last frame may arrive with no newline after it.
+    #[test]
+    fn an_opencode_stream_that_just_stops_is_read_whole_anyway() {
+        assert!(
+            !OPENCODE_STREAM.ends_with('\n'),
+            "the fixture's own shape: the stream stops mid-line"
+        );
+        for terminal in ["result", "\"type\":\"init\"", "usage"] {
+            assert!(
+                !OPENCODE_STREAM.contains(terminal),
+                "s13: there is no {terminal} event to terminate on"
+            );
+        }
+        // Truncate to *just* the report frame, unterminated: still read.
+        let cut = &OPENCODE_STREAM[..OPENCODE_STREAM.find('\n').unwrap()];
+        assert_eq!(
+            OpenCodeAdapter
+                .parse_stream(cut, ChildExit::default())
+                .narrative
+                .as_deref(),
+            Some("did the work"),
+        );
+    }
+
+    #[test]
+    fn an_opencode_error_frame_is_a_failure_even_though_stderr_was_empty() {
+        // S13's measured 400: one `{"type":"error"}` line on stdout, **stderr empty**, exit 1.
+        let out = OpenCodeAdapter.parse_stream(
+            r#"{"type":"error","timestamp":"<TS>","sessionID":"<SESSION-1>","error":{"name":"APIError","data":{"message":"bad request","statusCode":400,"isRetryable":false}}}"#,
+            ChildExit {
+                code: Some(1),
+                ..ChildExit::default()
+            },
+        );
+        assert_eq!(out.failure.as_deref(), Some("bad request"));
+        assert_eq!(out.narrative, None);
+    }
+
+    /// A rejected marion call is not a completed one. S13 measured `permission: "ask"` turning the
+    /// tool part into `{"status":"error", …}` while **the run continues and exits 0** — so without
+    /// this the contract would record a clean run in which marion's tool was refused.
+    #[test]
+    fn an_opencode_tool_call_that_ended_in_error_is_not_a_report() {
+        let out = OpenCodeAdapter.parse_stream(
+            r#"{"type":"tool_use","sessionID":"s","part":{"type":"tool","tool":"marion_report","callID":"c","state":{"status":"error","error":"The user rejected permission to use this specific tool call."}}}"#,
+            ChildExit {
+                code: Some(0),
+                ..ChildExit::default()
+            },
+        );
+        assert_eq!(out.narrative, None, "nothing was reported");
+        assert!(
+            out.failure
+                .as_deref()
+                .is_some_and(|f| f.contains("rejected permission"))
+        );
+    }
+
+    /// Each harness reads **its own** spelling and no other's. Cross-feeding is the failure this
+    /// seam exists to end: before it, every child was read as codex JSONL, so a gemini report was
+    /// invisible and the contract said `Unreported` about a run that had reported.
+    #[test]
+    fn no_adapter_can_read_another_harnesss_stream() {
+        let codex = r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"marion","tool":"report","arguments":{"narrative":"did the work"}}}"#;
+        let streams = [
+            (Harness::Codex, codex),
+            (Harness::Gemini, GEMINI_STREAM),
+            (Harness::OpenCode, OPENCODE_STREAM),
+        ];
+        for (owner, stream) in streams {
+            for h in Harness::ALL {
+                let got = adapter_for(h)
+                    .unwrap()
+                    .parse_stream(stream, ChildExit::default())
+                    .narrative;
+                assert_eq!(
+                    got.is_some(),
+                    h == owner,
+                    "{h} read a {owner} stream as {got:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_claude_code_report_is_read_from_an_assistant_frames_tool_use_block() {
+        // The frame shape `tests/fixtures/s9/` recorded off a real 2.1.220.
+        let stream = concat!(
+            r#"{"type":"assistant","message":{"content":[{"id":"toolu_1","input":{"narrative":"did the work"},"name":"mcp__marion__report","type":"tool_use"}],"role":"assistant","type":"message"},"session_id":"<UUID-1>"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false}"#,
+            "\n",
+        );
+        let out = ClaudeCodeAdapter.parse_stream(stream, ChildExit::default());
+        assert_eq!(out.narrative.as_deref(), Some("did the work"));
+        assert_eq!(out.failure, None);
+
+        let errored = ClaudeCodeAdapter.parse_stream(
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"it broke"}"#,
+            ChildExit::default(),
+        );
+        assert_eq!(errored.failure.as_deref(), Some("it broke"));
+    }
+
+    /// Every adapter must survive a stream that is pure noise — the framing hazard S12 recorded is
+    /// a *prefix* of the stream, so a reader that panicked or gave up on the first non-JSON line
+    /// would read nothing at all.
+    #[test]
+    fn a_stream_of_noise_is_an_empty_outcome_on_every_harness_rather_than_a_panic() {
+        for h in Harness::ALL {
+            let out = adapter_for(h).unwrap().parse_stream(
+                "Warning: Basic terminal detected...\n[STARTUP] Phase 1\n\r\n{not json\n",
+                ChildExit::default(),
+            );
+            assert_eq!(out, StreamOutcome::default(), "{h}");
+        }
+    }
+
+    /// The compiled model, which is what `TaskContract.child.model` records. Four harnesses, and
+    /// codex's is an **absence that is a measurement**: `codex exec` carries no model argument, so
+    /// a contract that named one would be describing a wire that never existed.
+    #[test]
+    fn the_invocation_records_the_model_that_actually_went_on_the_wire() {
+        let spec = LaunchSpec {
+            model: Some("some-model".into()),
+            ..codex_spec()
+        };
+        assert_eq!(
+            CodexAdapter.compile(&spec, &ctx()).unwrap().model,
+            None,
+            "codex exec takes no model argument, however loudly it was asked for"
+        );
+        assert_eq!(
+            ClaudeCodeAdapter
+                .compile(&claude_spec(), &ctx())
+                .unwrap()
+                .model,
+            Some("haiku".into())
+        );
+
+        // And on the two that require one, the recorded value is the string in argv — one
+        // derivation, so the contract cannot name a model the child was not given.
+        for (inv, flag) in [
+            (GeminiAdapter.compile(&gemini_spec(), &ctx()).unwrap(), "-m"),
+            (
+                OpenCodeAdapter.compile(&opencode_spec(), &ctx()).unwrap(),
+                "-m",
+            ),
+        ] {
+            let i = inv.args.iter().position(|a| a == flag).unwrap();
+            assert_eq!(inv.model.as_deref(), Some(inv.args[i + 1].as_str()));
         }
     }
 

@@ -198,6 +198,9 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         acceptance_criteria: vec!["the command is running".into()],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
+        // None, exactly as before this field existed: `codex exec` takes no model argument, so
+        // this criterion's invocation is byte-identical to the one it has always measured.
+        model: None,
     };
     let started = Instant::now();
     let contract = run_spawn(&env, &req, &TaskId("s7-timeout".into()), "root")

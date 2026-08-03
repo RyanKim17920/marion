@@ -85,6 +85,9 @@ pub fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "agent_type": {"type": "string"},
+                    // Optional: omitted, the agent type's own default is used (§3.1). Named in
+                    // marion's vocabulary — the adapter maps it to the harness's spelling.
+                    "model": {"type": "string"},
                     "prompt": {"type": "string"},
                     "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
                     "verification": {"type": "array", "items": {"type": "string"}},

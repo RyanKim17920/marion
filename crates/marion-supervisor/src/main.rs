@@ -66,6 +66,10 @@ fn handle_tool_call(
                     })
                     .unwrap_or_default(),
                 timeout_secs: args["timeout_secs"].as_u64().unwrap_or(900),
+                // Absent is not empty: `None` falls back to the agent type's own `model` key
+                // (§3.1), which is what makes a `gemini` or `opencode` spawn launchable without
+                // the parent having to know which harness needs a model and in what spelling.
+                model: args["model"].as_str().map(str::to_string),
             };
             let Ok(task_id) = new_task_id() else {
                 return bridge::tool_result(id, "marion: could not generate task id", true);

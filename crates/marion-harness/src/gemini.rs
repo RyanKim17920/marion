@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 // second spelling would put a gemini child's `TaskContract.requester` back on "unattributed-root".
 use crate::claude_code::{AGENT_ID_ENV, READY_FILE_ENV};
 use crate::invocation::Invocation;
+use crate::stream::{StreamOutcome, first_string, json_frames};
 
 /// Relocates the **entire** config and auth surface: `settings.json`, `oauth_creds.json`,
 /// `trustedFolders.json`, extensions, sessions. The CLI appends `.gemini` itself, so this names
@@ -136,7 +137,70 @@ pub fn compile_prompt(spec: &PromptSpec) -> Invocation {
         args,
         env,
         cwd: spec.cwd.clone(),
+        // What `-m` above carries. S12 measured the CLI remapping it in the request path
+        // (`gemini-2.5-flash` → `gemini-3.5-flash`), so this records what marion put on the wire,
+        // which is the last point at which marion knows anything for certain.
+        model: Some(spec.model.clone()),
     }
+}
+
+/// Parse a `gemini --output-format stream-json` stream.
+///
+/// The event set is closed and measured (`tests/fixtures/s12/`): `init | message | tool_use |
+/// tool_result | error | result`. Three of the six carry evidence marion wants.
+///
+/// **The exit code is not the verdict, and that is a measurement, not caution.** S12: *"an auth
+/// failure returned exit 0 with a JSON error body — so a launcher must parse the JSON and must not
+/// trust the exit code alone."* So a failure claim anywhere in the stream is recorded regardless of
+/// what the process exited with, and two shapes are accepted for it: the `stream-json` `error`
+/// frame, and the bare `{"error":{"type":…,"message":…,"code":…}}` object that the failure S12
+/// actually recorded took. The `result` frame's `status` is read the same way — S12 captured only
+/// `"success"`, so anything else is treated as the harness saying so rather than as an unknown to
+/// be ignored.
+///
+/// Two fields are left empty **because gemini has nothing to fill them with**, not because they
+/// were forgotten: there is no `file_change` analogue anywhere in the event set (git remains the
+/// authority for `changed_paths`), and `tool_result` carries only an opaque `output` string, so a
+/// report's narrative is read off the `tool_use` frame that made the call rather than off its
+/// result.
+///
+/// `report_tool` is the **model-facing** spelling, which is the adapter's to know: gemini's is
+/// `mcp_<server>_<tool>` and is nobody else's (§3.1). Passing it in rather than rebuilding it here
+/// keeps [`crate::HarnessAdapter::marion_tool_name`] the single derivation.
+pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
+    let mut out = StreamOutcome::default();
+    for v in json_frames(s) {
+        match v["type"].as_str() {
+            Some("tool_use") if v["tool_name"].as_str() == Some(report_tool) => {
+                if let Some(n) = v["parameters"]["narrative"].as_str() {
+                    out.narrative = Some(n.to_string());
+                }
+            }
+            Some("error") => {
+                out.failure = out.failure.take().or_else(|| {
+                    first_string(&v, &["/error/message", "/message", "/error/type"])
+                        .or_else(|| Some("the child's stream carried an error frame".into()))
+                });
+            }
+            Some("result") => {
+                if let Some(status) = v["status"].as_str()
+                    && status != "success"
+                {
+                    out.failure = Some(format!("gemini result status: {status}"));
+                }
+            }
+            // The exit-0 auth failure S12 recorded: an `error` object with no `type` frame around
+            // it. Untyped, so it is matched here rather than in the arms above.
+            _ if v.get("error").is_some() => {
+                out.failure = out.failure.take().or_else(|| {
+                    first_string(&v, &["/error/message", "/error/type"])
+                        .or_else(|| Some("the child's stream carried an error body".into()))
+                });
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The values [`settings_json`] writes into the MCP server declaration.

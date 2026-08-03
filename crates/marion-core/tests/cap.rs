@@ -37,6 +37,8 @@ fn contract(comp: Completion) -> TaskContract {
         child: ChildRef {
             harness: marion_core::Harness::Codex,
             version: "0.146.0".into(),
+            // `codex exec` carries no model argument, so a Codex contract names none.
+            model: None,
         },
         repo: RepoIdentity {
             git_common_dir: "/repo/.git".into(),
@@ -234,4 +236,43 @@ fn pinned_json_encodings_hold() {
     );
     assert_eq!(v["timeout"], 900, "a bound is integer seconds");
     assert_eq!(v["timestamps"]["spawned"], "2026-08-01T23:07:08.619Z");
+    assert_eq!(
+        v["child"]["harness"], "codex",
+        "the harness is its bare wire string, never the enum variant's name"
+    );
+    assert!(
+        v["child"]["model"].is_null(),
+        "a codex child names no model: `codex exec` carries no model argument"
+    );
+}
+
+/// `child.model` is **additive**. A contract persisted before the field existed must still read
+/// back, because §6.7's audit record outlives the code that wrote it and a state directory is not
+/// migrated between runs. The absence deserializes to the same `None` a codex child writes today,
+/// which is the honest reading: that contract never recorded a model either.
+#[test]
+fn a_contract_persisted_before_child_model_existed_still_deserializes() {
+    let mut v: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&contract(completion())).unwrap()).unwrap();
+    v["child"]
+        .as_object_mut()
+        .unwrap()
+        .remove("model")
+        .expect("the field is written");
+    let back: TaskContract = serde_json::from_value(v).expect("an older contract still reads");
+    assert_eq!(back.child.model, None);
+    assert_eq!(back, contract(completion()));
+}
+
+/// And when a harness *did* carry one, it is a bare string beside the harness — not a nested
+/// object, and not folded into `version`.
+#[test]
+fn a_recorded_model_is_a_bare_string_beside_the_harness() {
+    let mut c = contract(completion());
+    c.child.model = Some("gemini-2.5-flash".into());
+    let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+    assert_eq!(v["child"]["model"], "gemini-2.5-flash");
+    assert_eq!(v["child"]["version"], "0.146.0", "and version is untouched");
+    let back: TaskContract = serde_json::from_value(v).unwrap();
+    assert_eq!(back, c);
 }

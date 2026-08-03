@@ -139,6 +139,19 @@ pub struct ChildRef {
     /// The §3.1 enum, not free text. Serializes as its wire string, so the JSON is unchanged.
     pub harness: Harness,
     pub version: String,
+    /// The model the child was launched with, **in the harness's own spelling and only if one
+    /// actually reached the harness** — the compiled value, exactly as `allowed_tools` records
+    /// "the compiled, harness-native constraint" rather than what was asked for (§3.1, §6.7).
+    ///
+    /// `None` is a *measurement*, not an absence of information: `codex exec` takes no model
+    /// argument at all, so a Codex child's contract must not name one. Recording the requested
+    /// model here would be the same class of lie as recording the requested harness — the bug
+    /// `TaskContract.child.harness` was sourced from the adapter to end.
+    ///
+    /// `#[serde(default)]` keeps the addition backward-compatible: a contract persisted before
+    /// this field existed still deserializes, with `None` meaning exactly what it means today.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Written once, at the node's terminal transition — not at `report`, which only stages the

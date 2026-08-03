@@ -14,4 +14,13 @@ pub struct Invocation {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub cwd: PathBuf,
+    /// The model this invocation actually carries, in the harness's own spelling — or `None` where
+    /// the harness takes none at all.
+    ///
+    /// It lives here, on the compiled result, rather than being re-derived by a second adapter
+    /// method, for the reason every other derived path in this crate is derived once: two
+    /// derivations of "which model" could disagree, and the one that ends up in
+    /// `TaskContract.child.model` must be the one that went on the wire. `codex exec` takes no
+    /// model argument, so the Codex adapter compiles `None` however loudly a caller asked for one.
+    pub model: Option<String>,
 }

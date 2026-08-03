@@ -28,10 +28,10 @@ use marion_core::encoding::{Duration, SystemTime};
 use marion_core::ids::{RAND_BYTES, new_agent_id};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::scope::check_spawn_scope;
-use marion_harness::{Extras, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for};
+use marion_harness::{ChildExit, Extras, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for};
 
 use crate::spawn::{
-    SpawnError, build_contract, changed_paths, diff_text, make_worktree, parse_child_stream,
+    ChildOutcome, SpawnError, build_contract, changed_paths, diff_text, make_worktree,
 };
 
 pub struct SpawnRequest {
@@ -40,6 +40,9 @@ pub struct SpawnRequest {
     pub acceptance_criteria: Vec<String>,
     pub writable_scope: Vec<String>,
     pub timeout_secs: u64,
+    /// The model to run the child on, in marion's request vocabulary. **Optional, with the agent
+    /// type's own `model` key as the default** (§3.1) — see [`resolve_model`].
+    pub model: Option<String>,
 }
 
 pub struct Env {
@@ -397,6 +400,31 @@ fn persist_then_cap(agent: &AgentDir, contract: &TaskContract) -> Result<TaskCon
     Ok(cap_for_return(contract.clone()))
 }
 
+/// Which model a spawn runs on: **the request, else the agent type's default, else none**.
+///
+/// Optional rather than required, and this is the one decision here with a real alternative. Making
+/// it required would have forced every caller — including the two harnesses that have always run
+/// without one — to name a model, changing `codex exec`'s measured argv for nothing and giving
+/// `spawn`'s schema a mandatory field two of its four harnesses cannot use. Optional-with-a-default
+/// keeps codex and claude-code byte-identical (both resolve to `None`, exactly what they passed
+/// before) while making gemini and opencode launchable without the caller having to know which
+/// harness needs what.
+///
+/// It follows §3.1's precedent for tools rather than inventing one. Tool names are *"marion's
+/// vocabulary, and the mapping is part of the adapter contract"*; so is this. The name here is what
+/// the request or the type asked for, in marion's terms; the **adapter** maps it to that harness's
+/// own spelling — a bare id for gemini's `-m`, a `provider/model` pair that opencode's argv and its
+/// generated provider block must both repeat, `--model` for Claude Code, and *nothing at all* for
+/// codex, whose `exec` surface takes no model argument. And, as with `allowed_tools`, the contract
+/// records **the compiled value, not the asked-for one**: `TaskContract.child.model` is read off
+/// the compiled `Invocation`, so a codex contract records `None` however loudly a caller asked.
+fn resolve_model(
+    req: &SpawnRequest,
+    agent_type: &marion_core::agent_type::AgentType,
+) -> Option<String> {
+    req.model.clone().or_else(|| agent_type.model.clone())
+}
+
 fn harness_version(program: &str) -> String {
     SysCommand::new(program)
         .arg("--version")
@@ -445,7 +473,10 @@ pub fn run_spawn(
     let adapter = adapter_for(agent_type.harness)?;
     let launch = LaunchSpec {
         cwd: wt.clone(),
-        model: None,
+        // Was a hard `None` until now, which is why a gemini or opencode agent type could be named,
+        // resolved and dispatched — and then refused at `compile`, since both adapters make an
+        // explicit model a MUST. See `resolve_model`.
+        model: resolve_model(req, &agent_type),
         prompt: req.prompt.clone(),
         allowed_tools: vec![],
         mcp: McpDeclaration::Marion,
@@ -482,12 +513,19 @@ pub fn run_spawn(
             .current_dir(&inv.cwd),
         StdDuration::from_secs(req.timeout_secs),
     )?;
-    let stream = String::from_utf8_lossy(&output.stdout);
-    let mut outcome = parse_child_stream(&stream);
-    outcome.exit_code = output.code;
-    outcome.signal = output.signal;
-    outcome.timed_out = output.timed_out;
-    outcome.stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
+    // gemini or opencode child's report was unreadable and its contract said `Unreported` about a
+    // run that had reported — the §12 silent-failure shape, one layer down from the dispatch bug.
+    let exit = ChildExit {
+        code: output.code,
+        signal: output.signal,
+        timed_out: output.timed_out,
+    };
+    let outcome = ChildOutcome::from_stream(
+        adapter.parse_stream(&String::from_utf8_lossy(&output.stdout), exit),
+        exit,
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    );
 
     let changed = changed_paths(&wt, &base).unwrap_or_default();
     let diff = diff_text(&wt, &base).ok().filter(|d| !d.is_empty());
@@ -529,6 +567,12 @@ pub fn run_spawn(
     // check, and it is the reason a divergence between the two could never again be silent.
     contract.child.harness = adapter.harness();
     contract.child.version = harness_version(&inv.program);
+    // Read off the **compiled invocation** for the same reason, one step further: §3.1 makes the
+    // marion-name → harness-name mapping the adapter's, and §6.7's `allowed_tools` records "the
+    // compiled, harness-native constraint". So this records what went on the wire — which is
+    // `None` for codex, whose `exec` surface carries no model argument, even when the request or
+    // the agent type named one.
+    contract.child.model = inv.model.clone();
     let returned = persist_then_cap(&agent_dir, &contract)?;
     cleanup(&env.repo, &wt);
     Ok(returned)
@@ -1044,6 +1088,7 @@ mod tests {
             writable_scope: vec!["src/**".into()],
             // Short, so that a regression re-running `codex` for real is a fast failure.
             timeout_secs: 1,
+            model: None,
         };
 
         let result = run_spawn(&env, &req, &TaskId("dispatch".into()), "root");
@@ -1124,37 +1169,74 @@ mod tests {
         }
     }
 
-    /// The honest state of the two new harnesses under `run_spawn` **today**: their adapters exist
-    /// and are selected, but `run_spawn` builds its `LaunchSpec` with `model: None`, and §6.4 makes
-    /// an explicit model a MUST on both (gemini's `auto` router hangs; opencode has no
-    /// `OPENCODE_MODEL` env var). So a spawn of either refuses — loudly, naming its own harness,
-    /// never falling through to codex. Threading a model through `SpawnRequest` is the next phase's
-    /// change; this test exists so that gap is recorded rather than discovered.
+    fn launch_ctx() -> SpawnCtx {
+        SpawnCtx {
+            agent_id: AgentId("019f-child".into()),
+            ready_file: None,
+            repo: "/repo".into(),
+            state_dir: "/state".into(),
+            bridge: "/bin/marion-supervisor".into(),
+            bridge_args: vec!["mcp".into()],
+        }
+    }
+
+    fn launch_spec(model: Option<String>) -> LaunchSpec {
+        LaunchSpec {
+            cwd: "/wt".into(),
+            model,
+            prompt: "do the task".into(),
+            allowed_tools: vec![],
+            mcp: McpDeclaration::Marion,
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            api_key: None,
+            config_dir: "/state/x/config".into(),
+            extra: Extras::default(),
+        }
+    }
+
+    fn request(agent_type: &str, model: Option<&str>) -> SpawnRequest {
+        SpawnRequest {
+            agent_type: agent_type.into(),
+            prompt: "do the task".into(),
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            timeout_secs: 1,
+            model: model.map(str::to_string),
+        }
+    }
+
+    /// **The gap this phase closed.** `run_spawn` used to build its `LaunchSpec` with a hard
+    /// `model: None`, and §6.4 makes an explicit model a MUST on both new harnesses (gemini's
+    /// `auto` router hung; opencode has no `OPENCODE_MODEL` env var) — so a `gemini` or `opencode`
+    /// agent type could be named, resolved and dispatched, and then refused at `compile`. The
+    /// resolved model is what makes them launchable, so the test asserts the *whole chain*: the
+    /// built-in's default reaches `resolve_model`, and what `resolve_model` returns compiles.
     #[test]
-    fn the_new_harnesses_are_selected_and_then_refuse_for_want_of_a_model() {
-        for (name, h) in [("gemini", Harness::Gemini), ("opencode", Harness::OpenCode)] {
+    fn the_new_harnesses_now_compile_because_their_agent_types_carry_a_model() {
+        for name in ["gemini", "opencode"] {
             let t = builtin(name).unwrap();
-            let adapter = adapter_for(t.harness).unwrap();
-            let launch = LaunchSpec {
-                cwd: "/wt".into(),
-                model: None, // exactly what `run_spawn` passes today
-                prompt: "do the task".into(),
-                allowed_tools: vec![],
-                mcp: McpDeclaration::Marion,
-                base_url: Some("http://127.0.0.1:8099/v1".into()),
-                api_key: None,
-                config_dir: "/state/x/config".into(),
-                extra: Extras::default(),
-            };
-            let ctx = SpawnCtx {
-                agent_id: AgentId("019f-child".into()),
-                ready_file: None,
-                repo: "/repo".into(),
-                state_dir: "/state".into(),
-                bridge: "/bin/marion-supervisor".into(),
-                bridge_args: vec!["mcp".into()],
-            };
-            let err: SpawnError = adapter.compile(&launch, &ctx).unwrap_err().into();
+            let model = resolve_model(&request(name, None), &t);
+            assert!(
+                model.is_some(),
+                "{name}: its adapter refuses without one, so its built-in must state one"
+            );
+            adapter_for(t.harness)
+                .unwrap()
+                .compile(&launch_spec(model), &launch_ctx())
+                .unwrap_or_else(|e| panic!("{name} still cannot compile: {e}"));
+        }
+    }
+
+    /// And the refusal is still there for anyone who defeats the default: it names its own harness
+    /// rather than falling through to codex.
+    #[test]
+    fn a_new_harness_with_no_model_anywhere_still_refuses_and_names_itself() {
+        for (name, h) in [("gemini", Harness::Gemini), ("opencode", Harness::OpenCode)] {
+            let adapter = adapter_for(builtin(name).unwrap().harness).unwrap();
+            let err: SpawnError = adapter
+                .compile(&launch_spec(None), &launch_ctx())
+                .unwrap_err()
+                .into();
             assert!(
                 matches!(
                     err,
@@ -1166,6 +1248,55 @@ mod tests {
                 "{name}: expected a typed refusal naming {h}, got {err}"
             );
         }
+    }
+
+    /// §3.1's precedence, in one statement: the request wins, the agent type is the default, and
+    /// the two harnesses that have always run without a model still resolve to `None` — which is
+    /// what keeps `codex exec`'s measured argv, and `m1_hop` and `timeout_kill` with it, unchanged.
+    #[test]
+    fn the_request_overrides_the_agent_types_default_and_absence_stays_absence() {
+        let gemini = builtin("gemini").unwrap();
+        assert_eq!(
+            resolve_model(&request("gemini", Some("gemini-2.5-pro")), &gemini).as_deref(),
+            Some("gemini-2.5-pro"),
+        );
+        assert_eq!(
+            resolve_model(&request("gemini", None), &gemini).as_deref(),
+            Some("gemini-2.5-flash"),
+        );
+        for name in ["codex-impl", "claude"] {
+            assert_eq!(
+                resolve_model(&request(name, None), &builtin(name).unwrap()),
+                None,
+                "{name}: a default here would change an argv that is measured, for nothing"
+            );
+        }
+    }
+
+    /// **The contract records the wire, not the ask** — the same rule that made `child.harness`
+    /// come from the adapter. A caller can name a model for a codex child; `codex exec` carries
+    /// none, so the contract must not claim one.
+    #[test]
+    fn a_model_asked_for_on_a_harness_that_takes_none_is_never_recorded_as_used() {
+        let t = builtin("codex-impl").unwrap();
+        let asked = resolve_model(&request("codex-impl", Some("gpt-5.6-sol")), &t);
+        assert_eq!(
+            asked.as_deref(),
+            Some("gpt-5.6-sol"),
+            "the ask is honoured…"
+        );
+        let inv = adapter_for(t.harness)
+            .unwrap()
+            .compile(&launch_spec(asked), &launch_ctx())
+            .unwrap();
+        assert_eq!(
+            inv.model, None,
+            "…but nothing carried it, so `child.model` records nothing"
+        );
+        assert!(
+            !inv.args.iter().any(|a| a == "gpt-5.6-sol"),
+            "and it reached no argv either"
+        );
     }
 
     #[test]

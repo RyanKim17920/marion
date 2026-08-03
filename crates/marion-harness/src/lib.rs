@@ -14,6 +14,7 @@ pub mod codex;
 pub mod gemini;
 pub mod invocation;
 pub mod opencode;
+pub mod stream;
 pub mod surfaces;
 
 pub use adapter::{
@@ -30,6 +31,7 @@ pub use codex::{ExecSpec, compile_exec, config_toml};
 // `BridgeEnv` would make the harness a caller is configuring invisible at the use site, which is
 // the exact confusion §3.1's per-harness-spelling rule exists to prevent.
 pub use invocation::Invocation;
+pub use stream::{ChildExit, FrameSplitter, StreamOutcome, json_frames};
 pub use surfaces::{
     ControlTransport, DisplaySurface, ExecutionSurfaces, ObservationSource, TypedKind,
 };

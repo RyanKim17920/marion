@@ -155,7 +155,11 @@ fn main() -> ExitCode {
         state,
         base_url,
         bridge,
-        model: args.model,
+        // The same precedence a child's `spawn` gets (§3.1): the flag, else the agent type's own
+        // `model` key. `claude` states none, so this is a no-op today and stays one until a root
+        // type does — at which point the root would otherwise have been the one path that ignored
+        // its own type's model.
+        model: args.model.or_else(|| agent_type.model.clone()),
     };
     let node = match root::prepare(&spec) {
         Ok(n) => n,
