@@ -111,10 +111,13 @@ should be proven before anything that displays it: no *detached* daemon (the reg
 audit trail and the control MCP run in-process), no VT emulator, no model proxy. Only once that hop
 works do the supervisor split (M2) and the tree UI (M3) go in.
 
-Three debts fall due in M1, all things currently designed on decompilation rather than measurement:
-the pty re-confirmation of S1's protocol, a live `SubagentStop` check, and **a real `can_use_tool`
-round-trip** — the inbound half of Claude Code's control channel, which the whole permission path
-depends on and which no committed fixture exercises.
+Three debts fell due in M1, all of them designed on decompilation rather than measurement, and all
+three are now paid: the pty re-confirmation of S1's protocol (**S11**, `tests/fixtures/s11/`), a
+live `SubagentStop` check (**S10**, `tests/fixtures/s10/`), and a real `can_use_tool` round-trip
+(**S9**, `tests/fixtures/s9/`) — the inbound half of Claude Code's control channel, which the whole
+permission path depends on. Each was measured against the canned provider at zero cost. What each
+one *changed* is recorded in design §11 items 1, 2 and 14; item 14 is only partially closed, since
+hook callbacks and `request_user_dialog` remain unmeasured.
 
 ## Stack
 

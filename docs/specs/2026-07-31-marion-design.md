@@ -9,8 +9,9 @@
 > Corrections and retractions live in one place: §12.
 >
 > Spikes S1–S7 are resolved; **S6 closed 2026-08-01** and is fixtured in `tests/fixtures/s6/`
-> (§11 item 12). Claims are stamped; anything not independently verified
-> is marked **UNVERIFIED**.
+> (§11 item 12). **S8–S11 ran after this rev**: S10 and S11 closed §11 items 2 and 1 outright,
+> S8 and S9 answered part of items 3 and 14 — `MILESTONES.md` carries their per-spike status.
+> Claims are stamped; anything not independently verified is marked **UNVERIFIED**.
 
 ---
 
@@ -32,9 +33,12 @@ Codex CLI — **0.145.0 for S3 and the alt-screen/`/diff` capture, 0.146.0 for S
 captures, 0.146.0 for S6 and S7** (the local install moved mid-session; per-claim stamps appear
 inline where it matters).
 
-**Fixture-backed vs not.** S1–S7 have committed fixtures in `tests/fixtures/` — S6's arrived when
-the spike was re-run and resolved (§11 item 12, after an earlier run was killed mid-run leaving
-none), S7's with the process-group measurement (§11 item 18). The **Gemini and opencode launcher findings (§6.4) and the
+**Fixture-backed vs not.** S1–S7 and S9–S11 have committed fixtures in `tests/fixtures/` — S6's
+arrived when the spike was re-run and resolved (§11 item 12, after an earlier run was killed
+mid-run leaving none), S7's with the process-group measurement (§11 item 18), and S11's includes
+its **control** transport alongside the measurement because its finding is a difference between
+transports (§11 item 1). S8's report lives in `spikes/s8/` and carries structural facts only,
+because that spike touched real OAuth credentials. The **Gemini and opencode launcher findings (§6.4) and the
 entire resource model (`MILESTONES.md`) have no committed fixture** — they rest on single
 uncommitted sessions and should be re-measured before they harden into assumptions — **and further
 claim families are unfixtured, all listed in §11 item 10**: the vt100-vs-alacritty scrollback
@@ -706,18 +710,52 @@ for CLI-originated ones, which correlate to nothing marion sent and so are never
 > sends `hooks: {}`, and no probe has found a headless path that triggers a user dialog.
 > **`control_cancel_request` is untested in either direction.** S9 is one machine, one CLI version,
 > one run per outcome. §11 item 14 stays open on those three; the `can_use_tool` third of it is
-> closed. **`SubagentStop` was paid the same day by S10** (§11 item 2), leaving **one** M1 debt:
-> the pty re-confirmation of S1 (§11 item 1).
+> closed. **`SubagentStop` was paid the same day by S10** (§11 item 2) and **S1's pty
+> re-confirmation by S11** (§11 item 1), so **no M1 evidence debt remains** (§9).
 
 **An interrupted turn reports `is_error: true`** with `subtype:"error_during_execution"` and
 `terminal_reason:"aborted_streaming"`. marion MUST classify that as a clean interrupt.
+**Re-confirmed over a real pty by S11** (`tests/fixtures/s11/`, §11 item 1): byte-identical
+`control_response`, an identical 38-kind frame sequence, and 36 of 36 non-delta frames
+byte-identical between pipes and pty.
+
+**Framing is a property of the transport, not of the protocol — this is normative and it bit
+nothing only because M1 runs over pipes.** Measured by S11 on 2.1.220: the same run's stdout
+arrives as **139 reads (largest 46,515 B, none of them fragmentary)** over a pipe and as
+**230 reads (largest 1,024 B, 92 of them containing no line terminator at all)** over a pty — the
+~30 kB `initialize` reply above is **one** read on a pipe and ~47 on a pty.
+
+- **Any consumer of a harness's stdout MUST buffer across reads and split on frame boundaries. It
+  MUST NOT treat a `read()` as a frame.** That assumption is correct on a pipe and broken on a
+  pty, and nothing distinguishes the two until the transport changes.
+- **A stream-json reader MUST tolerate a trailing `\r`.** The pty line discipline's `ONLCR` adds
+  it; the CLI does not write it (measured — clearing `OPOST` yields 0 CRLF and leaves the read
+  count at exactly 230, so the `\r` and the 1024-byte chunking are **independent** mechanisms).
+  `serde_json::from_str` accepts trailing whitespace, so this survives by accident — but any code
+  that compares, splits on, or hashes raw line bytes MUST NOT assume the pipe form.
+
+**marion MUST NOT give a headless node a pty on stdin.** `claude -p` **refuses** one: with stdin a
+pty it exits **1** with `Error: Input must be provided either through stdin or as a prompt
+argument when using --print` after emitting only its `SessionStart` hook frames, regardless of what
+stdout is. Measured by S11 on both `pty-in` (pty stdin, pipe stdout) and `pty-all`, which isolates
+the trigger to **`isatty(stdin)`**. See §6.4.
+
+**Headless `claude -p` emits no terminal probes**, on any fd topology including one where it owns
+the pty as its controlling terminal (S11, all four transports, `probes_seen` empty). §5.3's probe
+table describes the **TUI** path.
 
 `--include-partial-messages` yields token-level `content_block_delta` events but **requires
 `--verbose`**. A fresh `system/init` frame is emitted **per turn, not per process**. Do not gate on
 `initialize` advertising `capabilities` — 2.1.220 returns none while still honoring `still_queued`.
 
-> **UNVERIFIED:** the S1 replay used pipes, not a pty. If the CLI does isatty-conditional line
-> buffering, behavior under `pty-process` may differ. Re-confirm during M1.
+> **RESOLVED 2026-08-03 (spike S11), fixtured in `tests/fixtures/s11/` — §11 item 1.** The S1
+> replay used pipes; S11 repeated it over a real pty with S1's argv and stdin script verbatim.
+> **The protocol is unchanged** (identical 38-kind sequence, 36/36 non-delta frames
+> byte-identical, byte-identical interrupt `control_response`). **The framing is not** — a pty
+> caps a read at 1,024 B on macOS and 40% of reads carry no line terminator, hence the buffering
+> MUST above; and `isatty` additionally causes `-p` to **refuse a pty stdin** and colours the
+> CLI's stderr warnings. Not the line-buffering change this marker feared, but a real hazard in
+> the same place.
 
 #### codex
 
@@ -1014,6 +1052,10 @@ They emit **different** sets, measured across all five captures:
 
 marion answers all of them regardless, so this asymmetry costs nothing in code — but the earlier
 text had it backwards in both directions and is corrected here.
+**This table is about the *TUI* path only.** Measured by S11 (§11 item 1): **headless `claude -p`
+emits no probes at all** — `probes_seen` empty across all four fd topologies, including one where
+the child owned the pty as its controlling terminal. So on the surface M1 actually runs, the
+question this section answers does not arise; it arises at M3.
 **`tests/fixtures/s2/ptyhost.py` answers none of them** and nonetheless drove complete sessions on
 both harnesses (19,373 bytes of Codex boot and two resizes — its `/status` was swallowed by the boot modal
 and Codex answers `/help` with *Unrecognized command*; Claude through the trust dialog, alt-screen
@@ -1703,12 +1745,24 @@ marion **never mutates the user's real harness config.**
   `model.switched` appear. The legacy `message.updated` / `message.part.updated` /
   `message.part.delta` family arrives either way: interleaved 1:1 with the new family **when the experimental flag is on**,
   and alone when it is off.
-- **A real TTY is required only for terminal-driven surfaces.** With stdio as a pipe, `codex`
-  errors `stdin is not a terminal` and `claude` falls back to demanding `--print`. So
-  `interactive`/`opaque`/`shared`-with-attached-TUI need a pty; **`headless` does not** —
-  `claude -p --output-format stream-json --input-format stream-json --verbose` (all four flags
-  are required — §5.2) and `codex exec --json` run over pipes, which is how S1
-  was replayed and how M1 runs its root.
+- **A real TTY is required only for terminal-driven surfaces — and is actively *forbidden* on
+  stdin for a headless one.** With stdio as a pipe, `codex` errors `stdin is not a terminal` and
+  `claude` falls back to demanding `--print`. So `interactive`/`opaque`/`shared`-with-attached-TUI
+  need a pty; **`headless` does not** — `claude -p --output-format stream-json --input-format
+  stream-json --verbose` (all four flags are required — §5.2) and `codex exec --json` run over
+  pipes, which is how S1 was replayed and how M1 runs its root.
+
+  **marion MUST NOT give a headless node a pty on stdin.** This is a measured refusal, not a
+  stylistic preference: S11 (§11 item 1, `tests/fixtures/s11/`) gave `claude -p` a pty stdin and
+  it exited **1** with `Error: Input must be provided either through stdin or as a prompt argument
+  when using --print`, having emitted only its `SessionStart` hook frames. The `pty-in` capture —
+  pty stdin, **pipe** stdout — fails identically to the all-pty one, which isolates the trigger to
+  **`isatty(stdin)`**. `headless` derives no `DisplayPlane` (§3.4), so marion has no reason to
+  allocate a pty for such a node at all; the rule exists because a *future* launcher that reuses
+  the display plane's spawn path for uniformity would produce an exit-1 run whose error message
+  names the prompt rather than the fd. **A pty on the headless node's stdout is merely
+  ill-advised** — the protocol survives it intact, but the read boundaries change (§5.2's
+  buffering MUST) and the CLI starts colouring its warnings.
 
 ### 6.5 Result
 
@@ -2851,8 +2905,10 @@ newline and never parse the final partial line — the same rule §4.3 states fo
   real terminal emulator, real fonts and a real pty, driven by screen capture. **Deliberately
   narrow**, because it is the slowest and least deterministic layer and buys nothing the layers
   above already cover:
-  - **pty fidelity of the S1 control protocol.** S1 was proven over *pipes*; §11 item 1 owes the
-    pty re-confirmation, and a real terminal is the honest place to take it.
+  - ~~**pty fidelity of the S1 control protocol.**~~ **Paid without L7, 2026-08-03 (spike S11,
+    `tests/fixtures/s11/`, §11 item 1)** — a protocol pty host was enough, because the question
+    was about *framing*, not rendering. Left in this list as a record of what L7 no longer owes:
+    L7's remaining value here is a *terminal*, not a pty.
   - **keystroke-injection submit**, which §8's `--adapter` micro-contract already calls the most
     version-fragile mechanism in the system. A pty host can send bytes; only a real terminal
     settles whether a harness's submit handling agrees.
@@ -3405,8 +3461,22 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   being left to the kill code's own tests (§11 item 18, spike S7, fixtured in
   `tests/fixtures/s7/`). A non-empty enumerated set is part of the criterion: an empty one would
   make the `ESRCH` check vacuous.
-- Owed here: **one** M1 debt remains — the **pty re-confirmation of S1** (§11 item 1). The other
-  two were both paid on 2026-08-03. The **live `SubagentStop` confirmation** (§7.6) was paid by
+- Owed here: **nothing. All three debts this line named are discharged, and M1's acceptance
+  criteria are met.** *(The line is kept rather than deleted, because it is the record of what was
+  owed and what paid it — deleting it would leave the criteria looking as though they were never
+  in doubt, and a reader auditing M1 needs to be able to check each debt against its fixture. It
+  is a closed ledger, not an outstanding one. It has now been narrowed three times: three debts →
+  two after S9 → one after S10 → zero after S11.)* The **pty re-confirmation of S1** (§11 item 1)
+  was paid on 2026-08-03 by spike **S11** and is fixtured in `tests/fixtures/s11/`: S1's argv and
+  stdin script replayed verbatim over a real pty against Claude Code 2.1.220 and a canned
+  provider, cost $0.00. The **protocol is unchanged** — identical 38-kind frame sequence, 36 of 36
+  non-delta frames byte-identical, byte-identical interrupt `control_response` — and the finding
+  that *did* change this document is about **framing and fds**, not semantics: a pty caps a read
+  at 1,024 B and 40% of reads carry no frame boundary, so §5.2 now requires every stream reader to
+  buffer and split rather than treat a read as a frame; and `claude -p` **refuses a pty stdin**
+  outright, so §6.4 now forbids giving a headless node one. It also narrowed §11 items 11 and 20.
+  The other two debts were paid the previous day. The **live `SubagentStop` confirmation** (§7.6)
+  was paid by
   spike **S10** and is fixtured in `tests/fixtures/s10/`: the event fires, its field set is
   exactly the `Stop` set plus three keys, `decision: block` re-prompts a stopping subagent and
   **replaces** the result the parent reads, and a negative control shows a mis-shaped hook
@@ -3519,8 +3589,92 @@ four inline markers sat outside it, including the two that decide what M1 builds
 `UNVERIFIED` marker anywhere in this document, add it here too; that pairing is what makes this
 list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
-1. **S1's pty re-confirmation.** The interrupt protocol was proven over pipes, not a pty. If the
-   CLI does isatty-conditional line buffering, framing may differ under `pty-process`. Closes in M1.
+1. **~~S1's pty re-confirmation~~ — RESOLVED 2026-08-03 (spike S11), fixtured in
+   `tests/fixtures/s11/`, harness `spikes/s11/`.** The debt this item named was a re-confirmation
+   of S1's interrupt protocol over a **pty** rather than pipes, on the stated worry that
+   isatty-conditional line buffering could change the framing. It is measured. **Claude Code
+   2.1.220** on macOS (darwin 25.5.0): **five captures across four fd topologies** — `pipes`
+   (S1's transport, the control), **`pty-out`** (the item-1 measurement: stdout a real pty, stdin
+   and stderr pipes), `pty-out-raw` (the same with `OPOST` cleared), `pty-in`, `pty-all` — using
+   **S1's argv and S1's stdin script verbatim**, against a canned Anthropic-Messages provider on
+   127.0.0.1 with an empty API key. **Cost $0.00**; every `result` frame carries
+   `total_cost_usd: 0`. The one deviation from S1 is that the script fires on *events* (interrupt
+   3.0 s after the first content delta) rather than on wall clock, so the interrupt reliably lands
+   mid-stream.
+
+   **The answer splits in two, and both halves are load-bearing.**
+
+   **The protocol and the frames are unchanged.** `pipes` and `pty-out` produce an **identical
+   collapsed frame-kind sequence** — 38 kinds, identical kind sets, `first_divergence: null`
+   (`compare.json`). Stronger than kinds: after normalising only the four things that legitimately
+   differ between two runs of one script — per-run UUIDs, wall-clock timestamps, wall-clock
+   durations, and how far the canned stream got before the interrupt landed — **36 of 36
+   non-delta frames are byte-identical across `pipes`, `pty-out` and `pty-out-raw`**
+   (`spikes/s11/frame_equality.py`), and the interrupt `control_response` is byte-identical across
+   all three. S1's semantics reproduce exactly: `control_response` `{"still_queued":[]}`, then a
+   `result` with `is_error: true` / `subtype: "error_during_execution"` /
+   `terminal_reason: "aborted_streaming"`, then a follow-up turn that succeeds
+   (`result: "OK-AFTER-INTERRUPT"`) and exit **0**. **Nothing in §5.2's control protocol changes.**
+
+   **The read boundaries change substantially — which is what this item was actually worried
+   about, and it is a *parser* hazard, not a protocol one.** `pipes`: **139** reads, largest
+   **46,515 B**, **zero** reads returning no complete frame. `pty-out`: **230** reads, largest
+   **1,024 B** — macOS's pty output-queue ceiling — and **92 of them, 40%, containing no line
+   terminator at all**. The ~48 kB `initialize` reply (§5.2) arrives as **one read on a pipe and
+   ~47 reads on a pty**. Stated normatively: **any consumer of a harness's stdout MUST buffer
+   across reads and split on frame boundaries, and MUST NOT treat a `read()` as a frame.** Code
+   that makes that assumption is correct on pipes and broken on a pty, and the difference is
+   invisible until the transport changes. Weaker but related: **a stream-json reader MUST tolerate
+   a trailing `\r`.** `serde_json::from_str` and `json.loads` both accept trailing whitespace, so
+   this survives by accident — but any reader that compares, splits on, or hashes *raw line bytes*
+   sees different bytes on a pty than S1's fixture records.
+
+   **The `\r` and the chunking are two independent mechanisms, attributed by measurement rather
+   than inferred.** `pty-out-raw` clears `OPOST` on the slave (which disables `ONLCR`) and is
+   otherwise the identical harness, argv and script: **0 CRLF, 141 LF-only lines — and the same
+   230 reads with the same 1,024 B maximum.** So the `\r` is the line discipline's `ONLCR` rather
+   than anything the CLI writes, and the 1024-byte ceiling is a **separate** mechanism that
+   `ONLCR` has nothing to do with. Recorded explicitly because conflating them produces a
+   plausible and wrong fix: clearing `OPOST` removes every `\r` and does not restore pipe-shaped
+   framing.
+
+   **`claude -p` REFUSES a pty stdin.** `pty-in` (pty stdin, pipe stdout) and `pty-all` both exit
+   **1** with `Error: Input must be provided either through stdin or as a prompt argument when
+   using --print`, having emitted only the `SessionStart` hook frames — 17 frames where `pipes`
+   reaches 38 kinds. Because `pty-in` differs from `pipes` **only** in stdin, this isolates the
+   cause to **`isatty(stdin)`, not stdout**. Stated normatively: **marion MUST NOT give a headless
+   harness node a pty on stdin** (§5.2, §6.4). `headless` already runs over pipes by construction
+   (§3.4), so this is now a measured requirement rather than an incidental property of how M1
+   happens to launch.
+
+   **Also measured.** **Colour is keyed on `isatty(stdout)`:** the connectors warning is plain
+   under `pipes` and ANSI-coloured (`\x1b[33m…\x1b[39m`) under `pty-out` **even though stderr was
+   a pipe in both runs**. Nothing coloured reached stdout here — `non_json_stdout_count: 0`, all
+   143 lines parsed as JSON — so the stream-json channel itself stayed clean, but the mechanism
+   that would dirty it is demonstrably active on the pty path. And **zero terminal probes on all
+   four transports**, including `pty-all`, where the child owned the pty as its controlling
+   terminal: **headless `claude -p` does not probe the terminal at all**, so §5.3's "answering
+   probes is prudence, not a requirement" does not even arise on this path. That says nothing
+   about the **TUI** path, which is item 20.
+
+   **Latency — reported, and deliberately not established.** interrupt → `control_response`:
+   `pipes` 0.37 / 0.78 / 0.96 ms, `pty-out` 1.23 / 1.26 / 1.67 ms (S1 recorded **0.50**).
+   interrupt → terminal `result`: `pipes` 3.3 / 6.2 / 8.5 ms, `pty-out` 9.0 / 11.0 / 13.1 ms (S1
+   recorded **1.87**). The pipe runs reproduce S1 within their own spread; every pty run exceeds
+   every pipe run on both measures, which 230 reads instead of 139 would predict. **Six runs on
+   one machine.** The fixture states the pipe/pty ordering as *"not contradicted, and
+   mechanistically plausible"* rather than established, and this document does not strengthen it
+   (cf. item 11).
+
+   **Still unmeasured, and deliberately not claimed.** `--include-partial-messages` was on (S1's
+   argv), so the boundary ratio **without** it is untested — fewer, larger frames would change the
+   read-chunk ratio. The 1,024-byte ceiling is a **macOS** number; Linux's pty buffer is larger,
+   so the *magnitude* of the boundary difference will differ there even though the direction
+   should not. No capture uses `--permission-prompt-tool stdio`, so like S1 these contain **zero
+   inbound `control_request` frames** (S9's territory, item 14). One machine, one OS, one CLI
+   version. And the **TUI** path over a pty — rendering, probes, item 9's `ESC[6n` stall, the
+   keystroke-injection submit check — is untouched: item 20, which S11 **narrows** and does not
+   close.
 2. **~~`SubagentStop` live confirmation~~ — RESOLVED 2026-08-03 (spike S10), fixtured in
    `tests/fixtures/s10/`, harness `spikes/s10/`.** The debt this item named was a *live*
    confirmation of an event the design had read **statically** out of the 2.1.220 bundle, and
@@ -3717,8 +3871,12 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       thread a live TUI owns. No committed probe issues `turn/steer` or involves a TUI. Also
       tracked as §11 item 15, since it is an unverified *behaviour*, not merely a missing fixture.
 11. **Several headline numbers rest on a single run on one machine** and should be re-measured
-    before they harden into assumptions: S1's interrupt latency (measured 0.5 ms to
-    `control_response`, 1.9 ms to terminal `result`, one run, over pipes);
+    before they harden into assumptions. **NARROWED 2026-08-03 (spike S11) for the first of the
+    three, and not for the other two.** S1's interrupt latency (0.5 ms to `control_response`,
+    1.9 ms to terminal `result`, one run, over pipes) is no longer a *single* run: S11 repeated it
+    **three times over pipes and three over a pty**, and the pipe runs reproduce S1's figure within
+    their own spread (item 1). That removes "n=1" and **does not** remove "one machine, one OS, one
+    CLI version" — which is why this item stays open rather than losing the entry. Untouched:
     `CLAUDE_CODE_ATTRIBUTION_HEADER`'s 0% → 99.7% cache effect (reported upstream, not measured
     here); and the DECSET 2026 bracket discipline (five captures, one host) that §8/L4.5 gates
     commits on.
@@ -3852,13 +4010,34 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     pre-existing ignored file as a change and make the check useless. Closing it properly needs a
     pre/post filesystem snapshot of the workspace, which M1 does not build. Worth revisiting when
     a child is first given a genuinely untrusted task.
-20. **No real-terminal coverage exists, and three debts sit behind it.** §8's L7 is specified but
-    unbuilt: every fixture in this repo was captured through `s2/ptyhost.py`, which answers no
-    terminal probes and renders nothing. That leaves §11 item 1 (S1 over a pty rather than pipes),
-    the keystroke-injection submit check `marion doctor --adapter` is required to include, and
-    item 9's `ESC[6n` stall all unmeasurable with what is committed here. **Not a blocker for M1**
-    — L4 drives real binaries over a real pty already — but the cheapest way to close three items
-    at once, and the only layer that would catch a harness changing how it reads a terminal.
+20. **No real-terminal coverage exists — NARROWED 2026-08-03 (spike S11), which paid the pty-host
+    half. What remains is the emulator/rendering half, and two of the original three debts.**
+    §8's L7 is still specified and unbuilt. The original wording was that *every* fixture in this
+    repo was captured through `s2/ptyhost.py`, which answers no terminal probes and renders
+    nothing, leaving three things unmeasurable: item 1 (S1 over a pty rather than pipes), the
+    keystroke-injection submit check `marion doctor --adapter` is required to include, and item
+    9's `ESC[6n` stall.
+
+    **What S11 settled.** `spikes/s11/pty_interrupt.py` is a second pty host — a *protocol* host
+    rather than a TUI host — and it **closed item 1** over a real pty with a real `claude`, plus
+    the finding that **headless `claude -p` emits no terminal probes at all**, so on that path the
+    "who answers the probes" question is answered by absence. **`s2/ptyhost.py` was not modified
+    and could not have taken that measurement.** It is the wrong *shape*, not broken — it did
+    exactly what S2 needed. Three properties disqualify it here: it gives the child a **pty
+    stdin**, which is precisely the configuration `-p` refuses (item 1); it has **no frame
+    parser**, so it can only fire on wall clock and never "3 s after the first delta"; and it
+    **never reads its own log**, so it can neither answer a probe nor measure a round trip. S11's
+    host keeps `ptyhost.py`'s length-prefixed `raw.bin` record format
+    (`tag + f64 + u32 + payload`, so `s2/extract.py` still applies) and adds the frame parser, the
+    event-driven script, the four fd topologies, and probe detection with optional answering.
+
+    **What this item still wants and S11 does not give it: a real terminal emulator with real
+    rendering.** Two of the original three debts are untouched — **item 9's `ESC[6n` stall**,
+    which needs a host that *answers* probes on the **TUI** path, and the **keystroke-injection
+    submit check**, which no byte-sending pty host can settle at all — plus M3's TUI smoke.
+    **Still not a blocker for M1** — L4 drives real binaries over a real pty already, and item 1 is
+    now closed — but this remains the only layer that would catch a harness changing how it
+    *reads* a terminal.
 21. **Does `SubagentStop` fire for a `run_in_background: true` subagent?** Split out of item 2
     (S10) because it is not the debt that item named — that was a live confirmation, and it was
     paid — but it **is** the case §7.6 exists for, so it deserves its own line rather than a
@@ -3877,14 +4056,15 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
 ## 12. History: what was retracted or corrected
 
-Recorded so it is not rediscovered. The 50 rows below come from ten spikes — S1–S5 on
-2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02, S9 and S10 on 2026-08-03 — from audit
-rounds 5–19, and from **M1's own build**; every spike passed, and eight of the ten corrected a
-design decision. **S9 and S10 are the two that principally *confirmed*:** S9 found the decompiled
-`can_use_tool` design right in every field it named, and S10 found the static `SubagentStop`
-reading not merely right but exhaustive. A confirmation is a result too, which is why it is
-recorded here rather than silently dropped — and both spikes still contribute correction rows,
-because what a static or decompiled reading leaves *un*specified is where the errors were.
+Recorded so it is not rediscovered. The 53 rows below come from eleven spikes — S1–S5 on
+2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02, S9, S10 and S11 on 2026-08-03 — from audit
+rounds 5–19, and from **M1's own build**; every spike passed, and nine of the eleven corrected a
+design decision. **S9, S10 and S11 are the three that principally *confirmed*:** S9 found the
+decompiled `can_use_tool` design right in every field it named, S10 found the static
+`SubagentStop` reading not merely right but exhaustive, and S11 found S1's interrupt protocol
+byte-for-byte unchanged over a pty. A confirmation is a result too, which is why it is recorded
+here rather than silently dropped — and all three still contribute correction rows, because what a
+static, decompiled or single-transport reading leaves *un*specified is where the errors were.
 
 **Stamps.** A spike row is stamped with its spike and date (`S8, 2026-08-02`); an audit row with
 its round (`round 15`). The three rows stamped **`M1, 2026-08-02`** were measured while building
@@ -3945,3 +4125,6 @@ different provenance from either. No row is renumbered and no spike is invented 
 | `SubagentStop` is verified statically only, adding `agent_id`/`agent_type`/`agent_transcript_path` to the `Stop` set | **CONFIRMED AND NARROWED (S10, 2026-08-03).** It fires, and the static reading was **complete**: exactly **14 keys** — S4's 11-key `Stop` set plus those three and nothing else — while the paired `Stop` in the same run carries the 11 and none of the three. What static reading could not give, now normative in §5.2: **`session_id` and `transcript_path` are the PARENT's**, so a hook reading `transcript_path` on a `SubagentStop` reads the wrong file; the child's transcript is `agent_transcript_path` at `<parent dir>/<session_id>/subagents/agent-<agent_id>.jsonl`. **`agent_id` is 17 lowercase hex chars with no dashes** — not a UUID, so a UUID-validating parser rejects a valid payload — and is **one id under four names** (`task_started.task_id`, `task_notification.task_id`, `agentId` in the `tool_result`). `stop_hook_active` correlates to the **node**, not the fire (`false` then `true`, same `agent_id`). Claude Code 2.1.220, canned provider, no credential, `total_cost_usd: 0`. |
 | A hook that produces no fire and no error was registered correctly and its event simply did not occur | **RETRACTED (S10, 2026-08-03).** There is **no signal that distinguishes the two.** A byte-identical run registering the hook **single-nested** plus misspelled event names produced **zero fires, zero `hook_started` frames, no warning, `is_error: false`, exit 0** and the same `num_turns: 2` as the working run. This document already said the nesting is double and typos are silently ignored; what was not stated is that the failure is **invisible**, so adapter conformance MUST prove wiring positively — a `hook_started`/`hook_response` pair or an actual fire — never by absence of an error. Both recordings committed (`settings-badshape.json`, `stream-badshape.jsonl`). Related and equally silent: Claude Code advertises the subagent tool to the model as **`Agent`** while `--tools` and `system/init` call it **`Task`**; a canned provider matching on `"Task"` never matches and the run looks exactly like one where the subagent tool was unavailable (§5.5). |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
+| S1's interrupt protocol was proven over pipes; under a pty, isatty-conditional line buffering may change the framing | **CONFIRMED AND NARROWED (S11, 2026-08-03).** The **protocol** is unchanged and the worry was aimed at the wrong layer. S1's argv and stdin script, replayed verbatim over a real pty against Claude Code 2.1.220 and a canned provider (cost **$0.00**), produce an **identical 38-kind collapsed frame sequence** (`first_divergence: null`), a **byte-identical** interrupt `control_response`, and — after normalising only per-run UUIDs, wall-clock timestamps/durations and how far the canned stream got — **36 of 36 non-delta frames byte-identical** across pipes, pty and pty-with-`OPOST`-off. The interrupt semantics reproduce exactly: `{"still_queued":[]}`, then `is_error: true` / `error_during_execution` / `aborted_streaming`, then a successful follow-up turn and exit 0. What *did* change is **framing and fds**, in the two rows below. Fixtured in `tests/fixtures/s11/`; §11 item 1 closed, items 11 and 20 narrowed. |
+| A `read()` on a harness's stdout can be treated as a frame, and the `\r` a pty adds is the thing to fix | **CORRECTED (S11, 2026-08-03).** Same run, same binary: **139 reads over a pipe (largest 46,515 B, *zero* returning no complete frame) vs 230 over a pty (largest 1,024 B — the macOS pty output-queue ceiling — with 92 of them, 40%, containing no line terminator at all)**. The ~48 kB `initialize` reply is **one** read on a pipe and ~47 on a pty. So a reader that assumes a read is a frame **works on pipes and breaks on a pty**, with nothing to distinguish the two until the transport changes — §5.2 now requires buffering and splitting on frame boundaries as a MUST. And the `\r` is **not** the mechanism: a fourth capture with `OPOST` cleared has **0 CRLF and 141 LF-only lines but exactly the same 230 reads and 1,024 B maximum**, attributing the `\r` to the line discipline's `ONLCR` and the chunking to a **separate, independent** mechanism. Recorded because conflating them yields a plausible and wrong fix — clearing `OPOST` removes every `\r` and restores nothing about the framing. |
+| A headless node's fd topology is a free choice, so a launcher may hand `claude -p` a pty for uniformity | **CORRECTED (S11, 2026-08-03).** `claude -p` **refuses a pty stdin**: it exits **1** with `Error: Input must be provided either through stdin or as a prompt argument when using --print`, having emitted only its `SessionStart` hook frames. A capture with **pty stdin and pipe stdout** fails identically to an all-pty one, isolating the trigger to **`isatty(stdin)`**, not stdout — and the error names the *prompt* rather than the fd, so the cause does not read off the message. §6.4 now states **MUST NOT give a headless node a pty on stdin**. Two lesser isatty effects measured alongside: the CLI **colours its stderr warnings** when *stdout* is a pty (stderr was a pipe in both runs), and **headless `claude -p` emits no terminal probes at all** on any of the four topologies — including one where it owned the pty as its controlling terminal — so §5.3's probe table is a **TUI**-path statement. |

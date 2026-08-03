@@ -97,7 +97,24 @@ erases scrollback (`CSI 3J`) on every resize, which marion must intercept. Codex
 screen transiently for full-screen overlays (the `/diff` pager), so buffer switching mid-session is
 required. Both harnesses emit terminal probes but **different sets** — Claude Code sends DA1 and
 XTVERSION; Codex sends DA1, CPR, and OSC 10/11. marion answers all of them, but our own fixtures
-show both proceeding without any answer, so this is prudence, not a requirement.
+show both proceeding without any answer, so this is prudence, not a requirement. **That is a
+statement about the TUI path only:** measured 2026-08-03 (S11), **headless `claude -p` emits no
+probes at all** — on any of four fd topologies, including one where it owned the pty as its
+controlling terminal.
+
+**⚠ A pty changes the *framing* of a harness's stdout, not its protocol — and `claude -p` refuses
+a pty stdin outright.** *(Claude Code 2.1.220, macOS darwin 25.5.0, spike S11, 2026-08-03,
+`tests/fixtures/s11/`.)* Replaying S1's interrupt script verbatim over a pty gives an **identical
+frame sequence and 36 of 36 non-delta frames byte-identical** to the pipe run. But the same bytes
+arrive as **139 reads on a pipe (largest 46,515 B, none fragmentary) and 230 on a pty (largest
+1,024 B, 40% of them containing no line terminator)** — so **any consumer of a harness's stream
+MUST buffer and split on frame boundaries and MUST NOT treat a read as a frame**; that code is
+correct on a pipe and broken on a pty. The `\r` a pty adds is `ONLCR` and is a **separate**
+mechanism from the chunking — clearing `OPOST` removes every `\r` and leaves the read count
+identical — so fixing the `\r` fixes nothing about the framing. Separately, **a launcher MUST NOT
+give a headless node a pty on stdin**: `claude -p` exits **1** with *"Input must be provided
+either through stdin or as a prompt argument when using --print"*, isolated to `isatty(stdin)` by
+a pty-stdin/pipe-stdout capture. Design doc §5.2, §6.4, §11 item 1.
 
 **Codex app-servers are never reaped**, but **unsubscribed threads unload after 30 minutes** and
 `thread/start` does not materialize a rollout. `thread/resume` is the subscribe mechanism.
@@ -262,10 +279,12 @@ implementation:
   closed the same way, at `tests/fixtures/s7/`; item 3's Codex half is closed by S8, fixtured at
   `spikes/s8/`, whose report carries structural facts only — key names, file modes, exit codes —
   because the spike touched real OAuth credentials; item 14's `can_use_tool` third by S9 at
-  `tests/fixtures/s9/`; and item 2 outright by S10 at `tests/fixtures/s10/`, which commits its
+  `tests/fixtures/s9/`; item 2 outright by S10 at `tests/fixtures/s10/`, which commits its
   **negative** control alongside the positive one — a mis-shaped hook registration that fired
   nothing, warned nothing and exited 0, so the fixture proves the positive run was actually the
-  hook firing).
+  hook firing; and item 1 outright by S11 at `tests/fixtures/s11/`, which commits its **control**
+  transport alongside the measurement — the same script over pipes — because the finding is a
+  *difference* between transports and is unreadable from the pty capture alone).
   Treat that list as authoritative and keep it current; do not re-enumerate it here.
 - **Fixtures contain system prompts, repo contents, and anything secret that appeared in tool
   output.** Redaction pass plus a pre-commit secret scan are mandatory; prefer recording against
@@ -285,7 +304,17 @@ also **corrected** design doc §7.6: `num_turns` is a root counter and says noth
 subagent re-prompt — `parent_tool_use_id` is the discriminator. A negative control (mis-shaped hook
 registration) fired nothing and reported nothing, which is why "no error" is never evidence a hook
 is wired. Four follow-ups remain, and `run_in_background: true` — untested, and the case §7.6
-actually exists for — is now design doc §11 item **21**. **S8 [partial]** and **S9 [partial]** —
+actually exists for — is now design doc §11 item **21**. **S11 [done]** — the pty re-confirmation
+of S1 that §11 item 1 owed before M1, fixtured in `tests/fixtures/s11/`: S1's argv and stdin script
+replayed **verbatim** over a real pty against Claude Code 2.1.220 and the canned provider, cost
+**$0.00**, across four fd topologies with the pipe run committed as the control. **The protocol is
+unchanged** — identical 38-kind frame sequence, byte-identical interrupt `control_response`, 36 of
+36 non-delta frames byte-identical. **The framing is not**, and `claude -p` **refuses a pty
+stdin**: both are stated as MUSTs above. S11 also narrowed two other open items — §11 item **11**
+(S1's interrupt latency is no longer a single run; it is still one machine) and §11 item **20**
+(the pty-host half of "no real-terminal coverage" is paid; the emulator/rendering half, item 9's
+`ESC[6n` stall and the keystroke-injection submit check are not, so item 20 is **narrowed, not
+closed**). **S8 [partial]** and **S9 [partial]** —
 the two spikes that did not close their questions outright; **do not read either as closed.**
 **S9 answered only the `can_use_tool` third of "the inbound half of Claude Code's control
 channel"** (design doc §11 item 14) — the decompiled design was right in every field it named and
@@ -318,11 +347,13 @@ the rest named; **[open]** not started. A milestone is never **[done]** while a 
 is unmet — including the evidence criteria. Statuses are claims about *verified* state, not about
 how much code exists.
 
-- **M1 [partial]** — one real cross-harness hop over the direct-MCP path, returning a task
-  contract, driven entirely by the canned provider. Preceded by S6. **Functionally complete: the
-  hop runs end to end, and all six functional criteria are met.** Still **[partial]** because §9's
-  seventh criterion is the evidence line, and one debt is open there — the pty re-confirmation of
-  S1 (§11 item 1). See below.
+- **M1 [done]** — one real cross-harness hop over the direct-MCP path, returning a task contract,
+  driven entirely by the canned provider. Preceded by S6. **All seven of design doc §9's
+  acceptance criteria are met**: the six functional ones, and the seventh — the evidence line —
+  whose last debt (the pty re-confirmation of S1, §11 item 1) was paid on 2026-08-03 by **S11**.
+  **[done] here means exactly what the convention says and nothing more: every criterion M1 names
+  is met and verified.** It does **not** mean marion is usable for real work — read the two
+  sections below, in order, before quoting this line.
 - **M2 [open]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
@@ -341,23 +372,34 @@ out-of-scope write is caught detectively; the whole run is canned. `cargo test -
 deserializes, and it equals the persisted `contracts/<task_id>.json` modulo the cap rules'
 shortening and the metadata recording it.
 
-**M1 is not done, and the gap is evidence, not function.** §9's timed-out-descendant criterion —
-`kill(pid, 0)` returns `ESRCH` for every pid in a **non-empty** enumerated descendant set — is now
+**All six functional criteria are met.** The last to land was §9's timed-out-descendant criterion
+— `kill(pid, 0)` returns `ESRCH` for every pid in a **non-empty** enumerated descendant set —
 asserted in `crates/marion-supervisor/tests/timeout_kill.rs` over the set marion enumerated in step
-1 of its two-step group kill (S7's ordering), so **all six functional criteria (1–6) are met**.
+1 of its two-step group kill (S7's ordering).
 
-**Criterion 7, the evidence line, is what remains, and it is down to one debt.** Design doc §9's
-*"Owed here"* named three: item 14 (a real `can_use_tool` round-trip with a committed fixture) was
-paid on 2026-08-03 by **S9**; item 2 (the live `SubagentStop` confirmation) was paid the same day
-by **S10**. **Open: §11 item 1, the pty re-confirmation of S1** — the interrupt protocol was proven
-over pipes, not a pty. The truthful headline is **six of six functional criteria met, one evidence
-debt outstanding** — not "M1 complete", because a milestone is never **[done]** while a criterion
-it names is unmet, and criterion 7 is a criterion.
+**Criterion 7, the evidence line, is now also met — the ledger closed on 2026-08-03.** Design doc
+§9's *"Owed here"* named three debts; all three are paid, each with a committed fixture. Item 14
+(a real `can_use_tool` round-trip) by **S9**. Item 2 (the live `SubagentStop` confirmation) by
+**S10**. And item 1 — **the pty re-confirmation of S1** — by **S11**, which replayed S1's argv and
+stdin script verbatim over a real pty and found the interrupt protocol **byte-for-byte unchanged**,
+while turning up two things that were not what the debt was about and are now MUSTs: a reader must
+not treat a `read()` as a frame, and a headless node must not be handed a pty stdin. **So the
+headline is seven of seven criteria met, and M1 is [done].**
+
+**What that sentence does not say.** M1 was scoped to prove exactly one thing — that a real
+cross-harness delegation hop returns an auditable contract — and was built **disposably** to prove
+it (design doc §9). Its criteria are a deliberately narrow bar, and clearing them says nothing
+about the rest of the system. **"M1 [done]" must never be read as "marion works."** The journal
+does not exist, so nothing survives a supervisor restart. Descendant gating — which principle 11
+above calls non-negotiable — is specified and **not in code**. `verification` never executes, so
+every contract's `evidence` is empty. The next section is the authoritative list, not a footnote
+to this one.
 
 ### Not started — what a working M1 does *not* imply
 
-M1 was built disposably on purpose (design doc §9), so a working hop rests on very little. Nothing
-below exists yet:
+**Read this before treating M1 [done] as a statement about marion.** M1 was built disposably on
+purpose (design doc §9), so a working hop — and a met acceptance criterion — rests on very little.
+Nothing below exists yet, and none of it is covered by any M1 criterion:
 
 - **The journal (design §4.3) — the significant one. Nothing survives a supervisor restart today.**
   `Orphaned` marking and reap recovery both depend on it, so M2's replay criteria have no substrate
