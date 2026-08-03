@@ -1,0 +1,507 @@
+{
+  "per_transport": {
+    "pipes": {
+      "errors": [],
+      "exit_code": 0,
+      "probes_seen": [],
+      "non_json_stdout_count": 0,
+      "line_endings": {
+        "crlf": 0,
+        "lf_only": 142
+      },
+      "latencies": {
+        "initialize_latency_s": 1.176710625179112,
+        "first_delta_after_s": 0.11579479207284749,
+        "interrupt_response_latency_s": 0.0007750410586595535,
+        "interrupt_to_result_s": 0.006182500161230564,
+        "followup_latency_s": 0.4407824161462486
+      },
+      "interrupted_result": {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": true,
+        "terminal_reason": "aborted_streaming",
+        "num_turns": 2,
+        "duration_ms": 3124,
+        "total_cost_usd": 0,
+        "errors": [
+          "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"
+        ]
+      },
+      "followup_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "terminal_reason": "completed",
+        "result": "OK-AFTER-INTERRUPT",
+        "num_turns": 1,
+        "total_cost_usd": 0
+      },
+      "boundaries": {
+        "stdout_read_chunks": 139,
+        "stdout_bytes": 130915,
+        "read_size_min": 123,
+        "read_size_median": 241,
+        "read_size_max": 46515,
+        "reads_at_or_above_4096": 5,
+        "reads_at_or_above_1024": 9,
+        "json_frames": 142,
+        "reads_that_completed_a_frame": 139,
+        "reads_that_completed_no_frame": 0,
+        "max_frames_completed_in_one_read": 3
+      },
+      "distinct_frame_kinds": [
+        "assistant[text]",
+        "control_response/success",
+        "result/error_during_execution",
+        "result/success",
+        "stream_event/content_block_delta/text_delta",
+        "stream_event/content_block_start/text",
+        "stream_event/content_block_stop",
+        "stream_event/message_delta",
+        "stream_event/message_start",
+        "stream_event/message_stop",
+        "system/hook_response",
+        "system/hook_started",
+        "system/init",
+        "system/status",
+        "user[text]"
+      ]
+    },
+    "pty-out": {
+      "errors": [],
+      "exit_code": 0,
+      "probes_seen": [],
+      "non_json_stdout_count": 0,
+      "line_endings": {
+        "crlf": 143,
+        "lf_only": 0
+      },
+      "latencies": {
+        "initialize_latency_s": 1.0676031250040978,
+        "first_delta_after_s": 0.1316941250115633,
+        "interrupt_response_latency_s": 0.0012309160083532333,
+        "interrupt_to_result_s": 0.009048625128343701,
+        "followup_latency_s": 0.4637999169062823
+      },
+      "interrupted_result": {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": true,
+        "terminal_reason": "aborted_streaming",
+        "num_turns": 2,
+        "duration_ms": 3143,
+        "total_cost_usd": 0,
+        "errors": [
+          "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"
+        ]
+      },
+      "followup_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "terminal_reason": "completed",
+        "result": "OK-AFTER-INTERRUPT",
+        "num_turns": 1,
+        "total_cost_usd": 0
+      },
+      "boundaries": {
+        "stdout_read_chunks": 230,
+        "stdout_bytes": 131449,
+        "read_size_min": 6,
+        "read_size_median": 243,
+        "read_size_max": 1024,
+        "reads_at_or_above_4096": 0,
+        "reads_at_or_above_1024": 93,
+        "json_frames": 143,
+        "reads_that_completed_a_frame": 138,
+        "reads_that_completed_no_frame": 92,
+        "max_frames_completed_in_one_read": 4
+      },
+      "distinct_frame_kinds": [
+        "assistant[text]",
+        "control_response/success",
+        "result/error_during_execution",
+        "result/success",
+        "stream_event/content_block_delta/text_delta",
+        "stream_event/content_block_start/text",
+        "stream_event/content_block_stop",
+        "stream_event/message_delta",
+        "stream_event/message_start",
+        "stream_event/message_stop",
+        "system/hook_response",
+        "system/hook_started",
+        "system/init",
+        "system/status",
+        "user[text]"
+      ]
+    },
+    "pty-out-raw": {
+      "errors": [],
+      "exit_code": 0,
+      "probes_seen": [],
+      "non_json_stdout_count": 0,
+      "line_endings": {
+        "crlf": 0,
+        "lf_only": 141
+      },
+      "latencies": {
+        "initialize_latency_s": 1.558390290942043,
+        "first_delta_after_s": 0.15310150012373924,
+        "interrupt_response_latency_s": 0.0017458749935030937,
+        "interrupt_to_result_s": 0.011536584002897143,
+        "followup_latency_s": 0.44844666705466807
+      },
+      "interrupted_result": {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": true,
+        "terminal_reason": "aborted_streaming",
+        "num_turns": 2,
+        "duration_ms": 3165,
+        "total_cost_usd": 0,
+        "errors": [
+          "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"
+        ]
+      },
+      "followup_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "terminal_reason": "completed",
+        "result": "OK-AFTER-INTERRUPT",
+        "num_turns": 1,
+        "total_cost_usd": 0
+      },
+      "boundaries": {
+        "stdout_read_chunks": 230,
+        "stdout_bytes": 130626,
+        "read_size_min": 6,
+        "read_size_median": 244,
+        "read_size_max": 1024,
+        "reads_at_or_above_4096": 0,
+        "reads_at_or_above_1024": 92,
+        "json_frames": 141,
+        "reads_that_completed_a_frame": 137,
+        "reads_that_completed_no_frame": 93,
+        "max_frames_completed_in_one_read": 4
+      },
+      "distinct_frame_kinds": [
+        "assistant[text]",
+        "control_response/success",
+        "result/error_during_execution",
+        "result/success",
+        "stream_event/content_block_delta/text_delta",
+        "stream_event/content_block_start/text",
+        "stream_event/content_block_stop",
+        "stream_event/message_delta",
+        "stream_event/message_start",
+        "stream_event/message_stop",
+        "system/hook_response",
+        "system/hook_started",
+        "system/init",
+        "system/status",
+        "user[text]"
+      ]
+    },
+    "pty-in": {
+      "errors": [
+        "TimeoutError('timed out waiting for initialize response')"
+      ],
+      "exit_code": 1,
+      "probes_seen": [],
+      "non_json_stdout_count": 0,
+      "line_endings": {
+        "crlf": 0,
+        "lf_only": 17
+      },
+      "latencies": {
+        "initialize_latency_s": null,
+        "first_delta_after_s": null,
+        "interrupt_response_latency_s": null,
+        "interrupt_to_result_s": null,
+        "followup_latency_s": null
+      },
+      "interrupted_result": null,
+      "followup_result": null,
+      "boundaries": {
+        "stdout_read_chunks": 11,
+        "stdout_bytes": 32679,
+        "read_size_min": 253,
+        "read_size_median": 1182,
+        "read_size_max": 15722,
+        "reads_at_or_above_4096": 2,
+        "reads_at_or_above_1024": 6,
+        "json_frames": 17,
+        "reads_that_completed_a_frame": 11,
+        "reads_that_completed_no_frame": 0,
+        "max_frames_completed_in_one_read": 5
+      },
+      "distinct_frame_kinds": [
+        "system/hook_response",
+        "system/hook_started"
+      ]
+    },
+    "pty-all": {
+      "errors": [
+        "TimeoutError('timed out waiting for initialize response')"
+      ],
+      "exit_code": 1,
+      "probes_seen": [],
+      "non_json_stdout_count": 2,
+      "line_endings": {
+        "crlf": 19,
+        "lf_only": 0
+      },
+      "latencies": {
+        "initialize_latency_s": null,
+        "first_delta_after_s": null,
+        "interrupt_response_latency_s": null,
+        "interrupt_to_result_s": null,
+        "followup_latency_s": null
+      },
+      "interrupted_result": null,
+      "followup_result": null,
+      "boundaries": {
+        "stdout_read_chunks": 43,
+        "stdout_bytes": 33004,
+        "read_size_min": 6,
+        "read_size_median": 1024,
+        "read_size_max": 1024,
+        "reads_at_or_above_4096": 0,
+        "reads_at_or_above_1024": 28,
+        "json_frames": 17,
+        "reads_that_completed_a_frame": 13,
+        "reads_that_completed_no_frame": 30,
+        "max_frames_completed_in_one_read": 4
+      },
+      "distinct_frame_kinds": [
+        "system/hook_response",
+        "system/hook_started"
+      ]
+    }
+  },
+  "comparisons": {
+    "pipes_vs_pty-out": {
+      "collapsed_sequence_identical": true,
+      "kind_set_identical": true,
+      "only_in_pipes": [],
+      "only_in_pty-out": [],
+      "first_divergence": null,
+      "len_pipes": 38,
+      "len_pty-out": 38
+    },
+    "pipes_vs_pty-out-raw": {
+      "collapsed_sequence_identical": true,
+      "kind_set_identical": true,
+      "only_in_pipes": [],
+      "only_in_pty-out-raw": [],
+      "first_divergence": null,
+      "len_pipes": 38,
+      "len_pty-out-raw": 38
+    },
+    "pipes_vs_pty-in": {
+      "collapsed_sequence_identical": false,
+      "kind_set_identical": false,
+      "only_in_pipes": [
+        "assistant[text]",
+        "control_response/success",
+        "result/error_during_execution",
+        "result/success",
+        "stream_event/content_block_delta/text_delta",
+        "stream_event/content_block_start/text",
+        "stream_event/content_block_stop",
+        "stream_event/message_delta",
+        "stream_event/message_start",
+        "stream_event/message_stop",
+        "system/init",
+        "system/status",
+        "user[text]"
+      ],
+      "only_in_pty-in": [],
+      "first_divergence": 17,
+      "len_pipes": 38,
+      "len_pty-in": 17
+    },
+    "pipes_vs_pty-all": {
+      "collapsed_sequence_identical": false,
+      "kind_set_identical": false,
+      "only_in_pipes": [
+        "assistant[text]",
+        "control_response/success",
+        "result/error_during_execution",
+        "result/success",
+        "stream_event/content_block_delta/text_delta",
+        "stream_event/content_block_start/text",
+        "stream_event/content_block_stop",
+        "stream_event/message_delta",
+        "stream_event/message_start",
+        "stream_event/message_stop",
+        "system/init",
+        "system/status",
+        "user[text]"
+      ],
+      "only_in_pty-all": [],
+      "first_divergence": 17,
+      "len_pipes": 38,
+      "len_pty-all": 17
+    },
+    "s1_vs_pipes": {
+      "kinds_in_s1_absent_here": [
+        "assistant[thinking]",
+        "rate_limit_event",
+        "stream_event/content_block_delta/signature_delta",
+        "stream_event/content_block_delta/thinking_delta",
+        "stream_event/content_block_start/thinking",
+        "system/thinking_tokens"
+      ],
+      "kinds_here_absent_in_s1": []
+    },
+    "s1_vs_pty-out": {
+      "kinds_in_s1_absent_here": [
+        "assistant[thinking]",
+        "rate_limit_event",
+        "stream_event/content_block_delta/signature_delta",
+        "stream_event/content_block_delta/thinking_delta",
+        "stream_event/content_block_start/thinking",
+        "system/thinking_tokens"
+      ],
+      "kinds_here_absent_in_s1": []
+    },
+    "s1_vs_pty-out-raw": {
+      "kinds_in_s1_absent_here": [
+        "assistant[thinking]",
+        "rate_limit_event",
+        "stream_event/content_block_delta/signature_delta",
+        "stream_event/content_block_delta/thinking_delta",
+        "stream_event/content_block_start/thinking",
+        "system/thinking_tokens"
+      ],
+      "kinds_here_absent_in_s1": []
+    },
+    "s1_vs_pty-in": {
+      "kinds_in_s1_absent_here": [
+        "assistant[text]",
+        "assistant[thinking]",
+        "control_response/success",
+        "rate_limit_event",
+        "result/error_during_execution",
+        "result/success",
+        "stream_event/content_block_delta/signature_delta",
+        "stream_event/content_block_delta/text_delta",
+        "stream_event/content_block_delta/thinking_delta",
+        "stream_event/content_block_start/text",
+        "stream_event/content_block_start/thinking",
+        "stream_event/content_block_stop",
+        "stream_event/message_delta",
+        "stream_event/message_start",
+        "stream_event/message_stop",
+        "system/init",
+        "system/status",
+        "system/thinking_tokens",
+        "user[text]"
+      ],
+      "kinds_here_absent_in_s1": []
+    },
+    "s1_vs_pty-all": {
+      "kinds_in_s1_absent_here": [
+        "assistant[text]",
+        "assistant[thinking]",
+        "control_response/success",
+        "rate_limit_event",
+        "result/error_during_execution",
+        "result/success",
+        "stream_event/content_block_delta/signature_delta",
+        "stream_event/content_block_delta/text_delta",
+        "stream_event/content_block_delta/thinking_delta",
+        "stream_event/content_block_start/text",
+        "stream_event/content_block_start/thinking",
+        "stream_event/content_block_stop",
+        "stream_event/message_delta",
+        "stream_event/message_start",
+        "stream_event/message_stop",
+        "system/init",
+        "system/status",
+        "system/thinking_tokens",
+        "user[text]"
+      ],
+      "kinds_here_absent_in_s1": []
+    }
+  },
+  "latency_repeats": {
+    "pipes": [
+      {
+        "run": "run-pipes",
+        "interrupt_response_latency_ms": 0.775,
+        "interrupt_to_result_ms": 6.183
+      },
+      {
+        "run": "run-pipes.rep2",
+        "interrupt_response_latency_ms": 0.368,
+        "interrupt_to_result_ms": 3.291
+      },
+      {
+        "run": "run-pipes.rep3",
+        "interrupt_response_latency_ms": 0.958,
+        "interrupt_to_result_ms": 8.498
+      }
+    ],
+    "pty-out": [
+      {
+        "run": "run-pty-out",
+        "interrupt_response_latency_ms": 1.231,
+        "interrupt_to_result_ms": 9.049
+      },
+      {
+        "run": "run-pty-out.rep2",
+        "interrupt_response_latency_ms": 1.256,
+        "interrupt_to_result_ms": 10.998
+      },
+      {
+        "run": "run-pty-out.rep3",
+        "interrupt_response_latency_ms": 1.67,
+        "interrupt_to_result_ms": 13.087
+      }
+    ],
+    "pty-out-raw": [
+      {
+        "run": "run-pty-out-raw",
+        "interrupt_response_latency_ms": 1.746,
+        "interrupt_to_result_ms": 11.537
+      }
+    ]
+  },
+  "s1_headline_ms": {
+    "interrupt_response_latency_ms": 0.5,
+    "interrupt_to_result_ms": 1.868,
+    "note": "tests/fixtures/s1/summary.json, one run"
+  },
+  "s1_fixture": {
+    "path": "tests/fixtures/s1/stdout.jsonl",
+    "frames": 95,
+    "distinct_frame_kinds": [
+      "assistant[text]",
+      "assistant[thinking]",
+      "control_response/success",
+      "rate_limit_event",
+      "result/error_during_execution",
+      "result/success",
+      "stream_event/content_block_delta/signature_delta",
+      "stream_event/content_block_delta/text_delta",
+      "stream_event/content_block_delta/thinking_delta",
+      "stream_event/content_block_start/text",
+      "stream_event/content_block_start/thinking",
+      "stream_event/content_block_stop",
+      "stream_event/message_delta",
+      "stream_event/message_start",
+      "stream_event/message_stop",
+      "system/hook_response",
+      "system/hook_started",
+      "system/init",
+      "system/status",
+      "system/thinking_tokens",
+      "user[text]"
+    ],
+    "collapsed_len": 81
+  }
+}

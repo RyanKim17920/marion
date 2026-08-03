@@ -1,0 +1,59 @@
+{
+  "harness_version": "s11-pty_interrupt.py/1",
+  "transport": "pty-all",
+  "argv": [
+    "<HOME>/.local/bin/claude",
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--input-format",
+    "stream-json",
+    "--include-partial-messages",
+    "--verbose",
+    "--model",
+    "haiku",
+    "--allowed-tools",
+    ""
+  ],
+  "env_overrides": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "COLORTERM",
+    "COLUMNS",
+    "LINES",
+    "TERM"
+  ],
+  "answer_probes": false,
+  "winsize": [
+    40,
+    120
+  ],
+  "events": {},
+  "errors": [
+    "TimeoutError('timed out waiting for initialize response')"
+  ],
+  "exit_status": 256,
+  "exit_code": 1,
+  "stderr": "",
+  "probes_seen": [],
+  "non_json_stdout": [
+    {
+      "t": 0.3250676670577377,
+      "bytes": "\u001b[33m\u00e2\u009a\u00a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00c2\u00b7 Unset it to load your organization's connectors\u001b[39m"
+    },
+    {
+      "t": 1.2004528329707682,
+      "bytes": "Error: Input must be provided either through stdin or as a prompt argument when using --print"
+    }
+  ],
+  "non_json_stdout_count": 2,
+  "framing": {
+    "stdout_read_chunks": 43,
+    "stdout_bytes": 33004,
+    "json_frames": 17,
+    "lines_ending_crlf": 19,
+    "lines_ending_lf_only": 0,
+    "frames_sharing_a_chunk": 4
+  }
+}
