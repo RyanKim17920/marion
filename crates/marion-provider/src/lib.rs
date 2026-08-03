@@ -27,7 +27,8 @@ pub mod script;
 pub mod server;
 
 pub use script::{
-    ChildStep, GeminiKind, GeminiStep, OpenAiStep, RootStep, Script, Wire, wire_name,
+    ChildStep, GeminiKind, GeminiStep, OpenAiStep, RootScript, RootStep, RootTurn, Script, Wire,
+    wire_name,
 };
 pub use server::{CannedServer, Config};
 

@@ -20,6 +20,12 @@ pub const REPORT_CALL_ID: &str = "call_marion_report_1";
 /// tied to the call that provoked it.
 pub const ROOT_TOOL_USE_ID: &str = "toolu_marion_spawn_1";
 
+/// `call_id` of a **root's** single tool call on the two wires that use one (Responses, Chat
+/// Completions). Distinct from [`REPORT_CALL_ID`] on purpose: in a same-harness run the root and
+/// its child speak the same wire, and two nodes quoting one id back would make each other's
+/// transcripts look finished.
+pub const ROOT_CALL_ID: &str = "call_marion_root_1";
+
 /// Which wire format a request is speaking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wire {
@@ -373,13 +379,39 @@ fn item_type(item: &Value) -> &str {
     item.get("type").and_then(Value::as_str).unwrap_or("")
 }
 
-/// A call to marion's `report` under either spelling S6 found: the `{name, namespace}` form codex
-/// dispatches on, or the `mcp_tool_call` item it surfaces the result as.
-fn is_report_call(item: &Value) -> bool {
+/// A call to one of marion's verbs under either spelling S6 found: the `{name, namespace}` form
+/// codex dispatches on, or the `mcp_tool_call` item it surfaces the result as.
+fn is_mcp_call(item: &Value, tool: &str) -> bool {
     match item_type(item) {
-        "function_call" => item.get("name").and_then(Value::as_str) == Some("report"),
-        "mcp_tool_call" => item.get("tool").and_then(Value::as_str) == Some("report"),
+        "function_call" => item.get("name").and_then(Value::as_str) == Some(tool),
+        "mcp_tool_call" => item.get("tool").and_then(Value::as_str) == Some(tool),
         _ => false,
+    }
+}
+
+/// A call to marion's `report`, the verb M1's codex child returns through.
+fn is_report_call(item: &Value) -> bool {
+    is_mcp_call(item, "report")
+}
+
+/// Decide a **root**'s step on the Responses wire, from the `input` array it sent us.
+///
+/// Two steps, not the child's three: a root has nothing to patch — its cwd is the repository
+/// itself, and a canned `apply_patch` there would edit the operator's own tree rather than a
+/// worktree. Evidence is the same kind [`classify_child`] takes and for the same reason (the tool
+/// catalogue names every verb on turn one, so a substring scan answers `Finish` to turn one): our
+/// own [`ROOT_CALL_ID`] quoted back, or a call item naming `tool`.
+pub fn classify_responses_root(body: &Value, tool: &str) -> RootStep {
+    let called = body
+        .get("input")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|it| is_echo_of(it, ROOT_CALL_ID) || is_mcp_call(it, tool));
+    if called {
+        RootStep::Finish
+    } else {
+        RootStep::Delegate
     }
 }
 
@@ -388,6 +420,90 @@ fn is_custom_tool_item(item: &Value) -> bool {
         item_type(item),
         "custom_tool_call" | "custom_tool_call_output"
     )
+}
+
+/// A **root**'s canned behaviour on whichever wire its harness speaks: call one tool, then stop.
+///
+/// One type for all four wires rather than four sets of fields, because a root's script genuinely
+/// is the same two-step machine everywhere — delegate, then say something once the result is in the
+/// transcript. What differs is the *frame* each wire carries it in, and [`Script::respond`] already
+/// knows the wire.
+///
+/// It exists because [`Script`]'s per-wire fields describe **one** node, and the cross-product
+/// matrix runs two: in a same-harness cell (a codex root spawning a codex child) both nodes speak
+/// one wire, so "which script is this request asking for" cannot be answered from the wire alone.
+/// See [`RootScript::marker`] for how it *is* answered — by shape, never by arrival order.
+#[derive(Debug, Clone)]
+pub struct RootTurn {
+    /// marion's verb in **this wire's** spelling, which the harnesses disagree about and nothing
+    /// here translates between: `mcp__marion__spawn` on Anthropic, `mcp_marion_spawn` on Gemini,
+    /// `marion_spawn` on Chat Completions, and the bare `spawn` on Responses (see
+    /// [`crate::responses::mcp_call`] for why that one is bare).
+    pub tool: String,
+    /// Arguments for that call — for `spawn`, the child's agent type, prompt and scope.
+    pub args: Value,
+    /// The root's closing text turn, once the call's result is in its transcript.
+    pub final_text: String,
+}
+
+impl RootTurn {
+    fn respond(&self, wire: Wire, body: &Value) -> String {
+        match wire {
+            Wire::Anthropic => match classify_root(body) {
+                RootStep::Delegate => {
+                    anthropic::tool_use_turn(&self.tool, ROOT_TOOL_USE_ID, &self.args)
+                }
+                RootStep::Finish => anthropic::text_turn(&self.final_text),
+            },
+            Wire::Responses => match classify_responses_root(body, &self.tool) {
+                RootStep::Delegate => responses::mcp_call(&self.tool, &self.args, ROOT_CALL_ID),
+                RootStep::Finish => responses::final_message(&self.final_text),
+            },
+            Wire::Gemini { streaming } => match classify_gemini_step(body, &self.tool) {
+                GeminiStep::Report => gemini::function_call_turn(&self.tool, &self.args, streaming),
+                GeminiStep::Finish => gemini::text_turn(&self.final_text, streaming),
+            },
+            Wire::OpenAi => match classify_openai_step(body, &self.tool) {
+                OpenAiStep::Report => openai::tool_call_turn(&self.tool, ROOT_CALL_ID, &self.args),
+                OpenAiStep::Finish => openai::text_turn(&self.final_text),
+            },
+        }
+    }
+}
+
+/// The root's script, and how a request belonging to the root is told from one belonging to the
+/// child.
+#[derive(Debug, Clone)]
+pub struct RootScript {
+    /// A string present in the **root's prompt and nowhere in the child's**.
+    ///
+    /// **This is shape dispatch, not arrival order, and the distinction is the one this crate's
+    /// module docs are about.** The discriminator is a property of the request body — the node's
+    /// own task, which every harness replays in full on every turn — so replaying a run's requests
+    /// backwards yields the same answers, exactly as [`classify_root`] and [`classify_child`] do.
+    /// Counting requests, or assuming the root's arrive first, would break on the very first
+    /// same-harness cell: the child's whole run happens *inside* the root's `spawn` call, so the
+    /// two conversations are interleaved on one wire by construction.
+    ///
+    /// A root's transcript also carries the *child's* prompt, inside the `spawn` arguments — which
+    /// is why the marker has to live on the root's side of that asymmetry and not the child's.
+    pub marker: String,
+    pub turn: RootTurn,
+}
+
+/// Does any string anywhere in `body` contain `needle`?
+///
+/// Whole-body rather than a per-wire path into "the user's first message", because the four wires
+/// put the prompt in four places (`messages[].content[].text`, `input[].content[].text`,
+/// `contents[].parts[].text`, `messages[].content`) and three of them also carry it again in a
+/// system instruction. One scan is both simpler and strictly harder to fool.
+fn carries(body: &Value, needle: &str) -> bool {
+    match body {
+        Value::String(s) => s.contains(needle),
+        Value::Array(a) => a.iter().any(|v| carries(v, needle)),
+        Value::Object(o) => o.values().any(|v| carries(v, needle)),
+        _ => false,
+    }
 }
 
 /// The canned behaviour of one M1 run, as data.
@@ -443,6 +559,13 @@ pub struct Script {
     pub openai_report_args: Value,
     /// The opencode child's closing text turn.
     pub openai_final_text: String,
+    /// A **second** node in the same run: the root, whose requests reach the same provider.
+    ///
+    /// `None` — the default — means every request this provider sees belongs to one node, which is
+    /// what `m1_hop` and `harness_matrix` need (in `m1_hop` the root is the only Anthropic speaker
+    /// and the child the only Responses speaker, so the wire already separates them). It is `Some`
+    /// for the cross-product matrix, where the root's harness may be the child's.
+    pub root: Option<RootScript>,
 }
 
 impl Default for Script {
@@ -472,13 +595,37 @@ impl Default for Script {
             openai_report_tool: "marion_report".to_string(),
             openai_report_args: json!({"narrative": narrative}),
             openai_final_text: "Reported back through marion. Done.".to_string(),
+            root: None,
         }
     }
 }
 
 impl Script {
     /// Produce the SSE body for one request, on whichever wire it arrived.
+    ///
+    /// Three decisions, in this order, and every one of them a function of `(wire, body)`:
+    ///
+    /// 1. **is this a node's turn at all?** Two wires carry an auxiliary request that is not — Claude
+    ///    Code's concurrent session-title generation and gemini's model-routing classifier probe.
+    ///    Both are recognised by carrying no tools, and both are answered with their fixed stub
+    ///    before anything asks whose turn it is, because neither belongs to a node.
+    /// 2. **whose turn is it?** [`RootScript::marker`], when a root is scripted at all.
+    /// 3. **which step of that node's script?** the per-wire classifiers, unchanged.
     pub fn respond(&self, wire: Wire, body: &Value) -> String {
+        match wire {
+            Wire::Anthropic if classify_anthropic(body) == RequestKind::SessionTitle => {
+                return anthropic::session_title_stub();
+            }
+            Wire::Gemini { streaming } if classify_gemini(body) == GeminiKind::RouterProbe => {
+                return gemini::text_turn(&self.gemini_router_verdict, streaming);
+            }
+            _ => {}
+        }
+        if let Some(root) = &self.root
+            && carries(body, &root.marker)
+        {
+            return root.turn.respond(wire, body);
+        }
         match wire {
             Wire::Anthropic => self.respond_anthropic(body),
             Wire::Responses => self.respond_responses(body),
@@ -1041,6 +1188,232 @@ mod tests {
         assert!(
             !openai_out.contains("\"name\":\"report\""),
             "the unprefixed name is the MCP layer's, not this wire's"
+        );
+    }
+
+    // --- two nodes on one wire -----------------------------------------------------------------
+
+    const MARKER: &str = "MARION-XPROD-ROOT-MARKER";
+
+    /// A codex root and a codex child in one run: both speak Responses, and the only honest
+    /// discriminator is the conversation itself.
+    fn same_wire_script() -> Script {
+        Script {
+            child_narrative: "the child reported".into(),
+            root: Some(RootScript {
+                marker: MARKER.into(),
+                turn: RootTurn {
+                    tool: "spawn".into(),
+                    args: json!({"agent_type": "codex-impl"}),
+                    final_text: "delegated and done".into(),
+                },
+            }),
+            ..Script::default()
+        }
+    }
+
+    fn responses_body(prompt: &str, items: Value) -> Value {
+        let mut input = json!([{
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": prompt}],
+        }]);
+        for it in items.as_array().unwrap() {
+            input.as_array_mut().unwrap().push(it.clone());
+        }
+        json!({"model": "gpt-5.6-sol", "input": input})
+    }
+
+    /// **The same-wire cell, as a unit test.** A codex root's delegate turn and a codex child's
+    /// patch turn are both `Responses` requests with an empty transcript; without a role
+    /// discriminator the provider answers both with the child's `apply_patch`, and the root edits
+    /// the operator's repository instead of delegating.
+    #[test]
+    fn a_root_and_a_child_on_one_wire_are_told_apart_by_whose_task_the_request_carries() {
+        let s = same_wire_script();
+        let root = s.respond(
+            Wire::Responses,
+            &responses_body(&format!("{MARKER}: delegate this"), json!([])),
+        );
+        assert!(root.contains("\"name\":\"spawn\""), "{root}");
+        assert!(!root.contains("apply_patch"), "a root has nothing to patch");
+
+        let child = s.respond(
+            Wire::Responses,
+            &responses_body("add the marker file under src/", json!([])),
+        );
+        assert!(child.contains("apply_patch"), "{child}");
+        assert!(!child.contains("\"name\":\"spawn\""));
+    }
+
+    /// The child's *whole run* happens inside the root's `spawn` call, so the two conversations are
+    /// interleaved on one wire by construction. Replaying every turn backwards must change nothing.
+    #[test]
+    fn role_and_step_are_both_functions_of_the_body_not_of_arrival_order() {
+        let s = same_wire_script();
+        let root_first = format!("{MARKER}: delegate this");
+        let root_second = responses_body(
+            &root_first,
+            json!([{"type": "function_call", "call_id": ROOT_CALL_ID, "name": "spawn"}]),
+        );
+        let child_second = responses_body(
+            "add the marker file under src/",
+            json!([{"type": "custom_tool_call", "call_id": PATCH_CALL_ID, "name": "exec"}]),
+        );
+        // Deliberately last-to-first.
+        let a = s.respond(Wire::Responses, &child_second);
+        let b = s.respond(Wire::Responses, &root_second);
+        let c = s.respond(
+            Wire::Responses,
+            &responses_body("add the marker", json!([])),
+        );
+        let d = s.respond(Wire::Responses, &responses_body(&root_first, json!([])));
+        assert!(a.contains("\"name\":\"report\""), "child step two: {a}");
+        assert!(b.contains("delegated and done"), "root step two: {b}");
+        assert!(c.contains("apply_patch"), "child step one: {c}");
+        assert!(d.contains("\"name\":\"spawn\""), "root step one: {d}");
+    }
+
+    /// The root's transcript carries the *child's* prompt too — inside the `spawn` arguments — so
+    /// the marker has to live on the root's side of that asymmetry. Asserted, not assumed.
+    #[test]
+    fn a_root_transcript_quoting_the_childs_prompt_is_still_the_roots() {
+        let s = same_wire_script();
+        let body = responses_body(
+            &format!("{MARKER}: delegate 'add the marker file under src/' to a child"),
+            json!([]),
+        );
+        assert!(
+            s.respond(Wire::Responses, &body)
+                .contains("\"name\":\"spawn\"")
+        );
+    }
+
+    /// A root's call id and a child's must differ: in a same-harness cell each node would otherwise
+    /// see the other's id quoted back and read its own script as finished.
+    #[test]
+    fn the_two_nodes_never_share_a_call_id() {
+        assert_ne!(ROOT_CALL_ID, REPORT_CALL_ID);
+        assert_ne!(ROOT_CALL_ID, PATCH_CALL_ID);
+    }
+
+    /// Neither auxiliary request belongs to a node, so neither may be routed by role — even when it
+    /// quotes the root's prompt back, which the title request does.
+    #[test]
+    fn the_auxiliary_requests_are_answered_before_anything_asks_whose_turn_it_is() {
+        let s = Script {
+            root: Some(RootScript {
+                marker: MARKER.into(),
+                turn: RootTurn {
+                    tool: "mcp__marion__spawn".into(),
+                    args: json!({}),
+                    final_text: "done".into(),
+                },
+            }),
+            ..Script::default()
+        };
+        let title = json!({
+            "model": "claude", "tools": [],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": MARKER}]}],
+            "output_config": {"format": {"type": "json_schema"}},
+        });
+        let out = s.respond(Wire::Anthropic, &title);
+        assert!(out.contains("marion m1"), "{out}");
+        assert!(!out.contains("mcp__marion__spawn"));
+
+        let probe = json!({
+            "contents": [{"role": "user", "parts": [{"text": MARKER}]}],
+            "generationConfig": {"responseMimeType": "application/json"},
+        });
+        let out = s.respond(Wire::Gemini { streaming: false }, &probe);
+        assert!(out.contains("model_choice"), "{out}");
+        assert!(!out.contains("functionCall"));
+    }
+
+    /// The root's two-step machine, on each of the four wires, in its own spelling — and nothing
+    /// translates between them.
+    #[test]
+    fn a_root_delegates_then_stops_on_every_wire() {
+        for (wire, tool, first, second) in [
+            (
+                Wire::Anthropic,
+                "mcp__marion__spawn",
+                json!({"model": "c", "tools": [{"name": "t", "input_schema": {}}],
+                       "messages": [{"role": "user",
+                                     "content": [{"type": "text", "text": MARKER}]}]}),
+                json!({"model": "c", "tools": [{"name": "t", "input_schema": {}}],
+                       "messages": [{"role": "user",
+                                     "content": [{"type": "text", "text": MARKER}]},
+                                    {"role": "user",
+                                     "content": [{"type": "tool_result",
+                                                  "tool_use_id": ROOT_TOOL_USE_ID}]}]}),
+            ),
+            (
+                Wire::Responses,
+                "spawn",
+                responses_body(MARKER, json!([])),
+                responses_body(
+                    MARKER,
+                    json!([{"type": "mcp_tool_call", "server": "marion", "tool": "spawn"}]),
+                ),
+            ),
+            (
+                Wire::Gemini { streaming: true },
+                "mcp_marion_spawn",
+                json!({"contents": [{"role": "user", "parts": [{"text": MARKER}]}],
+                       "tools": [{"functionDeclarations": [{"name": "mcp_marion_spawn"}]}]}),
+                json!({"contents": [{"role": "user", "parts": [{"text": MARKER}]},
+                                    {"role": "user", "parts": [{"functionResponse":
+                                        {"name": "mcp_marion_spawn", "response": {}}}]}],
+                       "tools": [{"functionDeclarations": [{"name": "mcp_marion_spawn"}]}]}),
+            ),
+            (
+                Wire::OpenAi,
+                "marion_spawn",
+                json!({"model": "m",
+                       "tools": [{"type": "function", "function": {"name": "marion_spawn"}}],
+                       "messages": [{"role": "user", "content": MARKER}]}),
+                json!({"model": "m",
+                       "tools": [{"type": "function", "function": {"name": "marion_spawn"}}],
+                       "messages": [{"role": "user", "content": MARKER},
+                                    {"role": "tool", "tool_call_id": ROOT_CALL_ID,
+                                     "name": "marion_spawn", "content": "{}"}]}),
+            ),
+        ] {
+            let s = Script {
+                root: Some(RootScript {
+                    marker: MARKER.into(),
+                    turn: RootTurn {
+                        tool: tool.into(),
+                        args: json!({"agent_type": "codex-impl"}),
+                        final_text: "delegated and done".into(),
+                    },
+                }),
+                ..Script::default()
+            };
+            let one = s.respond(wire, &first);
+            assert!(
+                one.contains(tool),
+                "{}: turn one must delegate: {one}",
+                wire_name(wire)
+            );
+            let two = s.respond(wire, &second);
+            assert!(
+                two.contains("delegated and done"),
+                "{}: turn two must stop: {two}",
+                wire_name(wire)
+            );
+        }
+    }
+
+    /// With no root scripted, nothing changes: the default `Script` is exactly what `m1_hop` and
+    /// `harness_matrix` drive, and it answers every wire as one node's.
+    #[test]
+    fn a_script_with_no_root_is_the_one_node_script_it_always_was() {
+        assert!(Script::default().root.is_none());
+        let s = Script::default();
+        assert!(
+            s.respond(Wire::Responses, &child_input(json!([])))
+                .contains("apply_patch")
         );
     }
 

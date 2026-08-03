@@ -362,19 +362,25 @@ impl HarnessAdapter for CodexAdapter {
             what: "a model_providers entry needs a base_url; a config pointing nowhere fails as \
                    a hang, which is the worst failure to diagnose",
         })?;
-        let args: Vec<&str> = ctx.bridge_args.iter().map(String::as_str).collect();
-        // TODO(phase-3): the node's identity does not reach the Codex bridge. The Claude Code path
-        // carries MARION_AGENT_ID and MARION_READY_FILE in the MCP JSON's per-server `env` block,
-        // but `config_toml` takes only (bridge, bridge_args, base_url) and emits no `env` at all —
-        // so a Codex child's bridge falls back to "unattributed-root" for `TaskContract.requester`
-        // (see `marion-supervisor::main::agent_id`). Codex TOML does support
-        // `env = { … }` inside `[mcp_servers.marion]`; `ctx.agent_id` is already threaded here and
-        // is deliberately unused until that is closed, which is why this is a gap and not a bug in
-        // this refactor: today the supervisor never gives a Codex child an MCP identity either.
-        let _ = &ctx.agent_id;
+        // **Closed.** This used to be a `TODO(phase-3)` beside a deliberate `let _ = &ctx.agent_id`:
+        // `config_toml` took only `(bridge, bridge_args, base_url)` and emitted no per-server `env`,
+        // so a codex node's bridge had neither marion's paths nor the node's identity. A codex child
+        // survived it (its one call is `report`, which reads nothing); a codex **root** did not —
+        // `spawn` answered `marion: MARION_REPO is not set`, and `TaskContract.requester` would have
+        // read `"unattributed-root"`. codex's TOML has always accepted `env` inside
+        // `[mcp_servers.<name>]`, so nothing was blocking it but this call.
+        let bridge = codex::BridgeEnv {
+            bridge: ctx.bridge.clone(),
+            args: ctx.bridge_args.clone(),
+            repo: ctx.repo.clone(),
+            state: ctx.state_dir.clone(),
+            base_url: base_url.to_string(),
+            agent_id: ctx.agent_id.clone(),
+            ready_file: ctx.ready_file.clone(),
+        };
         Ok(vec![(
             Self::config_path(spec),
-            codex::config_toml(&ctx.bridge.to_string_lossy(), &args, base_url),
+            codex::config_toml(&bridge, base_url),
         )])
     }
 
@@ -728,14 +734,33 @@ mod tests {
     fn the_codex_adapter_emits_byte_identical_config_toml() {
         let files = CodexAdapter.config_files(&codex_spec(), &ctx()).unwrap();
         let expected = config_toml(
-            "/bin/marion-supervisor",
-            &["mcp"],
+            &codex::BridgeEnv {
+                bridge: "/bin/marion-supervisor".into(),
+                args: vec!["mcp".into()],
+                repo: "/repo".into(),
+                state: "/state".into(),
+                base_url: "http://127.0.0.1:8099/v1".into(),
+                agent_id: AgentId("019f-root".into()),
+                ready_file: Some("/state/x/mcp-ready".into()),
+            },
             "http://127.0.0.1:8099/v1",
         );
         assert_eq!(
             files,
             vec![(PathBuf::from("/state/x/config/config.toml"), expected)]
         );
+    }
+
+    /// The other half of the closed gap, asserted through the **adapter** rather than the emitter:
+    /// whatever `SpawnCtx` carries has to reach the document, or a codex root's `spawn` fails with
+    /// `marion: MARION_REPO is not set` and its contract names no agent-dir.
+    #[test]
+    fn a_codex_nodes_identity_reaches_its_bridge_through_the_adapter() {
+        let files = CodexAdapter.config_files(&codex_spec(), &ctx()).unwrap();
+        let toml = &files[0].1;
+        assert!(toml.contains(r#"MARION_AGENT_ID = "019f-root""#), "{toml}");
+        assert!(toml.contains(r#"MARION_REPO = "/repo""#), "{toml}");
+        assert!(toml.contains(r#"MARION_STATE_DIR = "/state""#), "{toml}");
     }
 
     /// `compile` names the same file `config_files` writes. Two derivations of one path would let

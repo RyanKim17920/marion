@@ -640,11 +640,21 @@ pub fn run_spawn(
         // asserted post hoc from its JSONL stream.
         ready_file: ready_file.clone(),
         repo: env.repo.clone(),
-        // TODO(phase-3): the *project* dir, not §4.3's `<state>` root — `Env` does not carry the
-        // latter. Harmless today because `config_toml` emits no per-server `env` and so reads
-        // neither this nor `agent_id`; closing that gap (see `CodexAdapter::config_files`) means
-        // threading the real state root through `Env` first.
-        state_dir: env.project_dir.path().to_path_buf(),
+        // §4.3's `<state>` **root**, which is `<state>/<project-hash>`'s parent — not the project
+        // dir itself. This used to be the project dir behind a `TODO(phase-3)` that called itself
+        // harmless because codex's `config_toml` emitted no per-server `env` and so read neither
+        // this nor `agent_id`. That is no longer true (`CodexAdapter::config_files`), and it was
+        // never harmless on the three harnesses that *did* pass it through: a node that spawned in
+        // turn would have handed its own bridge `MARION_STATE_DIR=<state>/<hash>`, which
+        // `spawn_env` re-hashes into `<state>/<hash>/<hash>` — a second, invisible state tree for
+        // the same project. `ProjectDir` is `<state>/<hash>` by construction, so the root is its
+        // parent; the fallback is the dir itself, which is what it already was.
+        state_dir: env
+            .project_dir
+            .path()
+            .parent()
+            .unwrap_or_else(|| env.project_dir.path())
+            .to_path_buf(),
         bridge: env.bridge.clone(),
         bridge_args: vec!["mcp".into()],
     };

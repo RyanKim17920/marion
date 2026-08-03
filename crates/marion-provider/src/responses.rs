@@ -31,22 +31,34 @@ fn envelope(item: Value, id: &str) -> String {
     out
 }
 
-/// A call to marion's `report`, in the namespace form codex dispatches on.
+/// A call to one of marion's verbs, in the namespace form codex dispatches on.
 ///
 /// Verified end to end in S6: codex spawned the MCP server, issued `tools/call`, and surfaced the
 /// server's result as an `mcp_tool_call` item.
-pub fn report_call(narrative: &str, call_id: &str) -> String {
+///
+/// **`tool` is the bare verb, not the flat identifier**, and that is this wire's rule rather than an
+/// inconsistency with the other three. §11 item 12's correction: a `function_call` item whose
+/// `name` is `mcp__marion__report` is rejected by 0.146.0 as `unsupported call`; the flat spelling
+/// is the *code-mode JavaScript identifier* a model writes inside `tools.…`, and the `{name,
+/// namespace}` pair is the wire dispatch form. So a caller passes `spawn` or `report` here and
+/// `mcp__marion__spawn` on Anthropic — two spellings of one tool, translated by nobody.
+pub fn mcp_call(tool: &str, args: &Value, call_id: &str) -> String {
     envelope(
         json!({
             "type": "function_call",
             "id": format!("fc_{call_id}"),
             "call_id": call_id,
-            "name": "report",
+            "name": tool,
             "namespace": "mcp__marion",
-            "arguments": json!({"narrative": narrative}).to_string(),
+            "arguments": args.to_string(),
         }),
         "resp_report",
     )
+}
+
+/// [`mcp_call`] aimed at `report` with the one argument M1's child sends.
+pub fn report_call(narrative: &str, call_id: &str) -> String {
+    mcp_call("report", &json!({"narrative": narrative}), call_id)
 }
 
 /// An `exec` custom-tool call whose JavaScript edits a file via `apply_patch`.
