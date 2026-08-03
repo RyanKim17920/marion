@@ -62,7 +62,7 @@ use marion_core::harness::Harness;
 use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_harness::{
-    Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for, json_frames,
+    Auth, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for, json_frames,
 };
 use serde_json::Value;
 
@@ -134,10 +134,17 @@ pub struct RootSpec {
     /// Resolved state directory (`<state>` of §4.3), *not* the per-project subdirectory.
     pub state: PathBuf,
     /// The CannedProvider's base URL, in the `…/v1` form a Codex `model_providers` entry takes.
-    pub base_url: String,
+    ///
+    /// `None` under [`Auth::Inherited`], where marion overrides no endpoint and the harness resolves
+    /// its own — which is the point: a live node talks to the vendor it is already logged in to.
+    /// Adapters that *require* one (codex's `model_providers`, opencode's provider block) refuse by
+    /// name rather than compiling a config that points nowhere.
+    pub base_url: Option<String>,
     /// Path to the `marion-supervisor` binary the harness will start as the MCP server.
     pub bridge: PathBuf,
     pub model: Option<String>,
+    /// Whether the root presents a credential marion minted or the operator's own login (`--live`).
+    pub auth: Auth,
 }
 
 /// A prepared, not-yet-started root node.
@@ -158,6 +165,9 @@ pub struct RootNode {
     pub harness: Harness,
     pub path: RootPath,
     pub prompt: String,
+    /// Carried onto the node because the credential decision is not finished at `compile`: the
+    /// `LaunchOnly` run below pushes `MARION_DUMMY_KEY`, and under [`Auth::Inherited`] it must not.
+    pub auth: Auth,
 }
 
 /// What the root's run produced.
@@ -264,16 +274,21 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         },
         allowed_tools: ROOT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
         mcp: McpDeclaration::Marion,
-        base_url: Some(spec.base_url.clone()),
+        base_url: spec.base_url.clone(),
         // On the duplex path the root's credential is the per-run `ANTHROPIC_AUTH_TOKEN` pushed
         // onto the invocation below. On the other three it is **not** an env var marion can push
         // after the fact — gemini wants `GEMINI_API_KEY`, opencode wants it *inside* the generated
         // config — so it goes through the neutral field and each adapter puts it where that harness
         // reads it.
-        api_key: match path {
-            RootPath::Duplex => None,
-            RootPath::LaunchOnly => Some(token.clone()),
+        //
+        // Under `Inherited` there is no credential to place at all, on any path: the node is meant
+        // to present the login the operator already has, and a placeholder beside it would be a
+        // second credential competing with the real one.
+        api_key: match (spec.auth, path) {
+            (Auth::Inherited, _) | (Auth::Canned, RootPath::Duplex) => None,
+            (Auth::Canned, RootPath::LaunchOnly) => Some(token.clone()),
         },
+        auth: spec.auth,
         config_dir: agent_dir.config_dir(),
         extra: Extras::default(),
     };
@@ -311,7 +326,11 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         .ok_or(RootError::NoMcpDeclaration(harness))?;
 
     let mut invocation = adapter.compile(&launch, &ctx)?;
-    if path == RootPath::Duplex {
+    // **`Inherited` skips this too, and that is the whole of live mode on this path.** The adapter
+    // already withheld the three env vars it compiles; a push here would put two of them straight
+    // back, and `ANTHROPIC_API_KEY=""` in particular would blank the operator's own key on a node
+    // that is supposed to be using it.
+    if path == RootPath::Duplex && spec.auth == Auth::Canned {
         // §9: `ANTHROPIC_AUTH_TOKEN=<per-run token>` and `ANTHROPIC_API_KEY=""` — a non-empty key
         // silently wins (§6.4), so it is set to empty rather than left inherited.
         invocation
@@ -332,6 +351,7 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         harness,
         path,
         prompt: spec.prompt.clone(),
+        auth: spec.auth,
     })
 }
 
@@ -380,18 +400,21 @@ pub fn launch(
 /// give a headless node a pty on stdin, and on this surface there is nothing to write to it.
 fn launch_only(node: &RootNode, bound: StdDuration) -> Result<RootOutcome, RootError> {
     let inv = &node.invocation;
-    let out = run_bounded(
-        SysCommand::new(&inv.program)
-            .args(&inv.args)
-            .envs(inv.env.iter().cloned())
-            // Codex's generated `config.toml` names this as its provider `env_key`, and a provider
-            // whose key is unset refuses to start. The per-run token rather than a constant, for
-            // the same reason `ANTHROPIC_AUTH_TOKEN` carries it on the duplex path: it attributes a
-            // request log to one run. It is not a credential — the endpoint is the canned server.
-            .env("MARION_DUMMY_KEY", &node.token)
-            .current_dir(&inv.cwd),
-        bound,
-    )?;
+    let mut cmd = SysCommand::new(&inv.program);
+    cmd.args(&inv.args)
+        .envs(inv.env.iter().cloned())
+        .current_dir(&inv.cwd);
+    if node.auth == Auth::Canned {
+        // Codex's generated `config.toml` names this as its provider `env_key`, and a provider
+        // whose key is unset refuses to start. The per-run token rather than a constant, for
+        // the same reason `ANTHROPIC_AUTH_TOKEN` carries it on the duplex path: it attributes a
+        // request log to one run. It is not a credential — the endpoint is the canned server.
+        //
+        // Under `Inherited` there is no canned endpoint to name a key for, and pushing one would
+        // put a placeholder credential beside the operator's real login.
+        cmd.env("MARION_DUMMY_KEY", &node.token);
+    }
+    let out = run_bounded(&mut cmd, bound)?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let outcome = RootOutcome {
@@ -602,9 +625,10 @@ mod tests {
             prompt: "delegate it".into(),
             repo: dir.join("repo"),
             state: dir.join("state"),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
             bridge: "/bin/marion-supervisor".into(),
             model: builtin(agent_type).unwrap().model.clone(),
+            auth: Auth::Canned,
         }
     }
 
@@ -712,6 +736,72 @@ mod tests {
                 "{name}"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The other end of `--live`, asserted on a root marion actually prepared.**
+    ///
+    /// The adapter withholds the three env vars it compiles; `prepare` must also skip the *post*-
+    /// `compile` push of `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`, which is a second place the
+    /// same decision is made and therefore the one that drifts. Blanking `ANTHROPIC_API_KEY` on a
+    /// live node is the specific harm: it is set to `""` under `Canned` precisely so a real key
+    /// cannot silently win, which is exactly the wrong thing to do to a node meant to use it.
+    ///
+    /// Only `claude` is swept: it is the only harness part 1 makes live, and the other three refuse
+    /// under `Inherited` because their generated configs require a base URL there is none of.
+    #[test]
+    fn a_live_claude_root_pushes_no_anthropic_pair_and_keeps_its_fileless_isolation() {
+        let dir = temp("live");
+        let node = prepare(&RootSpec {
+            base_url: None,
+            auth: Auth::Inherited,
+            ..root_spec(&dir, "claude")
+        })
+        .unwrap();
+        for k in [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CONFIG_DIR",
+        ] {
+            assert!(
+                !node.invocation.env.iter().any(|(n, _)| n == k),
+                "{k} must not be overlaid on a --live root: {:?}",
+                node.invocation.env
+            );
+        }
+        // §6.4's MUST is unchanged by live mode: the declaration is still marion's, inside the
+        // node's own agent dir, and it is still what argv names.
+        assert!(node.mcp_config.is_file());
+        assert!(node.mcp_config.starts_with(node.agent_dir.path()));
+        assert!(
+            node.invocation
+                .args
+                .iter()
+                .any(|a| a == "--strict-mcp-config")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The canned root is untouched by the axis existing — the pair is still pushed, and it is still
+    /// only pushed on the duplex path.
+    #[test]
+    fn a_canned_root_still_carries_the_pair_exactly_where_it_always_did() {
+        let dir = temp("canned-auth");
+        let node = prepare(&root_spec(&dir, "claude")).unwrap();
+        let get = |k: &str| {
+            node.invocation
+                .env
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("ANTHROPIC_AUTH_TOKEN"), Some(node.token.clone()));
+        assert_eq!(get("ANTHROPIC_API_KEY"), Some(String::new()));
+        assert_eq!(
+            get("ANTHROPIC_BASE_URL"),
+            Some("http://127.0.0.1:8099".into())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

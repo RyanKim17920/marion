@@ -36,6 +36,28 @@ pub enum McpDeclaration {
     None,
 }
 
+/// Where the node's provider credential comes from, and therefore which endpoint it talks to.
+///
+/// An enum rather than a bool because an adapter reads *intent*, not a flag: the two modes differ in
+/// what marion is entitled to overlay, and a `bool` at the call site would say `true` without saying
+/// true of what. §6.4's central MUST is unchanged under either — marion never mutates the user's
+/// real harness config — so what varies is only what marion *adds*, never what it edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Auth {
+    /// marion mints the credential and points the node at its own canned endpoint. Every M1 path
+    /// takes this, and it is the default so that adding the axis changed no existing behaviour.
+    #[default]
+    Canned,
+    /// The node authenticates with the login the operator already has, inherited from marion's own
+    /// environment.
+    ///
+    /// Nothing is *seeded*: no `crates/` code calls `env_clear`, so a child inherits marion's
+    /// environment wholesale and marion only ever layers on top. Live mode is therefore the
+    /// **absence** of three overlays rather than the presence of a credential store — marion pushes
+    /// no key, overrides no base URL, and leaves the harness's own resolution alone.
+    Inherited,
+}
+
 /// The harness-specific knobs that have no neutral meaning. Deliberately a named struct rather
 /// than a map: every field here is read by exactly one adapter, and a map would let a typo pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,9 +95,19 @@ pub struct LaunchSpec {
     /// post-`compile` push of `ANTHROPIC_AUTH_TOKEN` (`marion-supervisor::root`) is not a pattern
     /// that generalises. `None` on the canned-provider path, which authenticates nothing.
     pub api_key: Option<String>,
+    /// Whether this node presents a credential marion minted, or the operator's own login.
+    ///
+    /// Distinct from `api_key` being `None`, which already means several things (a caller that
+    /// pushes the pair itself, a harness that reads none). This states the *intent*, so an adapter
+    /// can drop an overlay rather than merely omit a value it was not given.
+    pub auth: Auth,
     /// The node's isolated harness config dir (§6.4): `$CODEX_HOME` for Codex, the directory
     /// marion's `--mcp-config` document is written into for Claude Code, the sandbox `HOME` and
     /// XDG root for opencode. Every path in [`HarnessAdapter::config_files`] is under it.
+    ///
+    /// **Under [`Auth::Inherited`] too.** Live mode relaxes what marion *overlays*; it does not
+    /// relax where marion *writes*, and every path in [`HarnessAdapter::config_files`] stays under
+    /// this directory on every harness in every mode.
     pub config_dir: PathBuf,
     pub extra: Extras,
 }
@@ -290,16 +322,32 @@ impl HarnessAdapter for ClaudeCodeAdapter {
                        after §6.1 step 8's readiness gate",
             });
         }
+        // **Live is pure removal, and this harness is the case where that is literally true.**
+        // `CLAUDE_CONFIG_DIR` is already never set (isolating it breaks OAuth — the Keychain entry
+        // is keyed to the real config dir), `--strict-mcp-config --mcp-config` already keeps the
+        // MCP declaration fileless inside marion's own agent dir, and `--setting-sources ""`
+        // already excludes the user's settings, plugins and hooks. So the only thing standing
+        // between a logged-in `claude` and marion is the three env vars marion overlays, and
+        // dropping them is the whole of live mode: nothing is seeded, because nothing was cleared.
+        let (base_url, api_key) = match spec.auth {
+            Auth::Canned => (
+                spec.base_url
+                    .as_deref()
+                    .map(claude_code::anthropic_base_url),
+                spec.api_key.clone(),
+            ),
+            // `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` all fall out of
+            // `compile_headless` together: it emits each only when given the value behind it, so
+            // withholding both here is exactly "do not overlay", with no second branch to drift.
+            Auth::Inherited => (None, None),
+        };
         Ok(compile_headless(&HeadlessSpec {
             cwd: spec.cwd.clone(),
             model: spec.model.clone(),
             allowed_tools: spec.allowed_tools.clone(),
             mcp_config: Self::mcp_config_path(spec),
-            base_url: spec
-                .base_url
-                .as_deref()
-                .map(claude_code::anthropic_base_url),
-            api_key: spec.api_key.clone(),
+            base_url,
+            api_key,
         }))
     }
 
@@ -667,6 +715,7 @@ mod tests {
             mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: None,
+            auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             extra: Extras::default(),
         }
@@ -681,6 +730,7 @@ mod tests {
             mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: None,
+            auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             extra: Extras::default(),
         }
@@ -1050,6 +1100,227 @@ mod tests {
             Harness::Gemini => gemini_spec(),
             Harness::OpenCode => opencode_spec(),
         }
+    }
+
+    /// **§6.4's central MUST, as a sweep: marion never writes outside the node's own agent dir.**
+    ///
+    /// > *"marion never mutates the user's real harness config."*
+    ///
+    /// The caller writes whatever `config_files` hands it, unconditionally and with
+    /// `create_dir_all` on the parent — so a path that escaped `config_dir` would not be caught
+    /// anywhere downstream: it would simply be written, over the operator's own `~/.codex/config.toml`
+    /// or `~/.gemini/settings.json`, and the first symptom would be a broken login on a harness
+    /// marion was not even running.
+    ///
+    /// It sweeps **both auth modes**, because live mode is where this is easiest to break by
+    /// accident: the tempting way to make a logged-in harness work is to stop relocating its config
+    /// dir and let it read the real one, and one adapter doing that would put marion's generated
+    /// document straight into `$HOME`. Live mode's premise is the opposite — the config dir stays
+    /// marion's, and what is dropped is only the *overlay* of a base URL and a credential.
+    ///
+    /// A harness that refuses under a given mode is skipped rather than failed (codex and opencode
+    /// both require a base URL, and `Inherited` has none until part 2 gives them one) — but the
+    /// sweep asserts that **something** was checked in each mode, so it cannot pass by refusing
+    /// everywhere.
+    #[test]
+    fn no_config_file_any_adapter_emits_ever_escapes_marions_own_agent_dir() {
+        for auth in [Auth::Canned, Auth::Inherited] {
+            let mut checked = 0;
+            for h in Harness::ALL {
+                let spec = LaunchSpec {
+                    auth,
+                    // What `--live` implies: marion names no endpoint and mints no credential.
+                    base_url: match auth {
+                        Auth::Canned => spec_for(h).base_url,
+                        Auth::Inherited => None,
+                    },
+                    api_key: match auth {
+                        Auth::Canned => spec_for(h).api_key,
+                        Auth::Inherited => None,
+                    },
+                    ..spec_for(h)
+                };
+                let Ok(files) = adapter_for(h).unwrap().config_files(&spec, &ctx()) else {
+                    continue;
+                };
+                for (path, _) in &files {
+                    assert!(
+                        path.starts_with(&spec.config_dir),
+                        "{h} under {auth:?} would write {} outside its agent dir {} — §6.4: \
+                         marion never mutates the user's real harness config",
+                        path.display(),
+                        spec.config_dir.display()
+                    );
+                    assert!(
+                        path.is_absolute(),
+                        "{h} under {auth:?}: {} is relative, so where it lands depends on the \
+                         writer's cwd",
+                        path.display()
+                    );
+                }
+                checked += files.len();
+            }
+            assert!(
+                checked > 0,
+                "{auth:?}: no adapter emitted a single path, so this proved nothing"
+            );
+        }
+    }
+
+    /// **Live mode is pure removal on Claude Code, and this is the list of what is removed.**
+    ///
+    /// Asserted by *name*, not by comparing the whole env: the failure being defended against is one
+    /// of the three creeping back, and `ANTHROPIC_API_KEY` is the dangerous one — marion sets it to
+    /// the empty string under `Canned` precisely so a real key cannot silently win, which is exactly
+    /// the wrong thing to do to a node meant to be using that key.
+    #[test]
+    fn a_live_claude_node_carries_none_of_the_three_anthropic_env_vars() {
+        let spec = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..claude_spec()
+        };
+        let inv = ClaudeCodeAdapter.compile(&spec, &ctx()).unwrap();
+        for k in [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        ] {
+            assert!(
+                !inv.env.iter().any(|(n, _)| n == k),
+                "{k} must be absent under --live: marion inherits the operator's login rather \
+                 than overlaying one. env: {:?}",
+                inv.env
+            );
+        }
+        assert!(
+            inv.env.is_empty(),
+            "the three are the whole overlay, so a live node's env additions are empty: {:?}",
+            inv.env
+        );
+        // And the isolation that was never an overlay is untouched.
+        assert!(
+            !inv.env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"),
+            "isolating it breaks OAuth, under --live most of all"
+        );
+    }
+
+    /// The other half: nothing *else* changes. A live node still gets the fileless MCP declaration
+    /// and still excludes the user's settings — those are what keep §6.4's MUST true when the
+    /// credential is real, so a "live means don't isolate anything" reading would be the exact
+    /// mistake this pins shut.
+    #[test]
+    fn a_live_claude_node_keeps_the_same_argv_as_a_canned_one() {
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..claude_spec()
+        };
+        let canned = claude_spec();
+        assert_eq!(
+            ClaudeCodeAdapter.compile(&live, &ctx()).unwrap().args,
+            ClaudeCodeAdapter.compile(&canned, &ctx()).unwrap().args,
+            "live differs from canned in env only; argv is the measured 2.1.220 launch either way"
+        );
+        let inv = ClaudeCodeAdapter.compile(&live, &ctx()).unwrap();
+        assert!(inv.args.iter().any(|a| a == "--strict-mcp-config"));
+        let i = inv.args.iter().position(|a| a == "--mcp-config").unwrap();
+        assert_eq!(
+            PathBuf::from(&inv.args[i + 1]),
+            ClaudeCodeAdapter.config_files(&live, &ctx()).unwrap()[0].0,
+            "the declaration a live node reads is still the one marion wrote in its agent dir"
+        );
+        let i = inv
+            .args
+            .iter()
+            .position(|a| a == "--setting-sources")
+            .unwrap();
+        assert_eq!(
+            inv.args[i + 1],
+            "",
+            "the user's settings, plugins and hooks stay out under --live too"
+        );
+    }
+
+    /// **Canned mode is byte-identical to what it produced before the auth axis existed**, on all
+    /// four harnesses, asserted against each harness's own emitter rather than against a snapshot —
+    /// a snapshot would drift with any legitimate change, while this pins the one claim that
+    /// matters: routing through `Auth::Canned` adds nothing and drops nothing.
+    ///
+    /// `Auth::Canned` is also the `Default`, which is what makes "today's behaviour is untouched"
+    /// true of every caller that never mentions the field.
+    #[test]
+    fn canned_mode_emits_exactly_what_each_harnesss_own_emitter_does() {
+        assert_eq!(Auth::default(), Auth::Canned);
+        for h in Harness::ALL {
+            let explicit = LaunchSpec {
+                auth: Auth::Canned,
+                ..spec_for(h)
+            };
+            let a = adapter_for(h).unwrap();
+            assert_eq!(
+                a.compile(&explicit, &ctx()).ok(),
+                a.compile(&spec_for(h), &ctx()).ok(),
+                "{h}: naming the default must not change the compile"
+            );
+            assert_eq!(
+                a.config_files(&explicit, &ctx()).ok(),
+                a.config_files(&spec_for(h), &ctx()).ok(),
+                "{h}: naming the default must not change the configuration"
+            );
+        }
+
+        // gemini and opencode, against their own emitters — the claude and codex equivalences are
+        // asserted above, and these two had none, so the byte-identity claim covered half the matrix.
+        let g = GeminiAdapter.config_files(&gemini_spec(), &ctx()).unwrap();
+        assert_eq!(
+            g,
+            vec![(
+                PathBuf::from("/state/x/config/marion-settings.json"),
+                serde_json::to_string_pretty(&gemini::settings_json(Some(&gemini::BridgeEnv {
+                    bridge: "/bin/marion-supervisor".into(),
+                    args: vec!["mcp".into()],
+                    repo: "/repo".into(),
+                    state: "/state".into(),
+                    base_url: "http://127.0.0.1:8099/v1".into(),
+                    agent_id: AgentId("019f-root".into()),
+                    agent_type: "claude".into(),
+                    depth: 0,
+                    ready_file: Some("/state/x/mcp-ready".into()),
+                })))
+                .unwrap()
+            )]
+        );
+        let o = OpenCodeAdapter
+            .config_files(&opencode_spec(), &ctx())
+            .unwrap();
+        assert_eq!(
+            o,
+            vec![(
+                opencode::config_path(&PathBuf::from("/state/x/config")),
+                serde_json::to_string_pretty(&opencode::config_json(
+                    &opencode::ConfigSpec {
+                        model: opencode::ModelRef::parse("canned/canned-1").unwrap(),
+                        base_url: "http://127.0.0.1:8099/v1".into(),
+                        api_key: Some("sk-fake".into()),
+                    },
+                    Some(&opencode::BridgeEnv {
+                        bridge: "/bin/marion-supervisor".into(),
+                        args: vec!["mcp".into()],
+                        repo: "/repo".into(),
+                        state: "/state".into(),
+                        base_url: "http://127.0.0.1:8099/v1".into(),
+                        agent_id: AgentId("019f-root".into()),
+                        agent_type: "claude".into(),
+                        depth: 0,
+                        ready_file: Some("/state/x/mcp-ready".into()),
+                    })
+                ))
+                .unwrap()
+            )]
+        );
     }
 
     /// **Depth reaches the bridge on all four harnesses, or `max_depth` is inert on the ones it

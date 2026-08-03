@@ -29,7 +29,7 @@ use marion_core::ids::{RAND_BYTES, new_agent_id};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::scope::check_spawn_scope;
 use marion_harness::{
-    ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for,
+    Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for,
 };
 
 use crate::duplex::{self, DuplexSpec, LaunchPath, launch_path};
@@ -115,7 +115,11 @@ pub struct Env {
     pub repo: PathBuf,
     pub project_dir: ProjectDir,
     pub bridge: PathBuf,
-    pub base_url: String,
+    /// The canned provider's base URL, `None` where marion overrides no endpoint (`Auth::Inherited`)
+    /// and each harness resolves its own.
+    pub base_url: Option<String>,
+    /// Whether children present a credential marion minted or the operator's own login.
+    pub auth: Auth,
 }
 
 pub struct CommandOutput {
@@ -525,15 +529,19 @@ struct ChildRun {
 /// withhold and nothing to steer. codex, gemini and opencode all declare
 /// `launch_only_with_protocol_events()` and all take this path; §6.1 step 8 asserts their MCP
 /// readiness *post hoc* from their own streams instead.
-fn launch_only_child(inv: &Invocation, bound: StdDuration) -> Result<ChildRun, SpawnError> {
-    let output = run_bounded(
-        SysCommand::new(&inv.program)
-            .args(&inv.args)
-            .envs(inv.env.iter().cloned())
-            .env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY)
-            .current_dir(&inv.cwd),
-        bound,
-    )?;
+fn launch_only_child(
+    inv: &Invocation,
+    auth: Auth,
+    bound: StdDuration,
+) -> Result<ChildRun, SpawnError> {
+    let mut cmd = SysCommand::new(&inv.program);
+    cmd.args(&inv.args)
+        .envs(inv.env.iter().cloned())
+        .current_dir(&inv.cwd);
+    if auth == Auth::Canned {
+        cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
+    }
+    let output = run_bounded(&mut cmd, bound)?;
     Ok(ChildRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -568,17 +576,21 @@ fn launch_only_child(inv: &Invocation, bound: StdDuration) -> Result<ChildRun, S
 /// harness that does send one is denied promptly rather than silently held.
 fn duplex_child(
     inv: &Invocation,
+    auth: Auth,
     agent_id: &AgentId,
     ready_file: &Path,
     prompt: &str,
     bound: StdDuration,
 ) -> Result<ChildRun, SpawnError> {
+    let mut cmd = SysCommand::new(&inv.program);
+    cmd.args(&inv.args)
+        .envs(inv.env.iter().cloned())
+        .current_dir(&inv.cwd);
+    if auth == Auth::Canned {
+        cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
+    }
     let out = duplex::run_duplex(
-        SysCommand::new(&inv.program)
-            .args(&inv.args)
-            .envs(inv.env.iter().cloned())
-            .env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY)
-            .current_dir(&inv.cwd),
+        &mut cmd,
         &DuplexSpec {
             ready_file,
             prompt,
@@ -694,7 +706,7 @@ pub fn run_spawn(
         // permission list are unaffected: they ignore it, exactly as they did when it was empty.
         allowed_tools: vec![adapter.marion_tool_name("report")],
         mcp: McpDeclaration::Marion,
-        base_url: Some(env.base_url.clone()),
+        base_url: env.base_url.clone(),
         // **Present, and deliberately a placeholder.** The endpoint is marion's own, so this
         // authenticates nothing — but a credential *slot* that is empty is not the same as one that
         // is unused, and two of the four harnesses refuse outright when it is: gemini's adapter
@@ -705,7 +717,15 @@ pub fn run_spawn(
         // adapter compiled. codex has always been seeded the same way — its generated config names
         // `env_key = "MARION_DUMMY_KEY"` and the run below pushes it — so this generalises an
         // existing decision rather than making a new one.
-        api_key: Some(PLACEHOLDER_API_KEY.to_string()),
+        //
+        // Under `Auth::Inherited` there is nothing to placehold: the endpoint is the vendor's, the
+        // credential is the operator's already-established login, and a placeholder pushed beside it
+        // would be a second credential competing with the real one.
+        api_key: match env.auth {
+            Auth::Canned => Some(PLACEHOLDER_API_KEY.to_string()),
+            Auth::Inherited => None,
+        },
+        auth: env.auth,
         config_dir: ch.clone(),
         extra: Extras::default(),
     };
@@ -757,9 +777,10 @@ pub fn run_spawn(
     let inv = adapter.compile(&launch, &ctx)?;
     let bound = StdDuration::from_secs(req.timeout_secs);
     let run = match path {
-        LaunchPath::LaunchOnly => launch_only_child(&inv, bound)?,
+        LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound)?,
         LaunchPath::Duplex => duplex_child(
             &inv,
+            env.auth,
             &agent_id,
             ready_file
                 .as_deref()
@@ -1335,7 +1356,8 @@ mod tests {
             repo: repo.clone(),
             project_dir: ProjectDir::new(&state, &repo),
             bridge: PathBuf::from("/bin/marion-supervisor"),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
         };
         let req = SpawnRequest {
             agent_type: "claude".into(),
@@ -1465,6 +1487,7 @@ mod tests {
             mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: None,
+            auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
             extra: Extras::default(),
         }
@@ -1585,7 +1608,8 @@ mod tests {
             repo: repo.clone(),
             project_dir: ProjectDir::new(&state, &repo),
             bridge: PathBuf::from("/bin/marion-supervisor"),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
         };
         (root, state, env)
     }

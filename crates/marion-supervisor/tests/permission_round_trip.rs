@@ -136,7 +136,8 @@ fn prepare(name: &str, target: Target) -> Fixture {
         prompt: "Call the report tool.".into(),
         repo: repo.canonicalize().unwrap(),
         state,
-        base_url: server.base_url(),
+        base_url: Some(server.base_url()),
+        auth: marion_harness::Auth::Canned,
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         model: None,
     })

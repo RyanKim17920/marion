@@ -190,7 +190,8 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         repo: repo.clone(),
         project_dir: ProjectDir::new(&state, &repo),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: server.base_url(),
+        base_url: Some(server.base_url()),
+        auth: marion_harness::Auth::Canned,
     };
     let req = SpawnRequest {
         agent_type: "codex-impl".into(),

@@ -191,8 +191,14 @@ fn spawn_env() -> Result<run::Env, ()> {
         project_dir: ProjectDir::new(&state, &repo),
         repo,
         bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
-        base_url: std::env::var("MARION_BASE_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8099/v1".into()),
+        base_url: Some(
+            std::env::var("MARION_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8099/v1".into()),
+        ),
+        // The bridge serves a node marion did not start, and the only channel it has is the
+        // per-server `env` block that node's config carries. Nothing in that block says "live" yet,
+        // so a child spawned through the bridge stays canned — carrying live down a hop is part 2's
+        // change, and inferring it here from an absent variable would be a guess.
+        auth: marion_harness::Auth::Canned,
     })
 }
 

@@ -18,7 +18,7 @@ pub mod stream;
 pub mod surfaces;
 
 pub use adapter::{
-    ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter, HarnessError,
+    Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter, HarnessError,
     LaunchSpec, McpDeclaration, OpenCodeAdapter, SpawnCtx, adapter_for,
 };
 pub use claude_code::{

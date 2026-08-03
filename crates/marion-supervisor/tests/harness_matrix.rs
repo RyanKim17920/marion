@@ -245,7 +245,8 @@ fn drive(cell: &Cell) -> Evidence {
         repo: repo.clone(),
         project_dir: ProjectDir::new(&state, &repo),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: server.base_url(),
+        base_url: Some(server.base_url()),
+        auth: marion_harness::Auth::Canned,
     };
     let req = SpawnRequest {
         agent_type: cell.agent_type.into(),
