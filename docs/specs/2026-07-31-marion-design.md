@@ -706,7 +706,8 @@ for CLI-originated ones, which correlate to nothing marion sent and so are never
 > sends `hooks: {}`, and no probe has found a headless path that triggers a user dialog.
 > **`control_cancel_request` is untested in either direction.** S9 is one machine, one CLI version,
 > one run per outcome. §11 item 14 stays open on those three; the `can_use_tool` third of it is
-> closed. The remaining M1 debts are the pty re-confirmation and `SubagentStop`.
+> closed. **`SubagentStop` was paid the same day by S10** (§11 item 2), leaving **one** M1 debt:
+> the pty re-confirmation of S1 (§11 item 1).
 
 **An interrupted turn reports `is_error: true`** with `subtype:"error_during_execution"` and
 `terminal_reason:"aborted_streaming"`. marion MUST classify that as a clean interrupt.
@@ -1442,6 +1443,14 @@ every call.
   > `--no-session-persistence`. (Dispatching on shape fixed the hop first try: `tool_use
   > mcp__marion__spawn` → `tool_result` → `num_turns: 2`.) This is the Claude-side counterpart of
   > the Codex `GET /models` note above.
+
+  > **⚠ The subagent tool has two names, and matching on the wrong one fails silently.** Claude
+  > Code 2.1.220 advertises it **to the model** as **`Agent`**, while `--tools` and the
+  > `system/init` frame call it **`Task`** (S10, 2026-08-03). A canned `tool_use` naming *either*
+  > is executed — both measured — so this is not a compatibility break; it is a **matching**
+  > hazard. A provider that scripts a subagent turn by looking for `"Task"` in the request's tool
+  > list **never matches, emits nothing, and produces a run indistinguishable from one where the
+  > subagent tool was unavailable**. Match on both spellings, or on neither.
   Codex's **TUI/app-server** startup gates on `GET /models` returning `{"models":[…]}`, so the
   canned server answers that too — but **`codex exec` does not issue it** (verified on 0.146.0: an
   `exec --json` turn against a logging provider made exactly one request, `POST /v1/responses`).
@@ -2458,11 +2467,40 @@ This is the authoritative sequence; the rules above constrain it, the worked exa
    - none, node owes a report → *"are you reporting a result, or are you waiting on something?"*
    - none, node owes none → **no hook fire at all.** The exit is accepted at step 1.
 
-   **Verified working on both Claude Code and Codex.** On Claude Code the reason arrives as a real
-   `user` message (`Stop hook feedback:\n<reason>`), `num_turns` goes 1→2, and it is **observable
-   in `stream-json`**. (Exit-code-2-plus-stderr is believed equivalent, but it is fixtured on
+   **Verified working on both Claude Code and Codex, and on Claude Code for a *subagent* as well
+   as a root (S10, 2026-08-03, `tests/fixtures/s10/`).** On Claude Code the reason arrives as a
+   real `user` message (`Stop hook feedback:\n<reason>`), and it is **observable in
+   `stream-json`**. (Exit-code-2-plus-stderr is believed equivalent, but it is fixtured on
    **Codex only** — `s4/claude-code/stop_hook.sh` has no exit-2 branch, so on Claude Code
    `decision: block` is the only mechanism this repo verifies. **UNVERIFIED**, §11 item 13.)
+
+   **The observable differs by node, and getting this wrong mis-gates the whole procedure.**
+   - **Root `Stop`:** `num_turns` goes **1→2**. Verified in S4 and unchanged.
+   - **`SubagentStop`:** `num_turns` is **useless — it is a ROOT counter.** S10 measured it at
+     **`2` in every run**, including the negative control that **registered no hook at all**, so a
+     subagent re-prompt does not move it and a value of 2 proves nothing. An earlier revision of
+     this section offered `num_turns` 1→2 as the sign a block landed *generally*; that was wrong
+     for the subagent case and is corrected here (§12).
+   - **The discriminator for both is `parent_tool_use_id` on the `user` frame** — set to the
+     `Agent` call's `tool_use_id` for a subagent re-prompt, `null` for a root one. It is the
+     better signal not merely because it works but because it **names which node was
+     re-prompted**, which a counter cannot. marion **MUST** read `parent_tool_use_id` to attribute
+     a landed block to a node, and **MUST NOT** infer a subagent re-prompt from `num_turns`.
+
+   **On a subagent, `decision: block` does not merely deliver the reason — it REPLACES the
+   result.** S10 measured the root's `tool_result` for the `Agent` call carrying the subagent's
+   **second** answer, not its first. The provider log confirms the feedback reached the *model* as
+   a user turn (with a `cache_control` breakpoint), not just the CLI, so this is a real re-prompt
+   and not a CLI-side annotation. The frame:
+
+   ```json
+   {"type":"user","message":{"role":"user","content":[{"type":"text","text":"Stop hook feedback:\n<reason>"}]},"parent_tool_use_id":"toolu_s10_task_1"}
+   ```
+
+   Two consequences marion **MUST** honour: the parent sees only the post-block answer, so **a
+   `reason` that changes what the child says changes what the parent reads** — step 2's wording is
+   part of the delivered result, not a side channel; and marion **MUST NOT** treat the pre-block
+   text as the child's result, since it never reaches the parent.
 3. **Resolve the answer.**
    - *Reports* → done. With live descendants this sets `reported_early: true` and records them.
    - *Chooses to wait*, **or answers nothing while descendants are live** → **hold the node in
@@ -2565,6 +2603,10 @@ step 5 and is gated there.
 ordinary `assistant` events indistinguishable from normal output, and `num_turns` stays at **1**.
 Contrast the `block` path, which emits an identifiable `{"type":"user", … "Stop hook feedback:…"}`
 frame and moves `num_turns` to 2. marion would have to infer delivery rather than observe it.
+(**Both measurements here are of a root**, which is the case `num_turns` describes; for a subagent
+the counter says nothing either way and the frame's `parent_tool_use_id` is the discriminator —
+step 2 above. The prohibition on `additionalContext` is unaffected: the missing *frame* is the
+reason, and no frame is missing on the `block` path at either level.)
 (`tests/fixtures/s4/claude-code/stream-additionalContext.jsonl` does carry the two extra
 `assistant` frames the injected turn produced — what is missing is any frame attributable to the
 injection.) On **Codex it does not exist**: `stop.command.output` is
@@ -2607,9 +2649,57 @@ the loop this flag exists to prevent. Hook input carries `last_assistant_message
 > why the `hook_event_name` branch below is mandatory. The Claude Code captures contain `Stop`
 > records only, so that multi-event shape is fixtured on Codex alone.
 >
-> **`SubagentStop` is verified statically only** — it shares Claude Code's `Stop` code path in the
-> 2.1.220 bundle and adds `agent_id`, `agent_type`, `agent_transcript_path`. **A live confirmation
-> under real auth is owed before M1.**
+> **`SubagentStop` fires, and the static reading was complete** — **confirmed live 2026-08-03
+> (spike S10), fixtured in `tests/fixtures/s10/`, harness `spikes/s10/`** (Claude Code 2.1.220,
+> macOS darwin 25.5.0, driven entirely against a canned local provider: `total_cost_usd: 0`,
+> `output_tokens: 0`, `ANTHROPIC_BASE_URL` at 127.0.0.1 with a literal dummy key — no real
+> credential and no model call). The payload carries **14 keys: the 11-key `Stop` set above plus
+> exactly `agent_id`, `agent_type`, `agent_transcript_path`, and nothing else.** The paired `Stop`
+> fire in the same run carries the 11-key set and **none** of the three, so `hook_event_name` and
+> the presence of `agent_id` agree.
+>
+> **`session_id` and `transcript_path` on a `SubagentStop` are the PARENT's.** A subagent has
+> neither of its own. Its transcript is `agent_transcript_path`, which sits at
+> `<parent transcript dir>/<session_id>/subagents/agent-<agent_id>.jsonl`. **A hook handler
+> reading `transcript_path` on a `SubagentStop` reads the wrong file** — the parent's — and will
+> synthesize the parent's tail as the child's narrative in §7.6 step 5. Therefore:
+>
+> - marion **MUST** read `agent_transcript_path`, never `transcript_path`, when the event is
+>   `SubagentStop`.
+> - marion **MUST NOT** treat `session_id` on a `SubagentStop` as identifying the stopping node;
+>   it identifies the node's parent session.
+> - marion **MUST** key the stopping node on `agent_id`.
+>
+> **`agent_id` is 17 lowercase hex characters with no dashes** — deliberately a different shape
+> from every UUID beside it, so a parser that validates it as a UUID rejects a valid payload. **It
+> is one id under four names**, and the correspondence is what lets marion join the hook to the
+> tree: the root sees the same value as `task_started.task_id`, as `task_notification.task_id`,
+> and as `agentId` inside the `tool_result` for the `Agent` call. `agent_type` reported
+> `general-purpose`, the `subagent_type` that was requested (whether a file-defined
+> `.claude/agents/*.md` type reports its own name is **UNVERIFIED** — §11 item 2's follow-up list,
+> which that item keeps despite being resolved).
+>
+> `stop_hook_active` behaves as documented and **correlates to the node, not to the fire**:
+> `false` on the first fire and `true` on the second, with `agent_id` identical across both.
+> Under `--include-hook-events` the stream additionally carries `hook_started`/`hook_response`
+> frames, and `hook_response.output` echoes marion's decision JSON verbatim — the cheapest
+> available proof that a hook ran at all.
+>
+> **Verbatim, as committed (redacted):**
+>
+> ```json
+> {"session_id":"<UUID-1>","transcript_path":"<SCRATCH>/claude-config/projects/<SCRATCH-SLUG>-cwd/<UUID-1>.jsonl","cwd":"<SCRATCH>/cwd","prompt_id":"<UUID-2>","permission_mode":"bypassPermissions","agent_id":"<AGENT-ID-1>","agent_type":"general-purpose","effort":{"level":"high"},"hook_event_name":"SubagentStop","stop_hook_active":false,"agent_transcript_path":"<SCRATCH>/claude-config/projects/<SCRATCH-SLUG>-cwd/<UUID-1>/subagents/agent-<AGENT-ID-1>.jsonl","last_assistant_message":"ok","background_tasks":[],"session_crons":[]}
+> ```
+>
+> **The negative control is what makes "it fired" mean anything, and it ships too.** A
+> byte-identical run registering the hook **single-nested** plus misspelled event variants
+> produced **zero fires, zero `hook_started` frames, no warning, `is_error: false`, exit 0** — and
+> the same `num_turns: 2` as the working run. **A wrong hook shape is indistinguishable from a
+> correct shape whose event never occurred.** The double nesting and the silent typo tolerance
+> were already stated above; this measures what they cost. Both recordings are committed
+> (`settings-block.json` / `settings-badshape.json`, `stream-block.jsonl` /
+> `stream-badshape.jsonl`). marion's adapter conformance **MUST** therefore prove a hook is wired
+> by observing a `hook_started`/`hook_response` pair or a fire, never by the absence of an error.
 
 #### Prior art: how the four harnesses actually do this
 
@@ -3315,9 +3405,16 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   being left to the kill code's own tests (§11 item 18, spike S7, fixtured in
   `tests/fixtures/s7/`). A non-empty enumerated set is part of the criterion: an empty one would
   make the `ESRCH` check vacuous.
-- Owed here: **two** M1 debts remain — the live `SubagentStop` confirmation (§7.6) and the pty
-  re-confirmation of S1. The third, **a real `can_use_tool` round-trip with a committed fixture**
-  (§5.2), was **paid on 2026-08-03** by spike S9 and is fixtured in `tests/fixtures/s9/`: both
+- Owed here: **one** M1 debt remains — the **pty re-confirmation of S1** (§11 item 1). The other
+  two were both paid on 2026-08-03. The **live `SubagentStop` confirmation** (§7.6) was paid by
+  spike **S10** and is fixtured in `tests/fixtures/s10/`: the event fires, its field set is
+  exactly the `Stop` set plus three keys, `decision: block` re-prompts a stopping subagent and
+  **replaces** the result the parent reads, and a negative control shows a mis-shaped hook
+  registration is silent. It corrected §7.6's stated observable for the subagent case
+  (`num_turns` is a root counter; use `parent_tool_use_id`) and left four follow-ups, of which
+  `run_in_background: true` is the one that matters — §11 items 2 and 21. **A real `can_use_tool`
+  round-trip with a committed fixture**
+  (§5.2) was **paid** by spike S9 and is fixtured in `tests/fixtures/s9/`: both
   outcomes, marion's own invocation and bridge, Claude Code 2.1.220, no model call. **The inbound
   half of the control channel is not fully measured** — hook callbacks, `request_user_dialog` and
   `control_cancel_request` are still designed on decompilation (§11 item 14) — but **nothing M1
@@ -3424,7 +3521,73 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
 1. **S1's pty re-confirmation.** The interrupt protocol was proven over pipes, not a pty. If the
    CLI does isatty-conditional line buffering, framing may differ under `pty-process`. Closes in M1.
-2. **`SubagentStop` live confirmation** — static-only so far (§7.6). Closes in M1.
+2. **~~`SubagentStop` live confirmation~~ — RESOLVED 2026-08-03 (spike S10), fixtured in
+   `tests/fixtures/s10/`, harness `spikes/s10/`.** The debt this item named was a *live*
+   confirmation of an event the design had read **statically** out of the 2.1.220 bundle, and
+   which §7.6's descendant gating depends on. It is paid. Measured against **Claude Code 2.1.220**
+   on macOS (darwin 25.5.0), driven entirely against a **canned local provider** —
+   `total_cost_usd: 0`, `output_tokens: 0`, `ANTHROPIC_BASE_URL` at 127.0.0.1 with a literal dummy
+   key, **no real credential and no model call**. The Task/subagent path drives canned cleanly,
+   which is itself worth knowing: subagent behaviour is measurable for free.
+
+   **`SubagentStop` fires, and the static reading was not merely correct but complete.** The
+   payload carries **14 keys — the 11-key `Stop` set from S4 plus exactly `agent_id`,
+   `agent_type`, `agent_transcript_path`, and nothing else.** The paired `Stop` fire in the same
+   run carries the 11-key set and none of the three. The verbatim redacted payload is in §5.2.
+
+   **Three things a static reading could not give, all now normative (§5.2, §7.6):**
+
+   - **`session_id` and `transcript_path` are the PARENT's** — a subagent gets neither of its own.
+     Its transcript is `agent_transcript_path`, at
+     `<parent transcript dir>/<session_id>/subagents/agent-<agent_id>.jsonl`. **A hook that reads
+     `transcript_path` on a `SubagentStop` reads the wrong file**, which in §7.6 step 5 means
+     synthesizing the parent's tail as the child's narrative. Also: **`agent_id` is 17 lowercase
+     hex characters with no dashes**, a different shape from every UUID around it, and it is **one
+     id under four names** — the root sees the same value as `task_started.task_id`,
+     `task_notification.task_id`, and `agentId` in the `tool_result`. That correspondence is what
+     joins the hook to marion's tree.
+   - **`decision: block` does re-prompt a stopping subagent, and the re-prompt REPLACES the
+     result** rather than merely being delivered alongside it: the root's `tool_result` carried
+     the subagent's *second* answer. The provider log shows the feedback reaching the **model** as
+     a user turn with a `cache_control` breakpoint, so this is a real turn and not a CLI-side
+     annotation. The reason arrives as a real `user` frame carrying `parent_tool_use_id`.
+   - **§7.6's stated observable for a landed block does not transfer to subagents — a
+     correction, not an addition.** §7.6 offered `num_turns` 1→2. **`num_turns` is a ROOT
+     counter:** it read **`2` in every run**, including the negative control with **no hook
+     registered at all**, so a subagent re-prompt is invisible in it. The discriminator is
+     **`parent_tool_use_id` on the `user` frame** — the `Agent` call's `tool_use_id` for a
+     subagent, `null` for a root — and it is the better signal because it names *which* node was
+     re-prompted. §7.6 is corrected for the subagent case and left intact where it correctly
+     describes the root (§12).
+
+   `stop_hook_active` appears and behaves: `false` on fire 1, `true` on fire 2, `agent_id`
+   identical across both — so it correlates to the **node**, not the fire. With
+   `--include-hook-events` the stream also carries `hook_started`/`hook_response`, and
+   `hook_response.output` echoes marion's decision JSON verbatim.
+
+   **The negative control is what makes "it fired" trustworthy, and it ships.** A byte-identical
+   run registering the hook **single-nested** plus misspelled variants produced **zero fires, zero
+   `hook_started` frames, no warning, `is_error: false`, exit 0**, and the same `num_turns: 2`.
+   **A wrong hook shape is indistinguishable from a correct shape whose event never occurred.**
+   This document already warned that the nesting is double and that typos are silently ignored;
+   S10 measures the consequence, which is that no signal distinguishes the two failures. Both
+   recordings are committed.
+
+   **Incidental but expensive to rediscover:** the subagent tool is advertised **to the model** as
+   **`Agent`**, while `--tools` and `system/init` call it **`Task`**. A `tool_use` naming either
+   works (both measured), but a canned provider matching on `"Task"` in a tool name **silently
+   never matches and looks exactly like the subagent tool being unavailable** (§5.5).
+
+   **Left unmeasured — follow-ups, not reasons this item stays open.** The debt was a live
+   confirmation and the confirmation exists; these are the next questions, not the same one.
+   **`run_in_background: true` is the important one and is promoted to its own item (21)** — the
+   probe forces synchronous, so whether the fire survives a backgrounded child, or the root exits
+   first and loses it, is unknown, and that is precisely the mis-gating case §7.6 exists for. The
+   remaining three: **nested subagents** — whether `agent_id` names the stopping agent or the
+   outermost one; a **custom `.claude/agents/*.md` type** was never tried, so whether `agent_type`
+   reports the file-defined name is open; and **blocking past the `stop_hook_active` guard** is
+   untested, since the subagent had no tools and no pending work. All of it is **one machine, one
+   CLI version, one `subagent_type` (`general-purpose`), one run per mode** (cf. item 11).
 3. **Do `CODEX_HOME` / `GEMINI_CLI_HOME` isolation break auth** the way `CLAUDE_CONFIG_DIR` does?
     **PARTIALLY RESOLVED 2026-08-02 (spike S8), fixtured in `spikes/s8/`. The Codex half is
     answered; the Gemini half is not, and two Codex sub-questions remain open. Do not read this
@@ -3696,18 +3859,32 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     item 9's `ESC[6n` stall all unmeasurable with what is committed here. **Not a blocker for M1**
     — L4 drives real binaries over a real pty already — but the cheapest way to close three items
     at once, and the only layer that would catch a harness changing how it reads a terminal.
+21. **Does `SubagentStop` fire for a `run_in_background: true` subagent?** Split out of item 2
+    (S10) because it is not the debt that item named — that was a live confirmation, and it was
+    paid — but it **is** the case §7.6 exists for, so it deserves its own line rather than a
+    footnote inside a resolved item. S10's probe forces the child **synchronous**, so every fire
+    it recorded came from a subagent the root was blocked on. **Unknown: whether the hook fires at
+    all for a backgrounded child, or whether the root's own turn ends first and the fire is lost.**
+    Both outcomes are consequential in opposite directions — if it fires, marion's descendant gate
+    has the signal it needs on the very path where the parent is most likely to stop early
+    (§7.6's "status updates are not deliveries"); if it does not, marion **cannot** gate a
+    backgrounded Claude Code subagent on the hook and must fall back to its own tree, which is
+    exactly the asymmetry §7.6 claims marion can fix and a harness cannot. Cheap to measure: the
+    S10 harness plus `run_in_background: true`, canned provider, no credential. Natural follow-up
+    to item 2; not an M1 blocker, since M1 builds no `Stop` hook path at all (`MILESTONES.md`).
 
 ---
 
 ## 12. History: what was retracted or corrected
 
-Recorded so it is not rediscovered. The 47 rows below come from nine spikes — S1–S5 on
-2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02, S9 on 2026-08-03 — from audit rounds 5–19,
-and from **M1's own build**; every spike passed, and seven of the nine corrected a design decision.
-**S9 is the one that principally *confirmed*:** it found the decompiled `can_use_tool` design right
-in every field it named, and the two rows it contributes below correct only what the design left
-*un*specified. A confirmation is a result too, which is why it is recorded here rather than
-silently dropped.
+Recorded so it is not rediscovered. The 50 rows below come from ten spikes — S1–S5 on
+2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02, S9 and S10 on 2026-08-03 — from audit
+rounds 5–19, and from **M1's own build**; every spike passed, and eight of the ten corrected a
+design decision. **S9 and S10 are the two that principally *confirmed*:** S9 found the decompiled
+`can_use_tool` design right in every field it named, and S10 found the static `SubagentStop`
+reading not merely right but exhaustive. A confirmation is a result too, which is why it is
+recorded here rather than silently dropped — and both spikes still contribute correction rows,
+because what a static or decompiled reading leaves *un*specified is where the errors were.
 
 **Stamps.** A spike row is stamped with its spike and date (`S8, 2026-08-02`); an audit row with
 its round (`round 15`). The three rows stamped **`M1, 2026-08-02`** were measured while building
@@ -3764,4 +3941,7 @@ different provenance from either. No row is renumbered and no spike is invented 
 | `--setting-sources ""` suppresses the plugins, slash commands, agents and user hooks §9 enumerates | **NARROWED (M1, 2026-08-02).** Measured on 2.1.220 **with** the flag set, the root's `system/init` still listed **15 slash commands, 5 agents and 15 skills** — but **0 plugins and no user hooks**. The flag does suppress the two things isolation and cost actually turn on; it is not the clean sweep the earlier wording implied. Harmless for M1 (MCP tools and the turn were unaffected), but an auditor re-running the invocation will see a non-empty `system/init`. The counts are **this machine's config** and illustrative; the durable finding is qualitative — plugins and user hooks suppressed, commands/agents/skills not. |
 | The inbound `can_use_tool` frame has the fixed field set §5.2's envelope shows, and its `request_id` looks like marion's own | **NARROWED (S9, 2026-08-03).** The design was **right about every field it named** — top-level `request_id`, `request.subtype`, `tool_name`, `tool_use_id`, `permission_suggestions` — and `root::deny_response`, written from decompilation and never executed, was accepted **verbatim on the first attempt**. What was under-specified: the field set is **not fixed**. A built-in `Bash` ask also carries `description` and `blocked_path` and **three** `permission_suggestions`; an MCP-verb ask carries neither and one. Only `request_id`, `subtype` and `tool_name` are common to both — exactly the three marion's parser reads, now a MUST. The inbound `request_id` is a **bare UUID v4**, not the `req_N` form this document's examples use, so marion MUST NOT assume its own id scheme inbound. Also: on allow, `updatedInput` is **optional**; on deny, the envelope's own `subtype` stays `"success"`, because it reports that an answer was produced, not that permission was granted — reading it as the verdict would be a natural and wrong inference. Both field sets fixtured and asserted in `tests/fixtures/s9/`. |
 | `initialize` is optional, so whether marion sends it is a free choice with no stated cost | **CORRECTED (S9, 2026-08-03).** The `control_response` to `initialize` is **~30 kB**: the operator's entire slash-command catalogue with descriptions, the subagent list, the model list with prices, `output_style`, `available_output_styles`, `account.tokenSource` and the CLI's `pid`. The reply *is* the "session catalogue" the earlier wording named without sizing. marion sends `initialize` on **every** root launch as §6.1's event-loop round trip, so that payload crosses the pipe every run — a cost and privacy fact, not a correctness one. §5.2 now forbids journaling or forwarding it verbatim. |
+| `num_turns` 1→2 is the observable that a `decision: block` re-prompt landed | **CORRECTED (S10, 2026-08-03).** True of a **root** `Stop` and unchanged there. False for a subagent: `num_turns` is a **root counter** and read **`2` in every run**, including the negative control that registered **no hook at all**, so a `SubagentStop` re-prompt is invisible in it and a design keying on it would read "block landed" from a run where nothing fired. The discriminator is **`parent_tool_use_id` on the `user` frame** — the `Agent` call's `tool_use_id` for a subagent, `null` for a root — which is strictly better because it names *which* node was re-prompted rather than counting turns somewhere. §7.6 step 2 now states both cases separately. Also measured: the block on a subagent **replaces** the result — the root's `tool_result` carried the child's *second* answer, and the provider log shows the feedback reaching the model as a real user turn with a `cache_control` breakpoint, not merely the CLI. Fixtured in `tests/fixtures/s10/`. |
+| `SubagentStop` is verified statically only, adding `agent_id`/`agent_type`/`agent_transcript_path` to the `Stop` set | **CONFIRMED AND NARROWED (S10, 2026-08-03).** It fires, and the static reading was **complete**: exactly **14 keys** — S4's 11-key `Stop` set plus those three and nothing else — while the paired `Stop` in the same run carries the 11 and none of the three. What static reading could not give, now normative in §5.2: **`session_id` and `transcript_path` are the PARENT's**, so a hook reading `transcript_path` on a `SubagentStop` reads the wrong file; the child's transcript is `agent_transcript_path` at `<parent dir>/<session_id>/subagents/agent-<agent_id>.jsonl`. **`agent_id` is 17 lowercase hex chars with no dashes** — not a UUID, so a UUID-validating parser rejects a valid payload — and is **one id under four names** (`task_started.task_id`, `task_notification.task_id`, `agentId` in the `tool_result`). `stop_hook_active` correlates to the **node**, not the fire (`false` then `true`, same `agent_id`). Claude Code 2.1.220, canned provider, no credential, `total_cost_usd: 0`. |
+| A hook that produces no fire and no error was registered correctly and its event simply did not occur | **RETRACTED (S10, 2026-08-03).** There is **no signal that distinguishes the two.** A byte-identical run registering the hook **single-nested** plus misspelled event names produced **zero fires, zero `hook_started` frames, no warning, `is_error: false`, exit 0** and the same `num_turns: 2` as the working run. This document already said the nesting is double and typos are silently ignored; what was not stated is that the failure is **invisible**, so adapter conformance MUST prove wiring positively — a `hook_started`/`hook_response` pair or an actual fire — never by absence of an error. Both recordings committed (`settings-badshape.json`, `stream-badshape.jsonl`). Related and equally silent: Claude Code advertises the subagent tool to the model as **`Agent`** while `--tools` and `system/init` call it **`Task`**; a canned provider matching on `"Task"` never matches and the run looks exactly like one where the subagent tool was unavailable (§5.5). |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |

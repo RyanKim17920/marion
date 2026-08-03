@@ -261,7 +261,11 @@ implementation:
   (item 12, S6, is closed — its fixture is committed at `tests/fixtures/s6/`; item 18, S7, is
   closed the same way, at `tests/fixtures/s7/`; item 3's Codex half is closed by S8, fixtured at
   `spikes/s8/`, whose report carries structural facts only — key names, file modes, exit codes —
-  because the spike touched real OAuth credentials).
+  because the spike touched real OAuth credentials; item 14's `can_use_tool` third by S9 at
+  `tests/fixtures/s9/`; and item 2 outright by S10 at `tests/fixtures/s10/`, which commits its
+  **negative** control alongside the positive one — a mis-shaped hook registration that fired
+  nothing, warned nothing and exited 0, so the fixture proves the positive run was actually the
+  hook firing).
   Treat that list as authoritative and keep it current; do not re-enumerate it here.
 - **Fixtures contain system prompts, repo contents, and anything secret that appeared in tool
   output.** Redaction pass plus a pre-commit secret scan are mandatory; prefer recording against
@@ -271,8 +275,23 @@ implementation:
 
 ## Milestones
 
-**Spikes S1–S7 [done]** — resolved (design doc §12), each with a committed fixture. **S8
-[partial]** — the one spike that did not close its question outright; **do not read it as closed.**
+**Spikes S1–S7 [done]** — resolved (design doc §12), each with a committed fixture. **S10 [done]**
+— the live `SubagentStop` confirmation §11 item 2 owed before M1, fixtured in
+`tests/fixtures/s10/`. The event fires; its field set is exactly S4's 11-key `Stop` set plus
+`agent_id`/`agent_type`/`agent_transcript_path`; `session_id` and `transcript_path` are the
+**parent's**, so a hook reading `transcript_path` on a `SubagentStop` reads the wrong file; and
+`decision: block` re-prompts a stopping subagent and **replaces** the answer the parent reads. It
+also **corrected** design doc §7.6: `num_turns` is a root counter and says nothing about a
+subagent re-prompt — `parent_tool_use_id` is the discriminator. A negative control (mis-shaped hook
+registration) fired nothing and reported nothing, which is why "no error" is never evidence a hook
+is wired. Four follow-ups remain, and `run_in_background: true` — untested, and the case §7.6
+actually exists for — is now design doc §11 item **21**. **S8 [partial]** and **S9 [partial]** —
+the two spikes that did not close their questions outright; **do not read either as closed.**
+**S9 answered only the `can_use_tool` third of "the inbound half of Claude Code's control
+channel"** (design doc §11 item 14) — the decompiled design was right in every field it named and
+`root::deny_response` was accepted verbatim on first execution, but **hook callbacks,
+`request_user_dialog` and `control_cancel_request` are still designed on decompilation**. Nothing
+M1 builds depends on those three; they are M2 work. Fixtured in `tests/fixtures/s9/`.
 **S8 answered only the Codex half of "does config-dir isolation break auth"** — it does, but Codex's credential is a
 plain file rather than a Keychain entry, so seeding a copied `auth.json` fully restores it and
 `CODEX_HOME` isolation is keepable. That is a new **requirement on the launcher** for any Codex
@@ -301,7 +320,9 @@ how much code exists.
 
 - **M1 [partial]** — one real cross-harness hop over the direct-MCP path, returning a task
   contract, driven entirely by the canned provider. Preceded by S6. **Functionally complete: the
-  hop runs end to end.** See below for exactly what is and is not met.
+  hop runs end to end, and all six functional criteria are met.** Still **[partial]** because §9's
+  seventh criterion is the evidence line, and one debt is open there — the pty re-confirmation of
+  S1 (§11 item 1). See below.
 - **M2 [open]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
@@ -315,19 +336,23 @@ Post-M5: ModelProxy translation. Acceptance criteria for each: design doc §9.
 child starts in a worktree, edits a file, and returns through marion's `report` tool over MCP (S6's
 primary branch); the root receives the structured contract as a tool result; a deliberate
 out-of-scope write is caught detectively; the whole run is canned. `cargo test --test m1_hop`, ~2.2 s
-*(measured 2026-08-03; 129 tests across four crates)*. The contract criterion is asserted on the
+*(measured 2026-08-03; 138 tests across four crates)*. The contract criterion is asserted on the
 **request** side as §9 requires — the recorded `tool_result` is not a `<persisted-output>` stub, it
 deserializes, and it equals the persisted `contracts/<task_id>.json` modulo the cap rules'
 shortening and the metadata recording it.
 
-**M1 is not done, and the gap is evidence, not function.** Design doc §9's *"Owed here"* line names
-three debts and **all three are open**: §11 item 1 (the pty re-confirmation of S1), item 2 (the live
-`SubagentStop` confirmation), and item 14 (a real `can_use_tool` round-trip with a committed
-fixture — **in progress**, not closed). §9's timed-out-descendant criterion — `kill(pid, 0)` returns
-`ESRCH` for every pid in a non-empty enumerated descendant set — is **not confirmed here**: the kill
-path exists (descendant-pgid sweep before signalling, per S7), but this file records no verified run
-of that assertion. The truthful headline is **five of six functional criteria met, with the evidence
-debts outstanding** — not "M1 complete".
+**M1 is not done, and the gap is evidence, not function.** §9's timed-out-descendant criterion —
+`kill(pid, 0)` returns `ESRCH` for every pid in a **non-empty** enumerated descendant set — is now
+asserted in `crates/marion-supervisor/tests/timeout_kill.rs` over the set marion enumerated in step
+1 of its two-step group kill (S7's ordering), so **all six functional criteria (1–6) are met**.
+
+**Criterion 7, the evidence line, is what remains, and it is down to one debt.** Design doc §9's
+*"Owed here"* named three: item 14 (a real `can_use_tool` round-trip with a committed fixture) was
+paid on 2026-08-03 by **S9**; item 2 (the live `SubagentStop` confirmation) was paid the same day
+by **S10**. **Open: §11 item 1, the pty re-confirmation of S1** — the interrupt protocol was proven
+over pipes, not a pty. The truthful headline is **six of six functional criteria met, one evidence
+debt outstanding** — not "M1 complete", because a milestone is never **[done]** while a criterion
+it names is unmet, and criterion 7 is a criterion.
 
 ### Not started — what a working M1 does *not* imply
 
