@@ -624,21 +624,61 @@ no SDK).** NDJSON on stdin:
 in **0.5 ms**; the terminal `result` follows at **1.9 ms**. `initialize` is **optional** — needed only
 to register SDK-side hooks/MCP or read the session catalogue.
 
+> **The `initialize` reply *is* the session catalogue, and it is large (S9, 2026-08-03, measured on
+> 2.1.220, fixtured in `tests/fixtures/s9/`).** The `control_response` to `initialize` came back at
+> **~30 kB**, carrying the operator's entire slash-command catalogue with descriptions, the subagent
+> list, the model list with prices, `output_style`, `available_output_styles`,
+> `account.tokenSource` and the CLI's `pid`. "Optional" above is about *necessity*, not cost: M1
+> sends `initialize` on **every** root launch as §6.1's event-loop round trip, so that payload
+> crosses the pipe on every run. Nothing in it is needed by M1, and much of it is machine- and
+> account-specific — which is why S9's fixture *reduces* those keys rather than merely scrubbing
+> them. A launcher that sends `initialize` **MUST NOT** journal or forward the reply verbatim, and
+> **SHOULD** retain only the fields it actually reads.
+
 **⚠ Outbound `can_use_tool` frames require `--permission-prompt-tool stdio`.** Verified on
 2.1.220: without that flag a non-allowlisted tool call is **auto-denied in-process** and surfaces
 only as an `is_error` `tool_result` reading *"Claude requested permissions to use X, but you
 haven't granted it yet"* — no `control_request` reaches marion, nothing blocks, and the turn
-continues. With it, the CLI emits
-`{"type":"control_request","request_id":…,"request":{"subtype":"can_use_tool","tool_name":…,
-"permission_suggestions":[…],"tool_use_id":…}}`. **The top-level `request_id` is load-bearing and
-belongs in the envelope exactly as on the outbound direction**: the demux map below is keyed on it,
-and `control_cancel_request` names it — a frame without one could be neither answered nor cancelled.
-The **frame itself was observed live** in round 14 (above); what no *committed fixture* records is
-its exact field set, so the envelope shown here is that observation plus the two requirements above.
-Capturing it is part of §11 item 14's first probe. The flag is **absent from `--help`** but is what
+continues. With it, the CLI emits an inbound `control_request` — **recorded verbatim, both outcomes,
+in `tests/fixtures/s9/` (S9, 2026-08-03, Claude Code 2.1.220)**:
+
+```json
+{"type":"control_request","request_id":"<UUID-4>","request":{"subtype":"can_use_tool","tool_name":"mcp__marion__report","display_name":"Report","input":{"narrative":"s9 probe: a verb the root may not use"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"mcp__marion__report"}],"behavior":"allow","destination":"localSettings"}],"tool_use_id":"toolu_marion_spawn_1"}}
+```
+
+**The top-level `request_id` is load-bearing and belongs in the envelope exactly as on the outbound
+direction** — confirmed by that capture: the demux map below is keyed on it, and
+`control_cancel_request` names it, so a frame without one could be neither answered nor cancelled.
+`request.subtype`, `request.tool_name`, `request.tool_use_id` and `permission_suggestions` are all
+present exactly as this document designed them from decompilation. The flag is **absent from `--help`** but is what
 the official SDK passes (visible in the 2.1.220 bundle). Note this is an **argv** mechanism, not an
 `initialize` one — the "`initialize` is optional" note above concerns SDK-side hook/MCP
 registration and must not be read as "nothing further is required" for the inbound half.
+
+**The `can_use_tool` field set is not fixed, and this is normative (S9).** The envelope above is an
+**MCP-verb** ask. The same subtype for a built-in `Bash` ask
+(`tests/fixtures/s9/can-use-tool-builtin-deny.stdout.jsonl`) additionally carries `description` and
+`blocked_path`, and **three** `permission_suggestions` (`addRules` with a `ruleContent`,
+`addDirectories`, `setMode`) rather than one; it carries no `display_name`-plus-`input` pairing of
+the MCP shape. Only **`request_id`, `request.subtype` and `request.tool_name`** appear in **both**.
+Therefore:
+
+- The inbound demux **MUST** read only those three fields to route and answer a `can_use_tool`
+  request, and **MUST** tolerate any other key being absent. Every other field — `input`,
+  `tool_use_id`, `display_name`, `permission_suggestions`, `description`, `blocked_path` — is
+  **advisory**: a consumer may surface it, and **MUST NOT** fail the request when it is missing.
+  Both field sets are committed and asserted, so a parser that starts depending on either fails
+  loudly rather than in the field.
+- marion **MUST NOT** assume its own `request_id` scheme on the inbound direction. Outbound ids are
+  marion's (`req_N` in this document's examples); **inbound ids were measured to be bare UUID v4**.
+  The map is keyed on the string, so this is a naming observation rather than a protocol one — but
+  any code that parses, ranges over, or validates the `req_N` shape is wrong on inbound frames.
+- The `control_response` envelope's own `subtype` **stays `"success"` on a denial**: it reports that
+  an answer was produced, not that permission was granted. The verdict lives **only** in
+  `response.response.behavior`. A consumer **MUST NOT** read the envelope `subtype` as the verdict.
+- On **allow**, `updatedInput` is **optional** — a bare `{"behavior":"allow"}` was measured running
+  the tool with the model's original input. marion sends it anyway, because rewriting arguments is
+  what the field is for.
 
 **The channel is bidirectional, and this is load-bearing.** The CLI emits its own outbound
 `control_request` frames — `can_use_tool`, hook callbacks, `request_user_dialog` — on the same
@@ -647,12 +687,26 @@ stdout stream, expecting a `control_response`. So `ControlPlane` needs **both ha
 for CLI-originated ones, which correlate to nothing marion sent and so are never found in that map.
 **The inbound half is how Claude Code permission prompts reach marion's permission queue** (§5.6). Cancel with `{"type":"control_cancel_request","request_id":…}`.
 
-> **UNVERIFIED — and M1 depends on it.** This is established from the SDK source and the binary's
-> strings, **not** from the S1 replay: `tests/fixtures/s1/stdout.jsonl` contains **zero** inbound
-> `control_request` frames, because that run omitted `--permission-prompt-tool stdio`, so `can_use_tool` could never
-> fire. The demux map, the response half, and the hook-callback / `request_user_dialog` frames are designed on decompilation — the `can_use_tool` **ask** frame itself was observed in round 14 (above, and §11 item 14). **M1 must
-> exercise a real `can_use_tool` round-trip and emit a fixture** — it is the third M1 debt
-> alongside the pty re-confirmation and `SubagentStop`.
+> **`can_use_tool` is VERIFIED; the other two inbound kinds are still UNVERIFIED (S9, 2026-08-03).**
+> `tests/fixtures/s9/` records a **full round trip in both outcomes** against Claude Code 2.1.220,
+> driven by marion's own invocation, bridge and allowlist, with no model call and no paid tokens.
+> The demux map, the response half and the `request_id` correlation are now measured rather than
+> decompiled: the `control_response` names the same `request_id` the `control_request` did, and
+> marion's `root::deny_response` — written from decompilation and never once executed — was accepted
+> **verbatim on the first attempt**, requiring no implementation change. **On deny** the CLI turns
+> the denial into a `tool_result` with `is_error: true` whose content is marion's `message`
+> verbatim, tags it `tool_result_meta[].non_execution_kind: "permission-rule"`, lists the call under
+> the terminal frame's `permission_denials`, and **the turn continues** (`terminal_reason:
+> "completed"`, `is_error: false`, exit 0) — which is §9's permission rule executed, not asserted.
+> **On allow** the tool actually ran and returned marion's *own bridge's* string, proving the answer
+> reached the MCP server and not merely the CLI.
+>
+> **Still designed on decompilation:** **hook callbacks** and **`request_user_dialog`**. Neither is
+> provoked by S9 — hook callbacks need SDK-side hooks registered through `initialize` and marion
+> sends `hooks: {}`, and no probe has found a headless path that triggers a user dialog.
+> **`control_cancel_request` is untested in either direction.** S9 is one machine, one CLI version,
+> one run per outcome. §11 item 14 stays open on those three; the `can_use_tool` third of it is
+> closed. The remaining M1 debts are the pty re-confirmation and `SubagentStop`.
 
 **An interrupted turn reports `is_error: true`** with `subtype:"error_during_execution"` and
 `terminal_reason:"aborted_streaming"`. marion MUST classify that as a clean interrupt.
@@ -3099,6 +3153,14 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   child is killed) because there the contract would otherwise be terminal over a live process;
   here the root is alive and answerable, and denying one tool call is the smaller, recoverable act.
   The denial is recorded in the **journal** (§4.3), not in a contract — a root has none.
+  **This rule is now measured, not merely designed (S9, 2026-08-03, `tests/fixtures/s9/`).** With
+  `--permission-prompt-tool stdio` set, the ask reached marion, the root sat in
+  `Blocked(Permission)` until its bound expired, marion sent the deny, and **the root proceeded and
+  finished normally** — `terminal_reason: "completed"`, `is_error: false`, exit 0, with the CLI's
+  own terminal frame listing the call under `permission_denials` and the denied call surfacing as an
+  `is_error` `tool_result` carrying marion's `message` verbatim, tagged
+  `non_execution_kind: "permission-rule"`. On the allow leg the tool ran and returned marion's own
+  bridge's string, so the answer reaches the MCP server and not merely the CLI (§5.2, §11 item 14).
 - **Both processes are pointed at the CannedProvider, which is what makes §6.4's OAuth constraint
   moot for M1.** Neither process authenticates against a real endpoint, so nothing here depends on
   subscription auth — and neither the root's real `CLAUDE_CONFIG_DIR` nor the child's isolated
@@ -3253,12 +3315,17 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   being left to the kill code's own tests (§11 item 18, spike S7, fixtured in
   `tests/fixtures/s7/`). A non-empty enumerated set is part of the criterion: an empty one would
   make the `ESRCH` check vacuous.
-- Owed here: all three M1 debts — the live
-  `SubagentStop` confirmation (§7.6), the pty re-confirmation of S1, and **a real `can_use_tool`
-  round-trip with a committed fixture** (§5.2), the inbound half of Claude Code's control channel,
-  which the whole permission path is designed on and which no committed fixture exercises.
-  **Spike S6 is no longer owed here** — it was run and resolved 2026-08-01 and is fixtured in
-  `tests/fixtures/s6/` (§5.2, §11 item 12); it is named only because earlier revisions listed it
+- Owed here: **two** M1 debts remain — the live `SubagentStop` confirmation (§7.6) and the pty
+  re-confirmation of S1. The third, **a real `can_use_tool` round-trip with a committed fixture**
+  (§5.2), was **paid on 2026-08-03** by spike S9 and is fixtured in `tests/fixtures/s9/`: both
+  outcomes, marion's own invocation and bridge, Claude Code 2.1.220, no model call. **The inbound
+  half of the control channel is not fully measured** — hook callbacks, `request_user_dialog` and
+  `control_cancel_request` are still designed on decompilation (§11 item 14) — but **nothing M1
+  builds depends on them**: M1's permission path uses `can_use_tool` alone, and the deny leg of it
+  is now a recorded behaviour rather than a design claim. Those three are M2 work, tracked in §11,
+  and are deliberately **not** re-listed here as M1 debts.
+  **Spike S6 is likewise no longer owed here** — it was run and resolved 2026-08-01 and is fixtured
+  in `tests/fixtures/s6/` (§5.2, §11 item 12); it is named only because earlier revisions listed it
   first in this line.
 
 **M2 — supervisor split.**
@@ -3473,9 +3540,12 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       contents, the `managedCodexVersion` result, and the mid-run `install.sh` swap. Observed
       live; no log was committed, so §5.2's "`daemon start` does not arm the updater" rests on an
       uncommitted session.
-    - **The round-14 `can_use_tool` observation** (§5.2) — the `ask` frame and the without-flag
-      auto-deny were seen live on 2.1.220 but no fixture was committed. §11 item 14 owes the
-      round-trip capture.
+    - **~~The round-14 `can_use_tool` observation~~ — half discharged (S9, 2026-08-03).** The `ask`
+      frame is now fixtured in `tests/fixtures/s9/`, in both outcomes and both field sets (§5.2,
+      item 14). What is **still** uncommitted from round 14 is the **without-flag auto-deny** — the
+      `is_error` `tool_result` reading "Claude requested permissions to use X, but you haven't
+      granted it yet", seen live on 2.1.220 with no fixture. S9 always passes
+      `--permission-prompt-tool stdio`, so it does not record the negative case.
     - **The 1478-byte `ESC[6n` stall** (§5.3). The capture that showed it was never committed, so
       neither the byte count nor the stall is reproducible here — which matters because it is the
       only counter-evidence against "probe answering is unnecessary" (§11 item 9 asks a reader to
@@ -3505,12 +3575,51 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     (`tests/fixtures/s4/codex/stream-exit2-stderr.jsonl`); `s4/claude-code/stop_hook.sh` has no
     exit-2 branch, so the equivalence is asserted from nothing in this repo. Either record the
     mode or treat `decision: block` as the only verified mechanism on Claude Code.
-14. **The inbound half of Claude Code's control channel** — hook callbacks and
-    `request_user_dialog` — is designed on decompilation, with **zero** inbound `control_request`
-    frames in `tests/fixtures/s1/stdout.jsonl`. (The `can_use_tool` *ask* path itself is no longer
-    unverified: round 14 observed the frame under `--permission-prompt-tool stdio`, §5.2. What is
-    still owed is a **committed fixture** of a full round-trip, and the other two frame kinds.) The demux map and the entire permission path rest
-    on it. Closes in M1 (§5.2).
+14. **The inbound half of Claude Code's control channel.**
+    **PARTIALLY RESOLVED 2026-08-03 (spike S9), fixtured in `tests/fixtures/s9/`. The
+    `can_use_tool` third is answered; hook callbacks, `request_user_dialog` and
+    `control_cancel_request` are not. Do not read this item as closed.**
+
+    **The decompiled design was right about every field it named.** A full `can_use_tool` round
+    trip was captured in **both outcomes** against **Claude Code 2.1.220** on macOS (darwin 25.5.0),
+    driven by marion's own invocation, bridge and allowlist — no argv surgery — against marion's
+    canned provider, so **no model call and no paid tokens**. The inbound frame carries a top-level
+    `request_id`, a `request.subtype` of `can_use_tool`, a `request.tool_name`, a
+    `request.tool_use_id` and `permission_suggestions`, exactly as §5.2 designed them from
+    `@anthropic-ai/claude-agent-sdk@0.3.220`. marion's `root::deny_response` — written from
+    decompilation and **never once executed** before this run — was accepted **verbatim on the first
+    attempt**, and no implementation changed. This item's value is therefore not a correction: it is
+    that the demux map, the response half and the whole permission path **no longer rest on an
+    unrecorded assumption**.
+
+    **How the ask was provoked without a model:** `report` is deliberately absent from the root's
+    allowlist (§9 rejects `report` on a node with no contract, and a root has none) while being a
+    real tool marion's bridge serves, so the canned turn aims at `mcp__marion__report` — offered on
+    the availability axis, refused on the permission axis, hence asked.
+
+    **Three things the design under-specified, now normative in §5.2:** the request's **field set is
+    not fixed** (a built-in `Bash` ask additionally carries `description` and `blocked_path` and
+    **three** `permission_suggestions`; an MCP-verb ask carries neither and one — only `request_id`,
+    `subtype` and `tool_name` are common, which is exactly what marion's parser reads); the inbound
+    `request_id` is a **bare UUID v4**, not this document's `req_N` examples; and the
+    `control_response` envelope's own `subtype` stays `"success"` **on a denial**, because it
+    reports that an answer was produced, not that permission was granted. Separately, `updatedInput`
+    is **optional** on allow, and the `control_response` to `initialize` is **~30 kB** of session
+    catalogue that crosses the pipe on every root launch (§5.2).
+
+    **§9's permission rule is now exercised rather than dead code.** "Block until the root's bound
+    expires, then deny the pending request and let the root proceed — do not kill the root" was run
+    end to end: the bound was waited out, the deny sent, and the root finished normally —
+    `terminal_reason: "completed"`, `is_error: false`, exit 0, corroborated by the CLI's own
+    `permission_denials`. On the allow run the tool executed and returned marion's **own bridge's**
+    string, proving the answer reached the MCP server and not merely the CLI.
+
+    **Still open, and this is why the item stays open.** **Hook callbacks** are unmeasured — they
+    need SDK-side hooks registered through `initialize`, and marion sends `hooks: {}`.
+    **`request_user_dialog`** is unmeasured — no reachable headless path triggers it.
+    **`control_cancel_request`** is untested in **both** directions. And everything above is **one
+    machine, one CLI version, one run per outcome**. Re-measure before these harden (cf. item 11).
+    Reproduce with `cargo test -p marion-supervisor --test permission_round_trip` (§5.2).
 15. **Codex multi-client semantics are largely source-derived, not measured** (§5.2): no S5 probe
     exercises an approval, no probe issues `turn/steer`, and no probe involves a real TUI — all
     three are WebSocket clients. Unverified: the approval fan-out to all subscribers and
@@ -3592,9 +3701,13 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
 ## 12. History: what was retracted or corrected
 
-Recorded so it is not rediscovered. The 45 rows below come from eight spikes — S1–S5 on
-2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02 — from audit rounds 5–19, and from **M1's
-own build**; every spike passed, and seven of the eight corrected a design decision.
+Recorded so it is not rediscovered. The 47 rows below come from nine spikes — S1–S5 on
+2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02, S9 on 2026-08-03 — from audit rounds 5–19,
+and from **M1's own build**; every spike passed, and seven of the nine corrected a design decision.
+**S9 is the one that principally *confirmed*:** it found the decompiled `can_use_tool` design right
+in every field it named, and the two rows it contributes below correct only what the design left
+*un*specified. A confirmation is a result too, which is why it is recorded here rather than
+silently dropped.
 
 **Stamps.** A spike row is stamped with its spike and date (`S8, 2026-08-02`); an audit row with
 its round (`round 15`). The three rows stamped **`M1, 2026-08-02`** were measured while building
@@ -3649,4 +3762,6 @@ different provenance from either. No row is renumbered and no spike is invented 
 | Watching marion's own bridge complete its MCP handshake is a sufficient readiness gate for a headless Claude Code root | **CORRECTED (M1, 2026-08-02).** Claude Code 2.1.220 connects `--mcp-config` servers **asynchronously and does not hold the first turn for them** — its own debug log says so. Against a real endpoint this is invisible (model seconds vs. ~70 ms connect); against a canned/fast endpoint the first request goes out with `tools: []`, §5.5's dispatch-on-shape rule correctly reads it as the session-title request, and the root **emits a title and exits 0 in 63 ms with no error anywhere**. A property of the launch protocol, not of the canned provider. §6.1 step 8 now requires the marker to be written **after the bridge flushes its `tools/list` reply**, plus a `control_request`/`control_response` `initialize` round trip proving the harness's event loop has run since — no sleeps — and a refusal naming the cause if the marker never lands. |
 | `setpgid` + the §11 item 18 pgid sweep account for every process a `codex exec` run can leave behind | **CORRECTED (M1, 2026-08-02).** `codex exec` 0.146.0 starts a curated-plugin-marketplace clone into `$CODEX_HOME/.tmp/plugins-clone-*` whose `git fetch` **outlives the exec process**, reparents to pid 1, keeps writing into the agent dir marion is deleting, and makes a network call on a run premised on making none. **Not reapable after the fact** — item 18's sweep enumerates descendants *before* the child dies, and this is already an orphan by then. Distinct from item 18 (a *tool-call* child escaping via `setsid`), and fixing either does not fix the other. Remedy: `[features] plugins = false` in the child's `config.toml`, with a regression test. Two e2e runs failed on this first; the leak sweep found it, and is now an assertion rather than a manual step. |
 | `--setting-sources ""` suppresses the plugins, slash commands, agents and user hooks §9 enumerates | **NARROWED (M1, 2026-08-02).** Measured on 2.1.220 **with** the flag set, the root's `system/init` still listed **15 slash commands, 5 agents and 15 skills** — but **0 plugins and no user hooks**. The flag does suppress the two things isolation and cost actually turn on; it is not the clean sweep the earlier wording implied. Harmless for M1 (MCP tools and the turn were unaffected), but an auditor re-running the invocation will see a non-empty `system/init`. The counts are **this machine's config** and illustrative; the durable finding is qualitative — plugins and user hooks suppressed, commands/agents/skills not. |
+| The inbound `can_use_tool` frame has the fixed field set §5.2's envelope shows, and its `request_id` looks like marion's own | **NARROWED (S9, 2026-08-03).** The design was **right about every field it named** — top-level `request_id`, `request.subtype`, `tool_name`, `tool_use_id`, `permission_suggestions` — and `root::deny_response`, written from decompilation and never executed, was accepted **verbatim on the first attempt**. What was under-specified: the field set is **not fixed**. A built-in `Bash` ask also carries `description` and `blocked_path` and **three** `permission_suggestions`; an MCP-verb ask carries neither and one. Only `request_id`, `subtype` and `tool_name` are common to both — exactly the three marion's parser reads, now a MUST. The inbound `request_id` is a **bare UUID v4**, not the `req_N` form this document's examples use, so marion MUST NOT assume its own id scheme inbound. Also: on allow, `updatedInput` is **optional**; on deny, the envelope's own `subtype` stays `"success"`, because it reports that an answer was produced, not that permission was granted — reading it as the verdict would be a natural and wrong inference. Both field sets fixtured and asserted in `tests/fixtures/s9/`. |
+| `initialize` is optional, so whether marion sends it is a free choice with no stated cost | **CORRECTED (S9, 2026-08-03).** The `control_response` to `initialize` is **~30 kB**: the operator's entire slash-command catalogue with descriptions, the subagent list, the model list with prices, `output_style`, `available_output_styles`, `account.tokenSource` and the CLI's `pid`. The reply *is* the "session catalogue" the earlier wording named without sizing. marion sends `initialize` on **every** root launch as §6.1's event-loop round trip, so that payload crosses the pipe every run — a cost and privacy fact, not a correctness one. §5.2 now forbids journaling or forwarding it verbatim. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |

@@ -3,7 +3,8 @@
 A meta-harness: run any agent harness, on any model, as a first-class subagent of any other
 harness — with one UI over the whole tree.
 
-> **Scope of this file:** goals, principles, and verified harness facts. **Operational detail lives
+> **Scope of this file:** goals, principles, verified harness facts, and **milestone status**.
+> **Operational detail lives
 > in `docs/specs/2026-07-31-marion-design.md` (rev 3) and is not duplicated here** — duplication is
 > what caused this document to drift out of sync with the design once already. Where the two
 > disagree, this file wins on *what* and *why*; the design doc wins on *how*.
@@ -270,9 +271,9 @@ implementation:
 
 ## Milestones
 
-**Spikes S1–S7 are resolved** (design doc §12), each with a committed fixture; **S8 is
-*partially* resolved** and is the one spike that did not close its question outright. **S8 answered
-the Codex half of "does config-dir isolation break auth"** — it does, but Codex's credential is a
+**Spikes S1–S7 [done]** — resolved (design doc §12), each with a committed fixture. **S8
+[partial]** — the one spike that did not close its question outright; **do not read it as closed.**
+**S8 answered only the Codex half of "does config-dir isolation break auth"** — it does, but Codex's credential is a
 plain file rather than a Keychain entry, so seeding a copied `auth.json` fully restores it and
 `CODEX_HOME` isolation is keepable. That is a new **requirement on the launcher** for any Codex
 child talking to a real endpoint (seed the credential; `0700` dirs; never upload; shred on
@@ -292,14 +293,62 @@ Design doc §9 specifies what M1 builds. Build **M1 disposably** — prove the d
 displays it: no *detached* daemon (the registry, the task audit trail and the control MCP run
 in-process), no VT emulator, no model proxy.
 
-- **M1** — one real cross-harness hop over the direct-MCP path, returning a task contract, driven
-  entirely by the canned provider. Preceded by S6.
-- **M2** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
-- **M3** — tree UI + embedded terminal.
-- **M4** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
-- **M5** — ACP breadth, degrading per resolved capabilities.
+**Status convention** — introduced 2026-08-03, applied to every milestone and spike in this file:
+**[done]** every acceptance criterion in design doc §9 is met; **[partial]** some criteria met and
+the rest named; **[open]** not started. A milestone is never **[done]** while a criterion it names
+is unmet — including the evidence criteria. Statuses are claims about *verified* state, not about
+how much code exists.
+
+- **M1 [partial]** — one real cross-harness hop over the direct-MCP path, returning a task
+  contract, driven entirely by the canned provider. Preceded by S6. **Functionally complete: the
+  hop runs end to end.** See below for exactly what is and is not met.
+- **M2 [open]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
+- **M3 [open]** — tree UI + embedded terminal.
+- **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
+- **M5 [open]** — ACP breadth, degrading per resolved capabilities.
 
 Post-M5: ModelProxy translation. Acceptance criteria for each: design doc §9.
+
+### M1 — where it actually stands (2026-08-03)
+
+**The delegation core works.** A real `claude` root calls `mcp__marion__spawn`; a real `codex`
+child starts in a worktree, edits a file, and returns through marion's `report` tool over MCP (S6's
+primary branch); the root receives the structured contract as a tool result; a deliberate
+out-of-scope write is caught detectively; the whole run is canned. `cargo test --test m1_hop`, ~2.2 s
+*(measured 2026-08-03; 129 tests across four crates)*. The contract criterion is asserted on the
+**request** side as §9 requires — the recorded `tool_result` is not a `<persisted-output>` stub, it
+deserializes, and it equals the persisted `contracts/<task_id>.json` modulo the cap rules'
+shortening and the metadata recording it.
+
+**M1 is not done, and the gap is evidence, not function.** Design doc §9's *"Owed here"* line names
+three debts and **all three are open**: §11 item 1 (the pty re-confirmation of S1), item 2 (the live
+`SubagentStop` confirmation), and item 14 (a real `can_use_tool` round-trip with a committed
+fixture — **in progress**, not closed). §9's timed-out-descendant criterion — `kill(pid, 0)` returns
+`ESRCH` for every pid in a non-empty enumerated descendant set — is **not confirmed here**: the kill
+path exists (descendant-pgid sweep before signalling, per S7), but this file records no verified run
+of that assertion. The truthful headline is **five of six functional criteria met, with the evidence
+debts outstanding** — not "M1 complete".
+
+### Not started — what a working M1 does *not* imply
+
+M1 was built disposably on purpose (design doc §9), so a working hop rests on very little. Nothing
+below exists yet:
+
+- **The journal (design §4.3) — the significant one. Nothing survives a supervisor restart today.**
+  `Orphaned` marking and reap recovery both depend on it, so M2's replay criteria have no substrate
+  to stand on.
+- The registry.
+- **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.
+- `verification` command execution, so a contract's `evidence` is always empty.
+- The `Stop` hook path.
+- `marion doctor --adapter`, `marion-term`, `marion-tui`, `marion-proto`.
+- `status` / `wait` / `list` appear in `--allowedTools` but are **not implemented** — the bridge
+  declares only `spawn` and `report`. An allowlist entry for an undeclared tool is inert.
+
+What does exist: `marion run <agent-type> --prompt …` launches the root; contracts persist uncapped
+to `<agent-dir>/contracts/<task_id>.json` with the capped copy returned; timeouts are enforced with
+a descendant-pgid sweep; scope is checked both preventively (at spawn) and detectively (git-derived).
+Mechanism for all of it: design doc §5–§7.
 
 ---
 
