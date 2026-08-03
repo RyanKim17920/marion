@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "SubagentStop": [
+      {"hooks": [{"type": "command", "command": "S10_HOOKLOG='<SCRATCH>/hook-input.jsonl' S10_BLOCK=1 python3 '<HOME>/Desktop/CODING/marion/spikes/s10/hook.py'"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "S10_HOOKLOG='<SCRATCH>/hook-input.jsonl' S10_BLOCK=1 python3 '<HOME>/Desktop/CODING/marion/spikes/s10/hook.py'"}]}
+    ]
+  }
+}
