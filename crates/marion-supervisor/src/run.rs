@@ -28,7 +28,7 @@ use marion_core::encoding::{Duration, SystemTime};
 use marion_core::ids::{RAND_BYTES, new_agent_id};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::scope::check_spawn_scope;
-use marion_harness::{ExecSpec, compile_exec, config_toml};
+use marion_harness::{Extras, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for};
 
 use crate::spawn::{
     SpawnError, build_contract, changed_paths, diff_text, make_worktree, parse_child_stream,
@@ -433,17 +433,44 @@ pub fn run_spawn(
     let branch = format!("marion/{}", task_id.0);
     let base = make_worktree(&env.repo, &wt, &branch)?;
 
-    std::fs::write(
-        ch.join("config.toml"),
-        config_toml(&env.bridge.to_string_lossy(), &["mcp"], &env.base_url),
-    )?;
-    let inv = compile_exec(&ExecSpec {
+    // §6.1 step 5, through the seam, **dispatched on the agent type's harness**. This was a
+    // constant until now, which meant a `claude` agent type wrote a Codex config, exec'd `codex`,
+    // and still recorded `"claude-code"` in the contract below — §6.7's audit record asserting
+    // something that never happened.
+    //
+    // A harness marion can *name* but not yet *run* stops here, as a typed
+    // `HarnessError::Unimplemented` naming it. There is deliberately no fallback: silently running
+    // some other harness is the failure mode §12's correction rows keep recording, and a loud
+    // refusal is always the cheaper one to diagnose.
+    let adapter = adapter_for(agent_type.harness)?;
+    let launch = LaunchSpec {
         cwd: wt.clone(),
-        codex_home: ch,
+        model: None,
         prompt: req.prompt.clone(),
-        output_schema: None,
-        output_last_message: None,
-    });
+        allowed_tools: vec![],
+        mcp: McpDeclaration::Marion,
+        base_url: Some(env.base_url.clone()),
+        config_dir: ch.clone(),
+        extra: Extras::default(),
+    };
+    let ctx = SpawnCtx {
+        agent_id: agent_id.clone(),
+        // Its prompt rides argv, so there is no frame to withhold and no marker to wait on
+        // (§6.1 step 8); its MCP readiness is asserted post hoc from its JSONL stream.
+        ready_file: None,
+        repo: env.repo.clone(),
+        // TODO(phase-3): the *project* dir, not §4.3's `<state>` root — `Env` does not carry the
+        // latter. Harmless today because `config_toml` emits no per-server `env` and so reads
+        // neither this nor `agent_id`; closing that gap (see `CodexAdapter::config_files`) means
+        // threading the real state root through `Env` first.
+        state_dir: env.project_dir.path().to_path_buf(),
+        bridge: env.bridge.clone(),
+        bridge_args: vec!["mcp".into()],
+    };
+    for (path, contents) in adapter.config_files(&launch, &ctx)? {
+        std::fs::write(path, contents)?;
+    }
+    let inv = adapter.compile(&launch, &ctx)?;
     let output = run_bounded(
         SysCommand::new(&inv.program)
             .args(&inv.args)
@@ -492,7 +519,12 @@ pub fn run_spawn(
     {
         completion.exit.description = note_truncated_capture(&completion.exit.description);
     }
-    contract.child.harness = agent_type.harness;
+    // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so the
+    // harness it names must be the one that actually produced the work, never the one that was
+    // asked for. The two agree today precisely because the dispatch above reads the same field —
+    // sourcing it here makes that an invariant the code enforces rather than one a reader has to
+    // check, and it is the reason a divergence between the two could never again be silent.
+    contract.child.harness = adapter.harness();
     contract.child.version = harness_version(&inv.program);
     let returned = persist_then_cap(&agent_dir, &contract)?;
     cleanup(&env.repo, &wt);
@@ -510,6 +542,7 @@ fn cleanup(repo: &Path, wt: &Path) {
 mod tests {
     use super::*;
     use crate::spawn::ChildOutcome;
+    use marion_core::harness::Harness;
 
     fn temp(name: &str) -> PathBuf {
         let p =
@@ -922,6 +955,166 @@ mod tests {
             note_truncated_capture("child exceeded its timeout and its process group was killed");
         assert!(noted.starts_with("child exceeded its timeout"));
         assert!(noted.contains("output capture truncated"));
+    }
+
+    /// A repo with one commit, which is all `make_worktree` needs to get past `rev-parse HEAD`.
+    fn fixture_repo(root: &Path) -> PathBuf {
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/keep.txt"), "keep\n").unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main", "."],
+            vec!["add", "-A"],
+            vec![
+                "-c",
+                "user.email=marion@example.invalid",
+                "-c",
+                "user.name=marion",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        ] {
+            let out = SysCommand::new("git")
+                .current_dir(&repo)
+                .args(&args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        repo
+    }
+
+    /// Every file under `dir`, recursively. Used to prove a *negative* — that nothing anywhere
+    /// under the node's state is a Codex `config.toml` — because asserting the absence of one
+    /// guessed path would pass if the adapter simply wrote it somewhere else.
+    fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                files_under(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+
+    /// **The dispatch regression.** `run_spawn` selects its adapter from `agent_type.harness`; for
+    /// as long as it selected `Harness::Codex` by constant, spawning the `claude` type wrote a
+    /// Codex `config.toml`, exec'd `codex`, and returned a contract stamped `"claude-code"` — an
+    /// audit record (§6.7) describing a run that never happened.
+    ///
+    /// Three assertions, and each one fails against the constant:
+    /// 1. the call **refuses**, with a typed error naming `claude-code`. An `Ok` here would mean a
+    ///    child process was launched, and under the constant that child was `codex`;
+    /// 2. no `config.toml` exists anywhere under the node's state — the Codex adapter's one output;
+    /// 3. the state that *does* exist is the Claude Code adapter's refusal, not a Codex launch.
+    ///
+    /// The refusal itself is the right outcome for M1: `run_spawn` builds a Codex-shaped
+    /// `SpawnCtx` with `ready_file: None`, and §6.1 step 8 makes that marker mandatory for a
+    /// headless node — without it the first turn goes out with `tools: []` and nothing reports an
+    /// error. Loud is the point; which loud error it is will change when the headless child path
+    /// lands, and this test asserts the *harness* it names, not the branch it took.
+    #[test]
+    fn a_claude_agent_type_never_writes_a_codex_config_or_launches_codex() {
+        let root = temp("dispatch");
+        let repo = fixture_repo(&root);
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let env = Env {
+            repo: repo.clone(),
+            project_dir: ProjectDir::new(&state, &repo),
+            bridge: PathBuf::from("/bin/marion-supervisor"),
+            base_url: "http://127.0.0.1:8099/v1".into(),
+        };
+        let req = SpawnRequest {
+            agent_type: "claude".into(),
+            prompt: "do the task".into(),
+            acceptance_criteria: vec![],
+            writable_scope: vec!["src/**".into()],
+            // Short, so that a regression re-running `codex` for real is a fast failure.
+            timeout_secs: 1,
+        };
+
+        let result = run_spawn(&env, &req, &TaskId("dispatch".into()), "root");
+
+        let err = match result {
+            Err(e) => e,
+            Ok(c) => panic!(
+                "a claude agent type launched a child; contract recorded harness {}",
+                c.child.harness
+            ),
+        };
+        assert!(
+            matches!(
+                &err,
+                SpawnError::Harness(marion_harness::HarnessError::MissingInput {
+                    harness: Harness::ClaudeCode,
+                    ..
+                })
+            ),
+            "the refusal must be typed and must name the harness that was asked for, got: {err}"
+        );
+
+        let mut written = Vec::new();
+        files_under(&state, &mut written);
+        assert!(
+            !written
+                .iter()
+                .any(|p| p.file_name().is_some_and(|n| n == "config.toml")),
+            "a Codex config.toml was written for a claude agent type: {written:?}"
+        );
+    }
+
+    /// The other half of item 1: the Codex path still resolves to the Codex adapter, so the
+    /// dispatch change is observably a no-op for every M1 spawn.
+    #[test]
+    fn each_builtin_agent_type_dispatches_to_its_own_harness() {
+        for (name, expected) in [
+            ("claude", Harness::ClaudeCode),
+            ("codex", Harness::Codex),
+            ("codex-impl", Harness::Codex),
+        ] {
+            let t = builtin(name).expect("built-in resolves");
+            assert_eq!(t.harness, expected, "{name}");
+            assert_eq!(
+                adapter_for(t.harness)
+                    .expect("both M1 harnesses have adapters")
+                    .harness(),
+                expected,
+                "{name}: the adapter run_spawn selects must be this type's harness"
+            );
+        }
+    }
+
+    /// A harness marion can name but not yet run reaches `run_spawn` as a refusal that says which
+    /// harness, not as a fallback onto whichever adapter happens to exist.
+    #[test]
+    fn an_agent_type_on_an_unimplemented_harness_is_refused_by_name() {
+        for h in [Harness::Gemini, Harness::OpenCode] {
+            let err: SpawnError = adapter_for(h)
+                .err()
+                .unwrap_or_else(|| panic!("{h} must not have an adapter yet"))
+                .into();
+            assert!(
+                matches!(
+                    err,
+                    SpawnError::Harness(marion_harness::HarnessError::Unimplemented(g)) if g == h
+                ),
+                "{h}: expected a typed Unimplemented refusal"
+            );
+            assert!(
+                err.to_string().contains(h.as_str()),
+                "{h}: the message must name the harness, got {err}"
+            );
+        }
     }
 
     #[test]
