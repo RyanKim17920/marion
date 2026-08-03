@@ -221,6 +221,24 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
     out
 }
 
+/// Every marion tool this stream shows the node calling, in **marion's** vocabulary.
+///
+/// The tool's name sits under `part.tool` — a third field in a third place — and every state is
+/// counted, including `error`: the question this answers is "did the node reach marion's bridge",
+/// and a call the bridge refused reached it just as surely as one it served.
+pub fn marion_tool_calls(s: &str, prefix: &str) -> Vec<String> {
+    json_frames(s)
+        .iter()
+        .filter(|v| v["type"].as_str() == Some("tool_use"))
+        .filter_map(|v| {
+            v["part"]["tool"]
+                .as_str()
+                .and_then(|n| n.strip_prefix(prefix))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 /// The values [`config_json`] writes into the MCP declaration.
 #[derive(Debug, Clone)]
 pub struct BridgeEnv {

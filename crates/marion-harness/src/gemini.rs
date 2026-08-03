@@ -203,6 +203,23 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
     out
 }
 
+/// Every marion tool this stream shows the node calling, in **marion's** vocabulary.
+///
+/// The frame is gemini's `tool_use`, whose `tool_name` carries the `mcp_<server>_` spelling S12
+/// captured — a different field *and* a different spelling from every other harness.
+pub fn marion_tool_calls(s: &str, prefix: &str) -> Vec<String> {
+    json_frames(s)
+        .iter()
+        .filter(|v| v["type"].as_str() == Some("tool_use"))
+        .filter_map(|v| {
+            v["tool_name"]
+                .as_str()
+                .and_then(|n| n.strip_prefix(prefix))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 /// The values [`settings_json`] writes into the MCP server declaration.
 ///
 /// The key names in the `env` block are the **bridge's** contract, not Claude Code's, which is why

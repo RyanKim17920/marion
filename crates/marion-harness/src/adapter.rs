@@ -169,6 +169,25 @@ pub trait HarnessAdapter {
     /// item* naming the flat string is what 0.146.0 rejects as `unsupported call` (§11 item 12's
     /// correction), not the identifier in a prompt.
     fn marion_tool_name(&self, tool: &str) -> String;
+
+    /// Which of marion's own verbs this harness's stream shows the node calling, in **marion's**
+    /// vocabulary (`spawn`, `report`, …) rather than in the harness's spelling.
+    ///
+    /// This is §6.1 step 8's *post-hoc* readiness assertion. A surface whose prompt rides argv has
+    /// no frame to withhold, so its MCP readiness cannot be gated before the turn; §6.1 says it is
+    /// *"asserted post hoc from the `mcp_tool_call` items in its JSONL stream"* instead. An empty
+    /// result therefore means the node never reached marion's bridge, which is the §12 failure the
+    /// gate exists for: a run that ends as plain text, exit 0, with no error anywhere.
+    ///
+    /// It cannot be one function in the supervisor. The four harnesses put the tool's name in four
+    /// different places — a `tool_use` block's `name`, an `mcp_tool_call` item's `server`/`tool`
+    /// **pair**, a top-level `tool_name`, a `part.tool` — and in three different spellings, so a
+    /// substring scan for any one of them is wrong on the other three (codex most of all, whose
+    /// stream never contains the string `mcp__marion__` at all).
+    ///
+    /// Every call is counted, whatever came of it: a call the bridge refused still proves the node
+    /// had marion's tools, which is the only thing being asserted.
+    fn marion_tool_calls(&self, stdout: &str) -> Vec<String>;
 }
 
 /// Object safety and the thread bounds, checked by the compiler. §5.2 requires both and says so of
@@ -189,13 +208,37 @@ impl ClaudeCodeAdapter {
         spec.config_dir.join("mcp.json")
     }
 
+    /// Whether this launch writes its prompt after the process is up.
+    ///
+    /// The neutral vocabulary already carries the distinction and says so:
+    /// [`LaunchSpec::prompt`] is *"empty for a surface whose prompt is written after launch rather
+    /// than compiled into argv"*. So this reads the spec rather than adding a mode flag beside it —
+    /// two ways to say the same thing could disagree.
+    fn prompt_is_written_after_launch(spec: &LaunchSpec) -> bool {
+        spec.prompt.is_empty()
+    }
+
     fn mcp_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<McpEnv, HarnessError> {
-        let ready_file = ctx.ready_file.clone().ok_or(HarnessError::MissingInput {
-            harness: Harness::ClaudeCode,
-            what: "a headless node's prompt is written after launch, so the bridge readiness \
-                   marker is required: without it the first turn goes out with tools: [] and \
-                   nothing anywhere reports an error",
-        })?;
+        // Required **exactly when the prompt is withheld**, which is what the message has always
+        // said. A prompt already in argv cannot be held back until the bridge answers `tools/list`,
+        // so there is nothing for a marker to gate; §6.1 step 8 asserts that node's readiness post
+        // hoc from its stream instead (`marion_tool_calls`). The child still gets a marker path so
+        // the bridge's env block keeps one set of key names across the four adapters — nothing
+        // waits on the file, and `run_spawn` never reads it.
+        let ready_file = match ctx.ready_file.clone() {
+            Some(r) => r,
+            None if !Self::prompt_is_written_after_launch(spec) => {
+                spec.config_dir.join("mcp-ready")
+            }
+            None => {
+                return Err(HarnessError::MissingInput {
+                    harness: Harness::ClaudeCode,
+                    what: "a headless node's prompt is written after launch, so the bridge \
+                           readiness marker is required: without it the first turn goes out with \
+                           tools: [] and nothing anywhere reports an error",
+                });
+            }
+        };
         Ok(McpEnv {
             bridge: ctx.bridge.clone(),
             repo: ctx.repo.clone(),
@@ -216,7 +259,30 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         ExecutionSurfaces::headless(TypedKind::StreamJson)
     }
 
+    /// **Two shapes, chosen by whether the prompt is already here.**
+    ///
+    /// A root is steered turn by turn: its prompt is a frame written after launch, so it compiles
+    /// to `--input-format stream-json` and a `--permission-prompt-tool` that has a control plane to
+    /// ask over. A child spawned by `run_spawn` has neither — stdin is closed and nobody services a
+    /// permission ask — so its prompt rides argv exactly as it does on the other three harnesses.
+    /// Until this branch existed, `claude` was the one built-in agent type that could be *named* by
+    /// `spawn` and never *run*: it refused at `config_files`, and had it not, the launch would have
+    /// gone out with no prompt at all.
     fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        if !Self::prompt_is_written_after_launch(spec) {
+            return Ok(claude_code::compile_child(&claude_code::ChildSpec {
+                cwd: spec.cwd.clone(),
+                model: spec.model.clone(),
+                prompt: spec.prompt.clone(),
+                allowed_tools: spec.allowed_tools.clone(),
+                mcp_config: Self::mcp_config_path(spec),
+                base_url: spec
+                    .base_url
+                    .as_deref()
+                    .map(claude_code::anthropic_base_url),
+                api_key: spec.api_key.clone(),
+            }));
+        }
         Ok(compile_headless(&HeadlessSpec {
             cwd: spec.cwd.clone(),
             model: spec.model.clone(),
@@ -253,6 +319,12 @@ impl HarnessAdapter for ClaudeCodeAdapter {
 
     fn marion_tool_name(&self, tool: &str) -> String {
         format!("mcp__marion__{tool}")
+    }
+
+    /// The prefix is derived from this adapter's own `marion_tool_name`, so the reader and the
+    /// compiler of the name can never disagree about the spelling.
+    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
+        claude_code::marion_tool_calls(stdout, &self.marion_tool_name(""))
     }
 }
 
@@ -323,6 +395,12 @@ impl HarnessAdapter for CodexAdapter {
         // Flat, exactly as on Claude Code — see the trait's doc comment. The namespaced form is
         // codex's internal wire dispatch shape, not something a child types into `tools.…`.
         format!("mcp__marion__{tool}")
+    }
+
+    /// **No prefix.** codex's stream names the server and the tool as two fields, so the flat
+    /// identifier above never appears in it — see [`codex::marion_tool_calls`].
+    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
+        codex::marion_tool_calls(stdout)
     }
 }
 
@@ -422,6 +500,10 @@ impl HarnessAdapter for GeminiAdapter {
         // S12 captured this spelling in a `tool_use` frame: `"tool_name":"mcp_marion_report"`.
         format!("mcp_{}_{tool}", gemini::MCP_ALIAS)
     }
+
+    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
+        gemini::marion_tool_calls(stdout, &self.marion_tool_name(""))
+    }
 }
 
 /// opencode 1.17.3, `run` surface (§6.4, fixture `tests/fixtures/s13/`).
@@ -514,6 +596,10 @@ impl HarnessAdapter for OpenCodeAdapter {
         // is the MCP wire layer, not the model-facing name, and conflating the two would put the
         // wrong identifier into a compiled prompt.
         format!("{}_{tool}", opencode::MCP_ALIAS)
+    }
+
+    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
+        opencode::marion_tool_calls(stdout, &self.marion_tool_name(""))
     }
 }
 
@@ -666,6 +752,52 @@ mod tests {
         let i = inv.args.iter().position(|a| a == "--mcp-config").unwrap();
         let written = ClaudeCodeAdapter.config_files(&spec, &ctx()).unwrap();
         assert_eq!(PathBuf::from(&inv.args[i + 1]), written[0].0);
+    }
+
+    /// A `claude` **child**: the prompt is already here, so the launch compiles it into argv and
+    /// stops requiring the marker whose only job was to gate a prompt that has not been written
+    /// yet. Before this branch, `claude` was the one built-in agent type `spawn` could name and
+    /// never run — `run_spawn` refused at `config_files`, and had it not, the launch would have
+    /// gone out with no prompt at all.
+    #[test]
+    fn a_claude_child_compiles_its_prompt_into_argv_and_needs_no_readiness_marker() {
+        let mut c = ctx();
+        c.ready_file = None;
+        let spec = LaunchSpec {
+            prompt: "do the task".into(),
+            api_key: Some("dummy".into()),
+            ..claude_spec()
+        };
+        let inv = ClaudeCodeAdapter.compile(&spec, &c).unwrap();
+        assert_eq!(inv.args[0], "-p");
+        assert_eq!(inv.args[1], "do the task");
+        assert!(!inv.args.iter().any(|a| a == "--input-format"));
+        // And its MCP declaration is written rather than refused.
+        let files = ClaudeCodeAdapter.config_files(&spec, &c).unwrap();
+        assert_eq!(files[0].0, PathBuf::from("/state/x/config/mcp.json"));
+        let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+        assert_eq!(
+            v["mcpServers"]["marion"]["env"]["MARION_AGENT_ID"],
+            serde_json::json!("019f-root")
+        );
+    }
+
+    /// The root's shape is untouched by that branch: an empty prompt still compiles the measured
+    /// `--input-format stream-json` launch, marker and all.
+    #[test]
+    fn an_empty_prompt_still_compiles_the_roots_measured_launch() {
+        let inv = ClaudeCodeAdapter.compile(&claude_spec(), &ctx()).unwrap();
+        assert_eq!(
+            inv,
+            compile_headless(&HeadlessSpec {
+                cwd: "/repo".into(),
+                model: Some("haiku".into()),
+                allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
+                mcp_config: "/state/x/config/mcp.json".into(),
+                base_url: Some("http://127.0.0.1:8099".into()),
+            })
+        );
+        assert!(inv.args.iter().any(|a| a == "--input-format"));
     }
 
     #[test]
@@ -1246,6 +1378,77 @@ mod tests {
             let i = inv.args.iter().position(|a| a == flag).unwrap();
             assert_eq!(inv.model.as_deref(), Some(inv.args[i + 1].as_str()));
         }
+    }
+
+    /// §6.1 step 8's post-hoc assertion, per harness: each adapter finds marion's verb in **its
+    /// own** stream and in nobody else's. The spelling and the *field* both differ, which is why a
+    /// single supervisor-side scan would be wrong on three of the four — codex most sharply, whose
+    /// stream never contains the string `mcp__marion__` at all.
+    #[test]
+    fn each_adapter_recognises_a_marion_call_in_its_own_stream_and_no_others() {
+        let codex_spawn = r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{}}}"#;
+        let claude_spawn = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__marion__spawn","input":{}}]}}"#;
+        let gemini_spawn = r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","parameters":{}}"#;
+        let opencode_spawn = r#"{"type":"tool_use","part":{"type":"tool","tool":"marion_spawn","state":{"status":"completed"}}}"#;
+        let streams = [
+            (Harness::ClaudeCode, claude_spawn),
+            (Harness::Codex, codex_spawn),
+            (Harness::Gemini, gemini_spawn),
+            (Harness::OpenCode, opencode_spawn),
+        ];
+        assert!(
+            !codex_spawn.contains("mcp__marion__"),
+            "the whole reason this is behind the seam"
+        );
+        for (owner, stream) in streams {
+            for h in Harness::ALL {
+                let got = adapter_for(h).unwrap().marion_tool_calls(stream);
+                assert_eq!(
+                    got,
+                    if h == owner {
+                        vec!["spawn".to_string()]
+                    } else {
+                        vec![]
+                    },
+                    "{h} read a {owner} stream as {got:?}"
+                );
+            }
+        }
+    }
+
+    /// The negative, which is the one that has to be right: a run that ended as plain text calls
+    /// nothing, on every harness. This is the state §6.1 says must be refused rather than reported
+    /// as a success.
+    #[test]
+    fn a_stream_with_no_marion_call_reports_none_on_every_harness() {
+        for h in Harness::ALL {
+            let a = adapter_for(h).unwrap();
+            assert!(a.marion_tool_calls("").is_empty(), "{h}: empty stream");
+            assert!(
+                a.marion_tool_calls(
+                    "Here is a session title.\n{\"type\":\"result\",\"subtype\":\"success\"}\n"
+                )
+                .is_empty(),
+                "{h}: plain text plus a terminal frame is not a bridge call"
+            );
+            // A call to somebody *else's* MCP server is not marion's bridge either.
+            assert!(
+                a.marion_tool_calls(
+                    r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"other","tool":"spawn"}}"#
+                )
+                .is_empty(),
+                "{h}: another server's call"
+            );
+        }
+        // And the measured report streams do count as having reached the bridge.
+        assert_eq!(
+            GeminiAdapter.marion_tool_calls(GEMINI_STREAM),
+            vec!["report".to_string()]
+        );
+        assert_eq!(
+            OpenCodeAdapter.marion_tool_calls(OPENCODE_STREAM),
+            vec!["report".to_string()]
+        );
     }
 
     #[test]

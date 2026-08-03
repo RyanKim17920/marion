@@ -71,6 +71,15 @@ unsafe extern "C" {
 
 const SIGKILL: i32 = 9;
 
+/// The credential a spawned child presents to marion's own endpoint.
+///
+/// Not a secret and not checked by anything: the endpoint is marion's canned provider or its proxy,
+/// which authenticates nothing. It exists because a harness can refuse to *start* over an absent
+/// credential — see the `api_key` field in [`run_spawn`]'s `LaunchSpec` — and because codex's
+/// generated config has always named a variable that had to hold something (`env_key =
+/// "MARION_DUMMY_KEY"`).
+pub const PLACEHOLDER_API_KEY: &str = "dummy";
+
 /// `nfds_t`: `unsigned long` on Linux, `unsigned int` everywhere else marion runs.
 #[cfg(target_os = "linux")]
 type NfdsT = u64;
@@ -478,12 +487,26 @@ pub fn run_spawn(
         // explicit model a MUST. See `resolve_model`.
         model: resolve_model(req, &agent_type),
         prompt: req.prompt.clone(),
-        allowed_tools: vec![],
+        // The **permission** axis (§3.1), in marion's vocabulary translated by the adapter that is
+        // about to run. A child's one load-bearing call is `report`; on Claude Code an unlisted
+        // tool is auto-denied *in process*, and on a `LaunchOnly` child there is no control plane
+        // for the denial to be asked about — so an empty list here is a run that completes having
+        // reported nothing, with no error anywhere. The three harnesses whose adapters read no
+        // permission list are unaffected: they ignore it, exactly as they did when it was empty.
+        allowed_tools: vec![adapter.marion_tool_name("report")],
         mcp: McpDeclaration::Marion,
         base_url: Some(env.base_url.clone()),
-        // The canned provider authenticates nothing; §6.4's credential-seeding MUSTs are what a
-        // real-endpoint child would need instead, and M1 deliberately does not seed one.
-        api_key: None,
+        // **Present, and deliberately a placeholder.** The endpoint is marion's own, so this
+        // authenticates nothing — but a credential *slot* that is empty is not the same as one that
+        // is unused, and two of the four harnesses refuse outright when it is: gemini's adapter
+        // selects `security.auth.selectedType = "gemini-api-key"` (without which S12 measured
+        // `Invalid auth method selected.`, code 41), and 0.53.0 then exits **41** with *"you must
+        // specify the GEMINI_API_KEY environment variable"* when the variable it named is absent.
+        // A hard `None` here made that harness unlaunchable through `spawn` no matter what the
+        // adapter compiled. codex has always been seeded the same way — its generated config names
+        // `env_key = "MARION_DUMMY_KEY"` and the run below pushes it — so this generalises an
+        // existing decision rather than making a new one.
+        api_key: Some(PLACEHOLDER_API_KEY.to_string()),
         config_dir: ch.clone(),
         extra: Extras::default(),
     };
@@ -502,6 +525,14 @@ pub fn run_spawn(
         bridge_args: vec!["mcp".into()],
     };
     for (path, contents) in adapter.config_files(&launch, &ctx)? {
+        // The adapter decides *what and where*; the caller writes. "Where" is not always directly
+        // under `config_dir`: opencode's document lands at
+        // `<config_dir>/config/opencode/opencode.json`, because `$XDG_CONFIG_HOME` is a directory
+        // the harness owns the layout of. Writing without creating that layout failed the whole
+        // spawn with a bare `No such file or directory` naming nothing.
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         std::fs::write(path, contents)?;
     }
     let inv = adapter.compile(&launch, &ctx)?;
@@ -509,7 +540,7 @@ pub fn run_spawn(
         SysCommand::new(&inv.program)
             .args(&inv.args)
             .envs(inv.env.iter().cloned())
-            .env("MARION_DUMMY_KEY", "dummy")
+            .env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY)
             .current_dir(&inv.cwd),
         StdDuration::from_secs(req.timeout_secs),
     )?;
@@ -1058,17 +1089,20 @@ mod tests {
     /// Codex `config.toml`, exec'd `codex`, and returned a contract stamped `"claude-code"` — an
     /// audit record (§6.7) describing a run that never happened.
     ///
-    /// Three assertions, and each one fails against the constant:
-    /// 1. the call **refuses**, with a typed error naming `claude-code`. An `Ok` here would mean a
-    ///    child process was launched, and under the constant that child was `codex`;
-    /// 2. no `config.toml` exists anywhere under the node's state — the Codex adapter's one output;
-    /// 3. the state that *does* exist is the Claude Code adapter's refusal, not a Codex launch.
+    /// Two assertions, and each one fails against the constant:
+    /// 1. no `config.toml` exists anywhere under the node's state — the Codex adapter's one output;
+    /// 2. whatever the run produced, it is **the Claude Code adapter's**: its MCP declaration on
+    ///    disk, and `claude-code` in the contract.
     ///
-    /// The refusal itself is the right outcome for M1: `run_spawn` builds a Codex-shaped
-    /// `SpawnCtx` with `ready_file: None`, and §6.1 step 8 makes that marker mandatory for a
-    /// headless node — without it the first turn goes out with `tools: []` and nothing reports an
-    /// error. Loud is the point; which loud error it is will change when the headless child path
-    /// lands, and this test asserts the *harness* it names, not the branch it took.
+    /// **Re-pointed, not weakened.** This test used to assert a third thing first — that the call
+    /// *refused*, with a typed `MissingInput` naming `claude-code` — because `run_spawn` built a
+    /// `SpawnCtx` with `ready_file: None` and §6.1 step 8 made that marker mandatory. Its own note
+    /// said *"which loud error it is will change when the headless child path lands, and this test
+    /// asserts the harness it names, not the branch it took"*. That path has landed: a child's
+    /// prompt rides argv, so there is no frame to withhold and no marker to gate it with, and the
+    /// launch now happens. What the test defends is unchanged and is asserted here directly — a
+    /// `claude` agent type must never write a Codex config and never be recorded as anything but
+    /// claude-code.
     #[test]
     fn a_claude_agent_type_never_writes_a_codex_config_or_launches_codex() {
         let root = temp("dispatch");
@@ -1086,30 +1120,13 @@ mod tests {
             prompt: "do the task".into(),
             acceptance_criteria: vec![],
             writable_scope: vec!["src/**".into()],
-            // Short, so that a regression re-running `codex` for real is a fast failure.
+            // Short: the base URL below answers nothing, so this bounds the launch to a second —
+            // and a regression re-running `codex` for real is a fast failure rather than a wait.
             timeout_secs: 1,
             model: None,
         };
 
         let result = run_spawn(&env, &req, &TaskId("dispatch".into()), "root");
-
-        let err = match result {
-            Err(e) => e,
-            Ok(c) => panic!(
-                "a claude agent type launched a child; contract recorded harness {}",
-                c.child.harness
-            ),
-        };
-        assert!(
-            matches!(
-                &err,
-                SpawnError::Harness(marion_harness::HarnessError::MissingInput {
-                    harness: Harness::ClaudeCode,
-                    ..
-                })
-            ),
-            "the refusal must be typed and must name the harness that was asked for, got: {err}"
-        );
 
         let mut written = Vec::new();
         files_under(&state, &mut written);
@@ -1119,6 +1136,30 @@ mod tests {
                 .any(|p| p.file_name().is_some_and(|n| n == "config.toml")),
             "a Codex config.toml was written for a claude agent type: {written:?}"
         );
+        assert!(
+            written
+                .iter()
+                .any(|p| p.file_name().is_some_and(|n| n == "mcp.json")),
+            "the Claude Code adapter's own output must be what is on disk: {written:?}"
+        );
+        match result {
+            Ok(c) => assert_eq!(
+                c.child.harness,
+                Harness::ClaudeCode,
+                "the contract must name the harness that ran"
+            ),
+            Err(e) => assert!(
+                matches!(
+                    &e,
+                    SpawnError::Harness(marion_harness::HarnessError::MissingInput {
+                        harness: Harness::ClaudeCode,
+                        ..
+                    })
+                ),
+                "a refusal is still an acceptable outcome — but a typed one naming the harness \
+                 that was asked for, never a fallback onto another. Got: {e}"
+            ),
+        }
     }
 
     /// The other half of item 1: the Codex path still resolves to the Codex adapter, so the

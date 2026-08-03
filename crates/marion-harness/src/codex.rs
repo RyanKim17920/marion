@@ -97,6 +97,26 @@ pub fn parse_stream(s: &str) -> StreamOutcome {
     out
 }
 
+/// Every marion tool this stream shows the node calling, in **marion's** vocabulary.
+///
+/// Codex is the one harness that does **not** name marion's verbs by a prefixed identifier in its
+/// stream: an `mcp_tool_call` item carries `server` and `tool` as separate fields, which is why
+/// this reader takes no prefix and a substring scan for `mcp__marion__` would find nothing here.
+/// That difference is exactly why the read is behind the adapter seam rather than done once in the
+/// supervisor.
+pub fn marion_tool_calls(s: &str) -> Vec<String> {
+    json_frames(s)
+        .iter()
+        .filter_map(|v| {
+            let item = &v["item"];
+            if item["type"] != "mcp_tool_call" || item["server"] != "marion" {
+                return None;
+            }
+            item["tool"].as_str().map(str::to_string)
+        })
+        .collect()
+}
+
 /// The `$CODEX_HOME/config.toml` marion writes for a child.
 ///
 /// **`default_tools_approval_mode = "approve"` is load-bearing**: without it every marion tool

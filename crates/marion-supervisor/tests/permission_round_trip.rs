@@ -130,6 +130,10 @@ fn prepare(name: &str, target: Target) -> Fixture {
 
     let mut node = root::prepare(&RootSpec {
         agent_type: "claude".into(),
+        // The turn every probe in this file drives. It is compiled into the node rather than
+        // handed to `launch`, so the prompt that was prepared and the prompt that is written are
+        // one string.
+        prompt: "Call the report tool.".into(),
         repo: repo.canonicalize().unwrap(),
         state,
         base_url: server.base_url(),
@@ -266,7 +270,13 @@ fn drive(fx: &Fixture, answer: Answer) -> Capture {
     };
 
     assert!(
-        wait_for_ready(&fx.node.ready_file, MCP_READY),
+        wait_for_ready(
+            fx.node
+                .ready_file
+                .as_ref()
+                .expect("a duplex root has a readiness marker to gate on"),
+            MCP_READY
+        ),
         "the bridge never answered tools/list, so mcp__marion__report was never offered"
     );
 
@@ -668,8 +678,7 @@ fn the_supervisors_blocked_bound_expires_into_a_deny_and_the_root_survives_it() 
     let fx = prepare("bound", Target::MarionReport);
 
     let started = Instant::now();
-    let outcome = root::launch(&fx.node, "Call the report tool.", BLOCKED_BOUND, MCP_READY)
-        .expect("the root runs");
+    let outcome = root::launch(&fx.node, BLOCKED_BOUND, MCP_READY).expect("the root runs");
     let elapsed = started.elapsed();
 
     assert_eq!(

@@ -30,8 +30,11 @@ fn usage() -> ! {
          \n\
          agent types: {}\n\
          \n\
-         --timeout is the root's node-level bound. It is a per-episode `Blocked`-only budget, not\n\
-         a wall-clock ceiling: marion offers a root none.",
+         --timeout is the root's node-level bound, and what it bounds follows the harness's\n\
+         surfaces: on a typed control plane (claude) it is §9's per-episode `Blocked`-only budget\n\
+         and not a wall-clock ceiling, since marion offers a root none; on a LaunchOnly surface\n\
+         (codex, gemini, opencode) there is no `Blocked` state to budget and it is the wall-clock\n\
+         bound instead — which is not optional, because opencode never exits on a provider hang.",
         builtin_names().join(", ")
     );
     std::process::exit(2)
@@ -151,14 +154,15 @@ fn main() -> ExitCode {
 
     let spec = root::RootSpec {
         agent_type: args.agent_type.clone(),
+        prompt: args.prompt.clone(),
         repo,
         state,
         base_url,
         bridge,
         // The same precedence a child's `spawn` gets (§3.1): the flag, else the agent type's own
-        // `model` key. `claude` states none, so this is a no-op today and stays one until a root
-        // type does — at which point the root would otherwise have been the one path that ignored
-        // its own type's model.
+        // `model` key. `claude` and `codex` state none and resolve to `None`, exactly as before;
+        // `gemini` and `opencode` state one, which is what makes them launchable as roots at all —
+        // both adapters refuse to compile without an explicit model (§6.4).
         model: args.model.or_else(|| agent_type.model.clone()),
     };
     let node = match root::prepare(&spec) {
@@ -175,7 +179,7 @@ fn main() -> ExitCode {
         node.agent_dir.path().display()
     );
 
-    match root::launch(&node, &args.prompt, blocked_bound, MCP_READY_TIMEOUT) {
+    match root::launch(&node, blocked_bound, MCP_READY_TIMEOUT) {
         Ok(outcome) => {
             for frame in &outcome.transcript {
                 println!("{frame}");
@@ -185,6 +189,14 @@ fn main() -> ExitCode {
             }
             for tool in &outcome.denied_permissions {
                 eprintln!("marion: denied {tool}: the root's Blocked bound expired unanswered");
+            }
+            if outcome.timed_out {
+                eprintln!(
+                    "marion: the root exceeded its {} s wall-clock bound and its process group \
+                     was killed",
+                    blocked_bound.as_secs()
+                );
+                return ExitCode::FAILURE;
             }
             match outcome.exit_code {
                 Some(0) => ExitCode::SUCCESS,

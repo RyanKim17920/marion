@@ -87,6 +87,84 @@ pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
     }
 }
 
+/// What marion needs to compile a **child** invocation.
+///
+/// The root and a child sit at different points of §3.4's cross-product, and the argv says so.
+/// A root is `--input-format stream-json`: its prompt is a frame marion writes *after* launch, so
+/// the launch has to withhold the first turn until the bridge is up (§6.1 step 8) and a
+/// `--permission-prompt-tool` has a control plane to ask over. A child spawned by `run_spawn` has
+/// neither — `LaunchOnly`, stdin closed, nobody servicing a permission ask — so its prompt rides
+/// argv exactly as it does on the other three harnesses, and a permission prompt with no answerer
+/// would be a hang rather than a question. The two shapes are therefore separate functions rather
+/// than one with flags: every flag below differs *because* the surface differs.
+#[derive(Debug, Clone)]
+pub struct ChildSpec {
+    pub cwd: PathBuf,
+    pub model: Option<String>,
+    /// Compiled into argv, not written after launch.
+    pub prompt: String,
+    /// The permission axis (§3.1). marion's own tools go here or the child's `report` call is
+    /// auto-denied in-process, which on this surface surfaces as *nothing at all*: no
+    /// `can_use_tool` frame can be answered, so the run simply completes having reported nothing.
+    pub allowed_tools: Vec<String>,
+    pub mcp_config: PathBuf,
+    pub base_url: Option<String>,
+    /// Presented as `ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_API_KEY` blanked beside it — §9's rule
+    /// for the root, applied here so a child talking to marion's endpoint presents *marion's*
+    /// placeholder rather than whatever subscription credential the environment happened to carry.
+    pub api_key: Option<String>,
+}
+
+pub fn compile_child(spec: &ChildSpec) -> Invocation {
+    let mut args: Vec<String> = vec![
+        // `--print` takes no value: the prompt is positional beside it, as on `gemini -p` it is not.
+        "-p".into(),
+        spec.prompt.clone(),
+        "--output-format".into(),
+        "stream-json".into(),
+        // Same mandate as the root's: 2.1.220 exits 1 without it under `-p --output-format
+        // stream-json`.
+        "--verbose".into(),
+        // Availability axis: no built-in tools. Does NOT gate MCP tools.
+        "--tools".into(),
+        String::new(),
+        // Permission axis. See `ChildSpec::allowed_tools`.
+        "--allowedTools".into(),
+        spec.allowed_tools.join(","),
+        // Deliberately **no `--permission-prompt-tool`**: it exists to route a non-allowlisted call
+        // to marion over the typed control plane, and this surface has none. Setting it here would
+        // trade a fast auto-denial for a question nobody can answer.
+        "--strict-mcp-config".into(),
+        "--mcp-config".into(),
+        spec.mcp_config.to_string_lossy().into_owned(),
+        "--setting-sources".into(),
+        String::new(),
+    ];
+    if let Some(m) = &spec.model {
+        args.push("--model".into());
+        args.push(m.clone());
+    }
+
+    let mut env = Vec::new();
+    if let Some(u) = &spec.base_url {
+        env.push(("ANTHROPIC_BASE_URL".to_string(), u.clone()));
+    }
+    if let Some(k) = &spec.api_key {
+        env.push(("ANTHROPIC_AUTH_TOKEN".to_string(), k.clone()));
+        // A non-empty key silently wins over the token (§6.4), so it is blanked rather than left
+        // inherited — otherwise a child would present the operator's real key to marion's endpoint.
+        env.push(("ANTHROPIC_API_KEY".to_string(), String::new()));
+    }
+
+    Invocation {
+        program: "claude".into(),
+        args,
+        env,
+        cwd: spec.cwd.clone(),
+        model: spec.model.clone(),
+    }
+}
+
 /// Parse a `--output-format stream-json` stream.
 ///
 /// The frame shapes are the ones `tests/fixtures/s1/` and `tests/fixtures/s9/` recorded off a real
@@ -127,6 +205,27 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
                 }
             }
             _ => {}
+        }
+    }
+    out
+}
+
+/// Every marion tool this stream shows the node calling, in **marion's** vocabulary.
+///
+/// `prefix` is this harness's own namespace for marion's verbs — the adapter derives it from its
+/// `marion_tool_name`, so there is one spelling, not two.
+pub fn marion_tool_calls(s: &str, prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for v in json_frames(s) {
+        if v["type"].as_str() != Some("assistant") {
+            continue;
+        }
+        for block in v["message"]["content"].as_array().into_iter().flatten() {
+            if block["type"].as_str() == Some("tool_use")
+                && let Some(tool) = block["name"].as_str().and_then(|n| n.strip_prefix(prefix))
+            {
+                out.push(tool.to_string());
+            }
         }
     }
     out
@@ -262,5 +361,86 @@ mod tests {
                 .iter()
                 .all(|a| !a.contains('\'') && !a.contains('"'))
         );
+    }
+
+    fn child_spec() -> ChildSpec {
+        ChildSpec {
+            cwd: "/tmp/wt".into(),
+            model: None,
+            prompt: "do the task".into(),
+            allowed_tools: vec!["mcp__marion__report".into()],
+            mcp_config: "/tmp/mcp.json".into(),
+            base_url: Some("http://127.0.0.1:8099".into()),
+            api_key: Some("dummy".into()),
+        }
+    }
+
+    #[test]
+    fn a_childs_prompt_rides_argv_rather_than_a_frame_written_after_launch() {
+        let inv = compile_child(&child_spec());
+        let i = inv.args.iter().position(|a| a == "-p").unwrap();
+        assert_eq!(inv.args[i + 1], "do the task");
+        assert!(
+            !inv.args.iter().any(|a| a == "--input-format"),
+            "a LaunchOnly child has no stdin to write a frame on: stdin is closed"
+        );
+    }
+
+    /// The permission axis is the one that decides whether the child's single load-bearing call
+    /// happens at all, and its failure is silent: an unlisted tool is auto-denied in process.
+    #[test]
+    fn a_childs_marion_tools_are_allowlisted_and_no_permission_prompt_is_offered() {
+        let inv = compile_child(&child_spec());
+        let i = inv.args.iter().position(|a| a == "--allowedTools").unwrap();
+        assert_eq!(inv.args[i + 1], "mcp__marion__report");
+        assert!(
+            !inv.args.iter().any(|a| a == "--permission-prompt-tool"),
+            "it routes a denial to marion over a control plane this surface does not have, so \
+             setting it trades a fast auto-denial for a question nobody answers"
+        );
+    }
+
+    #[test]
+    fn a_childs_credential_is_the_token_and_the_key_beside_it_is_blanked() {
+        let inv = compile_child(&child_spec());
+        assert_eq!(
+            inv.env,
+            vec![
+                (
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "http://127.0.0.1:8099".to_string()
+                ),
+                ("ANTHROPIC_AUTH_TOKEN".to_string(), "dummy".to_string()),
+                // Non-empty, it would silently win — and would be the operator's own key.
+                ("ANTHROPIC_API_KEY".to_string(), String::new()),
+            ]
+        );
+    }
+
+    /// The three flags a child shares with the root, each for the same measured reason.
+    #[test]
+    fn a_child_keeps_the_flags_that_have_nothing_to_do_with_the_surface() {
+        let inv = compile_child(&child_spec());
+        for flag in [
+            "--verbose",           // 2.1.220 exits 1 without it under -p stream-json
+            "--strict-mcp-config", // never the user's servers
+            "--setting-sources",   // never the user's settings
+        ] {
+            assert!(inv.args.iter().any(|a| a == flag), "{flag}");
+        }
+        let i = inv.args.iter().position(|a| a == "--mcp-config").unwrap();
+        assert_eq!(inv.args[i + 1], "/tmp/mcp.json");
+    }
+
+    #[test]
+    fn a_child_records_the_model_it_was_given_and_nothing_when_it_was_given_none() {
+        assert_eq!(compile_child(&child_spec()).model, None);
+        let inv = compile_child(&ChildSpec {
+            model: Some("haiku".into()),
+            ..child_spec()
+        });
+        assert_eq!(inv.model.as_deref(), Some("haiku"));
+        let i = inv.args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(inv.args[i + 1], "haiku");
     }
 }
