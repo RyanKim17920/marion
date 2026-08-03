@@ -11,18 +11,24 @@
 pub mod adapter;
 pub mod claude_code;
 pub mod codex;
+pub mod gemini;
 pub mod invocation;
+pub mod opencode;
 pub mod surfaces;
 
 pub use adapter::{
-    ClaudeCodeAdapter, CodexAdapter, Extras, HarnessAdapter, HarnessError, LaunchSpec,
-    McpDeclaration, SpawnCtx, adapter_for,
+    ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter, HarnessError,
+    LaunchSpec, McpDeclaration, OpenCodeAdapter, SpawnCtx, adapter_for,
 };
 pub use claude_code::{
     AGENT_ID_ENV, HeadlessSpec, McpEnv, READY_FILE_ENV, anthropic_base_url, compile_headless,
     mcp_config_json,
 };
 pub use codex::{ExecSpec, compile_exec, config_toml};
+// `gemini` and `opencode` are addressed by module path rather than flattened here. Both define a
+// `BridgeEnv` and an `MCP_ALIAS`, and both spell marion's tool names differently — a flattened
+// `BridgeEnv` would make the harness a caller is configuring invisible at the use site, which is
+// the exact confusion §3.1's per-harness-spelling rule exists to prevent.
 pub use invocation::Invocation;
 pub use surfaces::{
     ControlTransport, DisplaySurface, ExecutionSurfaces, ObservationSource, TypedKind,

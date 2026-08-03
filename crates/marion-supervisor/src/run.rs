@@ -450,6 +450,9 @@ pub fn run_spawn(
         allowed_tools: vec![],
         mcp: McpDeclaration::Marion,
         base_url: Some(env.base_url.clone()),
+        // The canned provider authenticates nothing; §6.4's credential-seeding MUSTs are what a
+        // real-endpoint child would need instead, and M1 deliberately does not seed one.
+        api_key: None,
         config_dir: ch.clone(),
         extra: Extras::default(),
     };
@@ -1081,12 +1084,14 @@ mod tests {
             ("claude", Harness::ClaudeCode),
             ("codex", Harness::Codex),
             ("codex-impl", Harness::Codex),
+            ("gemini", Harness::Gemini),
+            ("opencode", Harness::OpenCode),
         ] {
             let t = builtin(name).expect("built-in resolves");
             assert_eq!(t.harness, expected, "{name}");
             assert_eq!(
                 adapter_for(t.harness)
-                    .expect("both M1 harnesses have adapters")
+                    .expect("every built-in's harness has an adapter")
                     .harness(),
                 expected,
                 "{name}: the adapter run_spawn selects must be this type's harness"
@@ -1094,15 +1099,17 @@ mod tests {
         }
     }
 
-    /// A harness marion can name but not yet run reaches `run_spawn` as a refusal that says which
-    /// harness, not as a fallback onto whichever adapter happens to exist.
+    /// **Re-pointed, not weakened.** This test used to reach the refusal through `adapter_for`,
+    /// because Gemini and OpenCode had no adapter. They do now, so that route is gone — and
+    /// asserting it against some other harness would have been vacuous, since the registry is
+    /// exhaustive over `Harness::ALL` (`marion-harness::adapter::…resolves_to_an_adapter`). What
+    /// the test was actually defending is the *conversion*: whatever produces an `Unimplemented`,
+    /// `run_spawn`'s `?` must surface it as a typed `SpawnError` naming the harness, never as a
+    /// fallback or a flattened string. That is asserted here directly, for every harness.
     #[test]
-    fn an_agent_type_on_an_unimplemented_harness_is_refused_by_name() {
-        for h in [Harness::Gemini, Harness::OpenCode] {
-            let err: SpawnError = adapter_for(h)
-                .err()
-                .unwrap_or_else(|| panic!("{h} must not have an adapter yet"))
-                .into();
+    fn an_unimplemented_harness_reaches_run_spawn_as_a_refusal_that_names_it() {
+        for h in Harness::ALL {
+            let err: SpawnError = marion_harness::HarnessError::Unimplemented(h).into();
             assert!(
                 matches!(
                     err,
@@ -1113,6 +1120,50 @@ mod tests {
             assert!(
                 err.to_string().contains(h.as_str()),
                 "{h}: the message must name the harness, got {err}"
+            );
+        }
+    }
+
+    /// The honest state of the two new harnesses under `run_spawn` **today**: their adapters exist
+    /// and are selected, but `run_spawn` builds its `LaunchSpec` with `model: None`, and §6.4 makes
+    /// an explicit model a MUST on both (gemini's `auto` router hangs; opencode has no
+    /// `OPENCODE_MODEL` env var). So a spawn of either refuses — loudly, naming its own harness,
+    /// never falling through to codex. Threading a model through `SpawnRequest` is the next phase's
+    /// change; this test exists so that gap is recorded rather than discovered.
+    #[test]
+    fn the_new_harnesses_are_selected_and_then_refuse_for_want_of_a_model() {
+        for (name, h) in [("gemini", Harness::Gemini), ("opencode", Harness::OpenCode)] {
+            let t = builtin(name).unwrap();
+            let adapter = adapter_for(t.harness).unwrap();
+            let launch = LaunchSpec {
+                cwd: "/wt".into(),
+                model: None, // exactly what `run_spawn` passes today
+                prompt: "do the task".into(),
+                allowed_tools: vec![],
+                mcp: McpDeclaration::Marion,
+                base_url: Some("http://127.0.0.1:8099/v1".into()),
+                api_key: None,
+                config_dir: "/state/x/config".into(),
+                extra: Extras::default(),
+            };
+            let ctx = SpawnCtx {
+                agent_id: AgentId("019f-child".into()),
+                ready_file: None,
+                repo: "/repo".into(),
+                state_dir: "/state".into(),
+                bridge: "/bin/marion-supervisor".into(),
+                bridge_args: vec!["mcp".into()],
+            };
+            let err: SpawnError = adapter.compile(&launch, &ctx).unwrap_err().into();
+            assert!(
+                matches!(
+                    err,
+                    SpawnError::Harness(marion_harness::HarnessError::MissingInput {
+                        harness: g,
+                        ..
+                    }) if g == h
+                ),
+                "{name}: expected a typed refusal naming {h}, got {err}"
             );
         }
     }

@@ -89,13 +89,27 @@ pub fn builtin(name: &str) -> Option<AgentType> {
                 Harness::Codex,
             )
         }),
+        // The two harnesses added with M-generality's adapters. Named for their harness because
+        // that is all they are: the same defaults, dispatched elsewhere. Without a built-in name a
+        // harness with a working adapter is still unreachable from `spawn`, which resolves an
+        // agent *type*, never a harness.
+        "gemini" => Some(AgentType::defaults(
+            "gemini",
+            "Implements a well-specified change on the Gemini CLI.",
+            Harness::Gemini,
+        )),
+        "opencode" => Some(AgentType::defaults(
+            "opencode",
+            "Implements a well-specified change on opencode.",
+            Harness::OpenCode,
+        )),
         _ => None,
     }
 }
 
 /// Every built-in name, aliases included — what `marion doctor` would list.
 pub fn builtin_names() -> &'static [&'static str] {
-    &["claude", "codex", "codex-impl"]
+    &["claude", "codex", "codex-impl", "gemini", "opencode"]
 }
 
 /// §6.1 step 2's refusals. Both gates **refuse rather than clamp or queue**: a clamped depth would
@@ -174,6 +188,28 @@ mod tests {
             builtin("codex"),
             Some(t),
             "the alias must not become a second definition"
+        );
+    }
+
+    /// Each built-in names the harness its adapter drives. `marion_harness::adapter_for` is what
+    /// turns that into behaviour, and `marion-supervisor::run`'s dispatch test asserts the pairing
+    /// end to end; here it is just the data.
+    #[test]
+    fn each_builtin_names_its_own_harness_and_no_name_is_a_second_definition() {
+        for (name, h) in [
+            ("claude", Harness::ClaudeCode),
+            ("codex", Harness::Codex),
+            ("codex-impl", Harness::Codex),
+            ("gemini", Harness::Gemini),
+            ("opencode", Harness::OpenCode),
+        ] {
+            assert_eq!(builtin(name).unwrap().harness, h, "{name}");
+            assert!(builtin_names().contains(&name), "{name} must be listed");
+        }
+        assert_eq!(
+            builtin_names().len(),
+            5,
+            "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
 

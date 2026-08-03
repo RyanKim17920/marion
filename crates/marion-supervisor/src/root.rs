@@ -226,6 +226,9 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         allowed_tools: ROOT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
         mcp: McpDeclaration::Marion,
         base_url: Some(spec.base_url.clone()),
+        // The root's credential is the per-run `ANTHROPIC_AUTH_TOKEN` pushed onto the invocation
+        // below, not a provider API key compiled into argv or a config file.
+        api_key: None,
         config_dir: agent_dir.config_dir(),
         extra: Extras::default(),
     };

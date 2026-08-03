@@ -18,7 +18,9 @@ use marion_core::harness::Harness;
 
 use crate::claude_code::{self, HeadlessSpec, McpEnv, compile_headless};
 use crate::codex::{self, ExecSpec, compile_exec};
+use crate::gemini;
 use crate::invocation::Invocation;
+use crate::opencode;
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
 /// Whether marion's control MCP is injected into this node, and how much of it.
@@ -62,9 +64,17 @@ pub struct LaunchSpec {
     /// adapter derives that itself ([`claude_code::anthropic_base_url`]), so no caller has to know
     /// which harness wants which spelling.
     pub base_url: Option<String>,
+    /// The provider credential, where the node is meant to present one.
+    ///
+    /// Neutral because two harnesses need it in incompatible places and neither can be patched up
+    /// afterwards: gemini takes it as `GEMINI_API_KEY` in the child's env, while opencode wants it
+    /// **inside the generated config** at `provider.<id>.options.apiKey` — so the root's
+    /// post-`compile` push of `ANTHROPIC_AUTH_TOKEN` (`marion-supervisor::root`) is not a pattern
+    /// that generalises. `None` on the canned-provider path, which authenticates nothing.
+    pub api_key: Option<String>,
     /// The node's isolated harness config dir (§6.4): `$CODEX_HOME` for Codex, the directory
-    /// marion's `--mcp-config` document is written into for Claude Code. Every path in
-    /// [`HarnessAdapter::config_files`] is under it.
+    /// marion's `--mcp-config` document is written into for Claude Code, the sandbox `HOME` and
+    /// XDG root for opencode. Every path in [`HarnessAdapter::config_files`] is under it.
     pub config_dir: PathBuf,
     pub extra: Extras,
 }
@@ -85,6 +95,10 @@ pub struct SpawnCtx {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HarnessError {
+    /// **No [`Harness`] variant returns this today** — every harness marion can name now has an
+    /// adapter. It stays because §3.1's enum is open to a fifth harness, and the alternative to a
+    /// typed refusal is the fallback this seam exists to end: naming a harness and running another.
+    /// Deleting it would mean whoever adds that harness has to re-derive the refusal.
     #[error("no adapter for harness {0} yet")]
     Unimplemented(Harness),
     #[error("{harness}: {what}")]
@@ -279,6 +293,179 @@ impl HarnessAdapter for CodexAdapter {
     }
 }
 
+/// Gemini CLI 0.53.0, headless `-p` (§6.4, fixture `tests/fixtures/s12/`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GeminiAdapter;
+
+impl GeminiAdapter {
+    /// The settings document `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names. Derived here, so `compile`
+    /// and `config_files` cannot disagree about where it is — the same reason the Claude Code
+    /// adapter derives its `--mcp-config` path.
+    ///
+    /// It sits *beside* `$GEMINI_CLI_HOME`, not inside `<home>/.gemini/`: the whole point of the
+    /// system-settings override is that marion writes nothing under the sandbox home the CLI owns.
+    fn settings_path(spec: &LaunchSpec) -> PathBuf {
+        spec.config_dir.join("marion-settings.json")
+    }
+}
+
+impl HarnessAdapter for GeminiAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Gemini
+    }
+
+    /// The same point of §3.4's cross-product as codex: the prompt rides argv and the only reading
+    /// is its `stream-json` NDJSON.
+    fn surfaces(&self) -> ExecutionSurfaces {
+        ExecutionSurfaces::launch_only_with_protocol_events()
+    }
+
+    fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        // Refused rather than defaulted. A pinned id would be a guess marion has no basis for, and
+        // S12 measured 0.53.0 rewriting even an explicit `-m gemini-2.5-flash` to `gemini-3.5-flash`
+        // in the request path — so a "safe" default is not even reliably the model that runs. The
+        // failure it prevents is the expensive one: with model `auto` the CLI issues a classifier
+        // call to gemini-3.1-flash-lite over non-streaming `:generateContent` and hung on retry 5.
+        let model = spec.model.clone().ok_or(HarnessError::MissingInput {
+            harness: Harness::Gemini,
+            what: "an explicit -m is mandatory: with the default model `auto` the CLI first makes \
+                   a classifier call that retried 5x and hung, and marion will not guess a model",
+        })?;
+        if let Some(u) = &spec.base_url
+            && !gemini::base_url_is_acceptable(u)
+        {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Gemini,
+                what: "GOOGLE_GEMINI_BASE_URL must be https unless the host is loopback; a \
+                       non-loopback plain-http endpoint is refused by the CLI",
+            });
+        }
+        Ok(gemini::compile_prompt(&gemini::PromptSpec {
+            cwd: spec.cwd.clone(),
+            model,
+            prompt: spec.prompt.clone(),
+            cli_home: spec.config_dir.clone(),
+            settings: Self::settings_path(spec),
+            base_url: spec.base_url.clone(),
+            api_key: spec.api_key.clone(),
+        }))
+    }
+
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        // Unlike Claude Code, the file is written even with no MCP server: it also carries the
+        // auth selection, without which the run dies with `Invalid auth method selected.`
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| gemini::BridgeEnv {
+            bridge: ctx.bridge.clone(),
+            args: ctx.bridge_args.clone(),
+            repo: ctx.repo.clone(),
+            state: ctx.state_dir.clone(),
+            base_url: spec.base_url.clone().unwrap_or_default(),
+            agent_id: ctx.agent_id.clone(),
+            ready_file: ctx.ready_file.clone(),
+        });
+        let json = gemini::settings_json(bridge.as_ref());
+        Ok(vec![(
+            Self::settings_path(spec),
+            serde_json::to_string_pretty(&json).expect("a Value always serialises"),
+        )])
+    }
+
+    fn marion_tool_name(&self, tool: &str) -> String {
+        // `mcp_<server>_<tool>`, single underscores — **not** Claude Code's `mcp__marion__report`.
+        // §3.1 makes the mapping part of the adapter contract precisely because it differs, and
+        // S12 captured this spelling in a `tool_use` frame: `"tool_name":"mcp_marion_report"`.
+        format!("mcp_{}_{tool}", gemini::MCP_ALIAS)
+    }
+}
+
+/// opencode 1.17.3, `run` surface (§6.4, fixture `tests/fixtures/s13/`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenCodeAdapter;
+
+impl OpenCodeAdapter {
+    /// The `provider/model` pair, which both argv and the generated config name. Parsed once so
+    /// they cannot disagree.
+    fn model_ref(spec: &LaunchSpec) -> Result<opencode::ModelRef, HarnessError> {
+        let m = spec.model.as_deref().ok_or(HarnessError::MissingInput {
+            harness: Harness::OpenCode,
+            what: "an explicit -m provider/model is mandatory: there is no OPENCODE_MODEL env var, \
+                   so argv and the generated config are the only two channels",
+        })?;
+        opencode::ModelRef::parse(m).ok_or(HarnessError::MissingInput {
+            harness: Harness::OpenCode,
+            what: "the model must be in `provider/model` form, which is the only spelling `-m` \
+                   accepts and the one the generated provider block has to repeat",
+        })
+    }
+}
+
+impl HarnessAdapter for OpenCodeAdapter {
+    fn harness(&self) -> Harness {
+        Harness::OpenCode
+    }
+
+    fn surfaces(&self) -> ExecutionSurfaces {
+        ExecutionSurfaces::launch_only_with_protocol_events()
+    }
+
+    fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        Ok(opencode::compile_run(&opencode::RunSpec {
+            cwd: spec.cwd.clone(),
+            sandbox: spec.config_dir.clone(),
+            model: Self::model_ref(spec)?,
+            // Any stable string suppresses the title-generation call; the node's own id makes the
+            // session identifiable in `opencode session list` without leaking the prompt.
+            title: format!("marion-{}", ctx.agent_id.0),
+            prompt: spec.prompt.clone(),
+        }))
+    }
+
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let base_url = spec.base_url.as_deref().ok_or(HarnessError::MissingInput {
+            harness: Harness::OpenCode,
+            what: "the provider block needs a baseURL; without one the child resolves no provider \
+                   at all, and a provider that answers nothing is an unbounded hang (S13)",
+        })?;
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| opencode::BridgeEnv {
+            bridge: ctx.bridge.clone(),
+            args: ctx.bridge_args.clone(),
+            repo: ctx.repo.clone(),
+            state: ctx.state_dir.clone(),
+            base_url: base_url.to_string(),
+            agent_id: ctx.agent_id.clone(),
+            ready_file: ctx.ready_file.clone(),
+        });
+        let json = opencode::config_json(
+            &opencode::ConfigSpec {
+                model: Self::model_ref(spec)?,
+                base_url: base_url.to_string(),
+                api_key: spec.api_key.clone(),
+            },
+            bridge.as_ref(),
+        );
+        Ok(vec![(
+            opencode::config_path(&spec.config_dir),
+            serde_json::to_string_pretty(&json).expect("a Value always serialises"),
+        )])
+    }
+
+    fn marion_tool_name(&self, tool: &str) -> String {
+        // `<serverName>_<toolName>` — a third spelling again (S13, verified live). The JSON-RPC
+        // `tools/call` opencode then makes to the bridge carries the **unprefixed** `report`: that
+        // is the MCP wire layer, not the model-facing name, and conflating the two would put the
+        // wrong identifier into a compiled prompt.
+        format!("{}_{tool}", opencode::MCP_ALIAS)
+    }
+}
+
 /// The adapter registry: the one place a [`Harness`] becomes behaviour.
 ///
 /// Naming a harness in §3.1's enum and having an adapter for it are different things, and the
@@ -289,7 +476,8 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
     match h {
         Harness::ClaudeCode => Ok(Box::new(ClaudeCodeAdapter)),
         Harness::Codex => Ok(Box::new(CodexAdapter)),
-        Harness::Gemini | Harness::OpenCode => Err(HarnessError::Unimplemented(h)),
+        Harness::Gemini => Ok(Box::new(GeminiAdapter)),
+        Harness::OpenCode => Ok(Box::new(OpenCodeAdapter)),
     }
 }
 
@@ -318,6 +506,7 @@ mod tests {
             allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
             mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
+            api_key: None,
             config_dir: "/state/x/config".into(),
             extra: Extras::default(),
         }
@@ -331,8 +520,25 @@ mod tests {
             allowed_tools: vec![],
             mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
+            api_key: None,
             config_dir: "/state/x/config".into(),
             extra: Extras::default(),
+        }
+    }
+
+    fn gemini_spec() -> LaunchSpec {
+        LaunchSpec {
+            model: Some("gemini-2.5-flash".into()),
+            api_key: Some("sk-fake".into()),
+            ..codex_spec()
+        }
+    }
+
+    fn opencode_spec() -> LaunchSpec {
+        LaunchSpec {
+            model: Some("canned/canned-1".into()),
+            api_key: Some("sk-fake".into()),
+            ..codex_spec()
         }
     }
 
@@ -428,6 +634,237 @@ mod tests {
     }
 
     #[test]
+    fn the_gemini_adapter_compiles_the_measured_invocation() {
+        let inv = GeminiAdapter.compile(&gemini_spec(), &ctx()).unwrap();
+        assert_eq!(inv.program, "gemini");
+        assert_eq!(
+            inv.args,
+            vec![
+                "-m",
+                "gemini-2.5-flash",
+                "--output-format",
+                "stream-json",
+                "-p",
+                "do the task"
+            ]
+        );
+        assert_eq!(
+            inv.env,
+            vec![
+                ("GEMINI_CLI_HOME".to_string(), "/state/x/config".to_string()),
+                (
+                    "GEMINI_CLI_SYSTEM_SETTINGS_PATH".to_string(),
+                    "/state/x/config/marion-settings.json".to_string()
+                ),
+                ("GEMINI_CLI_TRUST_WORKSPACE".to_string(), "true".to_string()),
+                ("GEMINI_FORCE_FILE_STORAGE".to_string(), "true".to_string()),
+                (
+                    "GOOGLE_GEMINI_BASE_URL".to_string(),
+                    "http://127.0.0.1:8099".to_string()
+                ),
+                ("GEMINI_API_KEY".to_string(), "sk-fake".to_string()),
+            ]
+        );
+    }
+
+    /// The settings file `compile` names is the one `config_files` writes — the gemini analogue of
+    /// the `--mcp-config` invariant, and with the same failure mode if the two ever diverged: a
+    /// highest-precedence settings layer pointing at a document nobody wrote, hence no MCP server,
+    /// hence tools that are silently absent.
+    #[test]
+    fn the_settings_argv_path_is_the_path_that_is_written() {
+        let spec = gemini_spec();
+        let inv = GeminiAdapter.compile(&spec, &ctx()).unwrap();
+        let (_, named) = inv
+            .env
+            .iter()
+            .find(|(k, _)| k == "GEMINI_CLI_SYSTEM_SETTINGS_PATH")
+            .unwrap();
+        let written = GeminiAdapter.config_files(&spec, &ctx()).unwrap();
+        assert_eq!(PathBuf::from(named), written[0].0);
+    }
+
+    /// §6.4/S12's MUST, asserted on the bytes the adapter actually emits: a "simplification" that
+    /// dropped `trust` would pass every other test in this file and produce runs that exit 0
+    /// having called nothing.
+    #[test]
+    fn the_gemini_settings_the_adapter_emits_declare_a_trusted_server() {
+        let files = GeminiAdapter.config_files(&gemini_spec(), &ctx()).unwrap();
+        assert_eq!(files.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+        assert_eq!(v["mcpServers"]["marion"]["trust"], serde_json::json!(true));
+        assert_eq!(
+            v["security"]["auth"]["selectedType"],
+            serde_json::json!("gemini-api-key")
+        );
+        assert_eq!(
+            v["mcpServers"]["marion"]["env"]["MARION_AGENT_ID"],
+            serde_json::json!("019f-root")
+        );
+    }
+
+    /// The node identity keys are the **bridge's** contract, so gemini's `env` block and Claude
+    /// Code's must carry the same names. A divergence would leave a gemini child's contract
+    /// stamped `unattributed-root` with nothing failing.
+    #[test]
+    fn every_adapters_bridge_env_block_uses_one_set_of_key_names() {
+        let claude = claude_code::mcp_config_json(&McpEnv {
+            bridge: "/bin/marion-supervisor".into(),
+            repo: "/repo".into(),
+            state: "/state".into(),
+            base_url: "http://127.0.0.1:8099/v1".into(),
+            agent_id: AgentId("019f-root".into()),
+            ready_file: "/state/x/mcp-ready".into(),
+        });
+        let expected: Vec<&String> = claude["mcpServers"]["marion"]["env"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect();
+
+        let g = gemini::settings_json(Some(&gemini::BridgeEnv {
+            bridge: "/bin/marion-supervisor".into(),
+            args: vec!["mcp".into()],
+            repo: "/repo".into(),
+            state: "/state".into(),
+            base_url: "http://127.0.0.1:8099/v1".into(),
+            agent_id: AgentId("019f-root".into()),
+            ready_file: Some("/state/x/mcp-ready".into()),
+        }));
+        let o = opencode::config_json(
+            &opencode::ConfigSpec {
+                model: opencode::ModelRef::parse("canned/canned-1").unwrap(),
+                base_url: "http://127.0.0.1:8099/v1".into(),
+                api_key: None,
+            },
+            Some(&opencode::BridgeEnv {
+                bridge: "/bin/marion-supervisor".into(),
+                args: vec!["mcp".into()],
+                repo: "/repo".into(),
+                state: "/state".into(),
+                base_url: "http://127.0.0.1:8099/v1".into(),
+                agent_id: AgentId("019f-root".into()),
+                ready_file: Some("/state/x/mcp-ready".into()),
+            }),
+        );
+        for block in [
+            &g["mcpServers"]["marion"]["env"],
+            &o["mcp"]["marion"]["environment"],
+        ] {
+            let got: Vec<&String> = block.as_object().unwrap().keys().collect();
+            assert_eq!(got, expected, "the bridge reads one set of names");
+        }
+    }
+
+    #[test]
+    fn a_gemini_node_without_a_model_is_refused_rather_than_launched_on_auto() {
+        let mut spec = gemini_spec();
+        spec.model = None;
+        let e = GeminiAdapter.compile(&spec, &ctx()).unwrap_err();
+        assert!(matches!(
+            e,
+            HarnessError::MissingInput {
+                harness: Harness::Gemini,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_non_loopback_plain_http_base_url_is_refused_at_compile_time() {
+        let mut spec = gemini_spec();
+        spec.base_url = Some("http://example.com/v1".into());
+        assert!(GeminiAdapter.compile(&spec, &ctx()).is_err());
+        spec.base_url = Some("https://example.com/v1".into());
+        assert!(GeminiAdapter.compile(&spec, &ctx()).is_ok());
+    }
+
+    #[test]
+    fn the_opencode_adapter_compiles_the_measured_invocation() {
+        let inv = OpenCodeAdapter.compile(&opencode_spec(), &ctx()).unwrap();
+        assert_eq!(inv.program, "opencode");
+        assert_eq!(
+            inv.args,
+            vec![
+                "run",
+                "--pure",
+                "--format",
+                "json",
+                "--title",
+                "marion-019f-root",
+                "-m",
+                "canned/canned-1",
+                "do the task"
+            ]
+        );
+        let names: Vec<&str> = inv.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_CACHE_HOME",
+                "XDG_STATE_HOME",
+                "OPENCODE_DISABLE_CLAUDE_CODE",
+                "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+                "OPENCODE_DISABLE_PROJECT_CONFIG",
+                "OPENCODE_DISABLE_MODELS_FETCH",
+                "OPENCODE_DISABLE_LSP_DOWNLOAD",
+                "OPENCODE_DISABLE_AUTOUPDATE",
+                "OPENCODE_DISABLE_SHARE",
+                "OPENCODE_DB",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_opencode_config_lands_under_the_isolated_xdg_config_root() {
+        let spec = opencode_spec();
+        let files = OpenCodeAdapter.config_files(&spec, &ctx()).unwrap();
+        assert_eq!(
+            files[0].0,
+            PathBuf::from("/state/x/config/config/opencode/opencode.json")
+        );
+        let inv = OpenCodeAdapter.compile(&spec, &ctx()).unwrap();
+        let (_, xdg) = inv
+            .env
+            .iter()
+            .find(|(k, _)| k == "XDG_CONFIG_HOME")
+            .unwrap();
+        assert!(
+            files[0].0.starts_with(xdg),
+            "a config outside XDG_CONFIG_HOME is never read"
+        );
+        let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+        assert_eq!(v["mcp"]["marion"]["type"], serde_json::json!("local"));
+        assert_eq!(
+            v["mcp"]["marion"]["command"],
+            serde_json::json!(["/bin/marion-supervisor", "mcp"])
+        );
+        assert_eq!(v["model"], serde_json::json!("canned/canned-1"));
+    }
+
+    #[test]
+    fn an_opencode_node_needs_a_provider_slash_model_and_a_base_url() {
+        let mut spec = opencode_spec();
+        spec.model = Some("canned-1".into());
+        assert!(OpenCodeAdapter.compile(&spec, &ctx()).is_err());
+        spec.model = None;
+        assert!(OpenCodeAdapter.compile(&spec, &ctx()).is_err());
+
+        let mut spec = opencode_spec();
+        spec.base_url = None;
+        assert!(matches!(
+            OpenCodeAdapter.config_files(&spec, &ctx()).unwrap_err(),
+            HarnessError::MissingInput {
+                harness: Harness::OpenCode,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn the_two_adapters_sit_at_different_points_of_the_cross_product() {
         let claude = ClaudeCodeAdapter.surfaces();
         let codex = CodexAdapter.surfaces();
@@ -453,22 +890,67 @@ mod tests {
         );
     }
 
+    /// §3.1 makes the mapping part of the adapter contract because the harnesses genuinely
+    /// disagree. Three spellings, measured: Claude Code's double-underscore form (and codex's, for
+    /// the reason above), gemini's `mcp_<server>_<tool>` (S12, captured in a `tool_use` frame) and
+    /// opencode's `<server>_<tool>` (S13, verified live). Compiling one harness's spelling into
+    /// another's prompt names a tool that does not exist there.
     #[test]
-    fn the_registry_returns_an_adapter_whose_harness_is_the_one_asked_for() {
-        for h in [Harness::ClaudeCode, Harness::Codex] {
-            assert_eq!(adapter_for(h).unwrap().harness(), h);
+    fn the_harnesses_disagree_about_the_tool_name_and_the_adapters_say_so() {
+        let names: Vec<String> = [
+            Harness::ClaudeCode,
+            Harness::Codex,
+            Harness::Gemini,
+            Harness::OpenCode,
+        ]
+        .into_iter()
+        .map(|h| adapter_for(h).unwrap().marion_tool_name("report"))
+        .collect();
+        assert_eq!(
+            names,
+            vec![
+                "mcp__marion__report",
+                "mcp__marion__report",
+                "mcp_marion_report",
+                "marion_report",
+            ]
+        );
+        // The opencode spelling is the **model-facing** one. The JSON-RPC `tools/call` that
+        // opencode then sends to the bridge carries the unprefixed `report`; that is the MCP layer.
+        assert_ne!(
+            OpenCodeAdapter.marion_tool_name("report"),
+            "report",
+            "the model-facing name is prefixed even though the wire call is not"
+        );
+    }
+
+    /// Now the stronger claim: `Harness::ALL` is *exhaustively* covered, and each adapter is the
+    /// one it says it is. This replaces the old "Gemini and OpenCode have no adapter" assertion —
+    /// they do now — and a future fifth harness fails here until it has one.
+    #[test]
+    fn every_named_harness_resolves_to_an_adapter_that_says_it_is_that_harness() {
+        for h in Harness::ALL {
+            assert_eq!(
+                adapter_for(h)
+                    .unwrap_or_else(|e| panic!("{h}: {e}"))
+                    .harness(),
+                h
+            );
         }
     }
 
-    /// A harness marion can *name* but not yet *run* is a typed error. Falling back to some other
-    /// adapter is the bug this whole seam exists to end.
+    /// The refusal itself, exercised at the type rather than through the registry: it names the
+    /// harness rather than falling back onto whichever adapter happens to exist. No `Harness`
+    /// produces it today, and it must stay correct for the one that eventually does.
     #[test]
-    fn an_unimplemented_harness_is_an_error_not_a_fallback() {
-        for h in [Harness::Gemini, Harness::OpenCode] {
+    fn an_unimplemented_harness_is_a_refusal_that_names_it_not_a_fallback() {
+        for h in Harness::ALL {
+            let e = HarnessError::Unimplemented(h);
+            assert!(e.to_string().contains(h.as_str()), "{h}: {e}");
             assert_eq!(
-                adapter_for(h).err(),
-                Some(HarnessError::Unimplemented(h)),
-                "{h} has no adapter until its phase lands"
+                e,
+                HarnessError::Unimplemented(h),
+                "the refusal carries the harness that was asked for, not a placeholder"
             );
         }
     }
@@ -476,15 +958,15 @@ mod tests {
     #[test]
     fn an_adapter_survives_being_boxed_and_shared_across_threads() {
         // The bounds §5.2 calls load-bearing, exercised rather than asserted.
-        let adapters: Vec<Box<dyn HarnessAdapter + Send + Sync>> = vec![
-            adapter_for(Harness::ClaudeCode).unwrap(),
-            adapter_for(Harness::Codex).unwrap(),
-        ];
+        let adapters: Vec<Box<dyn HarnessAdapter + Send + Sync>> = Harness::ALL
+            .into_iter()
+            .map(|h| adapter_for(h).unwrap())
+            .collect();
         let names: Vec<Harness> = std::thread::scope(|s| {
             s.spawn(|| adapters.iter().map(|a| a.harness()).collect())
                 .join()
                 .unwrap()
         });
-        assert_eq!(names, vec![Harness::ClaudeCode, Harness::Codex]);
+        assert_eq!(names, Harness::ALL.to_vec());
     }
 }
