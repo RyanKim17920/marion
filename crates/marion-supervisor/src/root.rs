@@ -33,18 +33,21 @@ use std::process::{Command as SysCommand, Stdio};
 use std::time::{Duration as StdDuration, Instant};
 
 use marion_core::contract::AgentId;
+use marion_core::harness::Harness;
 use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::paths::{AgentDir, ProjectDir};
-use marion_harness::{HeadlessSpec, Invocation, compile_headless};
+use marion_harness::{Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for};
 use serde_json::{Value, json};
 
 use crate::run::{entropy, unix_millis};
 
-/// Env var naming the file the bridge touches once it has answered `tools/list`.
-pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
-/// Env var carrying the root's `AgentId` to the bridge, so a top-level `spawn` can stamp
-/// `TaskContract.requester` with it (§9).
-pub const AGENT_ID_ENV: &str = "MARION_AGENT_ID";
+// The declaration's env-var names and the document that carries them are the Claude Code adapter's
+// business (§3.1: config emission is part of the adapter contract), so they live in
+// `marion-harness` and are re-exported here — `marion-supervisor mcp`, the other end of the
+// handshake, reads them from this module.
+pub use marion_harness::claude_code::{
+    AGENT_ID_ENV, McpEnv, READY_FILE_ENV, anthropic_base_url, mcp_config_json,
+};
 
 /// The permission axis for an M1 root (§9).
 ///
@@ -112,57 +115,8 @@ pub enum RootError {
     McpNeverReady(StdDuration, PathBuf),
     #[error("the root exited before answering marion's initialize control request")]
     DiedBeforeInitialize,
-}
-
-/// `ANTHROPIC_BASE_URL` from the provider base URL marion carries.
-///
-/// The two harnesses disagree about the `/v1`: a Codex `model_providers` entry names the full
-/// `…/v1`, while Claude Code appends `/v1/messages` to whatever it is given and would otherwise
-/// request `/v1/v1/messages`. marion stores the Codex form — it is the one that appears verbatim
-/// in a config file — and derives the other.
-pub fn anthropic_base_url(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    trimmed
-        .strip_suffix("/v1")
-        .unwrap_or(trimmed)
-        .trim_end_matches('/')
-        .to_string()
-}
-
-/// The `--mcp-config` document declaring marion's control MCP.
-///
-/// The bridge is a *short-lived process the harness starts*, not one marion spawns (§5.4), so
-/// everything it needs rides this declaration: which repo, which state dir, which provider, and
-/// **which node it is serving**. `MARION_AGENT_ID` is what makes `TaskContract.requester` the
-/// root's own `AgentId` rather than a placeholder.
-pub fn mcp_config_json(node_env: &McpEnv) -> Value {
-    json!({
-        "mcpServers": {
-            "marion": {
-                "type": "stdio",
-                "command": node_env.bridge.to_string_lossy(),
-                "args": ["mcp"],
-                "env": {
-                    "MARION_REPO": node_env.repo.to_string_lossy(),
-                    "MARION_STATE_DIR": node_env.state.to_string_lossy(),
-                    "MARION_BASE_URL": node_env.base_url,
-                    AGENT_ID_ENV: node_env.agent_id.0,
-                    READY_FILE_ENV: node_env.ready_file.to_string_lossy(),
-                }
-            }
-        }
-    })
-}
-
-/// The values [`mcp_config_json`] writes into the declaration.
-#[derive(Debug, Clone)]
-pub struct McpEnv {
-    pub bridge: PathBuf,
-    pub repo: PathBuf,
-    pub state: PathBuf,
-    pub base_url: String,
-    pub agent_id: AgentId,
-    pub ready_file: PathBuf,
+    #[error("compiling the root's launch: {0}")]
+    Harness(#[from] marion_harness::HarnessError),
 }
 
 /// One `stream-json` user turn, in the shape `tests/fixtures/s1/stdin.jsonl` records.
@@ -256,33 +210,45 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
     let agent_dir = project.agent(&agent_id);
     std::fs::create_dir_all(agent_dir.config_dir())?;
 
-    let mcp_config = agent_dir.config_dir().join("mcp.json");
     // Not one of §4.3's normative files: this is marion's own start-up handshake with a process it
     // did not spawn, so it lives beside the node's state rather than in the layout.
     let ready_file = agent_dir.path().join("mcp-ready");
     let _ = std::fs::remove_file(&ready_file);
 
-    std::fs::write(
-        &mcp_config,
-        serde_json::to_string_pretty(&mcp_config_json(&McpEnv {
-            bridge: spec.bridge.clone(),
-            repo: spec.repo.clone(),
-            state: spec.state.clone(),
-            base_url: spec.base_url.clone(),
-            agent_id: agent_id.clone(),
-            ready_file: ready_file.clone(),
-        }))
-        .expect("a Value always serialises"),
-    )?;
-
-    let token = per_run_token()?;
-    let mut invocation = compile_headless(&HeadlessSpec {
+    // §6.1 step 5, through the seam: the adapter decides argv, env, and which configuration files
+    // exist. marion writes what it is handed and derives none of those paths itself — one
+    // derivation, so `--mcp-config` can never name a document nobody wrote.
+    let adapter = adapter_for(Harness::ClaudeCode)?;
+    let launch = LaunchSpec {
         cwd: spec.repo.clone(),
         model: spec.model.clone(),
+        prompt: String::new(), // written after launch, not compiled into argv (§6.1 step 8).
         allowed_tools: ROOT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
-        mcp_config: mcp_config.clone(),
-        base_url: Some(anthropic_base_url(&spec.base_url)),
-    });
+        mcp: McpDeclaration::Marion,
+        base_url: Some(spec.base_url.clone()),
+        config_dir: agent_dir.config_dir(),
+        extra: Extras::default(),
+    };
+    let ctx = SpawnCtx {
+        agent_id: agent_id.clone(),
+        ready_file: Some(ready_file.clone()),
+        repo: spec.repo.clone(),
+        state_dir: spec.state.clone(),
+        bridge: spec.bridge.clone(),
+        bridge_args: vec!["mcp".into()],
+    };
+    let mut written = Vec::new();
+    for (path, contents) in adapter.config_files(&launch, &ctx)? {
+        std::fs::write(&path, contents)?;
+        written.push(path);
+    }
+    let mcp_config = written
+        .first()
+        .cloned()
+        .expect("the Claude Code adapter always emits its --mcp-config declaration");
+
+    let token = per_run_token()?;
+    let mut invocation = adapter.compile(&launch, &ctx)?;
     // §9: `ANTHROPIC_AUTH_TOKEN=<per-run token>` and `ANTHROPIC_API_KEY=""` — a non-empty key
     // silently wins (§6.4), so it is set to empty rather than left inherited.
     invocation

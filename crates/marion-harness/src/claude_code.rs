@@ -6,14 +6,16 @@
 
 use std::path::PathBuf;
 
-/// An argv + env pair, ready to spawn. Nothing here reaches a shell.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Invocation {
-    pub program: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
-    pub cwd: PathBuf,
-}
+use marion_core::contract::AgentId;
+use serde_json::{Value, json};
+
+use crate::invocation::Invocation;
+
+/// Env var naming the file the bridge touches once it has answered `tools/list`.
+pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
+/// Env var carrying a node's `AgentId` to the bridge, so a top-level `spawn` can stamp
+/// `TaskContract.requester` with it (§9).
+pub const AGENT_ID_ENV: &str = "MARION_AGENT_ID";
 
 /// What marion needs to compile a headless root invocation.
 #[derive(Debug, Clone)]
@@ -79,6 +81,62 @@ pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
         env,
         cwd: spec.cwd.clone(),
     }
+}
+
+/// `ANTHROPIC_BASE_URL` from the provider base URL marion carries.
+///
+/// The two harnesses disagree about the `/v1`: a Codex `model_providers` entry names the full
+/// `…/v1`, while Claude Code appends `/v1/messages` to whatever it is given and would otherwise
+/// request `/v1/v1/messages`. marion stores the Codex form — it is the one that appears verbatim
+/// in a config file — and derives the other. This lives with the adapter that needs the
+/// derivation, so the supervisor never has to know which harness wants which spelling.
+pub fn anthropic_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed
+        .strip_suffix("/v1")
+        .unwrap_or(trimmed)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// The values [`mcp_config_json`] writes into the declaration.
+#[derive(Debug, Clone)]
+pub struct McpEnv {
+    pub bridge: PathBuf,
+    pub repo: PathBuf,
+    pub state: PathBuf,
+    pub base_url: String,
+    pub agent_id: AgentId,
+    pub ready_file: PathBuf,
+}
+
+/// The `--mcp-config` document declaring marion's control MCP.
+///
+/// The bridge is a *short-lived process the harness starts*, not one marion spawns (§5.4), so
+/// everything it needs rides this declaration: which repo, which state dir, which provider, and
+/// **which node it is serving**. `MARION_AGENT_ID` is what makes `TaskContract.requester` the
+/// root's own `AgentId` rather than a placeholder.
+///
+/// This is the Claude Code adapter's config emission, so it lives here rather than in the
+/// supervisor: §3.1 makes config generation part of the adapter contract, and the Codex adapter's
+/// counterpart ([`crate::codex::config_toml`]) has always lived beside its own compile step.
+pub fn mcp_config_json(node_env: &McpEnv) -> Value {
+    json!({
+        "mcpServers": {
+            "marion": {
+                "type": "stdio",
+                "command": node_env.bridge.to_string_lossy(),
+                "args": ["mcp"],
+                "env": {
+                    "MARION_REPO": node_env.repo.to_string_lossy(),
+                    "MARION_STATE_DIR": node_env.state.to_string_lossy(),
+                    "MARION_BASE_URL": node_env.base_url,
+                    AGENT_ID_ENV: node_env.agent_id.0,
+                    READY_FILE_ENV: node_env.ready_file.to_string_lossy(),
+                }
+            }
+        }
+    })
 }
 
 #[cfg(test)]

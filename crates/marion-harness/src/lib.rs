@@ -2,9 +2,28 @@
 //!
 //! Control is config-time (README ground rule 1): marion owns the launch configuration and never
 //! parses a pty. Every flag these adapters emit was measured against an installed binary.
+//!
+//! [`HarnessAdapter`] is the seam (design §5.2): one trait per harness, whose `compile` step *is*
+//! the adapter contract — an agent type compiles to argv + env + config + MCP injection. The
+//! per-harness free functions below remain the implementations behind it, and stay public because
+//! their tests are the measurements.
 
+pub mod adapter;
 pub mod claude_code;
 pub mod codex;
+pub mod invocation;
+pub mod surfaces;
 
-pub use claude_code::{HeadlessSpec, Invocation, compile_headless};
+pub use adapter::{
+    ClaudeCodeAdapter, CodexAdapter, Extras, HarnessAdapter, HarnessError, LaunchSpec,
+    McpDeclaration, SpawnCtx, adapter_for,
+};
+pub use claude_code::{
+    AGENT_ID_ENV, HeadlessSpec, McpEnv, READY_FILE_ENV, anthropic_base_url, compile_headless,
+    mcp_config_json,
+};
 pub use codex::{ExecSpec, compile_exec, config_toml};
+pub use invocation::Invocation;
+pub use surfaces::{
+    ControlTransport, DisplaySurface, ExecutionSurfaces, ObservationSource, TypedKind,
+};

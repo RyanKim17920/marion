@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use crate::claude_code::Invocation;
+use crate::invocation::Invocation;
 
 #[derive(Debug, Clone)]
 pub struct ExecSpec {

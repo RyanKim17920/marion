@@ -6,6 +6,7 @@ pub mod agent_type;
 pub mod cap;
 pub mod contract;
 pub mod encoding;
+pub mod harness;
 pub mod ids;
 pub mod paths;
 pub mod scope;
@@ -18,5 +19,6 @@ pub use contract::{
     AgentId, Capped, ChildRef, Command, CommandOutcome, Completion, ExitStatus, Glob, Oid,
     ProcessExit, RepoIdentity, ResultStatus, TaskContract, TaskId, TaskTimestamps, Workspace,
 };
+pub use harness::{Harness, UnknownHarness};
 pub use ids::{new_agent_id, new_task_id, uuid_v7};
 pub use paths::{AgentDir, ProjectDir, project_hash, state_dir};

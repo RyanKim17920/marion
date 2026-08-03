@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::encoding::{Duration, Millis, SystemTime};
+use crate::harness::Harness;
 
 /// A value that may have been shortened by §6.7's cap rules.
 ///
@@ -135,7 +136,8 @@ pub type ResultStatus = ExitStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChildRef {
-    pub harness: String,
+    /// The §3.1 enum, not free text. Serializes as its wire string, so the JSON is unchanged.
+    pub harness: Harness,
     pub version: String,
 }
 

@@ -23,6 +23,8 @@ pub enum SpawnError {
     UnknownAgentType(String),
     #[error("invalid writable scope: {0}")]
     Scope(#[from] marion_core::scope::ScopeError),
+    #[error("compiling the child's launch: {0}")]
+    Harness(#[from] marion_harness::HarnessError),
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, SpawnError> {
@@ -215,7 +217,7 @@ pub fn build_contract(
         task_id,
         requester,
         child: ChildRef {
-            harness: "codex".into(),
+            harness: marion_core::Harness::Codex,
             version: "unknown".into(),
         },
         repo,

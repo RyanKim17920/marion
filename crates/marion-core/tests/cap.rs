@@ -35,7 +35,7 @@ fn contract(comp: Completion) -> TaskContract {
         task_id: TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
         requester: AgentId("019fbf94-0000-7000-8000-000000000001".into()),
         child: ChildRef {
-            harness: "codex".into(),
+            harness: marion_core::Harness::Codex,
             version: "0.146.0".into(),
         },
         repo: RepoIdentity {

@@ -10,6 +10,7 @@
 
 use crate::contract::Glob;
 use crate::encoding::Duration;
+use crate::harness::Harness;
 
 /// §3.1: `timeout_secs` defaults to 900 s, and §9 re-resolves it fresh on resume.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
@@ -30,7 +31,10 @@ pub struct AgentType {
     /// §3.1: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`.
     pub name: String,
     pub description: String,
-    pub harness: String,
+    /// §3.1 declares `harness` an **enum**, and this is what makes it dispatchable: an adapter is
+    /// selected from this value (`marion_harness::adapter_for`), which a `String` could never do
+    /// without re-parsing it at every call site.
+    pub harness: Harness,
     /// Ceiling only. `spawn` may narrow it and never widen it (§5.4).
     pub scope_ceiling: Vec<Glob>,
     pub timeout: Duration,
@@ -40,11 +44,11 @@ pub struct AgentType {
 
 impl AgentType {
     /// A type carrying every §3.1 default, so a built-in only states what it changes.
-    fn defaults(name: &str, description: &str, harness: &str) -> Self {
+    fn defaults(name: &str, description: &str, harness: Harness) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
-            harness: harness.into(),
+            harness,
             scope_ceiling: default_scope_ceiling(),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             max_depth: DEFAULT_MAX_DEPTH,
@@ -75,11 +79,15 @@ pub fn builtin(name: &str) -> Option<AgentType> {
         "claude" => Some(AgentType::defaults(
             "claude",
             "Root orchestrator: plans, delegates, and reviews.",
-            "claude-code",
+            Harness::ClaudeCode,
         )),
         "codex" | "codex-impl" => Some(AgentType {
             // The canonical name is the one the supervisor writes into contracts today.
-            ..AgentType::defaults("codex-impl", "Implements a well-specified change.", "codex")
+            ..AgentType::defaults(
+                "codex-impl",
+                "Implements a well-specified change.",
+                Harness::Codex,
+            )
         }),
         _ => None,
     }
@@ -161,7 +169,7 @@ mod tests {
         // marion-supervisor defaults `spawn`'s `agent_type` to "codex-impl"; if that stopped
         // resolving, every M1 spawn would fail at §6.1 step 2.
         let t = builtin("codex-impl").expect("codex-impl must exist");
-        assert_eq!(t.harness, "codex");
+        assert_eq!(t.harness, Harness::Codex);
         assert_eq!(
             builtin("codex"),
             Some(t),
