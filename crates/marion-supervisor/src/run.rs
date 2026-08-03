@@ -193,14 +193,9 @@ fn ps_rows() -> Vec<ProcRow> {
         .unwrap_or_default()
 }
 
-/// Every distinct process group among `root`, the rest of `root`'s own group, and all of their
-/// descendants — the set S7 measured as sufficient to leave zero survivors.
-///
-/// `codex exec` calls `setsid` for each tool-call command, so those children sit in their own
-/// session **and** their own process group: `killpg` on the group marion created reaches codex but
-/// not them (`tests/fixtures/s7/README.md`). Their groups can only be found by ancestry, and only
-/// while the tree is intact.
-fn descendant_pgids(rows: &[ProcRow], root: i32) -> Vec<i32> {
+/// Every pid in `root`'s tree: `root` itself, the rest of `root`'s own group, and all of their
+/// descendants. Step 1 of the two-step group kill, and the set the M1 criterion asserts over.
+fn descendant_pids(rows: &[ProcRow], root: i32) -> Vec<i32> {
     let root_pgid = rows.iter().find(|r| r.pid == root).map(|r| r.pgid);
     let mut seen: Vec<i32> = vec![root];
     if let Some(g) = root_pgid {
@@ -221,8 +216,19 @@ fn descendant_pgids(rows: &[ProcRow], root: i32) -> Vec<i32> {
         }
         i += 1;
     }
+    seen
+}
+
+/// Every distinct process group among the pids of `descendant_pids` — the set S7 measured as
+/// sufficient to leave zero survivors.
+///
+/// `codex exec` calls `setsid` for each tool-call command, so those children sit in their own
+/// session **and** their own process group: `killpg` on the group marion created reaches codex but
+/// not them (`tests/fixtures/s7/README.md`). Their groups can only be found by ancestry, and only
+/// while the tree is intact.
+fn pgids_of(rows: &[ProcRow], pids: &[i32]) -> Vec<i32> {
     let mut pgids: Vec<i32> = Vec::new();
-    for pid in &seen {
+    for pid in pids {
         if let Some(g) = rows.iter().find(|r| r.pid == *pid).map(|r| r.pgid)
             && !pgids.contains(&g)
         {
@@ -230,6 +236,26 @@ fn descendant_pgids(rows: &[ProcRow], root: i32) -> Vec<i32> {
         }
     }
     pgids
+}
+
+/// The pids enumerated in step 1 of the most recent expiry sweep in this process.
+///
+/// Read back by design §9's M1 criterion 6, whose assertion is over *marion's own* enumeration
+/// rather than one the test reconstructs — a test that re-walked `ps` itself would be asserting
+/// about a different set than the one the kill was aimed at. Exposing it here rather than through
+/// `run_spawn`'s return or the contract keeps the tool surface and the persisted schema untouched:
+/// the sweep is a process-wide event (it signals process *groups*), so a process-wide record of
+/// the last one is the same shape as the thing it describes. Only the last sweep is kept, so a
+/// long-lived supervisor accumulates nothing; concurrent expiries therefore leave only one behind.
+static LAST_SWEEP: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+
+/// The descendant pids marion enumerated at the most recent timeout expiry. Empty before the
+/// first one.
+pub fn last_kill_sweep() -> Vec<i32> {
+    LAST_SWEEP
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|e| e.into_inner().clone())
 }
 
 /// Filter a collected pgid set down to what is safe to `killpg`.
@@ -264,7 +290,11 @@ fn signal_targets(pgids: &[i32], own_pgid: i32) -> Vec<i32> {
 /// runaway keeps running.
 fn kill_process_tree(child_pid: i32) {
     let rows = ps_rows();
-    let mut pgids = descendant_pgids(&rows, child_pid);
+    let pids = descendant_pids(&rows, child_pid);
+    if let Ok(mut last) = LAST_SWEEP.lock() {
+        last.clone_from(&pids);
+    }
+    let mut pgids = pgids_of(&rows, &pids);
     // The child's own group, in case the `ps` sweep failed or raced its exit: `process_group(0)`
     // made the child its own group leader, so its pid is its pgid.
     if !pgids.contains(&child_pid) {
@@ -571,6 +601,11 @@ mod tests {
         );
     }
 
+    /// The pgid set of a pid set, which is how `kill_process_tree` composes the two steps.
+    fn descendant_pgids(rows: &[ProcRow], root: i32) -> Vec<i32> {
+        pgids_of(rows, &descendant_pids(rows, root))
+    }
+
     #[test]
     fn every_pgid_a_setsid_tool_call_child_escaped_into_is_collected() {
         // The measured remedy set. 55296 and 55386 are outside codex's group and are exactly what a
@@ -578,6 +613,16 @@ mod tests {
         assert_eq!(
             descendant_pgids(&s7_tree(), 55091),
             vec![55091, 55296, 55386]
+        );
+    }
+
+    #[test]
+    fn step_one_enumerates_the_pids_not_just_their_groups() {
+        // The set design §9's M1 criterion 6 asserts `ESRCH` over: codex, the code-mode host, the
+        // setsid'd tool-call child and its own child — every process the two-step kill must reach.
+        assert_eq!(
+            descendant_pids(&s7_tree(), 55091),
+            vec![55091, 55296, 55386, 55395]
         );
     }
 

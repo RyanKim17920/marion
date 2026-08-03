@@ -161,6 +161,14 @@ pub struct Script {
     pub root_final_text: String,
     /// The patch the child feeds to `tools.apply_patch` (a string — S6).
     pub child_patch: String,
+    /// Code-mode JavaScript to send *instead of* the `apply_patch` wrapper on the child's first
+    /// `exec` call.
+    ///
+    /// Parameterised for the same reason as [`Script::root_tool`]: §9's M1 criterion 6 needs the
+    /// child's tool call to be a `tools.exec_command` that is **still running when `exec` yields**
+    /// (§11 item 18 case B), which is the only shape that leaks a descendant at timeout expiry.
+    /// `None` keeps the M1 hop's patch step.
+    pub child_exec_js: Option<String>,
     /// The `narrative` the child passes to marion's `report`.
     pub child_narrative: String,
     /// The child's final assistant message. Under `--output-schema` this is delivered verbatim to
@@ -183,6 +191,7 @@ impl Default for Script {
             child_patch: "*** Begin Patch\n*** Add File: src/marion_m1.txt\n\
                           +marion M1: written by the canned codex child\n*** End Patch"
                 .to_string(),
+            child_exec_js: None,
             child_narrative: "Added the M1 marker file under src/.".to_string(),
             child_final_text:
                 json!({"narrative": "Added the M1 marker file under src/.", "result_commits": []})
@@ -216,7 +225,10 @@ impl Script {
 
     fn respond_responses(&self, body: &Value) -> String {
         match classify_child(body) {
-            ChildStep::ApplyPatch => responses::apply_patch_call(&self.child_patch, PATCH_CALL_ID),
+            ChildStep::ApplyPatch => match &self.child_exec_js {
+                Some(js) => responses::exec_call(js, PATCH_CALL_ID),
+                None => responses::apply_patch_call(&self.child_patch, PATCH_CALL_ID),
+            },
             ChildStep::Report => responses::report_call(&self.child_narrative, REPORT_CALL_ID),
             ChildStep::Finish => responses::final_message(&self.child_final_text),
         }
@@ -359,6 +371,20 @@ mod tests {
             s.respond(Wire::Responses, &child_input(done))
                 .contains("result_commits")
         );
+    }
+
+    #[test]
+    fn a_scripted_exec_body_replaces_the_patch_step_and_keeps_its_call_id() {
+        // The call_id has to survive the substitution: `classify_child` recognises the step's echo
+        // by that id, so a different one would loop the child on `ApplyPatch` forever.
+        let s = Script {
+            child_exec_js: Some("await tools.exec_command({cmd: \"sleep 900\"});".into()),
+            ..Script::default()
+        };
+        let out = s.respond(Wire::Responses, &child_input(json!([])));
+        assert!(out.contains("exec_command"));
+        assert!(!out.contains("apply_patch"));
+        assert!(out.contains(PATCH_CALL_ID));
     }
 
     #[test]

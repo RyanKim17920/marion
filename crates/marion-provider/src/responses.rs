@@ -55,10 +55,21 @@ pub fn report_call(narrative: &str, call_id: &str) -> String {
 /// string**, not `{input: …}`. Passing an object fails with
 /// `tool `apply_patch` expects a string input`, and the run silently does nothing.
 pub fn apply_patch_call(patch: &str, call_id: &str) -> String {
-    let js = format!(
-        "const r = await tools.apply_patch({});\ntext(JSON.stringify(r));",
-        serde_json::to_string(patch).expect("string encodes")
-    );
+    exec_call(
+        &format!(
+            "const r = await tools.apply_patch({});\ntext(JSON.stringify(r));",
+            serde_json::to_string(patch).expect("string encodes")
+        ),
+        call_id,
+    )
+}
+
+/// An `exec` custom-tool call carrying arbitrary code-mode JavaScript.
+///
+/// The general form `apply_patch_call` is one case of. §9's M1 criterion 6 needs the *other* case:
+/// a `tools.exec_command` whose command is still running when `exec` yields, which is the only
+/// shape that leaks a descendant at timeout expiry (§11 item 18 case B, spike S7).
+pub fn exec_call(js: &str, call_id: &str) -> String {
     envelope(
         json!({
             "type": "custom_tool_call",
