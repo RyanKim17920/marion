@@ -314,8 +314,8 @@ stdin**: both are stated as MUSTs above. S11 also narrowed two other open items 
 (S1's interrupt latency is no longer a single run; it is still one machine) and §11 item **20**
 (the pty-host half of "no real-terminal coverage" is paid; the emulator/rendering half, item 9's
 `ESC[6n` stall and the keystroke-injection submit check are not, so item 20 is **narrowed, not
-closed**). **S8 [partial]** and **S9 [partial]** —
-the two spikes that did not close their questions outright; **do not read either as closed.**
+closed**). **S8 [partial]**, **S9 [partial]**, **S12 [partial]** and **S13 [partial]** —
+the spikes that did not close their questions outright; **do not read any of them as closed.**
 **S9 answered only the `can_use_tool` third of "the inbound half of Claude Code's control
 channel"** (design doc §11 item 14) — the decompiled design was right in every field it named and
 `root::deny_response` was accepted verbatim on first execution, but **hook callbacks,
@@ -328,7 +328,41 @@ child talking to a real endpoint (seed the credential; `0700` dirs; never upload
 teardown) and a new **open risk** for long-lived nodes (refresh-token rotation across copies).
 Nothing here changes a milestone's scope — M1's child runs against the canned provider and is
 deliberately **not** seeded. Still open and not to be assumed: `GEMINI_CLI_HOME`. Mechanism and the
-MUSTs are design doc §6.4, §9 and §11 item 3. **S7 answered NO** —
+MUSTs are design doc §6.4, §9 and §11 item 3.
+**S12 answered the Gemini half of that same question — COPYABLE**, fixtured in
+`tests/fixtures/s12/`, measured 2026-08-03 against gemini 0.53.0 and a local canned endpoint at
+**$0.00**. `GEMINI_CLI_HOME` relocates everything including credentials, and nothing in that set is
+unfixable-by-copy on the same machine under the same user: the file-backed store derives its
+AES key from `hostname + username` plus a **hardcoded** passphrase, so no OS secret participates.
+It **corrected** design doc §6.4 and §11 item 3(c) — the `service=gemini` Keychain item cited as
+grounds for suspecting Claude-Code-like behaviour belongs to the **Antigravity IDE**; the CLI's own
+`gemini-cli-oauth` item does not exist. It also **fixtured** several §6.4 Gemini launcher claims
+that §11 item 10 lists as unevidenced (the `selectedType` requirement, the trust-workspace gate),
+and recorded a new silent-failure trap: without `trust: true` or `--yolo`, an MCP server's tools are
+**omitted from the request body entirely** — no prompt, no error, a run that succeeds having done
+nothing. **Still open and why this is not a close of §11 item 3:** whether copied `oauth-personal`
+credentials refresh correctly in a child is unverified — the whole measurement ran on
+`GEMINI_API_KEY`.
+**S13 characterized opencode 1.17.3**, recorded in `tests/fixtures/s13/`, measured 2026-08-03
+against the real binary and a canned local OpenAI-compatible provider at **$0.00** (a report only —
+binary inspection plus short live probes produced no capture, the same deviation S12 declared). It
+answers the **opencode half of §11 item 10** — those launcher findings had no committed fixture —
+and **corrected** design doc §6.4: that bullet describes the `opencode serve` HTTP path
+(`POST /session/{id}/prompt_async`, `/event`, `OPENCODE_EXPERIMENTAL_EVENT_SYSTEM`), whereas the
+path an adapter actually needs is `opencode run --pure --format json`, which **binds no TCP port**
+and emits NDJSON on stdout. It produced four §12 correction rows (60–63), one a deliberate
+**negative** result: opencode's MCP tool permission default is **allow**, so unlike codex and gemini
+there is no silent-omission trap — recorded so that family is not over-generalized. Two hazards an
+adapter must handle: opencode **never exits** on a provider hang (a 500 still retrying at 90 s, a
+connection-refused still hung at 180 s), which makes §9's two-step group kill **load-bearing rather
+than defensive**; and **cross-harness contamination** — opencode reads `~/.claude/CLAUDE.md`,
+project `CLAUDE.md` files and `~/.claude/skills/**`, so a marion-spawned opencode child inherits a
+*different* harness's user configuration unless severed. **Why this is [partial]:** opencode has
+never been exercised as a marion child end to end, no opencode adapter exists, and several questions
+remain **unknown** — whether pacote's git-plugin path honours `ignoreScripts`, whether LSP children
+get an explicit kill, whether the `~/.claude/ide` lock scan is gated, whether `--port` on `run` is
+truly unconsumed. The three original server-path claims also remain unfixtured, because S13 did not
+re-measure them. **S7 answered NO** —
 `codex exec` does **not** keep its tool-call children in marion's process group; it `setsid`s each
 one, so a single `killpg` at timeout expiry leaks every runaway tool-call subprocess to pid 1.
 marion's timeout kill must sweep the child's descendants for their process groups *before*

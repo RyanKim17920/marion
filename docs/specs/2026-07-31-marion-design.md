@@ -1706,9 +1706,23 @@ marion **never mutates the user's real harness config.**
 > refreshing copy rotates and invalidates the parent's refresh token — the access token's life is
 > ~10 days, so long-lived nodes will eventually refresh.
 >
-> **UNVERIFIED:** whether `GEMINI_CLI_HOME` shares the coupling, and if so in which form. It must
-> **not** be assumed to match Codex — a generic-password Keychain item for `service=gemini` **does**
-> exist, so Gemini may behave like Claude Code.
+> **`GEMINI_CLI_HOME` isolation also breaks auth — and Gemini is the easiest of the three to
+> repair.** Measured 2026-08-03, spike S12, gemini-cli 0.53.0 on macOS (§11 item 3(c), fixture
+> `tests/fixtures/s12/`). `GEMINI_CLI_HOME` relocates the **whole** config and auth surface
+> (verified: nothing written to the real `~/.gemini`), and nothing in that set is
+> unfixable-by-copy on the same machine under the same user: 0.53.0 stores credentials in a
+> `HybridTokenStorage` whose file half, `FileKeychain`, derives its aes-256-gcm key by
+> `scryptSync` over a **hardcoded passphrase** with salt
+> `${os.hostname()}-${os.userInfo().username}-gemini-cli` — **no OS secret participates** — and
+> that file honours `GEMINI_CLI_HOME`. `GEMINI_FORCE_FILE_STORAGE=true` pins that path
+> unconditionally. **The earlier suspicion that a `service=gemini` Keychain item implicated the
+> CLI was wrong** — that item's `acct` is `antigravity` (the Antigravity IDE, which shares
+> `~/.gemini/`); the CLI's own service name is `gemini-cli-oauth`, and no such item exists (§12).
+> **Verdict: COPYABLE.** Seed by copying the whole credential set, not the single legacy filename
+> — `OAuthCredentialStorage.migrateFromFileStorage()` reads `oauth_creds.json`, writes the hybrid
+> store, then `fs.rm`s the original, a one-way destructive migration. **UNVERIFIED (§11 item
+> 3(d)):** whether copied `oauth-personal` credentials refresh correctly in a child; S12 ran on
+> `GEMINI_API_KEY` against a canned endpoint and never exercised a real subscription child.
 
 **Verified launcher requirements:**
 
@@ -1727,13 +1741,29 @@ marion **never mutates the user's real harness config.**
   enumerates descendants before the child dies, and this process is already an orphan by then — so
   suppressing it at config time is the only remedy. Distinct from item 18's `setsid` tool-call
   escape (§9).
-- **Gemini 0.53.0:** must write
-  `<GEMINI_CLI_HOME>/.gemini/settings.json` = `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`
-  — an API key alone now fails with `Invalid auth method selected.` and there is no env-var
-  equivalent. Headless needs `--skip-trust` or `GEMINI_CLI_TRUST_WORKSPACE=true`. The
-  HTTPS-unless-localhost restriction present at 0.40.1 is **gone** at 0.53.0 (zero bundle hits;
-  plain-HTTP non-localhost base URLs accepted), so a loopback proxy needs no TLS.
-- **opencode 1.17.3:** drive turns with the legacy `POST /session/{id}/prompt_async`; the v2 path
+- **Gemini 0.53.0** (measured S12, 2026-08-03, fixture `tests/fixtures/s12/`): settings **MUST**
+  carry `{"security":{"auth":{"selectedType":"gemini-api-key"}}}` — an API key alone fails with
+  `Invalid auth method selected.` and there is **no env-var equivalent**. The *file* is not fixed:
+  settings resolve over four layers (system defaults / user / project / system settings), and
+  `GEMINI_CLI_SYSTEM_SETTINGS_PATH` points at an arbitrary path that **wins over all four**. A
+  launcher **SHOULD** use that env var rather than writing `<GEMINI_CLI_HOME>/.gemini/settings.json`
+  — it writes nothing under the sandbox home, needs no project `.gemini/` dir, and is the
+  non-invasive path this section already prefers. Verified end to end: with only that variable set,
+  marion's MCP tool was discovered, called and executed. Every marion MCP server declaration
+  **MUST** set `"trust": true` — in headless mode with the default approval mode and no `-y`, an
+  untrusted server's tools are **omitted from the request body entirely**, with no prompt, no
+  warning and exit 0 (§12). The launcher **MUST** pass an explicit `-m`: with model `auto` the CLI
+  first makes a classifier call that hangs against a canned endpoint (§12). Headless needs
+  `--skip-trust` or `GEMINI_CLI_TRUST_WORKSPACE=true`. Base-URL overrides
+  (`GOOGLE_GEMINI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL`) **MUST** be HTTPS **unless** the host is
+  `localhost` / `127.0.0.1` / `[::1]` — marion's proxy is on loopback, so it needs no TLS, but a
+  non-loopback plain-HTTP endpoint is refused.
+- **opencode 1.17.3 — two surfaces, and the adapter wants the second one.** Everything in the next
+  paragraph is the **`opencode serve` HTTP path**. It is retained because it stays relevant for a
+  future ACP/server surface, but it is **not the path a marion adapter needs**, and this section
+  previously read as though it were (§12).
+
+  *Server path (unchanged):* drive turns with the legacy `POST /session/{id}/prompt_async`; the v2 path
   `POST /api/session/{id}/prompt` returns 200 and then never runs, and `/api/session/{id}/wait`
   returns `ServiceUnavailableError`. Subscribe on `/event`, not `/api/event` — the latter
   suppresses heartbeats (~30 s on `/event`), losing free idle-liveness detection. The envelopes
@@ -1745,6 +1775,71 @@ marion **never mutates the user's real harness config.**
   `model.switched` appear. The legacy `message.updated` / `message.part.updated` /
   `message.part.delta` family arrives either way: interleaved 1:1 with the new family **when the experimental flag is on**,
   and alone when it is off.
+
+  *Headless path — this is what M-generality targets* (measured S13, 2026-08-03, fixture
+  `tests/fixtures/s13/`): **`opencode run --pure --format json`**. It **binds no TCP port** — the run
+  handler talks to an in-process fetch handler (`baseUrl: "http://opencode.internal"`), and
+  `Server.listen` has call sites only under `serve`/`acp`/`web`/desktop-RPC — and it emits **NDJSON
+  on stdout**, one object per line, every line `{type, timestamp, sessionID, …}` with `type` in
+  exactly `step_start | step_finish | text | reasoning | tool_use | error`. **None of the three
+  settings above applies to it**: there is no endpoint to choose, no `/event` subscription, and
+  `OPENCODE_EXPERIMENTAL_EVENT_SYSTEM` governs the server's event bus, not this stream. It needs no
+  tty and, unlike `claude -p`, **does not refuse one** — a `script -q /dev/null` run produced
+  identical NDJSON. Reading it has one non-obvious requirement: **there is no init, result or usage
+  event**, so a reader **MUST** terminate on **stdout close**, not on a terminal frame — the
+  opposite of codex and gemini. `sessionID` is on the **first** line, so a node can be keyed
+  immediately.
+
+  **Normative, for any opencode child (all measured S13):**
+  - **`XDG_CONFIG_HOME` is the only true config isolation, and marion MUST set it.**
+    `OPENCODE_CONFIG` (a path) and `OPENCODE_CONFIG_CONTENT` (inline JSONC) both **merge on top of**
+    the global config rather than replacing it — verified: the operator's own MCP servers still
+    loaded alongside. `OPENCODE_CONFIG_CONTENT` is still the right carrier for marion's MCP
+    declaration, but **on top of** an isolated `XDG_CONFIG_HOME`, never instead of it. MCP has **no
+    CLI flag** at all; `command` is an **argv array**, and tools reach the model as
+    `<serverName>_<toolName>` (a third spelling — §5.4).
+  - **All four XDG vars plus `HOME` MUST be set.** There is no `CODEX_HOME` analogue; paths resolve
+    through `XDG_{CONFIG,DATA,CACHE,STATE}_HOME`, while `Path.home` (i.e. `HOME`) independently
+    drives the `~/.claude`, `~/.agents` and `~/.opencode` lookups. Credentials are **files, not
+    Keychain** (`security find-generic-password -s opencode` → not found), so opencode is
+    **COPYABLE** like Codex; `OPENCODE_AUTH_CONTENT` also accepts the whole credential inline, at
+    the cost of putting a live token in the child's **environment**, readable by `ps -E` under the
+    same uid and inherited by grandchildren — the very exposure §7.1/§9 avoided for Codex by keeping
+    the MCP declaration in `config.toml` rather than argv. **A `0600` file copy under a `0700` agent
+    dir is the safer default.**
+  - **`--title` MUST be passed.** Without it opencode issues an extra `You are a title generator`
+    request against `small_model` — **3 POSTs instead of 2**. Same shape as §5.5's Claude Code
+    session-title request.
+  - **An explicit `-m provider/model` MUST be passed.** There is no `OPENCODE_MODEL` env var
+    (exhaustive `OPENCODE_*` scan of the binary), so the only alternative is the config `model` key.
+    An arbitrary OpenAI-compatible `baseURL` works with the **bundled** `@ai-sdk/openai-compatible`,
+    under `provider.<id>.options.baseURL` / `.apiKey` — verified end to end against a canned
+    loopback endpoint at zero cost.
+  - **marion MUST impose its own wall-clock timeout with the §9 two-step group kill.** Measured: a
+    provider **500 was still retrying at 90 s** and a **connection-refused was still hung at 180 s**,
+    with **no bounded backoff ceiling found**. (A 400 exits 1 cleanly with one `{"type":"error"}`
+    line.) `provider.<id>.options.timeout` / `headerTimeout` are a first line of defence, not a
+    substitute. **This makes the two-step kill load-bearing for opencode, not optional** — and the
+    bash tool's own `detached: true` children are the same escape class as §11 item 18's `setsid`.
+  - **The `~/.claude` adoption MUST be severed**: `OPENCODE_DISABLE_CLAUDE_CODE=1` and
+    `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`. By default opencode reads `~/.claude/CLAUDE.md`, every
+    `CLAUDE.md` between `cwd` and the worktree root, `~/.claude/skills/**/SKILL.md` and every
+    project `.claude/skills/**/SKILL.md`, and scans `~/.claude/ide/*.lock`. **`inherit_user_config:
+    false` does not cover this** — it is written against a harness reading its *own* config dir, and
+    no amount of `XDG_*` isolation helps, because `~/.claude` is found via `HOME` (§12).
+  - **SHOULD** also set `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_MODELS_FETCH=1`
+    (there is otherwise a boot fetch **plus a 60-minute in-process loop**),
+    `OPENCODE_DISABLE_LSP_DOWNLOAD=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, `OPENCODE_DB=:memory:`, and
+    pre-seed `rg` on the child's `PATH` — the ripgrep auto-download is gated by **neither** `--pure`
+    nor `OPENCODE_DISABLE_LSP_DOWNLOAD`. Note that `--pure` also does **not** gate a `forkDetach`ed
+    `@opencode-ai/plugin` npm install, so a first run **makes a network call on a run specified to
+    make none** — the same violated expectation as the codex plugin clone above, though this one
+    runs in-process and leaves no orphan.
+  - **No allowlist is required for marion's MCP tools**, and this is a *negative* result worth
+    keeping: opencode's `permission` default for MCP tools is **allow**, so there is no
+    silent-omission trap of the `default_tools_approval_mode` / `trust: true` family here (§12).
+    `"deny"` removes a tool from the model's schema outright; `"ask"` leaves it advertised and
+    auto-rejects non-interactively with the run continuing at exit 0.
 - **A real TTY is required only for terminal-driven surfaces — and is actively *forbidden* on
   stdin for a headless one.** With stdio as a pipe, `codex` errors `stdin is not a terminal` and
   `claude` falls back to demanding `--print`. So `interactive`/`opaque`/`shared`-with-attached-TUI
@@ -3743,9 +3838,9 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
    untested, since the subagent had no tools and no pending work. All of it is **one machine, one
    CLI version, one `subagent_type` (`general-purpose`), one run per mode** (cf. item 11).
 3. **Do `CODEX_HOME` / `GEMINI_CLI_HOME` isolation break auth** the way `CLAUDE_CONFIG_DIR` does?
-    **PARTIALLY RESOLVED 2026-08-02 (spike S8), fixtured in `spikes/s8/`. The Codex half is
-    answered; the Gemini half is not, and two Codex sub-questions remain open. Do not read this
-    item as closed.**
+    **PARTIALLY RESOLVED — Codex 2026-08-02 (spike S8, fixtured in `spikes/s8/`), Gemini
+    2026-08-03 (spike S12, fixtured in `tests/fixtures/s12/`). Both halves now have an answer, and
+    three sub-questions remain open. Do not read this item as closed.**
 
     **Codex: YES, isolation breaks auth — and unlike Claude Code it is cleanly and fully
     recoverable.** Measured against codex-cli 0.146.0 on macOS (darwin 25.5.0), on **one machine,
@@ -3797,6 +3892,42 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     **Zero-cost note:** `codex login status` reports auth state **without a model call**, so
     `marion doctor` can check a seeded node's credential for free.
 
+    **Gemini: YES, isolation breaks auth — and Gemini is the *easy* case. Verdict: COPYABLE.**
+    Measured against gemini-cli 0.53.0 on macOS (darwin 25.5.0), against a local canned endpoint
+    with a throwaway `GEMINI_API_KEY`: **no model call, no real credential read, $0.00**.
+    `GEMINI_CLI_HOME` relocates the **entire** config and auth surface — every path routes through
+    one `homedir()` that returns it — and the measurement confirms it: a fresh
+    `$SANDBOX/.gemini/` was created and **nothing was written to the real `~/.gemini`**. (Note the
+    doubling: the CLI appends `.gemini` itself.)
+
+    **Nothing in that set is unfixable-by-copy on the same machine under the same user.** 0.53.0
+    stores credentials in a `HybridTokenStorage` that probes a native keychain
+    (`@github/keytar`) and falls back to `FileKeychain` at `<home>/.gemini/gemini-credentials.json`.
+    `FileKeychain` derives its aes-256-gcm key by `scryptSync` over a **hardcoded passphrase**
+    with salt `${os.hostname()}-${os.userInfo().username}-gemini-cli`. **No OS secret
+    participates**, so any process running as the same user on the same host can decrypt the file,
+    and the file honours `GEMINI_CLI_HOME`. `GEMINI_FORCE_FILE_STORAGE=true` forces that path
+    unconditionally. **Same machine + same user is the whole precondition** — nothing here claims
+    a profile survives being moved between hosts or users, where the salt changes and the copy
+    stops decrypting. **Gemini is therefore strictly better than Claude Code for isolation and no
+    worse than Codex**, and it has a sidestep neither offers on the subscription path:
+    `GEMINI_API_KEY` (plus the `selectedType` setting §6.4 now requires).
+
+    **The premise that made Gemini look like Claude Code was false, and is retracted (§12).** The
+    `service=gemini` generic-password Keychain item that this item previously cited belongs to
+    **Antigravity** — its `acct` is `antigravity`, and the IDE shares `~/.gemini/` with the CLI.
+    The CLI's own service name is the constant `KEYCHAIN_SERVICE_NAME = "gemini-cli-oauth"`, and
+    `security find-generic-password -s "gemini-cli-oauth"` returns *"The specified item could not
+    be found in the keychain."* Only item **existence** was probed; no secret was read.
+
+    **The credential location this item used to state is half-stale, and the migration is
+    destructive.** `~/.gemini/oauth_creds.json` (`0600`) exists and is still where an unmigrated
+    profile's credential sits — but it is the **legacy** path.
+    `OAuthCredentialStorage.migrateFromFileStorage()` reads it, writes the hybrid store, then
+    `fs.rm`s the original: a **one-way destructive migration**. A seeding launcher that copies only
+    that filename can find it already gone. **Operationally: copy the whole credential set, and set
+    `GEMINI_FORCE_FILE_STORAGE=true` to pin the file path deterministically.**
+
     **What remains open:**
     - **(a) Refresh-token rotation — the open risk for long-lived nodes.** Access-token lifetime is
       ~10 days (`iat`→`exp`) and the observed `last_refresh` was already 10 days old, so a copy goes
@@ -3810,11 +3941,18 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       breaking the link and stranding a stale copy — is **unobserved**. Codex creates a `tmp/`
       directory under `CODEX_HOME`, which is consistent with rename-based writes. **Do not adopt
       the symlink remedy without measuring this.**
-    - **(c) The Gemini half is entirely unmeasured and MUST NOT be assumed to match Codex.**
-      `gemini` 0.53.0 is installed, `GEMINI_CLI_HOME` is a real referenced env var, and credentials
-      sit at `~/.gemini/oauth_creds.json` (`0600`) — but a generic-password **Keychain item for
-      `service=gemini` does exist**, so Gemini may behave like Claude Code rather than like Codex.
-      Gemini is not on M1's path, which is why the spike stopped here.
+    - **~~(c) The Gemini half~~ — ANSWERED 2026-08-03 (spike S12), fixtured in
+      `tests/fixtures/s12/`. Verdict COPYABLE**, on the storage mechanism plus the isolation
+      measurement above. This sub-question is discharged; it is left in place rather than deleted
+      because the grounds it stated — the `service=gemini` Keychain item — were **false**, and a
+      reader who saw only the deletion would not learn that (§12).
+    - **(d) The Gemini analogue of (a) — UNVERIFIED.** Whether `oauth-personal` credentials copied
+      via `GEMINI_CLI_HOME` refresh correctly in a child is **not measured**. It is not testable
+      without a live token refresh against Google's endpoint; the code path is plain file/keychain
+      reads, so it *should*, but nothing measures it. Compounding this: **S12's whole measurement
+      ran on `GEMINI_API_KEY` against a canned endpoint**, so a real `oauth-personal` child in an
+      isolated `GEMINI_CLI_HOME` was **never exercised end to end**. This is the same shape as (a)
+      for Codex, and it is why S12 does not close this item.
 
     Re-run with `S8_REAL_CALL=1 spikes/s8/probe.sh`; without that variable every case is an
     auth-state check and costs nothing. `spikes/s8/s8-report.json` records structural facts only —
@@ -3834,7 +3972,25 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
    input starvation, but it is unconfirmed, and if probe answering *is* load-bearing under some
    condition, that condition is unknown (§5.3).
 10. **Claims with no committed fixture**, contrary to this project's own rule:
-    - The Gemini and opencode launcher findings (§6.4).
+    - **The Gemini and opencode launcher findings (§6.4) — NARROWED 2026-08-03 (spikes S12 and
+      S13), not closed.** The **Gemini** half now has a committed fixture, `tests/fixtures/s12/`, which
+      **confirmed** the `selectedType` requirement (an API key alone fails
+      `Invalid auth method selected.`) and the folder-trust requirement
+      (`GEMINI_CLI_TRUST_WORKSPACE=true` / `--skip-trust`), **retracted** the claim that the
+      HTTPS-unless-localhost restriction is gone at 0.53.0, and **corrected** two more — the
+      settings *file location* is not fixed, and `trust: true` plus an explicit `-m` are launcher
+      requirements the section did not state (§12). The **opencode** half is **NARROWED, not
+      closed**, by S13 (`tests/fixtures/s13/`), which found the deeper problem: those three claims —
+      the `prompt_async` endpoint, the `/event` vs `/api/event` envelopes,
+      `OPENCODE_EXPERIMENTAL_EVENT_SYSTEM` — describe the **`opencode serve` HTTP path**, and **an
+      adapter does not use it**. S13 fixtured the path an adapter *does* use, `opencode run --pure
+      --format json`, which binds **no TCP port** and needs none of the three, together with the
+      launcher MUSTs §6.4 now states (`XDG_CONFIG_HOME` as the only real isolation, all four XDG
+      vars plus `HOME`, `--title`, explicit `-m`, marion's own timeout, and severing the `~/.claude`
+      adoption). **What remains unfixtured is the original three**: S13 did not re-measure them at
+      1.17.3, so they stand as recorded, unverified, and scoped to a surface marion does not yet
+      build. Also still unfixtured for opencode: **no test has exercised it as a marion child end to
+      end** — S13 characterises the CLI only.
     - The entire resource model (`MILESTONES.md`).
     - The `vt100`-vs-`alacritty` scrollback comparison — **but only partly, and the distinction
       matters.** *How many lines the 14-row Codex run scrolled up* is a property of the byte
@@ -4056,10 +4212,10 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
 ## 12. History: what was retracted or corrected
 
-Recorded so it is not rediscovered. The 53 rows below come from eleven spikes — S1–S5 on
-2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02, S9, S10 and S11 on 2026-08-03 — from audit
-rounds 5–19, and from **M1's own build**; every spike passed, and nine of the eleven corrected a
-design decision. **S9, S10 and S11 are the three that principally *confirmed*:** S9 found the
+Recorded so it is not rediscovered. The 63 rows below come from thirteen spikes — S1–S5 on
+2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02, S9, S10, S11, S12 and S13 on 2026-08-03 —
+from audit rounds 5–19, and from **M1's own build**; every spike passed, and eleven of the thirteen
+corrected a design decision. **S9, S10 and S11 are the three that principally *confirmed*:** S9 found the
 decompiled `can_use_tool` design right in every field it named, S10 found the static
 `SubagentStop` reading not merely right but exhaustive, and S11 found S1's interrupt protocol
 byte-for-byte unchanged over a pty. A confirmation is a result too, which is why it is recorded
@@ -4128,3 +4284,13 @@ different provenance from either. No row is renumbered and no spike is invented 
 | S1's interrupt protocol was proven over pipes; under a pty, isatty-conditional line buffering may change the framing | **CONFIRMED AND NARROWED (S11, 2026-08-03).** The **protocol** is unchanged and the worry was aimed at the wrong layer. S1's argv and stdin script, replayed verbatim over a real pty against Claude Code 2.1.220 and a canned provider (cost **$0.00**), produce an **identical 38-kind collapsed frame sequence** (`first_divergence: null`), a **byte-identical** interrupt `control_response`, and — after normalising only per-run UUIDs, wall-clock timestamps/durations and how far the canned stream got — **36 of 36 non-delta frames byte-identical** across pipes, pty and pty-with-`OPOST`-off. The interrupt semantics reproduce exactly: `{"still_queued":[]}`, then `is_error: true` / `error_during_execution` / `aborted_streaming`, then a successful follow-up turn and exit 0. What *did* change is **framing and fds**, in the two rows below. Fixtured in `tests/fixtures/s11/`; §11 item 1 closed, items 11 and 20 narrowed. |
 | A `read()` on a harness's stdout can be treated as a frame, and the `\r` a pty adds is the thing to fix | **CORRECTED (S11, 2026-08-03).** Same run, same binary: **139 reads over a pipe (largest 46,515 B, *zero* returning no complete frame) vs 230 over a pty (largest 1,024 B — the macOS pty output-queue ceiling — with 92 of them, 40%, containing no line terminator at all)**. The ~48 kB `initialize` reply is **one** read on a pipe and ~47 on a pty. So a reader that assumes a read is a frame **works on pipes and breaks on a pty**, with nothing to distinguish the two until the transport changes — §5.2 now requires buffering and splitting on frame boundaries as a MUST. And the `\r` is **not** the mechanism: a fourth capture with `OPOST` cleared has **0 CRLF and 141 LF-only lines but exactly the same 230 reads and 1,024 B maximum**, attributing the `\r` to the line discipline's `ONLCR` and the chunking to a **separate, independent** mechanism. Recorded because conflating them yields a plausible and wrong fix — clearing `OPOST` removes every `\r` and restores nothing about the framing. |
 | A headless node's fd topology is a free choice, so a launcher may hand `claude -p` a pty for uniformity | **CORRECTED (S11, 2026-08-03).** `claude -p` **refuses a pty stdin**: it exits **1** with `Error: Input must be provided either through stdin or as a prompt argument when using --print`, having emitted only its `SessionStart` hook frames. A capture with **pty stdin and pipe stdout** fails identically to an all-pty one, isolating the trigger to **`isatty(stdin)`**, not stdout — and the error names the *prompt* rather than the fd, so the cause does not read off the message. §6.4 now states **MUST NOT give a headless node a pty on stdin**. Two lesser isatty effects measured alongside: the CLI **colours its stderr warnings** when *stdout* is a pty (stderr was a pipe in both runs), and **headless `claude -p` emits no terminal probes at all** on any of the four topologies — including one where it owned the pty as its controlling terminal — so §5.3's probe table is a **TUI**-path statement. |
+| The HTTPS-unless-localhost restriction on Gemini's base-URL overrides is **gone** at 0.53.0 (zero bundle hits; plain-HTTP non-localhost base URLs accepted), so a loopback proxy needs no TLS | **RETRACTED (S12, 2026-08-03).** The restriction is **still present** at 0.53.0: `GOOGLE_GEMINI_BASE_URL` and `GOOGLE_VERTEX_BASE_URL` must be HTTPS **unless** the host is `localhost` / `127.0.0.1` / `[::1]`. The operational conclusion survives — marion's proxy needs no TLS — but **only because marion is on loopback**, which is a much narrower licence than the retracted sentence granted. The retracted form would mislead anyone putting a canned or proxied provider on a non-loopback address, and the failure lands as a **refusal at the transport**, not as a clear error about TLS policy. Fixtured in `tests/fixtures/s12/`. |
+| A generic-password Keychain item for `service=gemini` **does** exist, so Gemini may behave like Claude Code — unfixable-by-copy | **RETRACTED (S12, 2026-08-03).** That item's `acct` is **`antigravity`** — the Antigravity IDE, which shares the `~/.gemini/` directory with the CLI. The Gemini CLI's own Keychain service name is the constant `KEYCHAIN_SERVICE_NAME = "gemini-cli-oauth"`, and `security find-generic-password -s "gemini-cli-oauth"` returns *"The specified item could not be found in the keychain."* (`-s gemini-cli`, `-s "Gemini CLI"` and `-s google` are equally absent; only item **existence** was probed.) **The grounds for the Claude-Code analogy are removed** — §6.4's closing UNVERIFIED note and §11 item 3(c) both reasoned from this premise. **Verdict: COPYABLE.** |
+| A Gemini launcher must write `<GEMINI_CLI_HOME>/.gemini/settings.json` to set `selectedType` | **CORRECTED (S12, 2026-08-03).** The requirement is real and the *file location* is not. The `selectedType` key itself is **CONFIRMED** — an API key alone fails `Invalid auth method selected.` — and so is the **absence of any env-var equivalent**. But settings resolve over **four layers** (system defaults / user / project / system settings), and `GEMINI_CLI_SYSTEM_SETTINGS_PATH` points at an **arbitrary path that wins over all four**. That is the injection S12 verified end to end — MCP tool discovered, called and executed with only that variable set — and it writes **nothing under the sandbox home** and needs **no project `.gemini/` dir**. §6.4 now prefers it, consistent with that section's own stated preference for fileless, non-invasive launch paths. |
+| Gemini credentials sit at `~/.gemini/oauth_creds.json` (`0600`) | **CORRECTED (S12, 2026-08-03).** Half stale, and the stale half is **destructive**. That file exists, but 0.53.0's live path is a `HybridTokenStorage`: a native keychain via `@github/keytar` if it probes successfully, else `FileKeychain` at `<home>/.gemini/gemini-credentials.json`. `OAuthCredentialStorage.migrateFromFileStorage()` reads the legacy `oauth_creds.json`, writes the hybrid store, then **`fs.rm`s the original** — a **one-way destructive migration**. A seeding launcher that copies only the legacy filename can find it **already gone**. Operationally: seed by copying the **whole credential set**, and set `GEMINI_FORCE_FILE_STORAGE=true` to pin the file path deterministically. |
+| A Gemini MCP server that is declared is a Gemini MCP server the model can see | **CORRECTED (S12, 2026-08-03).** Servers declared **without `trust: true`**, in headless mode with the default approval mode and no `-y`, have their tools **omitted from the request body entirely**. Measured on identical prompts against a canned endpoint: `trust: true` → tool declared, **1** occurrence, **39.7 KB** body, tool called; **no trust** → **0** occurrences, **39.3 KB** body, no `tool_use` events, the model simply answered; no trust **+ `-y`** → declared, **52.9 KB** body, tool called. **No prompt, no warning, no error, exit success** — a run that completes cleanly having done nothing. This is a new member of the family this section already names: `default_tools_approval_mode = "approve"`, `--permission-prompt-tool stdio`, `--verbose`, `--setting-sources ""`, `[features] plugins = false`, `--output-schema`'s strict-mode `required`, positional canned-provider dispatch, `Task` vs `Agent` tool naming, and mis-shaped hook registration. Every one is a flag whose omission produces **no error anywhere**. |
+| A launcher may leave Gemini's model unpinned, and a canned server may match model ids exactly | **CORRECTED (S12, 2026-08-03).** Two distinct traps, each of which cost a run. **(a)** With no explicit `-m` (model `auto`), gemini 0.53.0 first issues a **classifier call** to `gemini-3.1-flash-lite` over **non-streaming `:generateContent`**, expecting a structured routing verdict; a naive canned reply produced **5 retries and a hang**. A launcher driving gemini against a canned or mocked endpoint **MUST pass an explicit `-m`**. **(b)** Even with `-m gemini-2.5-flash`, the request path was **`gemini-3.5-flash`** — an internal remap — so a canned server **MUST match model ids by substring, not equality**. Same **class** as §6.1 step 8's Claude Code readiness race: a harness behaviour that is invisible against a real endpoint and fatal against a fast or mocked one. |
+| §6.4's opencode launcher findings describe what a marion opencode adapter needs | **CORRECTED (S13, 2026-08-03).** All three — the legacy `POST /session/{id}/prompt_async`, `/event` vs `/api/event`, and `OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true` — are properties of the **`opencode serve` HTTP path**. They are not wrong and they are not retracted; they are simply **not the surface an adapter uses**, and the section gave no hint of that. The headless path is **`opencode run --pure --format json`**, which **binds no TCP port at all** (in-process fetch handler on `baseUrl: "http://opencode.internal"`; `Server.listen` has call sites only under `serve`/`acp`/`web`/desktop-RPC) and emits **NDJSON on stdout** with exactly six `type` values — `step_start`, `step_finish`, `text`, `reasoning`, `tool_use`, `error` — every line carrying `{type, timestamp, sessionID, …}`. It needs **none** of the three settings, requires no tty and, unlike `claude -p` (S11), **does not refuse one**: a `script -q /dev/null` run produced identical NDJSON. **There is no init, result or usage event**, so a reader **MUST** terminate on **stdout close** rather than on a terminal frame — the opposite of codex and gemini, both of which emit one, and a reader written against either would hang forever here. Fixtured in `tests/fixtures/s13/`; §11 item 10's opencode half narrowed, not closed. |
+| A timed-out harness child can be resolved by waiting, so §9's two-step group kill is a belt-and-braces measure | **CORRECTED (S13, 2026-08-03).** For opencode 1.17.3 it is **load-bearing**, because `opencode run` **never exits on a provider hang**. Measured: a provider returning **500 was still retrying at 90 s**; a **connection-refused was still hung at 180 s**; **no bounded backoff ceiling was found** anywhere in the binary. (The adjacent cases *do* terminate: a non-retryable 400 exits **1** with one `{"type":"error",…}` line on stdout and an empty stderr; an unresolvable `-m` exits 1; no message and no stdin exits 1.) So marion **MUST** impose its own wall-clock timeout — `provider.<id>.options.timeout` / `headerTimeout` are a first line of defence, not a substitute — and the kill must be the two-step group kill, because opencode's **bash tool spawns `detached: true`** children that can escape a single group signal, the **same class** as §11 item 18's codex `setsid` escape. For opencode the trigger is not a slow turn but a hang the harness will never resolve on its own. |
+| `inherit_user_config: false` prevents a marion child from picking up the operator's harness configuration | **CORRECTED (S13, 2026-08-03).** It prevents a harness reading **its own** config dir. It does not contemplate **one harness reading a different harness's**, and opencode 1.17.3 does exactly that: by default it reads `~/.claude/CLAUDE.md`, **every** `CLAUDE.md` between `cwd` and the worktree root, `~/.claude/skills/**/SKILL.md` and **every** project `.claude/skills/**/SKILL.md`, and it scans `~/.claude/ide/*.lock` for a running Claude Code IDE websocket bridge. **No amount of `XDG_*` isolation fixes this** — `~/.claude` is found via `HOME`, and `.claude/skills` via the project tree — so a launcher that correctly isolates config, data, cache and state still ships the operator's Claude Code instructions and skills into the child. Severed only by `OPENCODE_DISABLE_CLAUDE_CODE=1` **and** `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`, both now MUSTs in §6.4. A **novel hazard class** for this document: cross-harness contamination, defeating a default by a route that default never covered. (**UNKNOWN:** whether the `~/.claude/ide` lock scan is gated by any env var.) |
+| Every harness has a silent-omission trap in its MCP tool-permission surface, so marion must find opencode's | **RETRACTED (S13, 2026-08-03) — a deliberate NEGATIVE result.** opencode 1.17.3's `permission` default for MCP tools is **allow**. Verified: with no `permission` entry for `marionmcp_*`, the tool was declared, called and executed with **no prompt, no blocking and no allowlist**, and the JSON-RPC round trip completed. There is **no** analogue of codex's `default_tools_approval_mode = "approve"` or gemini's `trust: true` to forget. The measured matrix, all non-interactive with stdin closed: unset and `"allow"` → runs immediately; `"ask"` → stderr `! permission requested: marionmcp_report (*); auto-rejecting`, the tool part becomes `{"status":"error","error":"The user rejected permission to use this specific tool call."}`, and **the run continues to exit 0 without hanging**; `"deny"` → the tool is **removed from the model's schema entirely** (tools seen 8 → 7), which is strictly better than `"ask"`, since `ask` leaves it advertised and burns a model turn; `"ask"` + `--dangerously-skip-permissions` → auto-approved. **Recorded explicitly so the silent-failure family this section enumerates is not over-generalised into "every harness has one".** The family is a list of measured cases, not a law, and treating it as a law would have marion hunting for a flag that does not exist while missing opencode's *actual* traps — the never-exiting provider hang and the `~/.claude` adoption, both rows above. |
