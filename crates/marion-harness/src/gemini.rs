@@ -15,7 +15,11 @@ use serde_json::{Value, json};
 // These name the **bridge's** env contract rather than Claude Code's — the bridge reads
 // `MARION_AGENT_ID` whichever harness started it — so they are imported rather than respelled: a
 // second spelling would put a gemini child's `TaskContract.requester` back on "unattributed-root".
-use crate::claude_code::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
+use crate::adapter::Auth;
+use crate::claude_code::{
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV as MARION_BASE_URL_ENV, DEPTH_ENV,
+    READY_FILE_ENV,
+};
 use crate::invocation::Invocation;
 use crate::stream::{StreamOutcome, first_string, json_frames};
 
@@ -232,7 +236,12 @@ pub struct BridgeEnv {
     pub args: Vec<String>,
     pub repo: PathBuf,
     pub state: PathBuf,
-    pub base_url: String,
+    /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
+    /// ([`crate::claude_code::BASE_URL_ENV`]).
+    pub base_url: Option<String>,
+    /// Which endpoint a child this node spawns should talk to
+    /// ([`crate::claude_code::AUTH_ENV`]).
+    pub auth: Auth,
     pub agent_id: AgentId,
     /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
     pub agent_type: String,
@@ -270,11 +279,14 @@ pub fn settings_json(mcp: Option<&BridgeEnv>) -> Value {
         let mut env = json!({
             "MARION_REPO": b.repo.to_string_lossy(),
             "MARION_STATE_DIR": b.state.to_string_lossy(),
-            "MARION_BASE_URL": b.base_url,
+            AUTH_ENV: b.auth.as_wire(),
             AGENT_ID_ENV: b.agent_id.0,
             AGENT_TYPE_ENV: b.agent_type,
             DEPTH_ENV: b.depth.to_string(),
         });
+        if let Some(u) = &b.base_url {
+            env[MARION_BASE_URL_ENV] = json!(u);
+        }
         if let Some(r) = &b.ready_file {
             env[READY_FILE_ENV] = json!(r.to_string_lossy());
         }
@@ -315,7 +327,8 @@ mod tests {
             args: vec!["mcp".into()],
             repo: "/repo".into(),
             state: "/state".into(),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
             agent_id: AgentId("019f-child".into()),
             agent_type: "gemini".into(),
             depth: 1,

@@ -187,19 +187,59 @@ fn spawn_env() -> Result<run::Env, ()> {
         std::env::var("HOME").ok().as_deref(),
     )
     .ok_or(())?;
+    let (auth, base_url) = auth_from_env(
+        std::env::var(marion_supervisor::root::AUTH_ENV).ok(),
+        std::env::var(marion_supervisor::root::BASE_URL_ENV).ok(),
+    );
     Ok(run::Env {
         project_dir: ProjectDir::new(&state, &repo),
         repo,
         bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
-        base_url: Some(
-            std::env::var("MARION_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8099/v1".into()),
-        ),
-        // The bridge serves a node marion did not start, and the only channel it has is the
-        // per-server `env` block that node's config carries. Nothing in that block says "live" yet,
-        // so a child spawned through the bridge stays canned — carrying live down a hop is part 2's
-        // change, and inferring it here from an absent variable would be a guess.
-        auth: marion_harness::Auth::Canned,
+        base_url,
+        auth,
     })
+}
+
+/// **How `--live` crosses a spawn hop.**
+///
+/// The bridge serves a node marion did not start, so its only channel is the per-server `env` block
+/// marion wrote into that node's declaration. `MARION_AUTH` is the key that carries the mode; the
+/// pure half is here so the hop is testable without an environment.
+///
+/// Three rules, and each is the answer to a way this could go quietly wrong:
+///
+/// 1. **`inherited` means the child is live too, and marion names no endpoint for it.** A live root
+///    delegating to a canned child would launch that child against a server that is not running —
+///    the failure that motivated part 2 — and a canned root delegating to a live child would spend
+///    the operator's money without anyone asking for it.
+/// 2. **An absent `MARION_AUTH` is `Canned`**, which is what every declaration written before the
+///    key existed meant. It is *not* inferred from an absent `MARION_BASE_URL`: guessing live from a
+///    missing key points a real credential somewhere marion did not choose.
+/// 3. **An unrecognised value is `Canned` too, not a guess in the expensive direction.** The two
+///    errors are not symmetric — see [`marion_harness::Auth::from_wire`].
+///
+/// The empty string is the state this function exists to make impossible downstream: a
+/// `MARION_BASE_URL=""` (which is what `unwrap_or_default()` used to write into a live root's
+/// declaration) is treated as absent, never as an endpoint.
+fn auth_from_env(
+    auth: Option<String>,
+    base_url: Option<String>,
+) -> (marion_harness::Auth, Option<String>) {
+    let auth = auth
+        .as_deref()
+        .and_then(marion_harness::Auth::from_wire)
+        .unwrap_or(marion_harness::Auth::Canned);
+    let base_url = match auth {
+        // Live means marion overlays no endpoint on the child, exactly as `marion run --live`
+        // overlays none on the root. Any inherited value is ignored rather than obeyed.
+        marion_harness::Auth::Inherited => None,
+        marion_harness::Auth::Canned => Some(
+            base_url
+                .filter(|u| !u.trim().is_empty())
+                .unwrap_or_else(|| "http://127.0.0.1:8099/v1".into()),
+        ),
+    };
+    (auth, base_url)
 }
 
 fn new_task_id() -> std::io::Result<marion_core::contract::TaskId> {

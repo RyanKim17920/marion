@@ -58,6 +58,34 @@ pub enum Auth {
     Inherited,
 }
 
+impl Auth {
+    /// The spelling that rides a bridge declaration's `env` block (`MARION_AUTH`).
+    ///
+    /// A string rather than a bool for the same reason the type is an enum: an MCP `env` block is
+    /// `Record<string,string>` on every harness that has one, and `"true"` would say *true of what*.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Auth::Canned => "canned",
+            Auth::Inherited => "inherited",
+        }
+    }
+
+    /// The inverse, for the bridge reading the declaration marion wrote.
+    ///
+    /// **An unrecognised value is `None`, and the caller must not treat that as `Inherited`.** The
+    /// two failure directions are not symmetric: guessing canned costs a run against an endpoint
+    /// that is not there, while guessing live points the operator's real credential somewhere marion
+    /// did not choose. Absence — a declaration written before this key existed — is the caller's to
+    /// resolve, and every such declaration meant [`Auth::Canned`].
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s.trim() {
+            "canned" => Some(Auth::Canned),
+            "inherited" => Some(Auth::Inherited),
+            _ => None,
+        }
+    }
+}
+
 /// The harness-specific knobs that have no neutral meaning. Deliberately a named struct rather
 /// than a map: every field here is read by exactly one adapter, and a map would let a typo pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -278,7 +306,12 @@ impl ClaudeCodeAdapter {
             bridge: ctx.bridge.clone(),
             repo: ctx.repo.clone(),
             state: ctx.state_dir.clone(),
-            base_url: spec.base_url.clone().unwrap_or_default(),
+            // **Not `unwrap_or_default()`.** That wrote `MARION_BASE_URL: ""` into a live root's
+            // declaration, the bridge read it back as `Ok("")`, and the child it spawned was
+            // compiled canned against an endpoint spelled as the empty string — a live root whose
+            // child was neither live nor working, with nothing anywhere reporting it.
+            base_url: spec.base_url.clone(),
+            auth: spec.auth,
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
@@ -436,7 +469,8 @@ impl HarnessAdapter for CodexAdapter {
             args: ctx.bridge_args.clone(),
             repo: ctx.repo.clone(),
             state: ctx.state_dir.clone(),
-            base_url: base_url.to_string(),
+            base_url: spec.base_url.clone(),
+            auth: spec.auth,
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
@@ -538,7 +572,9 @@ impl HarnessAdapter for GeminiAdapter {
             args: ctx.bridge_args.clone(),
             repo: ctx.repo.clone(),
             state: ctx.state_dir.clone(),
-            base_url: spec.base_url.clone().unwrap_or_default(),
+            // Omitted rather than blanked under `Inherited` — see `ClaudeCodeAdapter::mcp_env`.
+            base_url: spec.base_url.clone(),
+            auth: spec.auth,
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
@@ -629,7 +665,8 @@ impl HarnessAdapter for OpenCodeAdapter {
             args: ctx.bridge_args.clone(),
             repo: ctx.repo.clone(),
             state: ctx.state_dir.clone(),
-            base_url: base_url.to_string(),
+            base_url: spec.base_url.clone(),
+            auth: spec.auth,
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
@@ -792,7 +829,8 @@ mod tests {
             repo: "/repo".into(),
             state: "/state".into(),
             // The `/v1` form, which is what the bridge hands a Codex grandchild.
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
             agent_id: AgentId("019f-root".into()),
             agent_type: "claude".into(),
             depth: 0,
@@ -814,7 +852,8 @@ mod tests {
                 args: vec!["mcp".into()],
                 repo: "/repo".into(),
                 state: "/state".into(),
-                base_url: "http://127.0.0.1:8099/v1".into(),
+                base_url: Some("http://127.0.0.1:8099/v1".into()),
+                auth: Auth::Canned,
                 agent_id: AgentId("019f-root".into()),
                 agent_type: "claude".into(),
                 depth: 0,
@@ -1040,7 +1079,8 @@ mod tests {
             bridge: "/bin/marion-supervisor".into(),
             repo: "/repo".into(),
             state: "/state".into(),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
             agent_id: AgentId("019f-root".into()),
             agent_type: "claude".into(),
             depth: 0,
@@ -1057,7 +1097,8 @@ mod tests {
             args: vec!["mcp".into()],
             repo: "/repo".into(),
             state: "/state".into(),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
             agent_id: AgentId("019f-root".into()),
             agent_type: "gemini".into(),
             depth: 0,
@@ -1074,7 +1115,8 @@ mod tests {
                 args: vec!["mcp".into()],
                 repo: "/repo".into(),
                 state: "/state".into(),
-                base_url: "http://127.0.0.1:8099/v1".into(),
+                base_url: Some("http://127.0.0.1:8099/v1".into()),
+                auth: Auth::Canned,
                 agent_id: AgentId("019f-root".into()),
                 agent_type: "opencode".into(),
                 depth: 0,
@@ -1284,7 +1326,8 @@ mod tests {
                     args: vec!["mcp".into()],
                     repo: "/repo".into(),
                     state: "/state".into(),
-                    base_url: "http://127.0.0.1:8099/v1".into(),
+                    base_url: Some("http://127.0.0.1:8099/v1".into()),
+                    auth: Auth::Canned,
                     agent_id: AgentId("019f-root".into()),
                     agent_type: "claude".into(),
                     depth: 0,
@@ -1311,7 +1354,8 @@ mod tests {
                         args: vec!["mcp".into()],
                         repo: "/repo".into(),
                         state: "/state".into(),
-                        base_url: "http://127.0.0.1:8099/v1".into(),
+                        base_url: Some("http://127.0.0.1:8099/v1".into()),
+                        auth: Auth::Canned,
                         agent_id: AgentId("019f-root".into()),
                         agent_type: "claude".into(),
                         depth: 0,

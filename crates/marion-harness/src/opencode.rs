@@ -17,7 +17,10 @@ use marion_core::contract::AgentId;
 use serde_json::{Value, json};
 
 // The bridge's env contract, imported for the same reason gemini imports it: one spelling.
-use crate::claude_code::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
+use crate::adapter::Auth;
+use crate::claude_code::{
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, READY_FILE_ENV,
+};
 use crate::invocation::Invocation;
 use crate::stream::{StreamOutcome, first_string, json_frames};
 
@@ -246,7 +249,12 @@ pub struct BridgeEnv {
     pub args: Vec<String>,
     pub repo: PathBuf,
     pub state: PathBuf,
-    pub base_url: String,
+    /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
+    /// ([`crate::claude_code::BASE_URL_ENV`]).
+    pub base_url: Option<String>,
+    /// Which endpoint a child this node spawns should talk to
+    /// ([`crate::claude_code::AUTH_ENV`]).
+    pub auth: Auth,
     pub agent_id: AgentId,
     /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
     pub agent_type: String,
@@ -319,11 +327,14 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
         let mut environment = json!({
             "MARION_REPO": b.repo.to_string_lossy(),
             "MARION_STATE_DIR": b.state.to_string_lossy(),
-            "MARION_BASE_URL": b.base_url,
+            AUTH_ENV: b.auth.as_wire(),
             AGENT_ID_ENV: b.agent_id.0,
             AGENT_TYPE_ENV: b.agent_type,
             DEPTH_ENV: b.depth.to_string(),
         });
+        if let Some(u) = &b.base_url {
+            environment[BASE_URL_ENV] = json!(u);
+        }
         if let Some(r) = &b.ready_file {
             environment[READY_FILE_ENV] = json!(r.to_string_lossy());
         }
@@ -365,7 +376,8 @@ mod tests {
             args: vec!["mcp".into()],
             repo: "/repo".into(),
             state: "/state".into(),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
             agent_id: AgentId("019f-child".into()),
             agent_type: "opencode".into(),
             depth: 1,

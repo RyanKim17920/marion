@@ -84,8 +84,8 @@ pub use crate::duplex::{
 // `marion-harness` and are re-exported here — `marion-supervisor mcp`, the other end of the
 // handshake, reads them from this module.
 pub use marion_harness::claude_code::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, McpEnv, READY_FILE_ENV, anthropic_base_url,
-    mcp_config_json,
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, McpEnv, READY_FILE_ENV,
+    anthropic_base_url, mcp_config_json,
 };
 
 /// §3.1/§6.1 step 2: *"`max_depth` … counting the root as 0"*.
@@ -530,7 +530,8 @@ mod tests {
             bridge: "/bin/marion-supervisor".into(),
             repo: "/repo".into(),
             state: "/state".into(),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
             agent_id: AgentId("019f-root".into()),
             agent_type: "claude".into(),
             depth: ROOT_DEPTH,

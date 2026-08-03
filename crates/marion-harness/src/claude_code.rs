@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use marion_core::contract::AgentId;
 use serde_json::{Value, json};
 
+use crate::adapter::Auth;
 use crate::invocation::Invocation;
 use crate::stream::{StreamOutcome, first_string, json_frames};
 
@@ -26,6 +27,26 @@ pub const AGENT_ID_ENV: &str = "MARION_AGENT_ID";
 /// is a constant pretending to be a lookup and would silently ignore any type that stated its own
 /// bound. That is the same shape as `AgentType.harness` having once been a `String` nothing read.
 pub const AGENT_TYPE_ENV: &str = "MARION_AGENT_TYPE";
+/// Env var carrying the node's **auth mode** to the bridge (§6.4, `--live`).
+///
+/// The sixth member of the bridge's env contract, and the one that makes `--live` survive a spawn
+/// hop. The bridge is a process the *harness* starts, so the per-server `env` block is marion's only
+/// channel to it — and until this existed nothing in that block said "live": a live root's child was
+/// silently compiled canned, against an endpoint that was not running.
+///
+/// **Explicit rather than inferred from an absent `MARION_BASE_URL`.** The absence of a URL is
+/// already ambiguous — a declaration written by an older marion, a harness that reads no URL, a bug
+/// that dropped it — and "guess live from a missing key" turns every one of those into a real
+/// credential pointed somewhere marion did not choose. The mode is a decision, so it is stated. Its
+/// absence still means [`crate::Auth::Canned`], which is what every pre-`--live` declaration meant.
+pub const AUTH_ENV: &str = "MARION_AUTH";
+/// Env var carrying the provider base URL the bridge should hand a child it spawns.
+///
+/// **Omitted entirely under [`crate::Auth::Inherited`]**, never written empty: `MARION_BASE_URL=""`
+/// read back through `var()` is `Ok("")`, which is a base URL that names nothing and compiles into a
+/// child's config as a provider pointing at the empty string. Absent is a state the reader can act
+/// on; empty is one it cannot tell from a value.
+pub const BASE_URL_ENV: &str = "MARION_BASE_URL";
 /// Env var carrying a node's **depth** to the bridge, with the root at 0 (§3.1, §6.1 step 2).
 ///
 /// The other half of the same problem: depth is a property of the *tree*, which only marion can
@@ -209,7 +230,11 @@ pub struct McpEnv {
     pub bridge: PathBuf,
     pub repo: PathBuf,
     pub state: PathBuf,
-    pub base_url: String,
+    /// `None` under [`crate::Auth::Inherited`], where the key is **omitted** rather than written
+    /// empty — see [`BASE_URL_ENV`].
+    pub base_url: Option<String>,
+    /// Which endpoint the child this node spawns should talk to. See [`AUTH_ENV`].
+    pub auth: Auth,
     pub agent_id: AgentId,
     /// The node's agent type name, in its **canonical** spelling — the alias `codex` resolves to
     /// `codex-impl` before it gets here, so the bridge re-resolves one definition and not two.
@@ -230,23 +255,31 @@ pub struct McpEnv {
 /// supervisor: §3.1 makes config generation part of the adapter contract, and the Codex adapter's
 /// counterpart ([`crate::codex::config_toml`]) has always lived beside its own compile step.
 pub fn mcp_config_json(node_env: &McpEnv) -> Value {
+    let mut env = json!({
+        "MARION_REPO": node_env.repo.to_string_lossy(),
+        "MARION_STATE_DIR": node_env.state.to_string_lossy(),
+        // The auth mode is stated on **every** declaration, in both modes: a key that appears only
+        // under `--live` would make its absence mean two things at once (canned, or an older
+        // marion), which is the ambiguity `AUTH_ENV` exists to remove.
+        AUTH_ENV: node_env.auth.as_wire(),
+        AGENT_ID_ENV: node_env.agent_id.0,
+        AGENT_TYPE_ENV: node_env.agent_type,
+        // A string, because an MCP `env` block is `Record<string,string>` on every
+        // harness that has one. The bridge parses it back.
+        DEPTH_ENV: node_env.depth.to_string(),
+        READY_FILE_ENV: node_env.ready_file.to_string_lossy(),
+    });
+    // Present or absent, never empty — see [`BASE_URL_ENV`].
+    if let Some(u) = &node_env.base_url {
+        env[BASE_URL_ENV] = json!(u);
+    }
     json!({
         "mcpServers": {
             "marion": {
                 "type": "stdio",
                 "command": node_env.bridge.to_string_lossy(),
                 "args": ["mcp"],
-                "env": {
-                    "MARION_REPO": node_env.repo.to_string_lossy(),
-                    "MARION_STATE_DIR": node_env.state.to_string_lossy(),
-                    "MARION_BASE_URL": node_env.base_url,
-                    AGENT_ID_ENV: node_env.agent_id.0,
-                    AGENT_TYPE_ENV: node_env.agent_type,
-                    // A string, because an MCP `env` block is `Record<string,string>` on every
-                    // harness that has one. The bridge parses it back.
-                    DEPTH_ENV: node_env.depth.to_string(),
-                    READY_FILE_ENV: node_env.ready_file.to_string_lossy(),
-                }
+                "env": env
             }
         }
     })

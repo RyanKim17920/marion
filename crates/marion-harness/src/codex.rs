@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use marion_core::contract::AgentId;
 
 // The bridge's own env-var contract, imported rather than respelled — see [`BridgeEnv`].
-use crate::claude_code::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
+use crate::adapter::Auth;
+use crate::claude_code::{
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, READY_FILE_ENV,
+};
 use crate::invocation::Invocation;
 use crate::stream::{StreamOutcome, json_frames};
 
@@ -133,7 +136,12 @@ pub struct BridgeEnv {
     pub args: Vec<String>,
     pub repo: PathBuf,
     pub state: PathBuf,
-    pub base_url: String,
+    /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
+    /// ([`crate::claude_code::BASE_URL_ENV`]).
+    pub base_url: Option<String>,
+    /// Which endpoint a child this node spawns should talk to
+    /// ([`crate::claude_code::AUTH_ENV`]).
+    pub auth: Auth,
     pub agent_id: AgentId,
     /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
     pub agent_type: String,
@@ -182,6 +190,35 @@ fn toml_str(s: &str) -> String {
 /// which §6.7 makes an audit record naming an agent-dir that does not exist. codex's TOML schema
 /// has always supported `env` inside `[mcp_servers.<name>]`; nothing was blocking this but the
 /// plumbing, and `ctx.agent_id` was already threaded to the call site.
+/// The `env` block of `[mcp_servers.marion]`, as ordered pairs.
+///
+/// Shared by the two routes codex's declaration can take — the generated `config.toml` under
+/// [`Auth::Canned`] and the `-c mcp_servers.marion.env.…` overrides under [`Auth::Inherited`] — so
+/// the two cannot carry different sets of variables. A live bridge that was handed fewer keys than a
+/// canned one is exactly the failure class this codebase keeps re-finding: `spawn` answering
+/// `MARION_REPO is not set` on the one path nobody tests automatically.
+pub fn bridge_env_pairs(env: &BridgeEnv) -> Vec<(String, String)> {
+    let mut pairs = vec![
+        ("MARION_REPO".to_string(), env.repo.display().to_string()),
+        (
+            "MARION_STATE_DIR".to_string(),
+            env.state.display().to_string(),
+        ),
+        (AUTH_ENV.to_string(), env.auth.as_wire().to_string()),
+        (AGENT_ID_ENV.to_string(), env.agent_id.0.clone()),
+        (AGENT_TYPE_ENV.to_string(), env.agent_type.clone()),
+        (DEPTH_ENV.to_string(), env.depth.to_string()),
+    ];
+    // Present or absent, never empty ([`crate::claude_code::BASE_URL_ENV`]).
+    if let Some(u) = &env.base_url {
+        pairs.push((BASE_URL_ENV.to_string(), u.clone()));
+    }
+    if let Some(r) = &env.ready_file {
+        pairs.push((READY_FILE_ENV.to_string(), r.display().to_string()));
+    }
+    pairs
+}
+
 pub fn config_toml(env: &BridgeEnv, base_url: &str) -> String {
     let args = env
         .args
@@ -189,21 +226,7 @@ pub fn config_toml(env: &BridgeEnv, base_url: &str) -> String {
         .map(|a| toml_str(a))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut pairs = vec![
-        ("MARION_REPO".to_string(), env.repo.display().to_string()),
-        (
-            "MARION_STATE_DIR".to_string(),
-            env.state.display().to_string(),
-        ),
-        ("MARION_BASE_URL".to_string(), env.base_url.clone()),
-        (AGENT_ID_ENV.to_string(), env.agent_id.0.clone()),
-        (AGENT_TYPE_ENV.to_string(), env.agent_type.clone()),
-        (DEPTH_ENV.to_string(), env.depth.to_string()),
-    ];
-    if let Some(r) = &env.ready_file {
-        pairs.push((READY_FILE_ENV.to_string(), r.display().to_string()));
-    }
-    let env_table = pairs
+    let env_table = bridge_env_pairs(env)
         .iter()
         .map(|(k, v)| format!("{k} = {}", toml_str(v)))
         .collect::<Vec<_>>()
@@ -278,7 +301,8 @@ mod tests {
             args: vec!["mcp".into()],
             repo: "/repo".into(),
             state: "/state".into(),
-            base_url: "http://127.0.0.1:8099/v1".into(),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
             agent_id: AgentId("019f-node".into()),
             agent_type: "codex-impl".into(),
             depth: 1,
