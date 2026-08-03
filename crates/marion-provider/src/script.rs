@@ -8,7 +8,7 @@
 
 use serde_json::{Value, json};
 
-use crate::{RequestKind, anthropic, classify_anthropic, responses};
+use crate::{RequestKind, anthropic, classify_anthropic, gemini, openai, responses};
 
 /// `call_id` of the child's `apply_patch` step. Its later echo in `input` is how the provider
 /// recognises that the patch step has already happened.
@@ -27,18 +27,59 @@ pub enum Wire {
     Anthropic,
     /// OpenAI Responses, spoken by the `codex exec` child.
     Responses,
+    /// Gemini `generateContent`, spoken by a `gemini` child.
+    ///
+    /// `streaming` distinguishes `:streamGenerateContent?alt=sse` from `:generateContent`. It is
+    /// the one thing on this wire that genuinely *is* a property of the path — the body is
+    /// byte-identical either way — and it selects a framing, never a script step. Carrying it here
+    /// keeps [`Script::respond`] a function of `(wire, body)` as it already was.
+    Gemini {
+        /// `true` for the SSE endpoint, `false` for the plain-JSON one.
+        streaming: bool,
+    },
+    /// OpenAI Chat Completions, spoken by an `opencode` child.
+    OpenAi,
 }
 
-/// Tell the two wires apart.
+/// The name this wire is recorded under in the request log.
+pub fn wire_name(wire: Wire) -> &'static str {
+    match wire {
+        Wire::Anthropic => "anthropic",
+        Wire::Responses => "responses",
+        Wire::Gemini { .. } => "gemini",
+        Wire::OpenAi => "openai",
+    }
+}
+
+/// Tell the four wires apart.
 ///
-/// The body is the primary evidence and the path only a tiebreak: both harnesses let the operator
-/// choose the base URL, so a path is configuration, whereas `messages` vs `input` is the protocol.
+/// The body is the primary evidence and the path only a tiebreak: every harness lets the operator
+/// choose the base URL, so a path is configuration, whereas the top-level request key is the
+/// protocol. Three of the four announce themselves outright — `contents` is Gemini, `input` is
+/// Responses, `messages` is one of the two Chat wires — and the fourth needs one more step.
+///
+/// **The `messages` collision is real and is resolved on measured shape, not on the path.** Both
+/// Anthropic Messages and OpenAI Chat Completions carry a top-level `messages` array, so the key
+/// alone is not a discriminator; see [`messages_wire`] for which shapes inside it are.
 pub fn classify_wire(path: &str, body: &Value) -> Option<Wire> {
-    if body.get("messages").and_then(Value::as_array).is_some() {
-        return Some(Wire::Anthropic);
+    if body.get("contents").and_then(Value::as_array).is_some() {
+        return Some(Wire::Gemini {
+            streaming: gemini_streaming(path),
+        });
     }
     if body.get("input").is_some() {
         return Some(Wire::Responses);
+    }
+    if body.get("messages").and_then(Value::as_array).is_some() {
+        return Some(messages_wire(path, body));
+    }
+    if path.contains(":streamGenerateContent") || path.contains(":generateContent") {
+        return Some(Wire::Gemini {
+            streaming: gemini_streaming(path),
+        });
+    }
+    if path.contains("/chat/completions") {
+        return Some(Wire::OpenAi);
     }
     if path.contains("/messages") {
         return Some(Wire::Anthropic);
@@ -47,6 +88,83 @@ pub fn classify_wire(path: &str, body: &Value) -> Option<Wire> {
         return Some(Wire::Responses);
     }
     None
+}
+
+/// SSE or plain JSON, from the endpoint the CLI chose.
+///
+/// `:streamGenerateContent` and `alt=sse` travel together in every S12 capture; either alone is
+/// taken as streaming, because answering SSE with JSON hangs the client and the reverse is an
+/// obvious parse error.
+fn gemini_streaming(path: &str) -> bool {
+    path.contains(":streamGenerateContent") || path.contains("alt=sse")
+}
+
+/// Split the two wires that both call their transcript `messages`.
+///
+/// Measured discriminators, strongest first — each is a *structural* difference, present on every
+/// request the respective harness makes, not a substring anywhere in the body:
+///
+/// 1. **The tool declarations.** Anthropic declares `tools[].input_schema` at the top of each tool
+///    object; OpenAI wraps every tool as `{"type":"function","function":{…}}`. S13 saw the
+///    `tools[].function` form on the wire from opencode, and the s1 Anthropic fixtures carry
+///    `input_schema`. Both harnesses declare marion's MCP tools on *every* turn, so this is stable
+///    rather than edge-triggered — the same property [`classify_root`] depends on.
+/// 2. **The transcript.** Anthropic represents a call and its result as content *blocks*
+///    (`{"type":"tool_use"}` / `{"type":"tool_result"}`) inside a message; OpenAI puts
+///    `tool_calls` on an assistant message and answers with a whole message of `role: "tool"`.
+///    These shapes cannot both be valid in one body.
+///
+/// Only if a body offers neither — a bare `messages` array, which neither harness ever sends —
+/// does the path break the tie, and then in exactly the way the rest of this function uses it: as
+/// configuration, consulted last. The tie defaults to Anthropic, which is what this provider
+/// answered before the two Chat wires had to share the key.
+///
+/// Deliberately *not* used as discriminators: `max_tokens` (Anthropic requires it, but OpenAI
+/// permits it, so its presence proves nothing), and `stream: true` (both wires stream).
+fn messages_wire(path: &str, body: &Value) -> Wire {
+    for tool in body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if tool.get("function").and_then(Value::as_object).is_some() {
+            return Wire::OpenAi;
+        }
+        if tool.get("input_schema").is_some() {
+            return Wire::Anthropic;
+        }
+    }
+    for message in body
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some()
+            || message.get("role").and_then(Value::as_str) == Some("tool")
+        {
+            return Wire::OpenAi;
+        }
+        let blocked = message
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b.get("type").and_then(Value::as_str))
+            .any(|t| matches!(t, "tool_use" | "tool_result"));
+        if blocked {
+            return Wire::Anthropic;
+        }
+    }
+    if path.contains("/chat/completions") {
+        Wire::OpenAi
+    } else {
+        Wire::Anthropic
+    }
 }
 
 /// Where the root is in its two-step script.
@@ -67,6 +185,135 @@ pub enum ChildStep {
     Report,
     /// Both have happened: emit the final message.
     Finish,
+}
+
+/// Where a `gemini` child is in its two-step script.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeminiStep {
+    /// Nothing has come back yet: call marion's `report`.
+    Report,
+    /// The transcript already carries that call's `functionResponse`: say something and stop.
+    Finish,
+}
+
+/// Where an `opencode` child is in its two-step script.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenAiStep {
+    /// Nothing has come back yet: call marion's `report`.
+    Report,
+    /// The transcript already carries that call: say something and stop.
+    Finish,
+}
+
+/// What a Gemini request is asking for, decided by shape alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeminiKind {
+    /// A real turn: carries a non-empty `tools` array.
+    ScriptedTurn,
+    /// The CLI's model-routing classifier call. Answered with a fixed stub.
+    RouterProbe,
+}
+
+/// Classify a Gemini `generateContent` request.
+///
+/// Same rule and same reasoning as [`classify_anthropic`]: a request carrying no tools is not a
+/// turn we have a script for, and treating it as one is the failure this function exists to
+/// prevent. On this wire the no-tools request has a name and a measured cost. S12: with no explicit
+/// `-m` the CLI first asks `gemini-3.1-flash-lite`, over **non-streaming `:generateContent`**, for
+/// a structured routing verdict — and a canned reply it could not use made it retry five times and
+/// then hang, with no error printed anywhere.
+///
+/// marion's adapter always passes an explicit `-m`, so in a marion run this arm should never fire.
+/// It exists so that when it does fire — an operator running the CLI by hand, a future model alias
+/// that re-enables routing — the answer is a well-formed terminal response and the client gives up
+/// on routing rather than hanging. **The verdict payload is a guess**: S12 recorded that the
+/// classifier expects "a structured routing verdict" but never captured its schema, which is why
+/// [`Script::gemini_router_verdict`] is a field an adapter can retarget rather than a constant.
+///
+/// Note this shares its shape with the trap S12 records for `trust: true`: a gemini child whose MCP
+/// server is untrusted has its tools stripped from the request body entirely, so it too would land
+/// here. That is the correct outcome — there is no tool to script a call to.
+pub fn classify_gemini(body: &Value) -> GeminiKind {
+    let has_tools = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|t| !t.is_empty());
+    if has_tools {
+        GeminiKind::ScriptedTurn
+    } else {
+        GeminiKind::RouterProbe
+    }
+}
+
+/// Decide the gemini child's step from the `contents` it sent us.
+///
+/// The signal is a `functionCall` or `functionResponse` **part** naming `report_tool`. Structured
+/// evidence only, for the reason [`classify_child`] gives: the tool's name is also in the request's
+/// `tools` declaration and in the system instruction on every single turn, so any substring scan
+/// would answer `Finish` to turn one and the child would never call anything.
+///
+/// The name is a parameter rather than a constant because the model-facing spelling is the
+/// harness's, not marion's ([`Script::gemini_report_tool`]).
+pub fn classify_gemini_step(body: &Value, report_tool: &str) -> GeminiStep {
+    let called = gemini_parts(body).any(|part| {
+        ["functionCall", "functionResponse"].iter().any(|key| {
+            part.get(key)
+                .and_then(|c| c.get("name"))
+                .and_then(Value::as_str)
+                == Some(report_tool)
+        })
+    });
+    if called {
+        GeminiStep::Finish
+    } else {
+        GeminiStep::Report
+    }
+}
+
+fn gemini_parts(body: &Value) -> impl Iterator<Item = &Value> {
+    body.get("contents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|content| content.get("parts").and_then(Value::as_array))
+        .flatten()
+}
+
+/// Decide the opencode child's step from the `messages` it sent us.
+///
+/// The signal is an assistant message whose `tool_calls[].function.name` is `report_tool`, or the
+/// `role: "tool"` message answering it. Chat Completions is stateless, so opencode replays the
+/// whole transcript on every request and the evidence is stable once present — the same property
+/// [`classify_root`] relies on, and the reason neither classifier needs to remember anything.
+///
+/// Structured evidence only, again: `report_tool` is named in `tools[]` on every turn.
+pub fn classify_openai_step(body: &Value, report_tool: &str) -> OpenAiStep {
+    let called = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|message| {
+            let calls = message
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|call| {
+                    call.get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str)
+                        == Some(report_tool)
+                });
+            let answered = message.get("role").and_then(Value::as_str) == Some("tool")
+                && message.get("name").and_then(Value::as_str) == Some(report_tool);
+            calls || answered
+        });
+    if called {
+        OpenAiStep::Finish
+    } else {
+        OpenAiStep::Report
+    }
 }
 
 /// Decide the root's step from the conversation it sent us.
@@ -174,10 +421,33 @@ pub struct Script {
     /// The child's final assistant message. Under `--output-schema` this is delivered verbatim to
     /// `--output-last-message`, so the default is a schema document, not prose.
     pub child_final_text: String,
+    /// marion's `report`, in the spelling a **gemini** child sees: `mcp_<server>_<tool>` with
+    /// single underscores (S12). A field rather than a constant for the same reason
+    /// [`Script::root_tool`] is one — and because the server alias is the operator's to choose.
+    pub gemini_report_tool: String,
+    /// Arguments the gemini child passes to [`Script::gemini_report_tool`].
+    pub gemini_report_args: Value,
+    /// The gemini child's closing text turn.
+    pub gemini_final_text: String,
+    /// What to answer a Gemini request that declares no tools — in practice the CLI's model-routing
+    /// classifier call. See [`classify_gemini`]: the schema of a real verdict was never captured,
+    /// so this is a placeholder whose only guaranteed property is that it is well formed and
+    /// terminal. Parameterised so an adapter that *does* learn the schema can supply it without
+    /// touching this crate.
+    pub gemini_router_verdict: String,
+    /// marion's `report`, in the spelling an **opencode** child sees: `<serverName>_<toolName>`
+    /// (S13). Distinct from the gemini spelling, and from the unprefixed `report` that opencode
+    /// sends over JSON-RPC to the MCP server itself.
+    pub openai_report_tool: String,
+    /// Arguments the opencode child passes to [`Script::openai_report_tool`].
+    pub openai_report_args: Value,
+    /// The opencode child's closing text turn.
+    pub openai_final_text: String,
 }
 
 impl Default for Script {
     fn default() -> Self {
+        let narrative = "Added the M1 marker file under src/.";
         Self {
             root_tool: "mcp__marion__spawn".to_string(),
             root_tool_input: json!({
@@ -192,10 +462,16 @@ impl Default for Script {
                           +marion M1: written by the canned codex child\n*** End Patch"
                 .to_string(),
             child_exec_js: None,
-            child_narrative: "Added the M1 marker file under src/.".to_string(),
-            child_final_text:
-                json!({"narrative": "Added the M1 marker file under src/.", "result_commits": []})
-                    .to_string(),
+            child_narrative: narrative.to_string(),
+            child_final_text: json!({"narrative": narrative, "result_commits": []}).to_string(),
+            gemini_report_tool: "mcp_marion_report".to_string(),
+            gemini_report_args: json!({"narrative": narrative}),
+            gemini_final_text: "Reported back through marion. Done.".to_string(),
+            gemini_router_verdict: json!({"model_choice": "flash", "reasoning": "canned"})
+                .to_string(),
+            openai_report_tool: "marion_report".to_string(),
+            openai_report_args: json!({"narrative": narrative}),
+            openai_final_text: "Reported back through marion. Done.".to_string(),
         }
     }
 }
@@ -206,6 +482,8 @@ impl Script {
         match wire {
             Wire::Anthropic => self.respond_anthropic(body),
             Wire::Responses => self.respond_responses(body),
+            Wire::Gemini { streaming } => self.respond_gemini(body, streaming),
+            Wire::OpenAi => self.respond_openai(body),
         }
     }
 
@@ -231,6 +509,33 @@ impl Script {
             },
             ChildStep::Report => responses::report_call(&self.child_narrative, REPORT_CALL_ID),
             ChildStep::Finish => responses::final_message(&self.child_final_text),
+        }
+    }
+
+    fn respond_gemini(&self, body: &Value, streaming: bool) -> String {
+        match classify_gemini(body) {
+            GeminiKind::RouterProbe => gemini::text_turn(&self.gemini_router_verdict, streaming),
+            GeminiKind::ScriptedTurn => {
+                match classify_gemini_step(body, &self.gemini_report_tool) {
+                    GeminiStep::Report => gemini::function_call_turn(
+                        &self.gemini_report_tool,
+                        &self.gemini_report_args,
+                        streaming,
+                    ),
+                    GeminiStep::Finish => gemini::text_turn(&self.gemini_final_text, streaming),
+                }
+            }
+        }
+    }
+
+    fn respond_openai(&self, body: &Value) -> String {
+        match classify_openai_step(body, &self.openai_report_tool) {
+            OpenAiStep::Report => openai::tool_call_turn(
+                &self.openai_report_tool,
+                REPORT_CALL_ID,
+                &self.openai_report_args,
+            ),
+            OpenAiStep::Finish => openai::text_turn(&self.openai_final_text),
         }
     }
 }
@@ -406,5 +711,364 @@ mod tests {
             Some(Wire::Responses)
         );
         assert_eq!(classify_wire("/health", &json!({})), None);
+    }
+
+    // --- the four wires ----------------------------------------------------------------------
+
+    /// The four measured request shapes, each with the path its harness actually uses.
+    fn measured_bodies() -> [(&'static str, &'static str, Value); 4] {
+        [
+            (
+                "anthropic",
+                "/v1/messages",
+                json!({
+                    "model": "claude", "max_tokens": 1024, "stream": true,
+                    "tools": [{"name": "mcp__marion__spawn", "input_schema": {"type": "object"}}],
+                    "messages": [{"role": "user", "content": [{"type": "text", "text": "go"}]}],
+                }),
+            ),
+            (
+                "responses",
+                "/v1/responses",
+                json!({"model": "gpt-5.6-sol", "input": [], "stream": true}),
+            ),
+            (
+                "gemini",
+                "/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+                json!({
+                    "contents": [{"role": "user", "parts": [{"text": "go"}]}],
+                    "systemInstruction": {"parts": [{"text": "you are"}]},
+                    "tools": [{"functionDeclarations": [{"name": "mcp_marion_report"}]}],
+                }),
+            ),
+            (
+                "openai",
+                "/v1/chat/completions",
+                json!({
+                    "model": "fake-1", "stream": true,
+                    "tools": [{"type": "function", "function": {
+                        "name": "marion_report", "parameters": {"type": "object"}}}],
+                    "messages": [{"role": "user", "content": "go"}],
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn all_four_wires_classify_unambiguously_and_no_body_answers_to_two() {
+        let bodies = measured_bodies();
+        for (expected, path, body) in &bodies {
+            let wire = classify_wire(path, body).expect("every measured body routes");
+            assert_eq!(&wire_name(wire), expected, "on its own path: {path}");
+            // The body is the evidence: every *other* harness's path must not change the verdict.
+            for (_, other_path, _) in &bodies {
+                let under_other = classify_wire(other_path, body).expect("still routes");
+                assert_eq!(
+                    wire_name(under_other),
+                    *expected,
+                    "{expected} body re-routed by the path {other_path}"
+                );
+            }
+        }
+        // And the four verdicts are four, not three with a collision.
+        let mut names: Vec<&str> = bodies
+            .iter()
+            .map(|(_, p, b)| wire_name(classify_wire(p, b).unwrap()))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 4, "two shapes collapsed onto one wire");
+    }
+
+    #[test]
+    fn the_two_wires_that_share_messages_are_split_on_their_tool_declarations() {
+        // The only genuine ambiguity in the set: both bodies carry a top-level `messages` array,
+        // and each arrives on the *other* one's path. Shape must win both times.
+        let anthropic = json!({
+            "max_tokens": 1024,
+            "tools": [{"name": "t", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "go"}]}],
+        });
+        let openai = json!({
+            "tools": [{"type": "function", "function": {"name": "t", "parameters": {}}}],
+            "messages": [{"role": "user", "content": "go"}],
+        });
+        assert_eq!(
+            classify_wire("/v1/chat/completions", &anthropic),
+            Some(Wire::Anthropic),
+            "`input_schema` is Anthropic's tool shape whatever the path says"
+        );
+        assert_eq!(
+            classify_wire("/v1/messages", &openai),
+            Some(Wire::OpenAi),
+            "`tools[].function` is OpenAI's tool shape whatever the path says"
+        );
+    }
+
+    #[test]
+    fn the_transcript_splits_them_when_the_tool_declarations_do_not() {
+        // A turn whose tools have been stripped still carries its own transcript shape.
+        let anthropic = json!({"messages": [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "x"}]}]});
+        let openai = json!({"messages": [
+            {"role": "assistant", "tool_calls": [{"id": "c", "type": "function",
+                                                  "function": {"name": "x", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c", "content": "ok"}]});
+        assert_eq!(classify_wire("/x", &anthropic), Some(Wire::Anthropic));
+        assert_eq!(classify_wire("/x", &openai), Some(Wire::OpenAi));
+    }
+
+    #[test]
+    fn a_bare_messages_array_still_falls_back_to_anthropic_unless_the_path_says_otherwise() {
+        // Neither harness sends this; the tie is broken by configuration, consulted last.
+        assert_eq!(
+            classify_wire("/x", &json!({"messages": []})),
+            Some(Wire::Anthropic)
+        );
+        assert_eq!(
+            classify_wire("/v1/chat/completions", &json!({"messages": []})),
+            Some(Wire::OpenAi)
+        );
+    }
+
+    #[test]
+    fn the_gemini_endpoint_selects_the_framing_and_only_the_framing() {
+        let body = json!({"contents": []});
+        assert_eq!(
+            classify_wire("/v1beta/models/m:streamGenerateContent?alt=sse", &body),
+            Some(Wire::Gemini { streaming: true })
+        );
+        assert_eq!(
+            classify_wire("/v1beta/models/m:generateContent", &body),
+            Some(Wire::Gemini { streaming: false })
+        );
+        // The model id in the path is never matched: S12 measured `-m gemini-2.5-flash` arriving
+        // as `gemini-3.5-flash`, so any id would do here.
+        assert_eq!(
+            classify_wire("/v1beta/models/anything-at-all:generateContent", &body),
+            Some(Wire::Gemini { streaming: false })
+        );
+    }
+
+    // --- the gemini child --------------------------------------------------------------------
+
+    fn gemini_turn(parts: Value) -> Value {
+        json!({
+            "contents": [{"role": "user", "parts": [{"text": "do the thing"}]},
+                         {"role": "model", "parts": parts}],
+            "systemInstruction": {"parts": [{"text": "tools: mcp_marion_report"}]},
+            "tools": [{"functionDeclarations": [{"name": "mcp_marion_report"}]}],
+        })
+    }
+
+    fn gemini_first_turn() -> Value {
+        json!({
+            "contents": [{"role": "user", "parts": [{"text": "do the thing"}]}],
+            "systemInstruction": {"parts": [{"text": "you may call mcp_marion_report"}]},
+            "tools": [{"functionDeclarations": [{"name": "mcp_marion_report"}]}],
+        })
+    }
+
+    fn gemini_after_report() -> Value {
+        let mut b = gemini_turn(json!([{"functionCall": {"name": "mcp_marion_report",
+                                                         "args": {"narrative": "x"}}}]));
+        b["contents"].as_array_mut().unwrap().push(json!({
+            "role": "user",
+            "parts": [{"functionResponse": {"name": "mcp_marion_report",
+                                            "response": {"state": "ok"}}}]
+        }));
+        b
+    }
+
+    #[test]
+    fn the_gemini_child_reports_before_anything_has_come_back() {
+        assert_eq!(
+            classify_gemini_step(&gemini_first_turn(), "mcp_marion_report"),
+            GeminiStep::Report,
+            "the tool is named in `tools` and in the system instruction on turn one already"
+        );
+    }
+
+    #[test]
+    fn the_gemini_child_stops_once_the_transcript_carries_the_function_response() {
+        assert_eq!(
+            classify_gemini_step(&gemini_after_report(), "mcp_marion_report"),
+            GeminiStep::Finish
+        );
+    }
+
+    #[test]
+    fn a_gemini_call_to_some_other_tool_is_not_evidence_of_reporting() {
+        // A trusted gemini child also has its core tools; one of them returning proves nothing.
+        let other = gemini_turn(json!([{"functionCall": {"name": "read_file", "args": {}}}]));
+        assert_eq!(
+            classify_gemini_step(&other, "mcp_marion_report"),
+            GeminiStep::Report
+        );
+    }
+
+    #[test]
+    fn gemini_steps_are_a_function_of_the_body_not_of_arrival_order() {
+        // Replay the *second* turn first. A counting provider would answer it with another
+        // `report` call, and the child would report twice and never finish.
+        let s = Script::default();
+        let second = s.respond(Wire::Gemini { streaming: true }, &gemini_after_report());
+        let first = s.respond(Wire::Gemini { streaming: true }, &gemini_first_turn());
+        assert!(
+            second.contains(&s.gemini_final_text) && !second.contains("functionCall"),
+            "the later turn must still end the run"
+        );
+        assert!(
+            first.contains("\"functionCall\""),
+            "the earlier turn must still report"
+        );
+        assert!(first.contains("mcp_marion_report"));
+    }
+
+    #[test]
+    fn the_gemini_router_probe_is_answered_rather_than_left_to_hang() {
+        // S12 gotcha (a): with no explicit `-m` the CLI asks a flash-lite model, over non-streaming
+        // `:generateContent`, for a routing verdict. A reply it cannot use cost 5 retries and a
+        // hang. It has no tools, which is exactly what tells it apart from a scripted turn.
+        let probe = json!({
+            "contents": [{"role": "user", "parts": [{"text": "route this"}]}],
+            "generationConfig": {"responseMimeType": "application/json"},
+        });
+        assert_eq!(classify_gemini(&probe), GeminiKind::RouterProbe);
+        assert_eq!(
+            classify_gemini(&gemini_first_turn()),
+            GeminiKind::ScriptedTurn
+        );
+
+        let out = Script::default().respond(Wire::Gemini { streaming: false }, &probe);
+        assert!(
+            !out.contains("functionCall"),
+            "the classifier must never be handed the scripted tool call"
+        );
+        let v: Value = serde_json::from_str(&out).expect(":generateContent answers plain JSON");
+        assert_eq!(
+            v["candidates"][0]["finishReason"], "STOP",
+            "a terminal answer is the whole point: an unusable one is a five-retry hang"
+        );
+    }
+
+    // --- the opencode child ------------------------------------------------------------------
+
+    fn openai_first_turn() -> Value {
+        json!({
+            "model": "fake-1", "stream": true,
+            "tools": [{"type": "function", "function": {
+                "name": "marion_report", "parameters": {"type": "object"}}}],
+            "messages": [{"role": "system", "content": "you may call marion_report"},
+                         {"role": "user", "content": "do the thing"}],
+        })
+    }
+
+    fn openai_after_report() -> Value {
+        let mut b = openai_first_turn();
+        let messages = b["messages"].as_array_mut().unwrap();
+        messages.push(json!({
+            "role": "assistant", "content": null,
+            "tool_calls": [{"id": REPORT_CALL_ID, "type": "function", "function": {
+                "name": "marion_report", "arguments": "{\"narrative\":\"x\"}"}}],
+        }));
+        messages.push(json!({
+            "role": "tool", "tool_call_id": REPORT_CALL_ID, "name": "marion_report",
+            "content": "{\"state\":\"ok\"}",
+        }));
+        b
+    }
+
+    #[test]
+    fn the_opencode_child_reports_before_anything_has_come_back() {
+        assert_eq!(
+            classify_openai_step(&openai_first_turn(), "marion_report"),
+            OpenAiStep::Report,
+            "the tool is named in `tools` and in the system message on turn one already"
+        );
+    }
+
+    #[test]
+    fn the_opencode_child_stops_once_the_transcript_carries_the_tool_call() {
+        assert_eq!(
+            classify_openai_step(&openai_after_report(), "marion_report"),
+            OpenAiStep::Finish
+        );
+    }
+
+    #[test]
+    fn an_opencode_call_to_some_other_tool_is_not_evidence_of_reporting() {
+        let mut b = openai_first_turn();
+        b["messages"].as_array_mut().unwrap().push(json!({
+            "role": "assistant",
+            "tool_calls": [{"id": "c9", "type": "function",
+                            "function": {"name": "read", "arguments": "{}"}}],
+        }));
+        assert_eq!(
+            classify_openai_step(&b, "marion_report"),
+            OpenAiStep::Report
+        );
+    }
+
+    #[test]
+    fn openai_steps_are_a_function_of_the_body_not_of_arrival_order() {
+        // Replay the *second* turn first, as with every other wire in this file.
+        let s = Script::default();
+        let second = s.respond(Wire::OpenAi, &openai_after_report());
+        let first = s.respond(Wire::OpenAi, &openai_first_turn());
+        assert!(
+            second.contains("\"finish_reason\":\"stop\"") && !second.contains("tool_calls\":["),
+            "the later turn must still end the run"
+        );
+        assert!(
+            first.contains("\"finish_reason\":\"tool_calls\"") && first.contains("marion_report"),
+            "the earlier turn must still report"
+        );
+    }
+
+    #[test]
+    fn each_wire_gets_its_own_spelling_of_the_same_report_tool() {
+        // §5.4's per-harness-spelling rule, asserted as one statement: four wires, four names, no
+        // translation anywhere between them.
+        let s = Script::default();
+        assert_eq!(s.gemini_report_tool, "mcp_marion_report");
+        assert_eq!(s.openai_report_tool, "marion_report");
+        let gemini_out = s.respond(Wire::Gemini { streaming: true }, &gemini_first_turn());
+        let openai_out = s.respond(Wire::OpenAi, &openai_first_turn());
+        assert!(!gemini_out.contains("mcp__marion__report"));
+        assert!(!gemini_out.contains("marion_report\","));
+        assert!(!openai_out.contains("mcp_marion_report"));
+        assert!(
+            !openai_out.contains("\"name\":\"report\""),
+            "the unprefixed name is the MCP layer's, not this wire's"
+        );
+    }
+
+    #[test]
+    fn retargeting_the_tool_name_retargets_both_the_call_and_the_step_predicate() {
+        // Data, not constants: an operator who renames the MCP server alias must not have to
+        // patch this crate, and the classifier must follow the emitter.
+        let s = Script {
+            gemini_report_tool: "mcp_other_report".into(),
+            openai_report_tool: "other_report".into(),
+            ..Script::default()
+        };
+        assert!(
+            s.respond(Wire::Gemini { streaming: true }, &gemini_first_turn())
+                .contains("mcp_other_report")
+        );
+        assert_eq!(
+            classify_gemini_step(&gemini_after_report(), &s.gemini_report_tool),
+            GeminiStep::Report,
+            "a transcript naming the *old* tool is no longer evidence"
+        );
+        assert!(
+            s.respond(Wire::OpenAi, &openai_first_turn())
+                .contains("other_report")
+        );
+        assert_eq!(
+            classify_openai_step(&openai_after_report(), &s.openai_report_tool),
+            OpenAiStep::Report
+        );
     }
 }

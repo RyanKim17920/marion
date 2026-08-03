@@ -14,9 +14,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 
 /// Header names whose values are credentials. Recorded as present, never verbatim.
-const REDACTED: [&str; 4] = [
+///
+/// `x-goog-api-key` is the Gemini wire's key header (S12) — a different spelling of the same
+/// secret, and one this list would have missed simply because it was written before that wire
+/// existed. A new wire is a reason to re-read this array, not only to extend `Wire`.
+const REDACTED: [&str; 5] = [
     "authorization",
     "x-api-key",
+    "x-goog-api-key",
     "proxy-authorization",
     "cookie",
 ];
@@ -143,6 +148,44 @@ mod tests {
     }
 
     #[test]
+    fn the_gemini_and_openai_wires_round_trip_with_their_own_shapes() {
+        let path = tmp("new-wires");
+        let _ = std::fs::remove_file(&path);
+        let log = RequestLog::create(&path).unwrap();
+        log.append(
+            "POST",
+            "/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+            &[("x-goog-api-client".into(), "google-genai-sdk/1.30.0".into())],
+            br#"{"contents":[{"role":"user","parts":[{"text":"go"}]}]}"#,
+            Some("gemini"),
+        )
+        .unwrap();
+        log.append(
+            "POST",
+            "/v1/chat/completions",
+            &[("Authorization".into(), "Bearer sk-fake".into())],
+            br#"{"model":"fake-1","messages":[],"stream":true}"#,
+            Some("openai"),
+        )
+        .unwrap();
+
+        let back = RequestLog::read(&path).unwrap();
+        assert_eq!(back[0]["wire"], "gemini");
+        assert!(back[0]["body"]["contents"].is_array());
+        assert_eq!(
+            back[0]["headers"]["x-goog-api-client"], "google-genai-sdk/1.30.0",
+            "the SDK header is evidence of which client spoke and is not a credential"
+        );
+        assert_eq!(back[1]["wire"], "openai");
+        assert!(back[1]["body"]["messages"].is_array());
+        assert_eq!(
+            back[1]["headers"]["authorization"], "<redacted>",
+            "opencode sends its key as a bearer token"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn credentials_are_recorded_as_present_but_not_verbatim() {
         let path = tmp("redact");
         let _ = std::fs::remove_file(&path);
@@ -150,14 +193,23 @@ mod tests {
         let headers = vec![("Authorization".into(), "Bearer sk-live-secret".into())];
         log.append("POST", "/v1/messages", &headers, b"{}", None)
             .unwrap();
+        // Every wire spells the key header differently; each spelling is the same secret.
+        let goog = vec![("X-Goog-Api-Key".into(), "AIza-live-secret".into())];
+        log.append(
+            "POST",
+            "/v1beta/models/m:generateContent",
+            &goog,
+            b"{}",
+            None,
+        )
+        .unwrap();
 
         let back = RequestLog::read(&path).unwrap();
         assert_eq!(back[0]["headers"]["authorization"], "<redacted>");
-        assert!(
-            !std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("sk-live-secret")
-        );
+        assert_eq!(back[1]["headers"]["x-goog-api-key"], "<redacted>");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("sk-live-secret"));
+        assert!(!text.contains("AIza-live-secret"));
         let _ = std::fs::remove_file(&path);
     }
 

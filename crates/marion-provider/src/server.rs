@@ -20,7 +20,7 @@ use std::thread::JoinHandle;
 use serde_json::Value;
 
 use crate::reqlog::RequestLog;
-use crate::script::{Script, Wire, classify_wire};
+use crate::script::{Script, Wire, classify_wire, wire_name};
 
 /// Default listen port, matching `spikes/s6`'s `S6_PORT`.
 pub const DEFAULT_PORT: u16 = 8099;
@@ -286,7 +286,7 @@ pub(crate) fn handle(req: &HttpRequest, script: &Script) -> (String, String, Str
     match classify_wire(&req.path, &body) {
         Some(wire) => (
             "200 OK".into(),
-            "text/event-stream".into(),
+            content_type_for(wire).into(),
             script.respond(wire, &body),
         ),
         None => (
@@ -294,10 +294,19 @@ pub(crate) fn handle(req: &HttpRequest, script: &Script) -> (String, String, Str
             "application/json".into(),
             serde_json::json!({"error": {
                 "type": "marion_canned_unroutable",
-                "message": "body has neither `messages` (Anthropic) nor `input` (Responses), \
-                            and the path names neither wire"}})
+                "message": "body has none of `messages` (Anthropic or OpenAI chat), `input` \
+                            (Responses) or `contents` (Gemini), and the path names no wire"}})
             .to_string(),
         ),
+    }
+}
+
+/// Three of the four wires are SSE. Gemini's `:generateContent` is the exception and answers plain
+/// JSON (S12) — sending it `text/event-stream` would be a lie about a body that has no frames.
+fn content_type_for(wire: Wire) -> &'static str {
+    match wire {
+        Wire::Gemini { streaming: false } => "application/json",
+        _ => "text/event-stream",
     }
 }
 
@@ -309,10 +318,7 @@ fn serve_connection(stream: TcpStream, log: &RequestLog, script: &Script) -> io:
             break;
         };
         let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-        let wire = classify_wire(&req.path, &body).map(|w| match w {
-            Wire::Anthropic => "anthropic",
-            Wire::Responses => "responses",
-        });
+        let wire = classify_wire(&req.path, &body).map(wire_name);
         // Log before answering: if the script panics, the evidence is already on disk.
         if !req.method.eq_ignore_ascii_case("GET") {
             let _ = log.append(&req.method, &req.path, &req.headers, &req.body, wire);
@@ -398,7 +404,29 @@ mod tests {
     }
 
     #[test]
-    fn both_wires_are_served_from_one_port() {
+    fn the_gemini_json_endpoint_is_not_announced_as_an_event_stream() {
+        let req = |path: &str| HttpRequest {
+            method: "POST".into(),
+            path: path.into(),
+            headers: vec![],
+            body: json!({"contents": [], "tools": [{"functionDeclarations": [{"name": "t"}]}]})
+                .to_string()
+                .into_bytes(),
+        };
+        let script = Script::default();
+        let (_, ct, body) = handle(&req("/v1beta/models/m:generateContent"), &script);
+        assert_eq!(ct, "application/json");
+        assert!(!body.contains("data: "));
+        let (_, ct, body) = handle(
+            &req("/v1beta/models/m:streamGenerateContent?alt=sse"),
+            &script,
+        );
+        assert_eq!(ct, "text/event-stream");
+        assert!(body.starts_with("data: "));
+    }
+
+    #[test]
+    fn all_four_wires_are_served_from_one_port() {
         let script = Script::default();
         let anthropic = HttpRequest {
             method: "POST".into(),
@@ -414,8 +442,29 @@ mod tests {
             headers: vec![],
             body: json!({"input": []}).to_string().into_bytes(),
         };
+        let gemini = HttpRequest {
+            method: "POST".into(),
+            path: "/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse".into(),
+            headers: vec![],
+            body: json!({"contents": [{"role": "user", "parts": [{"text": "go"}]}],
+                         "tools": [{"functionDeclarations": [{"name": "mcp_marion_report"}]}]})
+            .to_string()
+            .into_bytes(),
+        };
+        let openai = HttpRequest {
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            headers: vec![],
+            body: json!({"model": "fake-1", "stream": true,
+                         "tools": [{"type": "function", "function": {"name": "marion_report"}}],
+                         "messages": [{"role": "user", "content": "go"}]})
+            .to_string()
+            .into_bytes(),
+        };
         assert!(handle(&anthropic, &script).2.contains("mcp__marion__spawn"));
         assert!(handle(&responses, &script).2.contains("custom_tool_call"));
+        assert!(handle(&gemini, &script).2.contains("mcp_marion_report"));
+        assert!(handle(&openai, &script).2.contains("marion_report"));
     }
 
     /// End to end over a real socket: bind port 0, speak HTTP, read the log back.
@@ -463,6 +512,74 @@ mod tests {
         assert!(
             log[1]["body"]["input"].is_array(),
             "bodies are recorded parsed and complete"
+        );
+        let _ = std::fs::remove_file(&reqlog);
+    }
+
+    /// The same end-to-end proof for the two child wires S12 and S13 measured: a real socket, a
+    /// real reply the harness's own client shape could consume, and a log line naming the wire.
+    #[test]
+    fn a_started_server_answers_the_gemini_and_openai_wires_and_records_them() {
+        let reqlog = std::env::temp_dir().join(format!(
+            "marion-canned-e2e-new-wires-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&reqlog);
+        let server = CannedServer::start(Config {
+            addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            reqlog: reqlog.clone(),
+            script: Script::default(),
+        })
+        .unwrap();
+
+        let gemini = speak(
+            server.addr(),
+            &post(
+                "/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+                &json!({"contents": [{"role": "user", "parts": [{"text": "go"}]}],
+                        "tools": [{"functionDeclarations": [{"name": "mcp_marion_report"}]}]})
+                .to_string(),
+            ),
+        );
+        assert!(gemini.contains("Content-Type: text/event-stream"));
+        assert!(gemini.contains("\r\n\r\ndata: {"));
+        assert!(gemini.contains("\"functionCall\""));
+
+        let openai = speak(
+            server.addr(),
+            &post(
+                "/v1/chat/completions",
+                &json!({"model": "fake-1", "stream": true,
+                        "tools": [{"type": "function", "function": {"name": "marion_report"}}],
+                        "messages": [{"role": "user", "content": "go"}]})
+                .to_string(),
+            ),
+        );
+        assert!(openai.contains("\"finish_reason\":\"tool_calls\""));
+        assert!(openai.ends_with("data: [DONE]\n\n"));
+
+        let probe = speak(
+            server.addr(),
+            &post(
+                "/v1beta/models/gemini-3.1-flash-lite:generateContent",
+                &json!({"contents": [{"role": "user", "parts": [{"text": "route"}]}]}).to_string(),
+            ),
+        );
+        assert!(probe.contains("Content-Type: application/json"));
+        assert!(!probe.contains("functionCall"));
+
+        let log = server.requests().unwrap();
+        assert_eq!(log.len(), 3);
+        assert_eq!(log[0]["wire"], "gemini");
+        assert_eq!(log[1]["wire"], "openai");
+        assert_eq!(log[2]["wire"], "gemini");
+        assert!(
+            log[0]["path"].as_str().unwrap().ends_with("alt=sse"),
+            "the query string is evidence of the framing and is kept"
+        );
+        assert!(
+            log[0]["body"]["contents"].is_array() && log[1]["body"]["messages"].is_array(),
+            "bodies are recorded parsed and complete on the new wires too"
         );
         let _ = std::fs::remove_file(&reqlog);
     }

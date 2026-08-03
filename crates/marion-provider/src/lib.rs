@@ -1,8 +1,10 @@
 //! The canned provider (design §5.5).
 //!
-//! Replays scripted SSE for two wire formats — Anthropic Messages for a Claude Code root, OpenAI
-//! Responses for a Codex child — so an M1 run costs nothing and repeats exactly. **Canning is not
-//! translating:** each format replays its own recorded shape; nothing is converted between them.
+//! Replays scripted responses for four wire formats — Anthropic Messages for a Claude Code root,
+//! OpenAI Responses for a Codex child, Gemini `generateContent` for a gemini child and OpenAI Chat
+//! Completions for an opencode child — so a run costs nothing and repeats exactly. **Canning is not
+//! translating:** each format replays its own recorded shape; nothing is converted between them,
+//! down to the four different spellings the same `report` tool has on the four wires.
 //!
 //! # Dispatch on request *shape*, never on arrival order
 //!
@@ -17,12 +19,16 @@
 use serde_json::Value;
 
 pub mod anthropic;
+pub mod gemini;
+pub mod openai;
 pub mod reqlog;
 pub mod responses;
 pub mod script;
 pub mod server;
 
-pub use script::{ChildStep, RootStep, Script, Wire};
+pub use script::{
+    ChildStep, GeminiKind, GeminiStep, OpenAiStep, RootStep, Script, Wire, wire_name,
+};
 pub use server::{CannedServer, Config};
 
 /// What a request is asking for, decided by shape alone.
