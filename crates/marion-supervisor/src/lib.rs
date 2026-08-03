@@ -13,6 +13,9 @@
 //! the socket is not yet there to force agreement.
 
 pub mod bridge;
+/// §6.1 step 8's readiness gate and the `stream-json` conversation behind it — **shared by the
+/// root and by a child**, for the same reason the two binaries above share `run_spawn`.
+pub mod duplex;
 pub mod root;
 pub mod run;
 pub mod spawn;

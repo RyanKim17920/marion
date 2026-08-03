@@ -26,6 +26,19 @@ pub enum SpawnError {
     Scope(#[from] marion_core::scope::ScopeError),
     #[error("compiling the child's launch: {0}")]
     Harness(#[from] marion_harness::HarnessError),
+    /// §6.1 step 8's gate, failed on a **child**. Carried through rather than flattened so the
+    /// cause survives into the tool result the parent reads: the alternative to a loud refusal here
+    /// is a child that took its turn without marion's tools, reported nothing, and exited 0 — the
+    /// §12 silent-failure shape, indistinguishable from a run that simply had nothing to say.
+    #[error("driving the child over its control plane: {0}")]
+    Duplex(#[from] crate::duplex::DuplexError),
+    /// §3.4's third control transport, which is not a launch path on either axis.
+    #[error(
+        "{0} drives its node through a terminal, and marion MUST NOT give a headless node a pty \
+         on stdin (§5.2). There is no child launch path for that surface, so the spawn is refused \
+         rather than pushed down one that does not fit it."
+    )]
+    UnsupportedChildSurface(marion_core::harness::Harness),
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, SpawnError> {

@@ -27,10 +27,16 @@
 //! prompt is written only after the harness's event loop has demonstrably run at least once since
 //! the tool list was flushed to it.
 //!
+//! **None of that lives here.** §6.1 step 8 states the gate normatively, binding on *any* launcher
+//! driving Claude Code headlessly — root or child — so the whole protocol sits in [`crate::duplex`]
+//! and this module drives it. `run_spawn` drives the same code for a `Typed(_)` child, which is
+//! what closed the last red cell of the harness matrix: until then it drove every child as
+//! `LaunchOnly` and a `claude` child took turn one with `tools: []`.
+//!
 //! # Two root paths, chosen by the surface and never by the name
 //!
 //! Everything above is Claude-Code-specific *scaffolding*, not something a root needs in general.
-//! §3.4 is explicit that code branches on [`ExecutionSurfaces`], so [`launch`] dispatches on
+//! §3.4 is explicit that code branches on `ExecutionSurfaces`, so [`launch`] dispatches on
 //! `surfaces().control`:
 //!
 //! - **`Typed(_)`** — the path described above: pipes, a readiness marker, an `initialize` round
@@ -46,10 +52,9 @@
 //! A root on either path has **no `TaskContract` and cannot `report`** (§9). Its result is its
 //! stream and its exit.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command as SysCommand, Stdio};
-use std::time::{Duration as StdDuration, Instant};
+use std::path::PathBuf;
+use std::process::Command as SysCommand;
+use std::time::Duration as StdDuration;
 
 use marion_core::agent_type::builtin;
 use marion_core::contract::AgentId;
@@ -57,13 +62,22 @@ use marion_core::harness::Harness;
 use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_harness::{
-    ControlTransport, ExecutionSurfaces, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx,
-    adapter_for, json_frames,
+    Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for, json_frames,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 
+use crate::duplex::{self, DuplexError, DuplexSpec};
 use crate::run::{entropy, run_bounded, unix_millis};
 use crate::spawn::SpawnError;
+
+/// The typed-control-plane protocol, which a root shares with a child (`crate::duplex`).
+///
+/// Re-exported rather than reimplemented: §6.1 step 8's gate is normative for **any** launcher
+/// driving Claude Code headlessly, so one implementation serves `marion run` and `run_spawn` both.
+/// `permission_round_trip.rs` drives these directly.
+pub use crate::duplex::{
+    can_use_tool_request, deny_response, initialize_request, is_control_response_to, user_message,
+};
 
 // The declaration's env-var names and the document that carries them are the Claude Code adapter's
 // business (§3.1: config emission is part of the adapter contract), so they live in
@@ -88,30 +102,13 @@ pub const ROOT_ALLOWED_TOOLS: [&str; 4] = [
     "mcp__marion__list",
 ];
 
-/// Which of the two launch paths a root takes, derived from its adapter's [`ExecutionSurfaces`].
+/// Which of the two launch paths a root takes, derived from its adapter's `ExecutionSurfaces`.
 ///
-/// §3.4: *"branch code on `ExecutionSurfaces`"*, never on a harness name. A fifth harness gets the
-/// right path here by declaring its surfaces and changing nothing in this module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RootPath {
-    /// A typed control plane: prompt, steer, interrupt — Claude Code's `stream-json` pipe pair.
-    Duplex,
-    /// The prompt rides argv and there is no channel afterwards.
-    LaunchOnly,
-}
-
-/// The path a root with these surfaces takes.
-///
-/// A `TerminalInput` root has no answer here and is refused rather than forced down one of the two:
-/// marion **MUST NOT** give a headless node a pty on stdin (§5.2), and typing a prompt into a pty
-/// is a third path nobody has written.
-pub fn root_path(surfaces: &ExecutionSurfaces) -> Option<RootPath> {
-    match surfaces.control {
-        ControlTransport::Typed(_) => Some(RootPath::Duplex),
-        ControlTransport::LaunchOnly => Some(RootPath::LaunchOnly),
-        ControlTransport::TerminalInput => None,
-    }
-}
+/// **One derivation, two names.** A root and a child face the same question — is this node's prompt
+/// a frame written after launch, or an argv element? — and it has the same answer, so the enum and
+/// the function both live in [`crate::duplex`] and are re-exported here under the names this
+/// module has always used. Two copies of §3.4's dispatch would be exactly the drift §9 warns about.
+pub use crate::duplex::{LaunchPath as RootPath, launch_path as root_path};
 
 /// What `marion run` was asked for.
 #[derive(Debug, Clone)]
@@ -215,90 +212,6 @@ pub enum RootError {
         /// Pre-formatted, so the empty case adds no dangling label.
         stderr: String,
     },
-}
-
-/// One `stream-json` user turn, in the shape `tests/fixtures/s1/stdin.jsonl` records.
-pub fn user_message(prompt: &str) -> String {
-    json!({
-        "type": "user",
-        "session_id": "",
-        "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
-        "parent_tool_use_id": null,
-    })
-    .to_string()
-}
-
-/// The `initialize` control request. §5.2: optional, `request_id` client-generated.
-pub fn initialize_request(request_id: &str) -> String {
-    json!({
-        "type": "control_request",
-        "request_id": request_id,
-        "request": {"subtype": "initialize", "hooks": {}},
-    })
-    .to_string()
-}
-
-/// Is this frame the `control_response` to `request_id`?
-pub fn is_control_response_to(frame: &Value, request_id: &str) -> bool {
-    frame.get("type").and_then(Value::as_str) == Some("control_response")
-        && frame
-            .pointer("/response/request_id")
-            .and_then(Value::as_str)
-            == Some(request_id)
-}
-
-/// The `request_id` and `tool_name` of an inbound `can_use_tool` request, if that is what this
-/// frame is.
-///
-/// **Measured, not decompiled** — S9, `tests/fixtures/s9/`. Three fields and only three are common
-/// to every ask 2.1.220 emits: the **top-level** `request_id`, `request.subtype`, and
-/// `request.tool_name`. Everything else varies with the tool kind — an MCP verb carries
-/// `display_name`, `input` and one `permission_suggestions` entry; a built-in `Bash` call adds
-/// `description` and `blocked_path` and suggests three. So this reads the three and no more:
-/// requiring `blocked_path` would work against Bash and fail against `mcp__marion__*`.
-pub fn can_use_tool_request(frame: &Value) -> Option<(String, String)> {
-    if frame.get("type").and_then(Value::as_str) != Some("control_request") {
-        return None;
-    }
-    if frame.pointer("/request/subtype").and_then(Value::as_str) != Some("can_use_tool") {
-        return None;
-    }
-    let request_id = frame.get("request_id").and_then(Value::as_str)?.to_string();
-    let tool = frame
-        .pointer("/request/tool_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    Some((request_id, tool))
-}
-
-/// marion's answer to a permission it has nobody to ask (§9).
-///
-/// M1 has no TUI, so a genuine permission request blocks until the root's per-episode `Blocked`
-/// bound expires and is then **denied** — the root is not killed, because "expired" and
-/// "terminated" are different events for a root.
-///
-/// **Measured 2026-08-03 — S9, `tests/fixtures/s9/can-use-tool-deny.stdin.jsonl`.** This exact
-/// string was written to a real 2.1.220's stdin and accepted: the CLI turned the denial into an
-/// `is_error` `tool_result` carrying `message` verbatim, tagged it
-/// `non_execution_kind: "permission-rule"`, listed the call under the run's `permission_denials`,
-/// and **finished the turn normally** (`terminal_reason: "completed"`, exit 0). That is §9's rule
-/// — *expired* and *terminated* are different events for a root — no longer as a design claim but
-/// as a recording. `crates/marion-supervisor/tests/permission_round_trip.rs` re-runs it.
-///
-/// The corresponding allow is `{"behavior":"allow"}` with an **optional** `updatedInput`; S9
-/// measured a bare allow running the tool with the model's original input. marion does not send
-/// one in M1 — it has no permission answerer — so no function for it exists here.
-pub fn deny_response(request_id: &str, reason: &str) -> String {
-    json!({
-        "type": "control_response",
-        "response": {
-            "subtype": "success",
-            "request_id": request_id,
-            "response": {"behavior": "deny", "message": reason},
-        },
-    })
-    .to_string()
 }
 
 /// Mint the root's identity, write its configuration, and compile its argv.
@@ -413,18 +326,6 @@ fn per_run_token() -> Result<String, RootError> {
     Ok(format!("marion-run-{}", uuid_v7(unix_millis(), entropy()?)))
 }
 
-/// Wait for the bridge's readiness marker.
-fn wait_for_ready(path: &Path, timeout: StdDuration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(StdDuration::from_millis(10));
-    }
-    path.exists()
-}
-
 /// Start the root and run it to completion, on whichever path its **surfaces** select (§3.4).
 ///
 /// `bound` is the root's node-level timeout (§9), and what it bounds is derived from the surface
@@ -526,110 +427,65 @@ fn assert_reached_the_bridge(harness: Harness, outcome: &RootOutcome) -> Result<
     })
 }
 
-/// The duplex root, unchanged: pipes, a readiness marker, an `initialize` round trip, then the
-/// prompt.
+/// The duplex root: §6.1 step 8's gate, then the prompt — **driven by [`crate::duplex`], the one
+/// implementation a root and a child share.**
+///
+/// What is left here is only what a root *is*: it has no `TaskContract`, so its result is its
+/// stream and its exit (§9); and marion offers it no wall clock, so `wall_clock` is `None` and
+/// `bound` is spent only on a `Blocked` episode.
 fn launch_duplex(
     node: &RootNode,
     blocked_bound: StdDuration,
     mcp_ready_timeout: StdDuration,
 ) -> Result<RootOutcome, RootError> {
-    let prompt = &node.prompt;
     let ready_file = node
         .ready_file
         .clone()
         .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
     let inv = &node.invocation;
-    let mut child = SysCommand::new(&inv.program)
-        .args(&inv.args)
-        .envs(inv.env.iter().cloned())
-        .current_dir(&inv.cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let out = duplex::run_duplex(
+        SysCommand::new(&inv.program)
+            .args(&inv.args)
+            .envs(inv.env.iter().cloned())
+            .current_dir(&inv.cwd),
+        &DuplexSpec {
+            ready_file: &ready_file,
+            prompt: &node.prompt,
+            init_id: format!("marion-init-{}", node.agent_id.0),
+            mcp_ready_timeout,
+            blocked_bound,
+            // §9: marion offers a root no wall-clock ceiling on this path, so there is none here.
+            wall_clock: None,
+        },
+    )
+    .map_err(|e| root_error(e, mcp_ready_timeout))?;
+    Ok(RootOutcome {
+        exit_code: out.exit_code,
+        transcript: out.transcript,
+        stderr: out.stderr,
+        denied_permissions: out.denied_permissions,
+        // Gated *before* the turn on this path, so restating it post hoc would add nothing.
+        marion_tool_calls: vec![],
+        timed_out: out.timed_out,
+    })
+}
 
-    let mut stdin = child.stdin.take().expect("stdin was piped");
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
-    let stderr_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr_pipe.read_to_string(&mut s);
-        s
-    });
-    let mut lines = BufReader::new(stdout).lines();
-
-    let mut outcome = RootOutcome::default();
-
-    if !wait_for_ready(&ready_file, mcp_ready_timeout) {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = stderr_thread.join();
-        return Err(RootError::McpNeverReady(mcp_ready_timeout, ready_file));
+/// The shared driver's refusals, in the root's own words. The cause is the same event; the sentence
+/// names the node it happened to, which is what a reader of `marion run`'s stderr needs.
+fn root_error(e: DuplexError, mcp_ready_timeout: StdDuration) -> RootError {
+    match e {
+        DuplexError::Io(e) => RootError::Io(e),
+        DuplexError::McpNeverReady(_, path) => RootError::McpNeverReady(mcp_ready_timeout, path),
+        DuplexError::DiedBeforeInitialize => RootError::DiedBeforeInitialize,
     }
-
-    // One round trip through the harness's event loop, after the tool list was flushed to it.
-    let init_id = format!("marion-init-{}", node.agent_id.0);
-    writeln!(stdin, "{}", initialize_request(&init_id))?;
-    stdin.flush()?;
-    let mut initialized = false;
-    for line in lines.by_ref() {
-        let line = line?;
-        let Ok(frame) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let done = is_control_response_to(&frame, &init_id);
-        outcome.transcript.push(frame);
-        if done {
-            initialized = true;
-            break;
-        }
-    }
-    if !initialized {
-        let _ = child.wait();
-        outcome.stderr = stderr_thread.join().unwrap_or_default();
-        return Err(RootError::DiedBeforeInitialize);
-    }
-
-    writeln!(stdin, "{}", user_message(prompt))?;
-    stdin.flush()?;
-
-    for line in lines.by_ref() {
-        let line = line?;
-        let Ok(frame) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        if let Some((request_id, tool)) = can_use_tool_request(&frame) {
-            // Nobody to ask. Consume the episode's budget, then deny and let the root proceed.
-            std::thread::sleep(blocked_bound);
-            writeln!(
-                stdin,
-                "{}",
-                deny_response(
-                    &request_id,
-                    "marion: no permission answerer in M1; the root's Blocked bound expired",
-                )
-            )?;
-            stdin.flush()?;
-            outcome.denied_permissions.push(tool);
-        }
-        let terminal = frame.get("type").and_then(Value::as_str) == Some("result");
-        outcome.transcript.push(frame);
-        if terminal {
-            break;
-        }
-    }
-
-    // Closing stdin is what ends a `--input-format stream-json` session.
-    drop(stdin);
-    let status = child.wait()?;
-    outcome.exit_code = status.code();
-    outcome.stderr = stderr_thread.join().unwrap_or_default();
-    Ok(outcome)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    use serde_json::json;
 
     fn env() -> McpEnv {
         McpEnv {
@@ -700,125 +556,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_user_turn_matches_the_shape_s1_recorded() {
-        let v: Value = serde_json::from_str(&user_message("delegate")).unwrap();
-        assert_eq!(v["type"], "user");
-        assert_eq!(v["message"]["role"], "user");
-        assert_eq!(v["message"]["content"][0]["text"], "delegate");
-        assert!(v["parent_tool_use_id"].is_null());
-    }
-
-    #[test]
-    fn the_initialize_round_trip_is_matched_on_the_request_id_not_the_subtype() {
-        let frame: Value = serde_json::from_str(
-            r#"{"type":"control_response","response":{"subtype":"success","request_id":"a","response":{}}}"#,
-        )
-        .unwrap();
-        assert!(is_control_response_to(&frame, "a"));
-        assert!(
-            !is_control_response_to(&frame, "b"),
-            "another node's reply must not satisfy our wait"
-        );
-        let init: Value = serde_json::from_str(&initialize_request("a")).unwrap();
-        assert_eq!(init["request_id"], "a");
-        assert_eq!(init["request"]["subtype"], "initialize");
-    }
-
-    #[test]
-    fn a_permission_ask_is_recognised_by_its_subtype_and_carries_its_request_id() {
-        // Verbatim from tests/fixtures/s9/can-use-tool-deny.stdout.jsonl, recorded off a real
-        // 2.1.220. The top-level request_id is load-bearing: a frame without one could be neither
-        // answered nor cancelled.
-        let frame: Value = serde_json::from_str(
-            r#"{"type":"control_request","request_id":"<UUID-4>","request":{"subtype":"can_use_tool","tool_name":"mcp__marion__report","display_name":"Report","input":{"narrative":"s9 probe: a verb the root may not use"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"mcp__marion__report"}],"behavior":"allow","destination":"localSettings"}],"tool_use_id":"toolu_marion_spawn_1"}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            can_use_tool_request(&frame),
-            Some(("<UUID-4>".to_string(), "mcp__marion__report".to_string()))
-        );
-        let other: Value = serde_json::from_str(
-            r#"{"type":"control_request","request_id":"r","request":{"subtype":"interrupt"}}"#,
-        )
-        .unwrap();
-        assert!(can_use_tool_request(&other).is_none());
-    }
-
-    #[test]
-    fn an_unanswerable_permission_is_denied_and_the_root_is_not_killed() {
-        let v: Value = serde_json::from_str(&deny_response("req_7", "bound expired")).unwrap();
-        assert_eq!(v["response"]["request_id"], "req_7");
-        assert_eq!(
-            v["response"]["response"]["behavior"], "deny",
-            "§9: on expiry marion denies the pending permission and lets the root proceed"
-        );
-        // The envelope the CLI actually accepted (S9): the response's own `subtype` is `success` —
-        // it reports that the *answer* was produced, not that the permission was granted. Sending
-        // `subtype: "deny"` here would be a protocol error, not a denial.
-        assert_eq!(v["response"]["subtype"], "success");
-    }
-
+    /// The gate itself is `duplex::wait_for_ready`, tested there. What is asserted here is the
+    /// **root's own sentence** for it: the symptom is a run that "succeeds" with plain text, so the
+    /// message a `marion run` operator reads has to name the tool that was missing.
     #[test]
     fn a_ready_marker_that_never_appears_is_a_refusal_not_a_silent_first_turn() {
-        let missing = std::env::temp_dir().join(format!("marion-never-{}", std::process::id()));
-        let _ = std::fs::remove_file(&missing);
-        assert!(!wait_for_ready(&missing, StdDuration::from_millis(30)));
-        // And the error says why, because the symptom is a run that "succeeds" with plain text.
-        let e = RootError::McpNeverReady(StdDuration::from_millis(30), missing);
-        assert!(e.to_string().contains("without mcp__marion__spawn"));
-    }
-
-    /// **The routing rule, asserted the way §3.4 requires it to be written.** Not one arm of this
-    /// matches on a harness name: the expectation is derived from the adapter's own
-    /// `ExecutionSurfaces`, so a fifth harness gets the right path by declaring its surfaces and
-    /// this test keeps passing without being edited.
-    #[test]
-    fn every_harness_routes_to_the_path_its_surfaces_select_and_not_to_one_named_for_it() {
-        for h in Harness::ALL {
-            let surfaces = adapter_for(h).unwrap().surfaces();
-            let expected = match surfaces.control {
-                ControlTransport::Typed(_) => Some(RootPath::Duplex),
-                ControlTransport::LaunchOnly => Some(RootPath::LaunchOnly),
-                ControlTransport::TerminalInput => None,
-            };
-            assert_eq!(root_path(&surfaces), expected, "{h}");
-        }
-        // And the derivation agrees with the plane table it has to agree with (§3.4): a duplex root
-        // is exactly a node with a typed control plane.
-        for h in Harness::ALL {
-            let s = adapter_for(h).unwrap().surfaces();
-            assert_eq!(
-                root_path(&s) == Some(RootPath::Duplex),
-                s.has_typed_control_plane(),
-                "{h}: the root path and the plane derivation must read the same axis"
-            );
-        }
-    }
-
-    /// The four built-ins, each landing where its harness's measured surface puts it. Stated
-    /// separately from the rule above because *which* built-in is on which path is a fact about
-    /// today's harnesses, and a regression that flipped one would otherwise be invisible.
-    #[test]
-    fn the_builtin_agent_types_land_on_the_paths_their_harnesses_afford() {
-        let got: Vec<(&str, Option<RootPath>)> =
-            ["claude", "codex", "codex-impl", "gemini", "opencode"]
-                .into_iter()
-                .map(|n| {
-                    let h = builtin(n).expect("built-in resolves").harness;
-                    (n, root_path(&adapter_for(h).unwrap().surfaces()))
-                })
-                .collect();
-        assert_eq!(
-            got,
-            vec![
-                ("claude", Some(RootPath::Duplex)),
-                ("codex", Some(RootPath::LaunchOnly)),
-                ("codex-impl", Some(RootPath::LaunchOnly)),
-                ("gemini", Some(RootPath::LaunchOnly)),
-                ("opencode", Some(RootPath::LaunchOnly)),
-            ]
+        let missing = std::env::temp_dir().join("marion-never");
+        let e = root_error(
+            crate::duplex::DuplexError::McpNeverReady(StdDuration::from_millis(30), missing),
+            StdDuration::from_millis(30),
         );
+        assert!(matches!(e, RootError::McpNeverReady(_, _)), "{e}");
+        assert!(e.to_string().contains("without mcp__marion__spawn"));
     }
 
     /// A pty-only surface has no root launch path, and §5.2 forbids inventing one by handing a
@@ -826,8 +575,6 @@ mod tests {
     /// this is asserted at the derivation rather than through one.
     #[test]
     fn a_terminal_input_surface_is_refused_rather_than_pushed_down_one_of_the_two_paths() {
-        assert_eq!(root_path(&ExecutionSurfaces::opaque()), None);
-        assert_eq!(root_path(&ExecutionSurfaces::interactive()), None);
         let e = RootError::UnsupportedRootSurface(Harness::Codex);
         assert!(e.to_string().contains("pty on stdin"));
     }
@@ -1002,19 +749,5 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(!without.contains("stderr:"), "{without}");
-    }
-
-    #[test]
-    fn a_marker_written_after_the_wait_begins_is_still_seen() {
-        let path = std::env::temp_dir().join(format!("marion-ready-{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let p = path.clone();
-        let h = std::thread::spawn(move || {
-            std::thread::sleep(StdDuration::from_millis(50));
-            std::fs::write(&p, b"").unwrap();
-        });
-        assert!(wait_for_ready(&path, StdDuration::from_secs(5)));
-        h.join().unwrap();
-        let _ = std::fs::remove_file(&path);
     }
 }

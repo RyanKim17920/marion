@@ -387,35 +387,44 @@ fn claude_code_script() -> Script {
     }
 }
 
-/// **This cell is RED, and it is red about a real defect.** It is left failing rather than
-/// `#[ignore]`d or weakened, because §9's rule cuts both ways: a criterion that quietly passes on a
-/// machine that cannot run it is worth less than no criterion, and so is one deleted because the
-/// answer was inconvenient.
+/// **This cell was RED, and what turned it green is §6.1 step 8's gate — nothing else.**
 ///
-/// What it proves, measured against 2.1.220 while writing it: **`run_spawn`'s `LaunchOnly` path
-/// cannot drive a Claude Code child.** The launch itself is now correct — the adapter compiles the
-/// prompt into argv, the bridge starts, answers `tools/list` and touches its marker — but the CLI
-/// does **not gate its first turn on that**. The `system/init` frame reads, verbatim:
+/// Measured against 2.1.220 when it was written: `run_spawn`'s `LaunchOnly` path *cannot* drive a
+/// Claude Code child. The launch was correct in every other respect — the adapter compiled the
+/// prompt into argv, the bridge started, answered `tools/list` and touched its marker — but the CLI
+/// does **not gate its first turn on that**. Its own `system/init` frame read, verbatim:
 ///
 /// ```text
 /// "tools":[],"mcp_servers":[{"name":"marion","status":"pending"}]
 /// ```
 ///
-/// and the turn goes out with `tools: []` while the server is still connecting. The canned provider
-/// answers a no-tools request with the session-title stub, the CLI takes that as `end_turn`, and the
-/// run exits **0** having called nothing — §12's silent-failure shape exactly, and word for word the
-/// hazard §6.1 step 8 exists to prevent. `MCP_TIMEOUT` does not change it; there is no flag that
-/// makes the CLI wait, and no later turn to recover on, because the run has already ended.
+/// so the turn went out with `tools: []` while the server was still connecting, the canned provider
+/// answered a no-tools request with the session-title stub, the CLI took that as `end_turn`, and the
+/// run exited **0** having called nothing — §12's silent-failure shape exactly. `MCP_TIMEOUT` does
+/// not change it; there is no flag that makes the CLI wait, and no later turn to recover on.
 ///
-/// The only remedy is §6.1 step 8's own: **withhold the first frame until the bridge signals
-/// ready**, which requires `--input-format stream-json` — a typed control plane. That is precisely
-/// what this adapter's `surfaces()` declares (`headless(TypedKind::StreamJson)`) and what the other
-/// three declare they do *not* have (`launch_only_with_protocol_events`). So the gap is structural
-/// and named: `run_spawn` drives `LaunchOnly` children, and claude-code is not one.
+/// The remedy is §6.1 step 8's own and there is no other: **withhold the first frame until marion
+/// observes its own bridge flush `tools/list`, then complete an `initialize` round trip, then write
+/// the prompt** — which requires `--input-format stream-json`, a typed control plane. That is
+/// precisely what this adapter's `surfaces()` declares (`headless(TypedKind::StreamJson)`) and what
+/// the other three declare they do *not* have (`launch_only_with_protocol_events`). So `run_spawn`
+/// now routes a child on `adapter.surfaces().control` exactly as `marion run` routes a root, and
+/// drives a `Typed(_)` child through `marion_supervisor::duplex` — the same gate, the same code.
 ///
-/// **This is also a live warning for any node whose prompt rides argv, root or child.** A Claude
-/// Code node launched that way loses marion's tools on turn one, silently, whatever the tools were
-/// for.
+/// **This cell is the gate's only end-to-end witness.** §12 records that the bug is invisible
+/// against a real endpoint (a model reply takes seconds; the MCP connect ~70 ms) and appears only
+/// against a fast one, which is what the `CannedServer` is. Stub the wait out — `if false &&
+/// !wait_for_ready(…)` — and this cell regresses to the toolless-turn shape above, verbatim:
+///
+/// ```text
+/// claude-code: the narrative is the child's own, sourced from its `report` call — an absent
+/// one means the report never arrived through the MCP channel […] exit: child exited with code 0
+/// ```
+///
+/// Two `anthropic` requests, no marion call in either, exit 0. That is the whole bug.
+///
+/// **It is also a live warning for any node whose prompt rides argv, root or child.** A Claude Code
+/// node launched that way loses marion's tools on turn one, silently, whatever the tools were for.
 #[test]
 fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() {
     assert!(

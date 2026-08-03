@@ -18,18 +18,32 @@ pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
 /// `TaskContract.requester` with it (§9).
 pub const AGENT_ID_ENV: &str = "MARION_AGENT_ID";
 
-/// What marion needs to compile a headless root invocation.
+/// What marion needs to compile a headless invocation — **root or child.**
+///
+/// There is one shape and not two. A Claude Code node's prompt is *always* a frame written after
+/// launch, whatever its role in the tree: 2.1.220 connects `--mcp-config` servers asynchronously
+/// and does not hold turn one for them, so a prompt in argv takes that turn with `"tools":[]` and
+/// the run exits 0 having called nothing (§6.1 step 8, §12). That is a property of the harness, not
+/// of being a root, which is why the child spec that used to sit beside this one is gone.
 #[derive(Debug, Clone)]
 pub struct HeadlessSpec {
     pub cwd: PathBuf,
     pub model: Option<String>,
-    /// Tools the root may call **without a prompt** — the permission axis. marion's own tools go
-    /// here, or the root's single load-bearing `spawn` call is denied.
+    /// Tools the node may call **without a prompt** — the permission axis. marion's own tools go
+    /// here, or the node's load-bearing call (`spawn` on a root, `report` on a child) is denied.
     pub allowed_tools: Vec<String>,
     /// Path to the MCP server declaration marion wrote.
     pub mcp_config: PathBuf,
     /// Base URL for the canned provider.
     pub base_url: Option<String>,
+    /// The credential the node presents, as `ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_API_KEY` blanked
+    /// beside it (§9, §6.4: a non-empty key silently wins over the token, so it is blanked rather
+    /// than left inherited — otherwise a node would present the operator's real key to marion's
+    /// endpoint).
+    ///
+    /// `None` where the caller pushes the pair itself: `marion run` mints a **per-run** token after
+    /// `compile`, so that one run's traffic is attributable in a request log.
+    pub api_key: Option<String>,
 }
 
 pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
@@ -72,6 +86,12 @@ pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
     if let Some(u) = &spec.base_url {
         env.push(("ANTHROPIC_BASE_URL".to_string(), u.clone()));
     }
+    if let Some(k) = &spec.api_key {
+        env.push(("ANTHROPIC_AUTH_TOKEN".to_string(), k.clone()));
+        // A non-empty key silently wins over the token (§6.4), so it is blanked rather than left
+        // inherited — otherwise a node would present the operator's real key to marion's endpoint.
+        env.push(("ANTHROPIC_API_KEY".to_string(), String::new()));
+    }
     // NOT CLAUDE_CONFIG_DIR: isolating it breaks OAuth, because the Keychain entry is keyed to the
     // real config dir. Config isolation and subscription auth are mutually exclusive here, and the
     // fileless path (--mcp-config + --setting-sources "") is what keeps auth working.
@@ -87,84 +107,6 @@ pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
     }
 }
 
-/// What marion needs to compile a **child** invocation.
-///
-/// The root and a child sit at different points of §3.4's cross-product, and the argv says so.
-/// A root is `--input-format stream-json`: its prompt is a frame marion writes *after* launch, so
-/// the launch has to withhold the first turn until the bridge is up (§6.1 step 8) and a
-/// `--permission-prompt-tool` has a control plane to ask over. A child spawned by `run_spawn` has
-/// neither — `LaunchOnly`, stdin closed, nobody servicing a permission ask — so its prompt rides
-/// argv exactly as it does on the other three harnesses, and a permission prompt with no answerer
-/// would be a hang rather than a question. The two shapes are therefore separate functions rather
-/// than one with flags: every flag below differs *because* the surface differs.
-#[derive(Debug, Clone)]
-pub struct ChildSpec {
-    pub cwd: PathBuf,
-    pub model: Option<String>,
-    /// Compiled into argv, not written after launch.
-    pub prompt: String,
-    /// The permission axis (§3.1). marion's own tools go here or the child's `report` call is
-    /// auto-denied in-process, which on this surface surfaces as *nothing at all*: no
-    /// `can_use_tool` frame can be answered, so the run simply completes having reported nothing.
-    pub allowed_tools: Vec<String>,
-    pub mcp_config: PathBuf,
-    pub base_url: Option<String>,
-    /// Presented as `ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_API_KEY` blanked beside it — §9's rule
-    /// for the root, applied here so a child talking to marion's endpoint presents *marion's*
-    /// placeholder rather than whatever subscription credential the environment happened to carry.
-    pub api_key: Option<String>,
-}
-
-pub fn compile_child(spec: &ChildSpec) -> Invocation {
-    let mut args: Vec<String> = vec![
-        // `--print` takes no value: the prompt is positional beside it, as on `gemini -p` it is not.
-        "-p".into(),
-        spec.prompt.clone(),
-        "--output-format".into(),
-        "stream-json".into(),
-        // Same mandate as the root's: 2.1.220 exits 1 without it under `-p --output-format
-        // stream-json`.
-        "--verbose".into(),
-        // Availability axis: no built-in tools. Does NOT gate MCP tools.
-        "--tools".into(),
-        String::new(),
-        // Permission axis. See `ChildSpec::allowed_tools`.
-        "--allowedTools".into(),
-        spec.allowed_tools.join(","),
-        // Deliberately **no `--permission-prompt-tool`**: it exists to route a non-allowlisted call
-        // to marion over the typed control plane, and this surface has none. Setting it here would
-        // trade a fast auto-denial for a question nobody can answer.
-        "--strict-mcp-config".into(),
-        "--mcp-config".into(),
-        spec.mcp_config.to_string_lossy().into_owned(),
-        "--setting-sources".into(),
-        String::new(),
-    ];
-    if let Some(m) = &spec.model {
-        args.push("--model".into());
-        args.push(m.clone());
-    }
-
-    let mut env = Vec::new();
-    if let Some(u) = &spec.base_url {
-        env.push(("ANTHROPIC_BASE_URL".to_string(), u.clone()));
-    }
-    if let Some(k) = &spec.api_key {
-        env.push(("ANTHROPIC_AUTH_TOKEN".to_string(), k.clone()));
-        // A non-empty key silently wins over the token (§6.4), so it is blanked rather than left
-        // inherited — otherwise a child would present the operator's real key to marion's endpoint.
-        env.push(("ANTHROPIC_API_KEY".to_string(), String::new()));
-    }
-
-    Invocation {
-        program: "claude".into(),
-        args,
-        env,
-        cwd: spec.cwd.clone(),
-        model: spec.model.clone(),
-    }
-}
-
 /// Parse a `--output-format stream-json` stream.
 ///
 /// The frame shapes are the ones `tests/fixtures/s1/` and `tests/fixtures/s9/` recorded off a real
@@ -172,12 +114,10 @@ pub fn compile_child(spec: &ChildSpec) -> Invocation {
 /// of `{"type":"tool_use","name":"mcp__marion__report","input":{…}}`. The run's terminal frame is
 /// `{"type":"result", …}`, whose `is_error`/`subtype` is the harness's own verdict.
 ///
-/// **This is the child path, and marion has no Claude Code child yet.** `marion-supervisor::root`
-/// drives the *root*'s conversation itself, because a root is steered turn by turn over a typed
-/// control plane rather than parsed after the fact, and it keeps the whole transcript rather than
-/// this outcome. So the two are not duplicates of one another: this is the `LaunchOnly`-shaped read
-/// the seam requires of every harness, written against the same measured frames, and the day a
-/// `claude` agent type is spawnable as a child it is what will read it.
+/// **This is the child path.** `marion-supervisor::duplex` drives the conversation itself and keeps
+/// the whole transcript; this folds the same bytes into the `StreamOutcome` the seam requires of
+/// every harness, which is what `run_spawn` turns into a `TaskContract` (§6.1 step 9). The two are
+/// not duplicates: one is the live protocol, the other is the audit read.
 ///
 /// `file_change_paths` stays empty: Claude Code's edits arrive as `tool_use` blocks for its own
 /// built-in tools, whose argument shapes are per-tool and unmeasured here. Guessing them would put
@@ -298,6 +238,7 @@ mod tests {
             allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
             mcp_config: "/tmp/mcp.json".into(),
             base_url: Some("http://127.0.0.1:8099".into()),
+            api_key: None,
         }
     }
 
@@ -363,46 +304,49 @@ mod tests {
         );
     }
 
-    fn child_spec() -> ChildSpec {
-        ChildSpec {
-            cwd: "/tmp/wt".into(),
+    /// A **child** differs from a root in exactly two compiled values — the permission axis it is
+    /// given and the credential it presents — and in nothing else. Every flag is the root's,
+    /// because a Claude Code node has one launch shape (see [`HeadlessSpec`]).
+    fn child_spec() -> HeadlessSpec {
+        HeadlessSpec {
             model: None,
-            prompt: "do the task".into(),
             allowed_tools: vec!["mcp__marion__report".into()],
-            mcp_config: "/tmp/mcp.json".into(),
-            base_url: Some("http://127.0.0.1:8099".into()),
             api_key: Some("dummy".into()),
+            ..spec()
         }
     }
 
+    /// **The defect this shape exists to end.** A child's prompt is a frame written after the
+    /// readiness gate, never argv: 2.1.220 does not hold turn one for an `--mcp-config` server, so
+    /// an argv prompt takes that turn with `"tools":[]`, gets the session-title stub back, and the
+    /// run exits 0 having called nothing (§6.1 step 8, §12).
     #[test]
-    fn a_childs_prompt_rides_argv_rather_than_a_frame_written_after_launch() {
-        let inv = compile_child(&child_spec());
-        let i = inv.args.iter().position(|a| a == "-p").unwrap();
-        assert_eq!(inv.args[i + 1], "do the task");
+    fn a_childs_prompt_is_never_compiled_into_argv_and_stdin_stays_typed() {
+        let inv = compile_headless(&child_spec());
         assert!(
-            !inv.args.iter().any(|a| a == "--input-format"),
-            "a LaunchOnly child has no stdin to write a frame on: stdin is closed"
+            inv.args.iter().any(|a| a == "--input-format"),
+            "without a typed stdin there is no frame to withhold, and the gate cannot exist"
+        );
+        let i = inv.args.iter().position(|a| a == "-p").unwrap();
+        assert_ne!(
+            inv.args.get(i + 1).map(String::as_str),
+            Some("do the task"),
+            "`-p` takes no value here; a positional prompt is the toolless-turn bug"
         );
     }
 
     /// The permission axis is the one that decides whether the child's single load-bearing call
     /// happens at all, and its failure is silent: an unlisted tool is auto-denied in process.
     #[test]
-    fn a_childs_marion_tools_are_allowlisted_and_no_permission_prompt_is_offered() {
-        let inv = compile_child(&child_spec());
+    fn a_childs_marion_tools_are_allowlisted() {
+        let inv = compile_headless(&child_spec());
         let i = inv.args.iter().position(|a| a == "--allowedTools").unwrap();
         assert_eq!(inv.args[i + 1], "mcp__marion__report");
-        assert!(
-            !inv.args.iter().any(|a| a == "--permission-prompt-tool"),
-            "it routes a denial to marion over a control plane this surface does not have, so \
-             setting it trades a fast auto-denial for a question nobody answers"
-        );
     }
 
     #[test]
     fn a_childs_credential_is_the_token_and_the_key_beside_it_is_blanked() {
-        let inv = compile_child(&child_spec());
+        let inv = compile_headless(&child_spec());
         assert_eq!(
             inv.env,
             vec![
@@ -417,25 +361,19 @@ mod tests {
         );
     }
 
-    /// The three flags a child shares with the root, each for the same measured reason.
+    /// And a caller that mints its own per-run token after `compile` — which is what `marion run`
+    /// does, so that a request log attributes traffic to one run — gets no pair pushed under it.
     #[test]
-    fn a_child_keeps_the_flags_that_have_nothing_to_do_with_the_surface() {
-        let inv = compile_child(&child_spec());
-        for flag in [
-            "--verbose",           // 2.1.220 exits 1 without it under -p stream-json
-            "--strict-mcp-config", // never the user's servers
-            "--setting-sources",   // never the user's settings
-        ] {
-            assert!(inv.args.iter().any(|a| a == flag), "{flag}");
-        }
-        let i = inv.args.iter().position(|a| a == "--mcp-config").unwrap();
-        assert_eq!(inv.args[i + 1], "/tmp/mcp.json");
+    fn a_node_with_no_credential_in_its_spec_carries_no_anthropic_pair() {
+        let inv = compile_headless(&spec());
+        let names: Vec<&str> = inv.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, vec!["ANTHROPIC_BASE_URL"]);
     }
 
     #[test]
-    fn a_child_records_the_model_it_was_given_and_nothing_when_it_was_given_none() {
-        assert_eq!(compile_child(&child_spec()).model, None);
-        let inv = compile_child(&ChildSpec {
+    fn a_node_records_the_model_it_was_given_and_nothing_when_it_was_given_none() {
+        assert_eq!(compile_headless(&child_spec()).model, None);
+        let inv = compile_headless(&HeadlessSpec {
             model: Some("haiku".into()),
             ..child_spec()
         });

@@ -28,11 +28,21 @@ use marion_core::encoding::{Duration, SystemTime};
 use marion_core::ids::{RAND_BYTES, new_agent_id};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::scope::check_spawn_scope;
-use marion_harness::{ChildExit, Extras, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for};
+use marion_harness::{
+    ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for,
+};
 
+use crate::duplex::{self, DuplexSpec, LaunchPath, launch_path};
 use crate::spawn::{
     ChildOutcome, SpawnError, build_contract, changed_paths, diff_text, make_worktree,
 };
+
+/// How long a **child**'s harness may take to have marion's tool list before the run is refused
+/// (§6.1 step 8). The same 30 s `marion run` gives a root, for the same reason: the measured
+/// connect is ~70 ms, and the alternative to waiting is a run that ends in plain text with no error
+/// anywhere. It is additionally capped at the child's own `timeout_secs` in [`duplex_child`] — a
+/// child may not spend longer waiting to be ready than it is allowed to live.
+const CHILD_MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
 pub struct SpawnRequest {
     pub agent_type: String,
@@ -102,7 +112,7 @@ const DRAIN_POLL_MS: i32 = 20;
 /// How long a pipe that is still open *after the child has been reaped and the tree killed* is
 /// given before the drain is abandoned. On every healthy path the write ends are already closed by
 /// then and the drains finish in microseconds, so this is dead time only when something escaped.
-const DRAIN_GRACE: StdDuration = StdDuration::from_secs(2);
+pub(crate) const DRAIN_GRACE: StdDuration = StdDuration::from_secs(2);
 
 /// A pipe drain that can be stopped while the pipe is still open.
 ///
@@ -112,13 +122,13 @@ const DRAIN_GRACE: StdDuration = StdDuration::from_secs(2);
 /// because `spawn` is called repeatedly by a long-lived supervisor: one leaked thread (and one
 /// leaked fd, and its buffer) per timed-out spawn would be its own unbounded leak, traded for the
 /// hang it fixed.
-struct Drain {
+pub(crate) struct Drain {
     handle: thread::JoinHandle<(Vec<u8>, bool)>,
     stop: Arc<AtomicBool>,
 }
 
 impl Drain {
-    fn start<R: Read + AsRawFd + Send + 'static>(mut pipe: R) -> Self {
+    pub(crate) fn start<R: Read + AsRawFd + Send + 'static>(mut pipe: R) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let handle = thread::spawn(move || {
@@ -162,7 +172,7 @@ impl Drain {
     ///
     /// Returns `(bytes, complete)`; `complete` is false exactly when the pipe was still open at the
     /// deadline, i.e. when the capture is a prefix.
-    fn finish(self, deadline: Instant) -> (Vec<u8>, bool) {
+    pub(crate) fn finish(self, deadline: Instant) -> (Vec<u8>, bool) {
         while !self.handle.is_finished() && Instant::now() < deadline {
             thread::sleep(StdDuration::from_millis(5));
         }
@@ -300,7 +310,7 @@ fn signal_targets(pgids: &[i32], own_pgid: i32) -> Vec<i32> {
 /// here"; §6.7's status derivation reads `TimedOut` off marion's own attributed kill, not off which
 /// signal was used, so a grace period would buy nothing and would only widen the window in which a
 /// runaway keeps running.
-fn kill_process_tree(child_pid: i32) {
+pub(crate) fn kill_process_tree(child_pid: i32) {
     let rows = ps_rows();
     let pids = descendant_pids(&rows, child_pid);
     if let Ok(mut last) = LAST_SWEEP.lock() {
@@ -445,6 +455,97 @@ fn harness_version(program: &str) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// What one child run produced, in the two terms `build_contract` needs: what the harness wrote,
+/// and what marion observed of the process. One shape for both launch paths, so nothing downstream
+/// has to know which one ran.
+struct ChildRun {
+    stdout: String,
+    stderr: String,
+    exit: ChildExit,
+    capture_truncated: bool,
+}
+
+/// The `LaunchOnly` child, **unchanged**: the prompt is already in argv, so there is nothing to
+/// withhold and nothing to steer. codex, gemini and opencode all declare
+/// `launch_only_with_protocol_events()` and all take this path; §6.1 step 8 asserts their MCP
+/// readiness *post hoc* from their own streams instead.
+fn launch_only_child(inv: &Invocation, bound: StdDuration) -> Result<ChildRun, SpawnError> {
+    let output = run_bounded(
+        SysCommand::new(&inv.program)
+            .args(&inv.args)
+            .envs(inv.env.iter().cloned())
+            .env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY)
+            .current_dir(&inv.cwd),
+        bound,
+    )?;
+    Ok(ChildRun {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit: ChildExit {
+            code: output.code,
+            signal: output.signal,
+            timed_out: output.timed_out,
+        },
+        capture_truncated: output.capture_truncated,
+    })
+}
+
+/// The **duplex child**: §6.1 step 8's gate, then the prompt as a `user` frame.
+///
+/// Driven by [`crate::duplex`], which is the same code `marion run` drives a duplex *root* with —
+/// deliberately, because the gate is normative for any launcher driving Claude Code headlessly and
+/// a second implementation of it here would be exactly the drift §9 warns about. What a child adds
+/// is what a child *is*: a wall clock (its contract's `timeout_secs`), which a root is offered
+/// none of.
+///
+/// **The `Blocked` budget is zero, and that is a decision.** The child is compiled with
+/// `--allowedTools` carrying marion's verbs and **without** `--permission-prompt-tool`, so §5.2's
+/// rule applies: a non-allowlisted call is auto-denied *in process* and no `can_use_tool` ever
+/// reaches marion. §9's rule — block until the bound, then deny and let the node proceed — is
+/// written for a **root**, whose bound is a per-episode `Blocked` budget standing outside any wall
+/// clock. A child has no such separate budget: its only bound is the wall clock its contract
+/// records, so holding an unanswerable ask would spend the task's own time and could turn a run
+/// that should have been `Ok` into `TimedOut`. Since the child's tools are `--tools ""` plus
+/// marion's allowlisted verbs, the only call that *could* ask is one marion means to refuse, and a
+/// fast in-process denial reaches §9's outcome — denied, node proceeds — without a bound to burn.
+/// The zero here is therefore the answer to a frame that cannot arrive, kept only so a future
+/// harness that does send one is denied promptly rather than silently held.
+fn duplex_child(
+    inv: &Invocation,
+    agent_id: &AgentId,
+    ready_file: &Path,
+    prompt: &str,
+    bound: StdDuration,
+) -> Result<ChildRun, SpawnError> {
+    let out = duplex::run_duplex(
+        SysCommand::new(&inv.program)
+            .args(&inv.args)
+            .envs(inv.env.iter().cloned())
+            .env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY)
+            .current_dir(&inv.cwd),
+        &DuplexSpec {
+            ready_file,
+            prompt,
+            init_id: format!("marion-init-{}", agent_id.0),
+            mcp_ready_timeout: CHILD_MCP_READY_TIMEOUT.min(bound),
+            blocked_bound: StdDuration::ZERO,
+            wall_clock: Some(bound),
+        },
+    )?;
+    Ok(ChildRun {
+        stdout: out.stdout,
+        stderr: out.stderr,
+        exit: ChildExit {
+            code: out.exit_code,
+            signal: out.signal,
+            timed_out: out.timed_out,
+        },
+        // The duplex reader consumes the pipe inline and stops at the terminal frame, so there is
+        // no abandoned drain and nothing to record as short.
+        capture_truncated: false,
+    })
+}
+
 pub fn run_spawn(
     env: &Env,
     req: &SpawnRequest,
@@ -480,13 +581,35 @@ pub fn run_spawn(
     // some other harness is the failure mode §12's correction rows keep recording, and a loud
     // refusal is always the cheaper one to diagnose.
     let adapter = adapter_for(agent_type.harness)?;
+    // §3.4, the same derivation `marion run` uses for a root: **branch on the surfaces, never on a
+    // harness name.** Until this branch existed `run_spawn` drove every child as `LaunchOnly` —
+    // correct for the three harnesses that declare it, and the reason a `claude` child took turn
+    // one with `"tools":[]` and exited 0 having called nothing.
+    let path = launch_path(&adapter.surfaces())
+        .ok_or(SpawnError::UnsupportedChildSurface(agent_type.harness))?;
+    // Not one of §4.3's normative files: marion's own start-up handshake with a process it did not
+    // spawn. Only the duplex path has a frame to withhold, so only it has a marker to wait on.
+    let ready_file = match path {
+        LaunchPath::Duplex => {
+            let f = agent_dir.path().join("mcp-ready");
+            let _ = std::fs::remove_file(&f);
+            Some(f)
+        }
+        LaunchPath::LaunchOnly => None,
+    };
     let launch = LaunchSpec {
         cwd: wt.clone(),
         // Was a hard `None` until now, which is why a gemini or opencode agent type could be named,
         // resolved and dispatched — and then refused at `compile`, since both adapters make an
         // explicit model a MUST. See `resolve_model`.
         model: resolve_model(req, &agent_type),
-        prompt: req.prompt.clone(),
+        // §6.1 step 8: on a typed control plane the prompt is a frame written **after** the
+        // readiness gate, so nothing is compiled into argv and the adapter is told so by the empty
+        // string — the neutral vocabulary's own signal for "written after launch".
+        prompt: match path {
+            LaunchPath::Duplex => String::new(),
+            LaunchPath::LaunchOnly => req.prompt.clone(),
+        },
         // The **permission** axis (§3.1), in marion's vocabulary translated by the adapter that is
         // about to run. A child's one load-bearing call is `report`; on Claude Code an unlisted
         // tool is auto-denied *in process*, and on a `LaunchOnly` child there is no control plane
@@ -512,9 +635,10 @@ pub fn run_spawn(
     };
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
-        // Its prompt rides argv, so there is no frame to withhold and no marker to wait on
-        // (§6.1 step 8); its MCP readiness is asserted post hoc from its JSONL stream.
-        ready_file: None,
+        // `Some` only on the duplex path. On a `LaunchOnly` child the prompt rides argv, so there
+        // is no frame to withhold and no marker to wait on (§6.1 step 8); its MCP readiness is
+        // asserted post hoc from its JSONL stream.
+        ready_file: ready_file.clone(),
         repo: env.repo.clone(),
         // TODO(phase-3): the *project* dir, not §4.3's `<state>` root — `Env` does not carry the
         // latter. Harmless today because `config_toml` emits no per-server `env` and so reads
@@ -536,26 +660,26 @@ pub fn run_spawn(
         std::fs::write(path, contents)?;
     }
     let inv = adapter.compile(&launch, &ctx)?;
-    let output = run_bounded(
-        SysCommand::new(&inv.program)
-            .args(&inv.args)
-            .envs(inv.env.iter().cloned())
-            .env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY)
-            .current_dir(&inv.cwd),
-        StdDuration::from_secs(req.timeout_secs),
-    )?;
+    let bound = StdDuration::from_secs(req.timeout_secs);
+    let run = match path {
+        LaunchPath::LaunchOnly => launch_only_child(&inv, bound)?,
+        LaunchPath::Duplex => duplex_child(
+            &inv,
+            &agent_id,
+            ready_file
+                .as_deref()
+                .expect("the duplex path always mints a marker"),
+            &req.prompt,
+            bound,
+        )?,
+    };
     // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
     // gemini or opencode child's report was unreadable and its contract said `Unreported` about a
     // run that had reported — the §12 silent-failure shape, one layer down from the dispatch bug.
-    let exit = ChildExit {
-        code: output.code,
-        signal: output.signal,
-        timed_out: output.timed_out,
-    };
     let outcome = ChildOutcome::from_stream(
-        adapter.parse_stream(&String::from_utf8_lossy(&output.stdout), exit),
-        exit,
-        String::from_utf8_lossy(&output.stderr).into_owned(),
+        adapter.parse_stream(&run.stdout, run.exit),
+        run.exit,
+        run.stderr.clone(),
     );
 
     let changed = changed_paths(&wt, &base).unwrap_or_default();
@@ -586,7 +710,7 @@ pub fn run_spawn(
     // Say so when the capture is a prefix. §6.7's rule for caps is that shortening is always
     // recorded; a drain abandoned with the pipe still open shortens stdout and stderr the same way,
     // and the reader would otherwise see a truncated transcript as a complete one.
-    if output.capture_truncated
+    if run.capture_truncated
         && let Some(completion) = contract.completion.as_mut()
     {
         completion.exit.description = note_truncated_capture(&completion.exit.description);
@@ -1094,15 +1218,18 @@ mod tests {
     /// 2. whatever the run produced, it is **the Claude Code adapter's**: its MCP declaration on
     ///    disk, and `claude-code` in the contract.
     ///
-    /// **Re-pointed, not weakened.** This test used to assert a third thing first — that the call
-    /// *refused*, with a typed `MissingInput` naming `claude-code` — because `run_spawn` built a
-    /// `SpawnCtx` with `ready_file: None` and §6.1 step 8 made that marker mandatory. Its own note
-    /// said *"which loud error it is will change when the headless child path lands, and this test
-    /// asserts the harness it names, not the branch it took"*. That path has landed: a child's
-    /// prompt rides argv, so there is no frame to withhold and no marker to gate it with, and the
-    /// launch now happens. What the test defends is unchanged and is asserted here directly — a
-    /// `claude` agent type must never write a Codex config and never be recorded as anything but
-    /// claude-code.
+    /// **Re-pointed twice, never weakened, and the note has always said which part is stable.**
+    /// The original asserted a typed `MissingInput` naming `claude-code`, because `run_spawn` built
+    /// a `SpawnCtx` with `ready_file: None`; the second revision asserted the argv-prompt launch
+    /// that replaced it. Both notes said the same thing — *"this test asserts the harness it names,
+    /// not the branch it took"*. The branch has moved again, to the one this harness's surfaces
+    /// actually declare: a `claude` child is a **duplex** node, so §6.1 step 8's readiness gate now
+    /// runs on it. Against a base URL nobody serves and a one-second bound the gate is what fires,
+    /// and that refusal is itself proof the duplex path ran — no other path has a marker to wait on.
+    ///
+    /// So the acceptable outcomes are exactly the claude-code-shaped ones, and the arm that would
+    /// have caught the original bug is untouched: a contract stamped with any other harness, or a
+    /// Codex `config.toml` on disk, still fails.
     #[test]
     fn a_claude_agent_type_never_writes_a_codex_config_or_launches_codex() {
         let root = temp("dispatch");
@@ -1155,9 +1282,15 @@ mod tests {
                         harness: Harness::ClaudeCode,
                         ..
                     })
+                ) | matches!(
+                    &e,
+                    SpawnError::Duplex(crate::duplex::DuplexError::McpNeverReady(_, _))
+                        | SpawnError::Duplex(crate::duplex::DuplexError::DiedBeforeInitialize)
                 ),
-                "a refusal is still an acceptable outcome — but a typed one naming the harness \
-                 that was asked for, never a fallback onto another. Got: {e}"
+                "a refusal is still an acceptable outcome — but a typed one belonging to the \
+                 harness that was asked for, never a fallback onto another. §6.1 step 8's gate \
+                 only exists on the duplex path, so its refusal names that path as surely as \
+                 MissingInput names the adapter. Got: {e}"
             ),
         }
     }

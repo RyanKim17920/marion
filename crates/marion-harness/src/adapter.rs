@@ -219,26 +219,17 @@ impl ClaudeCodeAdapter {
     }
 
     fn mcp_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<McpEnv, HarnessError> {
-        // Required **exactly when the prompt is withheld**, which is what the message has always
-        // said. A prompt already in argv cannot be held back until the bridge answers `tools/list`,
-        // so there is nothing for a marker to gate; §6.1 step 8 asserts that node's readiness post
-        // hoc from its stream instead (`marion_tool_calls`). The child still gets a marker path so
-        // the bridge's env block keeps one set of key names across the four adapters — nothing
-        // waits on the file, and `run_spawn` never reads it.
-        let ready_file = match ctx.ready_file.clone() {
-            Some(r) => r,
-            None if !Self::prompt_is_written_after_launch(spec) => {
-                spec.config_dir.join("mcp-ready")
-            }
-            None => {
-                return Err(HarnessError::MissingInput {
-                    harness: Harness::ClaudeCode,
-                    what: "a headless node's prompt is written after launch, so the bridge \
-                           readiness marker is required: without it the first turn goes out with \
-                           tools: [] and nothing anywhere reports an error",
-                });
-            }
-        };
+        // Required on **every** Claude Code node, root or child. Its prompt is always written after
+        // launch — 2.1.220 does not hold turn one for an `--mcp-config` server — so there is always
+        // a frame to withhold and always something for the marker to gate (§6.1 step 8). A node
+        // launched without one takes its first turn with `tools: []` and nothing anywhere reports
+        // an error, which is why the absence is a refusal rather than a fallback path.
+        let ready_file = ctx.ready_file.clone().ok_or(HarnessError::MissingInput {
+            harness: Harness::ClaudeCode,
+            what: "a headless node's prompt is written after launch, so the bridge \
+                       readiness marker is required: without it the first turn goes out with \
+                       tools: [] and nothing anywhere reports an error",
+        })?;
         Ok(McpEnv {
             bridge: ctx.bridge.clone(),
             repo: ctx.repo.clone(),
@@ -259,29 +250,31 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         ExecutionSurfaces::headless(TypedKind::StreamJson)
     }
 
-    /// **Two shapes, chosen by whether the prompt is already here.**
+    /// **One shape, and a non-empty prompt is a refusal.**
     ///
-    /// A root is steered turn by turn: its prompt is a frame written after launch, so it compiles
-    /// to `--input-format stream-json` and a `--permission-prompt-tool` that has a control plane to
-    /// ask over. A child spawned by `run_spawn` has neither — stdin is closed and nobody services a
-    /// permission ask — so its prompt rides argv exactly as it does on the other three harnesses.
-    /// Until this branch existed, `claude` was the one built-in agent type that could be *named* by
-    /// `spawn` and never *run*: it refused at `config_files`, and had it not, the launch would have
-    /// gone out with no prompt at all.
+    /// This adapter used to compile two: `--input-format stream-json` for a root whose prompt is a
+    /// frame, and a positional `-p <prompt>` for a child. The second shape does not work and cannot
+    /// be made to — measured on 2.1.220, a child launched that way reports
+    /// `"tools":[],"mcp_servers":[{"name":"marion","status":"pending"}]` in its own `system/init`,
+    /// takes turn one without marion's tools, is answered with the session-title stub, and exits
+    /// **0 having called nothing**. There is no flag that makes the CLI wait; `MCP_TIMEOUT` does
+    /// not change it. §6.1 step 8's remedy is the only one, and it *requires* a typed stdin, which
+    /// is exactly what this adapter's [`Self::surfaces`] declares.
+    ///
+    /// So the argv branch is gone and a prompt that arrives here is a **typed refusal naming the
+    /// cause**, never a launch that quietly loses its tools. The signal is the neutral vocabulary's
+    /// own — [`LaunchSpec::prompt`] is *"empty for a surface whose prompt is written after launch"*
+    /// — rather than a second mode flag beside it.
     fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
         if !Self::prompt_is_written_after_launch(spec) {
-            return Ok(claude_code::compile_child(&claude_code::ChildSpec {
-                cwd: spec.cwd.clone(),
-                model: spec.model.clone(),
-                prompt: spec.prompt.clone(),
-                allowed_tools: spec.allowed_tools.clone(),
-                mcp_config: Self::mcp_config_path(spec),
-                base_url: spec
-                    .base_url
-                    .as_deref()
-                    .map(claude_code::anthropic_base_url),
-                api_key: spec.api_key.clone(),
-            }));
+            return Err(HarnessError::MissingInput {
+                harness: Harness::ClaudeCode,
+                what: "this harness's prompt is written after launch as a user frame, never \
+                       compiled into argv: 2.1.220 does not hold turn one for an --mcp-config \
+                       server, so an argv prompt takes that turn with tools: [] and the run exits \
+                       0 having called nothing. Leave LaunchSpec.prompt empty and write the frame \
+                       after §6.1 step 8's readiness gate",
+            });
         }
         Ok(compile_headless(&HeadlessSpec {
             cwd: spec.cwd.clone(),
@@ -292,6 +285,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
                 .base_url
                 .as_deref()
                 .map(claude_code::anthropic_base_url),
+            api_key: spec.api_key.clone(),
         }))
     }
 
@@ -692,6 +686,7 @@ mod tests {
             mcp_config: "/state/x/config/mcp.json".into(),
             // The supervisor used to derive this itself; the adapter now does.
             base_url: Some("http://127.0.0.1:8099".into()),
+            api_key: None,
         });
         assert_eq!(via_adapter, via_free_function);
     }
@@ -754,31 +749,78 @@ mod tests {
         assert_eq!(PathBuf::from(&inv.args[i + 1]), written[0].0);
     }
 
-    /// A `claude` **child**: the prompt is already here, so the launch compiles it into argv and
-    /// stops requiring the marker whose only job was to gate a prompt that has not been written
-    /// yet. Before this branch, `claude` was the one built-in agent type `spawn` could name and
-    /// never run — `run_spawn` refused at `config_files`, and had it not, the launch would have
-    /// gone out with no prompt at all.
+    /// **A `claude` child is a duplex node, and a prompt in argv is a refusal.**
+    ///
+    /// This test used to assert the opposite — that a non-empty prompt compiled to a positional
+    /// `-p <prompt>` with no marker required. **Re-pointed, because that shape was measured not to
+    /// work**: 2.1.220 launched that way reports `"tools":[]` with marion `pending` in its own
+    /// `system/init`, takes turn one toolless, and exits 0 having called nothing (§12). What the
+    /// test defends is unchanged and is asserted here directly — a `claude` child must never take a
+    /// turn without marion's tools — and the only way to guarantee that is §6.1 step 8's gate,
+    /// which needs the prompt withheld.
     #[test]
-    fn a_claude_child_compiles_its_prompt_into_argv_and_needs_no_readiness_marker() {
-        let mut c = ctx();
-        c.ready_file = None;
+    fn a_claude_child_is_refused_if_its_prompt_was_compiled_into_argv() {
         let spec = LaunchSpec {
             prompt: "do the task".into(),
             api_key: Some("dummy".into()),
             ..claude_spec()
         };
-        let inv = ClaudeCodeAdapter.compile(&spec, &c).unwrap();
-        assert_eq!(inv.args[0], "-p");
-        assert_eq!(inv.args[1], "do the task");
-        assert!(!inv.args.iter().any(|a| a == "--input-format"));
-        // And its MCP declaration is written rather than refused.
-        let files = ClaudeCodeAdapter.config_files(&spec, &c).unwrap();
+        let e = ClaudeCodeAdapter.compile(&spec, &ctx()).unwrap_err();
+        assert!(
+            matches!(
+                &e,
+                HarnessError::MissingInput {
+                    harness: Harness::ClaudeCode,
+                    ..
+                }
+            ),
+            "{e}"
+        );
+        assert!(
+            e.to_string().contains("written after launch"),
+            "the refusal must name the cause, not merely fail: {e}"
+        );
+    }
+
+    /// The child's *working* shape: an empty prompt, a marker, and the credential the neutral spec
+    /// carries — which is the one thing a child compiles differently from a root, because
+    /// `marion run` mints a per-run token after `compile` instead.
+    #[test]
+    fn a_claude_child_compiles_the_duplex_launch_with_its_credential_and_its_marker() {
+        let spec = LaunchSpec {
+            prompt: String::new(),
+            api_key: Some("dummy".into()),
+            allowed_tools: vec!["mcp__marion__report".into()],
+            ..claude_spec()
+        };
+        let inv = ClaudeCodeAdapter.compile(&spec, &ctx()).unwrap();
+        assert!(
+            inv.args.iter().any(|a| a == "--input-format"),
+            "no typed stdin means no frame to withhold, hence no gate"
+        );
+        assert!(!inv.args.iter().any(|a| a == "do the task"));
+        assert_eq!(
+            inv.env,
+            vec![
+                (
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "http://127.0.0.1:8099".to_string()
+                ),
+                ("ANTHROPIC_AUTH_TOKEN".to_string(), "dummy".to_string()),
+                ("ANTHROPIC_API_KEY".to_string(), String::new()),
+            ]
+        );
+        // And its MCP declaration is written, carrying the marker the gate waits on.
+        let files = ClaudeCodeAdapter.config_files(&spec, &ctx()).unwrap();
         assert_eq!(files[0].0, PathBuf::from("/state/x/config/mcp.json"));
         let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
         assert_eq!(
             v["mcpServers"]["marion"]["env"]["MARION_AGENT_ID"],
             serde_json::json!("019f-root")
+        );
+        assert_eq!(
+            v["mcpServers"]["marion"]["env"]["MARION_READY_FILE"],
+            serde_json::json!("/state/x/mcp-ready")
         );
     }
 
@@ -795,6 +837,7 @@ mod tests {
                 allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
                 mcp_config: "/state/x/config/mcp.json".into(),
                 base_url: Some("http://127.0.0.1:8099".into()),
+                api_key: None,
             })
         );
         assert!(inv.args.iter().any(|a| a == "--input-format"));
