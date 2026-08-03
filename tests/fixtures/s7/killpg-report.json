@@ -1,0 +1,133 @@
+{
+  "t0": 1785642062.710412,
+  "codex_pid": 55091,
+  "codex_pgid": 55091,
+  "harness_pid": 55056,
+  "harness_pgid": 55054,
+  "case_a_pids": {
+    "toolshell": 55302,
+    "child": 55306,
+    "midshell": 55307,
+    "grandchild": 55309
+  },
+  "case_b_pids": {
+    "runshell": 55386,
+    "runchild": 55395
+  },
+  "codex_exited_early": false,
+  "ps_before_kill": [
+    {
+      "pid": 55091,
+      "ppid": 55056,
+      "pgid": 55091,
+      "sess_ps": 0,
+      "sid": 55049,
+      "command": "codex exec --json --skip-git-repo-check -C <HOME>/Desktop/CODING/marion/spikes/s7/wt spawn a durable child"
+    },
+    {
+      "pid": 55296,
+      "ppid": 55091,
+      "pgid": 55296,
+      "sess_ps": 0,
+      "sid": 55049,
+      "command": "<HOME>/.local/bin/codex-code-mode-host"
+    },
+    {
+      "pid": 55386,
+      "ppid": 55091,
+      "pgid": 55386,
+      "sess_ps": 0,
+      "sid": 55386,
+      "command": "/bin/sleep 900"
+    },
+    {
+      "pid": 55395,
+      "ppid": 55386,
+      "pgid": 55386,
+      "sess_ps": 0,
+      "sid": 55386,
+      "command": "/bin/sleep 900"
+    },
+    {
+      "pid": 55459,
+      "ppid": 55091,
+      "pgid": 55091,
+      "sess_ps": 0,
+      "sid": null,
+      "command": "<defunct>"
+    }
+  ],
+  "alive_before_kill": {
+    "A.toolshell": false,
+    "A.child": false,
+    "A.midshell": false,
+    "A.grandchild": false,
+    "B.runshell": true,
+    "B.runchild": true
+  },
+  "died_on_their_own_before_kill_secs": {
+    "A.toolshell": 1.63,
+    "A.child": 1.63,
+    "A.midshell": 1.63,
+    "A.grandchild": 1.63
+  },
+  "harness_sid": 55049,
+  "codex_sid": 55049,
+  "descendant_pgids_before_kill": [
+    55091,
+    55296,
+    55386
+  ],
+  "killpg_target": 55091,
+  "alive_after_kill": {
+    "A.toolshell": false,
+    "A.child": false,
+    "A.midshell": false,
+    "A.grandchild": false,
+    "B.runshell": true,
+    "B.runchild": true
+  },
+  "codex_alive_after_kill": false,
+  "ps_after_kill": [
+    {
+      "pid": 55386,
+      "ppid": 1,
+      "pgid": 55386,
+      "sess_ps": 0,
+      "sid": 55386,
+      "command": "/bin/sleep 900"
+    },
+    {
+      "pid": 55395,
+      "ppid": 55386,
+      "pgid": 55386,
+      "sess_ps": 0,
+      "sid": 55386,
+      "command": "/bin/sleep 900"
+    }
+  ],
+  "live_at_kill_time": [
+    "B.runchild",
+    "B.runshell"
+  ],
+  "survivors": [
+    "B.runchild",
+    "B.runshell"
+  ],
+  "verdict": "KILLPG LEAKS -- survivors: ['B.runchild', 'B.runshell']",
+  "remedy_killpg_targets": [
+    55091,
+    55296,
+    55386
+  ],
+  "alive_after_remedy": {
+    "A.toolshell": false,
+    "A.child": false,
+    "A.midshell": false,
+    "A.grandchild": false,
+    "B.runshell": false,
+    "B.runchild": false
+  },
+  "remedy_survivors": [],
+  "remedy_verdict": "recursive pgid sweep CLEANS UP"
+}

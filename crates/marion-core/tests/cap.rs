@@ -34,10 +34,19 @@ fn contract(comp: Completion) -> TaskContract {
     TaskContract {
         task_id: TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
         requester: AgentId("019fbf94-0000-7000-8000-000000000001".into()),
-        child: ChildRef { harness: "codex".into(), version: "0.146.0".into() },
-        repo: RepoIdentity { git_common_dir: "/repo/.git".into(), head_branch: Some("main".into()) },
+        child: ChildRef {
+            harness: "codex".into(),
+            version: "0.146.0".into(),
+        },
+        repo: RepoIdentity {
+            git_common_dir: "/repo/.git".into(),
+            head_branch: Some("main".into()),
+        },
         base_commit: Oid("a".repeat(40)),
-        workspace: Workspace::Worktree { path: "/tmp/wt".into(), branch: "marion/t1".into() },
+        workspace: Workspace::Worktree {
+            path: "/tmp/wt".into(),
+            branch: "marion/t1".into(),
+        },
         instructions: Capped::whole("add a flag"),
         acceptance_criteria: vec![Capped::whole("tests pass")],
         allowed_tools: vec!["apply_patch".into()],
@@ -74,7 +83,11 @@ fn completion() -> Completion {
         diff: Some(Capped::whole("+line\n")),
         evidence: vec![outcome("ok", "")],
         evidence_omitted: 0,
-        exit: ProcessExit { code: Some(0), signal: None, description: "clean exit".into() },
+        exit: ProcessExit {
+            code: Some(0),
+            signal: None,
+            description: "clean exit".into(),
+        },
     }
 }
 
@@ -97,8 +110,12 @@ fn converges_on_pathological_input() {
     let mut comp = completion();
     comp.narrative = Some(Capped::whole("\u{1}".repeat(200_000)));
     comp.diff = Some(Capped::whole("\u{2}".repeat(200_000)));
-    comp.evidence = (0..64).map(|_| outcome(&"\u{3}".repeat(50_000), "\u{4}")).collect();
-    comp.changed_paths = (0..5_000).map(|i| PathBuf::from(format!("src/f{i}.rs"))).collect();
+    comp.evidence = (0..64)
+        .map(|_| outcome(&"\u{3}".repeat(50_000), "\u{4}"))
+        .collect();
+    comp.changed_paths = (0..5_000)
+        .map(|i| PathBuf::from(format!("src/f{i}.rs")))
+        .collect();
     comp.scope_violations = comp.changed_paths.clone();
 
     let out = cap_for_return(contract(comp));
@@ -112,7 +129,9 @@ fn converges_on_pathological_input() {
 #[test]
 fn a_cap_can_never_hide_a_scope_violation() {
     let mut comp = completion();
-    comp.scope_violations = (0..5_000).map(|i| PathBuf::from(format!("outside/f{i}.rs"))).collect();
+    comp.scope_violations = (0..5_000)
+        .map(|i| PathBuf::from(format!("outside/f{i}.rs")))
+        .collect();
     comp.narrative = Some(Capped::whole("x".repeat(300_000)));
     let out = cap_for_return(contract(comp));
     let c = out.completion.unwrap();
@@ -132,7 +151,10 @@ fn streams_carry_independent_truncation_flags() {
     let out = cap_for_return(contract(comp));
     let ev = &out.completion.unwrap().evidence[0];
     assert!(ev.stdout.truncated, "stdout was cut and must say so");
-    assert!(!ev.stderr.truncated, "stderr fitted; a shared flag would have lied about it");
+    assert!(
+        !ev.stderr.truncated,
+        "stderr fitted; a shared flag would have lied about it"
+    );
     assert_eq!(ev.stderr.value, "short");
 }
 
@@ -142,8 +164,14 @@ fn diff_keeps_its_head_and_streams_keep_their_tail() {
     comp.diff = Some(Capped::whole(format!("HEAD{}", "d".repeat(100_000))));
     comp.evidence = vec![outcome(&format!("{}TAIL", "o".repeat(100_000)), "")];
     let out = cap_for_return(contract(comp)).completion.unwrap();
-    assert!(out.diff.unwrap().value.starts_with("HEAD"), "a diff only parses from the start");
-    assert!(out.evidence[0].stdout.value.ends_with("TAIL"), "a summary lands at the end");
+    assert!(
+        out.diff.unwrap().value.starts_with("HEAD"),
+        "a diff only parses from the start"
+    );
+    assert!(
+        out.evidence[0].stdout.value.ends_with("TAIL"),
+        "a summary lands at the end"
+    );
 }
 
 #[test]
@@ -162,7 +190,11 @@ fn shortened_paths_keep_the_prefix_that_proves_scope() {
             s.starts_with("outside/"),
             "the prefix is what shows a path out of scope; trailing-only would erase it"
         );
-        assert!(s.len() <= PATH_CAP, "a cut must never lengthen: {} bytes", s.len());
+        assert!(
+            s.len() <= PATH_CAP,
+            "a cut must never lengthen: {} bytes",
+            s.len()
+        );
     }
 }
 
@@ -187,10 +219,19 @@ fn contract_round_trips_through_serde() {
 fn pinned_json_encodings_hold() {
     let c = contract(completion());
     let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
-    assert!(v["child"].is_object(), "child is a named object, not a two-element array");
-    assert!(v["workspace"]["Worktree"].is_object(), "Workspace is externally tagged");
+    assert!(
+        v["child"].is_object(),
+        "child is a named object, not a two-element array"
+    );
+    assert!(
+        v["workspace"]["Worktree"].is_object(),
+        "Workspace is externally tagged"
+    );
     assert_eq!(v["completion"]["status"], "Ok");
-    assert!(v["completion"]["diff"].is_object(), "diff is Capped, not a bare string");
+    assert!(
+        v["completion"]["diff"].is_object(),
+        "diff is Capped, not a bare string"
+    );
     assert_eq!(v["timeout"], 900, "a bound is integer seconds");
     assert_eq!(v["timestamps"]["spawned"], "2026-08-01T23:07:08.619Z");
 }

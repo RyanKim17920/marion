@@ -18,7 +18,10 @@ use crate::contract::Glob;
 #[derive(Debug, thiserror::Error)]
 pub enum ScopeError {
     #[error("bad glob {pattern:?}: {source}")]
-    BadGlob { pattern: String, source: globset::Error },
+    BadGlob {
+        pattern: String,
+        source: globset::Error,
+    },
     /// A `spawn` glob the ceiling could never admit — the parent asked for a scope the agent type
     /// forbids. A spawn-time error, not a silently empty scope.
     #[error("spawn scope {pattern:?} is not admitted by the agent type's ceiling")]
@@ -33,10 +36,16 @@ fn build(globs: &[Glob]) -> Result<globset::GlobSet, ScopeError> {
         let compiled = GlobBuilder::new(&g.0)
             .literal_separator(true)
             .build()
-            .map_err(|e| ScopeError::BadGlob { pattern: g.0.clone(), source: e })?;
+            .map_err(|e| ScopeError::BadGlob {
+                pattern: g.0.clone(),
+                source: e,
+            })?;
         b.add(compiled);
     }
-    b.build().map_err(|e| ScopeError::BadGlob { pattern: "<set>".into(), source: e })
+    b.build().map_err(|e| ScopeError::BadGlob {
+        pattern: "<set>".into(),
+        source: e,
+    })
 }
 
 /// A resolved scope: the conjunction of an agent type's ceiling and a `spawn` request.
@@ -47,7 +56,10 @@ pub struct Scope {
 
 impl Scope {
     pub fn new(ceiling: &[Glob], requested: &[Glob]) -> Result<Self, ScopeError> {
-        Ok(Self { ceiling: build(ceiling)?, requested: build(requested)? })
+        Ok(Self {
+            ceiling: build(ceiling)?,
+            requested: build(requested)?,
+        })
     }
 
     /// A path is writable iff it matches **both** lists.
@@ -61,7 +73,11 @@ impl Scope {
         &self,
         changed: I,
     ) -> Vec<std::path::PathBuf> {
-        changed.into_iter().filter(|p| !self.is_writable(p)).cloned().collect()
+        changed
+            .into_iter()
+            .filter(|p| !self.is_writable(p))
+            .cloned()
+            .collect()
     }
 }
 
@@ -76,17 +92,18 @@ impl Scope {
 pub fn check_spawn_scope(ceiling: &[Glob], requested: &[Glob]) -> Result<(), ScopeError> {
     let ceil = build(ceiling)?;
     for g in requested {
-        let prefix: Vec<&str> = g
-            .0
-            .split('/')
-            .take_while(|c| !c.contains(['*', '?', '[', '{']))
-            .collect();
+        let prefix: Vec<&str> =
+            g.0.split('/')
+                .take_while(|c| !c.contains(['*', '?', '[', '{']))
+                .collect();
         if prefix.is_empty() {
             continue; // `**/*.rs` — no literal prefix to test
         }
         let lit = prefix.join("/");
         if !ceil.is_match(&lit) && !ceil.is_match(format!("{lit}/x")) {
-            return Err(ScopeError::OutsideCeiling { pattern: g.0.clone() });
+            return Err(ScopeError::OutsideCeiling {
+                pattern: g.0.clone(),
+            });
         }
     }
     Ok(())
@@ -115,15 +132,17 @@ mod tests {
         let narrow = Scope::new(&[g("src/**")], &[g("**")]).unwrap();
         let explicit = Scope::new(&[g("src/**")], &[g("src/**")]).unwrap();
         for p in ["src/a.rs", "docs/b.md", "outside/c.txt"] {
-            assert_eq!(narrow.is_writable(Path::new(p)), explicit.is_writable(Path::new(p)));
+            assert_eq!(
+                narrow.is_writable(Path::new(p)),
+                explicit.is_writable(Path::new(p))
+            );
         }
     }
 
     #[test]
     fn violations_are_paths_failing_either_list() {
         let s = Scope::new(&[g("**")], &[g("src/**")]).unwrap();
-        let changed =
-            vec![PathBuf::from("src/a.rs"), PathBuf::from("outside/b.txt")];
+        let changed = vec![PathBuf::from("src/a.rs"), PathBuf::from("outside/b.txt")];
         assert_eq!(s.violations(&changed), vec![PathBuf::from("outside/b.txt")]);
     }
 

@@ -146,7 +146,11 @@ pub fn cap_for_return(mut c: TaskContract) -> TaskContract {
         comp.scope_violations_omitted += comp.scope_violations.len() - MAX_PATHS;
         comp.scope_violations.truncate(MAX_PATHS);
     }
-    for p in comp.changed_paths.iter_mut().chain(comp.scope_violations.iter_mut()) {
+    for p in comp
+        .changed_paths
+        .iter_mut()
+        .chain(comp.scope_violations.iter_mut())
+    {
         *p = shorten_path(&p.to_string_lossy()).into();
     }
     if encoded_len(&c) <= BACKSTOP {
@@ -157,7 +161,10 @@ pub fn cap_for_return(mut c: TaskContract) -> TaskContract {
     if c.acceptance_criteria.len() > MAX_CRITERIA {
         let dropped = c.acceptance_criteria.len() - MAX_CRITERIA;
         c.acceptance_criteria.truncate(MAX_CRITERIA);
-        c.completion.as_mut().expect("checked above").acceptance_criteria_omitted += dropped;
+        c.completion
+            .as_mut()
+            .expect("checked above")
+            .acceptance_criteria_omitted += dropped;
     }
     for cr in c.acceptance_criteria.iter_mut() {
         cap_tail(cr, 2048);
@@ -174,7 +181,10 @@ pub fn cap_for_return(mut c: TaskContract) -> TaskContract {
 /// Rule 6's stub completion: every text field empty, every counter raised to the full dropped
 /// count, and the persisted path so a reader goes there instead.
 fn stub(mut c: TaskContract) -> TaskContract {
-    let comp = c.completion.as_mut().expect("stub is only reached with a completion");
+    let comp = c
+        .completion
+        .as_mut()
+        .expect("stub is only reached with a completion");
     let dropped_paths = comp.changed_paths.len();
     let dropped_viol = comp.scope_violations.len();
     let dropped_ev = comp.evidence.len();
@@ -196,6 +206,9 @@ fn stub(mut c: TaskContract) -> TaskContract {
     c.instructions.truncated = true;
     let dropped_criteria = c.acceptance_criteria.len();
     c.acceptance_criteria.clear();
-    c.completion.as_mut().expect("checked").acceptance_criteria_omitted += dropped_criteria;
+    c.completion
+        .as_mut()
+        .expect("checked")
+        .acceptance_criteria_omitted += dropped_criteria;
     c
 }

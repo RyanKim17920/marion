@@ -17,7 +17,13 @@
 use serde_json::Value;
 
 pub mod anthropic;
+pub mod reqlog;
 pub mod responses;
+pub mod script;
+pub mod server;
+
+pub use script::{ChildStep, RootStep, Script, Wire};
+pub use server::{CannedServer, Config};
 
 /// What a request is asking for, decided by shape alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +44,11 @@ pub fn classify_anthropic(body: &Value) -> RequestKind {
         .get("tools")
         .and_then(Value::as_array)
         .is_some_and(|t| !t.is_empty());
-    if has_tools { RequestKind::ScriptedTurn } else { RequestKind::SessionTitle }
+    if has_tools {
+        RequestKind::ScriptedTurn
+    } else {
+        RequestKind::SessionTitle
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +80,9 @@ mod tests {
 
     #[test]
     fn a_missing_tools_key_is_not_a_turn() {
-        assert_eq!(classify_anthropic(&json!({"model": "claude"})), RequestKind::SessionTitle);
+        assert_eq!(
+            classify_anthropic(&json!({"model": "claude"})),
+            RequestKind::SessionTitle
+        );
     }
 }

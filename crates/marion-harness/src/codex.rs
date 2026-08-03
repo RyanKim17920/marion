@@ -21,8 +21,11 @@ pub struct ExecSpec {
 }
 
 pub fn compile_exec(spec: &ExecSpec) -> Invocation {
-    let mut args: Vec<String> =
-        vec!["exec".into(), "--json".into(), "--skip-git-repo-check".into()];
+    let mut args: Vec<String> = vec![
+        "exec".into(),
+        "--json".into(),
+        "--skip-git-repo-check".into(),
+    ];
     if let Some(s) = &spec.output_schema {
         args.push("--output-schema".into());
         args.push(s.to_string_lossy().into_owned());
@@ -38,7 +41,10 @@ pub fn compile_exec(spec: &ExecSpec) -> Invocation {
     Invocation {
         program: "codex".into(),
         args,
-        env: vec![("CODEX_HOME".into(), spec.codex_home.to_string_lossy().into_owned())],
+        env: vec![(
+            "CODEX_HOME".into(),
+            spec.codex_home.to_string_lossy().into_owned(),
+        )],
         cwd: spec.cwd.clone(),
     }
 }
@@ -57,6 +63,16 @@ pub fn config_toml(bridge: &str, bridge_args: &[&str], base_url: &str) -> String
         r#"model_provider = "canned"
 approval_policy = "never"
 sandbox_mode = "workspace-write"
+
+# Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
+# marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion
+# deletes the agent-dir with the node (§6.4), so that fetch would keep writing into a directory
+# that is being removed — and, worse, it is precisely the untracked runaway §9's kill rule exists
+# to prevent: by the time `exec` has exited its descendants have reparented to pid 1 and no
+# ancestry walk can find them. It also reaches the network on a run whose whole point is that it
+# does not. There is nothing for marion to reap here, so the fix is to never start it.
+[features]
+plugins = false
 
 [model_providers.canned]
 name = "canned"
@@ -97,16 +113,39 @@ mod tests {
     #[test]
     fn codex_home_is_set_in_env_not_argv() {
         let inv = compile_exec(&spec());
-        assert!(inv.env.iter().any(|(k, v)| k == "CODEX_HOME" && v == "/tmp/ch"));
+        assert!(
+            inv.env
+                .iter()
+                .any(|(k, v)| k == "CODEX_HOME" && v == "/tmp/ch")
+        );
         assert!(!inv.args.iter().any(|a| a.contains("CODEX_HOME")));
     }
 
     #[test]
     fn the_approval_mode_that_silently_cancels_everything_is_always_written() {
-        let t = config_toml("/bin/marion-supervisor", &["mcp"], "http://127.0.0.1:8099/v1");
+        let t = config_toml(
+            "/bin/marion-supervisor",
+            &["mcp"],
+            "http://127.0.0.1:8099/v1",
+        );
         assert!(
             t.contains(r#"default_tools_approval_mode = "approve""#),
             "without it every marion tool call is cancelled with no error the child can see"
+        );
+    }
+
+    /// Measured on 0.146.0 through the M1 end-to-end run: with the plugin feature left on, every
+    /// `codex exec` leaves a `git fetch https://github.com/openai/plugins.git` running **after it
+    /// has exited**, reparented to pid 1, writing into the agent-dir marion is deleting. It is not
+    /// reapable after the fact — §9's kill rule turns on enumerating descendants *before* the
+    /// child dies — so the only remedy is not to start it.
+    #[test]
+    fn the_background_plugin_fetch_that_outlives_exec_is_disabled() {
+        let t = config_toml("/bin/marion-supervisor", &["mcp"], "http://x/v1");
+        assert!(t.contains("[features]"));
+        assert!(
+            t.contains("plugins = false"),
+            "otherwise every child leaves a network fetch behind it"
         );
     }
 

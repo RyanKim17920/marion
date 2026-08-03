@@ -8,8 +8,12 @@ Agent(harness, model, tools, prompt, …) -> handle
 handle: observe · steer · interrupt · result
 ```
 
-**Status:** design complete, **spikes S1–S6 all resolved**, **no code yet.** M1 is next.
-Start at *First task*.
+**Status:** design complete, **spikes S1–S6 all resolved**, **M1 in progress.** The delegation hop
+runs end to end: `spawn` creates a git worktree, launches a real `codex exec` against the canned
+provider, the child edits a file and calls `report` through marion's own stdio MCP bridge, and
+marion returns a task contract derived from git — with detective scope enforcement demonstrated on
+an out-of-scope write. Still owed for M1: a real `claude` root driving `spawn`, contract
+persistence, and the three debts in design §11 items 1, 2 and 14. Start at *First task*.
 
 ---
 

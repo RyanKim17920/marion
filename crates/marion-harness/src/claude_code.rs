@@ -73,7 +73,12 @@ pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
     // real config dir. Config isolation and subscription auth are mutually exclusive here, and the
     // fileless path (--mcp-config + --setting-sources "") is what keeps auth working.
 
-    Invocation { program: "claude".into(), args, env, cwd: spec.cwd.clone() }
+    Invocation {
+        program: "claude".into(),
+        args,
+        env,
+        cwd: spec.cwd.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -145,6 +150,10 @@ mod tests {
     fn nothing_is_shell_quoted_because_nothing_reaches_a_shell() {
         let inv = compile_headless(&spec());
         assert_eq!(inv.program, "claude");
-        assert!(inv.args.iter().all(|a| !a.contains('\'') && !a.contains('"')));
+        assert!(
+            inv.args
+                .iter()
+                .all(|a| !a.contains('\'') && !a.contains('"'))
+        );
     }
 }

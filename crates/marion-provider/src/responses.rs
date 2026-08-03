@@ -11,14 +11,21 @@
 use serde_json::{Value, json};
 
 fn sse(data: &Value) -> String {
-    let ty = data.get("type").and_then(Value::as_str).unwrap_or("message");
+    let ty = data
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("message");
     format!("event: {ty}\ndata: {data}\n\n")
 }
 
 fn envelope(item: Value, id: &str) -> String {
     let mut out = String::new();
-    out.push_str(&sse(&json!({"type":"response.created","response":{"id":id}})));
-    out.push_str(&sse(&json!({"type":"response.output_item.done","item":item})));
+    out.push_str(&sse(
+        &json!({"type":"response.created","response":{"id":id}}),
+    ));
+    out.push_str(&sse(
+        &json!({"type":"response.output_item.done","item":item}),
+    ));
     out.push_str(&sse(&json!({"type":"response.completed",
                               "response":{"id":id,"output":[item]}})));
     out
@@ -96,7 +103,10 @@ mod tests {
     #[test]
     fn apply_patch_passes_a_string_not_an_object() {
         let s = apply_patch_call("*** Begin Patch\n*** End Patch", "call_2");
-        assert!(s.contains("tools.apply_patch(\\\""), "S6: an object input fails at runtime");
+        assert!(
+            s.contains("tools.apply_patch(\\\""),
+            "S6: an object input fails at runtime"
+        );
         assert!(!s.contains("apply_patch({input"));
     }
 

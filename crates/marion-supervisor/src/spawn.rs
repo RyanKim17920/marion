@@ -7,7 +7,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command as SysCommand;
 
-use marion_core::cap::cap_for_return;
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, SystemTime};
 use marion_core::scope::Scope;
@@ -18,10 +17,19 @@ pub enum SpawnError {
     Git(&'static str, String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("unknown agent type {0}")]
+    UnknownAgentType(String),
+    #[error("invalid writable scope: {0}")]
+    Scope(#[from] marion_core::scope::ScopeError),
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, SpawnError> {
-    let out = SysCommand::new("git").current_dir(repo).args(args).output()?;
+    let out = SysCommand::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()?;
     if !out.status.success() {
         return Err(SpawnError::Git(
             "command",
@@ -38,7 +46,17 @@ fn now() -> SystemTime {
 /// Create the child's worktree at `base_commit`.
 pub fn make_worktree(repo: &Path, path: &Path, branch: &str) -> Result<Oid, SpawnError> {
     let head = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
-    git(repo, &["worktree", "add", "-b", branch, &path.to_string_lossy(), &head])?;
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            &path.to_string_lossy(),
+            &head,
+        ],
+    )?;
     Ok(Oid(head))
 }
 
@@ -57,7 +75,10 @@ pub fn changed_paths(wt: &Path, base: &Oid) -> Result<Vec<PathBuf>, SpawnError> 
             }
         }
     };
-    push(&git(wt, &["diff", "--name-only", "--no-renames", &base.0, "HEAD"])?);
+    push(&git(
+        wt,
+        &["diff", "--name-only", "--no-renames", &base.0, "HEAD"],
+    )?);
     push(&git(wt, &["diff", "--name-only", "--no-renames", "HEAD"])?);
     let untracked = git(wt, &["ls-files", "--others", "--exclude-standard"])?;
     push(&untracked);
@@ -77,6 +98,9 @@ pub struct ChildOutcome {
     pub narrative: Option<String>,
     pub file_change_paths: Vec<PathBuf>,
     pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub timed_out: bool,
+    pub stderr: String,
 }
 
 /// Parse a `codex exec --json` stream.
@@ -87,7 +111,9 @@ pub struct ChildOutcome {
 pub fn parse_child_stream(s: &str) -> ChildOutcome {
     let mut out = ChildOutcome::default();
     for line in s.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
         let item = &v["item"];
         match item["type"].as_str() {
             Some("mcp_tool_call") if item["server"] == "marion" && item["tool"] == "report" => {
@@ -130,16 +156,36 @@ pub fn build_contract(
     evidence: Vec<CommandOutcome>,
 ) -> TaskContract {
     let scope = Scope::new(ceiling, requested).ok();
-    let violations =
-        scope.as_ref().map(|s| s.violations(&changed)).unwrap_or_default();
+    let violations = scope
+        .as_ref()
+        .map(|s| s.violations(&changed))
+        .unwrap_or_default();
     // A child that never reported is Unreported even if everything else looks clean — the status
     // is never silently promoted from a final message.
-    let status = if outcome.narrative.is_none() {
+    let status = if outcome.timed_out {
+        ExitStatus::TimedOut
+    } else if outcome.narrative.is_none() {
         ExitStatus::Unreported
     } else if outcome.exit_code.unwrap_or(0) != 0 {
         ExitStatus::Failed
     } else {
         ExitStatus::Ok
+    };
+    let description = if outcome.timed_out {
+        "child exceeded its timeout and its process group was killed".into()
+    } else if let Some(signal) = outcome.signal {
+        format!("child terminated by signal {signal}")
+    } else if let Some(code) = outcome.exit_code {
+        format!("child exited with code {code}")
+    } else {
+        "child exit status was unavailable".into()
+    };
+    let stderr = outcome.stderr.trim();
+    let description = if stderr.is_empty() {
+        description
+    } else {
+        let preview: String = stderr.chars().take(512).collect();
+        format!("{description}; stderr: {preview}")
     };
     let completion = Completion {
         status,
@@ -161,14 +207,17 @@ pub fn build_contract(
         evidence_omitted: 0,
         exit: ProcessExit {
             code: outcome.exit_code,
-            signal: None,
-            description: "child exited".into(),
+            signal: outcome.signal,
+            description,
         },
     };
-    let c = TaskContract {
+    TaskContract {
         task_id,
         requester,
-        child: ChildRef { harness: "codex".into(), version: "0.146.0".into() },
+        child: ChildRef {
+            harness: "codex".into(),
+            version: "unknown".into(),
+        },
         repo,
         base_commit: base,
         workspace,
@@ -186,8 +235,7 @@ pub fn build_contract(
             exited: Some(now()),
         },
         completion: Some(completion),
-    };
-    cap_for_return(c)
+    }
 }
 
 #[cfg(test)]
@@ -198,13 +246,19 @@ mod tests {
     fn a_report_is_read_from_the_mcp_tool_call_item() {
         // Verbatim shape from tests/fixtures/s6/exec-mcp-report.stream.jsonl.
         let s = r#"{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"report","arguments":{"narrative":"did the work"},"status":"completed"}}"#;
-        assert_eq!(parse_child_stream(s).narrative.as_deref(), Some("did the work"));
+        assert_eq!(
+            parse_child_stream(s).narrative.as_deref(),
+            Some("did the work")
+        );
     }
 
     #[test]
     fn file_changes_are_collected_as_corroboration() {
         let s = r#"{"type":"item.completed","item":{"id":"item_0","type":"file_change","changes":[{"path":"/wt/a.rs","kind":"update"}],"status":"completed"}}"#;
-        assert_eq!(parse_child_stream(s).file_change_paths, vec![PathBuf::from("/wt/a.rs")]);
+        assert_eq!(
+            parse_child_stream(s).file_change_paths,
+            vec![PathBuf::from("/wt/a.rs")]
+        );
     }
 
     #[test]
@@ -218,16 +272,27 @@ mod tests {
         let c = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
-            RepoIdentity { git_common_dir: "/r/.git".into(), head_branch: None },
+            RepoIdentity {
+                git_common_dir: "/r/.git".into(),
+                head_branch: None,
+            },
             Oid("a".repeat(40)),
-            Workspace::Worktree { path: "/wt".into(), branch: "b".into() },
+            Workspace::Worktree {
+                path: "/wt".into(),
+                branch: "b".into(),
+            },
             "do it",
             &["passes".to_string()],
             &[Glob("**".into())],
             &[Glob("src/**".into())],
             Duration::from_secs(900),
             now(),
-            &ChildOutcome { narrative: None, file_change_paths: vec![], exit_code: Some(0) },
+            &ChildOutcome {
+                narrative: None,
+                file_change_paths: vec![],
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
             vec![],
             None,
             vec![],
@@ -240,9 +305,15 @@ mod tests {
         let c = build_contract(
             TaskId("t".into()),
             AgentId("r".into()),
-            RepoIdentity { git_common_dir: "/r/.git".into(), head_branch: None },
+            RepoIdentity {
+                git_common_dir: "/r/.git".into(),
+                head_branch: None,
+            },
             Oid("a".repeat(40)),
-            Workspace::Worktree { path: "/wt".into(), branch: "b".into() },
+            Workspace::Worktree {
+                path: "/wt".into(),
+                branch: "b".into(),
+            },
             "do it",
             &["passes".to_string()],
             &[Glob("**".into())],
@@ -253,6 +324,7 @@ mod tests {
                 narrative: Some("done".into()),
                 file_change_paths: vec![],
                 exit_code: Some(0),
+                ..ChildOutcome::default()
             },
             vec![PathBuf::from("src/a.rs"), PathBuf::from("outside/b.txt")],
             None,
@@ -261,6 +333,10 @@ mod tests {
         let comp = c.completion.unwrap();
         assert!(comp.scope_enforced, "false would mean the check never ran");
         assert_eq!(comp.scope_violations, vec![PathBuf::from("outside/b.txt")]);
-        assert_eq!(comp.status, ExitStatus::Ok, "detective, not preventive: the run still succeeded");
+        assert_eq!(
+            comp.status,
+            ExitStatus::Ok,
+            "detective, not preventive: the run still succeeded"
+        );
     }
 }

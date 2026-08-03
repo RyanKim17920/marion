@@ -4,9 +4,20 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "marion_supervisor"
+path = "src/lib.rs"
+
 [[bin]]
 name = "marion-supervisor"
 path = "src/main.rs"
+
+# The user-facing command (§10). One crate, two binaries: M1 has no socket between them, so
+# sharing `run_spawn` by linkage is what keeps `marion run` and `marion-supervisor mcp` from
+# drifting. The split lands with M2's detached supervisor.
+[[bin]]
+name = "marion"
+path = "src/bin/marion.rs"
 
 [dependencies]
 marion-core = { path = "../marion-core" }
@@ -14,3 +25,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 marion-harness = { path = "../marion-harness" }
+
+# A **dev**-dependency, not a dependency: only the end-to-end test starts a provider. Linking the
+# canned provider into the user-facing `marion` binary would put a fake-model server inside the
+# shipped command, and §5.5 keeps the provider a separate component precisely so the real endpoint
+# can replace it. The e2e test drives it in-process so the run's request log is a value it can
+# assert on directly.
+[dev-dependencies]
+marion-provider = { path = "../marion-provider" }

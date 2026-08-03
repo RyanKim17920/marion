@@ -1,0 +1,9 @@
+# S8 touches REAL Codex credentials. Anything below can contain a live token
+# (auth.json holds an OAuth id/access/refresh triple). Never commit it.
+codex-home/
+iso*/
+wt/
+auth.json
+*.out
+*.err
+*.stream.jsonl

@@ -2,12 +2,21 @@
 //!
 //! No process spawning and no filesystem side effects, so §8's L1 tests stay pure.
 
+pub mod agent_type;
 pub mod cap;
 pub mod contract;
 pub mod encoding;
+pub mod ids;
+pub mod paths;
 pub mod scope;
 
+pub use agent_type::{
+    AgentType, DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_DEPTH, DEFAULT_TIMEOUT_SECS,
+    SpawnGateError, check_spawn_gates, default_scope_ceiling,
+};
 pub use contract::{
     AgentId, Capped, ChildRef, Command, CommandOutcome, Completion, ExitStatus, Glob, Oid,
     ProcessExit, RepoIdentity, ResultStatus, TaskContract, TaskId, TaskTimestamps, Workspace,
 };
+pub use ids::{new_agent_id, new_task_id, uuid_v7};
+pub use paths::{AgentDir, ProjectDir, project_hash, state_dir};
