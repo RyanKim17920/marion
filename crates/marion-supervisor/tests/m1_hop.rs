@@ -31,7 +31,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use marion_core::contract::TaskContract;
-use marion_provider::script::SPAWN_TOOL_USE_ID;
+use marion_provider::script::ROOT_TOOL_USE_ID;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::run_bounded;
 use serde_json::Value;
@@ -354,7 +354,7 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
     );
 
     // ---- criterion 3: the contract came back as the tool result, asserted on the request. -----
-    let result_text = tool_result_text(spawn_turn, SPAWN_TOOL_USE_ID)
+    let result_text = tool_result_text(spawn_turn, ROOT_TOOL_USE_ID)
         .expect("the request that follows the spawn call carries its tool_result");
     assert!(
         !result_text.contains("<persisted-output>"),

@@ -15,8 +15,10 @@ use crate::{RequestKind, anthropic, classify_anthropic, responses};
 pub const PATCH_CALL_ID: &str = "call_marion_patch_1";
 /// `call_id` of the child's `report` step, used the same way.
 pub const REPORT_CALL_ID: &str = "call_marion_report_1";
-/// `tool_use.id` of the root's `spawn` call. The root's `tool_result` quotes it back.
-pub const SPAWN_TOOL_USE_ID: &str = "toolu_marion_spawn_1";
+/// `tool_use.id` of the root's single tool call. The root's `tool_result` quotes it back, and — as
+/// S9 records — so does the `can_use_tool` frame's `tool_use_id`, which is how a permission ask is
+/// tied to the call that provoked it.
+pub const ROOT_TOOL_USE_ID: &str = "toolu_marion_spawn_1";
 
 /// Which wire format a request is speaking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,8 +149,14 @@ fn is_custom_tool_item(item: &Value) -> bool {
 /// patch at a path that actually exists in its own fixture repo.
 #[derive(Debug, Clone)]
 pub struct Script {
-    /// Arguments the root passes to `mcp__marion__spawn`.
-    pub spawn_args: Value,
+    /// The tool the root calls on its first turn, in the harness's own spelling.
+    ///
+    /// Parameterised so a test can aim the root at a verb that is **not** in
+    /// `ROOT_ALLOWED_TOOLS` — which is the only way to provoke a real inbound `can_use_tool`
+    /// frame from the CLI (S9, design §11 item 14). The M1 hop leaves it at `spawn`.
+    pub root_tool: String,
+    /// Arguments the root passes to [`Script::root_tool`].
+    pub root_tool_input: Value,
     /// The root's closing text turn.
     pub root_final_text: String,
     /// The patch the child feeds to `tools.apply_patch` (a string — S6).
@@ -163,7 +171,8 @@ pub struct Script {
 impl Default for Script {
     fn default() -> Self {
         Self {
-            spawn_args: json!({
+            root_tool: "mcp__marion__spawn".to_string(),
+            root_tool_input: json!({
                 "agent_type": "codex-impl",
                 "prompt": "Add the M1 marker file under src/ and report back.",
                 "acceptance_criteria": ["a file exists under src/ containing the M1 marker"],
@@ -196,9 +205,9 @@ impl Script {
             RequestKind::SessionTitle => anthropic::session_title_stub(),
             RequestKind::ScriptedTurn => match classify_root(body) {
                 RootStep::Delegate => anthropic::tool_use_turn(
-                    "mcp__marion__spawn",
-                    SPAWN_TOOL_USE_ID,
-                    &self.spawn_args,
+                    &self.root_tool,
+                    ROOT_TOOL_USE_ID,
+                    &self.root_tool_input,
                 ),
                 RootStep::Finish => anthropic::text_turn(&self.root_final_text),
             },
@@ -230,12 +239,12 @@ mod tests {
         let mut b = user_turn();
         b["messages"].as_array_mut().unwrap().push(json!({
             "role": "assistant",
-            "content": [{"type": "tool_use", "id": SPAWN_TOOL_USE_ID,
+            "content": [{"type": "tool_use", "id": ROOT_TOOL_USE_ID,
                          "name": "mcp__marion__spawn", "input": {}}]
         }));
         b["messages"].as_array_mut().unwrap().push(json!({
             "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": SPAWN_TOOL_USE_ID,
+            "content": [{"type": "tool_result", "tool_use_id": ROOT_TOOL_USE_ID,
                          "content": "{\"state\":\"ok\"}"}]
         }));
         b

@@ -195,7 +195,15 @@ pub fn is_control_response_to(frame: &Value, request_id: &str) -> bool {
             == Some(request_id)
 }
 
-/// The `tool_name` of an inbound `can_use_tool` request, if that is what this frame is.
+/// The `request_id` and `tool_name` of an inbound `can_use_tool` request, if that is what this
+/// frame is.
+///
+/// **Measured, not decompiled** — S9, `tests/fixtures/s9/`. Three fields and only three are common
+/// to every ask 2.1.220 emits: the **top-level** `request_id`, `request.subtype`, and
+/// `request.tool_name`. Everything else varies with the tool kind — an MCP verb carries
+/// `display_name`, `input` and one `permission_suggestions` entry; a built-in `Bash` call adds
+/// `description` and `blocked_path` and suggests three. So this reads the three and no more:
+/// requiring `blocked_path` would work against Bash and fail against `mcp__marion__*`.
 pub fn can_use_tool_request(frame: &Value) -> Option<(String, String)> {
     if frame.get("type").and_then(Value::as_str) != Some("control_request") {
         return None;
@@ -218,11 +226,17 @@ pub fn can_use_tool_request(frame: &Value) -> Option<(String, String)> {
 /// bound expires and is then **denied** — the root is not killed, because "expired" and
 /// "terminated" are different events for a root.
 ///
-/// **The response half of this channel is designed, not measured** (§5.2's `UNVERIFIED` box, and
-/// §9's third owed M1 debt: "a real `can_use_tool` round-trip with a committed fixture"). It
-/// cannot fire on M1's acceptance path — every verb the canned root reaches is allowlisted — so
-/// nothing M1 claims rests on this frame being right. It is here so the bound has something to
-/// bound rather than being a flag that does nothing.
+/// **Measured 2026-08-03 — S9, `tests/fixtures/s9/can-use-tool-deny.stdin.jsonl`.** This exact
+/// string was written to a real 2.1.220's stdin and accepted: the CLI turned the denial into an
+/// `is_error` `tool_result` carrying `message` verbatim, tagged it
+/// `non_execution_kind: "permission-rule"`, listed the call under the run's `permission_denials`,
+/// and **finished the turn normally** (`terminal_reason: "completed"`, exit 0). That is §9's rule
+/// — *expired* and *terminated* are different events for a root — no longer as a design claim but
+/// as a recording. `crates/marion-supervisor/tests/permission_round_trip.rs` re-runs it.
+///
+/// The corresponding allow is `{"behavior":"allow"}` with an **optional** `updatedInput`; S9
+/// measured a bare allow running the tool with the model's original input. marion does not send
+/// one in M1 — it has no permission answerer — so no function for it exists here.
 pub fn deny_response(request_id: &str, reason: &str) -> String {
     json!({
         "type": "control_response",
@@ -509,15 +523,16 @@ mod tests {
 
     #[test]
     fn a_permission_ask_is_recognised_by_its_subtype_and_carries_its_request_id() {
-        // §5.2's observed ask frame. The top-level request_id is load-bearing: a frame without one
-        // could be neither answered nor cancelled.
+        // Verbatim from tests/fixtures/s9/can-use-tool-deny.stdout.jsonl, recorded off a real
+        // 2.1.220. The top-level request_id is load-bearing: a frame without one could be neither
+        // answered nor cancelled.
         let frame: Value = serde_json::from_str(
-            r#"{"type":"control_request","request_id":"req_7","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_1"}}"#,
+            r#"{"type":"control_request","request_id":"<UUID-4>","request":{"subtype":"can_use_tool","tool_name":"mcp__marion__report","display_name":"Report","input":{"narrative":"s9 probe: a verb the root may not use"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"mcp__marion__report"}],"behavior":"allow","destination":"localSettings"}],"tool_use_id":"toolu_marion_spawn_1"}}"#,
         )
         .unwrap();
         assert_eq!(
             can_use_tool_request(&frame),
-            Some(("req_7".to_string(), "Bash".to_string()))
+            Some(("<UUID-4>".to_string(), "mcp__marion__report".to_string()))
         );
         let other: Value = serde_json::from_str(
             r#"{"type":"control_request","request_id":"r","request":{"subtype":"interrupt"}}"#,
@@ -534,6 +549,10 @@ mod tests {
             v["response"]["response"]["behavior"], "deny",
             "§9: on expiry marion denies the pending permission and lets the root proceed"
         );
+        // The envelope the CLI actually accepted (S9): the response's own `subtype` is `success` —
+        // it reports that the *answer* was produced, not that the permission was granted. Sending
+        // `subtype: "deny"` here would be a protocol error, not a denial.
+        assert_eq!(v["response"]["subtype"], "success");
     }
 
     #[test]

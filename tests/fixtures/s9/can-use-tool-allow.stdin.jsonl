@@ -1,0 +1,3 @@
+{"request":{"hooks":{},"subtype":"initialize"},"request_id":"marion-init-<AGENT-ID>","type":"control_request"}
+{"message":{"content":[{"text":"Use the tool you have been given.","type":"text"}],"role":"user"},"parent_tool_use_id":null,"session_id":"","type":"user"}
+{"response":{"request_id":"<UUID-4>","response":{"behavior":"allow","updatedInput":{"narrative":"s9 probe: a verb the root may not use"}},"subtype":"success"},"type":"control_response"}
