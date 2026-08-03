@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 
-use marion_core::agent_type::builtin;
+use marion_core::agent_type::{AgentType, builtin, check_spawn_gates};
 use marion_core::cap::cap_for_return;
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, SystemTime};
@@ -54,6 +54,62 @@ pub struct SpawnRequest {
     /// type's own `model` key as the default** (§3.1) — see [`resolve_model`].
     pub model: Option<String>,
 }
+
+/// The node whose `spawn` this is — §6.1 step 2's gates read the **caller's** agent type, never
+/// the child's just-resolved one.
+///
+/// One struct rather than three loose arguments because the three travel together and are wrong
+/// apart: `agent_id` stamps `TaskContract.requester` (§9), `agent_type` carries the `max_depth` /
+/// `max_concurrent_children` the gates read (§3.1), and `depth` is the position in the tree the
+/// child's is derived from. Passing the *child's* type here would make the concurrency gate
+/// vacuous — the child has no children yet — which is the mistake
+/// [`marion_core::agent_type::check_spawn_gates`]'s signature already exists to prevent.
+///
+/// A root builds one of these from what `marion run` minted; a child's bridge rebuilds it from the
+/// per-server MCP `env` block marion wrote (`marion_harness::AGENT_ID_ENV` and friends), because
+/// marion is not the bridge's parent and that declaration is the only channel there is.
+#[derive(Debug, Clone)]
+pub struct Caller {
+    /// `TaskContract.requester` (§9): the caller's own `AgentId`.
+    pub agent_id: String,
+    pub agent_type: AgentType,
+    /// The caller's depth, **root = 0**. The child lands at `depth + 1`.
+    pub depth: u32,
+}
+
+impl Caller {
+    /// The root of a tree: depth 0, which §6.1 step 2 says the gates are simply inapplicable to
+    /// (it has no parent to have been gated by). Its own `spawn` is gated like anyone else's.
+    pub fn root(agent_id: impl Into<String>, agent_type: AgentType) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            agent_type,
+            // The same constant `root::prepare` writes into the root's own declaration, not a
+            // second literal beside it: two spellings of "the root is 0" could disagree.
+            depth: crate::root::ROOT_DEPTH,
+        }
+    }
+}
+
+/// The caller's live-children count handed to §6.1 step 2's concurrency gate, and **why it is a
+/// constant rather than a lookup today.**
+///
+/// `spawn` is fully synchronous: [`run_spawn`] runs the child to completion and only then returns
+/// its contract, and the bridge that calls it (`marion-supervisor mcp`) serves JSON-RPC on a
+/// single-threaded loop that reads a line, answers it, and only then reads the next. So at the
+/// instant this gate runs, the number of the caller's children that are live and unreaped is
+/// **zero** — the one about to be created is this one. `background: true` is accepted by the tool
+/// schema and ignored (M2+); until it is honoured there is no second child to count.
+///
+/// The honest consequence, stated rather than hidden: **`max_concurrent_children` cannot bind
+/// today.** 0 is never `>= 4`, so the concurrency half of the gate is wired and inert while the
+/// depth half is live. It is deliberately *not* faked into looking enforced — a registry of live
+/// children is a read of the journal, and the journal does not exist yet (`MILESTONES.md`: "Not
+/// started"), so anything else here would be a number invented to make a test pass.
+///
+/// This constant is the one place to revisit when backgrounding lands: the count then comes from
+/// the caller's live children, and nothing else about the call site changes.
+const LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER: u32 = 0;
 
 pub struct Env {
     pub repo: PathBuf,
@@ -550,10 +606,30 @@ pub fn run_spawn(
     env: &Env,
     req: &SpawnRequest,
     task_id: &TaskId,
-    requester: &str,
+    caller: &Caller,
 ) -> Result<TaskContract, SpawnError> {
     let agent_type = builtin(&req.agent_type)
         .ok_or_else(|| SpawnError::UnknownAgentType(req.agent_type.clone()))?;
+    // **§6.1 step 2, and it runs before every side effect there is** — before the worktree, before
+    // `config_files`, before `compile`, before any process. That ordering is the whole point: the
+    // things this refuses are a real git worktree, a real branch, a real agent-dir and a real OS
+    // process tree, and a gate evaluated after any of them would be cleaning up rather than
+    // preventing.
+    //
+    // It reads the **caller's** type (§6.1 step 2 says so in as many words), not `agent_type`
+    // above: the child has no children yet, so the concurrency bound of *its* type would be
+    // vacuous, and its `max_depth` is a bound on its own descendants rather than on its existence.
+    //
+    // Until this call existed `check_spawn_gates` had no production caller at all, nothing computed
+    // a depth, and `max_depth` was an inert number: a child could spawn a grandchild, and that
+    // grandchild another, without bound. Only Claude Code reads `allowed_tools`, so on the other
+    // three harnesses the ungated `spawn` was simply *served* — real processes, real worktrees, no
+    // error anywhere.
+    check_spawn_gates(
+        &caller.agent_type,
+        caller.depth,
+        LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER,
+    )?;
     let requested: Vec<Glob> = if req.writable_scope.is_empty() {
         vec![Glob("**".into())]
     } else {
@@ -635,6 +711,15 @@ pub fn run_spawn(
     };
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
+        // The **canonical** name, read off the resolved type rather than off `req.agent_type`: the
+        // alias `codex` and the name `codex-impl` are one definition (`agent_type::builtin`), and
+        // writing the alias would make the child's bridge re-resolve a spelling marion had already
+        // resolved once.
+        agent_type: agent_type.name.clone(),
+        // §3.1's depth, one level below the caller's. This is what reaches the child's own bridge
+        // through the per-server `env` block, and it is what makes the gate above evaluable at all
+        // when *this* child spawns in turn.
+        depth: caller.depth + 1,
         // `Some` only on the duplex path. On a `LaunchOnly` child the prompt rides argv, so there
         // is no frame to withhold and no marker to wait on (§6.1 step 8); its MCP readiness is
         // asserted post hoc from its JSONL stream.
@@ -696,7 +781,7 @@ pub fn run_spawn(
     let diff = diff_text(&wt, &base).ok().filter(|d| !d.is_empty());
     let mut contract = build_contract(
         task_id.clone(),
-        AgentId(requester.to_string()),
+        AgentId(caller.agent_id.clone()),
         RepoIdentity {
             git_common_dir: env.repo.join(".git"),
             head_branch: None,
@@ -1263,7 +1348,12 @@ mod tests {
             model: None,
         };
 
-        let result = run_spawn(&env, &req, &TaskId("dispatch".into()), "root");
+        let result = run_spawn(
+            &env,
+            &req,
+            &TaskId("dispatch".into()),
+            &Caller::root("root", builtin("claude").unwrap()),
+        );
 
         let mut written = Vec::new();
         files_under(&state, &mut written);
@@ -1356,6 +1446,8 @@ mod tests {
     fn launch_ctx() -> SpawnCtx {
         SpawnCtx {
             agent_id: AgentId("019f-child".into()),
+            agent_type: "codex-impl".into(),
+            depth: 1,
             ready_file: None,
             repo: "/repo".into(),
             state_dir: "/state".into(),
@@ -1481,6 +1573,195 @@ mod tests {
             !inv.args.iter().any(|a| a == "gpt-5.6-sol"),
             "and it reached no argv either"
         );
+    }
+
+    /// An `Env` and a fixture repo, for the tests that call `run_spawn` for real.
+    fn spawn_env(name: &str) -> (PathBuf, PathBuf, Env) {
+        let root = temp(name);
+        let repo = fixture_repo(&root);
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let env = Env {
+            repo: repo.clone(),
+            project_dir: ProjectDir::new(&state, &repo),
+            bridge: PathBuf::from("/bin/marion-supervisor"),
+            base_url: "http://127.0.0.1:8099/v1".into(),
+        };
+        (root, state, env)
+    }
+
+    /// **The gate, and the side effects it must precede.**
+    ///
+    /// A caller already at its type's `max_depth` asks for one more level. §3.1: that spawn "is
+    /// refused with a spawn error, never silently clamped" — so the assertion is threefold, and
+    /// each part fails against the pre-fix code (which had no gate at all):
+    ///
+    /// 1. the error is the **typed** `SpawnError::Gate(DepthExceeded { .. })`, not a flattened
+    ///    string and not some later failure that happens to look like a refusal;
+    /// 2. its message **names the bound and the value** — a refusal that does not say `4` and `3`
+    ///    tells the caller nothing it can act on;
+    /// 3. **nothing was created.** Walked, not probed at a guessed path, for the same reason the
+    ///    dispatch regression above walks: asserting the absence of one path would pass if the code
+    ///    simply wrote it somewhere else. A worktree, a branch, an agent-dir and an OS process are
+    ///    what this gate exists to prevent, so "refused" has to mean none of them happened.
+    #[test]
+    fn a_spawn_past_max_depth_is_refused_by_name_and_creates_nothing() {
+        let (root, state, env) = spawn_env("depth-gate");
+        let caller = Caller {
+            agent_id: "caller".into(),
+            agent_type: builtin("claude").unwrap(),
+            depth: marion_core::agent_type::DEFAULT_MAX_DEPTH,
+        };
+        // codex-impl: a type whose child would really launch a process, so a missing gate is a real
+        // grandchild rather than a failure somewhere else.
+        let req = request("codex-impl", None);
+
+        let err = run_spawn(&env, &req, &TaskId("too-deep".into()), &caller)
+            .expect_err("a spawn past max_depth must be refused");
+
+        assert!(
+            matches!(
+                err,
+                SpawnError::Gate(marion_core::agent_type::SpawnGateError::DepthExceeded {
+                    child_depth: 4,
+                    max_depth: 3
+                })
+            ),
+            "expected a typed depth refusal, got {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("max_depth 3") && msg.contains("depth 4"),
+            "the refusal must name the bound AND the value that broke it, got: {msg}"
+        );
+
+        let mut written = Vec::new();
+        files_under(&state, &mut written);
+        assert!(
+            written.is_empty(),
+            "the gate runs before every side effect there is, so a refused spawn leaves no \
+             agent-dir, no config and no contract: {written:?}"
+        );
+        let worktrees = SysCommand::new("git")
+            .current_dir(repo_of(&root))
+            .args(["worktree", "list"])
+            .output()
+            .expect("git runs");
+        assert_eq!(
+            String::from_utf8_lossy(&worktrees.stdout).lines().count(),
+            1,
+            "a refused spawn must not have created a worktree: {}",
+            String::from_utf8_lossy(&worktrees.stdout)
+        );
+        let branches = SysCommand::new("git")
+            .current_dir(repo_of(&root))
+            .args(["branch", "--list", "marion/*"])
+            .output()
+            .expect("git runs");
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "nor a branch: {}",
+            String::from_utf8_lossy(&branches.stdout)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn repo_of(root: &Path) -> PathBuf {
+        root.join("repo")
+    }
+
+    /// The other half, so the gate cannot pass by refusing everything: one level shallower is
+    /// **allowed through it**. The run then fails for its own reasons — there is no `codex` process
+    /// worth starting against a base URL nobody serves — but whatever it fails as, it is not the
+    /// gate, and it got far enough to create the state a refusal never would.
+    #[test]
+    fn a_spawn_within_max_depth_is_not_refused_by_the_gate() {
+        let (root, state, env) = spawn_env("depth-allowed");
+        let caller = Caller {
+            agent_id: "caller".into(),
+            agent_type: builtin("claude").unwrap(),
+            // 2 → the child lands at 3, which is exactly `max_depth` and therefore legal.
+            depth: marion_core::agent_type::DEFAULT_MAX_DEPTH - 1,
+        };
+        let mut req = request("codex-impl", None);
+        req.timeout_secs = 1;
+
+        let result = run_spawn(&env, &req, &TaskId("deep-enough".into()), &caller);
+
+        if let Err(e) = &result {
+            assert!(
+                !matches!(e, SpawnError::Gate(_)),
+                "depth 3 is within max_depth 3 and must not be gated: {e}"
+            );
+        }
+        let mut written = Vec::new();
+        files_under(&state, &mut written);
+        assert!(
+            !written.is_empty(),
+            "a spawn the gate let through gets an agent-dir and a config, which is precisely what \
+             the refused one above must not have"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The child's own depth is its caller's plus one, and that is what reaches its bridge — the
+    /// link without which the gate above could never fire on a grandchild, because the grandchild's
+    /// bridge would have no depth to check.
+    #[test]
+    fn a_childs_bridge_is_told_a_depth_one_below_its_callers() {
+        let (root, state, env) = spawn_env("depth-carried");
+        let caller = Caller {
+            agent_id: "caller".into(),
+            agent_type: builtin("claude").unwrap(),
+            depth: 1,
+        };
+        let mut req = request("codex-impl", None);
+        req.timeout_secs = 1;
+        let _ = run_spawn(&env, &req, &TaskId("carry".into()), &caller);
+
+        let mut written = Vec::new();
+        files_under(&state, &mut written);
+        let config = written
+            .iter()
+            .find(|p| p.file_name().is_some_and(|n| n == "config.toml"))
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .unwrap_or_else(|| panic!("the codex child's config was not written: {written:?}"));
+        assert!(
+            config.contains(r#"MARION_DEPTH = "2""#),
+            "a child of a depth-1 caller is at depth 2, and its bridge must be told so:\n{config}"
+        );
+        assert!(
+            config.contains(r#"MARION_AGENT_TYPE = "codex-impl""#),
+            "and told its own canonical type, whose max_depth its own spawns are gated on:\n{config}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The concurrency half, stated honestly rather than asserted into existence.
+    ///
+    /// `spawn` is synchronous and the bridge's JSON-RPC loop is sequential, so the count handed to
+    /// the gate is 0 and `max_concurrent_children` **cannot bind today**. This test pins the two
+    /// facts that make that safe to have wired: the constant really is 0, and 0 really does pass
+    /// the gate on every built-in. When backgrounding lands, the count changes and this test is the
+    /// one that should start failing.
+    #[test]
+    fn the_concurrency_gate_is_wired_and_cannot_bind_while_spawn_is_synchronous() {
+        assert_eq!(
+            LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER, 0,
+            "a synchronous caller has no other live child; anything else here would be invented"
+        );
+        for name in marion_core::agent_type::builtin_names() {
+            let t = builtin(name).unwrap();
+            assert!(
+                check_spawn_gates(&t, 0, LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER).is_ok(),
+                "{name}: the concurrency bound is unreachable at a live count of 0"
+            );
+            assert!(
+                check_spawn_gates(&t, 0, t.max_concurrent_children).is_err(),
+                "{name}: and the gate itself still refuses at the bound, so what is inert is the \
+                 count and not the rule"
+            );
+        }
     }
 
     #[test]

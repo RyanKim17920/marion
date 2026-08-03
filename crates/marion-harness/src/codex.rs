@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use marion_core::contract::AgentId;
 
 // The bridge's own env-var contract, imported rather than respelled — see [`BridgeEnv`].
-use crate::claude_code::{AGENT_ID_ENV, READY_FILE_ENV};
+use crate::claude_code::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
 use crate::invocation::Invocation;
 use crate::stream::{StreamOutcome, json_frames};
 
@@ -135,6 +135,10 @@ pub struct BridgeEnv {
     pub state: PathBuf,
     pub base_url: String,
     pub agent_id: AgentId,
+    /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
+    pub agent_type: String,
+    /// The node's depth, root = 0 (§3.1's `max_depth`).
+    pub depth: u32,
     /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
     /// withhold and nothing to wait on (§6.1 step 8). codex is `LaunchOnly` on every path today, so
     /// this is `None` in practice; it is carried so the field cannot be forgotten if that changes.
@@ -193,6 +197,8 @@ pub fn config_toml(env: &BridgeEnv, base_url: &str) -> String {
         ),
         ("MARION_BASE_URL".to_string(), env.base_url.clone()),
         (AGENT_ID_ENV.to_string(), env.agent_id.0.clone()),
+        (AGENT_TYPE_ENV.to_string(), env.agent_type.clone()),
+        (DEPTH_ENV.to_string(), env.depth.to_string()),
     ];
     if let Some(r) = &env.ready_file {
         pairs.push((READY_FILE_ENV.to_string(), r.display().to_string()));
@@ -274,6 +280,8 @@ mod tests {
             state: "/state".into(),
             base_url: "http://127.0.0.1:8099/v1".into(),
             agent_id: AgentId("019f-node".into()),
+            agent_type: "codex-impl".into(),
+            depth: 1,
             ready_file: None,
         }
     }
@@ -322,6 +330,10 @@ mod tests {
             r#"MARION_STATE_DIR = "/state""#,
             r#"MARION_BASE_URL = "http://127.0.0.1:8099/v1""#,
             r#"MARION_AGENT_ID = "019f-node""#,
+            // §6.1 step 2's two inputs. Without them a codex node's bridge cannot read the
+            // caller's `max_depth` and every `spawn` it serves is ungated.
+            r#"MARION_AGENT_TYPE = "codex-impl""#,
+            r#"MARION_DEPTH = "1""#,
         ] {
             assert!(t.contains(expected), "missing {expected} from:\n{t}");
         }

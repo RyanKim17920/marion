@@ -8,7 +8,7 @@ use std::io::{BufRead, Read, Write};
 
 use marion_core::ids::{RAND_BYTES, new_task_id as core_new_task_id};
 use marion_core::paths::{ProjectDir, state_dir};
-use marion_supervisor::root::{AGENT_ID_ENV, READY_FILE_ENV};
+use marion_supervisor::root::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
 use marion_supervisor::{bridge, run};
 
 fn usage() -> ! {
@@ -43,6 +43,14 @@ fn handle_tool_call(
             let Ok(env) = spawn_env() else {
                 return bridge::tool_result(id, "marion: MARION_REPO is not set", true);
             };
+            // §6.1 step 2's gates read the caller's agent type and depth, and this bridge is the
+            // only place that knows which node it is serving. A bridge that was not told cannot
+            // evaluate them, so it refuses rather than spawning ungated — which is exactly the
+            // hazard this path exists to close, and the same shape as `spawn_env`'s refusal above.
+            let caller = match caller(&requester()) {
+                Ok(c) => c,
+                Err(e) => return bridge::tool_result(id, &e, true),
+            };
             let req = run::SpawnRequest {
                 agent_type: args["agent_type"]
                     .as_str()
@@ -74,7 +82,7 @@ fn handle_tool_call(
             let Ok(task_id) = new_task_id() else {
                 return bridge::tool_result(id, "marion: could not generate task id", true);
             };
-            match run::run_spawn(&env, &req, &task_id, &requester()) {
+            match run::run_spawn(&env, &req, &task_id, &caller) {
                 Ok(contract) => {
                     let json = serde_json::to_string_pretty(&contract)
                         .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
@@ -96,6 +104,64 @@ fn handle_tool_call(
 /// names no agent-dir.
 fn requester() -> String {
     std::env::var(AGENT_ID_ENV).unwrap_or_else(|_| "unattributed-root".into())
+}
+
+/// The caller of this `spawn`, rebuilt from the declaration marion wrote (§6.1 step 2).
+///
+/// The whole of the gate's input arrives through the per-server MCP `env` block, for the reason
+/// [`requester`] gives about the id: marion is not this process's parent. `agent_type` names the
+/// type whose `max_depth` / `max_concurrent_children` the gate reads, and `depth` says where in the
+/// tree this node sits, with the root at 0.
+///
+/// **Absent or unresolvable is a refusal, not a default**, and the two candidate defaults are both
+/// wrong in the same direction: assuming depth 0 makes every node look like a root, and assuming
+/// `DEFAULT_MAX_DEPTH` makes the per-type key a constant nothing reads. Either would restore
+/// exactly the unbounded recursion this is here to stop, silently. All four adapters emit both
+/// keys — `marion_harness::adapter`'s own test sweeps `Harness::ALL` — so the only caller that can
+/// land here is a hand-started bridge, which is the one that most needs to be told.
+fn caller(agent_id: &str) -> Result<run::Caller, String> {
+    caller_from(
+        agent_id,
+        std::env::var(AGENT_TYPE_ENV).ok(),
+        std::env::var(DEPTH_ENV).ok(),
+    )
+}
+
+/// The pure half, so the resolution is testable without an environment.
+fn caller_from(
+    agent_id: &str,
+    agent_type: Option<String>,
+    depth: Option<String>,
+) -> Result<run::Caller, String> {
+    let name = agent_type.ok_or_else(|| {
+        format!(
+            "marion: {AGENT_TYPE_ENV} is not set, so this bridge does not know which agent type is \
+             calling and cannot read its max_depth (§6.1 step 2). Refusing rather than spawning \
+             ungated."
+        )
+    })?;
+    let agent_type = marion_core::agent_type::builtin(&name).ok_or_else(|| {
+        format!(
+            "marion: {AGENT_TYPE_ENV}={name:?} names no known agent type, so its spawn gates \
+                 cannot be read. Refusing rather than spawning ungated."
+        )
+    })?;
+    let raw = depth.ok_or_else(|| {
+        format!(
+            "marion: {DEPTH_ENV} is not set, so this bridge does not know how deep in the tree it \
+             is and cannot enforce max_depth (§6.1 step 2). Refusing rather than spawning ungated."
+        )
+    })?;
+    let depth: u32 = raw.trim().parse().map_err(|_| {
+        format!(
+            "marion: {DEPTH_ENV}={raw:?} is not a depth. Refusing rather than spawning ungated."
+        )
+    })?;
+    Ok(run::Caller {
+        agent_id: agent_id.to_string(),
+        agent_type,
+        depth,
+    })
 }
 
 /// Tell marion the harness now has our tool list.
@@ -186,6 +252,55 @@ mod main_tests {
     #[test]
     fn task_ids_minted_back_to_back_use_entropy_and_do_not_collide() {
         assert_ne!(new_task_id().unwrap(), new_task_id().unwrap());
+    }
+
+    /// The gate's inputs come off the declaration marion wrote, and both are load-bearing: without
+    /// the type there is no `max_depth` to read, and without the depth there is nothing to compare
+    /// it against.
+    #[test]
+    fn the_callers_type_and_depth_are_read_off_the_declaration() {
+        let c = caller_from("019f-node", Some("codex".into()), Some("2".into()))
+            .expect("a declaration carrying both resolves");
+        assert_eq!(c.agent_id, "019f-node");
+        assert_eq!(
+            c.agent_type.name, "codex-impl",
+            "the alias resolves to the one definition, not a second one"
+        );
+        assert_eq!(c.depth, 2);
+        assert_eq!(
+            c.agent_type.max_depth, 3,
+            "which is the bound the gate reads"
+        );
+    }
+
+    /// **A bridge that was not told is a refusal, not a default.** Both plausible defaults restore
+    /// the unbounded recursion this exists to stop: depth 0 makes every node look like a root, and
+    /// a constant `max_depth` makes the per-type key a number nothing reads. The message has to say
+    /// which piece is missing, because the operator's fix differs.
+    #[test]
+    fn a_bridge_that_was_not_told_which_node_it_serves_refuses_rather_than_spawning_ungated() {
+        for (agent_type, depth, expected) in [
+            (None, Some("0".to_string()), "MARION_AGENT_TYPE is not set"),
+            (Some("claude".to_string()), None, "MARION_DEPTH is not set"),
+            (
+                Some("not-a-type".to_string()),
+                Some("0".to_string()),
+                "names no known agent type",
+            ),
+            (
+                Some("claude".to_string()),
+                Some("deep".to_string()),
+                "is not a depth",
+            ),
+        ] {
+            let e = caller_from("019f-node", agent_type.clone(), depth.clone())
+                .expect_err("an unevaluable gate must refuse");
+            assert!(e.contains(expected), "expected {expected:?} in: {e}");
+            assert!(
+                e.contains("ungated"),
+                "the refusal must say what it is protecting against: {e}"
+            );
+        }
     }
 
     #[test]

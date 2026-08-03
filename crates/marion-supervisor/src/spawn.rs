@@ -22,6 +22,16 @@ pub enum SpawnError {
     Json(#[from] serde_json::Error),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// §6.1 step 2's depth and concurrency gates, refused.
+    ///
+    /// **A refusal, never a clamp and never a queue**, and the wrapped error names the bound *and*
+    /// the value that broke it — §3.1 is explicit that a `spawn` past `max_depth` "is refused with
+    /// a spawn error, never silently clamped", and that excess `spawn`s are "refused, not queued".
+    /// Carried as its own variant rather than flattened into a string so the caller that reads the
+    /// tool result gets a sentence naming what it may not do, and so a test can match the shape
+    /// rather than a message.
+    #[error("spawn refused (§6.1 step 2): {0}")]
+    Gate(#[from] marion_core::agent_type::SpawnGateError),
     #[error("invalid writable scope: {0}")]
     Scope(#[from] marion_core::scope::ScopeError),
     #[error("compiling the child's launch: {0}")]

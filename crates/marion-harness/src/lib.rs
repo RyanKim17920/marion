@@ -22,8 +22,8 @@ pub use adapter::{
     LaunchSpec, McpDeclaration, OpenCodeAdapter, SpawnCtx, adapter_for,
 };
 pub use claude_code::{
-    AGENT_ID_ENV, HeadlessSpec, McpEnv, READY_FILE_ENV, anthropic_base_url, compile_headless,
-    mcp_config_json,
+    AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, HeadlessSpec, McpEnv, READY_FILE_ENV,
+    anthropic_base_url, compile_headless, mcp_config_json,
 };
 pub use codex::{ExecSpec, compile_exec, config_toml};
 // `gemini` and `opencode` are addressed by module path rather than flattened here. Both define a

@@ -39,7 +39,7 @@ use marion_core::contract::{ExitStatus, TaskContract, TaskId};
 use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
-use marion_supervisor::run::{Env, SpawnRequest, run_spawn};
+use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use serde_json::{Value, json};
 
 /// Every child's bound. Short on purpose: **opencode never exits on a provider hang** (S13
@@ -255,11 +255,18 @@ fn drive(cell: &Cell) -> Evidence {
         timeout_secs: CHILD_TIMEOUT_SECS,
         model: cell.model.map(str::to_string),
     };
+    // A root caller: depth 0, so §6.1 step 2's gates see a top-level `spawn` — the same thing
+    // `marion run` hands the bridge. `claude` is marion's root type and its `max_depth` is the
+    // bound every cell here runs under.
+    let caller = Caller::root(
+        "root",
+        marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+    );
     let contract = run_spawn(
         &env,
         &req,
         &TaskId(format!("matrix-{}", cell.agent_type)),
-        "root",
+        &caller,
     )
     .map_err(|e| e.to_string());
 

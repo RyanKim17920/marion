@@ -84,6 +84,18 @@ pub struct LaunchSpec {
 #[derive(Debug, Clone)]
 pub struct SpawnCtx {
     pub agent_id: AgentId,
+    /// The node's agent type, in the **canonical** name `marion_core::agent_type::builtin`
+    /// resolves — not the alias a caller happened to type, so the bridge re-resolves one
+    /// definition and not two.
+    ///
+    /// Distinct from [`LaunchSpec`]'s fields on purpose: that struct is *what was asked for*, and
+    /// this is what marion knows about the node. The type name is carried here because the bridge
+    /// this node will start has to re-resolve it to read §3.1's `max_depth` /
+    /// `max_concurrent_children` off the **caller's** type (§6.1 step 2).
+    pub agent_type: String,
+    /// The node's depth in the tree, **root = 0** (§3.1). A `spawn` this node makes creates a node
+    /// at `depth + 1`, and is refused when that would pass its type's `max_depth`.
+    pub depth: u32,
     /// The readiness marker the bridge touches once it has answered `tools/list` (§6.1 step 8).
     /// `None` for a surface whose prompt rides argv and so has no frame to withhold.
     pub ready_file: Option<PathBuf>,
@@ -236,6 +248,8 @@ impl ClaudeCodeAdapter {
             state: ctx.state_dir.clone(),
             base_url: spec.base_url.clone().unwrap_or_default(),
             agent_id: ctx.agent_id.clone(),
+            agent_type: ctx.agent_type.clone(),
+            depth: ctx.depth,
             ready_file,
         })
     }
@@ -376,6 +390,8 @@ impl HarnessAdapter for CodexAdapter {
             state: ctx.state_dir.clone(),
             base_url: base_url.to_string(),
             agent_id: ctx.agent_id.clone(),
+            agent_type: ctx.agent_type.clone(),
+            depth: ctx.depth,
             ready_file: ctx.ready_file.clone(),
         };
         Ok(vec![(
@@ -476,6 +492,8 @@ impl HarnessAdapter for GeminiAdapter {
             state: ctx.state_dir.clone(),
             base_url: spec.base_url.clone().unwrap_or_default(),
             agent_id: ctx.agent_id.clone(),
+            agent_type: ctx.agent_type.clone(),
+            depth: ctx.depth,
             ready_file: ctx.ready_file.clone(),
         });
         let json = gemini::settings_json(bridge.as_ref());
@@ -565,6 +583,8 @@ impl HarnessAdapter for OpenCodeAdapter {
             state: ctx.state_dir.clone(),
             base_url: base_url.to_string(),
             agent_id: ctx.agent_id.clone(),
+            agent_type: ctx.agent_type.clone(),
+            depth: ctx.depth,
             ready_file: ctx.ready_file.clone(),
         });
         let json = opencode::config_json(
@@ -621,12 +641,15 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claude_code::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::codex::config_toml;
     use crate::surfaces::{ControlTransport, DisplaySurface};
 
     fn ctx() -> SpawnCtx {
         SpawnCtx {
             agent_id: AgentId("019f-root".into()),
+            agent_type: "claude".into(),
+            depth: 0,
             ready_file: Some("/state/x/mcp-ready".into()),
             repo: "/repo".into(),
             state_dir: "/state".into(),
@@ -721,6 +744,8 @@ mod tests {
             // The `/v1` form, which is what the bridge hands a Codex grandchild.
             base_url: "http://127.0.0.1:8099/v1".into(),
             agent_id: AgentId("019f-root".into()),
+            agent_type: "claude".into(),
+            depth: 0,
             ready_file: "/state/x/mcp-ready".into(),
         }))
         .unwrap();
@@ -741,6 +766,8 @@ mod tests {
                 state: "/state".into(),
                 base_url: "http://127.0.0.1:8099/v1".into(),
                 agent_id: AgentId("019f-root".into()),
+                agent_type: "claude".into(),
+                depth: 0,
                 ready_file: Some("/state/x/mcp-ready".into()),
             },
             "http://127.0.0.1:8099/v1",
@@ -965,6 +992,8 @@ mod tests {
             state: "/state".into(),
             base_url: "http://127.0.0.1:8099/v1".into(),
             agent_id: AgentId("019f-root".into()),
+            agent_type: "claude".into(),
+            depth: 0,
             ready_file: "/state/x/mcp-ready".into(),
         });
         let expected: Vec<&String> = claude["mcpServers"]["marion"]["env"]
@@ -980,6 +1009,8 @@ mod tests {
             state: "/state".into(),
             base_url: "http://127.0.0.1:8099/v1".into(),
             agent_id: AgentId("019f-root".into()),
+            agent_type: "gemini".into(),
+            depth: 0,
             ready_file: Some("/state/x/mcp-ready".into()),
         }));
         let o = opencode::config_json(
@@ -995,6 +1026,8 @@ mod tests {
                 state: "/state".into(),
                 base_url: "http://127.0.0.1:8099/v1".into(),
                 agent_id: AgentId("019f-root".into()),
+                agent_type: "opencode".into(),
+                depth: 0,
                 ready_file: Some("/state/x/mcp-ready".into()),
             }),
         );
@@ -1005,6 +1038,87 @@ mod tests {
             let got: Vec<&String> = block.as_object().unwrap().keys().collect();
             assert_eq!(got, expected, "the bridge reads one set of names");
         }
+    }
+
+    /// The spec each harness needs to emit its configuration, so a test can sweep `Harness::ALL`
+    /// without pretending the four take the same inputs (two refuse without a model, and the two
+    /// spellings are incompatible).
+    fn spec_for(h: Harness) -> LaunchSpec {
+        match h {
+            Harness::ClaudeCode => claude_spec(),
+            Harness::Codex => codex_spec(),
+            Harness::Gemini => gemini_spec(),
+            Harness::OpenCode => opencode_spec(),
+        }
+    }
+
+    /// **Depth reaches the bridge on all four harnesses, or `max_depth` is inert on the ones it
+    /// does not reach.**
+    ///
+    /// The bridge is a process the *harness* starts, so the per-server `env` block is the only
+    /// channel marion has to tell a node where in the tree it sits. Until this was carried, nothing
+    /// anywhere computed a depth: `check_spawn_gates` had no production caller, `max_depth` was a
+    /// number no code read, and a child could spawn a grandchild, and that grandchild another,
+    /// without bound. The failure was **silent** on three of the four — only Claude Code reads
+    /// `allowed_tools`, and codex's generated config sets
+    /// `default_tools_approval_mode = "approve"`, so a codex, gemini or opencode child's `spawn`
+    /// was simply *served*.
+    ///
+    /// Asserted on the emitted bytes rather than through a struct, and format-agnostically: three
+    /// harnesses emit JSON (`"7"`) and codex emits TOML (`= "7"`), and both contain the quoted
+    /// value. A distinctive depth is used so the assertion cannot pass on some other field's value.
+    #[test]
+    fn a_nodes_depth_and_agent_type_reach_its_bridge_on_every_harness() {
+        for h in Harness::ALL {
+            let ctx = SpawnCtx {
+                depth: 7,
+                agent_type: "codex-impl".into(),
+                ..ctx()
+            };
+            let files = adapter_for(h)
+                .unwrap()
+                .config_files(&spec_for(h), &ctx)
+                .unwrap_or_else(|e| panic!("{h}: {e}"));
+            let doc = files
+                .first()
+                .map(|(_, c)| c.clone())
+                .unwrap_or_else(|| panic!("{h}: emitted no configuration document"));
+            for key in [AGENT_TYPE_ENV, DEPTH_ENV] {
+                assert!(
+                    doc.contains(key),
+                    "{h}: {key} is not in its bridge env:\n{doc}"
+                );
+            }
+            assert!(
+                doc.contains("\"7\""),
+                "{h}: the depth VALUE must be carried, not just its key:\n{doc}"
+            );
+            assert!(
+                doc.contains("\"codex-impl\""),
+                "{h}: §6.1 step 2's gates read the caller's agent type, so its name must \
+                 reach the bridge:\n{doc}"
+            );
+        }
+    }
+
+    /// A root is depth 0 and a `spawn` of its own would be at depth 1 — so a document that carried
+    /// no depth at all, or carried it as anything but the node's own, would let the gate read a
+    /// number marion never assigned. The zero is asserted explicitly because it is the one value
+    /// that could plausibly be confused with "absent".
+    #[test]
+    fn a_root_declares_depth_zero_rather_than_omitting_it() {
+        let v: serde_json::Value = serde_json::from_str(
+            &ClaudeCodeAdapter
+                .config_files(&claude_spec(), &ctx())
+                .unwrap()[0]
+                .1,
+        )
+        .unwrap();
+        assert_eq!(
+            v["mcpServers"]["marion"]["env"][DEPTH_ENV],
+            serde_json::json!("0"),
+            "a root is depth 0 by definition (§3.1), and an absent value is not the same claim"
+        );
     }
 
     #[test]

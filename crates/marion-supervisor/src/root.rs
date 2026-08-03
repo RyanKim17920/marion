@@ -84,8 +84,16 @@ pub use crate::duplex::{
 // `marion-harness` and are re-exported here — `marion-supervisor mcp`, the other end of the
 // handshake, reads them from this module.
 pub use marion_harness::claude_code::{
-    AGENT_ID_ENV, McpEnv, READY_FILE_ENV, anthropic_base_url, mcp_config_json,
+    AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, McpEnv, READY_FILE_ENV, anthropic_base_url,
+    mcp_config_json,
 };
+
+/// §3.1/§6.1 step 2: *"`max_depth` … counting the root as 0"*.
+///
+/// Stated once, here, because the root is the only node whose depth is not derived from another's:
+/// every other node's is its caller's plus one (`run::run_spawn`). A literal `0` at the call site
+/// would be a magic number that reads as "unknown" quite as easily as "the root".
+pub const ROOT_DEPTH: u32 = 0;
 
 /// The permission axis for an M1 root (§9).
 ///
@@ -224,9 +232,9 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
     // §6.1 step 5, through the seam, **dispatched on the root's own agent type** — the root used to
     // be `Harness::ClaudeCode` by constant, which is why `marion run codex` compiled a Claude Code
     // launch and then failed somewhere else entirely.
-    let harness = builtin(&spec.agent_type)
-        .ok_or_else(|| RootError::UnknownAgentType(spec.agent_type.clone()))?
-        .harness;
+    let agent_type = builtin(&spec.agent_type)
+        .ok_or_else(|| RootError::UnknownAgentType(spec.agent_type.clone()))?;
+    let harness = agent_type.harness;
     let adapter = adapter_for(harness)?;
     let path = root_path(&adapter.surfaces()).ok_or(RootError::UnsupportedRootSurface(harness))?;
 
@@ -271,6 +279,13 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
     };
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
+        // The canonical name, not `spec.agent_type`: `marion run codex` and `marion run codex-impl`
+        // are one type, and the root's own bridge has to re-resolve exactly one of them.
+        agent_type: agent_type.name.clone(),
+        // **§3.1: the root is depth 0, by definition.** Its `spawn` therefore creates depth 1, and
+        // this is the value that makes the whole chain measurable — without it every node in the
+        // tree would look like a root to its own bridge.
+        depth: ROOT_DEPTH,
         ready_file: ready_file.clone(),
         repo: spec.repo.clone(),
         state_dir: spec.state.clone(),
@@ -494,6 +509,8 @@ mod tests {
             state: "/state".into(),
             base_url: "http://127.0.0.1:8099/v1".into(),
             agent_id: AgentId("019f-root".into()),
+            agent_type: "claude".into(),
+            depth: ROOT_DEPTH,
             ready_file: "/state/x/mcp-ready".into(),
         }
     }
@@ -634,6 +651,41 @@ mod tests {
                 }
             }
             assert_eq!(node.prompt, "delegate it", "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The root is depth 0, on every harness, in the document its own bridge will read.**
+    ///
+    /// The adapters are tested for carrying whatever `SpawnCtx` hands them; this is the other end
+    /// of that wire — that `marion run` hands them the right thing. It is the one place a literal
+    /// could be wrong while every adapter test still passed, and getting it wrong is not a cosmetic
+    /// error: a root declared at any other depth would mis-measure its whole subtree, and one
+    /// declared at `max_depth` could not delegate at all.
+    ///
+    /// Read off the bytes on disk rather than off `ctx`, because the bytes are what the bridge gets.
+    #[test]
+    fn every_root_declares_itself_at_depth_zero_and_names_its_own_type() {
+        let dir = temp("depth");
+        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+            let node = prepare(&root_spec(&dir, name)).unwrap();
+            let doc = std::fs::read_to_string(&node.mcp_config).unwrap();
+            assert!(
+                doc.contains("\"0\""),
+                "{name}: a root is depth 0 (§3.1), and the value must be in the document its own \
+                 bridge reads:\n{doc}"
+            );
+            assert!(
+                doc.contains(DEPTH_ENV),
+                "{name}: {DEPTH_ENV} is missing:\n{doc}"
+            );
+            // The canonical name, so `marion run codex` and `marion run codex-impl` hand the bridge
+            // one spelling and it re-resolves one definition.
+            assert!(
+                doc.contains(&format!("\"{}\"", builtin(name).unwrap().name)),
+                "{name}: its canonical agent type name must reach the bridge, or §6.1 step 2's \
+                 gates have no max_depth to read:\n{doc}"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

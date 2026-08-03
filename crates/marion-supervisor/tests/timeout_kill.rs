@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 use marion_core::contract::{ExitStatus, TaskId};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
-use marion_supervisor::run::{Env, SpawnRequest, last_kill_sweep, run_spawn};
+use marion_supervisor::run::{Caller, Env, SpawnRequest, last_kill_sweep, run_spawn};
 
 /// The child's bound. Long enough for `codex exec` to boot, take turn one and get its tool call
 /// running (measured at ~4 s here); short enough that the test is not a wait. The tool call is
@@ -203,7 +203,12 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         model: None,
     };
     let started = Instant::now();
-    let contract = run_spawn(&env, &req, &TaskId("s7-timeout".into()), "root")
+    // A root caller (§6.1 step 2): depth 0, the same top-level `spawn` `marion run` produces.
+    let caller = Caller::root(
+        "root",
+        marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+    );
+    let contract = run_spawn(&env, &req, &TaskId("s7-timeout".into()), &caller)
         .expect("the spawn path runs to a contract");
     let elapsed = started.elapsed();
 

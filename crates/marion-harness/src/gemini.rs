@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 // These name the **bridge's** env contract rather than Claude Code's — the bridge reads
 // `MARION_AGENT_ID` whichever harness started it — so they are imported rather than respelled: a
 // second spelling would put a gemini child's `TaskContract.requester` back on "unattributed-root".
-use crate::claude_code::{AGENT_ID_ENV, READY_FILE_ENV};
+use crate::claude_code::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
 use crate::invocation::Invocation;
 use crate::stream::{StreamOutcome, first_string, json_frames};
 
@@ -234,6 +234,10 @@ pub struct BridgeEnv {
     pub state: PathBuf,
     pub base_url: String,
     pub agent_id: AgentId,
+    /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
+    pub agent_type: String,
+    /// The node's depth, root = 0 (§3.1's `max_depth`).
+    pub depth: u32,
     /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
     /// withhold and nothing to wait on (§6.1 step 8).
     pub ready_file: Option<PathBuf>,
@@ -268,6 +272,8 @@ pub fn settings_json(mcp: Option<&BridgeEnv>) -> Value {
             "MARION_STATE_DIR": b.state.to_string_lossy(),
             "MARION_BASE_URL": b.base_url,
             AGENT_ID_ENV: b.agent_id.0,
+            AGENT_TYPE_ENV: b.agent_type,
+            DEPTH_ENV: b.depth.to_string(),
         });
         if let Some(r) = &b.ready_file {
             env[READY_FILE_ENV] = json!(r.to_string_lossy());
@@ -311,6 +317,8 @@ mod tests {
             state: "/state".into(),
             base_url: "http://127.0.0.1:8099/v1".into(),
             agent_id: AgentId("019f-child".into()),
+            agent_type: "gemini".into(),
+            depth: 1,
             ready_file: None,
         }
     }

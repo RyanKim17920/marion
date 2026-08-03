@@ -17,6 +17,22 @@ pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
 /// Env var carrying a node's `AgentId` to the bridge, so a top-level `spawn` can stamp
 /// `TaskContract.requester` with it (§9).
 pub const AGENT_ID_ENV: &str = "MARION_AGENT_ID";
+/// Env var carrying a node's **agent type name** to the bridge.
+///
+/// §6.1 step 2 says the `spawn` gates read *"the **caller's** agent type"*, and `max_depth` /
+/// `max_concurrent_children` are per-type keys (§3.1). The bridge is a process the *harness*
+/// starts, so it knows nothing about the node it serves beyond what this declaration tells it —
+/// without this name it would have to assume [`marion_core::agent_type::DEFAULT_MAX_DEPTH`], which
+/// is a constant pretending to be a lookup and would silently ignore any type that stated its own
+/// bound. That is the same shape as `AgentType.harness` having once been a `String` nothing read.
+pub const AGENT_TYPE_ENV: &str = "MARION_AGENT_TYPE";
+/// Env var carrying a node's **depth** to the bridge, with the root at 0 (§3.1, §6.1 step 2).
+///
+/// The other half of the same problem: depth is a property of the *tree*, which only marion can
+/// see, and a node's `spawn` is served by a bridge that marion did not start. Until this existed
+/// nothing anywhere computed a depth, so `max_depth` was inert and a child could spawn a
+/// grandchild — and that grandchild another — without bound.
+pub const DEPTH_ENV: &str = "MARION_DEPTH";
 
 /// What marion needs to compile a headless invocation — **root or child.**
 ///
@@ -195,6 +211,11 @@ pub struct McpEnv {
     pub state: PathBuf,
     pub base_url: String,
     pub agent_id: AgentId,
+    /// The node's agent type name, in its **canonical** spelling — the alias `codex` resolves to
+    /// `codex-impl` before it gets here, so the bridge re-resolves one definition and not two.
+    pub agent_type: String,
+    /// The node's depth, root = 0. Its `spawn` creates a node at `depth + 1`.
+    pub depth: u32,
     pub ready_file: PathBuf,
 }
 
@@ -220,6 +241,10 @@ pub fn mcp_config_json(node_env: &McpEnv) -> Value {
                     "MARION_STATE_DIR": node_env.state.to_string_lossy(),
                     "MARION_BASE_URL": node_env.base_url,
                     AGENT_ID_ENV: node_env.agent_id.0,
+                    AGENT_TYPE_ENV: node_env.agent_type,
+                    // A string, because an MCP `env` block is `Record<string,string>` on every
+                    // harness that has one. The bridge parses it back.
+                    DEPTH_ENV: node_env.depth.to_string(),
                     READY_FILE_ENV: node_env.ready_file.to_string_lossy(),
                 }
             }

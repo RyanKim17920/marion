@@ -75,6 +75,34 @@ pub fn parse(line: &str) -> Option<Request> {
 /// prefixes to `mcp__marion__spawn`, and Codex exposes the same tool to the model as the
 /// JavaScript identifier `tools.mcp__marion__report` under code mode (S6) — but neither spelling
 /// belongs in this declaration.
+///
+/// # Why this is a constant and not a function of the node
+///
+/// The node's depth *is* available here — it rides the same `env` block as `MARION_AGENT_ID`
+/// (`marion_harness::DEPTH_ENV`) — so a bridge serving a node at its type's `max_depth` could
+/// simply not offer `spawn`, and one serving a root could not offer `report`. That was considered
+/// and **rejected**, on three grounds:
+///
+/// 1. **§3.1 wants a refusal that names the bound.** A `spawn` past `max_depth` "is refused with a
+///    spawn error, never silently clamped". A verb that is merely *absent* carries no bound, no
+///    value and no sentence: the node cannot tell "marion has no `spawn`" from "I may not spawn",
+///    and nothing anywhere reports why. That is the §12 silent-failure shape this codebase keeps
+///    legislating against, traded for the loud refusal `run::run_spawn` now returns.
+/// 2. **`tools/list` is answered once, at startup; the gate is evaluated per call.** Availability
+///    would be a snapshot and permission a live decision, so the two could only ever agree or lag
+///    — a second source of truth for a rule that must exist in the first place anyway. §9 warns
+///    about exactly that kind of drift.
+/// 3. **§3.1 and §9 already sanction the two axes differing.** §9 notes the root's allowlist being
+///    wider than the declared surface is "not a bug". A uniform declaration plus a per-call gate is
+///    a shape the design states, not a gap in it.
+///
+/// **`report` on a root is the one inconsistency left standing, knowingly.** §7.6 says a root has
+/// no contract and cannot `report`, yet `main::handle_tool_call` answers `report recorded` to a
+/// root today. Closing it means the bridge answering a root's `report` with an error — and that
+/// answer is *inside* `tests/fixtures/s9/can-use-tool-allow.stdout.jsonl`, a committed recording
+/// of a real 2.1.220 run that `permission_round_trip` replays and asserts still matches. Correcting
+/// the behaviour therefore requires re-recording that fixture, which this change does not touch.
+/// It is a real defect, and it is written down here rather than papered over.
 pub fn tools() -> Value {
     json!([
         {
