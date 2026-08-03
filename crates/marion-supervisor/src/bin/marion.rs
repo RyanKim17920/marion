@@ -10,7 +10,8 @@
 //! the socket at M2; splitting the binary out belongs with that move, not before it, when the
 //! split would only buy a second copy of the spawn path with nothing to keep the copies honest.
 
-use std::path::PathBuf;
+use std::io::{self, BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration as StdDuration;
 
@@ -23,22 +24,41 @@ use marion_supervisor::root;
 /// plain text with no error anywhere.
 const MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
-fn usage() -> ! {
-    eprintln!(
-        "usage: marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
-         \x20                 [--base-url <url>] [--model <name>] [--timeout <secs>] [--live]\n\
+fn usage_text() -> String {
+    format!(
+        "usage: marion                                (interactive: pick harness, model, prompt)\n\
+         \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
+         \x20                 [--base-url <url>] [--model <name>] [--timeout <secs>] [--canned]\n\
          \n\
          agent types: {}\n\
          \n\
-         --live runs the node against the vendor the operator is already logged in to, instead of\n\
-         marion's canned provider. It is not a credential store and seeds nothing: no code in\n\
-         marion clears a child's environment, so a harness's own login is inherited anyway, and\n\
-         --live is simply marion declining to overlay a base URL and a placeholder key on top of\n\
-         it. It therefore costs real money and makes real model calls.\n\
+         marion with no arguments asks three questions — harness, model, prompt — and then runs\n\
+         exactly what `marion run <answer> --prompt <answer>` would. It asks **only** when stdin\n\
+         is a terminal: in a pipe or under CI there is nobody to answer, so it prints this text\n\
+         and exits non-zero rather than blocking forever on a read nothing will satisfy.\n\
          \n\
-         --live with a loopback --base-url is refused rather than obeyed: that combination aims a\n\
-         real credential at a fake server, which is the one mistake whose blast radius is the\n\
-         operator's account rather than the run.\n\
+         A run uses the vendor the operator is already logged in to. marion is not a credential\n\
+         store and seeds nothing: no code in it clears a child's environment, so a harness's own\n\
+         login is inherited, and marion simply declines to overlay a base URL and a placeholder\n\
+         key on top of it. That is the default because it is what a person at a terminal means,\n\
+         and it makes real model calls that cost real money.\n\
+         \n\
+         --canned points the node at marion's own canned provider ({CANNED_BASE_URL}) instead.\n\
+         It is the fixture the test suite runs against: it costs nothing, and it answers nothing\n\
+         useful. `--live` is still accepted and now does nothing — real auth is the default it\n\
+         used to have to ask for.\n\
+         \n\
+         A loopback --base-url without --canned is refused rather than obeyed: that combination\n\
+         aims a real credential at a fake server, which is the one mistake whose blast radius is\n\
+         the operator's account rather than the run. Pass --canned if that is what was meant.\n\
+         \n\
+         --repo defaults to the enclosing git repository — the nearest ancestor of the working\n\
+         directory holding a `.git` — and to the working directory itself when there is none, so\n\
+         that running marion from a subdirectory still scopes the node to the whole checkout.\n\
+         \n\
+         --state-dir defaults to $XDG_STATE_HOME/marion, else ~/.local/state/marion. It is\n\
+         deliberately not repo-local and not a temp directory: §4.3's tree is what survives a run,\n\
+         and a run whose journal vanished with /tmp would have nothing to resume from.\n\
          \n\
          --timeout is the root's node-level bound, and what it bounds follows the harness's\n\
          surfaces: on a typed control plane (claude) it is §9's per-episode `Blocked`-only budget\n\
@@ -46,7 +66,11 @@ fn usage() -> ! {
          (codex, gemini, opencode) there is no `Blocked` state to budget and it is the wall-clock\n\
          bound instead — which is not optional, because opencode never exits on a provider hang.",
         builtin_names().join(", ")
-    );
+    )
+}
+
+fn usage() -> ! {
+    eprintln!("{}", usage_text());
     std::process::exit(2)
 }
 
@@ -58,7 +82,9 @@ struct Args {
     base_url: Option<String>,
     model: Option<String>,
     timeout_secs: Option<u64>,
-    live: bool,
+    /// Opt **in** to marion's canned provider. The inverse of the flag this replaced: real auth
+    /// is what a person at a terminal means, and the canned server is a test fixture.
+    canned: bool,
 }
 
 /// Hand-rolled, because the whole surface is one subcommand and six flags.
@@ -82,7 +108,7 @@ fn parse_args(argv: &[String]) -> Option<Args> {
         base_url: None,
         model: None,
         timeout_secs: None,
-        live: false,
+        canned: false,
     };
     let mut rest = argv[2..].iter();
     while let Some(flag) = rest.next() {
@@ -94,9 +120,13 @@ fn parse_args(argv: &[String]) -> Option<Args> {
             "--base-url" => args.base_url = Some(take()?),
             "--model" => args.model = Some(take()?),
             "--timeout" => args.timeout_secs = Some(take()?.parse().ok()?),
-            // The one flag with no value. Deliberately not `--live=true`: a mode this expensive
-            // should read as a decision at the call site, not as a setting.
-            "--live" => args.live = true,
+            // The one flag with no value. Deliberately not `--canned=true`: which provider a run
+            // talks to should read as a decision at the call site, not as a setting.
+            "--canned" => args.canned = true,
+            // Accepted and inert. It used to select real auth, which is now the default; every
+            // script and note already carrying it keeps working, and refusing it would break
+            // them to say nothing the run does not already do.
+            "--live" => {}
             _ => return None,
         }
     }
@@ -120,7 +150,7 @@ fn blocked_bound_secs(explicit: Option<u64>, agent_type_secs: u64) -> u64 {
         .max(1)
 }
 
-/// marion's own canned provider, where a run points when nothing says otherwise.
+/// marion's own canned provider, where a run points under `--canned`.
 const CANNED_BASE_URL: &str = "http://127.0.0.1:8099/v1";
 
 /// Whether a base URL names a host on this machine's loopback interface.
@@ -157,32 +187,34 @@ fn is_loopback_url(url: &str) -> bool {
 
 /// The endpoint a run points at, and the safety gate on the one combination that must not exist.
 ///
-/// Under `--live` the answer is normally **no endpoint at all**: each harness resolves the vendor it
-/// is already logged in to, which is the whole premise — marion overlays nothing rather than
-/// pointing the node somewhere. `$MARION_BASE_URL` is ignored under `--live` for that reason; it
-/// names marion's canned server, and inheriting it silently is precisely the accident below.
+/// By default the answer is **no endpoint at all**: each harness resolves the vendor it is already
+/// logged in to, which is the whole premise — marion overlays nothing rather than pointing the node
+/// somewhere. `$MARION_BASE_URL` is ignored there for that reason; it names marion's canned server,
+/// and inheriting it silently is precisely the accident below. Under `--canned` it is the flag,
+/// then the environment, then marion's own provider.
 ///
-/// **`--live` with a loopback `--base-url` is refused.** It is the one combination that aims a real
-/// credential at a fake server: the operator's own key or OAuth token, sent in the clear to whatever
-/// is listening on that port. Every other flag conflict here costs a run; this one can cost a
-/// credential, so it is an error naming the cause rather than a precedence rule.
+/// **A loopback `--base-url` without `--canned` is refused.** It is the one combination that aims a
+/// real credential at a fake server: the operator's own key or OAuth token, sent in the clear to
+/// whatever is listening on that port. Every other flag conflict here costs a run; this one can cost
+/// a credential, so it is an error naming the cause rather than a precedence rule. Inverting the
+/// default did not soften it — the gate now guards the *common* path rather than an opt-in one.
 fn resolve_base_url(
-    live: bool,
+    canned: bool,
     explicit: Option<String>,
     from_env: Option<String>,
 ) -> Result<Option<String>, String> {
-    match (live, explicit) {
-        (true, Some(u)) if is_loopback_url(&u) => Err(format!(
-            "--live with a loopback --base-url ({u}) is refused: --live makes the node present \
-             the operator's own credential, and a loopback endpoint is marion's canned provider \
-             or some other local process — the combination sends a real credential to a fake \
-             server. Drop --base-url to let the harness reach its own vendor, or drop --live to \
-             run against the canned endpoint."
+    match (canned, explicit) {
+        (false, Some(u)) if is_loopback_url(&u) => Err(format!(
+            "a loopback --base-url ({u}) without --canned is refused: marion runs the node \
+             against the vendor the operator is logged in to, so it presents a real credential, \
+             and a loopback endpoint is marion's canned provider or some other local process — \
+             the combination sends a real credential to a fake server. Drop --base-url to let the \
+             harness reach its own vendor, or pass --canned to run against the canned endpoint."
         )),
-        // An explicit non-loopback endpoint under --live is a proxy or a gateway, which is a
+        // An explicit non-loopback endpoint under real auth is a proxy or a gateway, which is a
         // legitimate thing to point a real credential at.
-        (true, explicit) => Ok(explicit),
-        (false, explicit) => Ok(Some(
+        (false, explicit) => Ok(explicit),
+        (true, explicit) => Ok(Some(
             explicit
                 .or(from_env)
                 .unwrap_or_else(|| CANNED_BASE_URL.into()),
@@ -190,10 +222,150 @@ fn resolve_base_url(
     }
 }
 
+/// `--repo`'s default: the enclosing git repository, else the working directory itself.
+///
+/// A `.git` **entry**, not a `.git` directory: a linked worktree and a submodule both carry a
+/// `.git` *file*, and treating those as "not a repository" would silently scope a node to a
+/// subdirectory of the checkout the operator is standing in.
+fn git_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
+}
+
+fn default_repo(cwd: &Path) -> PathBuf {
+    git_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
+}
+
+/// What the three questions produce. Everything else keeps its default: the picker exists to make
+/// the common run typable, not to grow a second copy of the flag surface.
+#[derive(Debug, PartialEq, Eq)]
+struct Chosen {
+    agent_type: String,
+    /// `None` means "whatever the agent type itself defaults to", which is the same precedence
+    /// `--model`'s absence gets. An empty answer is that absence, not an empty model id.
+    model: Option<String>,
+    prompt: String,
+}
+
+/// One question. `Ok(None)` is EOF — Ctrl-D at any prompt ends the session, it does not loop.
+fn ask(input: &mut impl BufRead, out: &mut impl Write, question: &str) -> io::Result<Option<String>> {
+    write!(out, "{question}")?;
+    out.flush()?;
+    let mut line = String::new();
+    if input.read_line(&mut line)? == 0 {
+        writeln!(out)?;
+        return Ok(None);
+    }
+    Ok(Some(line.trim().to_string()))
+}
+
+/// The interactive picker, over any reader and writer so its logic is testable without a terminal.
+///
+/// The harness list comes from `builtin_names()` rather than a literal, so a fifth built-in is
+/// offered the day it is added and cannot be forgotten here. `Ok(None)` is EOF at any question.
+fn pick(input: &mut impl BufRead, out: &mut impl Write) -> io::Result<Option<Chosen>> {
+    let names = builtin_names();
+    writeln!(out, "marion — pick a harness:")?;
+    for (i, name) in names.iter().enumerate() {
+        let desc = builtin(name).map_or(String::new(), |t| format!("  {}", t.description));
+        writeln!(out, "  {}) {name}{desc}", i + 1)?;
+    }
+    let agent_type = loop {
+        let Some(answer) = ask(input, out, "harness [1]: ")? else {
+            return Ok(None);
+        };
+        // Empty takes the first, which is the root orchestrator — the one a bare `marion` means.
+        if answer.is_empty() {
+            break names[0].to_string();
+        }
+        if let Some(n) = answer
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=names.len()).contains(n))
+        {
+            break names[n - 1].to_string();
+        }
+        // A name typed out is the same answer as its number; refusing it would be pedantry.
+        if let Some(name) = names.iter().find(|n| **n == answer) {
+            break (*name).to_string();
+        }
+        writeln!(out, "  not one of 1..={}, nor a listed name.", names.len())?;
+    };
+
+    let default_model = builtin(&agent_type).and_then(|t| t.model);
+    let model_hint = default_model
+        .clone()
+        .unwrap_or_else(|| "the harness's own default".into());
+    // Free text, not a menu: marion has no model catalogue and inventing one would go stale the
+    // week a vendor ships an id it does not list.
+    let Some(model) = ask(input, out, &format!("model [{model_hint}]: "))? else {
+        return Ok(None);
+    };
+    let model = if model.is_empty() {
+        default_model
+    } else {
+        Some(model)
+    };
+
+    let prompt = loop {
+        let Some(answer) = ask(input, out, "prompt: ")? else {
+            return Ok(None);
+        };
+        if !answer.is_empty() {
+            break answer;
+        }
+        // A root with no turn does nothing, so an empty answer re-asks rather than launching a
+        // run whose only outcome is a wasted process.
+        writeln!(out, "  a run needs a prompt.")?;
+    };
+
+    Ok(Some(Chosen {
+        agent_type,
+        model,
+        prompt,
+    }))
+}
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let Some(args) = parse_args(&argv) else {
-        usage()
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{}", usage_text());
+        return ExitCode::SUCCESS;
+    }
+    let args = if argv.is_empty() {
+        // **Only** with a terminal on the other end. A picker that read from a pipe would block
+        // forever on input nothing is going to send, which is a hang, not a prompt.
+        if !io::stdin().is_terminal() {
+            usage()
+        }
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        let mut out = io::stderr();
+        match pick(&mut input, &mut out) {
+            Ok(Some(chosen)) => Args {
+                agent_type: chosen.agent_type,
+                prompt: chosen.prompt,
+                repo: None,
+                state_dir: None,
+                base_url: None,
+                model: chosen.model,
+                timeout_secs: None,
+                canned: false,
+            },
+            // EOF: the operator changed their mind, which is not an error.
+            Ok(None) => return ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("marion: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        match parse_args(&argv) {
+            Some(a) => a,
+            None => usage(),
+        }
     };
 
     let Some(agent_type) = builtin(&args.agent_type) else {
@@ -205,9 +377,9 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let repo = args
-        .repo
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let repo = args.repo.unwrap_or_else(|| {
+        default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    });
     let repo = match repo.canonicalize() {
         Ok(p) => p,
         Err(e) => {
@@ -224,7 +396,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let base_url = match resolve_base_url(
-        args.live,
+        args.canned,
         args.base_url.clone(),
         std::env::var("MARION_BASE_URL").ok(),
     ) {
@@ -256,10 +428,10 @@ fn main() -> ExitCode {
         // `gemini` and `opencode` state one, which is what makes them launchable as roots at all —
         // both adapters refuse to compile without an explicit model (§6.4).
         model: args.model.or_else(|| agent_type.model.clone()),
-        auth: if args.live {
-            marion_harness::Auth::Inherited
-        } else {
+        auth: if args.canned {
             marion_harness::Auth::Canned
+        } else {
+            marion_harness::Auth::Inherited
         },
     };
     let node = match root::prepare(&spec) {
@@ -351,27 +523,50 @@ mod tests {
         assert!(parse_args(&argv(&["run", "--prompt", "p"])).is_none());
     }
 
+    /// The canned provider is a **fixture**, so reaching it is the thing that must be typed. A
+    /// person running marion means their own logged-in harness, and a default that silently aimed
+    /// them at a fake server on 127.0.0.1 answered a question nobody asked.
     #[test]
-    fn live_is_a_valueless_flag_and_is_off_unless_it_is_typed() {
+    fn canned_is_a_valueless_flag_and_real_auth_is_what_a_bare_run_gets() {
         assert!(
             !parse_args(&argv(&["run", "claude", "--prompt", "p"]))
                 .unwrap()
-                .live
+                .canned
         );
-        let a = parse_args(&argv(&["run", "claude", "--prompt", "p", "--live"])).unwrap();
-        assert!(a.live);
+        let a = parse_args(&argv(&["run", "claude", "--prompt", "p", "--canned"])).unwrap();
+        assert!(a.canned);
         assert!(a.base_url.is_none());
         // It takes no value, so a following flag is still parsed as a flag rather than eaten.
-        let a = parse_args(&argv(&["run", "claude", "--live", "--prompt", "p"])).unwrap();
-        assert!(a.live && a.prompt == "p");
+        let a = parse_args(&argv(&["run", "claude", "--canned", "--prompt", "p"])).unwrap();
+        assert!(a.canned && a.prompt == "p");
     }
 
-    /// **The safety gate.** `--live` makes the node present the operator's own credential; a
+    /// `--live` used to select real auth. Real auth is now the default, so the flag says nothing
+    /// the run does not already do — but every script and note carrying it must keep working, so
+    /// it is accepted and inert rather than a refusal.
+    #[test]
+    fn live_is_still_accepted_and_now_means_exactly_nothing() {
+        let a = parse_args(&argv(&["run", "claude", "--prompt", "p", "--live"])).unwrap();
+        assert!(!a.canned, "--live is the default, not the canned provider");
+        assert_eq!(a.prompt, "p");
+        // Still valueless: a following flag is parsed, not eaten.
+        let a = parse_args(&argv(&["run", "claude", "--live", "--prompt", "p"])).unwrap();
+        assert_eq!(a.prompt, "p");
+        // And it composes with the flag that replaced it rather than fighting it.
+        assert!(
+            parse_args(&argv(&["run", "claude", "--prompt", "p", "--live", "--canned"]))
+                .unwrap()
+                .canned
+        );
+    }
+
+    /// **The safety gate.** Without `--canned` the node presents the operator's own credential; a
     /// loopback endpoint is marion's canned provider or some other local process. The combination
     /// sends a real credential to a fake server, and it is the one flag conflict whose cost is the
-    /// operator's account rather than the run — so it is an error, not a precedence rule.
+    /// operator's account rather than the run — so it is an error, not a precedence rule. Inverting
+    /// the default moved this gate onto the *common* path, so it matters more than it used to.
     #[test]
-    fn live_with_a_loopback_base_url_is_refused_and_the_refusal_says_why() {
+    fn a_loopback_base_url_without_canned_is_refused_and_the_refusal_says_why() {
         for u in [
             "http://127.0.0.1:8099/v1",
             "http://localhost:8099/v1",
@@ -379,59 +574,66 @@ mod tests {
             "https://127.0.0.2/v1",
             "http://127.0.0.1",
         ] {
-            let e = resolve_base_url(true, Some(u.into()), None)
-                .expect_err("{u} is loopback and --live must refuse it");
+            let e = resolve_base_url(false, Some(u.into()), None)
+                .expect_err("{u} is loopback and real auth must refuse it");
             assert!(e.contains(u), "the refusal must quote the URL: {e}");
             assert!(
                 e.contains("real credential") && e.contains("fake server"),
                 "it must name why, not merely refuse: {e}"
             );
+            assert!(
+                e.contains("--canned"),
+                "it must name the flag that makes the run legal: {e}"
+            );
+            // …and it is precisely a *conflict*: the same URL under --canned is the normal case.
+            assert_eq!(
+                resolve_base_url(true, Some(u.into()), None),
+                Ok(Some(u.into()))
+            );
         }
     }
 
-    /// The gate is not a ban on `--base-url` under `--live`: a non-loopback endpoint is a proxy or a
-    /// gateway, which is a legitimate thing to point a real credential at. A check that refused
+    /// The gate is not a ban on `--base-url` under real auth: a non-loopback endpoint is a proxy or
+    /// a gateway, which is a legitimate thing to point a real credential at. A check that refused
     /// those too would be safe and useless.
     #[test]
-    fn live_with_a_remote_base_url_is_allowed_because_a_proxy_is_a_real_endpoint() {
+    fn a_remote_base_url_is_allowed_because_a_proxy_is_a_real_endpoint() {
         assert_eq!(
-            resolve_base_url(true, Some("https://gateway.example.com/v1".into()), None),
+            resolve_base_url(false, Some("https://gateway.example.com/v1".into()), None),
             Ok(Some("https://gateway.example.com/v1".into()))
         );
     }
 
-    /// `--live` means *marion names no endpoint*, so each harness resolves the vendor it is already
-    /// logged in to. `$MARION_BASE_URL` is ignored rather than inherited — it names marion's canned
-    /// server, and inheriting it silently is exactly the accident the gate above refuses loudly.
+    /// The default means *marion names no endpoint*, so each harness resolves the vendor it is
+    /// already logged in to. `$MARION_BASE_URL` is ignored rather than inherited — it names marion's
+    /// canned server, and inheriting it silently is exactly the accident the gate above refuses
+    /// loudly.
     #[test]
-    fn live_implies_no_base_url_at_all_and_ignores_the_canned_one_in_the_environment() {
-        assert_eq!(resolve_base_url(true, None, None), Ok(None));
+    fn the_default_is_no_base_url_at_all_and_ignores_the_canned_one_in_the_environment() {
+        assert_eq!(resolve_base_url(false, None, None), Ok(None));
         assert_eq!(
-            resolve_base_url(true, None, Some(CANNED_BASE_URL.into())),
+            resolve_base_url(false, None, Some(CANNED_BASE_URL.into())),
             Ok(None),
-            "an inherited canned endpoint under --live is the very mistake being prevented"
+            "an inherited canned endpoint under real auth is the very mistake being prevented"
         );
     }
 
     /// And canned mode's precedence is untouched: the flag, then the environment, then the default.
     #[test]
-    fn without_live_the_base_url_falls_back_from_the_flag_to_the_environment_to_the_canned_default()
+    fn under_canned_the_base_url_falls_back_from_the_flag_to_the_environment_to_the_loopback_default()
     {
         assert_eq!(
-            resolve_base_url(
-                false,
-                Some("http://x/v1".into()),
-                Some("http://y/v1".into())
-            ),
+            resolve_base_url(true, Some("http://x/v1".into()), Some("http://y/v1".into())),
             Ok(Some("http://x/v1".into()))
         );
         assert_eq!(
-            resolve_base_url(false, None, Some("http://y/v1".into())),
+            resolve_base_url(true, None, Some("http://y/v1".into())),
             Ok(Some("http://y/v1".into()))
         );
         assert_eq!(
-            resolve_base_url(false, None, None),
-            Ok(Some(CANNED_BASE_URL.into()))
+            resolve_base_url(true, None, None),
+            Ok(Some(CANNED_BASE_URL.into())),
+            "--canned means the loopback endpoint without having to also say where"
         );
     }
 
@@ -459,6 +661,153 @@ mod tests {
         ] {
             assert!(!is_loopback_url(u), "{u} is not loopback");
         }
+    }
+
+    /// A scratch directory nobody else is using, made without a temp-file dependency. `marion`
+    /// ships no dev-dependency for this and one flag's default does not justify adding one.
+    fn scratch(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "marion-cli-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        // Resolve the symlinked temp root once, so the ancestor walk compares like with like.
+        dir.canonicalize().unwrap_or(dir)
+    }
+
+    /// `--repo`'s default. Running marion from `crates/marion-supervisor/src` must scope the node
+    /// to the checkout, not to `src`, which is what the previous plain-cwd default did.
+    #[test]
+    fn the_repo_default_walks_up_to_the_enclosing_git_root() {
+        let root = scratch("gitroot");
+        let deep = root.join("crates/x/src");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        assert_eq!(git_root(&deep), Some(root.clone()));
+        assert_eq!(default_repo(&deep), root, "from any depth, the same root");
+        assert_eq!(git_root(&root), Some(root.clone()), "the root finds itself");
+
+        // The nearest `.git` wins, so a nested checkout is not swallowed by its container.
+        let inner = root.join("crates/x");
+        std::fs::write(inner.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        assert_eq!(
+            git_root(&deep),
+            Some(inner),
+            "a `.git` *file* is a linked worktree or a submodule, and is quite as much a root"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn with_no_git_anywhere_above_the_repo_default_is_the_working_directory_itself() {
+        let dir = scratch("nogit").join("a/b");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(git_root(&dir), None);
+        assert_eq!(default_repo(&dir), dir, "a fallback, never a failure");
+        std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap()).ok();
+    }
+
+    fn run_picker(input: &str) -> (Option<Chosen>, String) {
+        let mut reader = io::Cursor::new(input.as_bytes().to_vec());
+        let mut out: Vec<u8> = Vec::new();
+        let chosen = pick(&mut reader, &mut out).expect("a Cursor cannot fail to read");
+        (chosen, String::from_utf8(out).expect("prompts are utf-8"))
+    }
+
+    #[test]
+    fn the_picker_offers_every_builtin_by_number_and_selects_by_it() {
+        let (chosen, shown) = run_picker("4\ngemini-9.9-pro\nport the parser\n");
+        for name in builtin_names() {
+            assert!(shown.contains(name), "{name} must be offered: {shown}");
+        }
+        assert_eq!(
+            chosen,
+            Some(Chosen {
+                agent_type: "gemini".into(),
+                model: Some("gemini-9.9-pro".into()),
+                prompt: "port the parser".into(),
+            })
+        );
+    }
+
+    /// The list is `builtin_names()`, never a literal, so a fifth built-in is offered the day it
+    /// exists. Selecting the last one by its number is what proves the two are the same list.
+    #[test]
+    fn the_last_offered_number_is_the_last_builtin_whatever_that_becomes() {
+        let n = builtin_names().len();
+        let (chosen, _) = run_picker(&format!("{n}\n\nship it\n"));
+        assert_eq!(chosen.unwrap().agent_type, *builtin_names().last().unwrap());
+    }
+
+    #[test]
+    fn a_harness_may_also_be_typed_by_name_and_a_bad_answer_re_asks() {
+        let (chosen, shown) = run_picker("nope\n99\n0\nopencode\n\nship it\n");
+        assert_eq!(chosen.as_ref().unwrap().agent_type, "opencode");
+        assert_eq!(
+            shown.matches("not one of").count(),
+            3,
+            "each bad answer is told so and re-asked, not silently taken: {shown}"
+        );
+    }
+
+    /// An empty model answer is the *absence* of `--model`, which is what makes the agent type's
+    /// own default apply — including for the two harnesses whose adapters refuse without one.
+    #[test]
+    fn an_empty_model_answer_takes_the_agent_types_own_default() {
+        let (chosen, shown) = run_picker("opencode\n\nship it\n");
+        let c = chosen.unwrap();
+        assert_eq!(c.model, builtin("opencode").unwrap().model);
+        assert!(
+            shown.contains(&builtin("opencode").unwrap().model.unwrap()),
+            "the default is shown, so an empty answer is an informed one: {shown}"
+        );
+
+        // And where the type states none, an empty answer stays none rather than becoming "".
+        let (chosen, shown) = run_picker("claude\n\nship it\n");
+        assert_eq!(chosen.unwrap().model, None);
+        assert!(shown.contains("the harness's own default"), "{shown}");
+    }
+
+    #[test]
+    fn a_prompt_is_free_text_and_keeps_its_spaces() {
+        let (chosen, _) = run_picker("1\n\n  delegate the parser rewrite  \n");
+        assert_eq!(chosen.unwrap().prompt, "delegate the parser rewrite");
+    }
+
+    /// An empty prompt re-asks rather than launching: a root with no turn does nothing, and
+    /// spending a process to discover that is the opposite of helpful.
+    #[test]
+    fn an_empty_prompt_re_asks_rather_than_launching_an_empty_run() {
+        let (chosen, shown) = run_picker("1\n\n\n   \nfinally\n");
+        assert_eq!(chosen.unwrap().prompt, "finally");
+        assert_eq!(shown.matches("a run needs a prompt").count(), 2);
+    }
+
+    /// Ctrl-D at any question ends the session. Not a panic, and — the failure mode that matters —
+    /// not a loop that re-asks a closed stdin forever.
+    #[test]
+    fn eof_at_any_question_ends_the_picker_cleanly() {
+        for input in ["", "1\n", "1\n\n", "1\nsonnet\n", "nope\n"] {
+            let (chosen, _) = run_picker(input);
+            assert_eq!(chosen, None, "EOF after {input:?} must end it");
+        }
+    }
+
+    /// The usage text is the only place the flag semantics are stated to a person, so it has to
+    /// track them. A stale line here is the same bug as a stale default.
+    #[test]
+    fn the_usage_text_describes_the_flags_that_exist() {
+        let u = usage_text();
+        assert!(u.contains("--canned"), "the flag that reaches the fixture");
+        assert!(u.contains(CANNED_BASE_URL), "and where that points");
+        assert!(u.contains("`--live` is still accepted"), "{u}");
+        for name in builtin_names() {
+            assert!(u.contains(name), "{name} must be listed");
+        }
+        assert!(u.contains("terminal"), "the non-TTY guard is documented");
     }
 
     #[test]
