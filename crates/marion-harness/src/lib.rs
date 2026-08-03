@@ -19,7 +19,7 @@ pub mod surfaces;
 
 pub use adapter::{
     Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter, HarnessError,
-    LaunchSpec, McpDeclaration, OpenCodeAdapter, SpawnCtx, adapter_for,
+    LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx, adapter_for,
 };
 pub use claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, HeadlessSpec, McpEnv, READY_FILE_ENV,

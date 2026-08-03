@@ -7,7 +7,7 @@
 //! Three of the four env vars and two of the settings keys below are load-bearing in the §12 sense
 //! — *omitting them produces no error anywhere*. Each one carries the measurement that says so.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use marion_core::contract::AgentId;
 use serde_json::{Value, json};
@@ -26,6 +26,12 @@ use crate::stream::{StreamOutcome, first_string, json_frames};
 /// Relocates the **entire** config and auth surface: `settings.json`, `oauth_creds.json`,
 /// `trustedFolders.json`, extensions, sessions. The CLI appends `.gemini` itself, so this names
 /// the parent of the sandbox home, not the home (S12: `GEMINI_CLI_HOME=$D` → `$D/.gemini/`).
+///
+/// **Dropped under [`Auth::Inherited`].** Relocating everything is precisely what hides the
+/// operator's own credential from a node meant to use it — S12's COPYABLE verdict is about copying
+/// a credential *into* a sandbox home, and marion copies nothing. It is dropped *independently* of
+/// [`SYSTEM_SETTINGS_PATH_ENV`], which the same fixture records as an override of a different layer
+/// resolved by its own env var, so the MCP injection route survives the drop intact.
 pub const CLI_HOME_ENV: &str = "GEMINI_CLI_HOME";
 /// Points at an arbitrary settings file that **wins over all four settings layers**. There is no
 /// `--settings` flag, so this is the only non-invasive injection: it writes nothing the user owns
@@ -37,11 +43,39 @@ pub const TRUST_WORKSPACE_ENV: &str = "GEMINI_CLI_TRUST_WORKSPACE";
 /// Pins the file credential path unconditionally. `HybridTokenStorage` otherwise probes a native
 /// keychain under a 2 s timeout and only then falls back, so which store a child uses would
 /// depend on a race (S12).
+///
+/// **Dropped under [`Auth::Inherited`], and that is a safety matter rather than tidiness.** Against
+/// a throwaway `$GEMINI_CLI_HOME` it pins an empty store and costs nothing. Against the operator's
+/// **real** `~/.gemini` — which is exactly what live mode leaves in place — it risks pushing their
+/// actual `oauth_creds.json` through `OAuthCredentialStorage.migrateFromFileStorage()`, which
+/// `tests/fixtures/s12/` records as reading the legacy file, writing the hybrid store, and then
+/// `fs.rm`-ing the original: a **one-way destructive migration** of a file marion does not own.
+/// §6.4's central MUST is that marion never mutates the user's real harness config, so this
+/// variable may only ever be set over a config surface marion created.
 pub const FORCE_FILE_STORAGE_ENV: &str = "GEMINI_FORCE_FILE_STORAGE";
-/// Base-URL override for the `gemini-api-key` auth path.
+/// Base-URL override for the `gemini-api-key` auth path. **Dropped under [`Auth::Inherited`]**:
+/// live mode names no endpoint.
 pub const BASE_URL_ENV: &str = "GOOGLE_GEMINI_BASE_URL";
-/// The AI Studio key, which is the auth type [`settings_json`] selects.
+/// The AI Studio key, which is the auth type [`settings_json`] selects. **Dropped under
+/// [`Auth::Inherited`]**: marion mints no credential there, and a placeholder beside the
+/// operator's own login would be a second credential competing with the real one.
 pub const API_KEY_ENV: &str = "GEMINI_API_KEY";
+
+/// The auth type [`settings_json`] selects on the canned path, where marion supplies
+/// `GEMINI_API_KEY` itself.
+pub const CANNED_AUTH_TYPE: &str = "gemini-api-key";
+
+/// What [`live_auth_type`] selects when the operator's real `settings.json` cannot be read or does
+/// not state one.
+///
+/// **`oauth-personal` rather than [`CANNED_AUTH_TYPE`], and the asymmetry is the argument.** Under
+/// [`Auth::Inherited`] marion sets no [`API_KEY_ENV`] at all, so selecting `gemini-api-key` names an
+/// auth path with no key behind it and fails with S12's measured
+/// `{"code":41,"message":"Invalid auth method selected."}` — a *guaranteed* failure. Guessing
+/// `oauth-personal` instead is wrong only for an operator who authenticates by API key, and that
+/// operator's `settings.json` says so and is read below. It is also the subscription login `gemini`
+/// itself writes, and the value on this machine's real profile.
+pub const LIVE_FALLBACK_AUTH_TYPE: &str = "oauth-personal";
 
 /// The MCP server alias. **It must not contain `_`**: gemini exposes MCP tools as
 /// `mcp_<server>_<tool>`, and the shipped policy-engine docs warn that a fully-qualified name with
@@ -64,6 +98,57 @@ pub struct PromptSpec {
     /// Provider base URL, in marion's canonical `…/v1` form. See [`google_base_url`].
     pub base_url: Option<String>,
     pub api_key: Option<String>,
+    /// Whether this node presents a credential marion minted or the operator's own login.
+    ///
+    /// Read rather than a pair of booleans beside it: the three variables live mode drops
+    /// ([`CLI_HOME_ENV`], [`FORCE_FILE_STORAGE_ENV`], and the base-URL/key pair) fall out of *one*
+    /// intent, and two flags could disagree about it.
+    pub auth: Auth,
+}
+
+/// The operator's own gemini settings document — the **user** layer, which marion never writes.
+///
+/// `$HOME` rather than a home-directory crate: marion adds no dependency for this, and the CLI's own
+/// `homedir()` is `process.env.GEMINI_CLI_HOME ?? os.homedir()` — under [`Auth::Inherited`] marion
+/// sets no [`CLI_HOME_ENV`], so the child resolves the same path this does.
+pub fn operator_settings_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(Path::new(&home).join(".gemini").join("settings.json"))
+}
+
+/// `security.auth.selectedType` out of a settings document, or `None` if it is not a string there.
+///
+/// Pure, and separated from the read so the parse is testable without touching a real profile.
+/// **Malformed input is `None`, never a panic**: this reads a file the operator owns and marion has
+/// no say over, so every failure — absent, unparseable, right shape with the wrong type — has to
+/// land on the same defensible fallback rather than taking the run down.
+pub fn selected_auth_type_from(settings: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(settings).ok()?;
+    v.pointer("/security/auth/selectedType")?
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// The `security.auth.selectedType` a **live** node must declare.
+///
+/// It has to match the operator's real setting or 0.53.0 refuses the run outright with
+/// `{"code":41,"message":"Invalid auth method selected."}` (S12) — the settings marion writes are
+/// the *system* layer and win over the user layer, so a hardcoded `gemini-api-key` would override
+/// an `oauth-personal` profile with a type it has no credential for.
+///
+/// Reads the operator's own file to find out, and falls back to [`LIVE_FALLBACK_AUTH_TYPE`] when it
+/// is absent, unreadable or malformed. The I/O sits here rather than in `marion-core`, which stays
+/// I/O free.
+pub fn live_auth_type() -> String {
+    operator_settings_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .as_deref()
+        .and_then(selected_auth_type_from)
+        .unwrap_or_else(|| LIVE_FALLBACK_AUTH_TYPE.to_string())
 }
 
 /// `GOOGLE_GEMINI_BASE_URL` from the base URL marion carries.
@@ -117,23 +202,40 @@ pub fn compile_prompt(spec: &PromptSpec) -> Invocation {
         spec.prompt.clone(),
     ];
 
-    let mut env: Vec<(String, String)> = vec![
-        (
+    // **Live mode is a removal, and the two survivors are not part of the isolation.** S12's
+    // settings-precedence table resolves the *system settings* layer through
+    // `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and the *user* layer through `GEMINI_CLI_HOME` — two layers,
+    // two variables — so dropping the sandbox home leaves marion's MCP injection route untouched.
+    // `GEMINI_CLI_TRUST_WORKSPACE` answers the folder-trust gate on marion's worktree, which is a
+    // fresh directory under either auth mode.
+    let mut env: Vec<(String, String)> = Vec::new();
+    if spec.auth == Auth::Canned {
+        env.push((
             CLI_HOME_ENV.into(),
             spec.cli_home.to_string_lossy().into_owned(),
-        ),
-        (
-            SYSTEM_SETTINGS_PATH_ENV.into(),
-            spec.settings.to_string_lossy().into_owned(),
-        ),
-        (TRUST_WORKSPACE_ENV.into(), "true".into()),
-        (FORCE_FILE_STORAGE_ENV.into(), "true".into()),
-    ];
-    if let Some(u) = &spec.base_url {
-        env.push((BASE_URL_ENV.into(), google_base_url(u)));
+        ));
     }
-    if let Some(k) = &spec.api_key {
-        env.push((API_KEY_ENV.into(), k.clone()));
+    env.push((
+        SYSTEM_SETTINGS_PATH_ENV.into(),
+        spec.settings.to_string_lossy().into_owned(),
+    ));
+    env.push((TRUST_WORKSPACE_ENV.into(), "true".into()));
+    if spec.auth == Auth::Canned {
+        // Never over a real `~/.gemini`: see [`FORCE_FILE_STORAGE_ENV`] — the migration it can
+        // trigger deletes the operator's own `oauth_creds.json` (`tests/fixtures/s12/`).
+        env.push((FORCE_FILE_STORAGE_ENV.into(), "true".into()));
+    }
+    // Gated on the mode as well as on the value. The adapter already withholds both under
+    // `Inherited`, and this makes the guarantee local: a caller that hands a live spec an endpoint
+    // or a key gets neither pushed, rather than an overlay that quietly outranks the operator's own
+    // resolution.
+    if spec.auth == Auth::Canned {
+        if let Some(u) = &spec.base_url {
+            env.push((BASE_URL_ENV.into(), google_base_url(u)));
+        }
+        if let Some(k) = &spec.api_key {
+            env.push((API_KEY_ENV.into(), k.clone()));
+        }
     }
 
     Invocation {
@@ -264,9 +366,27 @@ pub struct BridgeEnv {
 /// `security.auth.selectedType` is load-bearing too, though loudly: with a `GEMINI_API_KEY` and no
 /// selected type the run fails with `{"error":{…,"code":41,"message":"Invalid auth method
 /// selected."}}`, and there is no env-var equivalent (S12, §6.4).
+///
+/// The canned emitter: [`CANNED_AUTH_TYPE`], because marion supplies the key itself. A live node
+/// takes [`settings_json_with_auth`] with the operator's own selection instead.
 pub fn settings_json(mcp: Option<&BridgeEnv>) -> Value {
+    settings_json_with_auth(mcp, CANNED_AUTH_TYPE)
+}
+
+/// [`settings_json`] with the `security.auth.selectedType` stated rather than assumed.
+///
+/// **UNKNOWN, and deliberately not guessed at in code: whether gemini's system-settings layer
+/// deep-merges with the user layer or replaces it per key.** S12 fixtured the *precedence* (system
+/// settings win) but not the *granularity*. If the merge is per-key replacement, then for the
+/// duration of one live run this document's `general` block silently replaces the operator's own
+/// `general` — and, worse, a marion node's `mcpServers` replaces theirs, so a live gemini child
+/// would see marion's bridge and none of the servers the operator configured. Nothing here depends
+/// on which it is: marion writes the keys it needs either way and states the ambiguity rather than
+/// encoding a belief about it. Resolving it is a measurement (declare a distinctive user-layer key,
+/// run with a system-settings file that omits it, and read it back), not a reading of this file.
+pub fn settings_json_with_auth(mcp: Option<&BridgeEnv>, selected_type: &str) -> Value {
     let mut settings = json!({
-        "security": { "auth": { "selectedType": "gemini-api-key" } },
+        "security": { "auth": { "selectedType": selected_type } },
         // Defaults to true and ships to Clearcut every 60 s, calling `systeminformation.graphics()`
         // on the way (S12).
         "privacy": { "usageStatisticsEnabled": false },
@@ -318,6 +438,17 @@ mod tests {
             settings: "/tmp/cfg/marion-settings.json".into(),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: Some("sk-fake".into()),
+            auth: Auth::Canned,
+        }
+    }
+
+    /// The same node under `--live`: marion names no endpoint and mints no credential.
+    fn live_spec() -> PromptSpec {
+        PromptSpec {
+            base_url: None,
+            api_key: None,
+            auth: Auth::Inherited,
+            ..spec()
         }
     }
 
@@ -478,6 +609,137 @@ mod tests {
         );
         assert_eq!(v["privacy"]["usageStatisticsEnabled"], json!(false));
         assert_eq!(v["general"]["enableAutoUpdate"], json!(false));
+    }
+
+    /// **Live mode drops three variables, and the MCP injection route is not one of them.**
+    ///
+    /// Asserted by *name*, because the failure being defended against is one of the three creeping
+    /// back — and by presence for the two that must survive, because the tempting way to "make live
+    /// mode simple" is to drop the whole env block, which would take the settings path with it and
+    /// leave a live node with no bridge at all (§6.1 step 8's failure class).
+    #[test]
+    fn a_live_gemini_node_drops_the_sandbox_home_the_endpoint_and_the_key() {
+        let inv = compile_prompt(&live_spec());
+        for k in [CLI_HOME_ENV, BASE_URL_ENV, API_KEY_ENV] {
+            assert!(
+                !inv.env.iter().any(|(n, _)| n == k),
+                "{k} must be absent under --live: relocating the config surface hides the very \
+                 login the node is meant to use. env: {:?}",
+                inv.env
+            );
+        }
+        let get = |k: &str| {
+            inv.env
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("{k} must survive live mode"))
+        };
+        assert_eq!(
+            get(SYSTEM_SETTINGS_PATH_ENV),
+            "/tmp/cfg/marion-settings.json"
+        );
+        assert_eq!(get(TRUST_WORKSPACE_ENV), "true");
+        assert_eq!(
+            inv.args,
+            compile_prompt(&spec()).args,
+            "live differs from canned in env only"
+        );
+    }
+
+    /// **A safety property, not a style choice — hence the name.**
+    ///
+    /// `GEMINI_FORCE_FILE_STORAGE` over the operator's **real** `~/.gemini` risks pushing their
+    /// actual `oauth_creds.json` through `OAuthCredentialStorage.migrateFromFileStorage()`, which
+    /// `tests/fixtures/s12/` records as reading the legacy file, writing the hybrid store, and then
+    /// `fs.rm`-ing the original. That is marion performing a **one-way destructive migration** of a
+    /// file it does not own, which §6.4 forbids outright. Under `Canned` the same variable points at
+    /// a throwaway `$GEMINI_CLI_HOME` and destroys nothing, which is why it is a mode gate rather
+    /// than a deletion.
+    #[test]
+    fn forcing_file_storage_over_a_real_gemini_profile_would_delete_the_operators_credential() {
+        assert!(
+            !compile_prompt(&live_spec())
+                .env
+                .iter()
+                .any(|(k, _)| k == FORCE_FILE_STORAGE_ENV),
+            "{FORCE_FILE_STORAGE_ENV} under --live can trigger a migration that fs.rm's the \
+             operator's own oauth_creds.json"
+        );
+        assert!(
+            compile_prompt(&spec())
+                .env
+                .iter()
+                .any(|(k, _)| k == FORCE_FILE_STORAGE_ENV),
+            "over marion's own sandbox home it is still wanted: otherwise which store a child uses \
+             depends on a 2 s keychain-probe race"
+        );
+    }
+
+    /// A live spec that arrived carrying an endpoint or a key gets neither overlaid. The mode is the
+    /// authority, not the presence of a value.
+    #[test]
+    fn a_live_node_overlays_no_endpoint_even_if_one_was_handed_to_it() {
+        let inv = compile_prompt(&PromptSpec {
+            auth: Auth::Inherited,
+            ..spec()
+        });
+        assert!(
+            !inv.env
+                .iter()
+                .any(|(k, _)| k == BASE_URL_ENV || k == API_KEY_ENV)
+        );
+    }
+
+    /// The operator's real selection is read, not assumed. A live node whose settings claim
+    /// `gemini-api-key` against an `oauth-personal` profile dies with S12's code 41.
+    #[test]
+    fn the_operators_own_auth_selection_is_read_out_of_their_settings() {
+        assert_eq!(
+            selected_auth_type_from(r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#)
+                .as_deref(),
+            Some("oauth-personal")
+        );
+        // Every way the operator's file can fail marion lands on the same defensible fallback
+        // rather than on a panic: this reads a document marion has no say over.
+        for bad in [
+            "",
+            "not json at all",
+            "{}",
+            r#"{"security":{}}"#,
+            r#"{"security":{"auth":{"selectedType":42}}}"#,
+            r#"{"security":{"auth":{"selectedType":"  "}}}"#,
+            "[1,2,3]",
+        ] {
+            assert_eq!(selected_auth_type_from(bad), None, "{bad}");
+        }
+        assert_eq!(
+            LIVE_FALLBACK_AUTH_TYPE, "oauth-personal",
+            "gemini-api-key with no GEMINI_API_KEY is a guaranteed code 41; the subscription \
+             login is the only fallback that can succeed"
+        );
+        // And the reader never panics whatever this machine's profile looks like.
+        assert!(!live_auth_type().is_empty());
+    }
+
+    #[test]
+    fn a_live_settings_document_still_declares_a_trusted_bridge() {
+        let v = settings_json_with_auth(Some(&bridge()), "oauth-personal");
+        assert_eq!(
+            v["security"]["auth"]["selectedType"],
+            json!("oauth-personal")
+        );
+        assert_eq!(v["mcpServers"]["marion"]["trust"], json!(true));
+        assert_eq!(
+            v["mcpServers"]["marion"]["env"]["MARION_AGENT_ID"],
+            json!("019f-child")
+        );
+        // The canned emitter is the same function with the canned selection, so the two cannot
+        // drift apart in anything but that one key.
+        assert_eq!(
+            settings_json(Some(&bridge())),
+            settings_json_with_auth(Some(&bridge()), CANNED_AUTH_TYPE)
+        );
     }
 
     #[test]

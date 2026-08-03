@@ -28,6 +28,14 @@ use crate::stream::{StreamOutcome, first_string, json_frames};
 /// this alias is literally half of `marion_report`.
 pub const MCP_ALIAS: &str = "marion";
 
+/// Inline JSONC config text, a virtual source that is **never written back** to disk.
+///
+/// It is last in S13's merge order and **merges over** whatever config already resolved — which is
+/// exactly wrong for isolation, and exactly right for [`Auth::Inherited`]: a live node keeps the
+/// operator's own provider, models and credentials and receives marion's MCP declaration on top.
+/// The same property that makes it useless as a sandbox makes it the live route.
+pub const CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG_CONTENT";
+
 /// `provider.<id>.options.timeout`, ms. A **first line of defence only** — see [`isolation_env`]'s
 /// note on the hang.
 pub const PROVIDER_TIMEOUT_MS: u64 = 120_000;
@@ -101,17 +109,36 @@ pub fn config_path(sandbox: &Path) -> PathBuf {
 /// backoff ceiling found. `provider.options.timeout` / `headerTimeout` ([`config_json`]) are a
 /// first line of defence, not a substitute — so marion's own bounded run and §9 two-step group
 /// kill are **load-bearing for an opencode child, not defensive**.
-pub fn isolation_env(sandbox: &Path) -> Vec<(String, String)> {
+///
+/// **Under [`Auth::Inherited`] the five relocations are dropped and the rest are kept**, and the
+/// split is exactly where the fixture puts the credential. S13: auth lives in
+/// `$XDG_DATA_HOME/opencode/auth.json` and config in `$XDG_CONFIG_HOME/opencode/`, resolved through
+/// **different variables**, with `HOME` independently driving the `~/.claude`, `~/.agents` and
+/// `~/.opencode` lookups. Relocating any of them hides the login a live node is meant to present,
+/// so live mode drops all five and delivers marion's MCP declaration through
+/// [`CONFIG_CONTENT_ENV`] instead.
+///
+/// The `OPENCODE_DISABLE_*` set and `OPENCODE_DB=:memory:` are **kept under both modes**, because
+/// they were never the isolation — they are hygiene, and two of them matter *more* on a live run,
+/// not less: `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS` sever a route no
+/// `XDG_*` var ever closed (`~/.claude` is found via `HOME`, and under live that `HOME` is the
+/// operator's real one, with their real `CLAUDE.md` and skills in it).
+pub fn isolation_env(sandbox: &Path, auth: Auth) -> Vec<(String, String)> {
     let p = |sub: &str| sandbox.join(sub).to_string_lossy().into_owned();
-    vec![
-        ("HOME".into(), sandbox.to_string_lossy().into_owned()),
-        (
-            "XDG_CONFIG_HOME".into(),
-            xdg_config_home(sandbox).to_string_lossy().into_owned(),
-        ),
-        ("XDG_DATA_HOME".into(), p("data")),
-        ("XDG_CACHE_HOME".into(), p("cache")),
-        ("XDG_STATE_HOME".into(), p("state")),
+    let mut env: Vec<(String, String)> = Vec::new();
+    if auth == Auth::Canned {
+        env.extend([
+            ("HOME".into(), sandbox.to_string_lossy().into_owned()),
+            (
+                "XDG_CONFIG_HOME".into(),
+                xdg_config_home(sandbox).to_string_lossy().into_owned(),
+            ),
+            ("XDG_DATA_HOME".into(), p("data")),
+            ("XDG_CACHE_HOME".into(), p("cache")),
+            ("XDG_STATE_HOME".into(), p("state")),
+        ]);
+    }
+    env.extend([
         ("OPENCODE_DISABLE_CLAUDE_CODE".into(), "1".into()),
         ("OPENCODE_DISABLE_EXTERNAL_SKILLS".into(), "1".into()),
         ("OPENCODE_DISABLE_PROJECT_CONFIG".into(), "1".into()),
@@ -120,7 +147,8 @@ pub fn isolation_env(sandbox: &Path) -> Vec<(String, String)> {
         ("OPENCODE_DISABLE_AUTOUPDATE".into(), "1".into()),
         ("OPENCODE_DISABLE_SHARE".into(), "1".into()),
         ("OPENCODE_DB".into(), ":memory:".into()),
-    ]
+    ]);
+    env
 }
 
 /// What marion needs to compile an `opencode run` invocation.
@@ -135,6 +163,16 @@ pub struct RunSpec {
     /// §5.5's Claude Code session-title request.
     pub title: String,
     pub prompt: String,
+    /// Whether this node presents a credential marion minted or the operator's own login. Drives
+    /// the five relocations in [`isolation_env`] and nothing else.
+    pub auth: Auth,
+    /// The inline JSONC document [`CONFIG_CONTENT_ENV`] carries, when this node's MCP declaration
+    /// travels by environment rather than by file ([`live_config_json`]).
+    ///
+    /// `Option<String>` rather than derived from `auth` because the two are different questions:
+    /// `McpDeclaration::None` is a live node with no bridge at all (§9's fallback branch), and a
+    /// mode flag could not express it.
+    pub config_content: Option<String>,
 }
 
 pub fn compile_run(spec: &RunSpec) -> Invocation {
@@ -155,10 +193,15 @@ pub fn compile_run(spec: &RunSpec) -> Invocation {
         spec.prompt.clone(),
     ];
 
+    let mut env = isolation_env(&spec.sandbox, spec.auth);
+    if let Some(content) = &spec.config_content {
+        env.push((CONFIG_CONTENT_ENV.into(), content.clone()));
+    }
+
     Invocation {
         program: "opencode".into(),
         args,
-        env: isolation_env(&spec.sandbox),
+        env,
         cwd: spec.cwd.clone(),
         // The `provider/model` pair `-m` carries, which is also the config's `model` key.
         model: Some(spec.model.qualified()),
@@ -324,30 +367,55 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
     });
 
     if let Some(b) = mcp {
-        let mut environment = json!({
-            "MARION_REPO": b.repo.to_string_lossy(),
-            "MARION_STATE_DIR": b.state.to_string_lossy(),
-            AUTH_ENV: b.auth.as_wire(),
-            AGENT_ID_ENV: b.agent_id.0,
-            AGENT_TYPE_ENV: b.agent_type,
-            DEPTH_ENV: b.depth.to_string(),
-        });
-        if let Some(u) = &b.base_url {
-            environment[BASE_URL_ENV] = json!(u);
-        }
-        if let Some(r) = &b.ready_file {
-            environment[READY_FILE_ENV] = json!(r.to_string_lossy());
-        }
-        let mut command: Vec<String> = vec![b.bridge.to_string_lossy().into_owned()];
-        command.extend(b.args.iter().cloned());
-        config["mcp"] = json!({
-            MCP_ALIAS: {
-                "type": "local",
-                "command": command,
-                "environment": environment,
-                "enabled": true,
-            }
-        });
+        config["mcp"] = json!({ MCP_ALIAS: mcp_block(b) });
+    }
+    config
+}
+
+/// The `mcp.<alias>` entry, which is identical on both routes: the declaration marion makes does
+/// not change because it travelled by environment instead of by file.
+///
+/// The schema (`https://opencode.ai/config.json`, `$defs.McpLocalConfig`) sets
+/// `additionalProperties: false`, so `env` instead of `environment`, or a `command` string instead
+/// of an argv array, is a hard failure rather than an ignored field.
+fn mcp_block(b: &BridgeEnv) -> Value {
+    let mut environment = json!({
+        "MARION_REPO": b.repo.to_string_lossy(),
+        "MARION_STATE_DIR": b.state.to_string_lossy(),
+        AUTH_ENV: b.auth.as_wire(),
+        AGENT_ID_ENV: b.agent_id.0,
+        AGENT_TYPE_ENV: b.agent_type,
+        DEPTH_ENV: b.depth.to_string(),
+    });
+    if let Some(u) = &b.base_url {
+        environment[BASE_URL_ENV] = json!(u);
+    }
+    if let Some(r) = &b.ready_file {
+        environment[READY_FILE_ENV] = json!(r.to_string_lossy());
+    }
+    let mut command: Vec<String> = vec![b.bridge.to_string_lossy().into_owned()];
+    command.extend(b.args.iter().cloned());
+    json!({
+        "type": "local",
+        "command": command,
+        "environment": environment,
+        "enabled": true,
+    })
+}
+
+/// The document [`CONFIG_CONTENT_ENV`] carries on a live node: **marion's MCP declaration and
+/// nothing else**.
+///
+/// No `provider` block and no `small_model`, and both omissions are deliberate rather than
+/// minimalism. This text is *merged over* the operator's own config (S13), so a `provider` entry
+/// would shadow the real provider the node is meant to authenticate against, and `small_model`
+/// would repoint their title/summary model at it too — marion overriding the model an operator
+/// chose, on a run whose whole premise is that the operator's own setup is in charge. `model` is
+/// likewise absent: `-m` already carries it and takes precedence over config.
+pub fn live_config_json(mcp: Option<&BridgeEnv>) -> Value {
+    let mut config = json!({});
+    if let Some(b) = mcp {
+        config["mcp"] = json!({ MCP_ALIAS: mcp_block(b) });
     }
     config
 }
@@ -367,6 +435,19 @@ mod tests {
             model: model(),
             title: "marion-019f-child".into(),
             prompt: "do the task".into(),
+            auth: Auth::Canned,
+            config_content: None,
+        }
+    }
+
+    /// The same node under `--live`: nothing relocated, and the MCP declaration inline.
+    fn live_spec() -> RunSpec {
+        RunSpec {
+            auth: Auth::Inherited,
+            config_content: Some(
+                serde_json::to_string(&live_config_json(Some(&bridge()))).unwrap(),
+            ),
+            ..spec()
         }
     }
 
@@ -551,6 +632,107 @@ mod tests {
         let v = config_json(&cfg(), None);
         assert!(v["mcp"].is_null());
         assert_eq!(v["model"], json!("canned/canned-1"));
+    }
+
+    /// **Live mode stops relocating, and stops there.** The five relocations are exactly what hides
+    /// the operator's login — `auth.json` lives under `$XDG_DATA_HOME`, and `HOME` drives the rest
+    /// — so all five go, asserted by name.
+    #[test]
+    fn a_live_opencode_node_relocates_neither_home_nor_any_xdg_root() {
+        let inv = compile_run(&live_spec());
+        for k in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ] {
+            assert!(
+                !inv.env.iter().any(|(n, _)| n == k),
+                "{k} must be absent under --live: opencode reads auth.json out of $XDG_DATA_HOME \
+                 and the rest out of $HOME, so relocating any of them hides the login. env: {:?}",
+                inv.env
+            );
+        }
+        assert_eq!(
+            inv.args,
+            compile_run(&spec()).args,
+            "live differs from canned in env only"
+        );
+    }
+
+    /// The hygiene set is **kept**, and the two contamination severs matter *more* live, not less:
+    /// under `--live` the `HOME` an unsevered child reads `~/.claude/CLAUDE.md` and
+    /// `~/.claude/skills/**` from is the operator's real one (`tests/fixtures/s13/`).
+    #[test]
+    fn a_live_node_still_severs_the_claude_code_adoption_and_the_rest_of_the_hygiene() {
+        let inv = compile_run(&live_spec());
+        for (k, v) in [
+            ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
+            ("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
+            ("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
+            ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
+            ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
+            ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+            ("OPENCODE_DISABLE_SHARE", "1"),
+            ("OPENCODE_DB", ":memory:"),
+        ] {
+            assert_eq!(
+                inv.env
+                    .iter()
+                    .find(|(n, _)| n == k)
+                    .map(|(_, v)| v.as_str()),
+                Some(v),
+                "{k}: hygiene, never isolation — it survives live mode"
+            );
+        }
+    }
+
+    /// The live route: the declaration is in the environment, whole and parseable, and it is the
+    /// same declaration the file route writes.
+    #[test]
+    fn the_live_mcp_declaration_reaches_the_child_through_the_config_content_env_var() {
+        let inv = compile_run(&live_spec());
+        let (_, content) = inv
+            .env
+            .iter()
+            .find(|(k, _)| k == CONFIG_CONTENT_ENV)
+            .expect("a live node's ONLY bridge route");
+        let v: Value = serde_json::from_str(content).expect("inline JSONC must parse as JSON");
+        assert_eq!(v["mcp"]["marion"]["type"], json!("local"));
+        assert_eq!(
+            v["mcp"]["marion"]["command"],
+            json!(["/bin/marion-supervisor", "mcp"])
+        );
+        assert_eq!(
+            v["mcp"]["marion"]["environment"]["MARION_AGENT_ID"],
+            json!("019f-child")
+        );
+        assert_eq!(
+            v["mcp"]["marion"],
+            config_json(&cfg(), Some(&bridge()))["mcp"]["marion"],
+            "the declaration does not change because it travelled by env instead of by file"
+        );
+    }
+
+    /// **Neither `provider` nor `small_model`, and that is the point of the route.** The inline text
+    /// *merges over* the operator's own config (S13), so either key would shadow the real provider
+    /// a live node is meant to authenticate against.
+    #[test]
+    fn the_live_config_shadows_none_of_the_operators_own_provider_settings() {
+        let v = live_config_json(Some(&bridge()));
+        for shadowing in ["provider", "small_model", "model"] {
+            assert!(
+                v.get(shadowing).is_none(),
+                "{shadowing} would merge over the operator's own config and override it"
+            );
+        }
+        assert_eq!(
+            v.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["mcp"],
+            "marion's bridge and nothing else"
+        );
+        assert!(live_config_json(None).as_object().unwrap().is_empty());
     }
 
     #[test]

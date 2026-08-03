@@ -36,6 +36,29 @@ pub enum McpDeclaration {
     None,
 }
 
+/// **How** marion's MCP declaration reaches this node — stated by the adapter, never inferred.
+///
+/// The distinction exists because "no configuration file" and "no bridge" are different facts that
+/// look identical downstream. A live opencode node legitimately writes no file at all: its
+/// declaration rides `OPENCODE_CONFIG_CONTENT`, because a file under an isolated `$XDG_CONFIG_HOME`
+/// would isolate away the very login it is meant to use. Before this enum the supervisor read an
+/// empty `config_files` as the refusal [`crate::RootError::NoMcpDeclaration`], and the obvious
+/// "fix" — accept an empty vec — would have turned that refusal into a **hole**: any adapter that
+/// forgot its declaration entirely would launch a node with no bridge, take a turn with no marion
+/// tools, and exit 0 having called nothing (§6.1 step 8's failure class, §12's silent-failure
+/// family). So the adapter says which route it took and the supervisor checks *that* route was
+/// actually taken; an adapter that declares nothing still fails, loudly and by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpRoute {
+    /// The first document [`HarnessAdapter::config_files`] emits carries it.
+    Document,
+    /// This env var of the compiled [`Invocation`] carries it inline, and no file is written.
+    Environment(&'static str),
+    /// No declaration was asked for — [`McpDeclaration::None`], §9's fallback branch. **Not** the
+    /// same as an adapter that was asked for one and produced none, which is the refusal above.
+    None,
+}
+
 /// Where the node's provider credential comes from, and therefore which endpoint it talks to.
 ///
 /// An enum rather than a bool because an adapter reads *intent*, not a flag: the two modes differ in
@@ -208,6 +231,13 @@ pub trait HarnessAdapter {
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError>;
+
+    /// Which channel this launch's MCP declaration travels on — see [`McpRoute`].
+    ///
+    /// Required rather than defaulted on purpose: a default of [`McpRoute::Document`] would be
+    /// inherited silently by a fifth harness whose declaration is not a document, which is the
+    /// same class of mistake as the fallback [`adapter_for`] refuses to make.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute;
 
     /// Read this harness's own output stream (§6.1 step 9).
     ///
@@ -399,6 +429,15 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         )])
     }
 
+    /// `--mcp-config` names a document, in both auth modes: live mode drops three env vars and
+    /// changes nothing about where the declaration lives.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        match spec.mcp {
+            McpDeclaration::Marion => McpRoute::Document,
+            McpDeclaration::None => McpRoute::None,
+        }
+    }
+
     /// Failure comes off the run's own `result` frame; the exit code is not consulted, because on
     /// this surface a non-zero exit is already the supervisor's to record and 2.1.220 reports its
     /// own errors in-band as `is_error`.
@@ -482,6 +521,15 @@ impl HarnessAdapter for CodexAdapter {
         )])
     }
 
+    /// `[mcp_servers.marion]` lives in the generated `config.toml`. codex's live route is another
+    /// task's; this states the route it has today and nothing more.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        match spec.mcp {
+            McpDeclaration::Marion => McpRoute::Document,
+            McpDeclaration::None => McpRoute::None,
+        }
+    }
+
     /// The pre-seam behaviour, unchanged: `report` off an `mcp_tool_call` item, `file_change`
     /// items as corroboration, and **no failure claim of its own** — codex's status has always come
     /// from the narrative and the exit code, so `exit` is deliberately unused here.
@@ -557,6 +605,7 @@ impl HarnessAdapter for GeminiAdapter {
             settings: Self::settings_path(spec),
             base_url: spec.base_url.clone(),
             api_key: spec.api_key.clone(),
+            auth: spec.auth,
         }))
     }
 
@@ -580,11 +629,32 @@ impl HarnessAdapter for GeminiAdapter {
             depth: ctx.depth,
             ready_file: ctx.ready_file.clone(),
         });
-        let json = gemini::settings_json(bridge.as_ref());
+        // The one key whose right value is not marion's to choose. Under `Canned` marion supplies
+        // `GEMINI_API_KEY` and so selects `gemini-api-key`; under `Inherited` it supplies no
+        // credential at all, and this document is the *system settings* layer, which outranks the
+        // operator's own — so a hardcoded selection here would override a real `oauth-personal`
+        // profile with a type that has no credential behind it and fail with S12's code 41.
+        let json = match spec.auth {
+            Auth::Canned => gemini::settings_json(bridge.as_ref()),
+            Auth::Inherited => {
+                gemini::settings_json_with_auth(bridge.as_ref(), &gemini::live_auth_type())
+            }
+        };
         Ok(vec![(
             Self::settings_path(spec),
             serde_json::to_string_pretty(&json).expect("a Value always serialises"),
         )])
+    }
+
+    /// A document in both modes. `GEMINI_CLI_SYSTEM_SETTINGS_PATH` is resolved *independently* of
+    /// `GEMINI_CLI_HOME` (S12's precedence table: two layers, two variables), so live mode drops the
+    /// sandbox home and the injection route survives untouched. There is no `--settings` flag and no
+    /// inline analogue, so this file is the only channel gemini has.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        match spec.mcp {
+            McpDeclaration::Marion => McpRoute::Document,
+            McpDeclaration::None => McpRoute::None,
+        }
     }
 
     /// **The exit code is not trusted on its own here, and that is measured.** S12 recorded an auth
@@ -621,10 +691,41 @@ impl OpenCodeAdapter {
             what: "an explicit -m provider/model is mandatory: there is no OPENCODE_MODEL env var, \
                    so argv and the generated config are the only two channels",
         })?;
+        // **The default is marion's own plumbing, and under `--live` that plumbing does not
+        // exist.** `marion/default` names the provider block `config_json` *generates*, pointed at
+        // marion's canned endpoint. A live node writes no provider block at all — deliberately, so
+        // as not to shadow the operator's real one — so `-m marion/default` would resolve nothing
+        // and S13 measured that as `Error: {"name":"UnknownError",…}` with exit 1. Refused by name
+        // instead: the operator has to say which of *their* providers a live node should use.
+        if spec.auth == Auth::Inherited && m == marion_core::agent_type::OPENCODE_DEFAULT_MODEL {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::OpenCode,
+                what: "the built-in default model `marion/default` names the provider block marion \
+                       generates for its own canned endpoint, and a --live node writes none — so \
+                       it resolves to no provider at all. Name a real provider/model from the \
+                       operator's own opencode config instead (marion run --live -m …)",
+            });
+        }
         opencode::ModelRef::parse(m).ok_or(HarnessError::MissingInput {
             harness: Harness::OpenCode,
             what: "the model must be in `provider/model` form, which is the only spelling `-m` \
                    accepts and the one the generated provider block has to repeat",
+        })
+    }
+
+    /// The bridge declaration, in the neutral form both routes serialise.
+    fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Option<opencode::BridgeEnv> {
+        (spec.mcp == McpDeclaration::Marion).then(|| opencode::BridgeEnv {
+            bridge: ctx.bridge.clone(),
+            args: ctx.bridge_args.clone(),
+            repo: ctx.repo.clone(),
+            state: ctx.state_dir.clone(),
+            base_url: spec.base_url.clone(),
+            auth: spec.auth,
+            agent_id: ctx.agent_id.clone(),
+            agent_type: ctx.agent_type.clone(),
+            depth: ctx.depth,
+            ready_file: ctx.ready_file.clone(),
         })
     }
 }
@@ -639,6 +740,19 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
 
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        // **Under `Inherited` the declaration is compiled into the env, not written to a file.**
+        // S13: auth resolves through `$XDG_DATA_HOME` and config through `$XDG_CONFIG_HOME` — two
+        // variables — so marion cannot relocate the config without also having to relocate, and
+        // therefore hide, the login. `OPENCODE_CONFIG_CONTENT` is last in the merge order and
+        // merges *over* the operator's own config, which is exactly the wrong property for
+        // isolation and exactly the right one here.
+        let config_content = match spec.auth {
+            Auth::Canned => None,
+            Auth::Inherited => Self::bridge_env(spec, ctx).map(|b| {
+                serde_json::to_string(&opencode::live_config_json(Some(&b)))
+                    .expect("a Value always serialises")
+            }),
+        };
         Ok(opencode::compile_run(&opencode::RunSpec {
             cwd: spec.cwd.clone(),
             sandbox: spec.config_dir.clone(),
@@ -647,31 +761,29 @@ impl HarnessAdapter for OpenCodeAdapter {
             // session identifiable in `opencode session list` without leaking the prompt.
             title: format!("marion-{}", ctx.agent_id.0),
             prompt: spec.prompt.clone(),
+            auth: spec.auth,
+            config_content,
         }))
     }
 
+    /// **No file at all under `Inherited`** — see [`HarnessAdapter::mcp_route`], which is what keeps
+    /// that from reading as "this node got no bridge".
     fn config_files(
         &self,
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if spec.auth == Auth::Inherited {
+            // And no `base_url` is demanded either: the refusal below exists because a *generated*
+            // provider block pointing nowhere is an unbounded hang, and a live node generates none.
+            return Ok(Vec::new());
+        }
         let base_url = spec.base_url.as_deref().ok_or(HarnessError::MissingInput {
             harness: Harness::OpenCode,
             what: "the provider block needs a baseURL; without one the child resolves no provider \
                    at all, and a provider that answers nothing is an unbounded hang (S13)",
         })?;
-        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| opencode::BridgeEnv {
-            bridge: ctx.bridge.clone(),
-            args: ctx.bridge_args.clone(),
-            repo: ctx.repo.clone(),
-            state: ctx.state_dir.clone(),
-            base_url: spec.base_url.clone(),
-            auth: spec.auth,
-            agent_id: ctx.agent_id.clone(),
-            agent_type: ctx.agent_type.clone(),
-            depth: ctx.depth,
-            ready_file: ctx.ready_file.clone(),
-        });
+        let bridge = Self::bridge_env(spec, ctx);
         let json = opencode::config_json(
             &opencode::ConfigSpec {
                 model: Self::model_ref(spec)?,
@@ -684,6 +796,19 @@ impl HarnessAdapter for OpenCodeAdapter {
             opencode::config_path(&spec.config_dir),
             serde_json::to_string_pretty(&json).expect("a Value always serialises"),
         )])
+    }
+
+    /// The one adapter whose route depends on the auth mode: a file under an isolated
+    /// `$XDG_CONFIG_HOME` when marion owns the config surface, and inline
+    /// `OPENCODE_CONFIG_CONTENT` when the operator does.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        match (spec.mcp, spec.auth) {
+            (McpDeclaration::None, _) => McpRoute::None,
+            (McpDeclaration::Marion, Auth::Canned) => McpRoute::Document,
+            (McpDeclaration::Marion, Auth::Inherited) => {
+                McpRoute::Environment(opencode::CONFIG_CONTENT_ENV)
+            }
+        }
     }
 
     /// **No terminal frame exists to wait for** (S13, `tests/fixtures/s13/`): opencode's stream
@@ -1160,14 +1285,20 @@ mod tests {
     /// document straight into `$HOME`. Live mode's premise is the opposite — the config dir stays
     /// marion's, and what is dropped is only the *overlay* of a base URL and a credential.
     ///
-    /// A harness that refuses under a given mode is skipped rather than failed (codex and opencode
-    /// both require a base URL, and `Inherited` has none until part 2 gives them one) — but the
-    /// sweep asserts that **something** was checked in each mode, so it cannot pass by refusing
-    /// everywhere.
+    /// A harness that refuses under a given mode is skipped rather than failed (codex still
+    /// requires a base URL, and `Inherited` has none until its own live route lands) — but the
+    /// sweep asserts that **something** was checked in each mode, and names the harnesses that must
+    /// be among them, so it cannot pass by refusing everywhere.
+    ///
+    /// **An adapter that emits no file is bound too, by the route it states.** A live opencode node
+    /// writes nothing and carries its declaration in `OPENCODE_CONFIG_CONTENT`; an empty `files`
+    /// would otherwise let it through this sweep having proved nothing at all, which is the
+    /// vacuous-pass shape the `checked` counter exists to prevent.
     #[test]
     fn no_config_file_any_adapter_emits_ever_escapes_marions_own_agent_dir() {
         for auth in [Auth::Canned, Auth::Inherited] {
             let mut checked = 0;
+            let mut bound: Vec<Harness> = Vec::new();
             for h in Harness::ALL {
                 let spec = LaunchSpec {
                     auth,
@@ -1180,11 +1311,50 @@ mod tests {
                         Auth::Canned => spec_for(h).api_key,
                         Auth::Inherited => None,
                     },
+                    // The canned default names marion's own generated provider block, which a live
+                    // opencode node deliberately does not write (see the refusal it earns).
+                    model: match (h, auth) {
+                        (Harness::OpenCode, Auth::Inherited) => {
+                            Some("anthropic/claude-sonnet-4-5".into())
+                        }
+                        _ => spec_for(h).model,
+                    },
                     ..spec_for(h)
                 };
-                let Ok(files) = adapter_for(h).unwrap().config_files(&spec, &ctx()) else {
+                let adapter = adapter_for(h).unwrap();
+                let Ok(files) = adapter.config_files(&spec, &ctx()) else {
                     continue;
                 };
+                // Whichever route this adapter took, it took *a* route, and the route it named is
+                // the one it actually used.
+                match adapter.mcp_route(&spec) {
+                    McpRoute::Document => assert!(
+                        !files.is_empty(),
+                        "{h} under {auth:?}: names a document route and wrote none"
+                    ),
+                    McpRoute::Environment(k) => {
+                        assert!(
+                            files.is_empty(),
+                            "{h} under {auth:?}: an env route that also writes files has two \
+                             declarations and no single authority"
+                        );
+                        let inv = adapter
+                            .compile(&spec, &ctx())
+                            .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"));
+                        let (_, v) =
+                            inv.env.iter().find(|(n, _)| n == k).unwrap_or_else(|| {
+                                panic!("{h} under {auth:?}: ${k} was never set")
+                            });
+                        assert!(
+                            v.contains("\"mcp\"") && v.contains(opencode::MCP_ALIAS),
+                            "{h} under {auth:?}: ${k} carries no marion declaration: {v}"
+                        );
+                    }
+                    McpRoute::None => {
+                        panic!("{h} under {auth:?}: asked for marion's bridge and routed nowhere")
+                    }
+                }
+                bound.push(h);
                 for (path, _) in &files {
                     assert!(
                         path.starts_with(&spec.config_dir),
@@ -1206,6 +1376,16 @@ mod tests {
                 checked > 0,
                 "{auth:?}: no adapter emitted a single path, so this proved nothing"
             );
+            // The named minimum. Without it the sweep would silently shrink to whichever harnesses
+            // happen still to compile under a mode, which is exactly how it passed vacuously for
+            // gemini and opencode before they had a live route at all.
+            for h in [Harness::ClaudeCode, Harness::Gemini, Harness::OpenCode] {
+                assert!(
+                    bound.contains(&h),
+                    "{h} under {auth:?} was skipped: it must be exercised in both modes, or this \
+                     sweep says nothing about the mode where escaping is easiest"
+                );
+            }
         }
     }
 
@@ -1450,6 +1630,99 @@ mod tests {
         ));
     }
 
+    /// The gemini node under `--live`, at the adapter seam: three variables gone by name, and the
+    /// settings path — the *whole* MCP injection route on this harness, there being no `--settings`
+    /// flag — still naming the document `config_files` writes.
+    #[test]
+    fn a_live_gemini_node_drops_three_env_vars_and_keeps_its_mcp_route() {
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..gemini_spec()
+        };
+        let inv = GeminiAdapter.compile(&live, &ctx()).unwrap();
+        for k in [
+            "GEMINI_CLI_HOME",
+            "GOOGLE_GEMINI_BASE_URL",
+            "GEMINI_API_KEY",
+        ] {
+            assert!(
+                !inv.env.iter().any(|(n, _)| n == k),
+                "{k} must be absent under --live. env: {:?}",
+                inv.env
+            );
+        }
+        let (_, named) = inv
+            .env
+            .iter()
+            .find(|(k, _)| k == "GEMINI_CLI_SYSTEM_SETTINGS_PATH")
+            .expect("the settings path IS the MCP injection route; without it a live node has no bridge");
+        let files = GeminiAdapter.config_files(&live, &ctx()).unwrap();
+        assert_eq!(PathBuf::from(named), files[0].0);
+        let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+        assert_eq!(
+            v["mcpServers"]["marion"]["trust"],
+            serde_json::json!(true),
+            "without it the tools are omitted from the request body with no error anywhere"
+        );
+        assert_eq!(
+            v["mcpServers"]["marion"]["env"]["MARION_AUTH"],
+            serde_json::json!("inherited"),
+            "a child this node spawns must reach the same endpoint it did"
+        );
+    }
+
+    /// **`GEMINI_FORCE_FILE_STORAGE`'s absence under `--live` is a safety property.** Over the
+    /// operator's real `~/.gemini` it can trigger the one-way migration `tests/fixtures/s12/`
+    /// records — read `oauth_creds.json`, write the hybrid store, `fs.rm` the original — which is
+    /// marion destroying a file it does not own (§6.4).
+    #[test]
+    fn live_never_forces_file_storage_because_the_migration_deletes_the_operators_credential() {
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..gemini_spec()
+        };
+        assert!(
+            !GeminiAdapter
+                .compile(&live, &ctx())
+                .unwrap()
+                .env
+                .iter()
+                .any(|(k, _)| k == "GEMINI_FORCE_FILE_STORAGE")
+        );
+    }
+
+    /// The auth selection a live node declares is the operator's own, read from their settings —
+    /// and never the canned `gemini-api-key`, which under `--live` has no key behind it and fails
+    /// with S12's code 41.
+    #[test]
+    fn a_live_gemini_node_declares_an_auth_type_it_could_actually_authenticate_with() {
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..gemini_spec()
+        };
+        let files = GeminiAdapter.config_files(&live, &ctx()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+        assert_eq!(
+            v["security"]["auth"]["selectedType"],
+            serde_json::json!(gemini::live_auth_type()),
+            "the operator's real selection, or the oauth-personal fallback — not marion's"
+        );
+        // Canned is untouched and still selects the type marion supplies a key for.
+        let canned: serde_json::Value =
+            serde_json::from_str(&GeminiAdapter.config_files(&gemini_spec(), &ctx()).unwrap()[0].1)
+                .unwrap();
+        assert_eq!(
+            canned["security"]["auth"]["selectedType"],
+            serde_json::json!("gemini-api-key")
+        );
+    }
+
     #[test]
     fn a_non_loopback_plain_http_base_url_is_refused_at_compile_time() {
         let mut spec = gemini_spec();
@@ -1542,6 +1815,187 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A live opencode spec: the operator's own provider, no endpoint and no credential from marion.
+    fn opencode_live_spec() -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            model: Some("anthropic/claude-sonnet-4-5".into()),
+            ..opencode_spec()
+        }
+    }
+
+    /// **Live mode stops relocating five variables and keeps eight**, and the split is not
+    /// arbitrary: the five hid the operator's login (auth.json under `$XDG_DATA_HOME`, `~/.claude`
+    /// and `~/.opencode` under `HOME`), while the eight were always hygiene.
+    #[test]
+    fn a_live_opencode_node_drops_home_and_the_xdg_roots_and_keeps_the_hygiene() {
+        let inv = OpenCodeAdapter
+            .compile(&opencode_live_spec(), &ctx())
+            .unwrap();
+        for k in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ] {
+            assert!(
+                !inv.env.iter().any(|(n, _)| n == k),
+                "{k} must be absent under --live. env: {:?}",
+                inv.env
+            );
+        }
+        // The two that matter MORE live, not less: under `--live` the `HOME` an unsevered child
+        // would read `~/.claude/CLAUDE.md` and `~/.claude/skills/**` from is the operator's real one.
+        for k in [
+            "OPENCODE_DISABLE_CLAUDE_CODE",
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+            "OPENCODE_DB",
+        ] {
+            assert!(
+                inv.env.iter().any(|(n, _)| n == k),
+                "{k} survives live mode"
+            );
+        }
+    }
+
+    /// The live route, end to end at the seam: **no file at all**, the declaration in
+    /// `OPENCODE_CONFIG_CONTENT`, and the adapter saying so rather than the supervisor guessing.
+    #[test]
+    fn a_live_opencode_node_declares_its_bridge_in_the_environment_and_writes_no_file() {
+        let live = opencode_live_spec();
+        assert_eq!(
+            OpenCodeAdapter.mcp_route(&live),
+            McpRoute::Environment("OPENCODE_CONFIG_CONTENT"),
+            "an empty config_files must never be *inferred* to mean 'fileless'"
+        );
+        assert!(
+            OpenCodeAdapter
+                .config_files(&live, &ctx())
+                .unwrap()
+                .is_empty(),
+            "a file under an isolated $XDG_CONFIG_HOME would isolate away the login"
+        );
+        let inv = OpenCodeAdapter.compile(&live, &ctx()).unwrap();
+        let (_, content) = inv
+            .env
+            .iter()
+            .find(|(k, _)| k == "OPENCODE_CONFIG_CONTENT")
+            .expect("the live node's only bridge route");
+        let v: serde_json::Value = serde_json::from_str(content).unwrap();
+        assert_eq!(
+            v["mcp"]["marion"]["command"],
+            serde_json::json!(["/bin/marion-supervisor", "mcp"])
+        );
+        assert_eq!(
+            v["mcp"]["marion"]["environment"]["MARION_AUTH"],
+            serde_json::json!("inherited")
+        );
+        assert!(
+            v["provider"].is_null() && v["small_model"].is_null(),
+            "the inline text MERGES over the operator's config, so either key would shadow their \
+             real provider: {content}"
+        );
+        // Canned is untouched: a document, in the isolated config root, exactly as before.
+        assert_eq!(
+            OpenCodeAdapter.mcp_route(&opencode_spec()),
+            McpRoute::Document
+        );
+        assert!(
+            !OpenCodeAdapter
+                .compile(&opencode_spec(), &ctx())
+                .unwrap()
+                .env
+                .iter()
+                .any(|(k, _)| k == "OPENCODE_CONFIG_CONTENT"),
+            "the canned route writes a file and carries no inline config"
+        );
+    }
+
+    /// **`marion/default` names marion's own generated plumbing, and a live node generates none.**
+    /// It would resolve to no provider at all — S13 measured that as
+    /// `Error: {"name":"UnknownError",…}`, exit 1 — so it is refused by name at compile time
+    /// instead, with the refusal saying what to pass instead.
+    #[test]
+    fn the_canned_default_model_is_refused_under_live_rather_than_resolving_to_no_provider() {
+        let live = LaunchSpec {
+            model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+            ..opencode_live_spec()
+        };
+        let e = OpenCodeAdapter.compile(&live, &ctx()).unwrap_err();
+        assert!(
+            matches!(
+                &e,
+                HarnessError::MissingInput {
+                    harness: Harness::OpenCode,
+                    ..
+                }
+            ),
+            "{e}"
+        );
+        assert!(
+            e.to_string().contains("marion/default"),
+            "the refusal must name the problem: {e}"
+        );
+        // And it is a *live* refusal only — canned is what that default exists for.
+        assert!(
+            OpenCodeAdapter
+                .compile(
+                    &LaunchSpec {
+                        model: Some(marion_core::agent_type::OPENCODE_DEFAULT_MODEL.into()),
+                        ..opencode_spec()
+                    },
+                    &ctx()
+                )
+                .is_ok()
+        );
+        // A real provider/model is accepted live.
+        assert!(
+            OpenCodeAdapter
+                .compile(&opencode_live_spec(), &ctx())
+                .is_ok()
+        );
+    }
+
+    /// **The route is stated, never inferred — and every adapter states one.** This is what keeps
+    /// `RootError::NoMcpDeclaration` from becoming a hole: "declares by another route" and "declared
+    /// nothing at all" are different answers here, and only the first is legal.
+    #[test]
+    fn every_adapter_states_the_route_its_mcp_declaration_travels_on() {
+        for h in Harness::ALL {
+            let a = adapter_for(h).unwrap();
+            let spec = spec_for(h);
+            match a.mcp_route(&spec) {
+                McpRoute::Document => assert!(
+                    !a.config_files(&spec, &ctx()).unwrap().is_empty(),
+                    "{h}: claims a document and emitted none"
+                ),
+                McpRoute::Environment(k) => assert!(
+                    a.compile(&spec, &ctx())
+                        .unwrap()
+                        .env
+                        .iter()
+                        .any(|(n, _)| n == k),
+                    "{h}: claims ${k} and did not set it"
+                ),
+                McpRoute::None => {
+                    panic!("{h}: asked for McpDeclaration::Marion and routed nowhere")
+                }
+            }
+            // And a node that asked for no bridge says so, rather than looking like a failure.
+            assert_eq!(
+                a.mcp_route(&LaunchSpec {
+                    mcp: McpDeclaration::None,
+                    ..spec
+                }),
+                McpRoute::None,
+                "{h}: §9's fallback branch is not the same fact as a missing declaration"
+            );
+        }
     }
 
     #[test]

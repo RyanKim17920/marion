@@ -62,7 +62,8 @@ use marion_core::harness::Harness;
 use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_harness::{
-    Auth, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for, json_frames,
+    Auth, Extras, Invocation, LaunchSpec, McpDeclaration, McpRoute, SpawnCtx, adapter_for,
+    json_frames,
 };
 use serde_json::Value;
 
@@ -153,8 +154,12 @@ pub struct RootNode {
     pub agent_id: AgentId,
     pub agent_dir: AgentDir,
     /// The first configuration document the adapter emitted — the one carrying marion's MCP server
-    /// declaration on every harness.
-    pub mcp_config: PathBuf,
+    /// declaration.
+    ///
+    /// `None` when this node's declaration travels by another route
+    /// ([`marion_harness::McpRoute::Environment`]): a live opencode node writes no file, and that
+    /// absence has already been checked against the route the adapter stated, not passed over.
+    pub mcp_config: Option<PathBuf>,
     /// The bridge's readiness marker. `None` on a `LaunchOnly` root: its prompt is already in argv,
     /// so there is no frame to withhold and nothing to gate (§6.1 step 8).
     pub ready_file: Option<PathBuf>,
@@ -212,8 +217,20 @@ pub enum RootError {
     UnsupportedRootSurface(Harness),
     #[error("running the root: {0}")]
     Run(#[from] SpawnError),
-    #[error("the adapter for {0} emitted no configuration document to declare marion's bridge in")]
-    NoMcpDeclaration(Harness),
+    /// **Relaxed in shape, not in strength.** It used to read an empty `config_files` as the
+    /// failure, which was wrong for an adapter whose declaration is legitimately fileless — a live
+    /// opencode node carries it in `OPENCODE_CONFIG_CONTENT`, because a file under an isolated
+    /// `$XDG_CONFIG_HOME` would isolate away the login the node exists to use. The fix is *not* to
+    /// accept an empty vec: that would let any adapter that simply forgot its declaration launch a
+    /// node with no bridge at all, which is §6.1 step 8's failure class and §12's silent one — a
+    /// turn taken without marion's tools, ending in plain text, exit 0. So the adapter states its
+    /// route ([`marion_harness::McpRoute`]) and marion checks *that* route was taken.
+    #[error(
+        "the adapter for {harness} declares marion's bridge by {route}, and none arrived — the \
+         node would take its turn with no bridge at all, so the run is refused rather than allowed \
+         to end in plain text with no error anywhere (§6.1 step 8)"
+    )]
+    NoMcpDeclaration { harness: Harness, route: String },
     /// §6.1 step 8's post-hoc assertion, failed. **The loud error that must exist**: the alternative
     /// is a run whose turn went out without marion's tools, ended as plain text, and exited 0 with
     /// nothing anywhere reporting it (§12).
@@ -320,12 +337,47 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         std::fs::write(&path, contents)?;
         written.push(path);
     }
-    let mcp_config = written
-        .first()
-        .cloned()
-        .ok_or(RootError::NoMcpDeclaration(harness))?;
-
     let mut invocation = adapter.compile(&launch, &ctx)?;
+
+    // §6.1 step 8, checked against the route the adapter *stated* rather than against the presence
+    // of a file. Every branch here is a refusal except the two that positively found the
+    // declaration, which is what keeps "this harness declares MCP some other way" from becoming
+    // "this node silently got no bridge".
+    let mcp_config = match adapter.mcp_route(&launch) {
+        McpRoute::Document => {
+            Some(
+                written
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| RootError::NoMcpDeclaration {
+                        harness,
+                        route: "a configuration document".into(),
+                    })?,
+            )
+        }
+        McpRoute::Environment(key) => {
+            if !invocation
+                .env
+                .iter()
+                .any(|(k, v)| k == key && !v.trim().is_empty())
+            {
+                return Err(RootError::NoMcpDeclaration {
+                    harness,
+                    route: format!("${key}"),
+                });
+            }
+            None
+        }
+        // The root always asks for `McpDeclaration::Marion` (above), so this is unreachable today
+        // — and it is a refusal rather than an `unreachable!()` because the thing it would be
+        // asserting is precisely the thing that must never fail silently.
+        McpRoute::None => {
+            return Err(RootError::NoMcpDeclaration {
+                harness,
+                route: "no route at all".into(),
+            });
+        }
+    };
     // **`Inherited` skips this too, and that is the whole of live mode on this path.** The adapter
     // already withheld the three env vars it compiles; a push here would put two of them straight
     // back, and `ANTHROPIC_API_KEY=""` in particular would blank the operator's own key on a node
@@ -633,6 +685,74 @@ mod tests {
         }
     }
 
+    /// **`prepare` accepts a fileless declaration, and only because the adapter named the route.**
+    ///
+    /// A live opencode root writes no configuration document at all — its declaration rides
+    /// `OPENCODE_CONFIG_CONTENT`, because a file under an isolated `$XDG_CONFIG_HOME` would isolate
+    /// away the login the run exists to use. The old check read an empty `config_files` as
+    /// `NoMcpDeclaration` and refused it; the new one checks the route the adapter *stated*, so this
+    /// passes while a genuinely bridgeless node still cannot.
+    #[test]
+    fn a_live_opencode_root_declares_its_bridge_without_writing_a_file() {
+        let dir = temp("opencode-live");
+        let node = prepare(&RootSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            // The built-in default names marion's own generated provider block, which a live node
+            // does not write — the adapter refuses it by name, so a real one is given here.
+            model: Some("anthropic/claude-sonnet-4-5".into()),
+            ..root_spec(&dir, "opencode")
+        })
+        .expect("a fileless MCP route is legal when the adapter says that is its route");
+        assert_eq!(
+            node.mcp_config, None,
+            "no document: the declaration is in the environment"
+        );
+        let (_, content) = node
+            .invocation
+            .env
+            .iter()
+            .find(|(k, _)| k == "OPENCODE_CONFIG_CONTENT")
+            .expect("and marion checked that it is actually there");
+        let v: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(
+            v["mcp"]["marion"]["environment"]["MARION_AUTH"],
+            "inherited"
+        );
+        // Nothing marion could write escaped the agent dir, because marion wrote nothing.
+        assert!(
+            !node
+                .invocation
+                .env
+                .iter()
+                .any(|(k, _)| k == "HOME" || k.starts_with("XDG_"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other side of the same coin: the refusal still exists and still names the route. An
+    /// adapter that declared *nothing* must not be waved through just because filelessness is now
+    /// legal for somebody.
+    #[test]
+    fn a_node_with_no_declaration_on_any_route_is_still_refused_by_name() {
+        for (route, needle) in [
+            ("a configuration document", "configuration document"),
+            ("$OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_CONTENT"),
+            ("no route at all", "no route at all"),
+        ] {
+            let e = RootError::NoMcpDeclaration {
+                harness: Harness::OpenCode,
+                route: route.into(),
+            };
+            let s = e.to_string();
+            assert!(s.contains(needle), "{s}");
+            assert!(
+                s.contains("no bridge at all"),
+                "the refusal must name the failure class, not merely fail: {s}"
+            );
+        }
+    }
+
     fn temp(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("marion-root-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
@@ -653,10 +773,15 @@ mod tests {
         for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
             let node = prepare(&root_spec(&dir, name))
                 .unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
+            // Canned: every harness declares marion's bridge in a document here.
+            let declaration = node
+                .mcp_config
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name}: no MCP declaration document"));
             assert!(
-                node.mcp_config.is_file(),
+                declaration.is_file(),
                 "{name}: the MCP declaration marion compiled a path to must exist: {}",
-                node.mcp_config.display()
+                declaration.display()
             );
             let in_argv = node.invocation.args.iter().any(|a| a == "delegate it");
             match node.path {
@@ -694,7 +819,7 @@ mod tests {
         let dir = temp("depth");
         for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
             let node = prepare(&root_spec(&dir, name)).unwrap();
-            let doc = std::fs::read_to_string(&node.mcp_config).unwrap();
+            let doc = std::fs::read_to_string(node.mcp_config.as_ref().unwrap()).unwrap();
             assert!(
                 doc.contains("\"0\""),
                 "{name}: a root is depth 0 (§3.1), and the value must be in the document its own \
@@ -773,8 +898,9 @@ mod tests {
         }
         // §6.4's MUST is unchanged by live mode: the declaration is still marion's, inside the
         // node's own agent dir, and it is still what argv names.
-        assert!(node.mcp_config.is_file());
-        assert!(node.mcp_config.starts_with(node.agent_dir.path()));
+        let declaration = node.mcp_config.as_ref().unwrap();
+        assert!(declaration.is_file());
+        assert!(declaration.starts_with(node.agent_dir.path()));
         assert!(
             node.invocation
                 .args
