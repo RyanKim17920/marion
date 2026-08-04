@@ -232,18 +232,34 @@ fn assert_persisted_copy_records_no_shortening(c: &TaskContract) {
 }
 
 /// Processes still alive with `needle` on their command line. A leak, if any.
+///
+/// `ps` is the *only* witness this file has for a leak, so every way it can fail to answer is a
+/// failure of the test rather than an empty answer. Reporting "no survivors" because `ps` was
+/// missing, errored, or printed nothing would make the leak assertion pass for free on exactly the
+/// machines where it cannot be checked — the silent pass this file exists to rule out.
 fn survivors(needle: &str) -> Vec<String> {
-    Command::new("ps")
+    let out = Command::new("ps")
         .args(["-axo", "pid=,command="])
         .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| l.contains(needle))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+        .expect("`ps` must run: without it nothing here can tell a clean run from a leak");
+    assert!(
+        out.status.success(),
+        "`ps -axo pid=,command=` exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let listing = String::from_utf8_lossy(&out.stdout);
+    // `ps -ax` lists at minimum this very test process, so an empty listing means a witness that
+    // did not work, not a machine with nothing running on it.
+    assert!(
+        !listing.trim().is_empty(),
+        "`ps` printed nothing; the leak check would report no survivors whatever had leaked"
+    );
+    listing
+        .lines()
+        .filter(|l| l.contains(needle))
+        .map(str::to_string)
+        .collect()
 }
 
 #[test]
