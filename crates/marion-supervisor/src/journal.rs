@@ -224,6 +224,58 @@ pub fn read_path(path: &Path) -> Result<Replay, JournalError> {
     }
 }
 
+/// The journals this process has open, one per file, keyed by path.
+///
+/// **One `Journal` per file per process, held open for the process's life**, because the per-writer
+/// ordinal is only gapless if one object owns it: reopening the file for each record would restart
+/// `seq` at 0 and replay would read the run as a writer emitting duplicate ordinals, which is
+/// exactly the loss signal [`marion_core::registry::SeqGap`] exists to make meaningful. A `Vec`
+/// rather than a map because a supervisor process serves one project — `marion run` opens exactly
+/// one, a bridge exactly one — and only the test binary, which drives many temp projects in one
+/// process, ever holds more than a single entry.
+static OPEN: std::sync::Mutex<Vec<(PathBuf, Journal)>> = std::sync::Mutex::new(Vec::new());
+
+/// This process's writer identity, minted once. See [`WriterId`]: two writers sharing an identity
+/// read as one writer emitting an interleaved, gap-ridden sequence.
+fn this_writer() -> WriterId {
+    static ID: std::sync::OnceLock<WriterId> = std::sync::OnceLock::new();
+    ID.get_or_init(writer_id).clone()
+}
+
+/// **Record one lifecycle transition, and never fail the run over it.**
+///
+/// This is the failure policy, stated once and applied identically to a root (`root::prepare`,
+/// `root::launch`) and to a child (`run::run_spawn`), because a policy that differed between them
+/// would make the journal's meaning depend on which node it is about.
+///
+/// The argument, from the spec. §9's M2 criteria exist to prevent an **untracked live process** —
+/// a node marion started and has no record of. That is what makes a lost record serious, and it is
+/// why §4.3 buys an fsync for the barrier records and not for the rest. But *today* nothing reads
+/// this file to make a decision: there is no registry, no descendant gate and no reap recovery on
+/// top of it yet, so a journal fault costs a stale replay and nothing else. Against that, promoting
+/// it to fatal would kill a working run — a real child in a real worktree, mid-edit — over a full
+/// disk, and would introduce a brand-new way for `marion run` to fail that no existing behaviour
+/// has. So: **the run continues, and the fault is loud on stderr rather than swallowed**, which is
+/// the failure mode §12 keeps recording. The day the registry actually reads this file to decide
+/// whether a process may be spawned, this becomes fatal — and that is a change to this one
+/// function, not to any call site.
+pub fn record(project: &ProjectDir, kind: RecordKind) {
+    let path = project.journal();
+    let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !open.iter().any(|(p, _)| *p == path) {
+        match Journal::open(project, this_writer()) {
+            Ok(j) => open.push((path.clone(), j)),
+            Err(e) => {
+                eprintln!("marion: cannot open the journal {}: {e}", path.display());
+                return;
+            }
+        }
+    }
+    if let Some((_, j)) = open.iter_mut().find(|(p, _)| *p == path) {
+        j.record(kind);
+    }
+}
+
 /// This process's writer identity: pid plus a UUIDv7, so two runs of one pid (recycled after a
 /// reboot, or in a container) never collide.
 pub fn writer_id() -> WriterId {
@@ -362,7 +414,10 @@ mod tests {
         assert!(j.dirty);
         std::thread::sleep(GROUP_COMMIT_INTERVAL + Duration::from_millis(10));
         j.tick();
-        assert!(!j.dirty, "the ~50 ms timer is the other half of §4.3's rule");
+        assert!(
+            !j.dirty,
+            "the ~50 ms timer is the other half of §4.3's rule"
+        );
     }
 
     #[test]

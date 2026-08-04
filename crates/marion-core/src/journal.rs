@@ -432,15 +432,17 @@ mod tests {
     #[test]
     fn the_barrier_set_is_section_4_3s_list_and_its_intents() {
         let a = AgentId("a".into());
-        assert!(RecordKind::SpawnIntent(SpawnIntent {
-            agent_id: a.clone(),
-            parent_id: None,
-            agent_type: "claude".into(),
-            harness: Harness::ClaudeCode,
-            depth: 0,
-            task_id: None,
-        })
-        .is_barrier());
+        assert!(
+            RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: a.clone(),
+                parent_id: None,
+                agent_type: "claude".into(),
+                harness: Harness::ClaudeCode,
+                depth: 0,
+                task_id: None,
+            })
+            .is_barrier()
+        );
         assert!(
             RecordKind::ReapIntent(ReapIntent {
                 agent_id: a.clone(),
@@ -501,7 +503,10 @@ mod tests {
             reason: "x".repeat(MAX_RECORD_BYTES),
         });
         let e = encode(&rec(huge)).unwrap_err();
-        assert!(matches!(e, EncodeError::TooLarge(n) if n > MAX_RECORD_BYTES), "{e}");
+        assert!(
+            matches!(e, EncodeError::TooLarge(n) if n > MAX_RECORD_BYTES),
+            "{e}"
+        );
     }
 
     #[test]

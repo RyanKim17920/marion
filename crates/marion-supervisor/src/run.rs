@@ -26,6 +26,9 @@ use marion_core::cap::cap_for_return;
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, SystemTime};
 use marion_core::ids::{RAND_BYTES, new_agent_id};
+use marion_core::journal::{
+    ContractPersisted, Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned,
+};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::scope::check_spawn_scope;
 use marion_harness::{
@@ -614,6 +617,42 @@ fn duplex_child(
     })
 }
 
+/// Resolves a written [`SpawnIntent`] as an **abort** unless the spawn path reaches its own
+/// terminal record.
+///
+/// A guard rather than a line before each `return`, because `run_spawn` leaves through a dozen `?`
+/// operators — the worktree, the config writes, `compile`, the child's own driver — and any one of
+/// them that left the intent unresolved would produce precisely the node §7.2 forbids: one that
+/// *looks* like a node marion lost, when in fact marion decided its fate and simply never said so.
+/// `Drop` catches every one of those exits, plus a panic, which no explicit call site can.
+///
+/// The reason is generic because the error is gone by the time `Drop` runs — a `?` has already
+/// moved it into the caller's `Err`. That is the honest trade: the journal records *that* marion
+/// abandoned the spawn (which is what replay needs, and what keeps the node out of `unresolved()`),
+/// and the error itself reaches the caller, who is the one who can act on it.
+struct AbortOnDrop<'a> {
+    project: &'a ProjectDir,
+    agent_id: AgentId,
+    armed: bool,
+}
+
+impl Drop for AbortOnDrop<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            crate::journal::record(
+                self.project,
+                RecordKind::SpawnAborted(SpawnAborted {
+                    agent_id: self.agent_id.clone(),
+                    reason: "marion left the spawn path before the child reached a terminal \
+                             record; the error was returned to the caller (§7.2: a node marion \
+                             decided the fate of is never one marion lost)"
+                        .into(),
+                }),
+            );
+        }
+    }
+}
+
 pub fn run_spawn(
     env: &Env,
     req: &SpawnRequest,
@@ -651,6 +690,40 @@ pub fn run_spawn(
 
     let spawned_at = SystemTime(std::time::SystemTime::now());
     let agent_id = new_agent_id(unix_millis(), entropy()?);
+    // §6.1 step 7, first half: *"journal the spawn intent, start the process, journal
+    // confirmation."* **Written at the first instant the node has an identity at all**, and
+    // deliberately before the worktree, the config files and the process — everything below this
+    // line is a side effect marion would otherwise have taken on behalf of a node the journal has
+    // never heard of. A node that is spawned and never recorded is exactly the untracked live
+    // process §9's M2 criteria exist to forbid.
+    //
+    // The gates (§6.1 step 2) and the scope check run **above** it, unchanged: a spawn that is
+    // refused creates no node, and recording an intent for one would put a node in the tree that
+    // never existed.
+    crate::journal::record(
+        &env.project_dir,
+        RecordKind::SpawnIntent(SpawnIntent {
+            agent_id: agent_id.clone(),
+            // §7.5: immutable, written once. The caller is the parent by construction.
+            parent_id: Some(AgentId(caller.agent_id.clone())),
+            // The canonical name off the resolved type, not the alias `req.agent_type` used —
+            // the same value `SpawnCtx` carries to the child's own bridge.
+            agent_type: agent_type.name.clone(),
+            harness: agent_type.harness,
+            // §3.1's depth, one level below the caller's — the same derivation `SpawnCtx` uses, so
+            // the journal and the child's declaration can never disagree about where it sits.
+            depth: caller.depth + 1,
+            // A child runs under a contract; §9's `None` is for a root.
+            task_id: Some(task_id.clone()),
+        }),
+    );
+    // Every path out of this function from here on resolves that intent — including the `?`
+    // returns below, which is what this guard is for. See [`AbortOnDrop`].
+    let mut resolution = AbortOnDrop {
+        project: &env.project_dir,
+        agent_id: agent_id.clone(),
+        armed: true,
+    };
     let agent_dir = env.project_dir.agent(&agent_id);
     let wt = agent_dir.worktree();
     let ch = agent_dir.config_dir();
@@ -789,6 +862,25 @@ pub fn run_spawn(
             bound,
         )?,
     };
+    // §6.1 step 7's confirmation, written the moment marion can truthfully make it. The process is
+    // started and reaped inside the call above — `spawn` is synchronous — so this is the first
+    // instant marion has *observed* that a process existed at all. Written before it, this would be
+    // a confirmation of something that had not happened, which is the whole point of splitting
+    // intent from confirmation; a crash in the window between the two therefore leaves an
+    // unconfirmed intent, which is the correct reading of a node whose fate marion does not know.
+    crate::journal::record(
+        &env.project_dir,
+        RecordKind::Spawned(Spawned {
+            agent_id: agent_id.clone(),
+            harness_version: harness_version(&inv.program),
+            // The **compiled** value, for §6.7's reason: what went on the wire, never what was
+            // asked for. `None` on codex, whose `exec` surface carries no model argument.
+            model: inv.model.clone(),
+            // marion drove the process through a helper that owns the child and surfaces no pid.
+            // An absence, recorded as one.
+            pid: None,
+        }),
+    );
     // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
     // gemini or opencode child's report was unreadable and its contract said `Unreported` about a
     // run that had reported — the §12 silent-failure shape, one layer down from the dispatch bug.
@@ -844,7 +936,39 @@ pub fn run_spawn(
     // `None` for codex, whose `exec` surface carries no model argument, even when the request or
     // the agent type named one.
     contract.child.model = inv.model.clone();
+    // The node's terminal transition, carrying the status and the `ProcessExit` §6.7 derived — so
+    // replay reconstructs the outcome **without reading the contract file**, which is the property
+    // that lets replay stay a pure function over the journal's bytes. Read off the contract rather
+    // than re-derived beside it: two derivations of one status are two chances to disagree about
+    // the same run.
+    if let Some(completion) = contract.completion.as_ref() {
+        crate::journal::record(
+            &env.project_dir,
+            RecordKind::Exited(Exited {
+                agent_id: agent_id.clone(),
+                status: completion.status,
+                exit: completion.exit.clone(),
+            }),
+        );
+    }
     let returned = persist_then_cap(&agent_dir, &contract)?;
+    // §4.3: the journal records **that a contract exists and how it ended**, never its contents —
+    // the file is the contract (§6.7), and copying it here would be a second source of truth.
+    // Written after `persist_then_cap` returns, so the record cannot claim a file that was never
+    // written; the node is `agent_id` (the child the contract is about) and `requester` is the
+    // caller, which is §6.7's own distinction, kept.
+    crate::journal::record(
+        &env.project_dir,
+        RecordKind::ContractPersisted(ContractPersisted {
+            agent_id: agent_id.clone(),
+            task_id: task_id.clone(),
+            requester: AgentId(caller.agent_id.clone()),
+            status: contract.completion.as_ref().map(|c| c.status),
+        }),
+    );
+    // The intent is resolved: `Spawned` and `Exited` are on the record above, so the abort this
+    // guard would otherwise write would contradict them.
+    resolution.armed = false;
     cleanup(&env.repo, &wt);
     Ok(returned)
 }

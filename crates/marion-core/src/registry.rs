@@ -293,8 +293,7 @@ pub fn replay(bytes: &[u8]) -> Replay {
     let mut out = Replay::default();
     let mut expected: HashMap<WriterId, u64> = HashMap::new();
     let mut offset = 0usize;
-    let mut line_no = 0usize;
-    for line in bytes.split_inclusive(|b| *b == b'\n') {
+    for (line_no, line) in bytes.split_inclusive(|b| *b == b'\n').enumerate() {
         if line.last() != Some(&b'\n') {
             // No terminator: these bytes are a prefix of a record that was never finished. §7.4.
             if !line.is_empty() {
@@ -325,7 +324,6 @@ pub fn replay(bytes: &[u8]) -> Replay {
             }
         }
         offset += line.len();
-        line_no += 1;
     }
     out
 }
@@ -335,9 +333,7 @@ mod tests {
     use super::*;
     use crate::encoding::SystemTime;
     use crate::ir::Provenance;
-    use crate::journal::{
-        Exited, ReapConfirmed, ReapIntent, Spawned, StateChanged, encode,
-    };
+    use crate::journal::{Exited, ReapConfirmed, ReapIntent, Spawned, StateChanged, encode};
 
     fn record(seq: u64, kind: RecordKind) -> JournalRecord {
         JournalRecord {
@@ -437,16 +433,25 @@ mod tests {
         assert!(r.gaps.is_empty());
 
         assert_eq!(
-            r.nodes().iter().map(|n| n.agent_id.0.as_str()).collect::<Vec<_>>(),
+            r.nodes()
+                .iter()
+                .map(|n| n.agent_id.0.as_str())
+                .collect::<Vec<_>>(),
             ["root", "child"],
             "first-mention order, which is the journal's own"
         );
         assert_eq!(
-            r.roots().iter().map(|n| n.agent_id.0.as_str()).collect::<Vec<_>>(),
+            r.roots()
+                .iter()
+                .map(|n| n.agent_id.0.as_str())
+                .collect::<Vec<_>>(),
             ["root"]
         );
         assert_eq!(
-            r.children(&id("root")).iter().map(|n| n.agent_id.0.as_str()).collect::<Vec<_>>(),
+            r.children(&id("root"))
+                .iter()
+                .map(|n| n.agent_id.0.as_str())
+                .collect::<Vec<_>>(),
             ["child"]
         );
 
@@ -487,7 +492,10 @@ mod tests {
         );
         assert!(root.is_unresolved());
         assert_eq!(
-            r.unresolved().iter().map(|n| n.agent_id.0.as_str()).collect::<Vec<_>>(),
+            r.unresolved()
+                .iter()
+                .map(|n| n.agent_id.0.as_str())
+                .collect::<Vec<_>>(),
             ["root"]
         );
     }
@@ -519,7 +527,10 @@ mod tests {
             }),
         ));
         let r = replay(&bytes(&j));
-        assert_eq!(r.get(&id("child")).unwrap().reap_state, ReapState::ReapedIdle);
+        assert_eq!(
+            r.get(&id("child")).unwrap().reap_state,
+            ReapState::ReapedIdle
+        );
     }
 
     #[test]
@@ -592,8 +603,14 @@ mod tests {
     fn an_ordinal_gap_is_reported_rather_than_hidden() {
         // §4.2's `Ordinal` form, applied to marion's own per-writer sequence.
         let j = vec![
-            record(0, RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("a") })),
-            record(2, RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("a") })),
+            record(
+                0,
+                RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("a") }),
+            ),
+            record(
+                2,
+                RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("a") }),
+            ),
         ];
         let r = replay(&bytes(&j));
         assert_eq!(
@@ -611,13 +628,22 @@ mod tests {
     fn two_writers_interleave_without_being_read_as_a_gap() {
         let a = JournalRecord {
             writer: WriterId("a".into()),
-            ..record(0, RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("x") }))
+            ..record(
+                0,
+                RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("x") }),
+            )
         };
         let b = JournalRecord {
             writer: WriterId("b".into()),
-            ..record(0, RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("y") }))
+            ..record(
+                0,
+                RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("y") }),
+            )
         };
-        let a1 = JournalRecord { seq: 1, ..a.clone() };
+        let a1 = JournalRecord {
+            seq: 1,
+            ..a.clone()
+        };
         let r = replay(&bytes(&[a, b, a1]));
         assert!(r.gaps.is_empty(), "sequences are per-writer, not global");
         assert_eq!(r.records, 3);
@@ -636,9 +662,20 @@ mod tests {
         // The writer emits one to close a torn line; it must not stop replay.
         let mut b = bytes(&m1_journal());
         b.extend_from_slice(b"\n");
-        b.extend_from_slice(&encode(&record(9, RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("child") }))).unwrap());
+        b.extend_from_slice(
+            &encode(&record(
+                9,
+                RecordKind::ReapConfirmed(ReapConfirmed {
+                    agent_id: id("child"),
+                }),
+            ))
+            .unwrap(),
+        );
         let r = replay(&b);
         assert_eq!(r.truncation, None);
-        assert_eq!(r.get(&id("child")).unwrap().reap_state, ReapState::ReapedIdle);
+        assert_eq!(
+            r.get(&id("child")).unwrap().reap_state,
+            ReapState::ReapedIdle
+        );
     }
 }

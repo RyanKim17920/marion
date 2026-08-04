@@ -60,7 +60,7 @@ fn a_tree() -> Vec<RecordKind> {
             agent_id: child.clone(),
             harness_version: "0.9.0".into(),
             model: None,
-            pid: Some(200 + i as i32),
+            pid: Some(200 + i),
         }));
         kinds.push(RecordKind::StateChanged(StateChanged {
             agent_id: child.clone(),
@@ -185,8 +185,15 @@ fn a_complete_but_unparsable_line_stops_replay_rather_than_being_skipped() {
         .unwrap(),
     );
     let r = replay(&bytes);
-    assert_eq!(r.records, good, "replay stops at the first line it cannot read");
-    assert!(matches!(r.truncation, Some(Truncation::Unparsable { .. })), "{:?}", r.truncation);
+    assert_eq!(
+        r.records, good,
+        "replay stops at the first line it cannot read"
+    );
+    assert!(
+        matches!(r.truncation, Some(Truncation::Unparsable { .. })),
+        "{:?}",
+        r.truncation
+    );
 }
 
 /// Every byte offset of a **file that is not valid UTF-8 at all** — replay takes bytes, so this
@@ -225,9 +232,11 @@ fn append_many(path: &Path, writer: &str) {
         .unwrap();
         // A barrier every tenth record, so the fsync path is exercised concurrently too.
         if i % 10 == 0 {
-            j.append(RecordKind::ReapConfirmed(marion_core::journal::ReapConfirmed {
-                agent_id: AgentId(format!("{writer}-{i}")),
-            }))
+            j.append(RecordKind::ReapConfirmed(
+                marion_core::journal::ReapConfirmed {
+                    agent_id: AgentId(format!("{writer}-{i}")),
+                },
+            ))
             .unwrap();
         }
     }

@@ -59,10 +59,10 @@ use std::time::Duration as StdDuration;
 use marion_core::agent_type::builtin;
 use marion_core::contract::{AgentId, ExitStatus, ProcessExit};
 use marion_core::harness::Harness;
+use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::journal::{
     Exited, PermissionDenied, RecordKind, SpawnAborted, SpawnIntent, Spawned,
 };
-use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_harness::{
     Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, McpRoute, SpawnCtx,
@@ -527,9 +527,10 @@ fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootE
                     exit: ProcessExit {
                         code: *exit,
                         signal: None,
-                        description: "the root never reached marion's bridge, so its turn went out \
+                        description:
+                            "the root never reached marion's bridge, so its turn went out \
                                       without marion's tools (§6.1 step 8)"
-                            .into(),
+                                .into(),
                     },
                 }),
             );
@@ -605,10 +606,20 @@ fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootE
 /// §6.1 step 7's confirmation for a root. `harness_version` and `model` are resolved by *launching*
 /// (§3.2), which is why they are here and not on the intent; `pid` is `None` because marion drives
 /// the root through a helper that owns the child and does not surface one — an absence, not a zero.
+///
+/// **`harness_version` is `"unknown"` on a root, and that is a refusal to invent a side effect.**
+/// A child's version is measured because `run_spawn` already runs `<program> --version` for
+/// §6.7's `TaskContract.child.version`; a root has no contract, so nothing on this path has ever
+/// executed the harness binary a second time. Doing it here to fill a journal field would add a
+/// process execution to every `marion run` — an observable change, and one `launch_only_root`'s
+/// fake-harness tests measure directly, since they assert over the argv their stub was invoked
+/// with and a stub that never exits would turn the extra call into a hang. §4.3 puts the binary's
+/// path and version in `meta.json`; when marion writes that file the value comes from there,
+/// measured once, and this reads it rather than re-deriving it.
 fn spawned_record(node: &RootNode) -> RecordKind {
     RecordKind::Spawned(Spawned {
         agent_id: node.agent_id.clone(),
-        harness_version: crate::run::harness_version(&node.invocation.program),
+        harness_version: "unknown".into(),
         // The **compiled** invocation's model, for §6.7's reason: what went on the wire, not what
         // was asked for. `None` on codex, whose `exec` surface takes no model argument at all.
         model: node.invocation.model.clone(),
