@@ -16,6 +16,9 @@ pub mod bridge;
 /// §6.1 step 8's readiness gate and the `stream-json` conversation behind it — **shared by the
 /// root and by a child**, for the same reason the two binaries above share `run_spawn`.
 pub mod duplex;
+/// §4.3's append-only registry journal, writer side. The records and the replay are
+/// `marion-core`'s — this crate is where I/O is allowed.
+pub mod journal;
 pub mod root;
 pub mod run;
 pub mod spawn;

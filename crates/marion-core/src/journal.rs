@@ -1,0 +1,539 @@
+//! The registry journal's **records and their framing** (design §4.3).
+//!
+//! > *"**The registry is an append-only journal**, replayed at startup, not a rewritten
+//! > `registry.json`: rewriting the whole tree per state change is O(tree) per event against an
+//! > intentionally unbounded tree. **Spawn is journaled as intent-then-confirm** — a crash between
+//! > 'process started' and 'registry updated' would otherwise leave a live child with no registry
+//! > entry, holding a session id the ownership invariant no longer knows about."*
+//!
+//! This module is pure data plus the line codec. The file lives in the supervisor
+//! (`marion_supervisor::journal`), because `marion-core` performs no I/O; replay lives in
+//! [`crate::registry`], because §8 lists *"journal replay"* as an **L1 pure unit**.
+//!
+//! # Framing
+//!
+//! One record per line, compact JSON, `\n`-terminated — the file is `journal.jsonl` (§4.3) and
+//! §7.4 says *"a truncated final line is discarded on replay"*, so the delimiter **is** the frame.
+//! Two properties make that safe rather than merely conventional:
+//!
+//! * `serde_json`'s compact form emits no literal newline (a newline inside a string is escaped as
+//!   `\n`), so **any prefix of a record is a prefix of exactly one line**. A torn tail cannot
+//!   forge a frame boundary.
+//! * every record is capped at [`MAX_RECORD_BYTES`] and written with **one** `write(2)` under
+//!   `O_APPEND`, which is what makes two writer processes interleave at record granularity rather
+//!   than byte granularity. The cap is enforced here, at encode time, so the invariant the
+//!   concurrency argument rests on cannot be violated by a caller.
+//!
+//! # Durability
+//!
+//! §4.3: *"Append without fsync; fsync on a ~50 ms timer **and** unconditionally at each state
+//! transition that must survive a crash — `Spawned`, `Exited`, `ReapedIdle`."* [`RecordKind::is_barrier`]
+//! is that list. Per-record fsync was **replaced** by group commit (§12) and is not reintroduced.
+
+use serde::{Deserialize, Serialize};
+
+use crate::contract::{AgentId, ExitStatus, ProcessExit, ResultStatus, TaskId};
+use crate::harness::Harness;
+use crate::ir::{Provenance, SrcSeq};
+use crate::node::NodeState;
+
+/// The hard cap on one encoded record, **newline included**.
+///
+/// It is the size limit the `O_APPEND` concurrency argument holds under: POSIX makes the
+/// offset-and-write of an `O_APPEND` write atomic with respect to other writers, and a single
+/// `write(2)` of this size to a local regular file is not split by any filesystem marion runs on.
+/// 16 KiB is far above what any record here can reach — the largest field is a `ProcessExit`
+/// description marion writes itself — and far below the point where a short write becomes a
+/// practical concern. A record that would exceed it is a **refusal**, not a silent truncation:
+/// truncating would produce a line that parses as a different, wrong record.
+pub const MAX_RECORD_BYTES: usize = 16 * 1024;
+
+/// Which process wrote a record.
+///
+/// **There is no global sequence number, and that is a decision.** `marion run` and each
+/// `marion-supervisor mcp` bridge are separate processes that both cause lifecycle events, and a
+/// monotonic counter shared across them would need exactly the coordination the append-only design
+/// exists to avoid. So the journal's total order is the **file's byte order** — the order the
+/// kernel serialized the appends in — and `seq` is per-writer, which is what makes loss detectable
+/// at all: a gap in one writer's ordinals is a lost record, in precisely §4.2's `Ordinal` sense.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct WriterId(pub String);
+
+/// One line of `journal.jsonl`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalRecord {
+    pub writer: WriterId,
+    /// This writer's ordinal, from 0, **gapless by construction**. See [`WriterId`].
+    pub seq: u64,
+    /// §4/§6.7 encoding: RFC3339 UTC, literal `Z`, three fractional digits. Display only — it is
+    /// wall clock, and §4.2 says NTP steps and sleep/wake move it backwards.
+    pub ts: crate::encoding::SystemTime,
+    /// Monotonic since this writer started. Not comparable across writers, and not the order
+    /// replay uses; it is here for the same reason §4.2 gives — aligning a record with `pty.cast`.
+    pub mono_ns: u64,
+    pub provenance: Provenance,
+    /// §4.2. `None` on every record marion writes about its own decisions, because marion *is* the
+    /// source and the source has no upstream ordering to report. Present when a record is caused by
+    /// a harness event that carried evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub src_seq: Option<SrcSeq>,
+    pub kind: RecordKind,
+}
+
+impl JournalRecord {
+    /// §4.3's barrier list, forwarded so callers need not reach through `kind`.
+    pub fn is_barrier(&self) -> bool {
+        self.kind.is_barrier()
+    }
+
+    /// The `AgentId` this record is about. Every record is about exactly one node — there is no
+    /// tree-wide record — which is what lets replay be a single pass with no second index.
+    pub fn agent_id(&self) -> &AgentId {
+        self.kind.agent_id()
+    }
+}
+
+/// What a record says. Externally tagged (`{"Spawned":{…}}`), matching §6.7's `Workspace` — one
+/// tagging convention across marion's persisted JSON, not two.
+///
+/// **Additive by rule.** A new variant may be added; an existing one may only gain
+/// `#[serde(default)]` fields. Both directions are exercised in this module's tests, because "an
+/// older record must still deserialize" is the property the journal's whole value rests on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordKind {
+    /// §6.1 step 7, first half: *"Journal the spawn intent, start the process, journal
+    /// confirmation."* Written **before** any process exists, so a crash in the window leaves an
+    /// intent with no confirmation — recoverable, rather than a live child with no registry entry.
+    SpawnIntent(SpawnIntent),
+    /// §6.1 step 7, second half. The process exists.
+    Spawned(Spawned),
+    /// The intent's other resolution: marion started the process and then abandoned the spawn
+    /// (§6.1 step 8's 30 s bridge cap kills it and *"journal[s] the abort against the intent
+    /// record"*). Recorded so the node is never mistaken for one marion *lost* — §7.2 is emphatic
+    /// that a node marion decided the fate of is never `Orphaned`.
+    SpawnAborted(SpawnAborted),
+    /// §3.2's `state`, moved.
+    StateChanged(StateChanged),
+    /// The node's terminal transition. Carries the terminal status and the `ProcessExit` §6.7
+    /// records, so replay reconstructs the outcome without reading the contract file.
+    Exited(Exited),
+    /// §7.2: *"Journaled **before** the kill, as an intent record."* A single record written
+    /// before the kill would leave a crash window in which restart reads `ReapedIdle`, skips the
+    /// `Orphaned` marking, and a live process survives untracked and unkillable.
+    ReapIntent(ReapIntent),
+    /// The process was observed dead. §7.2: an unconfirmed intent resolves to `ReapedIdle` either
+    /// way — that resolution is restart policy and is **not** replay's job.
+    ReapConfirmed(ReapConfirmed),
+    /// §4.3's `contracts/<task_id>.json` was written. The journal records *that a contract exists
+    /// and how it ended*, never its contents: the file is the contract, and copying it here would
+    /// be a second source of truth for a document §6.7 already makes authoritative.
+    ContractPersisted(ContractPersisted),
+    /// §7.1/§9: a permission marion refused. Recorded **in the journal, not in a contract** —
+    /// §9 says so in as many words, because the node it happens to may be a root, and a root has
+    /// no contract to record it in.
+    PermissionDenied(PermissionDenied),
+}
+
+impl RecordKind {
+    /// §4.3's barrier set: *"`Spawned`, `Exited`, `ReapedIdle`"*, plus the **intent** records those
+    /// three are the confirmations of — §4.3 extends the barrier to the intent explicitly ("fsync
+    /// the intent, do the act, then append and fsync the confirmation"), and an intent that is not
+    /// durable before the act buys nothing at all.
+    ///
+    /// Everything else rides the ~50 ms group-commit timer. The cost of losing one of those is a
+    /// slightly stale replay; the cost of losing a barrier record is an untracked live process,
+    /// and §4.3 says only the latter pays for a barrier.
+    pub fn is_barrier(&self) -> bool {
+        matches!(
+            self,
+            RecordKind::SpawnIntent(_)
+                | RecordKind::Spawned(_)
+                | RecordKind::SpawnAborted(_)
+                | RecordKind::Exited(_)
+                | RecordKind::ReapIntent(_)
+                | RecordKind::ReapConfirmed(_)
+        )
+    }
+
+    pub fn agent_id(&self) -> &AgentId {
+        match self {
+            RecordKind::SpawnIntent(r) => &r.agent_id,
+            RecordKind::Spawned(r) => &r.agent_id,
+            RecordKind::SpawnAborted(r) => &r.agent_id,
+            RecordKind::StateChanged(r) => &r.agent_id,
+            RecordKind::Exited(r) => &r.agent_id,
+            RecordKind::ReapIntent(r) => &r.agent_id,
+            RecordKind::ReapConfirmed(r) => &r.agent_id,
+            RecordKind::ContractPersisted(r) => &r.agent_id,
+            RecordKind::PermissionDenied(r) => &r.agent_id,
+        }
+    }
+}
+
+/// Everything about a node that never changes, written once, before the process exists.
+///
+/// This is §4's `Lifecycle::Spawned` payload **minus what `marion-core` cannot name**: `isolation`,
+/// `caps` and `surfaces` are `marion-harness` types, and core does not depend on harness (the
+/// dependency runs the other way). They are recoverable from `meta.json`, which §4.3 already makes
+/// the home of *"compiled spec, caps, harness ref"*; carrying them here too would be a second
+/// source of truth for the same three facts. `harness_version` and `model` are on [`Spawned`]
+/// instead of here, because both are resolved by *launching* and are not known at intent time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnIntent {
+    pub agent_id: AgentId,
+    /// §7.5: **immutable**. The tree never silently re-parents, so this is written once and
+    /// replay never updates it.
+    pub parent_id: Option<AgentId>,
+    /// The **canonical** agent-type name, not the alias the caller used.
+    pub agent_type: String,
+    pub harness: Harness,
+    /// §3.1's depth, root = 0.
+    pub depth: u32,
+    /// The contract this node's run is under. `None` for a **root**, which §9 says has no
+    /// contract — not a placeholder, an absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+}
+
+/// §6.1 step 7's confirmation: the process exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spawned {
+    pub agent_id: AgentId,
+    /// Resolved at launch (§3.2), so it cannot be on the intent.
+    pub harness_version: String,
+    /// The model that actually reached the harness, in the harness's own spelling — the same
+    /// measurement `TaskContract.child.model` records, and `None` for the same reason (`codex
+    /// exec` takes no model argument at all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `None` where marion drove the process through a helper that does not surface one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnAborted {
+    pub agent_id: AgentId,
+    /// marion's own explanation, never derived from an exit code — the same discipline
+    /// `ProcessExit.description` holds to.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateChanged {
+    pub agent_id: AgentId,
+    pub state: NodeState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Exited {
+    pub agent_id: AgentId,
+    pub status: ExitStatus,
+    pub exit: ProcessExit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReapIntent {
+    pub agent_id: AgentId,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReapConfirmed {
+    pub agent_id: AgentId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractPersisted {
+    /// The node the contract is *about* — the child. `requester` is the node that asked.
+    pub agent_id: AgentId,
+    pub task_id: TaskId,
+    pub requester: AgentId,
+    /// `Some` iff the contract carries a `Completion` (§6.7): `None` while the run is live, and
+    /// `None` if it ended unobserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ResultStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionDenied {
+    pub agent_id: AgentId,
+    pub tool: String,
+    pub reason: String,
+}
+
+/// Encoding refused a record. Both variants are refusals rather than repairs, for the same reason:
+/// a shortened record is a *different* record, and one that parses.
+#[derive(Debug, thiserror::Error)]
+pub enum EncodeError {
+    #[error(
+        "a journal record of {0} bytes exceeds the {MAX_RECORD_BYTES}-byte cap that makes an \
+         O_APPEND write atomic against a concurrent writer; refused rather than truncated, since \
+         a truncated record would deserialize as a different one"
+    )]
+    TooLarge(usize),
+    #[error("serializing a journal record: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// One record as its line, newline included. **The only place a record becomes bytes.**
+pub fn encode(record: &JournalRecord) -> Result<Vec<u8>, EncodeError> {
+    let mut line = serde_json::to_vec(record)?;
+    line.push(b'\n');
+    if line.len() > MAX_RECORD_BYTES {
+        return Err(EncodeError::TooLarge(line.len()));
+    }
+    debug_assert!(
+        line[..line.len() - 1].iter().all(|b| *b != b'\n'),
+        "compact JSON escapes newlines; a raw one would forge a frame boundary"
+    );
+    Ok(line)
+}
+
+/// One line back to a record. `None` for anything that is not a complete, valid record — replay
+/// treats that as the end of the intact prefix.
+pub fn decode(line: &[u8]) -> Option<JournalRecord> {
+    serde_json::from_slice(line).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoding::SystemTime;
+
+    fn rec(kind: RecordKind) -> JournalRecord {
+        JournalRecord {
+            writer: WriterId("w-1".into()),
+            seq: 3,
+            ts: SystemTime::from_unix_millis(1_785_625_628_619),
+            mono_ns: 42,
+            provenance: Provenance::marion(),
+            src_seq: None,
+            kind,
+        }
+    }
+
+    fn intent() -> RecordKind {
+        RecordKind::SpawnIntent(SpawnIntent {
+            agent_id: AgentId("a-1".into()),
+            parent_id: Some(AgentId("root".into())),
+            agent_type: "codex-impl".into(),
+            harness: Harness::Codex,
+            depth: 1,
+            task_id: Some(TaskId("t-1".into())),
+        })
+    }
+
+    #[test]
+    fn a_record_pins_its_wire_shape() {
+        // The whole envelope, byte for byte. Every field here is read by a replayer that may be a
+        // different build of marion than the one that wrote it.
+        assert_eq!(
+            serde_json::to_value(rec(intent())).unwrap(),
+            serde_json::json!({
+                "writer": "w-1",
+                "seq": 3,
+                "ts": "2026-08-01T23:07:08.619Z",
+                "mono_ns": 42,
+                "provenance": {
+                    "source": "Marion",
+                    "source_id": null,
+                    "observed_live": true,
+                    "authoritative": true,
+                    "completeness": "Complete",
+                    "transformation": "Native",
+                },
+                "kind": {"SpawnIntent": {
+                    "agent_id": "a-1",
+                    "parent_id": "root",
+                    "agent_type": "codex-impl",
+                    "harness": "codex",
+                    "depth": 1,
+                    "task_id": "t-1",
+                }},
+            }),
+            "the harness must still be the bare wire string `codex`, as `ChildRef` writes it"
+        );
+    }
+
+    #[test]
+    fn an_absent_src_seq_is_absent_from_the_wire_not_null() {
+        let json = serde_json::to_string(&rec(intent())).unwrap();
+        assert!(
+            !json.contains("src_seq"),
+            "§4.2: where there is no ordering evidence the record must not imply any; got {json}"
+        );
+        let with = JournalRecord {
+            src_seq: Some(SrcSeq::Predecessor(crate::ir::EventId("u-9".into()))),
+            ..rec(intent())
+        };
+        assert!(
+            serde_json::to_string(&with)
+                .unwrap()
+                .contains(r#""src_seq":{"Predecessor":"u-9"}"#)
+        );
+    }
+
+    #[test]
+    fn every_kind_round_trips_through_a_line() {
+        let exit = ProcessExit {
+            code: Some(0),
+            signal: None,
+            description: "clean exit".into(),
+        };
+        let kinds = [
+            intent(),
+            RecordKind::Spawned(Spawned {
+                agent_id: AgentId("a-1".into()),
+                harness_version: "2.1.220".into(),
+                model: Some("gpt-5.4".into()),
+                pid: Some(4242),
+            }),
+            RecordKind::SpawnAborted(SpawnAborted {
+                agent_id: AgentId("a-1".into()),
+                reason: "the bridge never handshook within 30 s".into(),
+            }),
+            RecordKind::StateChanged(StateChanged {
+                agent_id: AgentId("a-1".into()),
+                state: NodeState::Blocked(crate::node::BlockReason::Descendants),
+            }),
+            RecordKind::Exited(Exited {
+                agent_id: AgentId("a-1".into()),
+                status: ExitStatus::Ok,
+                exit: exit.clone(),
+            }),
+            RecordKind::ReapIntent(ReapIntent {
+                agent_id: AgentId("a-1".into()),
+                reason: "idle memory reclaim".into(),
+            }),
+            RecordKind::ReapConfirmed(ReapConfirmed {
+                agent_id: AgentId("a-1".into()),
+            }),
+            RecordKind::ContractPersisted(ContractPersisted {
+                agent_id: AgentId("a-1".into()),
+                task_id: TaskId("t-1".into()),
+                requester: AgentId("root".into()),
+                status: Some(ExitStatus::Unreported),
+            }),
+            RecordKind::PermissionDenied(PermissionDenied {
+                agent_id: AgentId("root".into()),
+                tool: "Bash".into(),
+                reason: "the root's Blocked bound expired unanswered".into(),
+            }),
+        ];
+        for kind in kinds {
+            let r = rec(kind);
+            let line = encode(&r).unwrap();
+            assert_eq!(line.last(), Some(&b'\n'));
+            assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
+        }
+    }
+
+    #[test]
+    fn the_barrier_set_is_section_4_3s_list_and_its_intents() {
+        let a = AgentId("a".into());
+        assert!(RecordKind::SpawnIntent(SpawnIntent {
+            agent_id: a.clone(),
+            parent_id: None,
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            depth: 0,
+            task_id: None,
+        })
+        .is_barrier());
+        assert!(
+            RecordKind::ReapIntent(ReapIntent {
+                agent_id: a.clone(),
+                reason: String::new()
+            })
+            .is_barrier()
+        );
+        assert!(
+            RecordKind::ReapConfirmed(ReapConfirmed {
+                agent_id: a.clone()
+            })
+            .is_barrier()
+        );
+        // Not barriers: losing one costs a stale replay, not an untracked process (§4.3).
+        assert!(
+            !RecordKind::StateChanged(StateChanged {
+                agent_id: a.clone(),
+                state: NodeState::Running,
+            })
+            .is_barrier()
+        );
+        assert!(
+            !RecordKind::ContractPersisted(ContractPersisted {
+                agent_id: a.clone(),
+                task_id: TaskId("t".into()),
+                requester: a,
+                status: None,
+            })
+            .is_barrier()
+        );
+    }
+
+    #[test]
+    fn an_older_record_still_deserializes() {
+        // Written by a build that had no `src_seq`, no `model`, no `pid` and no `status` — every
+        // field this module marks `#[serde(default)]`. The rule is additive-only, and this is the
+        // test that would fail the day someone makes a field required.
+        let old = br#"{"writer":"w-0","seq":0,"ts":"2026-08-01T23:07:08.619Z","mono_ns":1,
+            "provenance":{"source":"Marion"},
+            "kind":{"Spawned":{"agent_id":"a-1","harness_version":"2.1.220"}}}"#;
+        let compact: Vec<u8> = old.iter().copied().filter(|b| *b != b'\n').collect();
+        let r = decode(&compact).expect("an older record must still read");
+        assert_eq!(r.src_seq, None);
+        match r.kind {
+            RecordKind::Spawned(s) => {
+                assert_eq!(s.harness_version, "2.1.220");
+                assert_eq!(s.model, None);
+                assert_eq!(s.pid, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_record_that_would_break_append_atomicity_is_refused_not_truncated() {
+        let huge = RecordKind::SpawnAborted(SpawnAborted {
+            agent_id: AgentId("a-1".into()),
+            reason: "x".repeat(MAX_RECORD_BYTES),
+        });
+        let e = encode(&rec(huge)).unwrap_err();
+        assert!(matches!(e, EncodeError::TooLarge(n) if n > MAX_RECORD_BYTES), "{e}");
+    }
+
+    #[test]
+    fn a_newline_in_a_field_is_escaped_and_never_forges_a_frame() {
+        // The whole framing argument rests on this: a record's encoding contains exactly one raw
+        // newline, its terminator. A description carrying a literal newline must not split it.
+        let r = rec(RecordKind::Exited(Exited {
+            agent_id: AgentId("a-1".into()),
+            status: ExitStatus::Killed,
+            exit: ProcessExit {
+                code: None,
+                signal: Some(9),
+                description: "line one\nline two\r\n".into(),
+            },
+        }));
+        let line = encode(&r).unwrap();
+        assert_eq!(
+            line.iter().filter(|b| **b == b'\n').count(),
+            1,
+            "one raw newline, the terminator"
+        );
+        assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
+    }
+
+    #[test]
+    fn decode_rejects_rather_than_guesses() {
+        assert!(decode(b"").is_none());
+        assert!(decode(b"{\"writer\":\"w\"").is_none(), "a torn prefix");
+        assert!(decode(b"not json").is_none());
+        assert!(
+            decode(&[0xff, 0xfe]).is_none(),
+            "invalid UTF-8 must not panic"
+        );
+    }
+}
