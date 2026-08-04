@@ -1020,12 +1020,38 @@ mod tests {
     use crate::spawn::ChildOutcome;
     use marion_core::harness::Harness;
 
-    fn temp(name: &str) -> PathBuf {
+    /// A scratch dir that removes itself.
+    ///
+    /// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds
+    /// straight past any trailing cleanup, so an explicit call leaks on exactly the runs that fail
+    /// — the ones a developer re-runs most. `Drop` catches those, plus every `?` and early return.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            // Ignored: the dir may already be gone (a test that removed it, or a `git worktree
+            // remove` that took it), and a cleanup failure must not mask the test's own verdict.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    /// Bind the returned guard for the whole test — `temp("x").join("y")` drops the dir at the end
+    /// of that statement, deleting it out from under the test.
+    fn temp(name: &str) -> Scratch {
         let p =
             std::env::temp_dir().join(format!("marion-supervisor-{name}-{}", std::process::id()));
+        // Removed on the way *in* as well: a prior run that crashed hard enough to skip `Drop`
+        // leaves a dir behind, and a re-run has to start from an empty one to mean anything.
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
-        p
+        Scratch(p)
     }
 
     #[test]
@@ -1757,7 +1783,7 @@ mod tests {
     }
 
     /// An `Env` and a fixture repo, for the tests that call `run_spawn` for real.
-    fn spawn_env(name: &str) -> (PathBuf, PathBuf, Env) {
+    fn spawn_env(name: &str) -> (Scratch, PathBuf, Env) {
         let root = temp(name);
         let repo = fixture_repo(&root);
         let state = root.join("state");
@@ -1845,7 +1871,6 @@ mod tests {
             "nor a branch: {}",
             String::from_utf8_lossy(&branches.stdout)
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn repo_of(root: &Path) -> PathBuf {
@@ -1858,7 +1883,9 @@ mod tests {
     /// gate, and it got far enough to create the state a refusal never would.
     #[test]
     fn a_spawn_within_max_depth_is_not_refused_by_the_gate() {
-        let (root, state, env) = spawn_env("depth-allowed");
+        // `_root` and not `_`: the underscore-prefixed binding still lives to the end of the test,
+        // where its `Drop` removes the scratch dir. A bare `_` would drop it here, mid-test.
+        let (_root, state, env) = spawn_env("depth-allowed");
         let caller = Caller {
             agent_id: "caller".into(),
             agent_type: builtin("claude").unwrap(),
@@ -1883,7 +1910,6 @@ mod tests {
             "a spawn the gate let through gets an agent-dir and a config, which is precisely what \
              the refused one above must not have"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The child's own depth is its caller's plus one, and that is what reaches its bridge — the
@@ -1891,7 +1917,8 @@ mod tests {
     /// bridge would have no depth to check.
     #[test]
     fn a_childs_bridge_is_told_a_depth_one_below_its_callers() {
-        let (root, state, env) = spawn_env("depth-carried");
+        // Held, not dropped: see the note in the test above.
+        let (_root, state, env) = spawn_env("depth-carried");
         let caller = Caller {
             agent_id: "caller".into(),
             agent_type: builtin("claude").unwrap(),
@@ -1916,7 +1943,6 @@ mod tests {
             config.contains(r#"MARION_AGENT_TYPE = "codex-impl""#),
             "and told its own canonical type, whose max_depth its own spawns are gated on:\n{config}"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The concurrency half, stated honestly rather than asserted into existence.
