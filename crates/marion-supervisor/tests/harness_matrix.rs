@@ -108,25 +108,27 @@ fn on_path(program: &str) -> bool {
 }
 
 /// Every `contracts/<task_id>.json` marion persisted under `state`.
-fn persisted_contracts(state: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
+///
+/// Fallible rather than best-effort: a directory that will not enumerate is a state tree this test
+/// cannot see, and reporting the contracts it happened to reach would let "exactly one contract is
+/// persisted" pass on a run that wrote two and hid one.
+fn persisted_contracts(state: &Path) -> std::io::Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for e in std::fs::read_dir(dir)? {
+            let p = e?.path();
             if p.is_dir() {
-                walk(&p, out);
+                walk(&p, out)?;
             } else if p.extension().is_some_and(|x| x == "json")
                 && p.parent().is_some_and(|d| d.ends_with("contracts"))
             {
                 out.push(p);
             }
         }
+        Ok(())
     }
     let mut out = Vec::new();
-    walk(state, &mut out);
-    out
+    walk(state, &mut out)?;
+    Ok(out)
 }
 
 /// Processes still alive with `needle` on their command line, as `(pid, line)`.
@@ -296,11 +298,26 @@ fn drive(cell: &Cell) -> Evidence {
     .map_err(|e| e.to_string());
 
     let requests = server.requests().unwrap_or_default();
-    let persisted = persisted_contracts(&state)
-        .iter()
-        .filter_map(|p| std::fs::read(p).ok())
-        .filter_map(|b| serde_json::from_slice(&b).ok())
-        .collect();
+    // Read here, because cleanup below removes the directory these files live in — but *judged*
+    // after it, since a panic on this line would leave the child's processes and the scratch dir
+    // behind, which is the very failure the next block exists to prevent.
+    let persisted: Vec<Result<Value, String>> = match persisted_contracts(&state) {
+        Ok(paths) => paths
+            .iter()
+            .map(|p| {
+                std::fs::read(p)
+                    .map_err(|e| format!("{} cannot be read: {e}", p.display()))
+                    .and_then(|b| {
+                        serde_json::from_slice(&b)
+                            .map_err(|e| format!("{} does not parse as JSON: {e}", p.display()))
+                    })
+            })
+            .collect(),
+        Err(e) => vec![Err(format!(
+            "{} cannot be walked for contracts: {e}",
+            state.display()
+        ))],
+    };
 
     // Cleanup first, and unconditionally: a failing cell must never become the leak it is testing
     // for. `timeout_kill` takes the same line for the same reason.
@@ -310,6 +327,16 @@ fn drive(cell: &Cell) -> Evidence {
         let _ = unsafe { kill(*pid, SIGKILL) };
     }
     let _ = std::fs::remove_dir_all(&root_dir);
+
+    // Nothing is left running, so a contract marion wrote and this test cannot read back is now
+    // safe to fail on — and it must. `filter_map(…ok())` dropped such a file quietly, which let
+    // "exactly one contract is persisted" pass on a run that persisted one good file and one
+    // corrupt one: the corruption is a defect in the §6.7 audit record this cell is about, not
+    // noise to filter out.
+    let persisted = persisted
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|e| panic!("persisted contract {e}")))
+        .collect();
 
     Evidence {
         contract,
