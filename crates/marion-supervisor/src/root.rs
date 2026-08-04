@@ -57,13 +57,16 @@ use std::process::Command as SysCommand;
 use std::time::Duration as StdDuration;
 
 use marion_core::agent_type::builtin;
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, ExitStatus, ProcessExit};
 use marion_core::harness::Harness;
+use marion_core::journal::{
+    Exited, PermissionDenied, RecordKind, SpawnAborted, SpawnIntent, Spawned,
+};
 use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_harness::{
-    Auth, Extras, Invocation, LaunchSpec, McpDeclaration, McpRoute, SpawnCtx, adapter_for,
-    json_frames,
+    Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, McpRoute, SpawnCtx,
+    adapter_for, json_frames,
 };
 use serde_json::Value;
 
@@ -153,6 +156,11 @@ pub struct RootSpec {
 pub struct RootNode {
     pub agent_id: AgentId,
     pub agent_dir: AgentDir,
+    /// `<state>/<project-hash>` — §4.3's per-project directory, and therefore the journal this
+    /// node's records go to. Carried on the node rather than re-derived in [`launch`] because
+    /// re-deriving it would need `spec.state` and `spec.repo` again, and two resolutions of the
+    /// same path are two chances to write a run's records into two different files.
+    pub project: ProjectDir,
     /// The first configuration document the adapter emitted — the one carrying marion's MCP server
     /// declaration.
     ///
@@ -192,6 +200,11 @@ pub struct RootOutcome {
     pub marion_tool_calls: Vec<String>,
     /// marion's own wall-clock bound expired and the root's process group was killed.
     pub timed_out: bool,
+    /// The root's stream made a failure claim of its own, in the harness's words. Populated on the
+    /// `LaunchOnly` path, where it is often the *only* diagnosis there is: S13 measured opencode
+    /// failing with exit 1 and an empty stderr. `None` never means "it succeeded" — only that the
+    /// stream itself claimed nothing (see [`marion_harness::StreamOutcome::failure`]).
+    pub failure: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -239,12 +252,19 @@ pub enum RootError {
         "{harness}: the root never reached marion's bridge — not one marion tool call appears in \
          the {frames} frame(s) it emitted, so its turn went out without marion's tools and it \
          cannot have delegated anything. Refused rather than reported as a success, which is what \
-         a plain-text run that exits 0 is indistinguishable from. child exit {exit:?}{stderr}"
+         a plain-text run that exits 0 is indistinguishable from. child exit \
+         {exit:?}{failure}{stderr}"
     )]
     BridgeNeverReached {
         harness: Harness,
         frames: usize,
         exit: Option<i32>,
+        /// The harness's own words about the failure, taken from its stream. Pre-formatted, like
+        /// `stderr`. S13 measured opencode failing with **exit 1 and an empty stderr**, its whole
+        /// description in-stream; `spawn::build_contract` already keeps that beside the exit
+        /// numbers, and without it here a live root's refusal read "child exit Some(1)" and nothing
+        /// else — true, and useless for telling a retired model from a dead credential.
+        failure: String,
         /// Pre-formatted, so the empty case adds no dangling label.
         stderr: String,
     },
@@ -407,8 +427,33 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
             .push(("ANTHROPIC_API_KEY".into(), String::new()));
     }
 
+    // §6.1 step 7, first half, for a **root**: *"journal the spawn intent, start the process,
+    // journal confirmation."* Written here, at the end of `prepare`, because this is the last
+    // instant at which everything immutable about the node is known and **no process exists yet**:
+    // `launch` is the act. A crash in the window between the two therefore leaves an intent with no
+    // confirmation — recoverable — rather than a live root marion has no record of, which is
+    // precisely the untracked-live-process M2's criteria forbid.
+    //
+    // §9's two absences are written as absences, not placeholders: a root has **no parent** and
+    // **no `TaskContract`**. Its depth is `ROOT_DEPTH`, from the same constant the declaration its
+    // own bridge reads is stamped from.
+    crate::journal::record(
+        &project,
+        RecordKind::SpawnIntent(SpawnIntent {
+            agent_id: agent_id.clone(),
+            parent_id: None,
+            // The **canonical** name, not `spec.agent_type`: `marion run codex` and `marion run
+            // codex-impl` are one definition, and the journal must not record two.
+            agent_type: agent_type.name.clone(),
+            harness,
+            depth: ROOT_DEPTH,
+            task_id: None,
+        }),
+    );
+
     Ok(RootNode {
         agent_id,
+        project,
         agent_dir,
         mcp_config,
         ready_file,
@@ -446,10 +491,129 @@ pub fn launch(
     bound: StdDuration,
     mcp_ready_timeout: StdDuration,
 ) -> Result<RootOutcome, RootError> {
-    match node.path {
+    let result = match node.path {
         RootPath::Duplex => launch_duplex(node, bound, mcp_ready_timeout),
         RootPath::LaunchOnly => launch_only(node, bound),
+    };
+    journal_the_roots_outcome(node, &result);
+    result
+}
+
+/// §6.1 step 7's second half and the node's terminal transition, for a root.
+///
+/// **Both are written after the run returns, and the ordering is honest rather than convenient.**
+/// A root's process is started and reaped inside a single blocking call — `run_bounded` on the
+/// `LaunchOnly` path, `duplex::run_duplex` on the other — so the first instant at which marion can
+/// truthfully say *"the process exists"* and the instant it says *"it exited"* are the same
+/// instant. Writing `Spawned` **before** the call would be a confirmation of something that had
+/// not happened, which is exactly the claim §6.1's intent-then-confirm split exists to keep marion
+/// from making; and the alternative reading — a crash mid-run leaves the intent unconfirmed — is
+/// the *right* one, because that is a node whose fate marion genuinely does not know (§7.2).
+///
+/// Every failure of `launch` is recorded too, and none of them is left as silence: §7.2 is emphatic
+/// that a node marion decided the fate of must never be mistaken for one marion *lost*.
+fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootError>) {
+    let outcome = match result {
+        Ok(o) => o,
+        // The run happened, the process exited, and marion refused the *result* — so this is an
+        // exit, not an abandonment. It is the only error variant that can say so.
+        Err(RootError::BridgeNeverReached { exit, .. }) => {
+            crate::journal::record(&node.project, spawned_record(node));
+            crate::journal::record(
+                &node.project,
+                RecordKind::Exited(Exited {
+                    agent_id: node.agent_id.clone(),
+                    status: ExitStatus::Failed,
+                    exit: ProcessExit {
+                        code: *exit,
+                        signal: None,
+                        description: "the root never reached marion's bridge, so its turn went out \
+                                      without marion's tools (§6.1 step 8)"
+                            .into(),
+                    },
+                }),
+            );
+            return;
+        }
+        Err(e) => {
+            crate::journal::record(
+                &node.project,
+                RecordKind::SpawnAborted(SpawnAborted {
+                    agent_id: node.agent_id.clone(),
+                    // marion's own explanation, which is what these errors already are — never
+                    // derived from an exit code.
+                    reason: e.to_string(),
+                }),
+            );
+            return;
+        }
+    };
+    crate::journal::record(&node.project, spawned_record(node));
+    // §6.7's status derivation, read onto a node that has no contract to record it in.
+    // `Unreported` is deliberately absent: it means *no `report` arrived*, and §9 says a root
+    // **cannot `report`** at all — spending that status on a root would make every root look like
+    // a child that stayed silent. A timeout outranks everything for the same reason it does in
+    // `build_contract`: it is marion's own attributed kill.
+    let status = if outcome.timed_out {
+        ExitStatus::TimedOut
+    } else if outcome.failure.is_some() || outcome.exit_code.unwrap_or(0) != 0 {
+        ExitStatus::Failed
+    } else {
+        ExitStatus::Ok
+    };
+    let description = if outcome.timed_out {
+        "the root exceeded marion's bound and its process group was killed".to_string()
+    } else {
+        match outcome.exit_code {
+            Some(code) => format!("root exited with code {code}"),
+            None => "root exit status was unavailable".to_string(),
+        }
+    };
+    let description = match &outcome.failure {
+        Some(f) => format!("{description}; the root's stream reported: {f}"),
+        None => description,
+    };
+    crate::journal::record(
+        &node.project,
+        RecordKind::Exited(Exited {
+            agent_id: node.agent_id.clone(),
+            status,
+            exit: ProcessExit {
+                code: outcome.exit_code,
+                // `run_bounded` reports one, but a root's outcome does not carry it: `RootOutcome`
+                // is the shared shape of both paths and the duplex driver has none. Left absent
+                // rather than guessed at — §6.7's description carries what marion actually observed.
+                signal: None,
+                description,
+            },
+        }),
+    );
+    // Every permission marion refused, in the journal rather than in a contract — §9 says so in as
+    // many words, *because* the node it happens to may be a root and a root has no contract.
+    for tool in &outcome.denied_permissions {
+        crate::journal::record(
+            &node.project,
+            RecordKind::PermissionDenied(PermissionDenied {
+                agent_id: node.agent_id.clone(),
+                tool: tool.clone(),
+                reason: "the root's Blocked bound expired unanswered".into(),
+            }),
+        );
     }
+}
+
+/// §6.1 step 7's confirmation for a root. `harness_version` and `model` are resolved by *launching*
+/// (§3.2), which is why they are here and not on the intent; `pid` is `None` because marion drives
+/// the root through a helper that owns the child and does not surface one — an absence, not a zero.
+fn spawned_record(node: &RootNode) -> RecordKind {
+    RecordKind::Spawned(Spawned {
+        agent_id: node.agent_id.clone(),
+        harness_version: crate::run::harness_version(&node.invocation.program),
+        // The **compiled** invocation's model, for §6.7's reason: what went on the wire, not what
+        // was asked for. `None` on codex, whose `exec` surface takes no model argument at all.
+        model: node.invocation.model.clone(),
+        pid: None,
+    })
 }
 
 /// The `LaunchOnly` root: spawn with the prompt already in argv, read the stream, assert post hoc
@@ -483,10 +647,19 @@ fn launch_only(node: &RootNode, bound: StdDuration) -> Result<RootOutcome, RootE
     let out = run_bounded(&mut cmd, bound)?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let adapter = adapter_for(node.harness)?;
+    let exit = ChildExit {
+        code: out.code,
+        signal: None,
+        timed_out: out.timed_out,
+    };
     let outcome = RootOutcome {
         exit_code: out.code,
         transcript: json_frames(&stdout),
-        marion_tool_calls: adapter_for(node.harness)?.marion_tool_calls(&stdout),
+        marion_tool_calls: adapter.marion_tool_calls(&stdout),
+        // The same reading `spawn::build_contract` gives a child's stream, asked of the root's. A
+        // root has no `TaskContract` to record it in, so its only destination is the refusal below.
+        failure: adapter.parse_stream(&stdout, exit).failure,
         stderr,
         denied_permissions: vec![],
         timed_out: out.timed_out,
@@ -524,6 +697,10 @@ fn assert_reached_the_bridge(harness: Harness, outcome: &RootOutcome) -> Result<
         harness,
         frames: outcome.transcript.len(),
         exit: outcome.exit_code,
+        failure: match &outcome.failure {
+            Some(f) => format!("; the root's stream reported: {f}"),
+            None => String::new(),
+        },
         stderr: match outcome.stderr.trim() {
             "" => String::new(),
             s => format!("; stderr: {}", s.chars().take(512).collect::<String>()),
@@ -570,6 +747,9 @@ fn launch_duplex(
         denied_permissions: out.denied_permissions,
         // Gated *before* the turn on this path, so restating it post hoc would add nothing.
         marion_tool_calls: vec![],
+        // Same reason: the duplex driver never reaches the post-hoc assertion, so there is nowhere
+        // for a stream failure claim to be read from here.
+        failure: None,
         timed_out: out.timed_out,
     })
 }
@@ -1053,6 +1233,40 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// **The refusal must carry the harness's own words when the exit code has none.** Measured
+    /// live: an opencode root against a retired model exits 1 with an **empty stderr** and the whole
+    /// diagnosis — a 404 naming the model — in a single in-stream `error` frame. Before this, the
+    /// refusal read `child exit Some(1)` and stopped, which is true and tells the operator nothing
+    /// about whether the model is gone, the credential is dead, or marion mis-declared the bridge.
+    /// `spawn::build_contract` has kept this beside a *child's* exit numbers since S13; a root has
+    /// no `TaskContract`, so the refusal is the only place it can go.
+    #[test]
+    fn the_refusal_carries_the_streams_own_failure_when_stderr_is_empty() {
+        let silent_but_failed = RootOutcome {
+            failure: Some("APIError: model gemini-2.5-flash-lite is no longer available".into()),
+            ..ran(&[], 1, Some(1), "")
+        };
+        let msg = assert_reached_the_bridge(Harness::OpenCode, &silent_but_failed)
+            .expect_err("no marion call is still a refusal")
+            .to_string();
+        assert!(
+            msg.contains("no longer available"),
+            "the stream's diagnosis is the only one there is here: {msg}"
+        );
+        assert!(
+            msg.contains("the root's stream reported:"),
+            "and it must be labelled as the harness's claim, not marion's: {msg}"
+        );
+        // The empty case adds no dangling label — the same rule `stderr` already follows.
+        let quiet = assert_reached_the_bridge(Harness::OpenCode, &ran(&[], 1, Some(1), ""))
+            .expect_err("still a refusal")
+            .to_string();
+        assert!(
+            !quiet.contains("stream reported"),
+            "a stream that claimed nothing must not be quoted as claiming nothing: {quiet}"
+        );
     }
 
     /// The other half, so the check above cannot pass by always failing: one call to any marion verb
