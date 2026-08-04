@@ -300,6 +300,11 @@ second source of truth, and rev 2 had exactly that bug.
 The UI greys out an action iff its capability is false; `marion doctor` populates the static table
 and is the same code path (§8).
 
+**`permissions` and `elicitation` say only that a request *reaches marion*, never what marion does
+with it.** This section resolves both fields and stops there; no part of this document specifies the
+route from an arriving request to a person, and none exists in code — marion denies (§9). §11 item
+22 is that gap.
+
 ### 3.4 Execution surfaces (spawn modes are presets over these)
 
 The four familiar mode names are **presets over a cross-product of three independent properties** —
@@ -3402,6 +3407,9 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   `is_error` `tool_result` carrying marion's `message` verbatim, tagged
   `non_execution_kind: "permission-rule"`. On the allow leg the tool ran and returned marion's own
   bridge's string, so the answer reaches the MCP server and not merely the CLI (§5.2, §11 item 14).
+  **What this rule does *not* provide is any way for a human to be asked instead** — the deny is
+  marion's only answer on every path, and what a permission queue would need beyond it is §11 item
+  22.
 - **Both processes are pointed at the CannedProvider, which is what makes §6.4's OAuth constraint
   moot for M1.** Neither process authenticates against a real endpoint, so nothing here depends on
   subscription auth — and neither the root's real `CLAUDE_CONFIG_DIR` nor the child's isolated
@@ -4207,6 +4215,103 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     exactly the asymmetry §7.6 claims marion can fix and a harness cannot. Cheap to measure: the
     S10 harness plus `run_in_background: true`, canned provider, no credential. Natural follow-up
     to item 2; not an M1 blocker, since M1 builds no `Stop` hook path at all (`MILESTONES.md`).
+22. **There is no route from a node's permission request to a human — OPEN, newly articulated
+    2026-08-04, from a read of the code as it stands, not from a spike.** §5.6 promises a TUI with
+    *"permission **and elicitation** queues"* and §3.3 gives `Capabilities` a `permissions` /
+    `elicitation` pair; §6.7's expiry table classifies a node whose bound expires in
+    `Blocked(Permission)` / `Blocked(Elicitation)`, and §7.2 refuses to reap any `Blocked(_)` node.
+    **None of that has a path to a person.** Everything below is code, quoted; no measurement is
+    claimed that a fixture does not already carry.
+
+    **Current behaviour: marion denies every permission request, and nobody is ever asked.** The
+    duplex frame loop (`crates/marion-supervisor/src/duplex.rs`) has exactly one branch for an
+    inbound ask — *"Nobody to ask. Consume the episode's budget, then deny and let the node
+    proceed."* — which sleeps the node's bound and then sends
+    `deny_response(&request_id, "marion: no permission answerer in M1; the node's Blocked bound
+    expired")`. The **root** waits out `blocked_bound`, which is §9's per-episode `Blocked`-only
+    budget: `--timeout` if given, else the agent type's `timeout_secs`, else 900 s, floored at 1 s
+    (`bin/marion.rs::blocked_bound_secs`). The **child** does not wait at all —
+    `run::duplex_child` passes `blocked_bound: StdDuration::ZERO`, so a child's ask is denied
+    **immediately**, for the reason the source already states: *"A child has no such separate
+    budget: its only bound is the wall clock its contract records, so holding an unanswerable ask
+    would spend the task's own time and could turn a run that should have been `Ok` into
+    `TimedOut`. … The zero here is therefore the answer to a frame that cannot arrive, kept only so
+    a future harness that does send one is denied promptly rather than silently held."* Note the
+    shape of the wait as well as its length: it is a **blocking `std::thread::sleep` inside the
+    single reader loop**, so no other frame is read while it runs and there is no channel on which
+    an answer could arrive. An answerer is not a callback that slots into this loop; it is a
+    different loop.
+
+    **Only one harness of four ever asks at runtime, and that is a design choice rather than a
+    plumbing gap.** Claude Code asks via `can_use_tool`, and only because marion passes
+    **`--permission-prompt-tool stdio`** — without it a non-allowlisted call is auto-denied
+    in-process and **no `control_request` ever reaches marion** (§5.2, §12). The other three settle
+    permissions at **config time**: codex needs `default_tools_approval_mode = "approve"` or every
+    call is silently cancelled, gemini needs `"trust": true` or the tools are omitted from the
+    request body entirely (§12, S12), and **opencode's MCP default is already allow** — S13
+    recorded that as a deliberate **negative** result, with `"ask"` auto-rejecting on closed stdin
+    rather than prompting. So a permission overlay built today would surface asks from **one
+    harness in four**, and the other three would show a human nothing, because marion has already
+    granted them at launch. Narrowing those grants so an ask can happen is a decision about what
+    marion wants to mediate — **it should be taken deliberately and named as such**, not arrived at
+    by wiring a UI to whichever surface happens to speak.
+
+    **What already exists is the render half.** `marion_core::journal::PermissionDenied
+    { agent_id, tool, reason }` is written on the root's exit path (`root.rs`) with reason
+    *"the root's Blocked bound expired unanswered"*, and §9 puts it there deliberately: *"The
+    denial is recorded in the **journal** (§4.3), not in a contract — a root has none."* So a
+    durable, replayable *"someone asked and was refused"* stream exists, and
+    `marion_core::registry::replay` already folds it into `ReplayedNode.denied_permissions`. **Two
+    limits.** It records the **tool name and a reason and nothing else** — not the `input`, not the
+    `permission_suggestions` — so it is enough to *show* that an ask was refused and not enough to
+    *re-ask* it. And the **child path never writes one**: `run::duplex_child` discards
+    `DuplexOutcome.denied_permissions` (`ChildRun` has no such field), so only a root's denials
+    reach the journal at all. Whether that is a gap or a consequence of the child having no
+    reachable ask (above) is undecided here.
+
+    **What is missing is the return path** — an answer must travel back to a node that is
+    *currently blocked*, and each dependency is absent in order:
+    - **A registry of which nodes are live and blocked.** Replay exists and is a pure unit, but
+      **nothing in the running system calls it** — only `crates/marion-supervisor/tests/journal.rs`
+      does, and `supervisor/src/journal.rs` says so in as many words: *"today nothing reads this
+      file to make a decision: there is no registry, no descendant gate and no reap recovery on top
+      of it yet."*
+    - **A live control channel a UI can address.** The frame loop is owned by whichever process is
+      driving that node — `marion run` for a root, `run_spawn` for a child — and the node's stdin
+      is a local handle in that stack frame with no other holder. `spawn` is synchronous, so there
+      is no moment at which a third party could hold the write end.
+    - **A UI.** M3's `marion-tui`, unbuilt.
+
+    **And the state itself is never entered.** `NodeState::Blocked(BlockReason::Permission)` /
+    `Blocked(Elicitation)` exist **as types** (`marion-core/src/node.rs`) and are classified by
+    §6.7's expiry table and §7.2's reap rule, but **no production code constructs either, and no
+    `StateChanged` record is written anywhere** — the only construction of any `Blocked` variant in
+    the tree is `Blocked(Descendants)` inside a journal round-trip test. §9's account of S9 (*"the
+    root sat in `Blocked(Permission)` until its bound expired"*) describes the **behaviour**
+    accurately; it does not describe a state marion records, and the expiry table currently
+    classifies a state nothing can reach.
+
+    **`request_user_dialog` and hook callbacks are the same gap, one level worse.** §5.2: the CLI
+    emits them as `control_request` frames on the same stdout stream as `can_use_tool`, *"expecting
+    a `control_response`"*, and item 14 records both as still designed-on-decompilation and
+    unmeasured. **What marion does with one today, verified:** the loop matches `can_use_tool` and
+    nothing else, so any other inbound `control_request` is pushed onto the transcript and
+    **otherwise ignored — no `control_response` is ever written**. Whether the CLI then proceeds or
+    waits for an answer is **UNKNOWN**: no capture in this repo contains one. If it waits, the
+    consequence differs by node — a root is launched with `wall_clock: None` (§9 offers a root no
+    ceiling), so nothing bounds the hang, while a child's contract wall clock would kill it as
+    `TimedOut` with no record of why.
+
+    **Why this matters beyond convenience.** S9 measured what a denial looks like from the far
+    side: an `is_error: true` `tool_result` carrying marion's `message` verbatim, tagged
+    `non_execution_kind: "permission-rule"`, listed under the terminal frame's `permission_denials`,
+    with the turn continuing — `terminal_reason: "completed"`, exit 0. That is the *correct*
+    behaviour and it is also **indistinguishable, at the model's end, from a tool that does not
+    work**: a node being silently refused sees errors, not a question nobody answered, and it will
+    route around them. It is the §12 silent-failure shape one level up — the same family as
+    `default_tools_approval_mode` and `trust: true`, except that here it is **marion** producing
+    the clean-looking run. The `permission_denials` list and the journal record are the two places
+    a human could ever learn it happened, and today neither is read by anything.
 
 ---
 
