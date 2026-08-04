@@ -82,14 +82,14 @@ fn handle_tool_call(
             let Ok(task_id) = new_task_id() else {
                 return bridge::tool_result(id, "marion: could not generate task id", true);
             };
-            match run::run_spawn(&env, &req, &task_id, &caller) {
-                Ok(contract) => {
-                    let json = serde_json::to_string_pretty(&contract)
-                        .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
-                    bridge::tool_result(id, &json, false)
-                }
-                Err(e) => bridge::tool_result(id, &format!("marion: spawn failed: {e}"), true),
-            }
+            // A child that ran and failed and a spawn that never launched are the same news to
+            // the parent, and used to arrive in two different shapes. `bridge::spawn_result` is
+            // where that is decided, in one place, so both read alike.
+            bridge::spawn_result(
+                id,
+                &req.agent_type,
+                run::run_spawn(&env, &req, &task_id, &caller),
+            )
         }
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
     }
