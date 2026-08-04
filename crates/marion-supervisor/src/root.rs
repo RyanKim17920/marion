@@ -60,9 +60,7 @@ use marion_core::agent_type::builtin;
 use marion_core::contract::{AgentId, ExitStatus, ProcessExit};
 use marion_core::harness::Harness;
 use marion_core::ids::{new_agent_id, uuid_v7};
-use marion_core::journal::{
-    Exited, PermissionDenied, RecordKind, SpawnAborted, SpawnIntent, Spawned,
-};
+use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_harness::{
     Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, McpRoute, SpawnCtx,
@@ -590,17 +588,16 @@ fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootE
         }),
     );
     // Every permission marion refused, in the journal rather than in a contract — §9 says so in as
-    // many words, *because* the node it happens to may be a root and a root has no contract.
-    for tool in &outcome.denied_permissions {
-        crate::journal::record(
-            &node.project,
-            RecordKind::PermissionDenied(PermissionDenied {
-                agent_id: node.agent_id.clone(),
-                tool: tool.clone(),
-                reason: "the root's Blocked bound expired unanswered".into(),
-            }),
-        );
-    }
+    // many words, *because* the node it happens to may be a root and a root has no contract. The
+    // emitter is shared with the **child** path (`run::run_spawn`), which used to discard its
+    // denials outright; see `journal::record_permission_denials` for why the journal stays the one
+    // destination even for a node that does have a contract.
+    crate::journal::record_permission_denials(
+        &node.project,
+        &node.agent_id,
+        &outcome.denied_permissions,
+        "the root's Blocked bound expired unanswered",
+    );
 }
 
 /// §6.1 step 7's confirmation for a root. `harness_version` and `model` are resolved by *launching*

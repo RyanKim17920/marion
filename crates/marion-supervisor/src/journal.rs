@@ -52,9 +52,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use marion_core::contract::AgentId;
 use marion_core::encoding::SystemTime;
 use marion_core::ir::Provenance;
-use marion_core::journal::{EncodeError, JournalRecord, RecordKind, WriterId, encode};
+use marion_core::journal::{
+    EncodeError, JournalRecord, PermissionDenied, RecordKind, WriterId, encode,
+};
 use marion_core::paths::ProjectDir;
 use marion_core::registry::{Replay, replay};
 
@@ -273,6 +276,39 @@ pub fn record(project: &ProjectDir, kind: RecordKind) {
     }
     if let Some((_, j)) = open.iter_mut().find(|(p, _)| *p == path) {
         j.record(kind);
+    }
+}
+
+/// **Every permission marion refused on one node, journaled.** Written for a root
+/// (`root::launch_and_journal`) and for a child (`run::run_spawn`) by the *same* function, for the
+/// reason [`record`] gives about its own failure policy: a record whose shape or destination
+/// differed between the two would make the journal's meaning depend on which node it is about.
+///
+/// **The journal is the only destination, including for a child that has a contract.** §9 puts the
+/// denial here rather than in a contract *because a root has none* — but the contract is not the
+/// second home the absence of that reason would suggest. §6.7 makes `TaskContract` the audit record
+/// of one task's *result*, and §4.3's discipline throughout is one fact, one home: the journal
+/// records *that* a contract exists and how it ended, **never its contents**, precisely so nothing
+/// is asserted twice by two writers. A denial copied into both would be exactly that second source
+/// of truth, and it would be the weaker copy — `marion_core::registry::replay` already folds these
+/// records into `ReplayedNode.denied_permissions` keyed on `agent_id`, which reads a child's
+/// denials with no change at all, while a contract field would be readable only by whoever already
+/// had the contract in hand.
+pub fn record_permission_denials(
+    project: &ProjectDir,
+    agent_id: &AgentId,
+    tools: &[String],
+    reason: &str,
+) {
+    for tool in tools {
+        record(
+            project,
+            RecordKind::PermissionDenied(PermissionDenied {
+                agent_id: agent_id.clone(),
+                tool: tool.clone(),
+                reason: reason.to_string(),
+            }),
+        );
     }
 }
 

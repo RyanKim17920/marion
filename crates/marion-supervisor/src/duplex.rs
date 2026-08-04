@@ -127,6 +127,79 @@ pub fn can_use_tool_request(frame: &Value) -> Option<(String, String)> {
     Some((request_id, tool))
 }
 
+/// The `request_id` and `request.subtype` of an inbound `control_request` marion has **no
+/// implementation for**, if that is what this frame is. `can_use_tool` — the one kind marion does
+/// answer — is deliberately excluded, so the two arms of the frame loop cannot both fire.
+///
+/// §5.2: the CLI emits `can_use_tool`, **hook callbacks** and **`request_user_dialog`** as
+/// `control_request` frames on the same stdout stream, *"expecting a `control_response`"*. Only the
+/// first is measured (S9). This reads the two fields §5.2 makes normative for the whole inbound
+/// direction — the **top-level** `request_id` and `request.subtype` — because they are the only
+/// ones a kind marion has never seen can be assumed to carry. A frame with no top-level
+/// `request_id` is not answerable at all (§5.2: *"a frame without one could be neither answered nor
+/// cancelled"*), so it yields `None` and is left on the transcript.
+pub fn unanswerable_control_request(frame: &Value) -> Option<(String, String)> {
+    if frame.get("type").and_then(Value::as_str) != Some("control_request") {
+        return None;
+    }
+    let subtype = frame
+        .pointer("/request/subtype")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if subtype == "can_use_tool" {
+        return None;
+    }
+    let request_id = frame.get("request_id").and_then(Value::as_str)?.to_string();
+    Some((request_id, subtype.to_string()))
+}
+
+/// marion's answer to an inbound `control_request` it does not implement — **an answer, because
+/// silence is a deadlock.**
+///
+/// Until this existed the frame loop matched `can_use_tool` and nothing else, so any other inbound
+/// `control_request` was pushed onto the transcript and never answered. A child would eventually
+/// die on its contract's wall clock as `TimedOut` with no record of why; a **root** is launched
+/// with `wall_clock: None` (§9 offers a root no ceiling) and would wait **forever** — `blocked_bound`
+/// is a `sleep` inside the `can_use_tool` arm, not a watchdog.
+///
+/// **Why `subtype: "error"` and not a `"success"` carrying a refusal.** S9 measured that the
+/// envelope's own `subtype` reports *whether an answer was produced*, not what the answer was — the
+/// verdict lives in `response.response`. That is precisely why `success` is wrong here: marion has
+/// produced no answer, and the `response` payload a `success` must carry is **subtype-specific** —
+/// `{"still_queued":[]}` for `interrupt`, `{"behavior":…}` for `can_use_tool`, ~30 kB of session
+/// catalogue for `initialize` (all §5.2, all measured). There is no generic success payload; sending
+/// `{"behavior":"deny"}` in reply to `request_user_dialog` would be marion inventing a body for a
+/// protocol it has never observed, and claiming to have answered while doing it. An error carries a
+/// string, which is shape-free, and it is the one reply a requester must already be prepared for,
+/// since any request it makes can fail. It is also **loud**: the far side learns marion cannot serve
+/// this kind, rather than inferring it from a tool that silently does not work.
+///
+/// **Neither the request nor this reply is measured — §11 item 14.** Hook callbacks and
+/// `request_user_dialog` are still designed-on-decompilation: no capture in this repo contains
+/// either, so a faithful implementation would need fixtures that do not exist, and this is
+/// deliberately *not* one. It is the narrower claim that marion must not deadlock on a frame it
+/// cannot serve. (`initialize_request` sends `"hooks": {}`, so hook callbacks should not fire today
+/// — but the whole point is not to depend on that.)
+pub fn unsupported_request_response(request_id: &str, subtype: &str) -> String {
+    let subtype = match subtype {
+        "" => "<no request.subtype>",
+        s => s,
+    };
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "error",
+            "request_id": request_id,
+            "error": format!(
+                "marion does not implement the `{subtype}` control_request (design §11 item 14: \
+                 unmeasured, no fixture exists). Answered rather than dropped, so the session is \
+                 not left waiting for a control_response that would never arrive."
+            ),
+        },
+    })
+    .to_string()
+}
+
 /// marion's answer to a permission it has nobody to ask (§9).
 ///
 /// M1 has no TUI, so a genuine permission request blocks until the node's per-episode `Blocked`
@@ -206,6 +279,11 @@ pub struct DuplexOutcome {
     pub stderr: String,
     /// `tool_name` of each permission request marion denied on expiry of the `Blocked` bound.
     pub denied_permissions: Vec<String>,
+    /// `request.subtype` of each inbound `control_request` marion had no implementation for and
+    /// answered with an error rather than dropping. Empty on every run this repo has ever
+    /// captured — §11 item 14's two unmeasured kinds are the only things that populate it — so a
+    /// non-empty one is evidence a kind marion cannot serve is actually being emitted.
+    pub unanswered_control_requests: Vec<String>,
     /// marion's own wall-clock bound expired and the node's process group was killed.
     pub timed_out: bool,
 }
@@ -239,7 +317,10 @@ pub enum DuplexError {
 ///    reached it. Observing the bridge's side proves the tools were *sent*; only a completed round
 ///    trip proves anything was processed;
 /// 4. **then** the prompt;
-/// 5. frames until the terminal `result`, answering `can_use_tool` on the way;
+/// 5. frames until the terminal `result`, answering `can_use_tool` on the way — and answering
+///    **every other** inbound `control_request` too, with an error naming the unimplemented kind,
+///    because §5.2 says each of them expects a `control_response` and one that never arrives hangs
+///    a root forever;
 /// 6. `drop(stdin)`, which is what ends a `--input-format stream-json` session.
 pub fn run_duplex(
     command: &mut SysCommand,
@@ -376,6 +457,16 @@ pub fn run_duplex(
             )?;
             stdin.flush()?;
             outcome.denied_permissions.push(tool);
+        } else if let Some((request_id, subtype)) = unanswerable_control_request(&frame) {
+            // **Answered, not dropped.** See [`unsupported_request_response`]: a `control_request`
+            // marion leaves unanswered hangs a root indefinitely, because a root has no wall clock.
+            writeln!(
+                stdin,
+                "{}",
+                unsupported_request_response(&request_id, &subtype)
+            )?;
+            stdin.flush()?;
+            outcome.unanswered_control_requests.push(subtype);
         }
         let terminal = frame.get("type").and_then(Value::as_str) == Some("result");
         outcome.transcript.push(frame);
@@ -453,6 +544,140 @@ mod tests {
                 ("opencode", Some(LaunchPath::LaunchOnly)),
             ]
         );
+    }
+
+    /// The two arms of the frame loop are disjoint, and the unknown arm reads only the two fields
+    /// §5.2 makes normative for the inbound direction.
+    #[test]
+    fn an_inbound_control_request_marion_cannot_serve_is_recognised_and_can_use_tool_is_not() {
+        let dialog: Value = serde_json::from_str(
+            r#"{"type":"control_request","request_id":"d-1","request":{"subtype":"request_user_dialog"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            unanswerable_control_request(&dialog),
+            Some(("d-1".to_string(), "request_user_dialog".to_string()))
+        );
+        // The kind marion *does* answer must never fall into the generic arm.
+        let ask: Value = serde_json::from_str(
+            r#"{"type":"control_request","request_id":"<UUID-4>","request":{"subtype":"can_use_tool","tool_name":"Bash"}}"#,
+        )
+        .unwrap();
+        assert_eq!(unanswerable_control_request(&ask), None);
+        // Nor may an *outbound* reply or a cancel be mistaken for a request to answer.
+        let reply: Value = serde_json::from_str(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"a","response":{}}}"#,
+        )
+        .unwrap();
+        assert_eq!(unanswerable_control_request(&reply), None);
+        let cancel: Value =
+            serde_json::from_str(r#"{"type":"control_cancel_request","request_id":"d-1"}"#)
+                .unwrap();
+        assert_eq!(unanswerable_control_request(&cancel), None);
+        // A frame with no top-level `request_id` cannot be answered or cancelled (§5.2), so it is
+        // left alone rather than answered against an invented id.
+        let anonymous: Value =
+            serde_json::from_str(r#"{"type":"control_request","request":{"subtype":"hook"}}"#)
+                .unwrap();
+        assert_eq!(unanswerable_control_request(&anonymous), None);
+    }
+
+    /// The envelope of the generic answer. `error`, not `success`: marion produced no answer, and a
+    /// `success` must carry a payload whose shape is specific to a subtype marion has never seen.
+    #[test]
+    fn the_generic_answer_is_an_error_subtype_naming_the_kind_and_correlating_on_the_request_id() {
+        let v: Value =
+            serde_json::from_str(&unsupported_request_response("d-1", "request_user_dialog"))
+                .unwrap();
+        assert_eq!(v["type"], "control_response");
+        assert_eq!(v["response"]["request_id"], "d-1");
+        assert_eq!(v["response"]["subtype"], "error");
+        assert!(v["response"]["response"].is_null(), "no invented payload");
+        let msg = v["response"]["error"].as_str().unwrap();
+        assert!(msg.contains("request_user_dialog"), "{msg}");
+        assert!(msg.contains("§11 item 14"), "{msg}");
+        // A subtype-less request still gets an answer, since the hang is what matters.
+        let v: Value = serde_json::from_str(&unsupported_request_response("d-2", "")).unwrap();
+        assert_eq!(v["response"]["request_id"], "d-2");
+        assert_eq!(v["response"]["subtype"], "error");
+    }
+
+    /// **The hang.** A node emits a `control_request` of a kind marion does not implement and then
+    /// blocks on stdin, exactly as §5.2 says the CLI does. The node here is launched the way a
+    /// **root** is — `wall_clock: None`, §9 — so before this fix nothing bounded the wait at all:
+    /// `blocked_bound` is a `sleep` inside the `can_use_tool` arm, not a watchdog.
+    ///
+    /// The stub carries its own 10 s self-destruct so a regression **fails** rather than wedging
+    /// the suite, and the elapsed assertion is what distinguishes the two: answered is immediate,
+    /// unanswered is the self-destruct.
+    #[test]
+    fn an_unknown_inbound_control_request_is_answered_and_a_root_with_no_wall_clock_does_not_hang()
+    {
+        let dir =
+            std::env::temp_dir().join(format!("marion-duplex-unknown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("mcp-ready");
+        std::fs::write(&marker, b"ready\n").unwrap();
+        let answer = dir.join("answer.jsonl");
+        // Answer `initialize`, take the prompt, then ask something marion has no implementation
+        // for and **block on stdin for the reply**. The reply is written out for inspection; with
+        // no reply the shell sits in `read` until its own watchdog kills it.
+        let script = format!(
+            r#"( sleep 10; kill -9 $$ ) 2>/dev/null &
+read init
+printf '{{"type":"control_response","response":{{"subtype":"success","request_id":"marion-init-test","response":{{}}}}}}\n'
+read user
+printf '{{"type":"control_request","request_id":"dialog-1","request":{{"subtype":"request_user_dialog"}}}}\n'
+read reply
+printf '%s\n' "$reply" > '{}'
+printf '{{"type":"result","subtype":"success"}}\n'"#,
+            answer.display()
+        );
+        let started = Instant::now();
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &script]),
+            &DuplexSpec {
+                ready_file: &marker,
+                prompt: "do the task",
+                init_id: "marion-init-test".into(),
+                mcp_ready_timeout: StdDuration::from_secs(5),
+                blocked_bound: StdDuration::from_secs(900),
+                // A **root**: §9 offers it no wall-clock ceiling, so nothing here can rescue a
+                // dropped request. That is the whole point of the test.
+                wall_clock: None,
+            },
+        )
+        .expect("the run returns");
+        let elapsed = started.elapsed();
+        let written = std::fs::read_to_string(&answer).unwrap_or_default();
+        assert!(
+            !written.trim().is_empty(),
+            "marion dropped an inbound control_request instead of answering it: the node waited \
+             for a control_response that never came ({elapsed:?})"
+        );
+        let reply: Value = serde_json::from_str(written.trim()).expect("the answer is a frame");
+        assert_eq!(reply["type"], "control_response");
+        assert_eq!(
+            reply["response"]["request_id"], "dialog-1",
+            "the answer must correlate to the request that was asked"
+        );
+        assert_eq!(reply["response"]["subtype"], "error");
+        assert!(
+            elapsed < StdDuration::from_secs(5),
+            "the root did not proceed promptly: {elapsed:?}"
+        );
+        assert!(
+            out.transcript
+                .iter()
+                .any(|f| f.get("type").and_then(Value::as_str) == Some("result")),
+            "the node reached its terminal frame"
+        );
+        assert_eq!(out.unanswered_control_requests, vec!["request_user_dialog"]);
+        // `blocked_bound` above is 900 s: the generic arm must not spend a permission budget it is
+        // not a permission, which the elapsed assertion already proves.
+        assert!(out.denied_permissions.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A pty-only surface has no launch path on either axis, and §5.2 forbids inventing one by

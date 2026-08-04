@@ -28,14 +28,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use marion_core::contract::{AgentId, ExitStatus, TaskContract};
+use marion_core::contract::{AgentId, ExitStatus, TaskContract, TaskId};
 use marion_core::harness::Harness;
 use marion_core::journal::{RecordKind, decode};
 use marion_core::node::NodeState;
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::journal::read_path;
-use marion_supervisor::run::run_bounded;
+use marion_supervisor::run::{Caller, Env, SpawnRequest, run_bounded, run_spawn};
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(300);
@@ -368,3 +368,117 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
 
     let _ = std::fs::remove_dir_all(&root_dir);
 }
+
+/// **A child's denied permission reaches the journal** (§9, §7.1, design §11 item 14).
+///
+/// The ask is real, and the comment that used to say otherwise was wrong: a Claude Code child is
+/// compiled through the same `compile_headless` a root is, which emits
+/// `--permission-prompt-tool stdio` **unconditionally**, so a call to any verb outside the child's
+/// one-entry allowlist (`report`) produces an inbound `can_use_tool`. marion denies it — with a
+/// zero `Blocked` bound, because a child's only bound is the wall clock its contract records — and
+/// until this test existed that denial went **nowhere**: `duplex_child` dropped
+/// `DuplexOutcome.denied_permissions` and the only `PermissionDenied` emitter was the root's.
+///
+/// It is provoked exactly as S9 provokes a root's (`tests/fixtures/s9/README.md`): aim the canned
+/// turn at a real marion verb the node is not allowed to use. No argv surgery — marion's production
+/// invocation, bridge and allowlist, unmodified — and **no model call and no paid tokens**.
+#[test]
+fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() {
+    assert!(
+        on_path("claude"),
+        "this drives a REAL claude child, the one harness of four that asks at runtime; put \
+         `claude` on PATH"
+    );
+    let root_dir = scratch("child-denial");
+    let repo = fixture_repo(&root_dir);
+    let state = root_dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: root_dir.join("provider-requests.jsonl"),
+        script: Script {
+            // Offered by marion's own bridge (the availability axis) and **absent from the child's
+            // `--allowedTools`** (the permission axis), which is what makes the CLI ask instead of
+            // either running it or ignoring it. The input is never read: the call is refused.
+            root_tool: DENIED_VERB.into(),
+            root_tool_input: serde_json::json!({
+                "agent_type": "codex-impl",
+                "prompt": "a verb this child may not use",
+                "acceptance_criteria": [],
+                "writable_scope": ["src/**"],
+            }),
+            root_final_text: "The call was refused; nothing further to do.".into(),
+            ..Script::default()
+        },
+    })
+    .expect("the canned provider binds");
+
+    let env = Env {
+        repo: repo.clone(),
+        project_dir: ProjectDir::new(&state, &repo),
+        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
+        base_url: Some(server.base_url()),
+        auth: marion_harness::Auth::Canned,
+    };
+    let contract = run_spawn(
+        &env,
+        &SpawnRequest {
+            agent_type: "claude".into(),
+            prompt: "Try the verb you were not given.".into(),
+            acceptance_criteria: vec![],
+            writable_scope: vec!["src/**".into()],
+            timeout_secs: 60,
+            model: None,
+        },
+        &TaskId("denial-1".into()),
+        &Caller::root(
+            "root",
+            marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+        ),
+    );
+    drop(server);
+    // The run itself is not the assertion — a refused call leaves the child with nothing to report
+    // — but a *failed launch* would make the journal claim below vacuous, so it is checked.
+    let contract = contract.expect("the child launched and ran");
+
+    let project = ProjectDir::new(&state, &repo);
+    let replay = read_path(&project.journal()).expect("the journal replays");
+    assert_eq!(replay.truncation, None);
+    let node = replay
+        .nodes()
+        .iter()
+        .find(|n| n.task_id() == Some(&contract.task_id))
+        .expect("the child is in the replayed tree")
+        .clone();
+    let denied: Vec<&str> = node
+        .denied_permissions
+        .iter()
+        .map(|d| d.tool.as_str())
+        .collect();
+    assert_eq!(
+        denied,
+        vec![DENIED_VERB],
+        "the child asked for a verb it was not allowed and marion denied it; that denial must be \
+         in the journal, against the child's own agent_id, or it is recorded nowhere at all"
+    );
+    assert_eq!(
+        node.denied_permissions[0].agent_id, node.agent_id,
+        "§4.3: every record is about exactly one node, and this one is about the child"
+    );
+    assert!(
+        node.denied_permissions[0].reason.contains("bound is zero"),
+        "the record must say why marion denied rather than waited: {}",
+        node.denied_permissions[0].reason
+    );
+    // The same replay still reconstructs the rest of the node, so the new record is additive
+    // rather than a shape that displaced anything.
+    assert_eq!(node.harness(), Some(Harness::ClaudeCode));
+    assert!(node.spawn_confirmed, "the child's process really ran");
+
+    let _ = std::fs::remove_dir_all(&root_dir);
+}
+
+/// A verb marion's bridge really serves and a **child** is never allowed to call: `run_spawn`
+/// compiles a child's `--allowedTools` as exactly `[report]`.
+const DENIED_VERB: &str = "mcp__marion__spawn";

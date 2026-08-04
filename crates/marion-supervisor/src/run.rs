@@ -526,6 +526,12 @@ struct ChildRun {
     stderr: String,
     exit: ChildExit,
     capture_truncated: bool,
+    /// `tool_name` of each permission marion denied on this child's behalf. Always empty on the
+    /// `LaunchOnly` path, which has no control plane for an ask to arrive on; populated on the
+    /// duplex path, where Claude Code really does ask (see [`duplex_child`]). Carried out here
+    /// because `run_spawn` journals them — before this field existed `DuplexOutcome`'s copy was
+    /// dropped on the floor and a child's denial appeared in no contract and no journal record.
+    denied_permissions: Vec<String>,
 }
 
 /// The `LaunchOnly` child, **unchanged**: the prompt is already in argv, so there is nothing to
@@ -554,6 +560,9 @@ fn launch_only_child(
             timed_out: output.timed_out,
         },
         capture_truncated: output.capture_truncated,
+        // No control plane, so no ask can reach marion at all: the prompt is already in argv and
+        // there is no channel afterwards. An absence by construction, not an empty measurement.
+        denied_permissions: vec![],
     })
 }
 
@@ -565,18 +574,26 @@ fn launch_only_child(
 /// is what a child *is*: a wall clock (its contract's `timeout_secs`), which a root is offered
 /// none of.
 ///
-/// **The `Blocked` budget is zero, and that is a decision.** The child is compiled with
-/// `--allowedTools` carrying marion's verbs and **without** `--permission-prompt-tool`, so §5.2's
-/// rule applies: a non-allowlisted call is auto-denied *in process* and no `can_use_tool` ever
-/// reaches marion. §9's rule — block until the bound, then deny and let the node proceed — is
-/// written for a **root**, whose bound is a per-episode `Blocked` budget standing outside any wall
-/// clock. A child has no such separate budget: its only bound is the wall clock its contract
-/// records, so holding an unanswerable ask would spend the task's own time and could turn a run
-/// that should have been `Ok` into `TimedOut`. Since the child's tools are `--tools ""` plus
-/// marion's allowlisted verbs, the only call that *could* ask is one marion means to refuse, and a
-/// fast in-process denial reaches §9's outcome — denied, node proceeds — without a bound to burn.
-/// The zero here is therefore the answer to a frame that cannot arrive, kept only so a future
-/// harness that does send one is denied promptly rather than silently held.
+/// **The `Blocked` budget is zero, and that is a decision — but not the one this comment used to
+/// claim.** It said the child is compiled *without* `--permission-prompt-tool`, so §5.2's rule
+/// applies and no `can_use_tool` ever reaches marion. **That premise is false.** There is one
+/// compile path for a Claude Code node — `ClaudeCodeAdapter::compile` → `compile_headless` — and it
+/// emits `--permission-prompt-tool stdio` **unconditionally**, guarded by its own test
+/// (`permission_prompt_tool_is_set_or_can_use_tool_never_fires`). A duplex child is compiled with
+/// `--tools ""` plus exactly one allowlisted verb (`report`), so **every other tool call it makes
+/// asks** — the ask is reachable, not hypothetical, and its denial is journaled below.
+///
+/// The zero survives the correction, for the half of the original reasoning that was never about
+/// the premise. §9's rule — block until the bound, then deny and let the node proceed — is written
+/// for a **root**, whose `Blocked` budget stands outside any wall clock. A child has no such
+/// separate budget: its only bound is the wall clock its contract records (`timeout_secs`), so time
+/// spent holding an ask is spent out of the task's own, and can turn a run that should have been
+/// `Ok` into `TimedOut` — a worse outcome, on the same evidence, than the denial that is coming
+/// anyway. And the wait could not produce an answer if it were taken: M1 has no permission answerer,
+/// and the wait is a blocking `sleep` inside the single reader loop, so there is no channel on which
+/// one could arrive (§9). Zero therefore reaches §9's outcome — denied, node proceeds — at the
+/// only cost that is honest to pay, and the denial is no longer silent: it leaves a
+/// `PermissionDenied` record.
 fn duplex_child(
     inv: &Invocation,
     auth: Auth,
@@ -614,6 +631,7 @@ fn duplex_child(
         // The duplex reader consumes the pipe inline and stops at the terminal frame, so there is
         // no abandoned drain and nothing to record as short.
         capture_truncated: false,
+        denied_permissions: out.denied_permissions,
     })
 }
 
@@ -880,6 +898,22 @@ pub fn run_spawn(
             // An absence, recorded as one.
             pid: None,
         }),
+    );
+    // **Every permission marion refused on this child's behalf**, through the same emitter the root
+    // uses (`journal::record_permission_denials`), which is also where the argument for the journal
+    // being the *only* destination lives. Until this call existed `duplex_child` discarded
+    // `DuplexOutcome.denied_permissions` and a child's denial appeared in no contract and no
+    // journal record at all — while §5.2's ask is genuinely reachable on a duplex child, since
+    // `compile_headless` passes `--permission-prompt-tool stdio` unconditionally.
+    //
+    // Written after `Spawned` and before `Exited`, which is the order the events happened in: the
+    // ask can only arrive from a process that exists, and only before it has finished.
+    crate::journal::record_permission_denials(
+        &env.project_dir,
+        &agent_id,
+        &run.denied_permissions,
+        "denied immediately: a child's Blocked bound is zero, because its only bound is the wall \
+         clock its contract records and M1 has no answerer to spend it on",
     );
     // §6.1 step 9, through the same seam as step 5. This was codex-JSONL-specific until now, so a
     // gemini or opencode child's report was unreadable and its contract said `Unreported` about a
