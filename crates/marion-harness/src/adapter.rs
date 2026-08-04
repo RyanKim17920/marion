@@ -54,6 +54,17 @@ pub enum McpRoute {
     Document,
     /// This env var of the compiled [`Invocation`] carries it inline, and no file is written.
     Environment(&'static str),
+    /// The compiled [`Invocation`]'s **argv** carries it inline, and no file is written — the
+    /// payload is the config key that must appear in it.
+    ///
+    /// A third variant rather than a reuse of either neighbour, because a live codex node is
+    /// neither: `codex exec` resolves `mcp_servers` out of `$CODEX_HOME/config.toml`, and under
+    /// [`Auth::Inherited`] that file is the **operator's own** — §6.4's central MUST forbids marion
+    /// writing it. So the declaration is re-routed onto repeatable `-c <dotted.key>=<toml>` flags,
+    /// which are neither a document nor an env var. Returning [`McpRoute::None`] instead would let
+    /// the supervisor's verification pass on a node that has no bridge at all, which is §6.1 step
+    /// 8's failure class; spelling it `Environment` would have marion check a variable nobody set.
+    Argv(&'static str),
     /// No declaration was asked for — [`McpDeclaration::None`], §9's fallback branch. **Not** the
     /// same as an adapter that was asked for one and produced none, which is the refusal above.
     None,
@@ -464,6 +475,25 @@ impl CodexAdapter {
     fn config_path(spec: &LaunchSpec) -> PathBuf {
         spec.config_dir.join("config.toml")
     }
+
+    /// The bridge declaration in the neutral form both of codex's routes serialise — the generated
+    /// `config.toml` under [`Auth::Canned`], the `-c` overrides under [`Auth::Inherited`]. Built
+    /// once so the two cannot carry different `env` blocks.
+    fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Option<codex::BridgeEnv> {
+        (spec.mcp == McpDeclaration::Marion).then(|| codex::BridgeEnv {
+            bridge: ctx.bridge.clone(),
+            args: ctx.bridge_args.clone(),
+            repo: ctx.repo.clone(),
+            state: ctx.state_dir.clone(),
+            // Omitted rather than blanked under `Inherited` — see `ClaudeCodeAdapter::mcp_env`.
+            base_url: spec.base_url.clone(),
+            auth: spec.auth,
+            agent_id: ctx.agent_id.clone(),
+            agent_type: ctx.agent_type.clone(),
+            depth: ctx.depth,
+            ready_file: ctx.ready_file.clone(),
+        })
+    }
 }
 
 impl HarnessAdapter for CodexAdapter {
@@ -476,13 +506,35 @@ impl HarnessAdapter for CodexAdapter {
         ExecutionSurfaces::launch_only_with_protocol_events()
     }
 
-    fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+    /// **Under `Inherited` the declaration is compiled into argv, not written to a file** — and
+    /// `CODEX_HOME` is dropped, which is what makes the login visible in the first place. The two go
+    /// together: unsetting the variable points codex at the operator's `~/.codex/auth.json` *and* at
+    /// the operator's `~/.codex/config.toml`, and marion is forbidden to write the second (§6.4), so
+    /// the `-c` overlay is the only channel left.
+    fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        let config_overrides = match spec.auth {
+            Auth::Canned => Vec::new(),
+            Auth::Inherited => Self::bridge_env(spec, ctx)
+                .as_ref()
+                .map(codex::live_config_overrides)
+                .unwrap_or_default(),
+        };
         Ok(compile_exec(&ExecSpec {
             cwd: spec.cwd.clone(),
-            codex_home: spec.config_dir.clone(),
+            codex_home: match spec.auth {
+                Auth::Canned => Some(spec.config_dir.clone()),
+                Auth::Inherited => None,
+            },
+            // Canned compiles none, so every existing contract still records `None` and the canned
+            // argv is byte-identical to what it was before `-m` was known to exist here.
+            model: match spec.auth {
+                Auth::Canned => None,
+                Auth::Inherited => spec.model.clone(),
+            },
             prompt: spec.prompt.clone(),
             output_schema: spec.extra.output_schema.clone(),
             output_last_message: spec.extra.output_last_message.clone(),
+            config_overrides,
         }))
     }
 
@@ -491,6 +543,18 @@ impl HarnessAdapter for CodexAdapter {
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        // **No file at all under `Inherited`, and that is the MUST rather than a convenience.**
+        // With `CODEX_HOME` unset the only `config.toml` codex reads is `~/.codex/config.toml` —
+        // the operator's own — and §6.4 forbids marion mutating it. Writing marion's document
+        // *anywhere else* would simply not be read, and writing it there would clobber a login
+        // marion is not even running. So the declaration moves to argv (see `compile` /
+        // `mcp_route`) and this route emits nothing.
+        if spec.auth == Auth::Inherited {
+            // No `base_url` is demanded either: the refusal below exists because a *generated*
+            // `model_providers` block pointing nowhere is an unbounded hang, and a live node
+            // generates none — it uses codex's own default provider and the operator's credential.
+            return Ok(Vec::new());
+        }
         let base_url = spec.base_url.as_deref().ok_or(HarnessError::MissingInput {
             harness: Harness::Codex,
             what: "a model_providers entry needs a base_url; a config pointing nowhere fails as \
@@ -503,7 +567,7 @@ impl HarnessAdapter for CodexAdapter {
         // `spawn` answered `marion: MARION_REPO is not set`, and `TaskContract.requester` would have
         // read `"unattributed-root"`. codex's TOML has always accepted `env` inside
         // `[mcp_servers.<name>]`, so nothing was blocking it but this call.
-        let bridge = codex::BridgeEnv {
+        let bridge = Self::bridge_env(spec, ctx).unwrap_or_else(|| codex::BridgeEnv {
             bridge: ctx.bridge.clone(),
             args: ctx.bridge_args.clone(),
             repo: ctx.repo.clone(),
@@ -514,19 +578,23 @@ impl HarnessAdapter for CodexAdapter {
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
             ready_file: ctx.ready_file.clone(),
-        };
+        });
         Ok(vec![(
             Self::config_path(spec),
             codex::config_toml(&bridge, base_url),
         )])
     }
 
-    /// `[mcp_servers.marion]` lives in the generated `config.toml`. codex's live route is another
-    /// task's; this states the route it has today and nothing more.
+    /// The second adapter whose route depends on the auth mode, and for the same reason as
+    /// opencode's: the file marion would write is the operator's own once the isolation is dropped.
+    /// A canned node's `[mcp_servers.marion]` lives in the generated `config.toml`; a live node's
+    /// rides `-c mcp_servers.marion.…` on its own command line, which is neither a document nor an
+    /// env var — hence [`McpRoute::Argv`].
     fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
-        match spec.mcp {
-            McpDeclaration::Marion => McpRoute::Document,
-            McpDeclaration::None => McpRoute::None,
+        match (spec.mcp, spec.auth) {
+            (McpDeclaration::None, _) => McpRoute::None,
+            (McpDeclaration::Marion, Auth::Canned) => McpRoute::Document,
+            (McpDeclaration::Marion, Auth::Inherited) => McpRoute::Argv(codex::MCP_SERVER_KEY),
         }
     }
 
@@ -937,10 +1005,12 @@ mod tests {
         let via_adapter = CodexAdapter.compile(&codex_spec(), &ctx()).unwrap();
         let via_free_function = compile_exec(&ExecSpec {
             cwd: "/wt".into(),
-            codex_home: "/state/x/config".into(),
+            codex_home: Some("/state/x/config".into()),
+            model: None,
             prompt: "do the task".into(),
             output_schema: None,
             output_last_message: None,
+            config_overrides: Vec::new(),
         });
         assert_eq!(via_adapter, via_free_function);
     }
@@ -1285,15 +1355,17 @@ mod tests {
     /// document straight into `$HOME`. Live mode's premise is the opposite — the config dir stays
     /// marion's, and what is dropped is only the *overlay* of a base URL and a credential.
     ///
-    /// A harness that refuses under a given mode is skipped rather than failed (codex still
-    /// requires a base URL, and `Inherited` has none until its own live route lands) — but the
-    /// sweep asserts that **something** was checked in each mode, and names the harnesses that must
-    /// be among them, so it cannot pass by refusing everywhere.
+    /// A harness that refuses under a given mode is skipped rather than failed — but the sweep
+    /// asserts that **something** was checked in each mode, and names the harnesses that must be
+    /// among them, so it cannot pass by refusing everywhere. That named minimum is now
+    /// [`Harness::ALL`] in both modes: every harness has a live route, so a skip is no longer a
+    /// legitimate outcome anywhere and one reappearing would be a regression rather than a gap.
     ///
     /// **An adapter that emits no file is bound too, by the route it states.** A live opencode node
-    /// writes nothing and carries its declaration in `OPENCODE_CONFIG_CONTENT`; an empty `files`
-    /// would otherwise let it through this sweep having proved nothing at all, which is the
-    /// vacuous-pass shape the `checked` counter exists to prevent.
+    /// writes nothing and carries its declaration in `OPENCODE_CONFIG_CONTENT`, a live codex node
+    /// carries its own on `-c` flags; an empty `files` would otherwise let either through this sweep
+    /// having proved nothing at all, which is the vacuous-pass shape the `checked` counter exists to
+    /// prevent.
     #[test]
     fn no_config_file_any_adapter_emits_ever_escapes_marions_own_agent_dir() {
         for auth in [Auth::Canned, Auth::Inherited] {
@@ -1350,6 +1422,21 @@ mod tests {
                             "{h} under {auth:?}: ${k} carries no marion declaration: {v}"
                         );
                     }
+                    McpRoute::Argv(key) => {
+                        assert!(
+                            files.is_empty(),
+                            "{h} under {auth:?}: an argv route that also writes files has two \
+                             declarations and no single authority"
+                        );
+                        let inv = adapter
+                            .compile(&spec, &ctx())
+                            .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"));
+                        assert!(
+                            inv.args.iter().any(|a| a.contains(key)),
+                            "{h} under {auth:?}: argv carries no marion declaration: {:?}",
+                            inv.args
+                        );
+                    }
                     McpRoute::None => {
                         panic!("{h} under {auth:?}: asked for marion's bridge and routed nowhere")
                     }
@@ -1379,7 +1466,7 @@ mod tests {
             // The named minimum. Without it the sweep would silently shrink to whichever harnesses
             // happen still to compile under a mode, which is exactly how it passed vacuously for
             // gemini and opencode before they had a live route at all.
-            for h in [Harness::ClaudeCode, Harness::Gemini, Harness::OpenCode] {
+            for h in Harness::ALL {
                 assert!(
                     bound.contains(&h),
                     "{h} under {auth:?} was skipped: it must be exercised in both modes, or this \
@@ -1828,6 +1915,137 @@ mod tests {
         }
     }
 
+    /// What `--live` hands a codex node: marion names no endpoint and mints no credential.
+    fn codex_live_spec() -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            api_key: None,
+            ..codex_spec()
+        }
+    }
+
+    /// **§6.4's central MUST, at the one place a live codex node could break it.**
+    ///
+    /// > *"marion never mutates the operator's real harness config."*
+    ///
+    /// Once `CODEX_HOME` is unset — which is exactly what makes the operator's login visible —
+    /// `$CODEX_HOME/config.toml` *is* `~/.codex/config.toml`. The caller writes whatever
+    /// `config_files` returns, unconditionally and with `create_dir_all` on the parent, so a
+    /// document emitted here would land on the operator's own config and the first symptom would be
+    /// a broken codex login on a harness marion was not even running. The declaration goes to argv
+    /// instead; this asserts the file simply is not written.
+    #[test]
+    fn a_live_codex_node_writes_no_file_because_the_only_one_it_could_write_is_the_operators_own() {
+        assert!(
+            CodexAdapter
+                .config_files(&codex_live_spec(), &ctx())
+                .unwrap()
+                .is_empty(),
+            "the only config.toml a CODEX_HOME-less codex reads is ~/.codex/config.toml"
+        );
+    }
+
+    /// **Live mode is removal here too, and this is the list of what is removed** — asserted by
+    /// name, because the failure defended against is one of the two creeping back. `CODEX_HOME`
+    /// pointed anywhere but the operator's home hides the very `auth.json` the node exists to use,
+    /// and `MARION_DUMMY_KEY` is a minted placeholder standing beside a real credential.
+    #[test]
+    fn a_live_codex_node_carries_neither_codex_home_nor_the_minted_key() {
+        let inv = CodexAdapter.compile(&codex_live_spec(), &ctx()).unwrap();
+        for k in ["CODEX_HOME", "MARION_DUMMY_KEY"] {
+            assert!(
+                !inv.env.iter().any(|(n, _)| n == k),
+                "{k} must be absent, not blank: {:?}",
+                inv.env
+            );
+            assert!(
+                !inv.args.iter().any(|a| a.contains(k)),
+                "{k} must not reach argv either: {:?}",
+                inv.args
+            );
+        }
+        // And no canned provider was declared: a live node uses codex's own default.
+        assert!(!inv.args.iter().any(|a| a.contains("model_provider")));
+    }
+
+    /// The three things a live node's argv **must** carry, restated at the adapter seam so the
+    /// wiring between `compile` and `codex::live_config_overrides` is covered and not just the
+    /// builder in isolation.
+    #[test]
+    fn a_live_codex_nodes_argv_carries_the_bridge_its_approval_mode_and_the_plugin_kill() {
+        let inv = CodexAdapter.compile(&codex_live_spec(), &ctx()).unwrap();
+        let joined = inv.args.join(" ");
+        for needle in [
+            r#"-c mcp_servers.marion.command="/bin/marion-supervisor""#,
+            r#"-c mcp_servers.marion.args=["mcp"]"#,
+            r#"-c mcp_servers.marion.default_tools_approval_mode="approve""#,
+            "-c features.plugins=false",
+            // The env block, whose absence is silent in exactly the way §12 keeps recording: a
+            // codex root whose bridge got none of these answers `MARION_REPO is not set`.
+            r#"-c mcp_servers.marion.env.MARION_REPO="/repo""#,
+            r#"-c mcp_servers.marion.env.MARION_STATE_DIR="/state""#,
+            r#"-c mcp_servers.marion.env.MARION_AGENT_ID="019f-root""#,
+            r#"-c mcp_servers.marion.env.MARION_AGENT_TYPE="claude""#,
+            r#"-c mcp_servers.marion.env.MARION_DEPTH="0""#,
+            r#"-c mcp_servers.marion.env.MARION_AUTH="inherited""#,
+            r#"-c mcp_servers.marion.env.MARION_READY_FILE="/state/x/mcp-ready""#,
+        ] {
+            assert!(
+                joined.contains(needle),
+                "missing `{needle}` from:\n{joined}"
+            );
+        }
+        // `--live` names no endpoint, so the key is omitted rather than written empty.
+        assert!(!joined.contains("MARION_BASE_URL"), "{joined}");
+    }
+
+    /// A live node reaches a real vendor, so the model is the operator's to choose and `-m` carries
+    /// it — verified present on the installed 0.146.0's `codex exec --help`.
+    #[test]
+    fn a_live_codex_node_takes_the_model_it_was_asked_for() {
+        let inv = CodexAdapter
+            .compile(
+                &LaunchSpec {
+                    model: Some("gpt-5-codex".into()),
+                    ..codex_live_spec()
+                },
+                &ctx(),
+            )
+            .unwrap();
+        assert_eq!(
+            inv.args.windows(2).find(|w| w[0] == "-m").map(|w| &w[1]),
+            Some(&"gpt-5-codex".to_string())
+        );
+        assert_eq!(inv.model.as_deref(), Some("gpt-5-codex"));
+    }
+
+    /// **Canned is untouched by all of the above**, including the newly-discovered `-m`: a canned
+    /// launch compiles no override and no model however loudly one was asked for, so every contract
+    /// this harness has ever written still records `None` and the argv is the measured one.
+    #[test]
+    fn a_canned_codex_launch_gained_neither_a_c_flag_nor_a_model() {
+        let inv = CodexAdapter
+            .compile(
+                &LaunchSpec {
+                    model: Some("gpt-5-codex".into()),
+                    ..codex_spec()
+                },
+                &ctx(),
+            )
+            .unwrap();
+        assert!(
+            !inv.args.iter().any(|a| a == "-c" || a == "-m"),
+            "{:?}",
+            inv.args
+        );
+        assert_eq!(inv.model, None);
+        assert_eq!(
+            inv.env,
+            vec![("CODEX_HOME".to_string(), "/state/x/config".to_string())]
+        );
+    }
+
     /// **Live mode stops relocating five variables and keeps eight**, and the split is not
     /// arbitrary: the five hid the operator's login (auth.json under `$XDG_DATA_HOME`, `~/.claude`
     /// and `~/.opencode` under `HOME`), while the eight were always hygiene.
@@ -1981,6 +2199,14 @@ mod tests {
                         .iter()
                         .any(|(n, _)| n == k),
                     "{h}: claims ${k} and did not set it"
+                ),
+                McpRoute::Argv(key) => assert!(
+                    a.compile(&spec, &ctx())
+                        .unwrap()
+                        .args
+                        .iter()
+                        .any(|arg| arg.contains(key)),
+                    "{h}: claims argv carries {key} and it does not appear there"
                 ),
                 McpRoute::None => {
                     panic!("{h}: asked for McpDeclaration::Marion and routed nowhere")

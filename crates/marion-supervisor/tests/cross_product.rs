@@ -460,6 +460,103 @@ fn is_a_turn(request: &Value) -> bool {
     }
 }
 
+/// Is `url`'s host the loopback interface? The same question `bin/marion.rs` asks of `--base-url`,
+/// restated here so the harness can hold itself to the binary's own gate without importing it.
+fn is_loopback(url: &str) -> bool {
+    let host = url
+        .split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    let host = host.rsplit_once(':').map_or(host, |(h, _)| h);
+    host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1"
+}
+
+/// The argv [`drive`] hands the real `marion` binary for one cell, built apart from the run so the
+/// invariant it has to hold is testable without a provider, a child process, or five minutes.
+///
+/// **A loopback `--base-url` appears only alongside `--canned`.** The binary refuses that
+/// combination without the flag, and rightly: real vendor auth is what a bare `marion run`
+/// presents, and pointing that credential at a fake server is the accident the gate exists to
+/// prevent. Every cell in this file is driven at $0.00 against the in-process canned provider, so
+/// every cell **says** it wants the fixture. See
+/// [`argv_that_names_a_loopback_endpoint_always_says_canned`].
+fn marion_argv(
+    root: &Node,
+    repo: &Path,
+    state: &Path,
+    base_url: &str,
+    timeout: &str,
+) -> Vec<String> {
+    let prompt = format!("{ROOT_MARKER}: delegate the marker-file task to a child.");
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        root.agent_type.into(),
+        "--prompt".into(),
+        prompt,
+        "--repo".into(),
+        repo.to_string_lossy().into_owned(),
+        "--state-dir".into(),
+        state.to_string_lossy().into_owned(),
+        "--base-url".into(),
+        base_url.into(),
+        // Not optional and not incidental: without it the binary refuses the loopback URL above at
+        // argument parsing and the cell never starts.
+        "--canned".into(),
+        "--timeout".into(),
+        timeout.into(),
+    ];
+    if let Some(m) = root.model {
+        args.push("--model".into());
+        args.push(m.into());
+    }
+    args
+}
+
+/// **The regression this file's launch path can suffer without any cell being wrong.**
+///
+/// Sixteen cells go through [`marion_argv`], and all sixteen fail identically — at argument
+/// parsing, before a provider or a harness is involved — if the builder ever emits a loopback
+/// `--base-url` without `--canned`. That is a property of the *harness*, not of any cell, and it is
+/// checkable in microseconds against the same gate `bin/marion.rs` enforces in seconds.
+///
+/// It runs over every node, because `--model` is the one thing that varies between the four and a
+/// builder that dropped the flag on one branch would otherwise be caught only by that harness.
+#[test]
+fn argv_that_names_a_loopback_endpoint_always_says_canned() {
+    for node in [&CLAUDE, &CODEX, &GEMINI, &OPENCODE] {
+        for base_url in ["http://127.0.0.1:8080/v1", "http://localhost:1/v1"] {
+            let args = marion_argv(
+                node,
+                Path::new("/tmp/repo"),
+                Path::new("/tmp/state"),
+                base_url,
+                ROOT_BLOCKED_SECS,
+            );
+            let url = args
+                .iter()
+                .position(|a| a == "--base-url")
+                .and_then(|i| args.get(i + 1))
+                .unwrap_or_else(|| panic!("{} argv passes --base-url", node.agent_type));
+            assert!(
+                is_loopback(url),
+                "{}: the fixture endpoint is loopback — if this ever stops being true the check \
+                 below stops meaning anything",
+                node.agent_type
+            );
+            assert!(
+                args.iter().any(|a| a == "--canned"),
+                "{}: argv names the loopback endpoint {url} without --canned. marion refuses that \
+                 combination on purpose (it aims a real credential at a fake server), so every \
+                 cell built this way would fail at argument parsing. A run that wants the fixture \
+                 has to say so.\nargv: {args:?}",
+                node.agent_type
+            );
+        }
+    }
+}
+
 /// Stand up a canned provider, build a fixture repo, run the real `marion` binary on `root`, then
 /// clean up **unconditionally** and hand back what happened.
 fn drive(root: &Node, child: &Node) -> Evidence {
@@ -483,25 +580,7 @@ fn drive(root: &Node, child: &Node) -> Evidence {
         Some(RootPath::Duplex) => ROOT_BLOCKED_SECS,
         _ => ROOT_WALL_CLOCK_SECS,
     };
-    let prompt = format!("{ROOT_MARKER}: delegate the marker-file task to a child.");
-    let mut args: Vec<String> = vec![
-        "run".into(),
-        root.agent_type.into(),
-        "--prompt".into(),
-        prompt,
-        "--repo".into(),
-        repo.to_string_lossy().into_owned(),
-        "--state-dir".into(),
-        state.to_string_lossy().into_owned(),
-        "--base-url".into(),
-        server.base_url(),
-        "--timeout".into(),
-        timeout.into(),
-    ];
-    if let Some(m) = root.model {
-        args.push("--model".into());
-        args.push(m.into());
-    }
+    let args = marion_argv(root, &repo, &state, &server.base_url(), timeout);
 
     let out = run_bounded(
         Command::new(env!("CARGO_BIN_EXE_marion"))

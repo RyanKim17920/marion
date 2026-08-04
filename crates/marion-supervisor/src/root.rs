@@ -156,8 +156,9 @@ pub struct RootNode {
     /// The first configuration document the adapter emitted — the one carrying marion's MCP server
     /// declaration.
     ///
-    /// `None` when this node's declaration travels by another route
-    /// ([`marion_harness::McpRoute::Environment`]): a live opencode node writes no file, and that
+    /// `None` when this node's declaration travels by another route: a live opencode node carries
+    /// it in `OPENCODE_CONFIG_CONTENT` ([`marion_harness::McpRoute::Environment`]) and a live codex
+    /// node on `-c` flags ([`marion_harness::McpRoute::Argv`]), so neither writes a file — and that
     /// absence has already been checked against the route the adapter stated, not passed over.
     pub mcp_config: Option<PathBuf>,
     /// The bridge's readiness marker. `None` on a `LaunchOnly` root: its prompt is already in argv,
@@ -364,6 +365,19 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
                 return Err(RootError::NoMcpDeclaration {
                     harness,
                     route: format!("${key}"),
+                });
+            }
+            None
+        }
+        // Checked against the compiled argv rather than waved through, because "declared on the
+        // command line" is exactly as forgettable as "written to a file". The needle is the config
+        // key the adapter named, so this fails if the overrides were dropped, if they were built
+        // for a different server name, or if `compile` and `mcp_route` disagreed about the mode.
+        McpRoute::Argv(key) => {
+            if !invocation.args.iter().any(|a| a.contains(key)) {
+                return Err(RootError::NoMcpDeclaration {
+                    harness,
+                    route: format!("`-c {key}.…` on its own command line"),
                 });
             }
             None
@@ -907,6 +921,63 @@ mod tests {
                 .iter()
                 .any(|a| a == "--strict-mcp-config")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **§6.4's central MUST at the one place `--live` could break it on codex: marion must never
+    /// mutate the operator's own harness config.**
+    ///
+    /// Unsetting `CODEX_HOME` is what makes the operator's `~/.codex/auth.json` visible — and it
+    /// makes `~/.codex/config.toml` the *only* config codex will read. `prepare` writes whatever
+    /// `config_files` returns, unconditionally and with `create_dir_all` on the parent, so an
+    /// adapter that kept emitting a document here would have marion write over the operator's real
+    /// codex config, and the first symptom would be a broken login on a harness marion was not even
+    /// running. Asserted three ways: nothing was written, `CODEX_HOME` is absent by name, and the
+    /// declaration is on argv where [`McpRoute::Argv`]'s verification above found it.
+    #[test]
+    fn a_live_codex_root_writes_no_file_and_so_cannot_touch_the_operators_own_codex_config() {
+        let dir = temp("live-codex");
+        let node = prepare(&RootSpec {
+            base_url: None,
+            auth: Auth::Inherited,
+            ..root_spec(&dir, "codex")
+        })
+        .unwrap();
+        assert!(
+            node.mcp_config.is_none(),
+            "the live route is argv, so there is no document to name: {:?}",
+            node.mcp_config
+        );
+        assert!(
+            std::fs::read_dir(node.agent_dir.config_dir())
+                .unwrap()
+                .next()
+                .is_none(),
+            "marion wrote into {} on a route whose only readable config.toml is ~/.codex/config.toml",
+            node.agent_dir.config_dir().display()
+        );
+        for k in ["CODEX_HOME", "MARION_DUMMY_KEY"] {
+            assert!(
+                !node.invocation.env.iter().any(|(n, _)| n == k),
+                "{k} must be absent, not blank: {:?}",
+                node.invocation.env
+            );
+        }
+        // The declaration `McpRoute::Argv` promised, actually present — including the two settings
+        // whose absence is silent (§12): the approval mode and the plugin fetch.
+        let joined = node.invocation.args.join(" ");
+        for needle in [
+            "-c mcp_servers.marion.command=",
+            r#"-c mcp_servers.marion.default_tools_approval_mode="approve""#,
+            "-c features.plugins=false",
+            r#"-c mcp_servers.marion.env.MARION_DEPTH="0""#,
+            r#"-c mcp_servers.marion.env.MARION_AUTH="inherited""#,
+        ] {
+            assert!(
+                joined.contains(needle),
+                "missing `{needle}` from:\n{joined}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

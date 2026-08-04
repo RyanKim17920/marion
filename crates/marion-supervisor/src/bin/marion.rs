@@ -250,7 +250,11 @@ struct Chosen {
 }
 
 /// One question. `Ok(None)` is EOF — Ctrl-D at any prompt ends the session, it does not loop.
-fn ask(input: &mut impl BufRead, out: &mut impl Write, question: &str) -> io::Result<Option<String>> {
+fn ask(
+    input: &mut impl BufRead,
+    out: &mut impl Write,
+    question: &str,
+) -> io::Result<Option<String>> {
     write!(out, "{question}")?;
     out.flush()?;
     let mut line = String::new();
@@ -554,9 +558,11 @@ mod tests {
         assert_eq!(a.prompt, "p");
         // And it composes with the flag that replaced it rather than fighting it.
         assert!(
-            parse_args(&argv(&["run", "claude", "--prompt", "p", "--live", "--canned"]))
-                .unwrap()
-                .canned
+            parse_args(&argv(&[
+                "run", "claude", "--prompt", "p", "--live", "--canned"
+            ]))
+            .unwrap()
+            .canned
         );
     }
 
@@ -621,7 +627,7 @@ mod tests {
     /// And canned mode's precedence is untouched: the flag, then the environment, then the default.
     #[test]
     fn under_canned_the_base_url_falls_back_from_the_flag_to_the_environment_to_the_loopback_default()
-    {
+     {
         assert_eq!(
             resolve_base_url(true, Some("http://x/v1".into()), Some("http://y/v1".into())),
             Ok(Some("http://x/v1".into()))

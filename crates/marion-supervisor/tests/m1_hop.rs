@@ -296,6 +296,10 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
                 &repo.to_string_lossy(),
                 "--state-dir",
                 &state.to_string_lossy(),
+                // The canned provider is the whole model side of this hop, and saying so is what
+                // lets the binary accept a loopback endpoint: under real vendor auth it refuses
+                // one rather than aim the operator's credential at a fake server.
+                "--canned",
                 "--base-url",
                 &server.base_url(),
                 // The root's per-episode `Blocked` bound. Short, so a permission request that

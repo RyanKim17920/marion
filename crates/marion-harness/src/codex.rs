@@ -18,14 +18,33 @@ use crate::stream::{StreamOutcome, json_frames};
 #[derive(Debug, Clone)]
 pub struct ExecSpec {
     pub cwd: PathBuf,
-    /// `$CODEX_HOME`. Unlike Claude Code's config dir, isolating this does not break auth in M1,
-    /// because the child runs against the canned provider — §11 item 3 owes the real-auth check.
-    pub codex_home: PathBuf,
+    /// `$CODEX_HOME`. Under [`Auth::Canned`] this is the node's own agent dir, and isolating it does
+    /// not break auth because the child runs against the canned provider.
+    ///
+    /// **`None` under [`Auth::Inherited`], and the variable is then not set at all** — not set to
+    /// the operator's home, *unset*, so codex resolves its own default. That is the whole of live
+    /// auth on this harness: `CODEX_HOME` is where codex looks for `auth.json`, and S8 measured
+    /// codex's to be a plain 0600 file rather than a Keychain item, so leaving the variable alone
+    /// is enough for the child to find the login the operator already has. Nothing is copied and
+    /// nothing is read by marion.
+    pub codex_home: Option<PathBuf>,
+    /// `codex exec -m <MODEL>`. **Verified on 0.146.0**, where `codex exec --help` lists
+    /// `-m, --model <MODEL>  Model the agent should use`.
+    ///
+    /// `None` under [`Auth::Canned`]: marion names no model there, because the endpoint is its own
+    /// canned server and every contract this harness has ever written records `None`. Under
+    /// [`Auth::Inherited`] the model reaches a real vendor and is the operator's to choose, so it
+    /// is carried — and [`Invocation::model`] then records what actually went on the wire.
+    pub model: Option<String>,
     pub prompt: String,
     /// `--output-schema`, used only on the fallback branch. S6 proved the primary branch works,
     /// so M1 leaves this unset.
     pub output_schema: Option<PathBuf>,
     pub output_last_message: Option<PathBuf>,
+    /// Repeatable `-c <dotted.key>=<toml value>` overrides, in order — see
+    /// [`live_config_overrides`]. Empty under [`Auth::Canned`], where the same settings are written
+    /// into the generated `config.toml` instead.
+    pub config_overrides: Vec<(String, String)>,
 }
 
 pub fn compile_exec(spec: &ExecSpec) -> Invocation {
@@ -34,6 +53,14 @@ pub fn compile_exec(spec: &ExecSpec) -> Invocation {
         "--json".into(),
         "--skip-git-repo-check".into(),
     ];
+    for (k, v) in &spec.config_overrides {
+        args.push("-c".into());
+        args.push(format!("{k}={v}"));
+    }
+    if let Some(m) = &spec.model {
+        args.push("-m".into());
+        args.push(m.clone());
+    }
     if let Some(s) = &spec.output_schema {
         args.push("--output-schema".into());
         args.push(s.to_string_lossy().into_owned());
@@ -49,17 +76,23 @@ pub fn compile_exec(spec: &ExecSpec) -> Invocation {
     Invocation {
         program: "codex".into(),
         args,
-        env: vec![(
-            "CODEX_HOME".into(),
-            spec.codex_home.to_string_lossy().into_owned(),
-        )],
+        // Set only where marion owns the config surface. Omitted — not blanked — under
+        // `Auth::Inherited`: an empty `CODEX_HOME` would send codex looking for `auth.json` in the
+        // process's cwd, and a *present* one pointed at marion's agent dir is exactly what hides the
+        // operator's login. See [`ExecSpec::codex_home`].
+        env: spec
+            .codex_home
+            .iter()
+            .map(|h| ("CODEX_HOME".to_string(), h.to_string_lossy().into_owned()))
+            .collect(),
         cwd: spec.cwd.clone(),
-        // **Not a gap.** `codex exec` takes no model argument here at all — the model comes from
-        // `$CODEX_HOME/config.toml`'s provider selection — so there is no model on this wire to
-        // record, and `ExecSpec` deliberately has no field for one. A contract naming the model a
-        // caller *asked* for would be the same lie `child.harness` was sourced from the adapter to
-        // stop telling.
-        model: None,
+        // **Corrected against the installed binary.** This used to read "`codex exec` takes no model
+        // argument here at all"; 0.146.0's `codex exec --help` lists `-m, --model <MODEL>`, so the
+        // comment was simply wrong. What stays true is the *recorded* value: this is whatever went
+        // on the wire and nothing else, so a canned launch — which compiles no `-m` — still records
+        // `None` however loudly a caller asked for a model, and a contract naming a model that never
+        // reached argv remains the lie `child.harness` was moved behind the adapter to stop telling.
+        model: spec.model.clone(),
     }
 }
 
@@ -219,6 +252,74 @@ pub fn bridge_env_pairs(env: &BridgeEnv) -> Vec<(String, String)> {
     pairs
 }
 
+/// The config key `[mcp_servers.marion]` sits at, as a dotted path.
+///
+/// Doubles as the needle [`crate::McpRoute::Argv`] hands the supervisor: an argv that does not
+/// mention this key carries no declaration, whatever else it carries.
+pub const MCP_SERVER_KEY: &str = "mcp_servers.marion";
+
+/// The feature flag whose default `true` leaves a `git fetch` running after `exec` has exited.
+///
+/// Verified against the installed 0.146.0: `codex features list` reports `plugins  stable  true`
+/// by default and `plugins  stable  false` under `-c features.plugins=false`. `--disable plugins`
+/// is documented as the exact equivalent (`-c features.<name>=false`); the dotted form is emitted
+/// because it is the same key path the generated `config.toml` has always written, so the two
+/// routes cannot drift into disabling different things.
+pub const PLUGINS_FEATURE_KEY: &str = "features.plugins";
+
+/// The whole of marion's configuration for a **live** codex node, as `-c key=value` pairs.
+///
+/// **Why argv and not a file.** Under [`Auth::Inherited`] `CODEX_HOME` is unset, so
+/// `$CODEX_HOME/config.toml` *is* `~/.codex/config.toml` — the operator's own. §6.4's central MUST
+/// is that marion never mutates it, and there is no third location: `-p/--profile` also resolves
+/// under `$CODEX_HOME`, and `--ignore-user-config` would throw away the operator's provider and
+/// model defaults along with everything else. `-c` is the one channel that overlays without
+/// writing. Values are TOML-parsed by codex (falling back to a literal string), which is why every
+/// string below goes through [`toml_str`] rather than being interpolated raw.
+///
+/// **Every key here was checked against the installed binary rather than assumed**, because a
+/// silently-ignored `-c` key is this project's recurring failure shape — and codex *does* accept
+/// unknown keys without complaint (`-c mcp_servers.marion.totally_bogus_key="x"` is a clean exit).
+/// `codex mcp get marion --json` with these overrides renders the server, its `args` and its `env`
+/// map; `mcp_servers.marion.default_tools_approval_mode="not-a-mode"` is rejected with
+/// *"unknown variant `not-a-mode`, expected one of `auto`, `prompt`, `writes`, `approve`"*, which is
+/// the proof that the key is really parsed and that `approve` is really one of its values.
+///
+/// The `env` block comes from [`bridge_env_pairs`], shared with [`config_toml`], so the live route
+/// and the canned one cannot hand the bridge different sets of variables.
+pub fn live_config_overrides(env: &BridgeEnv) -> Vec<(String, String)> {
+    let args = env
+        .args
+        .iter()
+        .map(|a| toml_str(a))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut out = vec![
+        (
+            format!("{MCP_SERVER_KEY}.command"),
+            toml_str(&env.bridge.to_string_lossy()),
+        ),
+        (format!("{MCP_SERVER_KEY}.args"), format!("[{args}]")),
+        // **Load-bearing** (§12): without it every marion tool call is silently cancelled and the
+        // bridge never receives `tools/call` — no error the node can act on, and a run that ends
+        // `Unreported`. It is the trap that would have made S6 answer its own question wrong.
+        (
+            format!("{MCP_SERVER_KEY}.default_tools_approval_mode"),
+            toml_str("approve"),
+        ),
+    ];
+    for (k, v) in bridge_env_pairs(env) {
+        out.push((format!("{MCP_SERVER_KEY}.env.{k}"), toml_str(&v)));
+    }
+    // Measured (S7 / §12): left on, `codex exec` starts a curated-plugin-marketplace clone whose
+    // `git fetch` OUTLIVES the process, reparents to pid 1, writes into the agent dir after
+    // teardown, and reaches the network on a run specified to make none. It is not reapable after
+    // the fact — §9's kill rule turns on enumerating descendants *before* the child dies — so
+    // prevention at config time is the only remedy, on this route exactly as on the other.
+    out.push((PLUGINS_FEATURE_KEY.to_string(), "false".to_string()));
+    out
+}
+
 pub fn config_toml(env: &BridgeEnv, base_url: &str) -> String {
     let args = env
         .args
@@ -269,10 +370,12 @@ mod tests {
     fn spec() -> ExecSpec {
         ExecSpec {
             cwd: "/tmp/wt".into(),
-            codex_home: "/tmp/ch".into(),
+            codex_home: Some("/tmp/ch".into()),
+            model: None,
             prompt: "do the task".into(),
             output_schema: None,
             output_last_message: None,
+            config_overrides: Vec::new(),
         }
     }
 
@@ -388,6 +491,165 @@ mod tests {
         e.repo = "/re\"po".into();
         let t = config_toml(&e, "http://x/v1");
         assert!(t.contains(r#"MARION_REPO = "/re\"po""#), "{t}");
+    }
+
+    /// **The live route carries the same declaration, not a smaller one.**
+    ///
+    /// Asserted key by key rather than against a rendered blob, because the failure being defended
+    /// against is one key quietly going missing — and codex accepts an unknown `-c` key without a
+    /// word, so a typo here is invisible at runtime. Every spelling below was checked against the
+    /// installed 0.146.0 through `codex mcp get marion --json` (see [`live_config_overrides`]).
+    #[test]
+    fn the_live_declaration_reaches_the_bridge_through_c_flags_instead_of_a_document() {
+        let o = live_config_overrides(&bridge_env());
+        let by_key = |k: &str| {
+            o.iter()
+                .find(|(n, _)| n == k)
+                .unwrap_or_else(|| panic!("missing {k} from {o:?}"))
+                .1
+                .clone()
+        };
+        assert_eq!(
+            by_key("mcp_servers.marion.command"),
+            r#""/bin/marion-supervisor""#
+        );
+        assert_eq!(by_key("mcp_servers.marion.args"), r#"["mcp"]"#);
+        for (k, v) in [
+            ("MARION_REPO", r#""/repo""#),
+            ("MARION_STATE_DIR", r#""/state""#),
+            ("MARION_BASE_URL", r#""http://127.0.0.1:8099/v1""#),
+            ("MARION_AGENT_ID", r#""019f-node""#),
+            // §6.1 step 2's two inputs: without them the live node's bridge cannot read the
+            // caller's `max_depth` and every `spawn` it serves is ungated.
+            ("MARION_AGENT_TYPE", r#""codex-impl""#),
+            ("MARION_DEPTH", r#""1""#),
+            ("MARION_AUTH", r#""canned""#),
+        ] {
+            assert_eq!(by_key(&format!("mcp_servers.marion.env.{k}")), v);
+        }
+    }
+
+    /// The same trap as [`the_approval_mode_that_silently_cancels_everything_is_always_written`],
+    /// on the other route. §12 records it as what would have made S6 answer its own question wrong.
+    #[test]
+    fn the_approval_mode_that_silently_cancels_everything_rides_the_live_route_too() {
+        let o = live_config_overrides(&bridge_env());
+        assert!(
+            o.contains(&(
+                "mcp_servers.marion.default_tools_approval_mode".to_string(),
+                r#""approve""#.to_string()
+            )),
+            "without it every marion tool call is cancelled and the bridge never sees tools/call: \
+             {o:?}"
+        );
+    }
+
+    /// The runaway `git fetch` is prevented on the live route too — and it has to be prevented
+    /// *here*, at config time, because after `exec` exits its descendants have reparented to pid 1
+    /// and no ancestry walk can find them.
+    #[test]
+    fn the_background_plugin_fetch_that_outlives_exec_is_disabled_on_the_live_route_too() {
+        assert!(
+            live_config_overrides(&bridge_env())
+                .contains(&("features.plugins".to_string(), "false".to_string())),
+            "otherwise every live node leaves a network fetch behind it, writing into an agent \
+             dir marion is deleting"
+        );
+    }
+
+    /// The live overlay adds exactly what the canned document adds and nothing that belongs to the
+    /// canned *provider*: naming `model_provider` or `MARION_DUMMY_KEY` here would point a node
+    /// holding the operator's real credential at marion's fake endpoint.
+    #[test]
+    fn the_live_overlay_names_no_canned_provider_and_no_minted_key() {
+        for (k, v) in live_config_overrides(&bridge_env()) {
+            let pair = format!("{k}={v}");
+            for forbidden in ["model_provider", "MARION_DUMMY_KEY", "base_url ="] {
+                assert!(
+                    !k.contains(forbidden),
+                    "a live node uses codex's own default provider and the operator's own \
+                     credential, but {pair} names {forbidden}"
+                );
+            }
+        }
+    }
+
+    /// A path with a quote in it must not be able to produce a `-c` value codex parses as something
+    /// else — the same escaping the document route has always had, on the route that reaches a
+    /// shell-free argv but is still TOML-parsed by codex.
+    #[test]
+    fn live_override_values_are_escaped_rather_than_interpolated_raw() {
+        let mut e = bridge_env();
+        e.repo = "/re\"po".into();
+        assert!(live_config_overrides(&e).contains(&(
+            "mcp_servers.marion.env.MARION_REPO".to_string(),
+            r#""/re\"po""#.to_string()
+        )));
+    }
+
+    /// **The whole of live auth on this harness.** `CODEX_HOME` is where codex resolves
+    /// `auth.json`, and S8 measured codex's to be a plain 0600 file rather than a Keychain item —
+    /// so *not setting the variable* is what lets the child find the operator's own login. Absent
+    /// by name, not merely different: a blank value would send codex looking in the process cwd.
+    #[test]
+    fn a_live_node_sets_no_codex_home_at_all_so_it_finds_the_operators_own_auth_json() {
+        let mut s = spec();
+        s.codex_home = None;
+        let inv = compile_exec(&s);
+        assert!(
+            !inv.env.iter().any(|(k, _)| k == "CODEX_HOME"),
+            "{:?}",
+            inv.env
+        );
+        assert!(
+            inv.env.is_empty(),
+            "and nothing else crept in: {:?}",
+            inv.env
+        );
+    }
+
+    /// The `-c` pairs reach argv as `-c key=value`, one flag per pair, unquoted by marion — nothing
+    /// here goes through a shell, so codex receives the TOML exactly as written.
+    #[test]
+    fn config_overrides_ride_argv_one_flag_per_pair() {
+        let mut s = spec();
+        s.config_overrides = vec![
+            ("a.b".into(), r#""x""#.into()),
+            ("c".into(), "false".into()),
+        ];
+        let inv = compile_exec(&s);
+        let joined = inv.args.join(" ");
+        assert!(joined.contains(r#"-c a.b="x""#), "{joined}");
+        assert!(joined.contains("-c c=false"), "{joined}");
+        assert_eq!(inv.args.iter().filter(|a| *a == "-c").count(), 2);
+        assert_eq!(
+            inv.args.last().unwrap(),
+            "do the task",
+            "the prompt stays last and positional"
+        );
+    }
+
+    /// **The comment this corrects said `codex exec` "takes no model argument here at all".** It
+    /// does: 0.146.0's `codex exec --help` lists `-m, --model <MODEL>  Model the agent should use`.
+    #[test]
+    fn exec_does_take_a_model_and_records_the_one_it_compiled() {
+        let mut s = spec();
+        s.model = Some("gpt-5-codex".into());
+        let inv = compile_exec(&s);
+        assert_eq!(
+            inv.args.windows(2).find(|w| w[0] == "-m").map(|w| &w[1]),
+            Some(&"gpt-5-codex".to_string())
+        );
+        assert_eq!(inv.model.as_deref(), Some("gpt-5-codex"));
+    }
+
+    /// And absent it there is still no `-m` and still nothing recorded — so a contract can never
+    /// name a model that did not reach argv.
+    #[test]
+    fn no_model_asked_for_is_no_model_on_the_wire_and_none_recorded() {
+        let inv = compile_exec(&spec());
+        assert!(!inv.args.iter().any(|a| a == "-m"));
+        assert_eq!(inv.model, None);
     }
 
     #[test]
