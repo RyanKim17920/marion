@@ -156,11 +156,48 @@ unsafe extern "C" {
 }
 const SIGKILL: i32 = 9;
 
-fn scratch(name: &str) -> PathBuf {
+/// A scratch dir that removes itself.
+///
+/// `Drop`, and not a `remove_dir_all` at the end of [`drive`]: that call sits after the provider is
+/// dropped and the survivor loop has run, which is the right *order* but not a guarantee — every
+/// `.expect` above it (the provider failing to bind, `marion run` failing to start) unwinds
+/// straight past it and strands the dir together with the fixture repository. `Drop` catches those.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // Ignored: the dir may already be gone, and a cleanup failure must not mask the cell's own
+        // verdict.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// `Deref` alone is not enough: it coerces `&Scratch` to `&Path` at a call site expecting one, but
+/// a generic `P: AsRef<Path>` — `std::fs::remove_dir_all`, `Command::current_dir` — never triggers
+/// that coercion and fails to compile instead.
+impl AsRef<Path> for Scratch {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Bind the returned guard for as long as the cell needs it — `scratch("x").join("y")` drops the
+/// dir at the end of that statement, deleting it out from under the run. Bind it as `dir`, never as
+/// a bare `_`, which drops on the spot.
+fn scratch(name: &str) -> Scratch {
     let p = std::env::temp_dir().join(format!("marion-xp-{name}-{}", std::process::id()));
+    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
+    // and pids recycle, so a later run can inherit that exact name.
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
-    p.canonicalize().expect("scratch dir canonicalises")
+    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -785,12 +822,14 @@ fn drive(root: &Node, child: &Node) -> Evidence {
         .collect();
 
     // Cleanup first, and unconditionally: a failing cell must never become the leak it tests for.
+    // The dir itself is removed by `dir`'s own `Drop` as this function returns — which is the same
+    // point in the same order, and unlike the `remove_dir_all` that used to stand here it also
+    // covers the `.expect`s above, which unwind straight past any trailing statement.
     drop(server);
     let leaked = survivors(&dir.to_string_lossy());
     for (pid, _) in &leaked {
         let _ = unsafe { kill(*pid, SIGKILL) };
     }
-    let _ = std::fs::remove_dir_all(&dir);
 
     Evidence {
         timed_out: out.timed_out,
