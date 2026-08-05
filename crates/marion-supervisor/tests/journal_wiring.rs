@@ -40,11 +40,37 @@ use marion_supervisor::run::{Caller, Env, SpawnRequest, run_bounded, run_spawn};
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(300);
 
-fn scratch(name: &str) -> PathBuf {
+/// A scratch dir that removes itself.
+///
+/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
+/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
+/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
+        // verdict.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
+/// of that statement, deleting it out from under the test.
+fn scratch(name: &str) -> Scratch {
     let p = std::env::temp_dir().join(format!("marion-journal-e2e-{name}-{}", std::process::id()));
+    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
+    // and pids recycle, so a later run can inherit that exact name.
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
-    p.canonicalize().expect("scratch dir canonicalises")
+    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -177,7 +203,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
                 "--timeout",
                 "5",
             ])
-            .current_dir(&root_dir),
+            .current_dir(&*root_dir),
         RUN_BOUND,
     )
     .expect("marion run starts");
@@ -365,8 +391,6 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
         !kinds.contains(&"SpawnAborted"),
         "nothing was abandoned in a run both of whose nodes exited: {kinds:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&root_dir);
 }
 
 /// **A child's denied permission reaches the journal** (§9, §7.1, design §11 item 14).
@@ -475,8 +499,6 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
     // rather than a shape that displaced anything.
     assert_eq!(node.harness(), Some(Harness::ClaudeCode));
     assert!(node.spawn_confirmed, "the child's process really ran");
-
-    let _ = std::fs::remove_dir_all(&root_dir);
 }
 
 /// A verb marion's bridge really serves and a **child** is never allowed to call: `run_spawn`

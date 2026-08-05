@@ -34,11 +34,37 @@ use marion_supervisor::run::run_bounded;
 /// Generous. The bound exists so a hung `marion` fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(60);
 
-fn scratch(name: &str) -> PathBuf {
+/// A scratch dir that removes itself.
+///
+/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
+/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
+/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
+        // verdict.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
+/// of that statement, deleting it out from under the test.
+fn scratch(name: &str) -> Scratch {
     let p = std::env::temp_dir().join(format!("marion-lo-{name}-{}", std::process::id()));
+    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
+    // and pids recycle, so a later run can inherit that exact name.
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
-    p.canonicalize().expect("scratch canonicalises")
+    Scratch(p.canonicalize().expect("scratch canonicalises"))
 }
 
 /// A stub `codex` on a directory that is prepended to `PATH`.
@@ -185,8 +211,6 @@ fn a_launch_only_root_that_never_reached_the_bridge_fails_loudly_instead_of_exit
         Path::new(codex_home).join("config.toml").is_file(),
         "the adapter's config document must have been written before launch: {codex_home}"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The same run, one frame different. Without this, the test above would pass against a marion
@@ -214,7 +238,6 @@ fn the_same_root_succeeds_once_one_marion_call_appears_in_its_stream() {
         "the root's stream is its result — a root has no contract to return (§9):\n{}",
         run.stdout
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The bound, and the group kill behind it. A harness that never exits is not hypothetical: S13
@@ -256,11 +279,18 @@ fn a_root_that_never_exits_is_killed_on_its_bound_and_leaves_its_group_behind_it
     let mut survivors = recorded.clone();
     for _ in 0..40 {
         survivors.retain(|p| {
+            // `kill -0` is the *only* witness this test has for a leak. A non-zero exit is its
+            // real answer — the process is gone — but a `kill` that would not run at all is no
+            // answer, and reading that as "dead" would make the leak assertion below pass for
+            // free on exactly the machines where it cannot be checked.
             Command::new("kill")
                 .args(["-0", &p.to_string()])
                 .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
+                .expect(
+                    "`kill -0` must run: without it nothing here can tell a clean run from a leak",
+                )
+                .status
+                .success()
         });
         if survivors.is_empty() {
             break;
@@ -279,5 +309,4 @@ fn a_root_that_never_exits_is_killed_on_its_bound_and_leaves_its_group_behind_it
         survivors.is_empty(),
         "the root's descendants outlived the group kill — the S7 class of failure: {survivors:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

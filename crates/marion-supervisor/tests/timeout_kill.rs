@@ -59,11 +59,37 @@ fn alive(pid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
 }
 
-fn scratch(name: &str) -> PathBuf {
+/// A scratch dir that removes itself.
+///
+/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
+/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
+/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
+        // verdict.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
+/// of that statement, deleting it out from under the test.
+fn scratch(name: &str) -> Scratch {
     let p = std::env::temp_dir().join(format!("marion-s7-{name}-{}", std::process::id()));
+    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
+    // and pids recycle, so a later run can inherit that exact name.
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
-    p.canonicalize().expect("scratch dir canonicalises")
+    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -278,6 +304,4 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
          ran for {elapsed:?} against a {CHILD_TIMEOUT_SECS}s bound. exit: {}",
         completion.exit.description
     );
-
-    let _ = std::fs::remove_dir_all(&root_dir);
 }

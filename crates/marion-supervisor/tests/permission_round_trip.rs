@@ -65,11 +65,37 @@ fn on_path(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn scratch(name: &str) -> PathBuf {
+/// A scratch dir that removes itself.
+///
+/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
+/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
+/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
+        // verdict.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Bind the returned guard for the whole test — here it rides in [`Fixture`], so the fixture must
+/// itself outlive the test rather than being dropped at the end of the statement that built it.
+fn scratch(name: &str) -> Scratch {
     let p = std::env::temp_dir().join(format!("marion-s9-{name}-{}", std::process::id()));
+    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
+    // and pids recycle, so a later run can inherit that exact name.
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
-    p.canonicalize().expect("scratch dir canonicalises")
+    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
 }
 
 /// What the canned root reaches for.
@@ -87,7 +113,7 @@ enum Target {
 /// Everything one probe needs: a canned provider aimed at the non-allowlisted verb, and a prepared
 /// root node built by marion's own [`root::prepare`].
 struct Fixture {
-    root_dir: PathBuf,
+    root_dir: Scratch,
     server: CannedServer,
     node: root::RootNode,
 }
@@ -344,7 +370,21 @@ fn drive(fx: &Fixture, answer: Answer) -> Capture {
 
     drop(stdin);
     cap.exit_code = child.wait().expect("claude exits").code();
-    cap.stderr = stderr_thread.join().unwrap_or_default();
+    // Not `unwrap_or_default()`: that hands back an empty string when the collector *panicked*,
+    // indistinguishable from a child that wrote nothing — and `stderr` is what every failure
+    // message in this file reaches for to explain a run that never got as far as asking.
+    //
+    // This is not the bounded-drain problem `run.rs::Drain` solves. `join` blocks for as long as
+    // anything holds the stderr write end whatever is done with its `Result`; the `Result` says
+    // only "the thread unwound", which is a fact about this test and never about claude.
+    cap.stderr = stderr_thread.join().unwrap_or_else(|e| {
+        let why = e
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a payload that is not a string".into());
+        panic!("the stderr collector panicked ({why}); this run's stderr was never observed")
+    });
     cap
 }
 
@@ -568,18 +608,35 @@ fn assert_committed_recording_still_matches(fx: &Fixture, cap: &Capture, stdout_
     );
 }
 
+/// Processes still alive with `needle` on their command line. A leak, if any.
+///
+/// `ps` is the *only* witness this file has for a leak, so every way it can fail to answer is a
+/// failure of the test rather than an empty answer. Reporting "no survivors" because `ps` was
+/// missing, errored, or printed nothing would make the leak assertion pass for free on exactly the
+/// machines where it cannot be checked — the silent pass this file exists to rule out.
 fn survivors(needle: &str) -> Vec<String> {
-    Command::new("ps")
+    let out = Command::new("ps")
         .args(["-axo", "pid=,command="])
         .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| l.contains(needle))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+        .expect("`ps` must run: without it nothing here can tell a clean run from a leak");
+    assert!(
+        out.status.success(),
+        "`ps -axo pid=,command=` exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let listing = String::from_utf8_lossy(&out.stdout);
+    // `ps -ax` lists at minimum this very test process, so an empty listing means a witness that
+    // did not work, not a machine with nothing running on it.
+    assert!(
+        !listing.trim().is_empty(),
+        "`ps` printed nothing; the leak check would report no survivors whatever had leaked"
+    );
+    listing
+        .lines()
+        .filter(|l| l.contains(needle))
+        .map(str::to_string)
+        .collect()
 }
 
 fn require_claude() {
@@ -635,7 +692,6 @@ fn a_non_allowlisted_verb_makes_the_cli_ask_over_the_control_channel_and_a_denia
     assert_committed_recording_still_matches(&fx, &cap, "can-use-tool-deny.stdout.jsonl");
 
     drop(fx.server);
-    let _ = std::fs::remove_dir_all(&fx.root_dir);
 }
 
 #[test]
@@ -668,7 +724,6 @@ fn an_allowed_permission_actually_runs_the_tool_and_the_answer_reaches_marions_o
     assert_committed_recording_still_matches(&fx, &cap, "can-use-tool-allow.stdout.jsonl");
 
     drop(fx.server);
-    let _ = std::fs::remove_dir_all(&fx.root_dir);
 }
 
 #[test]
@@ -718,7 +773,6 @@ fn the_supervisors_blocked_bound_expires_into_a_deny_and_the_root_survives_it() 
         "leaked processes:\n{}",
         leaked.join("\n")
     );
-    let _ = std::fs::remove_dir_all(&fx.root_dir);
 }
 
 #[test]
@@ -753,7 +807,6 @@ fn the_same_subtype_carries_a_different_field_set_for_a_builtin_tool() {
     assert_committed_recording_still_matches(&fx, &cap, "can-use-tool-builtin-deny.stdout.jsonl");
 
     drop(fx.server);
-    let _ = std::fs::remove_dir_all(&fx.root_dir);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -765,9 +818,11 @@ fn the_recorded_response_is_the_string_the_supervisor_actually_writes() {
     // Not "a deny-shaped frame": the byte string `root::deny_response` produces, modulo the
     // request_id redaction. If the two ever diverge, the fixture is no longer evidence about
     // marion.
-    let recorded: Value = fixture_lines("can-use-tool-deny.stdin.jsonl")
-        .iter()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+    // `fixture_frames`, not a `filter_map(…ok())` over the lines: a committed recording carrying a
+    // line that is not a frame is a broken fixture, and skipping it would let this comparison find
+    // its answer among whatever else still parsed.
+    let recorded: Value = fixture_frames("can-use-tool-deny.stdin.jsonl")
+        .into_iter()
         .find(|v| v.pointer("/response/response/behavior").is_some())
         .expect("the committed recording holds marion's answer");
     let rid = recorded["response"]["request_id"].as_str().unwrap();
