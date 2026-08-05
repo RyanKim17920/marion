@@ -3,6 +3,7 @@
 //! `codex exec` is **launch-only with protocol events**: marion writes its configuration, starts
 //! it, and reads its JSONL stream. There is no control channel to steer it mid-turn.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use marion_core::contract::AgentId;
@@ -13,7 +14,7 @@ use crate::claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, READY_FILE_ENV,
 };
 use crate::invocation::Invocation;
-use crate::stream::{StreamOutcome, json_frames, report_commits};
+use crate::stream::{CallOutcome, MarionCall, StreamOutcome, json_frames, report_commits};
 
 /// The sandbox every codex node marion generates a config for runs in — and **this harness's whole
 /// availability axis** (§3.1). `codex exec` has no `--tools` and no permission list; it exposes
@@ -149,23 +150,74 @@ pub fn parse_stream(s: &str) -> StreamOutcome {
     out
 }
 
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary.
+/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
+/// of each call.
 ///
 /// Codex is the one harness that does **not** name marion's verbs by a prefixed identifier in its
 /// stream: an `mcp_tool_call` item carries `server` and `tool` as separate fields, which is why
 /// this reader takes no prefix and a substring scan for `mcp__marion__` would find nothing here.
 /// That difference is exactly why the read is behind the adapter seam rather than done once in the
 /// supervisor.
-pub fn marion_tool_calls(s: &str) -> Vec<String> {
-    json_frames(s)
-        .iter()
-        .filter_map(|v| {
-            let item = &v["item"];
-            if item["type"] != "mcp_tool_call" || item["server"] != "marion" {
-                return None;
-            }
-            item["tool"].as_str().map(str::to_string)
-        })
+///
+/// **One call is two frames of the same item, and the later one revises the earlier.**
+/// `tests/fixtures/s6/exec-mcp-report.stream.jsonl` records `item.started` with
+/// `"result":null,"error":null,"status":"in_progress"` and then `item.completed` with the result
+/// filled in and `"status":"completed"`. So the item's `id` keys the call and the last frame for it
+/// wins — which also deletes a real bug in the reader this replaces: it counted both frames, so a
+/// codex node that called `report` once appeared to have called it twice.
+///
+/// **`status` is the verdict and `error` is the words.** Only the success spelling is recorded, so
+/// anything that is not `completed` is read as a refusal rather than as an unknown: a stream saying
+/// something marion has not measured must not be read as consent. An item with no terminal frame at
+/// all stays [`CallOutcome::Unknown`] — see there for the marion-side refusal this still cannot see.
+pub fn marion_calls(s: &str) -> Vec<MarionCall> {
+    // Insertion-ordered by first sighting, so the calls come back in the order the node made them
+    // while a later frame for the same id revises the outcome in place.
+    let mut order: Vec<String> = Vec::new();
+    let mut calls: BTreeMap<String, MarionCall> = BTreeMap::new();
+    for v in json_frames(s) {
+        let item = &v["item"];
+        if item["type"] != "mcp_tool_call" || item["server"] != "marion" {
+            continue;
+        }
+        let Some(verb) = item["tool"].as_str() else {
+            continue;
+        };
+        // An item with no `id` is its own call: nothing can revise it, and dropping it would lose a
+        // reached verb over a missing field.
+        let id = match item["id"].as_str() {
+            Some(id) => id.to_string(),
+            None => format!("{}-{}", verb, order.len()),
+        };
+        let outcome = match item["status"].as_str() {
+            Some("completed") => CallOutcome::Answered,
+            // The `item.started` spelling. Not an answer and not a refusal: if a later frame
+            // revises this item it will say which, and if none does the stream stopped mid-call.
+            Some("in_progress") | None => CallOutcome::Unknown,
+            // Every terminal spelling codex has not been measured emitting. Read as a refusal
+            // rather than as an unknown: a stream saying something unrecognised must not be read
+            // as consent.
+            Some(status) => CallOutcome::Refused(match item["error"].as_str() {
+                Some(e) => format!("{status}: {e}"),
+                None => status.to_string(),
+            }),
+        };
+        if calls
+            .insert(
+                id.clone(),
+                MarionCall {
+                    verb: verb.to_string(),
+                    outcome,
+                },
+            )
+            .is_none()
+        {
+            order.push(id);
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|id| calls.remove(&id))
         .collect()
 }
 

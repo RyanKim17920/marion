@@ -4,6 +4,7 @@
 //! flag here was measured against 2.1.220, and several are non-obvious enough that the tests below
 //! state *why* rather than merely pinning the string.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use marion_core::contract::AgentId;
@@ -11,7 +12,9 @@ use serde_json::{Value, json};
 
 use crate::adapter::Auth;
 use crate::invocation::Invocation;
-use crate::stream::{StreamOutcome, first_string, json_frames, report_commits};
+use crate::stream::{
+    CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
+};
 
 /// Env var naming the file the bridge touches once it has answered `tools/list`.
 pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
@@ -215,13 +218,42 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
     out
 }
 
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary.
+/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
+/// of each call.
 ///
 /// `prefix` is this harness's own namespace for marion's verbs — the adapter derives it from its
 /// `marion_tool_name`, so there is one spelling, not two.
-pub fn marion_tool_calls(s: &str, prefix: &str) -> Vec<String> {
+///
+/// **The call and its result are two frames and are paired by `tool_use_id`.** The shape is the one
+/// `tests/fixtures/s9/can-use-tool-allow.stdout.jsonl` recorded off a real 2.1.220: an `assistant`
+/// frame carries `{"type":"tool_use","id":"toolu_…","name":"mcp__marion__report"}` and a later
+/// `user` frame carries `{"type":"tool_result","tool_use_id":"toolu_…", …}`. On that recording the
+/// success case has **no `is_error` key at all**, which is why the reading is `Some(true)` ⇒
+/// refused rather than "not `Some(false)`" ⇒ refused: an absent key is this harness saying the call
+/// was fine, and treating it as a refusal would red-line every working run.
+///
+/// A call whose result frame never arrived is [`CallOutcome::Unknown`], not an answer — a run that
+/// was killed mid-call leaves exactly that trace.
+pub fn marion_calls(s: &str, prefix: &str) -> Vec<MarionCall> {
+    let frames = json_frames(s);
+    // id → what its result frame said. Built first, because a stream is read once and the results
+    // trail the calls.
+    let mut results: BTreeMap<String, CallOutcome> = BTreeMap::new();
+    for v in &frames {
+        if v["type"].as_str() != Some("user") {
+            continue;
+        }
+        for block in v["message"]["content"].as_array().into_iter().flatten() {
+            if block["type"].as_str() == Some("tool_result")
+                && let Some(id) = block["tool_use_id"].as_str()
+            {
+                results.insert(id.to_string(), tool_result_outcome(block));
+            }
+        }
+    }
+
     let mut out = Vec::new();
-    for v in json_frames(s) {
+    for v in &frames {
         if v["type"].as_str() != Some("assistant") {
             continue;
         }
@@ -229,11 +261,40 @@ pub fn marion_tool_calls(s: &str, prefix: &str) -> Vec<String> {
             if block["type"].as_str() == Some("tool_use")
                 && let Some(tool) = block["name"].as_str().and_then(|n| n.strip_prefix(prefix))
             {
-                out.push(tool.to_string());
+                let outcome = block["id"]
+                    .as_str()
+                    .and_then(|id| results.get(id).cloned())
+                    .unwrap_or(CallOutcome::Unknown);
+                out.push(MarionCall {
+                    verb: tool.to_string(),
+                    outcome,
+                });
             }
         }
     }
     out
+}
+
+/// One `tool_result` block's verdict, and the words behind it.
+///
+/// The `content` is an array of typed blocks on the recording, so the refusal's own sentence is
+/// gathered from the `text` ones. A refusal with no readable text still refuses — the fallback says
+/// so rather than reporting an empty string, since "refused, and the harness gave no reason" is a
+/// different thing to read than "refused: <reason>".
+fn tool_result_outcome(block: &Value) -> CallOutcome {
+    if block["is_error"].as_bool() != Some(true) {
+        return CallOutcome::Answered;
+    }
+    let text: Vec<&str> = block["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["text"].as_str())
+        .collect();
+    match text.is_empty() {
+        true => CallOutcome::Refused("the result frame carried no message".into()),
+        false => CallOutcome::Refused(text.join(" ")),
+    }
 }
 
 /// `ANTHROPIC_BASE_URL` from the provider base URL marion carries.

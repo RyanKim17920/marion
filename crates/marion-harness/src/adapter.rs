@@ -22,7 +22,7 @@ use crate::codex::{self, ExecSpec, compile_exec};
 use crate::gemini;
 use crate::invocation::Invocation;
 use crate::opencode;
-use crate::stream::{ChildExit, StreamOutcome};
+use crate::stream::{ChildExit, MarionCall, StreamOutcome};
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
 /// Whether marion's control MCP is injected into this node, and how much of it.
@@ -372,8 +372,9 @@ pub trait HarnessAdapter {
     /// in `compile`. A caller reaching this after a successful `compile` cannot see that error.
     fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError>;
 
-    /// Which of marion's own verbs this harness's stream shows the node calling, in **marion's**
-    /// vocabulary (`spawn`, `report`, …) rather than in the harness's spelling.
+    /// Every call to one of marion's verbs this harness's stream shows the node making, in
+    /// **marion's** vocabulary (`spawn`, `report`, …) rather than in the harness's spelling, **and
+    /// what the stream says came of each one**.
     ///
     /// This is §6.1 step 8's *post-hoc* readiness assertion. A surface whose prompt rides argv has
     /// no frame to withhold, so its MCP readiness cannot be gated before the turn; §6.1 says it is
@@ -385,11 +386,32 @@ pub trait HarnessAdapter {
     /// different places — a `tool_use` block's `name`, an `mcp_tool_call` item's `server`/`tool`
     /// **pair**, a top-level `tool_name`, a `part.tool` — and in three different spellings, so a
     /// substring scan for any one of them is wrong on the other three (codex most of all, whose
-    /// stream never contains the string `mcp__marion__` at all).
+    /// stream never contains the string `mcp__marion__` at all). They disagree about the *result*
+    /// just as widely: codex revises one item in place, opencode emits only terminal states,
+    /// gemini and Claude Code emit a separate result frame that must be paired back to its call by
+    /// id.
     ///
-    /// Every call is counted, whatever came of it: a call the bridge refused still proves the node
-    /// had marion's tools, which is the only thing being asserted.
-    fn marion_tool_calls(&self, stdout: &str) -> Vec<String>;
+    /// **The outcome used to be discarded here, and that was the defect.** This read returned bare
+    /// verb names on the argument that "a call the bridge refused still proves the node had
+    /// marion's tools" — true, and not what §6.1 step 8 needs to know. A gemini root whose `spawn`
+    /// was refused by gemini's own schema validator satisfied that gate, exited 0, and was
+    /// journalled `ExitStatus::Ok` having delegated nothing (`tasks/todo.md`, owed item 0): the
+    /// same silent success the gate exists to prevent, one level in. It is also why the root
+    /// `report` defect fixed in `7ff470e` stayed invisible — every refusal marion started issuing
+    /// still read as evidence the run had worked. So each call carries its [`CallOutcome`], and
+    /// what that outcome can and cannot see is documented there.
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall>;
+
+    /// The verbs alone, for callers that only ask *which* verbs were reached for.
+    ///
+    /// Derived rather than implemented per adapter: two readings of one stream is how the name and
+    /// the result would drift apart, and the result is the half that matters.
+    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
+        self.marion_calls(stdout)
+            .into_iter()
+            .map(|c| c.verb)
+            .collect()
+    }
 }
 
 /// Object safety and the thread bounds, checked by the compiler. §5.2 requires both and says so of
@@ -597,8 +619,8 @@ impl HarnessAdapter for ClaudeCodeAdapter {
 
     /// The prefix is derived from this adapter's own `marion_tool_name`, so the reader and the
     /// compiler of the name can never disagree about the spelling.
-    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
-        claude_code::marion_tool_calls(stdout, &self.marion_tool_name(""))
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
+        claude_code::marion_calls(stdout, &self.marion_tool_name(""))
     }
 }
 
@@ -796,9 +818,9 @@ impl HarnessAdapter for CodexAdapter {
     }
 
     /// **No prefix.** codex's stream names the server and the tool as two fields, so the flat
-    /// identifier above never appears in it — see [`codex::marion_tool_calls`].
-    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
-        codex::marion_tool_calls(stdout)
+    /// identifier above never appears in it — see [`codex::marion_calls`].
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
+        codex::marion_calls(stdout)
     }
 }
 
@@ -983,8 +1005,8 @@ impl HarnessAdapter for GeminiAdapter {
         )])
     }
 
-    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
-        gemini::marion_tool_calls(stdout, &self.marion_tool_name(""))
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
+        gemini::marion_calls(stdout, &self.marion_tool_name(""))
     }
 }
 
@@ -1174,8 +1196,8 @@ impl HarnessAdapter for OpenCodeAdapter {
         Ok(vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()])
     }
 
-    fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
-        opencode::marion_tool_calls(stdout, &self.marion_tool_name(""))
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
+        opencode::marion_calls(stdout, &self.marion_tool_name(""))
     }
 }
 
@@ -1199,6 +1221,7 @@ mod tests {
     use super::*;
     use crate::claude_code::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::codex::config_toml;
+    use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface};
 
     fn ctx() -> SpawnCtx {
@@ -3467,6 +3490,183 @@ mod tests {
         );
         assert_eq!(
             OpenCodeAdapter.marion_tool_calls(OPENCODE_STREAM),
+            vec!["report".to_string()]
+        );
+    }
+
+    /// **What became of each call, per harness — the half the old reader discarded.**
+    ///
+    /// Each harness answers a call somewhere different: codex revises its own item in place,
+    /// opencode carries the verdict on the tool part, gemini and Claude Code emit a separate frame
+    /// that must be paired back by id. A single supervisor-side reading would be wrong on three of
+    /// the four, exactly as it would be for the verb's name.
+    ///
+    /// **Provenance, stated because it is uneven.** The answered rows are the recorded shapes
+    /// (s6 for codex, s9 for Claude Code, s12 for gemini, s13 for opencode). Of the refused rows
+    /// **only opencode's is a recording**; codex's `"status":"failed"` and gemini's non-success
+    /// `status` are the obvious complements of what was captured, and nothing in this tree has
+    /// watched either arrive. They are pinned so that a harness that starts spelling refusal some
+    /// other way fails here rather than passing silently as an answer.
+    #[test]
+    fn each_adapter_reads_what_became_of_a_marion_call_in_its_own_stream() {
+        let answered = |verb: &str| MarionCall {
+            verb: verb.to_string(),
+            outcome: CallOutcome::Answered,
+        };
+        let cases: [(Harness, &str, &str, MarionCall); 8] = [
+            (
+                Harness::ClaudeCode,
+                "answered",
+                concat!(
+                    r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__marion__spawn","input":{}}]}}"#,
+                    "\n",
+                    // s9's success block carries no `is_error` key at all.
+                    r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"child spawned"}]}]}}"#,
+                ),
+                answered("spawn"),
+            ),
+            (
+                Harness::ClaudeCode,
+                "refused",
+                concat!(
+                    r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__marion__report","input":{}}]}}"#,
+                    "\n",
+                    r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":[{"type":"text","text":"marion: §5.4 rejects report on a root"}]}]}}"#,
+                ),
+                MarionCall {
+                    verb: "report".into(),
+                    outcome: CallOutcome::Refused("marion: §5.4 rejects report on a root".into()),
+                },
+            ),
+            (
+                Harness::Codex,
+                "answered",
+                r#"{"type":"item.completed","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"spawn","result":{},"error":null,"status":"completed"}}"#,
+                answered("spawn"),
+            ),
+            (
+                Harness::Codex,
+                "refused",
+                r#"{"type":"item.completed","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"spawn","result":null,"error":"bad arguments","status":"failed"}}"#,
+                MarionCall {
+                    verb: "spawn".into(),
+                    outcome: CallOutcome::Refused("failed: bad arguments".into()),
+                },
+            ),
+            (
+                Harness::Gemini,
+                "answered",
+                concat!(
+                    r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}"#,
+                    "\n",
+                    r#"{"type":"tool_result","tool_id":"g1","status":"success","output":"ok"}"#,
+                ),
+                answered("spawn"),
+            ),
+            (
+                Harness::Gemini,
+                "refused",
+                concat!(
+                    r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}"#,
+                    "\n",
+                    r#"{"type":"tool_result","tool_id":"g1","status":"error","output":"invalid arguments"}"#,
+                ),
+                MarionCall {
+                    verb: "spawn".into(),
+                    outcome: CallOutcome::Refused("error: invalid arguments".into()),
+                },
+            ),
+            (
+                Harness::OpenCode,
+                "answered",
+                r#"{"type":"tool_use","part":{"type":"tool","tool":"marion_spawn","state":{"status":"completed"}}}"#,
+                answered("spawn"),
+            ),
+            (
+                Harness::OpenCode,
+                "refused",
+                // S13's recorded shape, verbatim.
+                r#"{"type":"tool_use","part":{"type":"tool","tool":"marion_spawn","state":{"status":"error","error":"The user rejected permission to use this specific tool call."}}}"#,
+                MarionCall {
+                    verb: "spawn".into(),
+                    outcome: CallOutcome::Refused(
+                        "The user rejected permission to use this specific tool call.".into(),
+                    ),
+                },
+            ),
+        ];
+        for (h, label, stream, want) in cases {
+            assert_eq!(
+                adapter_for(h).unwrap().marion_calls(stream),
+                vec![want],
+                "{h}: {label}"
+            );
+        }
+    }
+
+    /// **A call whose result never arrived is `Unknown`, on every harness that can express one.**
+    ///
+    /// Not `Answered`, which is the whole point: a stream that showed a call starting and never
+    /// showed it ending is a run that stopped mid-call, and reading that as success is the defect
+    /// class `root::assert_a_verb_was_answered` exists to close.
+    #[test]
+    fn a_call_with_no_result_frame_is_unknown_and_not_an_answer() {
+        let unanswered: [(Harness, &str); 3] = [
+            (
+                Harness::ClaudeCode,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__marion__spawn","input":{}}]}}"#,
+            ),
+            // codex's `item.started`, which s6 records ahead of every completion.
+            (
+                Harness::Codex,
+                r#"{"type":"item.started","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"spawn","result":null,"error":null,"status":"in_progress"}}"#,
+            ),
+            (
+                Harness::Gemini,
+                r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}"#,
+            ),
+        ];
+        for (h, stream) in unanswered {
+            let got = adapter_for(h).unwrap().marion_calls(stream);
+            assert_eq!(
+                got,
+                vec![MarionCall {
+                    verb: "spawn".into(),
+                    outcome: CallOutcome::Unknown
+                }],
+                "{h}: a call with no result is not an answered call"
+            );
+            assert!(!got[0].outcome.is_answered(), "{h}");
+        }
+        // opencode is the exception and it is a property of the harness, not a gap here: S13
+        // measured `tool_use` firing **only** on terminal states, so there is no in-flight frame
+        // for this harness to emit and nothing that could arrive without a verdict on it.
+    }
+
+    /// **One codex call is two frames, and it used to count as two calls.**
+    ///
+    /// `tests/fixtures/s6/exec-mcp-report.stream.jsonl` carries `item.started` then
+    /// `item.completed` for the same `id`. The reader this replaced filtered on the item's `type`
+    /// and `server` alone, so a codex node that called `report` once appeared to have called it
+    /// twice — invisible to an is-empty check, wrong for anything that counts, and fixed by keying
+    /// on the id and letting the later frame revise the earlier.
+    #[test]
+    fn a_codex_call_revised_by_a_later_frame_is_one_call_and_not_two() {
+        let s = concat!(
+            r#"{"type":"item.started","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"report","status":"in_progress"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"i0","type":"mcp_tool_call","server":"marion","tool":"report","status":"completed"}}"#,
+        );
+        assert_eq!(
+            CodexAdapter.marion_calls(s),
+            vec![MarionCall {
+                verb: "report".into(),
+                outcome: CallOutcome::Answered
+            }],
+            "the completion revises the start; it does not add a second call"
+        );
+        assert_eq!(
+            CodexAdapter.marion_tool_calls(s),
             vec!["report".to_string()]
         );
     }

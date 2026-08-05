@@ -78,6 +78,55 @@ pub fn report_commits(args: &Value) -> Vec<String> {
         .collect()
 }
 
+/// One call to one of marion's verbs, as a harness's stream showed it — **and what came of it**.
+///
+/// The verb is in *marion's* vocabulary (`spawn`, `report`, …), never the harness's spelling: the
+/// four harnesses name the same verb four ways (§3.1) and a caller comparing against `"spawn"` must
+/// be right on all four.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarionCall {
+    pub verb: String,
+    pub outcome: CallOutcome,
+}
+
+/// What a harness's stream says became of one marion call.
+///
+/// **Three values and not two, because "no news" is its own answer.** A stream that shows a call
+/// starting and never shows it ending is not a call that succeeded; folding [`Self::Unknown`] into
+/// [`Self::Answered`] would be a reader reporting success by failing to look, which is the defect
+/// class this repository keeps re-finding (`alive()` as `kill(pid,0)==0`, `survivors()` with
+/// `.unwrap_or_default()`, and `report_refusal` serving on an unparsable depth until `36fbbee`).
+/// Every one of the four measured event sets carries a terminal frame per call — codex's
+/// `item.completed`, gemini's `tool_result`, opencode's terminal-only `tool_use`, Claude Code's
+/// `tool_result` block — so `Unknown` means a stream that stopped mid-call, which is news.
+///
+/// **What this cannot see is stated here rather than discovered later.** `Refused` is populated
+/// from the *harness's* structural error signal. A refusal marion's own bridge issued arrives as an
+/// MCP result with `isError: true`, and whether each harness re-surfaces that as a stream-level
+/// error is **unmeasured**: `tests/fixtures/s6/` records codex's `mcp_tool_call` item only with
+/// `status: "completed"`, `error: null`, and S12 captured gemini's `tool_result` `status` only as
+/// `"success"`. So a §5.4 authorization refusal *may* read as `Answered` on codex and gemini until
+/// somebody records the failing shape. Matching marion's refusal prose in the result body would
+/// close it today and is deliberately not done — a gate keyed on a sentence breaks the moment the
+/// sentence is reworded, and every one of them was reworded in this session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallOutcome {
+    /// The stream showed the call reaching a terminal state the harness did not mark as an error.
+    Answered,
+    /// The stream showed the call ending in an error, in the harness's own words.
+    Refused(String),
+    /// The stream showed the call and never showed its result.
+    Unknown,
+}
+
+impl CallOutcome {
+    /// The one question §6.1 step 8 asks of a call. A method rather than a `matches!` at each use
+    /// site, so "what counts as an answer" is one decision and not one per caller.
+    pub fn is_answered(&self) -> bool {
+        matches!(self, Self::Answered)
+    }
+}
+
 /// What marion observed about the child *process*, for the adapters whose success rule needs it.
 ///
 /// Passed to [`crate::HarnessAdapter::parse_stream`] so each harness can state its own rule rather

@@ -7,6 +7,7 @@
 //! Three of the four env vars and two of the settings keys below are load-bearing in the §12 sense
 //! — *omitting them produces no error anywhere*. Each one carries the measurement that says so.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::AgentId;
@@ -21,7 +22,9 @@ use crate::claude_code::{
     READY_FILE_ENV,
 };
 use crate::invocation::Invocation;
-use crate::stream::{StreamOutcome, first_string, json_frames, report_commits};
+use crate::stream::{
+    CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
+};
 
 /// Relocates the **entire** config and auth surface: `settings.json`, `oauth_creds.json`,
 /// `trustedFolders.json`, extensions, sessions. The CLI appends `.gemini` itself, so this names
@@ -364,19 +367,51 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
     out
 }
 
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary.
+/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
+/// of each call.
 ///
 /// The frame is gemini's `tool_use`, whose `tool_name` carries the `mcp_<server>_` spelling S12
 /// captured — a different field *and* a different spelling from every other harness.
-pub fn marion_tool_calls(s: &str, prefix: &str) -> Vec<String> {
-    json_frames(s)
+///
+/// **The result is a separate `tool_result` frame, paired back by `tool_id`, and that pairing is an
+/// assumption this comment refuses to hide.** S12 recorded both frames (`tests/fixtures/s12/
+/// README.md`) but redacted their ids independently — `mcp_marion_report__mcp_marion_report_<n>_0`
+/// on the call, `<TOOL-ID-1>` on the result — so nothing in this tree *proves* the two carry the
+/// same value. Pairing by id is the only reading the field name admits, and it is written here so
+/// that whoever next records a gemini run knows the fixture owes an unredacted pair.
+///
+/// Only `"success"` was ever captured for `tool_result.status`, so every other spelling is read as
+/// a refusal rather than as an unknown — the same call [`parse_stream`] makes for the `result`
+/// frame's status, for the same reason. A call whose result frame never arrived is
+/// [`CallOutcome::Unknown`], which is what a run killed mid-call leaves behind.
+pub fn marion_calls(s: &str, prefix: &str) -> Vec<MarionCall> {
+    let frames = json_frames(s);
+    let mut results: BTreeMap<String, CallOutcome> = BTreeMap::new();
+    for v in &frames {
+        if v["type"].as_str() == Some("tool_result")
+            && let Some(id) = v["tool_id"].as_str()
+        {
+            let outcome = match v["status"].as_str() {
+                Some("success") => CallOutcome::Answered,
+                Some(status) => CallOutcome::Refused(match v["output"].as_str() {
+                    Some(o) => format!("{status}: {o}"),
+                    None => status.to_string(),
+                }),
+                None => CallOutcome::Unknown,
+            };
+            results.insert(id.to_string(), outcome);
+        }
+    }
+    frames
         .iter()
         .filter(|v| v["type"].as_str() == Some("tool_use"))
         .filter_map(|v| {
-            v["tool_name"]
+            let verb = v["tool_name"].as_str()?.strip_prefix(prefix)?.to_string();
+            let outcome = v["tool_id"]
                 .as_str()
-                .and_then(|n| n.strip_prefix(prefix))
-                .map(str::to_string)
+                .and_then(|id| results.get(id).cloned())
+                .unwrap_or(CallOutcome::Unknown);
+            Some(MarionCall { verb, outcome })
         })
         .collect()
 }

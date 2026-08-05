@@ -22,7 +22,9 @@ use crate::claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, READY_FILE_ENV,
 };
 use crate::invocation::Invocation;
-use crate::stream::{StreamOutcome, first_string, json_frames, report_commits};
+use crate::stream::{
+    CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
+};
 
 /// The MCP server alias. opencode exposes MCP tools to the model as `<serverName>_<toolName>`, so
 /// this alias is literally half of `marion_report`.
@@ -286,20 +288,46 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
     out
 }
 
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary.
+/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
+/// of each call.
 ///
 /// The tool's name sits under `part.tool` — a third field in a third place — and every state is
-/// counted, including `error`: the question this answers is "did the node reach marion's bridge",
-/// and a call the bridge refused reached it just as surely as one it served.
-pub fn marion_tool_calls(s: &str, prefix: &str) -> Vec<String> {
+/// counted, including `error`: the question this answers is "which of marion's verbs did the node
+/// reach for", and a call the bridge refused was reached for just as surely as one it served. What
+/// *became* of each is the [`CallOutcome`] beside it, which is where a refusal is now recorded
+/// instead of being flattened away.
+///
+/// **opencode is the one harness whose refusal shape is recorded rather than constructed.** S13
+/// measured `{"status":"error","error":"The user rejected permission to use this specific tool
+/// call."}` on the tool part, with the run continuing and exiting 0 — the exact silent success
+/// §6.1 step 8 exists to refuse. `parse_stream` has read that shape for a *child's* `report` since
+/// S13; this makes it readable for a **root**, which has no `TaskContract` for `parse_stream` to
+/// put it in.
+///
+/// `tool_use` fires only on terminal states here (S13: no streaming partials), so a state that is
+/// neither `completed` nor `error` is something this harness has not been measured emitting, and is
+/// [`CallOutcome::Unknown`] rather than a guess in either direction.
+pub fn marion_calls(s: &str, prefix: &str) -> Vec<MarionCall> {
     json_frames(s)
         .iter()
         .filter(|v| v["type"].as_str() == Some("tool_use"))
         .filter_map(|v| {
-            v["part"]["tool"]
-                .as_str()
-                .and_then(|n| n.strip_prefix(prefix))
-                .map(str::to_string)
+            let verb = v["part"]["tool"]
+                .as_str()?
+                .strip_prefix(prefix)?
+                .to_string();
+            let state = &v["part"]["state"];
+            let outcome = match state["status"].as_str() {
+                Some("completed") => CallOutcome::Answered,
+                Some("error") => CallOutcome::Refused(
+                    state["error"]
+                        .as_str()
+                        .unwrap_or("the tool part carried no message")
+                        .to_string(),
+                ),
+                _ => CallOutcome::Unknown,
+            };
+            Some(MarionCall { verb, outcome })
         })
         .collect()
 }
