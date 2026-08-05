@@ -4,8 +4,10 @@
 //!
 //! - `harness_matrix.rs` drives four children through `run_spawn` **directly**, with no root in the
 //!   run at all. It proves the *child* axis.
-//! - `launch_only_root.rs` drives three roots through the real `marion` binary against a **stub**
-//!   harness on `PATH`. It proves the *root* axis, with nothing real on the other end of `spawn`.
+//! - `launch_only_root.rs` drives the three **`LaunchOnly`** roots — codex, gemini and opencode —
+//!   through the real `marion` binary against a **stub** harness on `PATH`, one `#[test]` per
+//!   harness per property. It proves the *root* axis for that surface: claude-code's duplex root
+//!   path is not in it, and nothing real is on the other end of `spawn`.
 //! - `m1_hop.rs` proves exactly one cell of the cross-product — a claude root spawning a codex
 //!   child — end to end against real binaries.
 //!
@@ -19,13 +21,14 @@
 //! A loop reports the first failure and hides the other fifteen. Each cell is named for its own
 //! pair, so a failing run names the cell in its output.
 //!
-//! Every cell asserts the same nine things:
+//! Every cell asserts the same eleven things:
 //!
 //! 1. the run did not time out and `marion run` exited 0;
 //! 2. exactly one `contracts/<task_id>.json` is persisted, and it deserializes to a `TaskContract`;
 //! 3. `contract.child.harness` is the harness that **actually ran**, read off the adapter, and
-//!    `contract.child.model` is the **compiled** harness-native value (`None` for codex, whose
-//!    `exec` surface carries no model argument however loudly one was asked for);
+//!    `contract.child.model` is the **compiled** harness-native value, which every cell asks for a
+//!    model in order to test: codex is asked for `gpt-5.6-sol` and must record `None`, because a
+//!    canned launch compiles no `-m` at all;
 //! 4. the narrative is the child's own — non-empty, `narrative_synthesized == false` — and the
 //!    status is `Ok`, which together mean the report arrived through marion's MCP channel;
 //! 5. **both nodes are visible in the provider's request log, by role and not merely by wire.** See
@@ -36,12 +39,19 @@
 //! 8. nothing outlived the run (the S7 class of failure);
 //! 9. **the child's worktree was audited**: `scope_enforced` is true — the check *ran*, which §6.7
 //!    is careful to say is not the same as "no violation" — and, in the cells whose child can
-//!    write at all, `changed_paths` carries the file that child wrote.
+//!    write at all, `changed_paths` carries the file that child wrote;
+//! 10. **the contract reached the ROOT**, as the tool result of its own `spawn` call, read back off
+//!     the root's *next request* on its own wire and compared to the persisted copy modulo §6.7's
+//!     cap rules. Everything above it is satisfied by a marion that persists a contract and hands
+//!     the model a stub, or someone else's contract;
+//! 11. **both nodes reached a terminal `NodeState` in the journal** — one root, one child, each
+//!     `Exited(Ok)`, and nothing left `unresolved()`.
 //!
 //! # Eight cells write, and the other eight say why they cannot
 //!
 //! Criterion 9 is the only one that requires marion to have opened a worktree; every other
-//! criterion is satisfiable from the two nodes' streams alone. It was also, until now, the one the
+//! criterion is satisfiable from the two nodes' streams and marion's own bookkeeping — the request
+//! log, the persisted contract, the journal. It was also, until now, the one the
 //! matrix did not make: twelve cells had a child that called nothing but `report`, so
 //! `changed_paths` was empty **by construction** and a marion that never diffed anything passed
 //! them.
@@ -86,8 +96,13 @@ use std::time::Duration;
 
 use marion_core::contract::{ExitStatus, TaskContract};
 use marion_core::harness::Harness;
+use marion_core::node::NodeState;
+use marion_core::paths::ProjectDir;
+use marion_core::registry::Replay;
 use marion_harness::adapter_for;
+use marion_provider::script::{ROOT_CALL_ID, ROOT_TOOL_USE_ID};
 use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Script};
+use marion_supervisor::journal::read_path;
 use marion_supervisor::root::{RootPath, root_path};
 use marion_supervisor::run::run_bounded;
 use serde_json::{Value, json};
@@ -302,11 +317,21 @@ struct Node {
     /// The built-in agent type. `codex-impl` is `codex`'s canonical name, so both roles use it.
     agent_type: &'static str,
     harness: Harness,
-    /// `--model` for a root, and `spawn`'s `model` for a child. `None` where the harness takes
-    /// none; the two that refuse to compile without one state it.
-    model: Option<&'static str>,
-    /// `TaskContract.child.model` when this harness is the **child**: the compiled value, which is
-    /// `None` on codex whatever was asked for.
+    /// `--model` for a root, and `spawn`'s `model` for a child. **Every node asks for one**, which
+    /// is what makes [`Node::child_model`] worth asserting: a matrix that asked for nothing and
+    /// then asserted nothing had been recorded would pass against an adapter that dropped the
+    /// field, one that invented a value, and one that did neither.
+    model: &'static str,
+    /// `TaskContract.child.model` when this harness is the **child**: the value the adapter
+    /// **compiled**, which is not always the value [`Node::model`] asked for.
+    ///
+    /// The two are deliberately separate fields rather than one, because §6.7 makes the contract an
+    /// audit record of what *ran* — so the only interesting case is the one where they differ, and
+    /// codex is it: `AdapterCodex::compile` maps `Auth::Canned` to `model: None` whatever was
+    /// asked, because under canned auth the endpoint is marion's own server and naming a model
+    /// there would be a contract naming something that never reached argv. Asking codex for
+    /// `gpt-5.6-sol` and asserting `None` is that property end to end; `harness_matrix.rs` asserts
+    /// the same property one node at a time.
     child_model: Option<&'static str>,
     /// The wire this harness speaks to the canned provider on.
     wire: &'static str,
@@ -345,10 +370,13 @@ struct Node {
 const CLAUDE: Node = Node {
     agent_type: "claude",
     harness: Harness::ClaudeCode,
-    // Claude Code's `--model` is legitimately omissible and the canned provider ignores it, so the
-    // cells assert the absence rather than pinning a vendor id marion has no basis for.
-    model: None,
-    child_model: None,
+    // Claude Code's `--model` is legitimately omissible, and these cells pass one anyway: an
+    // omitted flag makes `child.model == None` true for two unrelated reasons at once — the
+    // adapter carried the absence, or the adapter drops the field — and the contract cannot tell
+    // them apart. `compile_headless` carries `--model` through verbatim, so an asked-for `haiku`
+    // must come back as `haiku`. The canned provider ignores the value.
+    model: "haiku",
+    child_model: Some("haiku"),
     wire: "anthropic",
     program: "claude",
     child_writes_worktree: false,
@@ -357,7 +385,12 @@ const CLAUDE: Node = Node {
 const CODEX: Node = Node {
     agent_type: "codex-impl",
     harness: Harness::Codex,
-    model: None,
+    // **Asked for on purpose, and the contract must refuse to record it.** `codex exec` does take
+    // `-m` (0.146.0's `--help` lists it), so this is not a harness that cannot carry a model — it
+    // is `AdapterCodex::compile` declining to name one under `Auth::Canned`, where the endpoint is
+    // marion's own canned server. A contract naming `gpt-5.6-sol` here would be an audit record of
+    // a flag that never reached argv.
+    model: "gpt-5.6-sol",
     child_model: None,
     wire: "responses",
     program: "codex",
@@ -368,7 +401,7 @@ const GEMINI: Node = Node {
     agent_type: "gemini",
     harness: Harness::Gemini,
     // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
-    model: Some("gemini-2.5-flash"),
+    model: "gemini-2.5-flash",
     child_model: Some("gemini-2.5-flash"),
     wire: "gemini",
     program: "gemini",
@@ -379,7 +412,7 @@ const OPENCODE: Node = Node {
     agent_type: "opencode",
     harness: Harness::OpenCode,
     // `provider/model`, the only spelling `-m` accepts; the generated provider block repeats it.
-    model: Some("marion/canned-1"),
+    model: "marion/canned-1",
     child_model: Some("marion/canned-1"),
     wire: "openai",
     program: "opencode",
@@ -421,22 +454,20 @@ fn report_tool(node: &Node) -> String {
 /// `report`. In a same-harness cell both halves live on one wire and the marker is what separates
 /// them — see the module docs.
 fn script(root: &Node, child: &Node) -> Script {
-    let mut spawn_args = json!({
+    // A **string**, on every harness, never a JSON `null`. §3.1 makes an omitted `model` mean "the
+    // agent type's own default" (`marion-supervisor::main` reads it with `as_str()`), and a JSON
+    // `null` is not the same thing to every harness: measured here, gemini 0.53.0 validates a tool
+    // call against the declared schema *before* dispatching it and refuses `"model": null` with
+    // `params/model must be string` — an `invalid_tool_params` tool_result, after which the root
+    // happily finished its turn having spawned nothing.
+    let spawn_args = json!({
         "agent_type": child.agent_type,
         "prompt": CHILD_PROMPT,
         "acceptance_criteria": ["a file exists under src/ containing the marker"],
         "writable_scope": ["src/**"],
         "timeout_secs": CHILD_TIMEOUT_SECS,
+        "model": child.model,
     });
-    // **Absent, never null**, on the two harnesses that take no model. §3.1 makes an omitted
-    // `model` mean "the agent type's own default" (`marion-supervisor::main` reads it with
-    // `as_str()`), and a JSON `null` is not the same thing to every harness: measured here, gemini
-    // 0.53.0 validates a tool call against the declared schema *before* dispatching it and refuses
-    // `"model": null` with `params/model must be string` — an `invalid_tool_params` tool_result,
-    // after which the root happily finished its turn having spawned nothing.
-    if let Some(m) = child.model {
-        spawn_args["model"] = json!(m);
-    }
     let mut s = Script {
         root: Some(RootScript {
             marker: ROOT_MARKER.into(),
@@ -505,6 +536,12 @@ struct Evidence {
     agent_dirs_present: Vec<String>,
     /// The canned provider's verbatim request log — the primary evidence for any failure.
     requests: Vec<Value>,
+    /// §4.3's journal for this run's project, replayed off disk before the scratch dir went away.
+    ///
+    /// A `Result` and not an `expect` inside [`drive`], because everything in [`drive`] runs before
+    /// the unconditional cleanup below it: a panic there would leave the very processes and
+    /// directories this file asserts about. The error is carried out and raised as an assertion.
+    journal: Result<Replay, String>,
     leaked: Vec<String>,
 }
 
@@ -618,7 +655,7 @@ fn marion_argv(
     timeout: &str,
 ) -> Vec<String> {
     let prompt = format!("{ROOT_MARKER}: delegate the marker-file task to a child.");
-    let mut args: Vec<String> = vec![
+    let args: Vec<String> = vec![
         "run".into(),
         root.agent_type.into(),
         "--prompt".into(),
@@ -634,11 +671,12 @@ fn marion_argv(
         "--canned".into(),
         "--timeout".into(),
         timeout.into(),
+        // Passed for every root, including the two whose `--model` is omissible: see
+        // [`Node::model`]. What the adapter does with it is the cell's assertion, not the
+        // builder's.
+        "--model".into(),
+        root.model.into(),
     ];
-    if let Some(m) = root.model {
-        args.push("--model".into());
-        args.push(m.into());
-    }
     args
 }
 
@@ -649,8 +687,11 @@ fn marion_argv(
 /// `--base-url` without `--canned`. That is a property of the *harness*, not of any cell, and it is
 /// checkable in microseconds against the same gate `bin/marion.rs` enforces in seconds.
 ///
-/// It runs over every node, because `--model` is the one thing that varies between the four and a
-/// builder that dropped the flag on one branch would otherwise be caught only by that harness.
+/// It runs over every node, and checks the second thing this builder owes every cell alongside it:
+/// **`--model` is passed, and with this node's own asked-for value.** Criterion 3 asserts what the
+/// adapter *compiled*, and its whole meaning rests on something having been asked for — a builder
+/// that quietly stopped passing the flag would turn codex's `None` back into the tautology this
+/// file used to assert, with every cell still green.
 #[test]
 fn argv_that_names_a_loopback_endpoint_always_says_canned() {
     for node in [&CLAUDE, &CODEX, &GEMINI, &OPENCODE] {
@@ -679,6 +720,17 @@ fn argv_that_names_a_loopback_endpoint_always_says_canned() {
                  combination on purpose (it aims a real credential at a fake server), so every \
                  cell built this way would fail at argument parsing. A run that wants the fixture \
                  has to say so.\nargv: {args:?}",
+                node.agent_type
+            );
+            let asked = args
+                .iter()
+                .position(|a| a == "--model")
+                .and_then(|i| args.get(i + 1));
+            assert_eq!(
+                asked.map(String::as_str),
+                Some(node.model),
+                "{}: every cell asks its root for a model, so that criterion 3's assertion about \
+                 the COMPILED value has something to be about.\nargv: {args:?}",
                 node.agent_type
             );
         }
@@ -719,6 +771,8 @@ fn drive(root: &Node, child: &Node) -> Evidence {
     .expect("marion run starts");
 
     let requests = server.requests().unwrap_or_default();
+    // §4.3's location, resolved the one way marion resolves it — never a second literal here.
+    let journal = read_path(&ProjectDir::new(&state, &repo).journal()).map_err(|e| e.to_string());
     let contracts = persisted_contracts(&state);
     let agent_dirs_present = std::fs::read_dir(&state)
         .into_iter()
@@ -746,12 +800,172 @@ fn drive(root: &Node, child: &Node) -> Evidence {
         persisted: contracts.into_iter().map(|(_, v)| v).collect(),
         agent_dirs_present,
         requests,
+        journal,
         leaked: leaked.into_iter().map(|(_, line)| line).collect(),
     }
 }
 
-/// The eight assertions every cell makes, in the order that makes a failure most diagnosable: the
-/// run's own outcome first, then what the provider saw, then what marion recorded.
+// --- what the ROOT was handed back ---------------------------------------------------------------
+
+/// The text of the tool result the **root** received for its own `spawn` call, read back off the
+/// root's *next* request on its own wire.
+///
+/// **This is the only thing in the file that looks at the reply marion sent rather than at what
+/// marion wrote down.** Every other criterion is satisfied by a marion that persists a perfectly
+/// good contract and hands the model a stub, an error, or some other run's contract — the model
+/// never sees the file, it sees this string. §9 asserts it *on the request side* for the same
+/// reason it asserts everything else there: what the harness replayed back to the provider is what
+/// the harness actually received, whereas marion's own outgoing frame is marion's testimony about
+/// itself.
+///
+/// Four wires, four frames, and none of them is a substring scan: each finds the *structured*
+/// result of the root's own call, by the id the provider minted for it (or, on Gemini, by the tool
+/// name — the CLI mints its own call id, so ours is not there to match).
+fn root_tool_result(root: &Node, ev: &Evidence, cell: &str) -> String {
+    // Latest first: on every wire the whole transcript is replayed each turn, so the last root
+    // request is the one that carries the most, and a cell that somehow took extra turns still
+    // finds the result rather than the frame before it.
+    ev.root_requests()
+        .iter()
+        .rev()
+        .find_map(|r| tool_result_on(root, &r["body"]))
+        .unwrap_or_else(|| {
+            panic!(
+                "{cell}: no request the root sent carries the result of its own `spawn` call. The \
+                 child ran and marion persisted a contract, so the missing piece is the tool \
+                 result going back to the model — which is the whole of §9's third criterion.\n\
+                 Request log:\n{}\n{}",
+                ev.log_summary(),
+                ev.marion_summary()
+            )
+        })
+}
+
+/// [`root_tool_result`] for one request body, on one wire. `None` means "this request does not
+/// carry the result yet", which is the ordinary state of the root's *first* turn.
+fn tool_result_on(root: &Node, body: &Value) -> Option<String> {
+    match root.wire {
+        // Anthropic Messages: a `tool_result` block quoting our own `tool_use.id`, whose content
+        // Claude Code 2.1.220 sends as an MCP block list.
+        "anthropic" => {
+            let block = body["messages"]
+                .as_array()?
+                .iter()
+                .filter_map(|m| m["content"].as_array())
+                .flatten()
+                .find(|b| b["type"] == "tool_result" && b["tool_use_id"] == ROOT_TOOL_USE_ID)?;
+            mcp_blocks_text(&block["content"])
+        }
+        // Responses: a `function_call_output` item quoting our `call_id`. Its `output` is **not**
+        // the MCP result — codex 0.146.0 frames it as `Wall time: <n> seconds\nOutput:\n<blocks>`,
+        // where `<blocks>` is the MCP content list. Unwrapped structurally rather than by hunting
+        // for a `{`: the contract itself is full of braces.
+        "responses" => {
+            let output =
+                body["input"].as_array()?.iter().find(|i| {
+                    i["type"] == "function_call_output" && i["call_id"] == ROOT_CALL_ID
+                })?["output"]
+                    .as_str()?;
+            let blocks = output.split_once("\nOutput:\n").unwrap_or_else(|| {
+                panic!(
+                    "codex framed its mcp result as something other than `…\\nOutput:\\n<blocks>`, \
+                     so this cell cannot read what the root was handed:\n{output}"
+                )
+            });
+            let parsed: Value = serde_json::from_str(blocks.1).unwrap_or_else(|e| {
+                panic!("codex's `Output:` section is not JSON: {e}\n{}", blocks.1)
+            });
+            mcp_blocks_text(&parsed)
+        }
+        // Gemini: a `functionResponse` part. The CLI mints its own call id, so the match is on the
+        // tool name; and it wraps every MCP result in `<untrusted_context>` before showing it to
+        // the model, which is stripped here rather than tolerated by a substring assertion.
+        "gemini" => {
+            let tool = spawn_tool(root);
+            let output =
+                body["contents"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|c| c["parts"].as_array())
+                    .flatten()
+                    .find(|p| p["functionResponse"]["name"] == tool.as_str())?["functionResponse"]
+                    ["response"]["output"]
+                    .as_str()?;
+            let inner = output
+                .trim()
+                .strip_prefix("<untrusted_context>")
+                .and_then(|s| s.strip_suffix("</untrusted_context>"))
+                .unwrap_or(output);
+            Some(inner.trim().to_string())
+        }
+        // Chat Completions: the `role: "tool"` message answering our `tool_call_id`, whose content
+        // is the MCP text flattened by opencode itself.
+        "openai" => Some(
+            body["messages"]
+                .as_array()?
+                .iter()
+                .find(|m| m["role"] == "tool" && m["tool_call_id"] == ROOT_CALL_ID)?["content"]
+                .as_str()?
+                .to_string(),
+        ),
+        w => panic!("no reader for wire {w:?}; a fifth wire needs its own frame here"),
+    }
+}
+
+/// An MCP `content` payload — a block list, or the bare string a harness may flatten it to — as
+/// text. Shared by the two wires that hand the block list through unflattened.
+fn mcp_blocks_text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(blocks) => Some(
+            blocks
+                .iter()
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join(""),
+        ),
+        _ => None,
+    }
+}
+
+/// Drop everything §6.7's cap rules 0–6 may shorten, **and the metadata that records the
+/// shortening**, from a contract's JSON.
+///
+/// The returned copy is legitimately *shorter* than the persisted one — that is what the caps are
+/// for — so the comparison cannot be byte equality, and §9 says exactly which fields it normalizes:
+/// *"every `Capped.truncated`/`original_bytes` pair and every `*_omitted` counter may differ
+/// between the two copies […] The comparison normalizes both the shortened fields and their
+/// metadata; it is not an equality over the metadata."* Everything left — the ids, the repo, the
+/// workspace, the scope lists, the status, the flags, the exit, the timestamps — must match byte
+/// for byte. `m1_hop.rs` normalizes the same set for the same reason.
+fn normalize_for_cap_rules(mut v: Value) -> Value {
+    // Rule 5(e).
+    v["instructions"] = Value::Null;
+    v["acceptance_criteria"] = Value::Null;
+    if let Some(c) = v.get_mut("completion").and_then(Value::as_object_mut) {
+        for key in [
+            // Rules 0, 2/3, 1, 5(a)-(d).
+            "narrative",
+            "diff",
+            "evidence",
+            "changed_paths",
+            "scope_violations",
+            // The metadata recording the shortening.
+            "evidence_omitted",
+            "changed_paths_omitted",
+            "scope_violations_omitted",
+            "acceptance_criteria_omitted",
+        ] {
+            c.insert(key.to_string(), Value::Null);
+        }
+    }
+    v
+}
+
+/// The eleven assertions every cell makes, in the order that makes a failure most diagnosable: the
+/// run's own outcome first, then what the provider saw, then what marion recorded, then what the
+/// root was actually handed, and last the two whole-run properties — the tree's terminal states and
+/// the leak check.
 fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
     let cell = format!("{} root → {} child", root.harness, child.harness);
 
@@ -934,6 +1148,131 @@ fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
             ev.log_summary()
         );
     }
+
+    // ---- 10: the ROOT received the contract, and it is the one on disk. -------------------------
+    //
+    // Everything above is an assertion about what marion *wrote down*. A marion that persisted a
+    // flawless contract and handed its root a stub — or a truncation notice, or another run's
+    // contract — passes every one of them, and the model, which is the only consumer §6.7 has, sees
+    // none of what they checked. Read off the root's own next request, on its own wire.
+    let result_text = root_tool_result(root, ev, &cell);
+    assert!(
+        !result_text.contains("<persisted-output>"),
+        "{cell}: the tool result was replaced by a stub, so the contract never reached the model. \
+         Keeping it under that threshold is what §6.7's cap rules exist to guarantee.\n\
+         {result_text}"
+    );
+    let returned: TaskContract = serde_json::from_str(&result_text).unwrap_or_else(|e| {
+        panic!("{cell}: the root's tool result does not deserialize to a TaskContract: {e}\n{result_text}")
+    });
+    assert_eq!(
+        returned.task_id, contract.task_id,
+        "{cell}: the root was handed a contract for a different task than the one persisted — the \
+         failure a per-cell equality below would otherwise report as a diff a reader has to \
+         squint at"
+    );
+    // Nothing in these cells is anywhere near a cap, so the shortenable fields survived intact and
+    // the normalization below is not hiding a difference in them. Asserted, not assumed: if a cap
+    // ever does fire here, this says so instead of letting the comparison quietly compare nulls.
+    assert!(
+        !contract.instructions.truncated
+            && contract.acceptance_criteria.iter().all(|c| !c.truncated)
+            && comp.narrative.as_ref().is_none_or(|n| !n.truncated)
+            && comp.diff.as_ref().is_none_or(|d| !d.truncated)
+            && (comp.evidence_omitted, comp.changed_paths_omitted) == (0, 0)
+            && (
+                comp.scope_violations_omitted,
+                comp.acceptance_criteria_omitted
+            ) == (0, 0),
+        "{cell}: the persisted contract is the complete one and nothing here is near a cap, so \
+         nothing in it should record having been shortened: {:?}",
+        ev.persisted[0]
+    );
+    let returned_comp = returned
+        .completion
+        .as_ref()
+        .unwrap_or_else(|| panic!("{cell}: the returned copy carries the same completion"));
+    assert_eq!(
+        returned_comp.narrative.as_ref().map(|n| &n.value),
+        comp.narrative.as_ref().map(|n| &n.value),
+        "{cell}: the child's own words are what the root is told; nothing here is near rule 0's cap"
+    );
+    assert_eq!(
+        returned_comp.changed_paths, comp.changed_paths,
+        "{cell}: §6.7's audit of the worktree is part of what the root is answering to, and this \
+         run's set is far under rule 5(b)'s cap"
+    );
+    assert_eq!(
+        normalize_for_cap_rules(
+            serde_json::to_value(&returned).expect("a TaskContract serializes")
+        ),
+        normalize_for_cap_rules(ev.persisted[0].clone()),
+        "{cell}: the tool result must BE the persisted contract, modulo only what §6.7's cap rules \
+         may shorten. Every field outside those rules — the ids, the repo, the workspace, the \
+         scope lists, the status, the flags, the exit, the timestamps — is the same run described \
+         twice.\nRequest log:\n{}",
+        ev.log_summary()
+    );
+
+    // ---- 11: both nodes reached a terminal state, in §4.3's journal. ----------------------------
+    //
+    // The contract says how the *child's task* ended; the journal says how the two *nodes* ended,
+    // and they are not the same claim. §7.2's `Orphaned` marking is about exactly the gap: a node
+    // marion recorded live and never recorded resolving. A run can hand back a clean `Ok` contract
+    // and still leave its tree saying a process is running.
+    let replay = ev
+        .journal
+        .as_ref()
+        .unwrap_or_else(|e| panic!("{cell}: the run's journal does not replay: {e}"));
+    assert_eq!(
+        replay.nodes().len(),
+        2,
+        "{cell}: one root, one child: {:?}",
+        replay
+            .nodes()
+            .iter()
+            .map(|n| &n.agent_id.0)
+            .collect::<Vec<_>>()
+    );
+    let roots = replay.roots();
+    assert_eq!(roots.len(), 1, "{cell}: one root: {roots:?}");
+    let root_node = roots[0];
+    let children = replay.children(&root_node.agent_id);
+    assert_eq!(
+        children.len(),
+        1,
+        "{cell}: the root spawned exactly one child: {children:?}"
+    );
+    let child_node = children[0];
+    // Which node is which, before saying anything about how they ended — in a same-harness cell
+    // these two agree, which is why the parent edge above and not the harness is what tells them
+    // apart.
+    assert_eq!(
+        (root_node.harness(), child_node.harness()),
+        (Some(root.harness), Some(child.harness)),
+        "{cell}: the journal must name the harness each node actually ran"
+    );
+    for (label, node) in [("root", root_node), ("child", child_node)] {
+        assert_eq!(
+            node.state,
+            NodeState::Exited(ExitStatus::Ok),
+            "{cell}: the {label} node's terminal state. `Exited(_)` with a non-`Ok` status is a \
+             node marion watched fail; anything else is a node marion never recorded resolving at \
+             all, which is what §7.2's Orphaned marking is for. exit: {:?}\nRequest log:\n{}",
+            node.exit,
+            ev.log_summary()
+        );
+    }
+    assert!(
+        replay.unresolved().is_empty(),
+        "{cell}: a node recorded live with no exit outlives the run in marion's own tree, whatever \
+         `ps` says: {:?}",
+        replay
+            .unresolved()
+            .iter()
+            .map(|n| &n.agent_id.0)
+            .collect::<Vec<_>>()
+    );
 
     // ---- 8: nothing outlived the run. -----------------------------------------------------------
     assert!(
