@@ -787,18 +787,30 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
         assert!(e.to_string().contains("refused"));
     }
 
+    /// The marker lives **inside a [`temp`] dir**, exactly as the gate test below already puts its
+    /// own there, rather than beside one in the system temp root with a `remove_file` at the end.
+    ///
+    /// That trailing call cleaned up only the passing run: a failing assertion unwinds straight
+    /// past it, so the marker survived on precisely the runs a developer re-runs — the same
+    /// asymmetry cb6ab2e removed from `temp` itself, one file at a time instead of one dir. The
+    /// guard already exists and already covers a file placed under it, so this needs no second
+    /// guard type; it needs the marker to be somewhere something owns.
+    ///
+    /// `dir` is bound for the whole test on purpose. `temp("ready").join(…)` would drop the guard
+    /// at the end of that statement and delete the directory out from under `wait_for_ready`.
     #[test]
     fn a_marker_written_after_the_wait_begins_is_still_seen() {
-        let path = std::env::temp_dir().join(format!("marion-ready-{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let dir = temp("ready");
+        let path = dir.join("mcp-ready");
         let p = path.clone();
         let h = std::thread::spawn(move || {
             std::thread::sleep(StdDuration::from_millis(50));
             std::fs::write(&p, b"").unwrap();
         });
         assert!(wait_for_ready(&path, StdDuration::from_secs(5)));
+        // Joined before the guard drops, so the writing thread cannot still be holding a path
+        // inside a directory this test has already removed.
         h.join().unwrap();
-        let _ = std::fs::remove_file(&path);
     }
 
     /// The gate refuses **before** anything is written to the node's stdin: a marker that never
