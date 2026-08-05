@@ -66,8 +66,23 @@ pub const DEPTH_ENV: &str = "MARION_DEPTH";
 pub struct HeadlessSpec {
     pub cwd: PathBuf,
     pub model: Option<String>,
+    /// Built-in tools that **exist** for this node — the availability axis (§3.1), already in
+    /// Claude Code's own spelling (`Write`, …). `--tools` selects from the *built-in* set and does
+    /// not gate MCP tools at all, so marion's own verbs never appear here.
+    ///
+    /// **Empty is the documented "no built-in tools" value and the default every node has run
+    /// with**: `--help` on 2.1.222 reads *"Use `""` to disable all tools"*, and an empty list joins
+    /// to exactly the `""` this argv has always carried. A node that declares nothing therefore
+    /// compiles byte-identically to one compiled before this field existed.
+    pub tools: Vec<String>,
     /// Tools the node may call **without a prompt** — the permission axis. marion's own tools go
     /// here, or the node's load-bearing call (`spawn` on a root, `report` on a child) is denied.
+    ///
+    /// **Every entry of [`Self::tools`] must appear here too**, and the adapter is what unions
+    /// them: §3.1's table compiles the permission axis from *"the same list, plus marion's own
+    /// `mcp__marion__*`"*. Availability without permission is not a route — §11 item 24 measured
+    /// `--tools "Write"` alone sending the call to `--permission-prompt-tool stdio`, where marion
+    /// has no answerer, so the child received item 22's dead-end message rather than writing.
     pub allowed_tools: Vec<String>,
     /// Path to the MCP server declaration marion wrote.
     pub mcp_config: PathBuf,
@@ -95,9 +110,16 @@ pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
         // anything. Easy to omit, because this document long explained it only as a dependency of
         // --include-partial-messages, which M1 does not use.
         "--verbose".into(),
-        // Availability axis: no built-in tools. This does NOT gate MCP tools.
+        // Availability axis (§3.1): which built-in tools exist. This does NOT gate MCP tools.
+        // Empty — the default — is the CLI's documented "disable all tools" value, so a node that
+        // declares nothing is launched exactly as every node was before the axis existed.
+        //
+        // Comma-joined, matching `--allowedTools` below, which is the separator measured to work
+        // on this CLI. The multi-name case is presently unreachable rather than measured:
+        // `marion_core::agent_type` implements a one-word vocabulary, so at most one name is ever
+        // emitted here. Whoever widens that vocabulary owes this separator a measurement.
         "--tools".into(),
-        "".into(),
+        spec.tools.join(","),
         // Permission axis. marion's tools must be listed here or a denied `spawn` is the result.
         "--allowedTools".into(),
         spec.allowed_tools.join(","),
@@ -299,6 +321,7 @@ mod tests {
         HeadlessSpec {
             cwd: "/tmp/wt".into(),
             model: Some("haiku".into()),
+            tools: vec![],
             allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
             mcp_config: "/tmp/mcp.json".into(),
             base_url: Some("http://127.0.0.1:8099".into()),

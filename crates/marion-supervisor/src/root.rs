@@ -112,6 +112,26 @@ pub const ROOT_ALLOWED_TOOLS: [&str; 4] = [
     "mcp__marion__list",
 ];
 
+/// The **availability** axis for an M1 root (§3.1): empty, on every harness, for every agent type.
+///
+/// Deliberately a constant beside [`ROOT_ALLOWED_TOOLS`] rather than a read of
+/// `AgentType::tools` — which is exactly what `run::run_spawn` gives a *child*. **If you came here
+/// to wire the agent type up, this is the reason not to.**
+///
+/// **A root's cwd is `RootSpec::repo`, the operator's own repository.** A child runs in a git
+/// worktree marion created and later removes, and §6.7 derives `changed_paths` and
+/// `scope_violations` from a diff of it; a root has no such directory, so it has no audit and no
+/// containment behind it. A built-in write tool there is `8a69f22`'s opencode containment failure —
+/// a write outside anything marion diffs — taken on purpose rather than by accident.
+///
+/// **And the agent type cannot be trusted to decline it, because the operator chooses it.**
+/// `prepare` resolves whatever name `marion run` was handed, `claude-impl` included, and that type
+/// really does declare `write`. So keeping the grant on separate implementer types is a
+/// *convention*: it says which types are meant for the job. This constant is the *invariant*: it
+/// holds for every agent type that exists now and every one added later, including one whose name
+/// carries no warning at all. **The convention alone is not a guarantee; the two together are.**
+pub const ROOT_TOOLS: [&str; 0] = [];
+
 /// Which of the two launch paths a root takes, derived from its adapter's `ExecutionSurfaces`.
 ///
 /// **One derivation, two names.** A root and a child face the same question — is this node's prompt
@@ -308,6 +328,10 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
             RootPath::Duplex => String::new(),
             RootPath::LaunchOnly => spec.prompt.clone(),
         },
+        // §3.1's availability axis, and a root compiles **none of it** — deliberately not
+        // `agent_type.tools`, which is what `run::run_spawn` gives a child. The whole argument is
+        // at [`ROOT_TOOLS`], beside `ROOT_ALLOWED_TOOLS`, which is a constant for the same reason.
+        tools: ROOT_TOOLS.iter().map(|s| s.to_string()).collect(),
         allowed_tools: ROOT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
         mcp: McpDeclaration::Marion,
         base_url: spec.base_url.clone(),
@@ -884,6 +908,45 @@ mod tests {
             bridge: "/bin/marion-supervisor".into(),
             model: builtin(agent_type).unwrap().model.clone(),
             auth: Auth::Canned,
+        }
+    }
+
+    /// **A root receives no built-in tool, whatever agent type it is given.**
+    ///
+    /// The invariant behind §3.1's availability axis, and the one that guards the operator's own
+    /// tree: `prepare` compiles a root with `cwd: spec.repo` — the user's repository, not a
+    /// worktree — so unlike a child there is no isolated directory to diff, no `changed_paths`,
+    /// and no `scope_violations` to derive. Handing it a write tool would be `8a69f22`'s opencode
+    /// containment failure taken deliberately.
+    ///
+    /// **Driven at `claude-impl` on purpose.** That type *does* declare `write`, and it is
+    /// reachable here — `prepare` resolves whatever name `marion run` was handed. So this is what
+    /// makes the guarantee structural rather than a naming convention: the axis is a constant in
+    /// `prepare`, not a read of the resolved type, and no agent type added later can change that.
+    ///
+    /// `--tools ""` with the flag still present is the assertion, not merely "Write is absent":
+    /// the CLI documents the empty string as *"disable all tools"*, so a dropped **flag** would be
+    /// a silently different grant that a substring search for `Write` would pass.
+    #[test]
+    fn a_root_compiles_no_availability_axis_even_for_a_type_that_declares_one() {
+        let dir = temp("root-tools");
+        assert_eq!(
+            builtin("claude-impl").unwrap().tools,
+            vec!["write".to_string()],
+            "this test is vacuous unless the type really does declare a grant"
+        );
+        for agent_type in ["claude", "claude-impl"] {
+            let node = prepare(&root_spec(&dir, agent_type)).expect("the root compiles");
+            let args = &node.invocation.args;
+            let i = args
+                .iter()
+                .position(|a| a == "--tools")
+                .expect("the availability flag is always compiled, empty or not");
+            assert_eq!(
+                args[i + 1],
+                "",
+                "{agent_type}: a root's availability axis is empty by construction"
+            );
         }
     }
 

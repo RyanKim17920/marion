@@ -77,6 +77,37 @@ pub const CANNED_AUTH_TYPE: &str = "gemini-api-key";
 /// itself writes, and the value on this machine's real profile.
 pub const LIVE_FALLBACK_AUTH_TYPE: &str = "oauth-personal";
 
+/// The approval mode that makes gemini's edit tools **exist**, and the whole of this harness's
+/// availability axis (§3.1).
+///
+/// gemini has no `--tools` flag and no per-tool permission list: under the default approval mode
+/// 0.53.0 withholds `write_file`, `replace` and `run_shell_command` from `functionDeclarations`
+/// entirely, so the model is never offered them and the prose of its system instruction describes
+/// tools it cannot call. §11 item 24 measured this mode putting `write_file` and `replace` back.
+///
+/// **This is not `-y`, and §6.4's standing objection to yolo mode does not reach it.** That
+/// objection is that `--yolo` auto-approves *everything* and an admin can veto it outright through
+/// `security.disableYoloMode`, so it is not a foundation marion can stand on. `auto_edit` is a
+/// third value beside `default` and `yolo` (0.53.0 `--help`: *"auto_edit (auto-approve edit
+/// tools)"*), scoped to edit tools and outside that veto.
+///
+/// Emitted **only** when an edit tool is actually declared ([`is_edit_tool`]). A node whose
+/// `tools:` is the default `[]` is launched in the default mode it always was.
+pub const AUTO_EDIT_APPROVAL_MODE: &str = "auto_edit";
+
+/// Is this gemini-native tool name one [`AUTO_EDIT_APPROVAL_MODE`] is required for?
+///
+/// The two names 0.53.0 was measured to add under that mode (§11 item 24). `run_shell_command` is
+/// deliberately **not** here: it is withheld under the default mode too, but item 24 did not
+/// measure `auto_edit` restoring it — *"edit tools"* is what the flag documents — so claiming it
+/// would be a guess about a grant, which is the direction this codebase never guesses in.
+///
+/// Lives here rather than in the adapter because it is knowledge about gemini, and the adapter's
+/// job is only to hand marion's declaration to the harness that owns the answer.
+pub fn is_edit_tool(native: &str) -> bool {
+    matches!(native, "write_file" | "replace")
+}
+
 /// The MCP server alias. **It must not contain `_`**: gemini exposes MCP tools as
 /// `mcp_<server>_<tool>`, and the shipped policy-engine docs warn that a fully-qualified name with
 /// extra underscores is mis-parsed and **fails silently** (S12). `marion` is safe.
@@ -91,6 +122,14 @@ pub struct PromptSpec {
     /// measured a naive canned reply making it retry 5× and then hang. §6.4 states the MUST.
     pub model: String,
     pub prompt: String,
+    /// Whether this node's declaration contains an edit tool, and so needs
+    /// [`AUTO_EDIT_APPROVAL_MODE`] for that tool to exist at all.
+    ///
+    /// A resolved `bool` rather than the tool list itself: the mapping from marion's vocabulary to
+    /// gemini's names is the adapter's (§3.1), the rule about which of *gemini's* names need the
+    /// mode is [`is_edit_tool`] above, and a second copy of the list here could disagree with the
+    /// one the adapter compiled. `false` — the default — is the mode every gemini node has run in.
+    pub auto_edit: bool,
     /// `$GEMINI_CLI_HOME`.
     pub cli_home: PathBuf,
     /// The file [`settings_json`] is written to, named by [`SYSTEM_SETTINGS_PATH_ENV`].
@@ -190,17 +229,23 @@ pub fn base_url_is_acceptable(base_url: &str) -> bool {
 }
 
 pub fn compile_prompt(spec: &PromptSpec) -> Invocation {
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         // Explicit model: see `PromptSpec::model`. Never omitted, never `auto`.
         "-m".into(),
         spec.model.clone(),
         "--output-format".into(),
         "stream-json".into(),
-        // The prompt is the **argument to `-p`** — not positional (a bare positional query
-        // launches the interactive UI) and not stdin (which is *prepended as context* instead).
-        "-p".into(),
-        spec.prompt.clone(),
     ];
+    // Ahead of `-p`, so a node that declares nothing compiles the argv it always compiled, in the
+    // order it always compiled it.
+    if spec.auto_edit {
+        args.push("--approval-mode".into());
+        args.push(AUTO_EDIT_APPROVAL_MODE.into());
+    }
+    // The prompt is the **argument to `-p`** — not positional (a bare positional query launches
+    // the interactive UI) and not stdin (which is *prepended as context* instead).
+    args.push("-p".into());
+    args.push(spec.prompt.clone());
 
     // **Live mode is a removal, and the two survivors are not part of the isolation.** S12's
     // settings-precedence table resolves the *system settings* layer through
@@ -434,6 +479,7 @@ mod tests {
         PromptSpec {
             cwd: "/tmp/wt".into(),
             model: "gemini-2.5-flash".into(),
+            auto_edit: false,
             prompt: "do the task".into(),
             cli_home: "/tmp/cfg".into(),
             settings: "/tmp/cfg/marion-settings.json".into(),

@@ -15,6 +15,17 @@ use crate::claude_code::{
 use crate::invocation::Invocation;
 use crate::stream::{StreamOutcome, json_frames, report_commits};
 
+/// The sandbox every codex node marion generates a config for runs in — and **this harness's whole
+/// availability axis** (§3.1). `codex exec` has no `--tools` and no permission list; it exposes
+/// only `--sandbox <read-only|workspace-write|danger-full-access>`, so this one value is what
+/// decides whether a codex child can change a file at all.
+///
+/// Named rather than inlined into [`config_toml`] because
+/// `crate::adapter::CodexAdapter::tool_name` maps marion's `write` onto it as §3.1's *"coarsest
+/// equivalent"* (`sandbox:workspace-write`): two spellings of one grant could drift, and then the
+/// adapter would be reporting a mode the generated config does not set.
+pub const SANDBOX_MODE: &str = "workspace-write";
+
 #[derive(Debug, Clone)]
 pub struct ExecSpec {
     pub cwd: PathBuf,
@@ -337,7 +348,7 @@ pub fn config_toml(env: &BridgeEnv, base_url: &str) -> String {
     format!(
         r#"model_provider = "canned"
 approval_policy = "never"
-sandbox_mode = "workspace-write"
+sandbox_mode = "{SANDBOX_MODE}"
 
 # Measured on 0.146.0: `codex exec` starts a **background** `git fetch` of the curated plugin
 # marketplace into `$CODEX_HOME/.tmp/plugins-clone-*`, and it OUTLIVES the exec process. marion

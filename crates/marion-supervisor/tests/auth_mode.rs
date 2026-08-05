@@ -88,6 +88,7 @@ fn live_spec_with_gateway(model: Option<&str>) -> LaunchSpec {
         cwd: "/repo".into(),
         model: model.map(str::to_string),
         prompt: String::new(),
+        tools: vec![],
         allowed_tools: vec!["mcp__marion__spawn".into()],
         mcp: McpDeclaration::Marion,
         base_url: Some(GATEWAY.into()),

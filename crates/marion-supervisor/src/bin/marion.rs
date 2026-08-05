@@ -828,7 +828,16 @@ mod tests {
 
     #[test]
     fn the_picker_offers_every_builtin_by_number_and_selects_by_it() {
-        let (chosen, shown) = run_picker("4\ngemini-9.9-pro\nport the parser\n");
+        // Looked up rather than hardcoded, for the reason the test below states: the offered list
+        // *is* `builtin_names()`, so an ordinal written as a literal here would silently start
+        // naming a different type the day a built-in is added — which is exactly what adding
+        // `claude-impl` and `gemini-impl` did to the literal `4` that used to sit here.
+        let n = builtin_names()
+            .iter()
+            .position(|n| *n == "gemini")
+            .expect("gemini is a built-in")
+            + 1;
+        let (chosen, shown) = run_picker(&format!("{n}\ngemini-9.9-pro\nport the parser\n"));
         for name in builtin_names() {
             assert!(shown.contains(name), "{name} must be offered: {shown}");
         }

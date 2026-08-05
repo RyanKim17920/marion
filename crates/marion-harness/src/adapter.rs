@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 
+use marion_core::agent_type;
 use marion_core::contract::AgentId;
 use marion_core::harness::Harness;
 
@@ -140,8 +141,26 @@ pub struct LaunchSpec {
     /// The compiled prompt (§3.1's wrapping rules). Empty for a surface whose prompt is written
     /// after launch rather than compiled into argv.
     pub prompt: String,
+    /// The **availability** axis (§3.1): which built-in tools exist for this node, in **marion's**
+    /// vocabulary (`marion_core::agent_type::TOOL_WRITE`, …). The agent type's `tools:` list,
+    /// verbatim; each adapter maps it to its harness's own spelling through
+    /// [`HarnessAdapter::tool_name`], and refuses by name what it cannot provide.
+    ///
+    /// Distinct from [`Self::allowed_tools`] because §3.1 says the two axes are distinct and §11
+    /// item 24 measured what conflating them costs — but **not independent of it**: an adapter
+    /// that reads this must also union it into whatever permission surface its harness has, or the
+    /// tool exists and every call to it is denied. `HarnessAdapter::compile` is where that union
+    /// happens, so the two can never be declared apart.
+    ///
+    /// Empty on every node marion spawns today: no built-in agent type declares a tool.
+    pub tools: Vec<String>,
     /// The **permission** axis (§3.1): tool calls allowed without a prompt, in marion's names for
     /// its own verbs. Adapters translate; §3.1's two-axis table is why this is not `tools`.
+    ///
+    /// Carries marion's **own** verbs only. What the node's agent type declared arrives on
+    /// [`Self::tools`] and is unioned in by the adapter — a caller that appended it here instead
+    /// would have granted permission without availability, which is the mirror of item 24's dead
+    /// end and just as silent.
     pub allowed_tools: Vec<String>,
     pub mcp: McpDeclaration,
     /// The provider base URL in the canonical **`…/v1`** form — the one a Codex
@@ -213,6 +232,20 @@ pub enum HarnessError {
         harness: Harness,
         what: &'static str,
     },
+    /// An agent type declared a tool this harness has no mapping for (§3.1's availability axis).
+    ///
+    /// **Loud, at compile time, naming both halves** — never a silent drop. Dropping it is the
+    /// §12 accept-and-ignore shape marion keeps finding in other harnesses, and here it would be
+    /// the worst instance of it: the node launches, is offered no such tool, does no work, and
+    /// persists a contract with `changed_paths: []` that is byte-identical to a child whose write
+    /// escaped its worktree (§11 item 24). A caller cannot tell those apart, so marion must never
+    /// produce the first by accident.
+    ///
+    /// The tool is a `String` and not a `&'static str` because it is a value that came from a
+    /// declaration rather than from marion's own source, and the message is only useful if it
+    /// quotes what was actually written.
+    #[error("{harness}: no mapping for marion tool `{tool}`; this harness's adapter provides none")]
+    UnsupportedTool { harness: Harness, tool: String },
 }
 
 /// One harness's translation of marion's vocabulary into that harness's own.
@@ -282,6 +315,39 @@ pub trait HarnessAdapter {
     /// item* naming the flat string is what 0.146.0 rejects as `unsupported call` (§11 item 12's
     /// correction), not the identifier in a prompt.
     fn marion_tool_name(&self, tool: &str) -> String;
+
+    /// This harness's spelling of one tool from **marion's own vocabulary**
+    /// (`marion_core::agent_type::TOOL_WRITE`), for §3.1's **availability** axis.
+    ///
+    /// The sibling of [`Self::marion_tool_name`] on the other side of the boundary: that one names
+    /// *marion's* verbs to a harness, this one names a *harness's* verbs to marion. §3.1 settles
+    /// which direction the vocabulary runs — *"tool names are marion's vocabulary, and the mapping
+    /// is part of the adapter contract"* — so a marion name goes in and a harness-native one comes
+    /// out, and no call site anywhere else has to know either spelling.
+    ///
+    /// **Returns a `Result`, and the error is the point.** A name this harness cannot provide is
+    /// [`HarnessError::UnsupportedTool`], naming the tool and the harness, and it aborts the
+    /// launch. Silently dropping it would spawn a node that cannot do the work it was spawned for
+    /// and report no error — §11 item 24's whole subject.
+    ///
+    /// **Answering does not imply marion compiles anything for it.** Two of the four harnesses
+    /// have no per-tool availability surface at all, and for them the honest answer is §3.1's
+    /// *"the harness's coarsest equivalent"*: a name they already grant unconditionally, which
+    /// this method reports and `compile` then has nothing to do about. Making the grant
+    /// conditional there would *narrow* what those two harnesses have always been able to do,
+    /// which is a behaviour change wearing a feature's clothes.
+    fn tool_name(&self, tool: &str) -> Result<String, HarnessError>;
+
+    /// Every tool [`LaunchSpec::tools`] declares, in this harness's own spelling, or the first
+    /// refusal.
+    ///
+    /// Provided rather than written four times: the *mapping* is per-harness ([`Self::tool_name`])
+    /// and refusing on the first unmappable name is not. Every `compile` must call it — including
+    /// the two harnesses that do nothing with the result — because the refusal is the part that is
+    /// owed to a declaration on all four.
+    fn native_tools(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        spec.tools.iter().map(|t| self.tool_name(t)).collect()
+    }
 
     /// Which of marion's own verbs this harness's stream shows the node calling, in **marion's**
     /// vocabulary (`spawn`, `report`, …) rather than in the harness's spelling.
@@ -415,10 +481,18 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             // withholding both here is exactly "do not overlay", with no second branch to drift.
             Auth::Inherited => (None, None),
         };
+        // §3.1's two axes, compiled from **one** declaration, which is why they cannot disagree:
+        // availability is the mapped list, permission is *"the same list, plus marion's own
+        // `mcp__marion__*`"*. This harness is the one of four where both axes are marion's to set
+        // and where opening only the first is a measured dead end (§11 item 24).
+        let native = self.native_tools(spec)?;
+        let mut allowed = spec.allowed_tools.clone();
+        allowed.extend(native.iter().cloned());
         Ok(compile_headless(&HeadlessSpec {
             cwd: spec.cwd.clone(),
             model: spec.model.clone(),
-            allowed_tools: spec.allowed_tools.clone(),
+            tools: native,
+            allowed_tools: allowed,
             mcp_config: Self::mcp_config_path(spec),
             base_url,
             api_key,
@@ -458,6 +532,25 @@ impl HarnessAdapter for ClaudeCodeAdapter {
 
     fn marion_tool_name(&self, tool: &str) -> String {
         format!("mcp__marion__{tool}")
+    }
+
+    /// `write` → **`Write`**, measured on 2.1.222: `--tools "Write"` puts a tool of that name, with
+    /// schema `{file_path, content}`, into the request body's tool list (§11 item 24). Its own
+    /// description asks for an absolute path; the same measurement drove it at a **relative** one
+    /// deliberately, and the file landed in the node's worktree — this harness resolves against the
+    /// process cwd, so `Invocation.cwd` places it and nothing further is owed here.
+    ///
+    /// `Edit` is *not* mapped, and its absence is deliberate rather than pending: item 24 records
+    /// that `Edit` and `Bash` were never tried, and this codebase does not name a grant it has not
+    /// watched arrive.
+    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
+        match tool {
+            agent_type::TOOL_WRITE => Ok("Write".into()),
+            _ => Err(HarnessError::UnsupportedTool {
+                harness: Harness::ClaudeCode,
+                tool: tool.to_string(),
+            }),
+        }
     }
 
     /// The prefix is derived from this adapter's own `marion_tool_name`, so the reader and the
@@ -512,6 +605,10 @@ impl HarnessAdapter for CodexAdapter {
     /// the operator's `~/.codex/config.toml`, and marion is forbidden to write the second (§6.4), so
     /// the `-c` overlay is the only channel left.
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        // Called for the **refusal**, which is owed on all four harnesses, and for nothing else:
+        // see `Self::tool_name` for why a codex declaration compiles no flag. Discarding the names
+        // is the honest outcome, not a forgotten `?`.
+        let _already_granted = self.native_tools(spec)?;
         let config_overrides = match spec.auth {
             Auth::Canned => Vec::new(),
             Auth::Inherited => Self::bridge_env(spec, ctx)
@@ -611,6 +708,31 @@ impl HarnessAdapter for CodexAdapter {
         format!("mcp__marion__{tool}")
     }
 
+    /// `write` → **`sandbox:workspace-write`**, which is §3.1's *"the harness's coarsest
+    /// equivalent where it has no per-tool allowlist at all"* — that section names this exact
+    /// string for this exact harness.
+    ///
+    /// **This harness's availability axis is a sandbox mode, and marion already opens it.**
+    /// `codex exec` exposes no `--tools` and no permission list, only
+    /// `--sandbox <read-only|workspace-write|danger-full-access>`; `codex::config_toml` compiles
+    /// `sandbox_mode = "workspace-write"` on every node and always has, which is why a codex child
+    /// is the one this matrix has always been able to drive to a write. So a declaration here is
+    /// **satisfied rather than newly granted**, and `compile` emits nothing for it.
+    ///
+    /// The judgement call, stated: this could instead have made `workspace-write` *conditional* on
+    /// the declaration, which reads tidier and would silently demote every codex node marion spawns
+    /// today to `read-only` — a behaviour change on the harness that was never broken, taken to
+    /// close a gap on two others. The opt-in rule cuts the other way here.
+    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
+        match tool {
+            agent_type::TOOL_WRITE => Ok(format!("sandbox:{}", codex::SANDBOX_MODE)),
+            _ => Err(HarnessError::UnsupportedTool {
+                harness: Harness::Codex,
+                tool: tool.to_string(),
+            }),
+        }
+    }
+
     /// **No prefix.** codex's stream names the server and the tool as two fields, so the flat
     /// identifier above never appears in it — see [`codex::marion_tool_calls`].
     fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
@@ -665,9 +787,14 @@ impl HarnessAdapter for GeminiAdapter {
                        non-loopback plain-http endpoint is refused by the CLI",
             });
         }
+        // §3.1's availability axis, in the only form this harness has one: a mode, not a list. The
+        // marion → gemini mapping is `Self::tool_name`'s, and which *gemini* names need the mode is
+        // `gemini::is_edit_tool`'s, so neither half is restated here.
+        let native = self.native_tools(spec)?;
         Ok(gemini::compile_prompt(&gemini::PromptSpec {
             cwd: spec.cwd.clone(),
             model,
+            auto_edit: native.iter().any(|t| gemini::is_edit_tool(t)),
             prompt: spec.prompt.clone(),
             cli_home: spec.config_dir.clone(),
             settings: Self::settings_path(spec),
@@ -741,6 +868,25 @@ impl HarnessAdapter for GeminiAdapter {
         format!("mcp_{}_{tool}", gemini::MCP_ALIAS)
     }
 
+    /// `write` → **`write_file`**, measured on 0.53.0: under
+    /// [`gemini::AUTO_EDIT_APPROVAL_MODE`] it appears in `functionDeclarations` with schema
+    /// `{file_path, content}`, and under the default mode it appears nowhere but the prose of the
+    /// system instruction (§11 item 24). The same measurement drove it at a **relative** path and
+    /// the file landed in the node's worktree, so `Invocation.cwd` places it.
+    ///
+    /// `replace` is gemini's *other* edit tool and the same mode restores it, but marion's
+    /// vocabulary has no verb that means it today, so nothing maps there. It is still named by
+    /// [`gemini::is_edit_tool`], which answers about gemini's names rather than marion's.
+    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
+        match tool {
+            agent_type::TOOL_WRITE => Ok("write_file".into()),
+            _ => Err(HarnessError::UnsupportedTool {
+                harness: Harness::Gemini,
+                tool: tool.to_string(),
+            }),
+        }
+    }
+
     fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
         gemini::marion_tool_calls(stdout, &self.marion_tool_name(""))
     }
@@ -808,6 +954,9 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
 
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        // For the **refusal** only — see `Self::tool_name`. Discarding the names is the honest
+        // outcome on this harness, not a forgotten `?`.
+        let _already_granted = self.native_tools(spec)?;
         // **Under `Inherited` the declaration is compiled into the env, not written to a file.**
         // S13: auth resolves through `$XDG_DATA_HOME` and config through `$XDG_CONFIG_HOME` — two
         // variables — so marion cannot relocate the config without also having to relocate, and
@@ -896,6 +1045,29 @@ impl HarnessAdapter for OpenCodeAdapter {
         format!("{}_{tool}", opencode::MCP_ALIAS)
     }
 
+    /// `write` → **`write`**, which is the name opencode already declares. Measured off the request
+    /// log of a child spawned through `spawn`: an opencode node's tool list carries `write`, `edit`
+    /// and `bash` alongside marion's MCP tools, with no flag from marion asking for any of them.
+    ///
+    /// So, as on codex, a declaration here is **satisfied rather than newly granted** and `compile`
+    /// emits nothing for it. The judgement call is the same one and lands the same way: opencode's
+    /// config *does* have a per-tool block that could disable these, and using the declaration to
+    /// drive it would silently narrow every opencode node marion spawns today. Opening a route on
+    /// two harnesses is not a licence to close one on a third.
+    ///
+    /// A spelling collision, not a shared vocabulary: marion's `write` and opencode's `write` are
+    /// the same six letters by coincidence, and the mapping is written out rather than defaulted
+    /// so that a future marion verb cannot pass through unmapped.
+    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
+        match tool {
+            agent_type::TOOL_WRITE => Ok("write".into()),
+            _ => Err(HarnessError::UnsupportedTool {
+                harness: Harness::OpenCode,
+                tool: tool.to_string(),
+            }),
+        }
+    }
+
     fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
         opencode::marion_tool_calls(stdout, &self.marion_tool_name(""))
     }
@@ -941,6 +1113,7 @@ mod tests {
             cwd: "/repo".into(),
             model: Some("haiku".into()),
             prompt: String::new(),
+            tools: vec![],
             allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
             mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -956,6 +1129,7 @@ mod tests {
             cwd: "/wt".into(),
             model: None,
             prompt: "do the task".into(),
+            tools: vec![],
             allowed_tools: vec![],
             mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -991,6 +1165,7 @@ mod tests {
         let via_free_function = compile_headless(&HeadlessSpec {
             cwd: "/repo".into(),
             model: Some("haiku".into()),
+            tools: vec![],
             allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
             mcp_config: "/state/x/config/mcp.json".into(),
             // The supervisor used to derive this itself; the adapter now does.
@@ -1013,6 +1188,370 @@ mod tests {
             config_overrides: Vec::new(),
         });
         assert_eq!(via_adapter, via_free_function);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // §3.1's availability axis (§11 item 24).
+    //
+    // The first test is the one the whole feature stands on and the rest are the feature itself.
+    // Each harness expresses availability in its **own** form and the tests say which, because a
+    // single shared assertion would have to pick one harness's form and be vacuous on the other
+    // three — which is how §11 item 24 came to be written in the first place.
+    // -----------------------------------------------------------------------------------------
+
+    /// Every byte a node is told: argv, env, and each generated config file. The same surface
+    /// `tests/auth_mode.rs` searches, for the same reason — a flag that reached the harness
+    /// reached one of these three.
+    fn everything_the_node_is_told(adapter: &dyn HarnessAdapter, spec: &LaunchSpec) -> String {
+        let inv = adapter.compile(spec, &ctx()).expect("the spec compiles");
+        let mut blob = format!("{:?}\n{:?}\n", inv.args, inv.env);
+        for (p, c) in adapter.config_files(spec, &ctx()).expect("configs derive") {
+            blob.push_str(&format!("--- {}\n{c}\n", p.display()));
+        }
+        blob
+    }
+
+    fn adapters_and_specs() -> Vec<(&'static str, Box<dyn HarnessAdapter>, LaunchSpec)> {
+        vec![
+            ("claude", Box::new(ClaudeCodeAdapter), claude_spec()),
+            ("codex", Box::new(CodexAdapter), codex_spec()),
+            ("gemini", Box::new(GeminiAdapter), gemini_spec()),
+            ("opencode", Box::new(OpenCodeAdapter), opencode_spec()),
+        ]
+    }
+
+    /// **The property that makes this axis opt-in: a node that declares nothing is launched with
+    /// the bytes marion launched it with before the axis existed.**
+    ///
+    /// The argv strings below were captured off `HEAD` *before* a line of this feature was
+    /// written, by compiling all four adapters from a throwaway test and printing the result — the
+    /// same technique `ae2a18d` used to prove the adapter seam was a pure refactor, and the reason
+    /// they are pinned literally rather than derived: a derivation would move with the code it is
+    /// supposed to be pinning.
+    ///
+    /// **`--tools ""` is the one to watch on claude.** It was a hardcoded empty string and is now
+    /// `spec.tools.join(",")`; an empty `Vec` joins to exactly the same empty string, so the flag
+    /// and its value are both still there and still empty. If that ever compiles to something else
+    /// — a dropped flag, a `[]`, a stray separator — every claude node marion runs changes at once.
+    #[test]
+    fn a_node_that_declares_no_tools_compiles_the_argv_it_always_did() {
+        let expected: Vec<(&str, Vec<&str>)> = vec![
+            (
+                "claude",
+                vec![
+                    "-p",
+                    "--output-format",
+                    "stream-json",
+                    "--input-format",
+                    "stream-json",
+                    "--verbose",
+                    "--tools",
+                    "",
+                    "--allowedTools",
+                    "mcp__marion__spawn,mcp__marion__status",
+                    "--permission-prompt-tool",
+                    "stdio",
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    "/state/x/config/mcp.json",
+                    "--setting-sources",
+                    "",
+                    "--model",
+                    "haiku",
+                ],
+            ),
+            (
+                "codex",
+                vec![
+                    "exec",
+                    "--json",
+                    "--skip-git-repo-check",
+                    "-C",
+                    "/wt",
+                    "do the task",
+                ],
+            ),
+            (
+                "gemini",
+                vec![
+                    "-m",
+                    "gemini-2.5-flash",
+                    "--output-format",
+                    "stream-json",
+                    "-p",
+                    "do the task",
+                ],
+            ),
+            (
+                "opencode",
+                vec![
+                    "run",
+                    "--pure",
+                    "--format",
+                    "json",
+                    "--title",
+                    "marion-019f-root",
+                    "-m",
+                    "canned/canned-1",
+                    "do the task",
+                ],
+            ),
+        ];
+        // The env block, keys and values, in order. Captured from the same pre-axis run: the axis
+        // must be provably invisible in every channel a harness is configured through, not only
+        // the one it happens to compile into on claude.
+        let expected_env: Vec<(&str, Vec<(&str, &str)>)> = vec![
+            (
+                "claude",
+                vec![("ANTHROPIC_BASE_URL", "http://127.0.0.1:8099")],
+            ),
+            ("codex", vec![("CODEX_HOME", "/state/x/config")]),
+            (
+                "gemini",
+                vec![
+                    ("GEMINI_CLI_HOME", "/state/x/config"),
+                    (
+                        "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+                        "/state/x/config/marion-settings.json",
+                    ),
+                    ("GEMINI_CLI_TRUST_WORKSPACE", "true"),
+                    ("GEMINI_FORCE_FILE_STORAGE", "true"),
+                    ("GOOGLE_GEMINI_BASE_URL", "http://127.0.0.1:8099"),
+                    ("GEMINI_API_KEY", "sk-fake"),
+                ],
+            ),
+            (
+                "opencode",
+                vec![
+                    ("HOME", "/state/x/config"),
+                    ("XDG_CONFIG_HOME", "/state/x/config/config"),
+                    ("XDG_DATA_HOME", "/state/x/config/data"),
+                    ("XDG_CACHE_HOME", "/state/x/config/cache"),
+                    ("XDG_STATE_HOME", "/state/x/config/state"),
+                    ("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
+                    ("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
+                    ("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
+                    ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
+                    ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
+                    ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+                    ("OPENCODE_DISABLE_SHARE", "1"),
+                    ("OPENCODE_DB", ":memory:"),
+                    ("PWD", "/wt"),
+                ],
+            ),
+        ];
+        for (name, adapter, spec) in adapters_and_specs() {
+            assert!(
+                spec.tools.is_empty(),
+                "{name}: this test is about the default"
+            );
+            let inv = adapter.compile(&spec, &ctx()).unwrap();
+            assert_eq!(
+                inv.args,
+                expected.iter().find(|(n, _)| *n == name).unwrap().1,
+                "{name}: an empty declaration must compile the pre-axis argv byte for byte"
+            );
+            let env: Vec<(&str, &str)> = inv
+                .env
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            assert_eq!(
+                env,
+                expected_env.iter().find(|(n, _)| *n == name).unwrap().1,
+                "{name}: and the pre-axis env block byte for byte"
+            );
+        }
+    }
+
+    /// The same claim for the generated configuration, which is where **codex's** availability
+    /// axis lives — `sandbox_mode` moved from a literal in `config_toml` to `codex::SANDBOX_MODE`
+    /// so the adapter's `tool_name` and the file cannot disagree, and that is a refactor that has
+    /// to be provably pure.
+    ///
+    /// Lengths are the pre-axis byte counts, captured the same way as the argv above. A length is
+    /// enough here precisely because the other tests in this file already pin these documents'
+    /// *contents* against their free functions: what this adds is that the availability axis did
+    /// not perturb them.
+    #[test]
+    fn a_node_that_declares_no_tools_generates_the_config_it_always_did() {
+        for (name, adapter, spec) in adapters_and_specs() {
+            let files = adapter.config_files(&spec, &ctx()).unwrap();
+            let len: usize = files.iter().map(|(_, c)| c.len()).sum();
+            let want = match name {
+                "claude" => 491,
+                "codex" => 1275,
+                "gemini" => 718,
+                "opencode" => 962,
+                _ => unreachable!(),
+            };
+            assert_eq!(len, want, "{name}: generated config changed size");
+        }
+        let codex = CodexAdapter.config_files(&codex_spec(), &ctx()).unwrap();
+        assert!(
+            codex[0].1.contains("sandbox_mode = \"workspace-write\""),
+            "the constant must render the literal the file always carried: {}",
+            codex[0].1
+        );
+    }
+
+    /// A `LaunchSpec` declaring marion's one write verb.
+    fn writing(spec: LaunchSpec) -> LaunchSpec {
+        LaunchSpec {
+            tools: vec![agent_type::TOOL_WRITE.into()],
+            ..spec
+        }
+    }
+
+    /// **Claude Code: both of §3.1's axes, from one declaration.**
+    ///
+    /// The harness where the whole gap was measured. `--tools` is availability and `--allowedTools`
+    /// is permission; item 24 measured that opening only the first is *not* a write — the call
+    /// goes to `--permission-prompt-tool stdio`, marion has no answerer, and the child receives
+    /// item 22's dead-end string as its `tool_result`. So the assertion is deliberately a
+    /// conjunction: `Write` in **both** flags, beside marion's own verbs, which `--tools` must
+    /// never gate.
+    #[test]
+    fn a_declared_write_reaches_claude_codes_two_axes_together() {
+        let inv = ClaudeCodeAdapter
+            .compile(&writing(claude_spec()), &ctx())
+            .unwrap();
+        let after = |flag: &str| -> String {
+            let i = inv
+                .args
+                .iter()
+                .position(|a| a == flag)
+                .expect("flag present");
+            inv.args[i + 1].clone()
+        };
+        assert_eq!(
+            after("--tools"),
+            "Write",
+            "availability, in claude's spelling"
+        );
+        assert_eq!(
+            after("--allowedTools"),
+            "mcp__marion__spawn,mcp__marion__status,Write",
+            "permission is `the same list, plus marion's own` — availability alone is item 22's \
+             dead end, not a write"
+        );
+    }
+
+    /// **gemini: the availability axis is a mode, because the CLI has no per-tool flag.**
+    ///
+    /// Under the default approval mode 0.53.0 withholds `write_file` from `functionDeclarations`
+    /// entirely, so the tool the mapping names does not exist to be called. The flag is therefore
+    /// the compiled form of the declaration, and it is emitted **only** when one arrives — the
+    /// negative half is asserted here too, since an unconditional `auto_edit` would widen every
+    /// gemini node marion runs.
+    #[test]
+    fn a_declared_write_puts_gemini_in_the_approval_mode_that_declares_one() {
+        assert_eq!(
+            GeminiAdapter.tool_name(agent_type::TOOL_WRITE).unwrap(),
+            "write_file"
+        );
+        assert!(gemini::is_edit_tool("write_file"));
+        let with = GeminiAdapter
+            .compile(&writing(gemini_spec()), &ctx())
+            .unwrap();
+        let i = with
+            .args
+            .iter()
+            .position(|a| a == "--approval-mode")
+            .expect("the declaration must compile the mode that makes write_file exist");
+        assert_eq!(
+            with.args[i + 1],
+            "auto_edit",
+            "never -y: see §6.4 and item 24"
+        );
+        let without = GeminiAdapter.compile(&gemini_spec(), &ctx()).unwrap();
+        assert!(
+            !without.args.iter().any(|a| a == "--approval-mode"),
+            "a node that declared nothing must stay in the default mode"
+        );
+    }
+
+    /// **codex and opencode: the declaration is *satisfied*, not compiled.**
+    ///
+    /// Neither has a per-tool availability surface marion drives. codex has one sandbox mode, which
+    /// `config_toml` has always set to `workspace-write`; opencode declares `write` in its own
+    /// default tool list with no flag from marion. So `tool_name` answers with what that harness
+    /// already grants — §3.1's *"the harness's coarsest equivalent"*, whose exact string for codex
+    /// that section names — and `compile` emits nothing new.
+    ///
+    /// **The argv equality is the point, not an omission.** Making these grants conditional on the
+    /// declaration would read tidier and would silently demote every codex and opencode node
+    /// marion spawns today, to close a gap on two other harnesses. This pins that they were left
+    /// alone.
+    #[test]
+    fn a_declared_write_on_the_two_already_write_capable_harnesses_changes_nothing() {
+        assert_eq!(
+            CodexAdapter.tool_name(agent_type::TOOL_WRITE).unwrap(),
+            format!("sandbox:{}", codex::SANDBOX_MODE),
+            "§3.1 names this exact string for this exact harness"
+        );
+        assert_eq!(
+            OpenCodeAdapter.tool_name(agent_type::TOOL_WRITE).unwrap(),
+            "write"
+        );
+        for (name, adapter, spec) in adapters_and_specs() {
+            if name != "codex" && name != "opencode" {
+                continue;
+            }
+            assert_eq!(
+                everything_the_node_is_told(adapter.as_ref(), &writing(spec.clone())),
+                everything_the_node_is_told(adapter.as_ref(), &spec),
+                "{name}: already grants the write, so a declaration must not narrow or widen it"
+            );
+        }
+    }
+
+    /// **A tool no adapter can provide is refused by name, on every harness, before anything
+    /// launches.**
+    ///
+    /// The rule this codebase keeps re-deriving: marion refuses what it declares and does not
+    /// perform (`77557e3`). Dropping an unmappable name silently would be the worst instance of it
+    /// — the node launches, is offered no such tool, does no work, and persists `changed_paths: []`,
+    /// which §11 item 24 records as byte-identical to a child whose write escaped its worktree.
+    ///
+    /// `edit` and `bash` are in the sample deliberately: they are §3.1's own example vocabulary,
+    /// and item 24 says in as many words that they *"were never tried"*. Refusing a §3.1 word is
+    /// the honest state, and the message has to be good enough to say so.
+    #[test]
+    fn a_tool_a_harness_cannot_provide_is_refused_by_name_not_dropped() {
+        for (name, adapter, spec) in adapters_and_specs() {
+            for unmapped in ["edit", "bash", "read", "Write", "write_file", ""] {
+                let spec = LaunchSpec {
+                    tools: vec![unmapped.into()],
+                    ..spec.clone()
+                };
+                let Err(err) = adapter.compile(&spec, &ctx()) else {
+                    panic!("{name}: `{unmapped}` is not mappable and must not compile");
+                };
+                let msg = err.to_string();
+                assert!(
+                    msg.contains(unmapped) && msg.contains(&adapter.harness().to_string()),
+                    "{name}/{unmapped}: the refusal must name both the tool and the harness, got \
+                     `{msg}`"
+                );
+            }
+        }
+    }
+
+    /// The refusal survives a *mixed* declaration, and it aborts rather than compiling the good
+    /// half. A partial grant is the failure this axis exists to prevent, wearing a success's
+    /// clothes: the node would launch able to write and unable to do the other thing it was told
+    /// it could, with nothing anywhere saying which.
+    #[test]
+    fn one_unmappable_tool_refuses_the_whole_declaration() {
+        let spec = LaunchSpec {
+            tools: vec![agent_type::TOOL_WRITE.into(), "bash".into()],
+            ..claude_spec()
+        };
+        assert!(matches!(
+            ClaudeCodeAdapter.compile(&spec, &ctx()),
+            Err(HarnessError::UnsupportedTool { tool, .. }) if tool == "bash"
+        ));
     }
 
     #[test]
@@ -1170,6 +1709,7 @@ mod tests {
             compile_headless(&HeadlessSpec {
                 cwd: "/repo".into(),
                 model: Some("haiku".into()),
+                tools: vec![],
                 allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
                 mcp_config: "/state/x/config/mcp.json".into(),
                 base_url: Some("http://127.0.0.1:8099".into()),

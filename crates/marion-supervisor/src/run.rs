@@ -789,12 +789,29 @@ pub fn run_spawn(
             LaunchPath::Duplex => String::new(),
             LaunchPath::LaunchOnly => req.prompt.clone(),
         },
+        // The **availability** axis (§3.1), straight off the resolved agent type and still in
+        // marion's vocabulary — the adapter about to run maps it, and refuses by name what its
+        // harness cannot provide (`HarnessError::UnsupportedTool`).
+        //
+        // **This is the field `--tools ""` was hardcoded for want of** (§11 item 24). Until it
+        // existed a claude or gemini child was read-only by construction: marion spawned it to do
+        // work and declared it no tool with which to change anything, and the contract it persisted
+        // — `changed_paths: []`, `scope_violations: []`, `scope_enforced: true` — was byte-identical
+        // to a child whose write escaped its worktree. Empty on every built-in, so nothing marion
+        // spawns today is launched any differently.
+        tools: agent_type.tools.clone(),
         // The **permission** axis (§3.1), in marion's vocabulary translated by the adapter that is
         // about to run. A child's one load-bearing call is `report`; on Claude Code an unlisted
         // tool is auto-denied *in process*, and on a `LaunchOnly` child there is no control plane
         // for the denial to be asked about — so an empty list here is a run that completes having
         // reported nothing, with no error anywhere. The three harnesses whose adapters read no
         // permission list are unaffected: they ignore it, exactly as they did when it was empty.
+        //
+        // **marion's own verbs only, and the declared tools are unioned in by the adapter.** §3.1's
+        // table compiles this axis from *"the same list, plus marion's own `mcp__marion__*`"*, and
+        // doing the union at the one place both axes are compiled is what makes them unable to
+        // disagree. Appending here instead would grant permission without availability — the mirror
+        // of item 24's dead end, and just as silent.
         allowed_tools: vec![adapter.marion_tool_name("report")],
         mcp: McpDeclaration::Marion,
         base_url: env.base_url.clone(),
@@ -1574,9 +1591,11 @@ mod tests {
     fn each_builtin_agent_type_dispatches_to_its_own_harness() {
         for (name, expected) in [
             ("claude", Harness::ClaudeCode),
+            ("claude-impl", Harness::ClaudeCode),
             ("codex", Harness::Codex),
             ("codex-impl", Harness::Codex),
             ("gemini", Harness::Gemini),
+            ("gemini-impl", Harness::Gemini),
             ("opencode", Harness::OpenCode),
         ] {
             let t = builtin(name).expect("built-in resolves");
@@ -1634,6 +1653,7 @@ mod tests {
             cwd: "/wt".into(),
             model,
             prompt: "do the task".into(),
+            tools: vec![],
             allowed_tools: vec![],
             mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -1642,6 +1662,58 @@ mod tests {
             config_dir: "/state/x/config".into(),
             extra: Extras::default(),
         }
+    }
+
+    /// **The child's two axes, composed the way `run_spawn` composes them.**
+    ///
+    /// `run_spawn` sets `tools` from the resolved agent type and `allowed_tools` to marion's
+    /// `report` alone, and leaves the union to the adapter. This drives that exact pair through
+    /// the exact adapter the dispatch above selects, so the composition is checked without a
+    /// process: a `claude-impl` child gets `Write` on **both** flags and marion's own verb is not
+    /// lost from the permission axis in the process.
+    ///
+    /// **It restates two lines of `run_spawn` rather than calling them, and that is stated rather
+    /// than hidden.** `run_spawn` needs a repo, a worktree and a process, so the wiring itself is
+    /// pinned end to end by the harness cross-product's writing cells; what this catches is the
+    /// composition being wrong — the union done at the call site instead of in the adapter (which
+    /// would grant permission without availability), or `report` dropped while unioning (which
+    /// would leave a child that can write and cannot report, the §12 shape in a new place).
+    #[test]
+    fn a_child_of_an_impl_type_is_compiled_with_availability_and_permission_open_together() {
+        let t = builtin("claude-impl").expect("the implementer type resolves");
+        let adapter = adapter_for(t.harness).unwrap();
+        let spec = LaunchSpec {
+            // Verbatim from `run_spawn`.
+            tools: t.tools.clone(),
+            allowed_tools: vec![adapter.marion_tool_name("report")],
+            // A duplex child's prompt is a frame written after launch, so argv carries none.
+            prompt: String::new(),
+            ..launch_spec(None)
+        };
+        let args = adapter.compile(&spec, &launch_ctx()).unwrap().args;
+        let after = |flag: &str| -> String {
+            let i = args.iter().position(|a| a == flag).expect("flag present");
+            args[i + 1].clone()
+        };
+        assert_eq!(after("--tools"), "Write", "availability");
+        assert_eq!(
+            after("--allowedTools"),
+            "mcp__marion__report,Write",
+            "permission carries marion's verb AND the declaration; either alone is a dead end"
+        );
+        // The orchestrator type through the same path: unchanged, which is what keeps this
+        // additive.
+        let orchestrator = LaunchSpec {
+            tools: builtin("claude").unwrap().tools,
+            ..spec
+        };
+        let args = adapter.compile(&orchestrator, &launch_ctx()).unwrap().args;
+        let i = args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(
+            args[i + 1],
+            "",
+            "a `claude` child is read-only as it always was"
+        );
     }
 
     fn request(agent_type: &str, model: Option<&str>) -> SpawnRequest {
