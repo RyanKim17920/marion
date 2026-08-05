@@ -19,7 +19,7 @@
 //! A loop reports the first failure and hides the other fifteen. Each cell is named for its own
 //! pair, so a failing run names the cell in its output.
 //!
-//! Every cell asserts the same eight things:
+//! Every cell asserts the same nine things:
 //!
 //! 1. the run did not time out and `marion run` exited 0;
 //! 2. exactly one `contracts/<task_id>.json` is persisted, and it deserializes to a `TaskContract`;
@@ -33,7 +33,26 @@
 //!    only one of the two nodes having run;
 //! 6. `TaskContract.requester` names the root's own agent-dir and is **not** `"unattributed-root"`;
 //! 7. no verbatim credential reached the canned server;
-//! 8. nothing outlived the run (the S7 class of failure).
+//! 8. nothing outlived the run (the S7 class of failure);
+//! 9. **the child's worktree was audited**: `scope_enforced` is true — the check *ran*, which §6.7
+//!    is careful to say is not the same as "no violation" — and, in the cells whose child can
+//!    write at all, `changed_paths` carries the file that child wrote.
+//!
+//! # Eight cells write, and the other eight say why they cannot
+//!
+//! Criterion 9 is the only one that requires marion to have opened a worktree; every other
+//! criterion is satisfiable from the two nodes' streams alone. It was also, until now, the one the
+//! matrix did not make: twelve cells had a child that called nothing but `report`, so
+//! `changed_paths` was empty **by construction** and a marion that never diffed anything passed
+//! them.
+//!
+//! Two of the four harnesses now drive a real edit, each through its own wire's tool-call shape —
+//! codex's `tools.apply_patch` and opencode's declared `write`. The other two **declare no write
+//! tool to the model at all**, which is a property of how marion launches them and not a choice
+//! this file is free to make: a canned provider may only emit calls to tools the harness declared,
+//! and a call to anything else tests the fixture rather than marion. See
+//! `Node::child_writes_worktree` for the per-harness measurement, taken off these cells' own
+//! request logs. Those cells pin the gap instead of ignoring it.
 //!
 //! # The same-wire cells, and why they are not ambiguous
 //!
@@ -68,7 +87,7 @@ use std::time::Duration;
 use marion_core::contract::{ExitStatus, TaskContract};
 use marion_core::harness::Harness;
 use marion_harness::adapter_for;
-use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
+use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Script};
 use marion_supervisor::root::{RootPath, root_path};
 use marion_supervisor::run::run_bounded;
 use serde_json::{Value, json};
@@ -102,6 +121,20 @@ const CHILD_PROMPT: &str = "Add the cross-product marker file under src/ and rep
 
 /// The narrative every child's script reports.
 const NARRATIVE: &str = "Wrote the cross-product marker under src/ and reported back.";
+
+/// The file every child that *can* write is driven to write, **worktree-relative** and inside
+/// `writable_scope`. One path for every wire, so a cell's failure never turns on which name it used.
+///
+/// Relative and not absolute because the absolute one does not exist when this script is written: a
+/// child's worktree is `<state>/<project-hash>/agents/<agent-id>/worktree` and the agent id is
+/// minted inside `spawn`, three processes later. Each harness resolves it against the cwd marion
+/// placed the node in — which is exactly the placement [`ROOT_MARKER`]'s counterpart on the
+/// containment axis, and which an opencode child did not honour until `opencode::compile_run`
+/// exported `PWD`.
+const CHILD_FILE: &str = "src/xprod-marker.txt";
+
+/// What that file contains. Distinctive, so a stray copy anywhere on the machine is attributable.
+const CHILD_FILE_CONTENT: &str = "marion cross-product marker\n";
 
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -159,6 +192,13 @@ fn on_path(program: &str) -> bool {
 }
 
 /// Every `contracts/<task_id>.json` marion persisted under `state`, as `(path, parsed)`.
+///
+/// **A file that cannot be read or parsed is a failure naming the file, never a file this function
+/// does not mention.** It used to be dropped by a `filter_map`, and the drop was invisible in
+/// exactly the direction that matters: assertion 2 counts the contracts and requires exactly one,
+/// so one good contract beside one corrupt one counted as one and passed. §6.7 makes a contract an
+/// audit record, and an audit record marion wrote and cannot read back is a defect whichever half
+/// is wrong — so the count and the parse are the same question and are answered in the same place.
 fn persisted_contracts(state: &Path) -> Vec<(PathBuf, Value)> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -179,29 +219,68 @@ fn persisted_contracts(state: &Path) -> Vec<(PathBuf, Value)> {
     walk(state, &mut paths);
     paths
         .into_iter()
-        .filter_map(|p| {
-            let v = serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
-            Some((p, v))
+        .map(|p| {
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| {
+                panic!(
+                    "marion persisted {} and this test cannot read it back: {e}",
+                    p.display()
+                )
+            });
+            let v = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                panic!(
+                    "{} is not JSON: {e}\nfirst 512 bytes:\n{}",
+                    p.display(),
+                    String::from_utf8_lossy(&bytes)
+                        .chars()
+                        .take(512)
+                        .collect::<String>()
+                )
+            });
+            (p, v)
         })
         .collect()
 }
 
 /// Processes still alive with `needle` on their command line, as `(pid, line)`.
+///
+/// `ps` is the *only* witness this file has for a leak, so every way it can fail to answer is a
+/// failure of the test rather than an empty answer. Reporting "no survivors" because `ps` was
+/// missing, errored, or printed nothing would make the leak assertion pass for free on exactly the
+/// machines where it cannot be checked — the silent pass this file exists to rule out.
 fn survivors(needle: &str) -> Vec<(i32, String)> {
-    Command::new("ps")
+    let out = Command::new("ps")
         .args(["-axo", "pid=,command="])
         .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| l.contains(needle))
-                .filter_map(|l| {
-                    let pid = l.split_whitespace().next()?.parse().ok()?;
-                    Some((pid, l.to_string()))
-                })
-                .collect()
+        .expect("`ps` must run: without it nothing here can tell a clean run from a leak");
+    assert!(
+        out.status.success(),
+        "`ps -axo pid=,command=` exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let listing = String::from_utf8_lossy(&out.stdout);
+    // `ps -ax` lists at minimum this very test process, so an empty listing means a witness that
+    // did not work, not a machine with nothing running on it.
+    assert!(
+        !listing.trim().is_empty(),
+        "`ps` printed nothing; the leak check would report no survivors whatever had leaked"
+    );
+    listing
+        .lines()
+        .filter(|l| l.contains(needle))
+        // A matching line whose pid will not parse is a survivor this test cannot name. Dropping it
+        // would be the same silent pass one line down, so say so instead.
+        .map(|l| {
+            let pid = l
+                .split_whitespace()
+                .next()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or_else(|| {
+                    panic!("`ps` line matches {needle:?} but carries no pid: {l:?}")
+                });
+            (pid, l.to_string())
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Does any string anywhere in `v` contain `needle`? The same whole-body scan the provider uses to
@@ -233,6 +312,34 @@ struct Node {
     wire: &'static str,
     /// The binary that must be on `PATH`.
     program: &'static str,
+    /// **Does this harness's child have any route to edit its worktree at all?**
+    ///
+    /// Not a preference and not a script-authoring choice: it is whether the harness *declares a
+    /// write tool to the model*, read off the request bodies these very cells produce. A canned
+    /// provider may only emit calls to tools the harness declared — a call to anything else is a
+    /// turn no real model could have taken, and answering with one would test the fixture rather
+    /// than marion.
+    ///
+    /// Measured here against the request log of a child spawned through `spawn`, per harness:
+    ///
+    /// - **codex** — `tools.apply_patch` under code mode. Writes. This is M1's child.
+    /// - **opencode** — declares `write`, `edit` and `bash` alongside marion's MCP tools. Writes.
+    /// - **claude** — declares `mcp__marion__report` and `mcp__marion__spawn` and **nothing else**:
+    ///   `compile_headless` passes `--tools ""` to every node, root or child, and
+    ///   `marion_core::agent_type::AgentType` has no `tools` field for anything to populate it
+    ///   from. §3.1's availability axis is unimplemented, so a Claude Code child is read-only by
+    ///   construction.
+    /// - **gemini** — declares `list_directory`, `read_file`, `grep_search`, `glob`,
+    ///   `google_web_search`, `enter_plan_mode`, `invoke_agent` and marion's two. `write_file`,
+    ///   `replace` and `run_shell_command` appear only in the *prose* of its system instruction,
+    ///   never in `functionDeclarations`: 0.53.0 withholds the mutating tools under the default
+    ///   approval mode, and s12 measured them appearing only under `-y` — which marion does not
+    ///   pass, and which an admin can veto anyway (`security.disableYoloMode`).
+    ///
+    /// The two `false`s are a **coverage gap that is not this file's to close**, and
+    /// [`assert_cell`] pins it rather than passing over it: those cells assert that the worktree is
+    /// untouched, and say what to do when that stops being true.
+    child_writes_worktree: bool,
 }
 
 const CLAUDE: Node = Node {
@@ -244,6 +351,7 @@ const CLAUDE: Node = Node {
     child_model: None,
     wire: "anthropic",
     program: "claude",
+    child_writes_worktree: false,
 };
 
 const CODEX: Node = Node {
@@ -253,6 +361,7 @@ const CODEX: Node = Node {
     child_model: None,
     wire: "responses",
     program: "codex",
+    child_writes_worktree: true,
 };
 
 const GEMINI: Node = Node {
@@ -263,6 +372,7 @@ const GEMINI: Node = Node {
     child_model: Some("gemini-2.5-flash"),
     wire: "gemini",
     program: "gemini",
+    child_writes_worktree: false,
 };
 
 const OPENCODE: Node = Node {
@@ -273,6 +383,7 @@ const OPENCODE: Node = Node {
     child_model: Some("marion/canned-1"),
     wire: "openai",
     program: "opencode",
+    child_writes_worktree: true,
 };
 
 /// marion's `spawn`, in the spelling **this harness's wire** dispatches on.
@@ -346,15 +457,32 @@ fn script(root: &Node, child: &Node) -> Script {
             s.root_tool_input = json!({ "narrative": NARRATIVE });
             s.root_final_text = "Reported back through marion. Done.".into();
         }
-        // The Responses child keeps its three steps: patch, report, final message.
-        Harness::Codex => s.child_narrative = NARRATIVE.into(),
+        // The Responses child keeps its three steps: patch, report, final message. The patch is
+        // re-aimed at this file's own [`CHILD_FILE`] rather than left at the M1 default, so all
+        // eight writing cells attest to one path.
+        Harness::Codex => {
+            s.child_narrative = NARRATIVE.into();
+            s.child_patch = format!(
+                "*** Begin Patch\n*** Add File: {CHILD_FILE}\n+{}\n*** End Patch",
+                CHILD_FILE_CONTENT.trim_end()
+            );
+            s.child_final_text = json!({"narrative": NARRATIVE, "result_commits": []}).to_string();
+        }
         Harness::Gemini => {
             s.gemini_report_tool = report;
             s.gemini_report_args = json!({ "narrative": NARRATIVE });
         }
+        // The opencode child writes before it reports, through the harness's own `write` — the tool
+        // it declares to the model as `tools[].function.name == "write"`, taking `{filePath,
+        // content}`. That makes it the second of the four wires whose child leaves something behind
+        // for §6.7's git-derived `changed_paths` to find.
         Harness::OpenCode => {
             s.openai_report_tool = report;
             s.openai_report_args = json!({ "narrative": NARRATIVE });
+            s.openai_edit = Some(EditTurn {
+                tool: "write".into(),
+                args: json!({ "filePath": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
+            });
         }
     }
     s
@@ -748,6 +876,64 @@ fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
         contract.requester,
         ev.agent_dirs_present
     );
+
+    // ---- 9: the worktree was audited, and the child's edit is in the audit. ----------------------
+    //
+    // Everything above this point is derivable from the two nodes' streams and from marion's own
+    // bookkeeping; **nothing above it requires marion to have opened a worktree at all**. These are
+    // the §6.7 fields that do — `changed_paths`, and the `scope_enforced` flag that says the check
+    // behind them ran.
+    assert!(
+        comp.scope_enforced,
+        "{cell}: scope_enforced is false, which records that the containment check NEVER RAN — it \
+         is not the same as, and must never be read as, `no violation`. Every cell here gives its \
+         child a `Workspace::Worktree`, which is exactly the case that affords a git-derived \
+         changed_paths, so false means the derivation failed rather than that there was nothing to \
+         derive. changed_paths: {:?}\nRequest log:\n{}",
+        comp.changed_paths,
+        ev.log_summary()
+    );
+    if child.child_writes_worktree {
+        assert!(
+            comp.changed_paths
+                .iter()
+                .any(|p| p == Path::new(CHILD_FILE)),
+            "{cell}: the child wrote {CHILD_FILE} through its own harness's write tool, so §6.7's \
+             git derivation must attest to it. changed_paths: {:?}\n\
+             An EMPTY set here with an `Ok` status is the failure this assertion exists for: it is \
+             a clean audit record for a run whose write went somewhere marion never looked. That \
+             is what an opencode child did before `opencode::compile_run` exported `PWD` — it \
+             worked in the directory marion was launched from, not in its worktree, and wrote into \
+             the operator's own repository while the contract recorded changed_paths: [], \
+             scope_violations: [], scope_enforced: true.\nRequest log:\n{}",
+            comp.changed_paths,
+            ev.log_summary()
+        );
+        assert!(
+            comp.scope_violations.is_empty(),
+            "{cell}: {CHILD_FILE} is inside the `src/**` this cell's spawn asked for, so a \
+             violation here means the scope comparison, not the child, is wrong: {:?}",
+            comp.scope_violations
+        );
+    } else {
+        // **A pinned gap, not an assertion that marion is broken.** This harness declares no write
+        // tool to the model at all (see `Node::child_writes_worktree` for the per-harness
+        // measurement), so its child cannot change its worktree and this cell cannot witness
+        // `changed_paths`. Pinned rather than passed over so the gap is visible in the file that
+        // has it: **if this ever fails, that is good news** — the harness has gained a write route,
+        // and this cell should be moved to the branch above by giving the node
+        // `child_writes_worktree: true` and scripting its edit in `script()`.
+        assert!(
+            comp.changed_paths.is_empty(),
+            "{cell}: this cell's child has no write tool declared to it, so it could not have \
+             changed anything — yet changed_paths is {:?}. If the harness has gained a write \
+             route, set `child_writes_worktree: true` on this node and script its edit in \
+             `script()`; the assertion above is the one this cell should be making.\n\
+             Request log:\n{}",
+            comp.changed_paths,
+            ev.log_summary()
+        );
+    }
 
     // ---- 8: nothing outlived the run. -----------------------------------------------------------
     assert!(

@@ -15,6 +15,11 @@ use crate::{RequestKind, anthropic, classify_anthropic, gemini, openai, response
 pub const PATCH_CALL_ID: &str = "call_marion_patch_1";
 /// `call_id` of the child's `report` step, used the same way.
 pub const REPORT_CALL_ID: &str = "call_marion_report_1";
+/// `call_id` of a child's [`EditTurn`] — the write it makes into its own worktree before it
+/// reports. Distinct from [`PATCH_CALL_ID`], which is the Responses wire's own edit step: a run
+/// carries one or the other, never both, and two ids that could collide across wires would be a
+/// trap the day a test scripted both.
+pub const EDIT_CALL_ID: &str = "call_marion_edit_1";
 /// `tool_use.id` of the root's single tool call. The root's `tool_result` quotes it back, and — as
 /// S9 records — so does the `can_use_tool` frame's `tool_use_id`, which is how a permission ask is
 /// tied to the call that provoked it.
@@ -471,6 +476,28 @@ impl RootTurn {
     }
 }
 
+/// A child's **edit** turn: the write it makes into its own worktree, before it reports.
+///
+/// It exists because §6.7 gives `changed_paths` exactly one source — a git diff of the child's
+/// worktree — so a child that calls nothing but `report` leaves that set **empty by construction**,
+/// and with it `scope_violations` and `result_commits`. A matrix of such children cannot tell a
+/// marion that diffs a worktree from one that never opens it.
+///
+/// The Responses wire has carried its own edit step since M1 ([`Script::child_patch`], a
+/// `tools.apply_patch` call). This is the same idea for a wire whose harness edits through an
+/// ordinary declared tool instead, and it is deliberately **not** a `Script`-wide field: the tool's
+/// name, its argument schema and whether the harness declares it at all are per-harness facts, and
+/// a wire whose harness declares no write tool must not be handed a call a real model could never
+/// have made.
+#[derive(Debug, Clone)]
+pub struct EditTurn {
+    /// The harness's own write tool, in the model-facing spelling that wire declares it under —
+    /// `write` on opencode 1.17.3, measured in its `tools[].function.name`.
+    pub tool: String,
+    /// Arguments for that call, in the tool's own schema (`{filePath, content}` on opencode).
+    pub args: Value,
+}
+
 /// The root's script, and how a request belonging to the root is told from one belonging to the
 /// child.
 #[derive(Debug, Clone)]
@@ -557,6 +584,11 @@ pub struct Script {
     pub openai_report_tool: String,
     /// Arguments the opencode child passes to [`Script::openai_report_tool`].
     pub openai_report_args: Value,
+    /// A write into the worktree, taken **before** the report — see [`EditTurn`].
+    ///
+    /// `None` — the default — is the two-step child every existing caller drives, whose transcript
+    /// is `report` and then a closing message.
+    pub openai_edit: Option<EditTurn>,
     /// The opencode child's closing text turn.
     pub openai_final_text: String,
     /// A **second** node in the same run: the root, whose requests reach the same provider.
@@ -594,6 +626,7 @@ impl Default for Script {
                 .to_string(),
             openai_report_tool: "marion_report".to_string(),
             openai_report_args: json!({"narrative": narrative}),
+            openai_edit: None,
             openai_final_text: "Reported back through marion. Done.".to_string(),
             root: None,
         }
@@ -676,6 +709,19 @@ impl Script {
     }
 
     fn respond_openai(&self, body: &Value) -> String {
+        // The edit comes first, and only when one is scripted. [`classify_openai_step`] answers
+        // "has this tool been called yet" for whatever name it is handed, so the extra step needs
+        // no second predicate and keeps the property the first one has: it is a function of the
+        // transcript, so replaying a run's turns backwards yields the same answers.
+        // The report is consulted first and not only for ordering: a child whose write never
+        // landed still reaches `report`, and re-issuing the edit against a transcript that already
+        // carries the report would send it round that loop forever instead of finishing.
+        if let Some(edit) = &self.openai_edit
+            && classify_openai_step(body, &self.openai_report_tool) == OpenAiStep::Report
+            && classify_openai_step(body, &edit.tool) == OpenAiStep::Report
+        {
+            return openai::tool_call_turn(&edit.tool, EDIT_CALL_ID, &edit.args);
+        }
         match classify_openai_step(body, &self.openai_report_tool) {
             OpenAiStep::Report => openai::tool_call_turn(
                 &self.openai_report_tool,
@@ -1171,6 +1217,97 @@ mod tests {
             first.contains("\"finish_reason\":\"tool_calls\"") && first.contains("marion_report"),
             "the earlier turn must still report"
         );
+    }
+
+    /// The opencode child's transcript after it has written the file but before it has reported.
+    fn openai_after_edit() -> Value {
+        let mut b = openai_first_turn();
+        let messages = b["messages"].as_array_mut().unwrap();
+        messages.push(json!({
+            "role": "assistant", "content": null,
+            "tool_calls": [{"id": EDIT_CALL_ID, "type": "function", "function": {
+                "name": "write", "arguments": "{\"filePath\":\"src/x.txt\",\"content\":\"x\"}"}}],
+        }));
+        messages.push(json!({
+            "role": "tool", "tool_call_id": EDIT_CALL_ID, "name": "write", "content": "ok",
+        }));
+        b
+    }
+
+    fn editing_script() -> Script {
+        Script {
+            openai_edit: Some(EditTurn {
+                tool: "write".into(),
+                args: json!({"filePath": "src/x.txt", "content": "x"}),
+            }),
+            ..Script::default()
+        }
+    }
+
+    /// A scripted edit turns the child's two steps into three, and the write comes **first**: a
+    /// report is the end of the child's run, so anything it wanted to be true of its worktree has
+    /// to have happened already.
+    #[test]
+    fn a_scripted_edit_is_taken_before_the_report_and_only_once() {
+        let s = editing_script();
+        let first = s.respond(Wire::OpenAi, &openai_first_turn());
+        assert!(
+            first.contains("\"name\":\"write\"") && !first.contains("marion_report"),
+            "turn one must be the write: {first}"
+        );
+        let second = s.respond(Wire::OpenAi, &openai_after_edit());
+        assert!(
+            second.contains("marion_report") && !second.contains("\"name\":\"write\""),
+            "turn two must be the report, never a second write: {second}"
+        );
+        let third = s.respond(Wire::OpenAi, &openai_after_report());
+        assert!(
+            third.contains("\"finish_reason\":\"stop\""),
+            "turn three must end the run: {third}"
+        );
+    }
+
+    /// The same order-independence every other predicate in this module has: replayed backwards,
+    /// each turn still gets its own step.
+    #[test]
+    fn the_edit_step_is_a_function_of_the_body_not_of_arrival_order() {
+        let s = editing_script();
+        let third = s.respond(Wire::OpenAi, &openai_after_report());
+        let second = s.respond(Wire::OpenAi, &openai_after_edit());
+        let first = s.respond(Wire::OpenAi, &openai_first_turn());
+        assert!(third.contains("\"finish_reason\":\"stop\""));
+        assert!(second.contains("marion_report"));
+        assert!(first.contains("\"name\":\"write\""));
+    }
+
+    /// A transcript that shows the *report* already made must not be answered with the edit, even
+    /// though the write is missing from it — otherwise a child whose write failed would be sent
+    /// round the loop forever instead of finishing.
+    #[test]
+    fn a_reported_child_is_finished_even_if_its_edit_is_not_in_the_transcript() {
+        let out = editing_script().respond(Wire::OpenAi, &openai_after_report());
+        assert!(
+            !out.contains("\"name\":\"write\""),
+            "the run is over; re-issuing the write would never terminate: {out}"
+        );
+    }
+
+    /// With no edit scripted, nothing about the two-step child changes — which is what every
+    /// existing caller of this crate drives.
+    #[test]
+    fn a_script_with_no_edit_is_the_two_step_child_it_always_was() {
+        assert!(Script::default().openai_edit.is_none());
+        let out = Script::default().respond(Wire::OpenAi, &openai_first_turn());
+        assert!(out.contains("marion_report"));
+    }
+
+    /// Three ids, three steps, no two of them equal: a child that saw its own edit id quoted back
+    /// as the report's would read its script as one step further along than it is.
+    #[test]
+    fn the_edit_never_shares_a_call_id_with_any_other_step() {
+        assert_ne!(EDIT_CALL_ID, REPORT_CALL_ID);
+        assert_ne!(EDIT_CALL_ID, PATCH_CALL_ID);
+        assert_ne!(EDIT_CALL_ID, ROOT_CALL_ID);
     }
 
     #[test]

@@ -1854,6 +1854,11 @@ mod tests {
                 "OPENCODE_DISABLE_AUTOUPDATE",
                 "OPENCODE_DISABLE_SHARE",
                 "OPENCODE_DB",
+                // Placement, not isolation: opencode resolves its project directory from the
+                // environment and re-enters `$PWD`, so a node given only `cwd` works in the
+                // directory marion was launched from. See
+                // `opencode::tests::the_node_is_placed_in_its_own_cwd_by_pwd_too_not_only_by_chdir`.
+                "PWD",
             ]
         );
     }

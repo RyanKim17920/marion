@@ -194,6 +194,24 @@ pub fn compile_run(spec: &RunSpec) -> Invocation {
     ];
 
     let mut env = isolation_env(&spec.sandbox, spec.auth);
+    // **`cwd` alone does not place an opencode node, and the difference is a containment failure.**
+    // Measured against 1.17.3 through marion's own `spawn`: with `Invocation.cwd` set to the
+    // child's worktree and `PWD` left inherited, the child's `bash` tool reported
+    // `pwd`/`git rev-parse --show-toplevel` as the **operator's own repository** — the directory
+    // marion itself was launched from — and a `write` of `src/…` landed there. opencode resolves
+    // its project directory from the environment, so the process re-enters `$PWD` whatever it was
+    // `chdir`'d to.
+    //
+    // Everything downstream of that is silently wrong rather than loud: §6.7 derives
+    // `changed_paths` from a git diff of the **worktree**, which the child never touched, so the
+    // contract records `changed_paths: []`, `scope_violations: []`, `scope_enforced: true` — a
+    // clean audit record for a run that wrote outside the worktree, outside the repo marion was
+    // given, and outside any scope list. That is precisely the false confidence §6.7's two-field
+    // split exists to prevent.
+    //
+    // Stated under both auth modes, because it is placement and not isolation: a live node works in
+    // its worktree for the same reason a canned one does.
+    env.push(("PWD".to_string(), spec.cwd.to_string_lossy().into_owned()));
     if let Some(content) = &spec.config_content {
         env.push((CONFIG_CONTENT_ENV.into(), content.clone()));
     }
@@ -506,6 +524,44 @@ mod tests {
         assert_eq!(ModelRef::parse("canned/canned-1"), Some(model()));
         for bad in ["canned", "/m", "p/", "a/b/c", ""] {
             assert!(ModelRef::parse(bad).is_none(), "{bad}");
+        }
+    }
+
+    /// **The node is placed by `PWD` as well as by `cwd`, and one without the other is not
+    /// placement at all.** Measured against 1.17.3 through `spawn`: with only `Invocation.cwd` set,
+    /// the child's `bash` reported `pwd` and `git rev-parse --show-toplevel` as the directory
+    /// *marion* was launched from, and a `write` of `src/…` landed in the operator's own
+    /// repository. Everything downstream is then quietly wrong rather than loud — §6.7 derives
+    /// `changed_paths` from a diff of the worktree, which such a child never touches, so the
+    /// contract records an empty, unviolated, `scope_enforced: true` audit of a run that wrote
+    /// outside every scope it was given.
+    ///
+    /// Asserted under **both** modes: this is where the node works, which is not part of the
+    /// canned-mode isolation that live mode drops.
+    #[test]
+    fn the_node_is_placed_in_its_own_cwd_by_pwd_too_not_only_by_chdir() {
+        for (label, inv) in [
+            ("canned", compile_run(&spec())),
+            ("live", compile_run(&live_spec())),
+        ] {
+            let pwd = inv
+                .env
+                .iter()
+                .find(|(k, _)| k == "PWD")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{label}: PWD is unset, so the child re-enters whatever directory marion \
+                         was launched from and edits it instead of its worktree. env: {:?}",
+                        inv.env
+                    )
+                });
+            assert_eq!(
+                pwd,
+                inv.cwd.to_string_lossy(),
+                "{label}: PWD and cwd must name one directory; two answers to \"where am I\" is \
+                 the same failure as having only the wrong one"
+            );
         }
     }
 
