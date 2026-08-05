@@ -34,6 +34,7 @@ use marion_core::contract::TaskContract;
 use marion_provider::script::ROOT_TOOL_USE_ID;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::run_bounded;
+use marion_testsupport::{fixture_repo, on_path};
 use serde_json::Value;
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite, not to
@@ -90,49 +91,6 @@ fn scratch(name: &str) -> Scratch {
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
     Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git runs");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// A repository for the child to worktree. Its own, not marion's: the run writes to it.
-fn fixture_repo(root: &Path) -> PathBuf {
-    let repo = root.join("repo");
-    std::fs::create_dir_all(repo.join("src")).unwrap();
-    std::fs::write(repo.join("src/keep.txt"), "keep\n").unwrap();
-    git(&repo, &["init", "-q", "-b", "main", "."]);
-    git(&repo, &["add", "-A"]);
-    git(
-        &repo,
-        &[
-            "-c",
-            "user.email=marion@example.invalid",
-            "-c",
-            "user.name=marion",
-            "commit",
-            "-qm",
-            "fixture",
-        ],
-    );
-    repo
-}
-
-fn on_path(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// Every `contracts/<task_id>.json` marion persisted under `state`.

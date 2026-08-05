@@ -37,6 +37,7 @@ use marion_supervisor::root::{
     self, RootSpec, can_use_tool_request, deny_response, initialize_request,
     is_control_response_to, user_message,
 };
+use marion_testsupport::on_path;
 use serde_json::{Value, json};
 
 /// The verb the canned root reaches for. Real, served by marion's own bridge, and **not** in
@@ -55,14 +56,6 @@ fn fixture_dir() -> PathBuf {
 
 fn recording() -> bool {
     std::env::var_os("MARION_S9_RECORD").is_some()
-}
-
-fn on_path(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// A scratch dir that removes itself.

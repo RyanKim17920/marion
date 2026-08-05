@@ -78,6 +78,7 @@ use marion_harness::adapter_for;
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
+use marion_testsupport::{fixture_repo, git, kill_hard, on_path};
 use serde_json::{Value, json};
 
 /// The child's own bound. Short: a wedged cell must fail fast rather than wedge CI.
@@ -99,11 +100,6 @@ const GRANDCHILD_PROMPT: &str = "Add the depth-gate marker file under src/ and r
 /// The narrative the grandchild's script reports, on whichever wire it would have run on. Present
 /// only so the grandchild is a *complete* child script; a run that reaches it has already failed.
 const GRANDCHILD_NARRATIVE: &str = "Wrote the depth-gate marker under src/ and reported back.";
-
-unsafe extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-const SIGKILL: i32 = 9;
 
 /// A scratch dir that removes itself.
 ///
@@ -146,49 +142,6 @@ fn scratch(name: &str) -> Scratch {
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
     Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git runs");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn fixture_repo(root: &Path) -> PathBuf {
-    let repo = root.join("repo");
-    std::fs::create_dir_all(repo.join("src")).unwrap();
-    std::fs::write(repo.join("src/keep.txt"), "keep\n").unwrap();
-    git(&repo, &["init", "-q", "-b", "main", "."]);
-    git(&repo, &["add", "-A"]);
-    git(
-        &repo,
-        &[
-            "-c",
-            "user.email=marion@example.invalid",
-            "-c",
-            "user.name=marion",
-            "commit",
-            "-qm",
-            "fixture",
-        ],
-    );
-    repo
-}
-
-fn on_path(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// Every `contracts/<task_id>.json` marion persisted under `state`.
@@ -547,7 +500,7 @@ fn drive(node: &Node) -> Evidence {
     drop(server);
     let leaked = survivors(&dir.to_string_lossy());
     for (pid, _) in &leaked {
-        let _ = unsafe { kill(*pid, SIGKILL) };
+        kill_hard(*pid);
     }
     // The dir goes with the guard, here rather than at the end of the function, so the order the
     // rest of this block establishes still holds: processes are killed before their cwd is removed.

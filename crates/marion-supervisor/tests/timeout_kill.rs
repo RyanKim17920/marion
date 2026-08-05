@@ -34,6 +34,7 @@ use marion_core::contract::{ExitStatus, TaskId};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, last_kill_sweep, run_spawn};
+use marion_testsupport::{alive, fixture_repo, kill_hard};
 
 /// The child's bound. Long enough for `codex exec` to boot, take turn one and get its tool call
 /// running (measured at ~4 s here); short enough that the test is not a wait. The tool call is
@@ -43,21 +44,6 @@ const CHILD_TIMEOUT_SECS: u64 = 25;
 /// How long the runaway `sleep`s live if nothing kills them. Far past this test, so a survivor is
 /// unmistakable rather than a race with its own exit.
 const RUNAWAY_SECS: u64 = 900;
-
-unsafe extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-const SIGKILL: i32 = 9;
-const ESRCH: i32 = 3;
-
-/// `kill(pid, 0)`: `ESRCH` is the only answer that means *gone*. `EPERM` means the process exists
-/// and is not ours — a survivor, not a death.
-fn alive(pid: i32) -> bool {
-    if unsafe { kill(pid, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
-}
 
 /// A scratch dir that removes itself.
 ///
@@ -90,40 +76,6 @@ fn scratch(name: &str) -> Scratch {
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
     Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git runs");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn fixture_repo(root: &Path) -> PathBuf {
-    let repo = root.join("repo");
-    std::fs::create_dir_all(repo.join("src")).unwrap();
-    std::fs::write(repo.join("src/keep.txt"), "keep\n").unwrap();
-    git(&repo, &["init", "-q", "-b", "main", "."]);
-    git(&repo, &["add", "-A"]);
-    git(
-        &repo,
-        &[
-            "-c",
-            "user.email=marion@example.invalid",
-            "-c",
-            "user.name=marion",
-            "commit",
-            "-qm",
-            "fixture",
-        ],
-    );
-    repo
 }
 
 /// Case B's command, from `spikes/s7/runaway.sh`: a shell that backgrounds one sleeper and then
@@ -256,7 +208,7 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
     }
     let recorded_survivors: Vec<i32> = recorded.iter().copied().filter(|p| alive(*p)).collect();
     for p in enumerated.iter().chain(recorded.iter()) {
-        let _ = unsafe { kill(*p, SIGKILL) };
+        kill_hard(*p);
     }
     drop(server);
 

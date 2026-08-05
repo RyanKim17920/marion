@@ -40,6 +40,7 @@ use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
+use marion_testsupport::{fixture_repo, kill_hard, on_path};
 use serde_json::{Value, json};
 
 /// Every child's bound. Short on purpose: **opencode never exits on a provider hang** (S13
@@ -51,11 +52,6 @@ const CHILD_TIMEOUT_SECS: u64 = 60;
 /// The narrative every wire's script reports. One string, so a cell that read *another* harness's
 /// stream would still have to have produced the right wire's traffic to get here.
 const NARRATIVE: &str = "Wrote the matrix marker under src/ and reported back.";
-
-unsafe extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-const SIGKILL: i32 = 9;
 
 /// A scratch dir that removes itself.
 ///
@@ -88,49 +84,6 @@ fn scratch(name: &str) -> Scratch {
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
     Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git runs");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// A repository for the child to worktree. Its own, not marion's: the run writes to it.
-fn fixture_repo(root: &Path) -> PathBuf {
-    let repo = root.join("repo");
-    std::fs::create_dir_all(repo.join("src")).unwrap();
-    std::fs::write(repo.join("src/keep.txt"), "keep\n").unwrap();
-    git(&repo, &["init", "-q", "-b", "main", "."]);
-    git(&repo, &["add", "-A"]);
-    git(
-        &repo,
-        &[
-            "-c",
-            "user.email=marion@example.invalid",
-            "-c",
-            "user.name=marion",
-            "commit",
-            "-qm",
-            "fixture",
-        ],
-    );
-    repo
-}
-
-fn on_path(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// Every `contracts/<task_id>.json` marion persisted under `state`.
@@ -352,7 +305,7 @@ fn drive(cell: &Cell) -> Evidence {
     drop(server);
     let leaked = survivors(&root_dir.to_string_lossy());
     for (pid, _) in &leaked {
-        let _ = unsafe { kill(*pid, SIGKILL) };
+        kill_hard(*pid);
     }
 
     // Nothing is left running, so a contract marion wrote and this test cannot read back is now
