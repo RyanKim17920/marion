@@ -174,11 +174,96 @@ pub fn changed_paths(wt: &Path, base: &Oid) -> Result<Vec<PathBuf>, SpawnError> 
     Ok(set)
 }
 
+/// A scratch `GIT_INDEX_FILE`, seeded from a commit and removed on the way out.
+///
+/// It lives in the system temp dir and **never inside the workspace**: an index file written under
+/// the worktree would itself show up as an untracked file, so the diff would report the instrument
+/// that produced it.
+struct ScratchIndex(PathBuf);
+
+impl Drop for ScratchIndex {
+    fn drop(&mut self) {
+        // Ignored: a leftover scratch index costs a few hundred bytes in the temp dir and must not
+        // turn a successful run into a failed one.
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+impl ScratchIndex {
+    /// `GIT_INDEX_FILE=<tmp>` plus `git read-tree <base>`, §6.7's own recipe.
+    fn seeded(wt: &Path, base: &Oid) -> Result<Self, SpawnError> {
+        let path = std::env::temp_dir().join(format!(
+            "marion-diff-index-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        // A stale file from a run that died before `Drop` would be read as the index's *contents*,
+        // so it is removed rather than reused: pids recycle.
+        let _ = std::fs::remove_file(&path);
+        let me = Self(path);
+        git_indexed(wt, &me, &["read-tree", &base.0])?;
+        Ok(me)
+    }
+}
+
+/// `git` in `wt` with `GIT_INDEX_FILE` pointed at the scratch index.
+///
+/// Every index-mutating call in `diff_text` goes through here. The workspace's own index is never
+/// named, which is the property §6.7 states twice: a bare `git add -N` in the workspace permanently
+/// changes what `git status`, `git diff`, `git stash` and `git commit -a` do for the user — on
+/// files marion was only ever reading — and since `isolation` defaults to `shared-cwd`, that
+/// workspace is by default the user's own checkout.
+fn git_indexed(wt: &Path, index: &ScratchIndex, args: &[&str]) -> Result<String, SpawnError> {
+    let out = SysCommand::new("git")
+        .current_dir(wt)
+        .env("GIT_INDEX_FILE", &index.0)
+        .args(args)
+        .output()?;
+    if !out.status.success() {
+        return Err(SpawnError::Git(
+            "command",
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// The patch for everything the child did, as one `git diff <base_commit>` (§6.7).
+///
+/// **One diff against the base, not two diffs concatenated.** The previous shape — `git diff <base>
+/// HEAD` followed by `git diff HEAD` — could not see an untracked file at all: with nothing
+/// committed the first term is empty and the second compares the index to the worktree, where a
+/// file git does not track is simply absent. A child that *created* a file therefore produced an
+/// empty diff, and since `run_spawn` drops an empty one, §6.7's audit record carried
+/// `changed_paths: ["the/file"]` with no bytes anywhere — and `cleanup` then removed the worktree
+/// holding the only copy. Measured, and now pinned by `tests/worktree_reap.rs`.
+///
+/// The intent-to-add pass is what puts those bytes in the patch, and it is the reason the scratch
+/// index exists: `git add -N` records "this path is about to be tracked" so `git diff` will emit it
+/// as a creation, and doing that in the workspace's own index would alter what the *user's* `git
+/// status` and `git commit -a` do.
+///
+/// Untracked paths are enumerated with the same `ls-files --others --exclude-standard` call
+/// [`changed_paths`] uses, so the two derive their subject from one dialect rather than two: a path
+/// that reaches `changed_paths` is a path whose content reaches the diff.
 pub fn diff_text(wt: &Path, base: &Oid) -> Result<String, SpawnError> {
-    // Committed plus uncommitted, without touching the workspace index.
-    let a = git(wt, &["diff", "--no-renames", &base.0, "HEAD"])?;
-    let b = git(wt, &["diff", "--no-renames", "HEAD"])?;
-    Ok(format!("{a}{b}"))
+    let index = ScratchIndex::seeded(wt, base)?;
+    let untracked: Vec<String> = git(wt, &["ls-files", "--others", "--exclude-standard"])?
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    if !untracked.is_empty() {
+        // `--` first: a path that happens to look like a revision is still a path. `git add` with an
+        // empty pathspec is an error, hence the guard above rather than an unconditional call.
+        let mut args = vec!["add", "-N", "--"];
+        args.extend(untracked.iter().map(String::as_str));
+        git_indexed(wt, &index, &args)?;
+    }
+    // `--no-renames`, matching `changed_paths`: a rename rendered as a rename carries no content,
+    // and these two must describe the same run.
+    git_indexed(wt, &index, &["diff", "--no-renames", &base.0])
 }
 
 /// What marion knows about a finished child: what its stream said, plus what marion observed of

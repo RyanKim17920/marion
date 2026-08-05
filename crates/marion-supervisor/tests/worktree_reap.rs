@@ -16,11 +16,16 @@
 //! 2. **The branch outlives the worktree.** `marion/<task_id>` is left pointing at `base_commit`,
 //!    holding none of the child's work, in the user's own repo, once per spawn — and it makes a
 //!    task id single-use, since `git worktree add -b` cannot recreate it.
-//! 3. **A created file is destroyed by the reap.** The contract truthfully attests
-//!    `changed_paths: ["src/marion_m1.txt"]` while the content exists nowhere: not in the branch,
-//!    not in the worktree, not in a stash or reflog, and not in the contract's own `diff`. A
-//!    *modified tracked* file survives, in the persisted contract's diff alone. The asymmetry is
-//!    `spawn::diff_text`, which omits the intent-to-add pass §6.7 specifies.
+//! 3. **The child's work survives only as the persisted contract's `diff`** — git holds none of it,
+//!    for a created file or a modified one. This is the one item that has already been fixed: it
+//!    originally recorded a *created* file's content being destroyed, because `spawn::diff_text`
+//!    omitted the intent-to-add pass §6.7 specifies while a *modified tracked* file came through.
+//!    The asymmetry was the diagnosis; `diff_text` now implements §6.7's recipe and the two cases
+//!    agree. The inverted assertion is kept deliberately, and says so at the test.
+//!
+//! and one property of the fix, asserted on its own because it is the part that can silently harm a
+//! user rather than merely lose data: the diff is derived through a **scratch `GIT_INDEX_FILE`**,
+//! so the operator's staged state is untouched.
 //!
 //! # Running it
 //!
@@ -33,6 +38,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use marion_core::contract::{TaskContract, TaskId, Workspace};
 use marion_core::journal::{RecordKind, decode};
@@ -243,13 +249,28 @@ fn persisted_contract(state: &Path, task_id: &str) -> TaskContract {
         .unwrap_or_else(|e| panic!("{} does not parse as a contract: {e}", path.display()))
 }
 
+/// How long to keep looking for a record that is missing on the first read.
+///
+/// Not a tolerance to absorb a race — nothing here may pass on the second read. It exists to tell
+/// **late** from **lost**, because the two are different findings and a bare "not present" cannot
+/// distinguish them.
+const RECORD_GRACE: Duration = Duration::from_secs(2);
+
 /// Every record kind in the run's journal, in order.
 fn journal_kinds(env: &Env) -> Vec<&'static str> {
+    kinds_of(&read_journal(env).1)
+}
+
+fn read_journal(env: &Env) -> (PathBuf, Vec<u8>) {
     let path = env.project_dir.journal();
     // Not `unwrap_or_default()`: an unreadable journal would make "no reap record" true for the
     // wrong reason, which is the one way the assertion below could pass without looking.
     let bytes = std::fs::read(&path)
         .unwrap_or_else(|e| panic!("the run's journal {} cannot be read: {e}", path.display()));
+    (path, bytes)
+}
+
+fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
     bytes
         .split(|b| *b == b'\n')
         .filter(|l| !l.is_empty())
@@ -273,6 +294,55 @@ fn journal_kinds(env: &Env) -> Vec<&'static str> {
             RecordKind::PermissionDenied(_) => "PermissionDenied",
         })
         .collect()
+}
+
+/// Assert `wanted` is in the journal **on the first read**, and say which of the two failures it is
+/// when it is not.
+///
+/// `run_spawn` has returned by the time this runs, and every record it writes was written by *this*
+/// process with one unbuffered `write(2)` — `Journal::append` calls `File::write` directly, and
+/// §4.3's group commit governs only the `fsync`, never whether the bytes reached the file. So the
+/// page cache already holds them and a read here cannot miss them. Two consequences, both asserted:
+///
+/// * a record that is **never** found is *lost*, not pending — and since `Journal::record` reports a
+///   failed append with a bare `eprintln!` and lets the run continue (`journal.rs:179-183`), a lost
+///   record leaves no other trace. The message says where to look.
+/// * a record found only on a **later** read is *late*, which for a same-process unbuffered write
+///   should be impossible. That is a durability finding in its own right, so it fails too rather
+///   than being absorbed as a retry. A test that quietly waited would convert exactly this evidence
+///   into a green run.
+fn assert_journalled(env: &Env, wanted: &str, context: &str) {
+    let (path, bytes) = read_journal(env);
+    if kinds_of(&bytes).contains(&wanted) {
+        return;
+    }
+    let deadline = Instant::now() + RECORD_GRACE;
+    let started = Instant::now();
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        let (_, later) = read_journal(env);
+        if kinds_of(&later).contains(&wanted) {
+            panic!(
+                "{context}: the {wanted} record was absent when `run_spawn` returned and appeared \
+                 {:?} later. It is written by this process with one unbuffered `write(2)` before \
+                 the call returns, so a read that missed it means the journal's durability story is \
+                 weaker than the code claims — a real defect, not a race for this test to wait \
+                 out.\njournal: {}\n{}",
+                started.elapsed(),
+                path.display(),
+                String::from_utf8_lossy(&later)
+            );
+        }
+    }
+    panic!(
+        "{context}: no {wanted} record, and none arrived within {RECORD_GRACE:?}, so it is lost \
+         rather than late. `Journal::record` reports a failed append with a bare `eprintln!` and \
+         lets the run continue, so check this test's captured stderr for `marion: journal write \
+         failed` — that line, not this assertion, would name the cause.\njournal: {} ({} bytes)\n{}",
+        path.display(),
+        bytes.len(),
+        String::from_utf8_lossy(&bytes)
+    );
 }
 
 /// The worktree path and branch the contract says the child ran in.
@@ -325,16 +395,19 @@ fn the_reap_reaches_the_journal_as_no_record_at_all() {
     let _root = scratch("unjournalled");
     let fx = fixture(&_root, CREATE);
     spawn_one(&fx, "reap-unjournalled").expect("the child runs");
-    let kinds = journal_kinds(&fx.env);
-
     // The run really was journalled. Without this, "no reap record" could just mean "no journal",
-    // and the assertion below would hold on a run that recorded nothing whatsoever.
+    // and the assertion below would hold on a run that recorded nothing whatsoever. Each of the
+    // four goes through `assert_journalled`, which tells a lost record from a late one —
+    // `ContractPersisted` is the one that matters, being a NON-barrier kind (with `StateChanged`
+    // and `PermissionDenied`) and the last record the run writes.
     for expected in ["SpawnIntent", "Spawned", "Exited", "ContractPersisted"] {
-        assert!(
-            kinds.contains(&expected),
-            "no {expected} record in a run that spawned a child: {kinds:?}"
+        assert_journalled(
+            &fx.env,
+            expected,
+            "a run that spawned a child records its whole lifecycle",
         );
     }
+    let kinds = journal_kinds(&fx.env);
     assert!(
         !kinds.iter().any(|k| k.starts_with("Reap")),
         "CURRENT BEHAVIOUR, NOT DESIRED: marion removed this child's worktree and recorded nothing \
@@ -415,15 +488,18 @@ fn a_second_spawn_of_the_same_task_id_is_refused_by_the_first_ones_leftover_bran
 // 3. Whether the child's work survives at all.
 // ---------------------------------------------------------------------------------------------
 
-/// **CURRENT BEHAVIOUR, NOT DESIRED — the defect from the first live run.**
+/// **This assertion is inverted from what it said when the file was written, and that is the
+/// point.** It used to pin the defect from the first live run: the contract attested to a file the
+/// child created while the content existed nowhere, because `spawn::diff_text` omitted §6.7's
+/// intent-to-add pass (`git diff <base> HEAD` is empty with nothing committed, and `git diff HEAD`
+/// cannot see an untracked file). The reap then took the only copy.
 ///
-/// The contract attests to a file the child created. After the reap its *content* exists nowhere:
-/// the worktree is gone, the branch holds the base tree, nothing was stashed, and `spawn::diff_text`
-/// produced no patch because it omits the intent-to-add pass §6.7 specifies (`git diff <base> HEAD`
-/// is empty with nothing committed, and `git diff HEAD` cannot see an untracked file). So §6.7's
-/// audit record truthfully describes work that can be neither recovered nor reviewed.
+/// Everything about the *reap* is unchanged and still asserted below — the worktree is gone, the
+/// branch holds the base tree, nothing is stashed, the reflog holds one line. What changed is the
+/// last line: the persisted contract now carries the bytes, so §6.7's audit record is
+/// self-sufficient and the work is recoverable from it as a patch.
 #[test]
-fn a_created_files_content_is_destroyed_by_the_reap_though_the_contract_attests_to_it() {
+fn a_created_files_content_survives_the_reap_in_the_persisted_contracts_diff() {
     require_codex();
     let _root = scratch("created");
     let fx = fixture(&_root, CREATE);
@@ -443,10 +519,11 @@ fn a_created_files_content_is_destroyed_by_the_reap_though_the_contract_attests_
     assert!(
         comp.result_commits.is_empty(),
         "and that it committed nothing — `result_commits` is the one child-owned field, and this \
-         child, like the first live one, never used it"
+         child, like the first live one, never used it. So the diff below is the *only* record of \
+         the work: this is not a case where a commit could be fallen back on"
     );
 
-    // Every place the content could have survived.
+    // Git holds none of it — unchanged by the diff fix, and the reason the contract has to.
     assert!(!wt.exists(), "the worktree is gone");
     assert!(
         !git(&fx.repo, &["ls-tree", "-r", "--name-only", &branch]).contains("marion_m1.txt"),
@@ -463,23 +540,151 @@ fn a_created_files_content_is_destroyed_by_the_reap_though_the_contract_attests_
         "and the branch's reflog records only its creation, so there is no earlier tip to recover \
          it from: {reflog}"
     );
+
+    // And the contract does.
     let diff = persisted_contract(&fx.state, "reap-created")
         .completion
-        .and_then(|c| c.diff);
+        .and_then(|c| c.diff)
+        .expect(
+            "§6.7's diff is `git diff <base_commit>` with intent-to-add for untracked paths, so a \
+             created file reaches it. An absent diff here is the original defect returning: the \
+             contract would attest to work whose bytes the reap destroyed",
+        );
     assert!(
-        diff.is_none(),
-        "CURRENT BEHAVIOUR, NOT DESIRED: the persisted contract is the last place this content \
-         could live, and its `diff` is empty for a *created* file. §6.7 specifies the diff as `git \
-         diff <base_commit>` with intent-to-add for untracked paths against a scratch \
-         GIT_INDEX_FILE; `spawn::diff_text` does neither, so the one artefact that could have \
-         carried these bytes does not. When the intent-to-add pass lands this becomes a `Some` \
-         holding the new file, and this assertion is the one to invert. Got: {diff:?}"
+        diff.value.contains("new file mode"),
+        "the patch records it as a creation, which is what the intent-to-add pass buys — without \
+         it git emits nothing at all for a path it does not track: {}",
+        diff.value
+    );
+    assert!(
+        diff.value
+            .contains("+marion M1: written by the canned codex child"),
+        "and it carries the child's actual bytes, so the file can be reconstructed from the \
+         contract alone: {}",
+        diff.value
+    );
+    assert!(
+        !diff.truncated,
+        "whole, not capped — the persisted copy is uncapped by construction (`cap_for_return` \
+         applies to the returned one), so a truncation here would mean something else shortened it"
     );
 }
 
-/// The other half of the asymmetry, and the reason the defect above is about *untracked* paths
-/// rather than about reaping in general: a modified tracked file **does** survive the reap — in the
-/// persisted contract's diff, and nowhere else.
+// ---------------------------------------------------------------------------------------------
+// 4. The scratch index: deriving the diff must not touch what the user has staged.
+// ---------------------------------------------------------------------------------------------
+
+/// `diff_text` called directly, on a worktree that has **staged** state of its own.
+///
+/// The end-to-end test below shows the operator's repository index surviving a spawn, but a child
+/// runs in a linked worktree, and a linked worktree has its own index — so that run would pass even
+/// if `diff_text` scribbled all over the index it actually operates on. This test closes that hole
+/// by pointing `diff_text` at a workspace whose index state is known, and comparing it byte for
+/// byte across the call. It is also the case §6.7 is really about: `isolation` defaults to
+/// `shared-cwd`, where the workspace *is* the user's own checkout.
+#[test]
+fn deriving_the_diff_leaves_the_workspaces_own_index_byte_for_byte_unchanged() {
+    let _root = scratch("scratch-index");
+    let repo = fixture_repo(&_root);
+    let wt = _root.join("wt");
+    let base = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "probe",
+            &wt.to_string_lossy(),
+            &base,
+        ],
+    );
+
+    // Deliberate index state: one staged modification, plus an untracked file the diff must pick
+    // up. If the intent-to-add pass ran in *this* index, the untracked file would join the staged
+    // set and the user's next `git commit` would carry a file marion only ever read.
+    std::fs::write(wt.join("src/keep.txt"), "keep, staged by the user\n").unwrap();
+    git(&wt, &["add", "src/keep.txt"]);
+    std::fs::write(wt.join("src/untracked.txt"), "created, never staged\n").unwrap();
+
+    let before_staged = git(&wt, &["diff", "--cached", "--name-only"]);
+    let before_status = git(&wt, &["status", "--porcelain"]);
+    let index_before =
+        std::fs::read(repo.join(".git/worktrees/wt/index")).expect("the worktree index");
+
+    let diff = marion_supervisor::spawn::diff_text(&wt, &marion_core::contract::Oid(base.clone()))
+        .expect("the diff derives");
+
+    assert!(
+        diff.contains("+created, never staged"),
+        "the untracked file's content reaches the patch — otherwise this test proves only that a \
+         no-op touches nothing: {diff}"
+    );
+    assert_eq!(
+        git(&wt, &["diff", "--cached", "--name-only"]),
+        before_staged,
+        "the staged set is exactly what it was: `git add -N` ran against the scratch index, so \
+         `src/untracked.txt` did not join it"
+    );
+    assert_eq!(
+        git(&wt, &["status", "--porcelain"]),
+        before_status,
+        "and nothing else moved between git's columns either"
+    );
+    assert_eq!(
+        std::fs::read(repo.join(".git/worktrees/wt/index")).expect("the worktree index"),
+        index_before,
+        "the index file is unchanged byte for byte — the strongest form of the claim, and the one \
+         that would catch a refresh that happened to leave `status` reading the same"
+    );
+    // Checking that no index file *remains* in the worktree would prove nothing: `ScratchIndex`
+    // removes it on `Drop`, so it is gone by the time this test could look, wherever it was
+    // written. The observable harm of writing it inside the workspace is that the intent-to-add
+    // pass finds it — `ls-files --others` runs after it is created — and the instrument lands in
+    // the patch as a new file. That is what this asserts, and it is what caught the mutation.
+    assert!(
+        !diff.contains("marion-diff-index"),
+        "the scratch index must not be written inside the workspace, or the diff reports the \
+         instrument that produced it: {diff}"
+    );
+}
+
+/// The same property end to end: a file the operator staged in their own repository before a spawn
+/// is still staged, and still unchanged, after one.
+#[test]
+fn a_spawn_leaves_the_operators_staged_state_alone() {
+    require_codex();
+    let _root = scratch("operator-index");
+    let fx = fixture(&_root, CREATE);
+
+    // The operator stages something and walks away, exactly as they might while a child runs.
+    std::fs::write(fx.repo.join("src/staged.txt"), "staged by the operator\n").unwrap();
+    git(&fx.repo, &["add", "src/staged.txt"]);
+    let staged_before = git(&fx.repo, &["diff", "--cached", "--name-only"]);
+    assert_eq!(
+        staged_before.trim(),
+        "src/staged.txt",
+        "the fixture really did stage something, so the assertion below is not vacuous"
+    );
+
+    spawn_one(&fx, "reap-operator-index").expect("the child runs");
+
+    assert_eq!(
+        git(&fx.repo, &["diff", "--cached", "--name-only"]),
+        staged_before,
+        "the operator's staged set survives the spawn untouched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fx.repo.join("src/staged.txt")).unwrap(),
+        "staged by the operator\n",
+        "and so do its contents"
+    );
+}
+
+/// The control for the created-file test, and the case that always worked: a modified tracked file
+/// survives the reap in the persisted contract's diff. Its value is that the two now agree — before
+/// the intent-to-add fix this passed while its neighbour recorded content being destroyed, and that
+/// difference was the whole diagnosis.
 #[test]
 fn a_modified_tracked_files_content_survives_only_as_the_persisted_contracts_diff() {
     require_codex();
@@ -503,17 +708,17 @@ fn a_modified_tracked_files_content_survives_only_as_the_persisted_contracts_dif
     let diff = persisted_contract(&fx.state, "reap-modified")
         .completion
         .and_then(|c| c.diff)
-        .expect("a tracked modification reaches `git diff HEAD`, so this diff is captured");
+        .expect("a tracked modification is visible to `git diff <base>` whatever the index holds");
     assert!(
         diff.value
             .contains("keep, edited by the canned codex child"),
         "the child's actual bytes survive in the persisted contract — the sole recovery route for a \
-         run whose worktree has been reaped, and the one that fails for a created file: {}",
+         run whose worktree has been reaped: {}",
         diff.value
     );
     assert!(
         !diff.truncated,
-        "and this one is whole, so the contrast with the created-file case is about capture and \
+        "and this one is whole, so the comparison with the created-file case is about capture and \
          not about caps"
     );
 }
