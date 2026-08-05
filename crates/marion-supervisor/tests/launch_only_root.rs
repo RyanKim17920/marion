@@ -66,18 +66,24 @@ const RUN_BOUND: Duration = Duration::from_secs(60);
 /// The `--timeout` every property-3 root is given, as a number the assertions can reason about
 /// rather than a literal repeated between the argv and the checks on what it produced.
 ///
-/// **Six seconds and not two, and the extra four are load-bearing.** The stub records its
-/// backgrounded grandchild's pid on its first line, and that pid file is the *only* witness those
-/// tests have for the leak they exist to detect. marion's bound is a wall clock that starts when it
-/// spawns the harness, so everything between that spawn and the stub's first line — `exec`, the
-/// shell starting, the script being read — has to fit inside it. Normally microseconds; on a
-/// machine running several cargo builds, seconds.
+/// **Six seconds and not two, and the extra four are headroom for a race that cannot be closed
+/// entirely.** The stub's backgrounded grandchild's pid is the *only* witness property 3 has for
+/// the leak it exists to detect, and it is written under marion's wall clock, which starts at
+/// `spawn`. Everything between that instant and the stub's first line — `exec`, the shell starting,
+/// the script being read — has to fit inside the bound. Normally microseconds; on a machine running
+/// several cargo builds, seconds.
 ///
-/// Reproduced here rather than inferred: delaying the stub's first line past a 2 s bound fails
-/// `a_codex_root_that_never_exits…` with `the stub recorded its grandchild: []`, in a run of
-/// entirely normal duration — which is the signature of the one unexplained failure this file saw
-/// under load. At 2 s that race was live on a busy machine; the bound is the only lever over it,
-/// because nothing can make the test observe a pid the stub never wrote.
+/// Reproduced rather than inferred: delaying the stub's first line past a 2 s bound fails
+/// `a_codex_root_that_never_exits…` with an empty pid set, in a run of **entirely normal
+/// duration** — no clock is overrun, so the timing assertions all pass and only the witness is
+/// missing. That is the signature of the failures this file saw under load, on codex and on
+/// opencode, and all three harnesses run the identical stub and launch path.
+///
+/// **The bound is the second lever, not the first.** The primary fix is ordering: the pid is
+/// recorded in `stub_harness`'s prologue, ahead of the argv write and ahead of the `env`
+/// `fork`+`exec` that used to precede it, so the removable part of the window is gone. What is left
+/// is irreducible — a process cannot run an instruction before it exists — and this bound covers
+/// that remainder.
 ///
 /// It is not a fail-fast bound: `RUN_BOUND` is what keeps a wedged run from wedging the suite, and
 /// it is 10x this. The three tests that use this run in parallel, so the cost is ~4 s on the target
@@ -227,7 +233,21 @@ fn reached_the_bridge(node: &Node) -> String {
 ///
 /// argv and env go to two files rather than one stream: an environment value is arbitrary text and
 /// could contain anything a marker in a shared file might use to separate them.
-fn stub_harness(dir: &Path, node: &Node, body: &str) -> PathBuf {
+///
+/// # `prologue` runs before the recording, and that ordering is load-bearing
+///
+/// Everything the stub records is a side effect a *bounded* run may or may not reach: marion's
+/// wall clock starts when it spawns this process, and a caller whose test depends on some effect
+/// having happened is in a race with that clock. The recording above is not free — `env` is a
+/// `fork`+`exec` of another binary, and on a loaded machine that alone can take a noticeable slice
+/// of the bound — so anything a test *must* observe goes in `prologue` and runs first, ahead of
+/// both writes and the subprocess.
+///
+/// This is not a cure. A process cannot execute anything before it exists, so the window between
+/// marion's `spawn` and this script's first line stays open however it is ordered; `HANG_BOUND`
+/// covers that remainder. What `prologue` removes is the part that *is* removable, which is most
+/// of it.
+fn stub_harness(dir: &Path, node: &Node, prologue: &str, body: &str) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let program = bin.join(node.program);
@@ -235,6 +255,7 @@ fn stub_harness(dir: &Path, node: &Node, body: &str) -> PathBuf {
         &program,
         format!(
             "#!/bin/sh\n\
+             {prologue}\n\
              for a in \"$@\"; do echo \"ARG=$a\"; done > '{argv}'\n\
              env > '{env}'\n\
              {body}\n",
@@ -471,6 +492,8 @@ fn a_silent_root_is_refused(node: &Node, name: &str) {
     let bin = stub_harness(
         &dir,
         node,
+        // Nothing to record ahead of the argv this test reads: an unbounded run reaches every line.
+        "",
         "echo 'Here is a summary of the repository.'\nexit 0",
     );
     let prompt = "Delegate the task to a child.";
@@ -550,7 +573,12 @@ fn a_root_that_called_marion_succeeds(node: &Node, name: &str) {
     );
 
     let dir = scratch(name);
-    let bin = stub_harness(&dir, node, &format!("cat <<'EOF'\n{frame}\nEOF\nexit 0"));
+    let bin = stub_harness(
+        &dir,
+        node,
+        "",
+        &format!("cat <<'EOF'\n{frame}\nEOF\nexit 0"),
+    );
 
     let run = marion_run(&dir, node, &bin, "Delegate the task to a child.", "30");
 
@@ -599,13 +627,17 @@ fn a_hanging_root_is_killed_with_its_group(node: &Node, name: &str) {
     let pids = dir.join("pids");
     // A backgrounded grandchild that outlives its parent's own exit, recording its pid: the class
     // of process a pid-only kill leaves running.
+    //
+    // **In the prologue, so it is the stub's first act.** That pid file is the only witness this
+    // test has for the leak below, and it is written under marion's wall clock: every instruction
+    // ahead of it is time in which the group can be killed with nothing recorded, which fails the
+    // run on a machine that was merely slow. `sh` writes a redirected builtin immediately — there
+    // is no buffering to flush — so first is as early as it can be made. See `stub_harness`.
     let bin = stub_harness(
         &dir,
         node,
-        &format!(
-            "sleep 600 & echo $! >> '{p}'\nsleep 600\n",
-            p = pids.display()
-        ),
+        &format!("sleep 600 & echo $! >> '{p}'", p = pids.display()),
+        "sleep 600\n",
     );
 
     let run = marion_run(
@@ -704,17 +736,26 @@ fn a_hanging_root_is_killed_with_its_group(node: &Node, name: &str) {
     // **The leak check's witness, asserted before the leak check reads it.** An empty set here is
     // not a clean run and must never be read as one — it is a run whose only evidence never
     // existed, so it fails rather than passing vacuously.
+    //
+    // The two ways it can be empty are told apart rather than merged, by a marker the stub writes
+    // *after* the pid: `argv.txt`. Reaching that file means the stub was running and the pid line
+    // ran before it, so a missing pid with a present argv is a defect in the recording itself,
+    // while neither file means the stub never got a first instruction at all.
+    let stub_started = dir.join("argv.txt").is_file();
     assert_eq!(
         recorded.len(),
         1,
-        "{}: the stub was killed before it recorded its grandchild's pid, so the leak assertion \
-         below has no witness and this run proves nothing either way — it is NOT evidence that the \
-         group kill worked.\n\
-         The stub writes that pid on its first line, so an empty file means it never got there \
-         inside the {:?} it was given: on a loaded machine, `exec` plus shell start-up can exceed \
-         that, and marion's bound is a wall clock that does not know the difference (see \
-         `HANG_BOUND`). Re-run it alone; if it reproduces idle, the stub or the launch is broken \
-         rather than slow.\n\
+        "{}: no grandchild pid was recorded, so the leak assertion below has no witness and this \
+         run proves nothing either way — it is NOT evidence that the group kill worked.\n\
+         The stub reached its later `argv.txt` write: {stub_started}.\n\
+         - `false` — the stub never ran a first instruction inside the {:?} it was given. marion's \
+         bound is a wall clock that starts at `spawn`, and `exec` plus shell start-up on a loaded \
+         machine can exceed it; nothing the stub does can precede its own creation, which is why \
+         `HANG_BOUND` carries headroom and the pid is recorded in the stub's prologue. Re-run \
+         alone before believing it.\n\
+         - `true` — the stub WAS running and still recorded nothing, which the ordering is \
+         supposed to make impossible. That is a real defect in this test's witness, not a slow \
+         machine.\n\
          recorded: {recorded:?}",
         node.harness,
         HANG_BOUND
