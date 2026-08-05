@@ -33,12 +33,204 @@ use marion_core::harness::Harness;
 use marion_core::journal::{RecordKind, decode};
 use marion_core::node::NodeState;
 use marion_core::paths::ProjectDir;
-use marion_provider::{CannedServer, Config, Script};
+use marion_harness::adapter_for;
+use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
+use marion_supervisor::root::{RootPath, root_path};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_bounded, run_spawn};
+use serde_json::json;
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(300);
+
+/// The root's bound on a **`LaunchOnly`** surface, where `--timeout` is a wall clock over the whole
+/// run — and the child's entire run happens inside the root's `spawn` call, so this has to cover
+/// both. Matches `cross_product`, for the reason that file gives: opencode never exits on a
+/// provider hang, so a short-enough ceiling is what turns a hang into a failure.
+const ROOT_WALL_CLOCK_SECS: &str = "150";
+
+/// The root's bound on a **duplex** surface, where `--timeout` is §9's per-episode `Blocked`-only
+/// budget and *not* a wall clock. Short: an unanswerable permission request must fail in seconds.
+const ROOT_BLOCKED_SECS: &str = "5";
+
+/// The child's own wall clock, through `spawn`'s `timeout_secs`.
+const CHILD_TIMEOUT_SECS: u64 = 60;
+
+/// Present in the **root's** prompt and nowhere in the child's — the provider's role discriminator
+/// when both nodes of a pairing speak the same wire. Same device, and same reason, as
+/// `cross_product`'s marker of the same name.
+const ROOT_MARKER: &str = "MARION-JOURNAL-ROOT-TURN-8c31";
+
+/// The child's task, free of [`ROOT_MARKER`] so a child request never reads as the root's.
+const CHILD_PROMPT: &str = "Add the journal marker file under src/ and report back.";
+
+/// The narrative every child's script reports.
+const NARRATIVE: &str = "Wrote the journal marker under src/ and reported back.";
+
+/// The file a child that *can* write is driven to write. Worktree-relative and inside
+/// `writable_scope`, for the reason `cross_product` states: the absolute path does not exist when
+/// this script is written, because the agent id is minted inside `spawn`.
+const CHILD_FILE: &str = "src/journal-marker.txt";
+
+/// What that file contains.
+const CHILD_FILE_CONTENT: &str = "marion journal marker\n";
+
+// --- the node table ------------------------------------------------------------------------------
+//
+// The same shape `cross_product` uses, and deliberately not a second vocabulary: a pairing is one
+// row in each role. Trimmed to what a journal assertion reads — this file asserts about records,
+// not about worktree contents, so `child_writes_worktree` has no counterpart here.
+
+/// One harness, in both of the roles it can play.
+#[derive(Debug, Clone, Copy)]
+struct Node {
+    /// The built-in agent type. `codex-impl` is `codex`'s canonical name, so both roles use it.
+    agent_type: &'static str,
+    harness: Harness,
+    /// `--model` for a root, and `spawn`'s `model` for a child. `None` where the harness takes
+    /// none; the two that refuse to compile without one state it.
+    model: Option<&'static str>,
+    /// The binary that must be on `PATH`.
+    program: &'static str,
+}
+
+const CLAUDE: Node = Node {
+    agent_type: "claude",
+    harness: Harness::ClaudeCode,
+    model: None,
+    program: "claude",
+};
+
+const CODEX: Node = Node {
+    agent_type: "codex-impl",
+    harness: Harness::Codex,
+    model: None,
+    program: "codex",
+};
+
+const GEMINI: Node = Node {
+    agent_type: "gemini",
+    // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
+    model: Some("gemini-2.5-flash"),
+    harness: Harness::Gemini,
+    program: "gemini",
+};
+
+const OPENCODE: Node = Node {
+    agent_type: "opencode",
+    // `provider/model`, the only spelling `-m` accepts.
+    model: Some("marion/canned-1"),
+    harness: Harness::OpenCode,
+    program: "opencode",
+};
+
+/// marion's `spawn`, in the spelling **this harness's wire** dispatches on. Codex is the exception
+/// and it is a wire fact: its `marion_tool_name` is the code-mode JavaScript identifier, while the
+/// wire dispatch form is the bare verb beside `namespace: "mcp__marion"` (§11 item 12).
+fn spawn_tool(node: &Node) -> String {
+    let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
+    match node.harness {
+        Harness::Codex => "spawn".to_string(),
+        _ => adapter.marion_tool_name("spawn"),
+    }
+}
+
+/// marion's `report`, in the same per-harness spelling, for the **child**'s script.
+fn report_tool(node: &Node) -> String {
+    let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
+    match node.harness {
+        Harness::Codex => "report".to_string(),
+        _ => adapter.marion_tool_name("report"),
+    }
+}
+
+/// The `Script` that answers **both** nodes of one pairing — the root's half keyed on
+/// [`ROOT_MARKER`], the child's half on its own wire's fields.
+fn script(root: &Node, child: &Node) -> Script {
+    let mut spawn_args = json!({
+        "agent_type": child.agent_type,
+        "prompt": CHILD_PROMPT,
+        "acceptance_criteria": ["a file exists under src/ containing the marker"],
+        "writable_scope": ["src/**"],
+        "timeout_secs": CHILD_TIMEOUT_SECS,
+    });
+    // **Absent, never null**: gemini 0.53.0 validates a tool call against the declared schema before
+    // dispatching it and refuses `"model": null` outright.
+    if let Some(m) = child.model {
+        spawn_args["model"] = json!(m);
+    }
+    let mut s = Script {
+        root: Some(RootScript {
+            marker: ROOT_MARKER.into(),
+            turn: RootTurn {
+                tool: spawn_tool(root),
+                args: spawn_args,
+                final_text: "The child completed the task and reported back.".into(),
+            },
+        }),
+        ..Script::default()
+    };
+    let report = report_tool(child);
+    match child.harness {
+        Harness::ClaudeCode => {
+            s.root_tool = report;
+            s.root_tool_input = json!({ "narrative": NARRATIVE });
+            s.root_final_text = "Reported back through marion. Done.".into();
+        }
+        Harness::Codex => {
+            s.child_narrative = NARRATIVE.into();
+            s.child_patch = format!(
+                "*** Begin Patch\n*** Add File: {CHILD_FILE}\n+{}\n*** End Patch",
+                CHILD_FILE_CONTENT.trim_end()
+            );
+            s.child_final_text = json!({"narrative": NARRATIVE, "result_commits": []}).to_string();
+        }
+        Harness::Gemini => {
+            s.gemini_report_tool = report;
+            s.gemini_report_args = json!({ "narrative": NARRATIVE });
+        }
+        Harness::OpenCode => {
+            s.openai_report_tool = report;
+            s.openai_report_args = json!({ "narrative": NARRATIVE });
+            s.openai_edit = Some(EditTurn {
+                tool: "write".into(),
+                args: json!({ "filePath": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
+            });
+        }
+    }
+    s
+}
+
+fn marion_argv(
+    root: &Node,
+    repo: &Path,
+    state: &Path,
+    base_url: &str,
+    timeout: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        root.agent_type.into(),
+        "--prompt".into(),
+        format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
+        "--repo".into(),
+        repo.to_string_lossy().into_owned(),
+        "--state-dir".into(),
+        state.to_string_lossy().into_owned(),
+        "--base-url".into(),
+        base_url.into(),
+        // Zero paid calls, and not optional: without it the binary refuses the loopback URL above
+        // at argument parsing and the pairing never starts.
+        "--canned".into(),
+        "--timeout".into(),
+        timeout.into(),
+    ];
+    if let Some(m) = root.model {
+        args.push("--model".into());
+        args.push(m.into());
+    }
+    args
+}
 
 /// A scratch dir that removes itself.
 ///
@@ -160,6 +352,359 @@ fn writers_by_agent(journal: &Path) -> Vec<(String, String)> {
         .filter_map(decode)
         .map(|r| (r.agent_id().0.clone(), r.writer.0.clone()))
         .collect()
+}
+
+// --- driving one pairing -------------------------------------------------------------------------
+
+/// What one driven pairing left behind, gathered **before** the scratch dir is removed and asserted
+/// **after** — so a failing pairing can never become the leak this suite also tests for. The same
+/// discipline `cross_product`, `harness_matrix` and `timeout_kill` take, for the same reason.
+struct JournalEvidence {
+    timed_out: bool,
+    code: Option<i32>,
+    stderr: String,
+    /// `None` when the run wrote no journal at all, which is a distinct failure from an empty one
+    /// and is reported as such.
+    replay: Option<marion_core::registry::Replay>,
+    /// The agent-dirs marion actually created — the ground truth the replayed nodes are compared
+    /// against, rather than a count written here.
+    agent_dirs: BTreeSet<String>,
+    /// `(agent_id, writer_id)` for every record, the cross-process evidence.
+    writers: Vec<(String, String)>,
+    /// Each record's kind, in file order.
+    kinds: Vec<&'static str>,
+    /// `(path, parsed)` for each persisted contract, read back before cleanup.
+    contracts: Vec<(PathBuf, TaskContract)>,
+    /// Where the journal was, for failure messages naming a path that really existed.
+    journal_path: PathBuf,
+}
+
+fn record_kinds(journal: &Path) -> Vec<&'static str> {
+    std::fs::read(journal)
+        .unwrap_or_default()
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .filter_map(decode)
+        .map(|r| match r.kind {
+            RecordKind::SpawnIntent(_) => "SpawnIntent",
+            RecordKind::Spawned(_) => "Spawned",
+            RecordKind::SpawnAborted(_) => "SpawnAborted",
+            RecordKind::StateChanged(_) => "StateChanged",
+            RecordKind::Exited(_) => "Exited",
+            RecordKind::ReapIntent(_) => "ReapIntent",
+            RecordKind::ReapConfirmed(_) => "ReapConfirmed",
+            RecordKind::ContractPersisted(_) => "ContractPersisted",
+            RecordKind::PermissionDenied(_) => "PermissionDenied",
+        })
+        .collect()
+}
+
+/// Run one `root → child` pairing end to end through the real `marion` binary, and collect
+/// everything the assertions need before anything is cleaned up.
+fn drive(root: &Node, child: &Node) -> JournalEvidence {
+    let dir = scratch(&format!("{}-{}", root.agent_type, child.agent_type));
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: dir.join("provider-requests.jsonl"),
+        script: script(root, child),
+    })
+    .expect("the canned provider binds");
+
+    // §3.4: what `--timeout` bounds follows the surface, so the value does too — derived from the
+    // adapter exactly as `marion run` derives the path itself, never from the harness's name.
+    let adapter = adapter_for(root.harness).expect("the root's harness has an adapter");
+    let timeout = match root_path(&adapter.surfaces()) {
+        Some(RootPath::Duplex) => ROOT_BLOCKED_SECS,
+        _ => ROOT_WALL_CLOCK_SECS,
+    };
+    let args = marion_argv(root, &repo, &state, &server.base_url(), timeout);
+
+    let out = run_bounded(
+        Command::new(env!("CARGO_BIN_EXE_marion"))
+            .args(&args)
+            .current_dir(&*dir),
+        RUN_BOUND,
+    )
+    .expect("marion run starts");
+
+    let project = ProjectDir::new(&state, &repo);
+    let journal_path = project.journal();
+    let replay = journal_path
+        .is_file()
+        .then(|| read_path(&journal_path).expect("the journal replays"));
+    let writers = if journal_path.is_file() {
+        writers_by_agent(&journal_path)
+    } else {
+        Vec::new()
+    };
+    let kinds = record_kinds(&journal_path);
+    let contracts: Vec<(PathBuf, TaskContract)> = persisted_contracts(&state)
+        .into_iter()
+        .map(|p| {
+            // A contract marion wrote and cannot read back is a defect whichever half is wrong, so
+            // it fails here naming the file rather than being dropped by a `filter_map`.
+            let bytes =
+                std::fs::read(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()));
+            let parsed = serde_json::from_slice(&bytes)
+                .unwrap_or_else(|e| panic!("parsing {}: {e}", p.display()));
+            (p, parsed)
+        })
+        .collect();
+    let agent_dirs = agent_dirs(&project);
+
+    drop(server);
+
+    JournalEvidence {
+        timed_out: out.timed_out,
+        code: out.code,
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        replay,
+        agent_dirs,
+        writers,
+        kinds,
+        contracts,
+        journal_path,
+    }
+    // `dir` drops here: the scratch guard removes it whether these assertions pass or panic.
+}
+
+/// **Every claim this file makes about one root/child pairing.**
+///
+/// Identical in substance to the claude→codex test below, which stays written out longhand as the
+/// worked example; this is that same argument applied to a pairing named by the table. The one that
+/// cannot be made by any single-process test is the writer-identity assertion at the end.
+fn assert_pairing(root: &Node, child: &Node) {
+    for n in [root, child] {
+        assert!(
+            on_path(n.program),
+            "this pairing drives a REAL {}; put it on PATH — §9's rule is that a criterion which \
+             quietly passes on a machine that cannot run it is worth less than no criterion",
+            n.program
+        );
+    }
+    let label = format!("{} root → {} child", root.agent_type, child.agent_type);
+    let ev = drive(root, child);
+
+    assert!(
+        !ev.timed_out,
+        "{label}: marion run hung\nstderr:\n{}",
+        ev.stderr
+    );
+    assert_eq!(
+        ev.code,
+        Some(0),
+        "{label}: marion run exited {:?}\nstderr:\n{}",
+        ev.code,
+        ev.stderr
+    );
+    let replay = ev.replay.as_ref().unwrap_or_else(|| {
+        panic!(
+            "{label}: a run that created two nodes wrote no journal at {}\nstderr:\n{}",
+            ev.journal_path.display(),
+            ev.stderr
+        )
+    });
+    assert_eq!(
+        replay.truncation, None,
+        "{label}: a clean run leaves an intact file"
+    );
+    assert!(
+        replay.gaps.is_empty(),
+        "{label}: a per-writer ordinal gap means a record was written and lost: {:?}",
+        replay.gaps
+    );
+
+    // ---- same nodes, against what the run left on disk. --------------------------------------
+    let replayed: BTreeSet<String> = replay
+        .nodes()
+        .iter()
+        .map(|n| n.agent_id.0.clone())
+        .collect();
+    assert_eq!(
+        replayed, ev.agent_dirs,
+        "{label}: every node marion created must appear in the journal, and no node it did not"
+    );
+    assert_eq!(
+        replay.nodes().len(),
+        2,
+        "{label}: one root, one child: {replayed:?}"
+    );
+
+    // ---- same parent edges, and each node's own harness. --------------------------------------
+    let roots = replay.roots();
+    assert_eq!(roots.len(), 1, "{label}: one root: {roots:?}");
+    let root_id = roots[0].agent_id.clone();
+    let root_node = replay.get(&root_id).unwrap();
+    assert_eq!(
+        root_node.parent_id(),
+        None,
+        "{label}: §9: a root has no parent"
+    );
+    assert_eq!(
+        root_node.depth(),
+        Some(0),
+        "{label}: §3.1: the root is depth 0"
+    );
+    assert_eq!(
+        root_node.task_id(),
+        None,
+        "{label}: §9: a root has no TaskContract — an absence, not a placeholder"
+    );
+    assert_eq!(
+        root_node.harness(),
+        Some(root.harness),
+        "{label}: the journal must record the harness the root actually ran"
+    );
+    assert!(
+        root_node.spawn_confirmed,
+        "{label}: the root's process really ran"
+    );
+
+    let children = replay.children(&root_id);
+    assert_eq!(
+        children.len(),
+        1,
+        "{label}: the root spawned exactly one child: {children:?}"
+    );
+    let child_node = children[0];
+    assert_eq!(child_node.parent_id(), Some(&root_id), "{label}");
+    assert_eq!(
+        child_node.depth(),
+        Some(1),
+        "{label}: one level below its caller"
+    );
+    assert_eq!(
+        child_node.harness(),
+        Some(child.harness),
+        "{label}: the child's own harness, not its caller's"
+    );
+    assert_eq!(child_node.agent_type(), Some(child.agent_type), "{label}");
+    assert!(child_node.spawn_confirmed, "{label}");
+
+    // ---- same terminal states. ----------------------------------------------------------------
+    assert_eq!(
+        child_node.state,
+        NodeState::Exited(ExitStatus::Ok),
+        "{label}: the child reported through marion's tool and exited clean"
+    );
+    assert!(
+        child_node
+            .exit
+            .as_ref()
+            .is_some_and(|e| e.description.contains("child exited")),
+        "{label}: the terminal record carries §6.7's ProcessExit, so replay needs no contract \
+         file: {:?}",
+        child_node.exit
+    );
+    assert!(
+        root_node.state.is_exited(),
+        "{label}: the root's terminal transition must be recorded too, got {:?}",
+        root_node.state
+    );
+    assert!(
+        replay.unresolved().is_empty(),
+        "{label}: a node recorded live with no exit is what §7.2's Orphaned marking is about: {:?}",
+        replay
+            .unresolved()
+            .iter()
+            .map(|n| &n.agent_id.0)
+            .collect::<Vec<_>>()
+    );
+
+    // ---- same contracts, named against the files the run actually wrote. ----------------------
+    assert!(
+        root_node.contracts.is_empty(),
+        "{label}: §9: a root has no contract to record"
+    );
+    assert_eq!(
+        child_node.contracts.len(),
+        1,
+        "{label}: one run, one contract"
+    );
+    let recorded = &child_node.contracts[0];
+    assert_eq!(
+        recorded.requester, root_id,
+        "{label}: §9: requester for a top-level spawn is the root's own AgentId"
+    );
+    assert_eq!(recorded.status, Some(ExitStatus::Ok), "{label}");
+    assert_eq!(
+        ev.contracts.len(),
+        1,
+        "{label}: exactly one contract on disk: {:?}",
+        ev.contracts.iter().map(|(p, _)| p).collect::<Vec<_>>()
+    );
+    let (path, persisted) = &ev.contracts[0];
+    assert_eq!(
+        persisted.task_id, recorded.task_id,
+        "{label}: the journal's contract record must name the task id the file itself carries"
+    );
+    assert_eq!(
+        persisted.requester,
+        AgentId(root_id.0.clone()),
+        "{label}: and the same requester, in the file at {}",
+        path.display()
+    );
+    assert_eq!(
+        persisted.completion.as_ref().map(|c| c.status),
+        recorded.status,
+        "{label}: how the contract ended, as the journal records it, is how the contract says it \
+         ended"
+    );
+
+    // ---- the bridge is a separate process, and its records are in the same file. --------------
+    // **The claim no single-process test can cover, and the reason this runs per pairing at all.**
+    // The root's records are written by `marion run`; the child's by the `marion-supervisor mcp`
+    // bridge that the *root's harness* started (§10). Which means the writer identity below is
+    // evidence about the ROOT's adapter: its MCP declaration is what carries the five env vars the
+    // bridge reads, and an adapter that emitted no `env` block would produce a bridge that either
+    // refuses or journals against the wrong node. That plumbing is per-harness, so it is proven
+    // per-harness.
+    let root_writers: BTreeSet<&String> = ev
+        .writers
+        .iter()
+        .filter(|(a, _)| *a == root_id.0)
+        .map(|(_, w)| w)
+        .collect();
+    let child_writers: BTreeSet<&String> = ev
+        .writers
+        .iter()
+        .filter(|(a, _)| *a == child_node.agent_id.0)
+        .map(|(_, w)| w)
+        .collect();
+    assert_eq!(
+        root_writers.len(),
+        1,
+        "{label}: one process journals the root: {root_writers:?}"
+    );
+    assert_eq!(
+        child_writers.len(),
+        1,
+        "{label}: one bridge journals the child: {child_writers:?}"
+    );
+    assert!(
+        root_writers.is_disjoint(&child_writers),
+        "{label}: the child's records must come from the bridge's own process, not the root's — \
+         otherwise this run never crossed the process boundary and the cross-process claim is \
+         untested: root {root_writers:?}, child {child_writers:?}"
+    );
+
+    // ---- and the record vocabulary is the one `marion-core` already defines. ------------------
+    for expected in ["SpawnIntent", "Spawned", "Exited", "ContractPersisted"] {
+        assert!(
+            ev.kinds.contains(&expected),
+            "{label}: no {expected} record in a run that spawned a child: {:?}",
+            ev.kinds
+        );
+    }
+    assert!(
+        !ev.kinds.contains(&"SpawnAborted"),
+        "{label}: nothing was abandoned in a run both of whose nodes exited: {:?}",
+        ev.kinds
+    );
 }
 
 #[test]
@@ -504,3 +1049,86 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
 /// A verb marion's bridge really serves and a **child** is never allowed to call: `run_spawn`
 /// compiles a child's `--allowedTools` as exactly `[report]`.
 const DENIED_VERB: &str = "mcp__marion__spawn";
+
+// --- the pairings ---------------------------------------------------------------------------------
+//
+// One `#[test]` per pairing, never a loop: a loop reports the first failure and hides the rest, and
+// the whole point of a matrix is which cells fail.
+//
+// **Fifteen, not sixteen** — `claude → codex` is the longhand test above, which stays written out
+// as the worked example this function is the generalisation of. Running it twice would buy nothing.
+
+#[test]
+fn b_claude_root_journals_a_claude_child_across_the_process_boundary() {
+    assert_pairing(&CLAUDE, &CLAUDE);
+}
+
+#[test]
+fn c_claude_root_journals_a_gemini_child_across_the_process_boundary() {
+    assert_pairing(&CLAUDE, &GEMINI);
+}
+
+#[test]
+fn d_claude_root_journals_an_opencode_child_across_the_process_boundary() {
+    assert_pairing(&CLAUDE, &OPENCODE);
+}
+
+#[test]
+fn e_codex_root_journals_a_claude_child_across_the_process_boundary() {
+    assert_pairing(&CODEX, &CLAUDE);
+}
+
+#[test]
+fn f_codex_root_journals_a_codex_child_across_the_process_boundary() {
+    assert_pairing(&CODEX, &CODEX);
+}
+
+#[test]
+fn g_codex_root_journals_a_gemini_child_across_the_process_boundary() {
+    assert_pairing(&CODEX, &GEMINI);
+}
+
+#[test]
+fn h_codex_root_journals_an_opencode_child_across_the_process_boundary() {
+    assert_pairing(&CODEX, &OPENCODE);
+}
+
+#[test]
+fn i_gemini_root_journals_a_claude_child_across_the_process_boundary() {
+    assert_pairing(&GEMINI, &CLAUDE);
+}
+
+#[test]
+fn j_gemini_root_journals_a_codex_child_across_the_process_boundary() {
+    assert_pairing(&GEMINI, &CODEX);
+}
+
+#[test]
+fn k_gemini_root_journals_a_gemini_child_across_the_process_boundary() {
+    assert_pairing(&GEMINI, &GEMINI);
+}
+
+#[test]
+fn l_gemini_root_journals_an_opencode_child_across_the_process_boundary() {
+    assert_pairing(&GEMINI, &OPENCODE);
+}
+
+#[test]
+fn m_opencode_root_journals_a_claude_child_across_the_process_boundary() {
+    assert_pairing(&OPENCODE, &CLAUDE);
+}
+
+#[test]
+fn n_opencode_root_journals_a_codex_child_across_the_process_boundary() {
+    assert_pairing(&OPENCODE, &CODEX);
+}
+
+#[test]
+fn o_opencode_root_journals_a_gemini_child_across_the_process_boundary() {
+    assert_pairing(&OPENCODE, &GEMINI);
+}
+
+#[test]
+fn p_opencode_root_journals_an_opencode_child_across_the_process_boundary() {
+    assert_pairing(&OPENCODE, &OPENCODE);
+}
