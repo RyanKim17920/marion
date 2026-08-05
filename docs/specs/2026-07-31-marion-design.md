@@ -68,7 +68,12 @@ rule and is recorded as such rather than glossed.
 ```
 
 The split exists so a TUI crash cannot kill running agents, and so the supervisor is the single
-process that can enforce session ownership (§5.1).
+process that can enforce session ownership (§5.1). **The crash case and the quit case are not the
+same case.** A crash is an accident and its handling is an invariant — agents survive, always,
+unconditionally (§7.3.1). A quit is a decision, and the operator gets to make it: the same split
+that makes survival free also means the supervisor will happily outlive every client, so *someone*
+must say what happens to a running fleet when the last window closes. That choice is §7.3.2 and
+the lifetime it acts on is §5.7.
 
 **Keying.** Both the supervisor and its state are keyed on the **project root** (git common-dir,
 falling back to cwd) — not cwd, since worktree children (§6.6) have different cwds and would
@@ -81,7 +86,17 @@ independently find the supervisor its parent bound.
 
 **Client↔supervisor methods:** `tree/subscribe`, `node/get`, `node/attach`, `node/detach`,
 `node/prompt`, `node/steer`, `node/cancel`, `node/kill`, `node/rename`, `permission/reply`,
-`elicitation/reply`, `policy/set`, `agent/spawn`, `doctor/run`.
+`elicitation/reply`, `policy/set`, `agent/spawn`, `doctor/run`, `session/quit`.
+
+`session/quit { disposition }` is **M2+** and is the only method on this list that can end the
+supervisor. It exists because none of the others can express "I am leaving": `node/kill` is
+per-node and §6.7 classifies it as `Cancelled`, `node/detach` is subscription bookkeeping over a
+channel the supervisor never let go of (§6.2), and a client that simply closes its socket has said
+nothing at all. Its three dispositions and their costs are §7.3.2; what the supervisor does with
+each is §5.7. **A client that closes without calling it has chosen nothing, and marion MUST treat
+that as the crash case (§7.3.1), not as a quit** — a dropped socket is indistinguishable from a
+SIGKILL from the supervisor's side, and guessing intent from a disconnect is how work gets killed
+by accident.
 
 `node/rename` sets `Node.name`, which is the address other agents use with `send` — **renaming a node never moves an `allow_peers` grant
 that has already bound to it**; an *unbound* grant, by contrast, resolves its name at first use, so
@@ -1523,6 +1538,80 @@ marion is the only process seeing permission requests from every harness that *h
 keybinding, central policy. An `opaque` node cannot participate and will block invisibly, so the
 UI shows **"possibly blocked, no permission channel"** with elapsed time, never a spinner.
 
+### 5.7 Supervisor lifetime
+
+§10's table gives the supervisor seven words — *"which `marion` starts on demand"* — and says
+nothing about when it stops. Everything downstream of that silence (what quitting means, what
+re-attach can reconnect to, what M2 can even assert) depends on filling it in, so it is filled in
+here. **All of this is M2+.** In M1 the supervisor runs in-process inside `marion` (§10) and has no
+lifetime of its own: it is born and dies with that one process, and the paragraphs below describe a
+component that does not yet exist separately.
+
+**Start.** On demand, by the first client that dials the §2 socket path and finds nothing
+listening. The starting client MUST NOT assume it is alone: two `marion` invocations racing in the
+same project root resolve to the *same* path, so the start MUST be idempotent under contention —
+one supervisor wins, the loser dials the winner rather than erroring or starting a second. The
+obvious mechanism is bind-then-publish (bind the socket, then rename it into place) or a lockfile
+adjacent to it, and **which one marion uses is not settled here and has not been measured**; what
+is normative is the outcome, since a second supervisor on the same project root would hold a second
+registry over the same journal and §5.1's single-enforcer property is exactly what the split was
+for.
+
+**Stop — the supervisor's lifetime is not the client's.** A supervisor with **zero clients and at
+least one non-terminal node MUST keep running.** This is the whole point of the split: a fleet that
+dies when the last window closes is a fleet the operator can never walk away from. §5.2 already
+records the precedent from the other side of the same relationship — Codex's idle app-servers are
+**never reaped**, and `shutdown_when_no_connections` is gated to stdio only — so a harness server
+outliving its client is measured behaviour in a component marion already drives, not a hopeful
+analogy. **The sharper half of that same measurement is the warning**: `THREAD_UNLOADING_DELAY =
+1800 s` unloads *unsubscribed* threads, so a server outliving its client does **not** imply the
+work inside it does. What protects marion here is §6.2 — the supervisor has held every node's
+channel since `t=0` and a client coming or going is a view switch, never a connection event — so
+the supervisor *is* the subscriber that keeps those threads loaded, and it stays one while no
+client is attached. A design in which the client held the channel would lose threads to that timer
+on every quit.
+
+**Stop — when it may.** With **zero clients and zero non-terminal nodes**, the supervisor MAY exit
+after an idle grace period. It MUST NOT exit while any of the following holds, which is §7.2's reap
+exclusion list applied one level up and for the same reason — each one strands something that can
+never be resolved:
+
+- any node is `Live` or otherwise non-terminal;
+- any node is in **any** `Blocked(_)` state, including `Blocked(Descendants)`;
+- any `spawn` is outstanding;
+- any reap intent is journaled but unconfirmed (§7.2) — exiting here reproduces exactly the crash
+  window that intent-then-confirm exists to close.
+
+**The grace period is a design choice, not a measurement.** A default of **300 s**, configurable,
+is proposed on the reasoning that it should outlast an operator closing one window to open another
+and should not outlast a coffee break; **no experiment in this repo bears on the number** and it
+should be re-set the moment one does. Zero is defensible too and is deliberately not chosen: an
+exit-immediately supervisor makes the common re-attach pay a cold start, and cold start is where
+the race above lives.
+
+**Exit MUST be journaled**, as an ordinary record at the moment the supervisor decides to go, not
+as a best-effort epitaph. Strictly it is not needed for correctness — with zero non-terminal nodes
+there is nothing for restart to mark `Orphaned` (§7.2), so replay reaches the same state either way
+— but the record is what lets a later `marion`, and a later reader of `events.jsonl`, distinguish
+*"it finished its work and left"* from *"it died"*. That distinction is unrecoverable from the
+journal's contents alone and free to write.
+
+**How a detached supervisor actually detaches is UNSPECIFIED and unmeasured.** Double-fork plus
+`setsid`, a `posix_spawn` with the parent exiting, or a platform launcher are all plausible and
+this document is not choosing between them, because the choice is not cosmetic: §6.7's kill path
+starts every child in **its own process group** and expires it with `killpg`, and S7 measured
+`codex exec` calling `setsid` for every tool-call command — so session and group membership are
+already load-bearing for what a tree-wide signal can reach (§6.7, §12). A supervisor that makes
+itself a session leader, and the relationship between its session and its children's, decides
+whether §7.3.2's disposition (a) can reach the whole tree or only part of it. **That interaction is
+not measured and no fixture in this repo covers it**; it is a spike, and until it is run, the kill
+disposition's reach is a design claim rather than a recorded behaviour.
+
+**What this does not claim.** None of this is implemented. The start race, the detach mechanism,
+the grace period and the exit record are all specification ahead of code, and the only measured
+fact reused here is §5.2's Codex app-server lifetime, which is evidence that a server *can* outlive
+its client — not evidence about marion's.
+
 ---
 
 ## 6. Data flow
@@ -2354,9 +2443,97 @@ exception worth the complexity: `opencode serve` busy-polls at **1.15%/core whil
 On restart: replay the journal, mark `Live` → `Orphaned`, offer `view()` replay where supported,
 leave `ReapedIdle` resumable.
 
-### 7.3 TUI dies
+### 7.3 The TUI goes away
 
-Nothing happens to agents. Reattach replays `events.jsonl` per node.
+Two different events wear one name. A TUI that **dies** had no say in it and the handling is an
+invariant. A TUI the operator **quits** made a decision, and marion's job is to make sure it was
+actually made. Conflating them is how a crash-safety guarantee quietly becomes conditional.
+
+#### 7.3.1 Involuntary — the TUI dies
+
+**Nothing happens to agents.** Unchanged, and reaffirmed here as an **invariant, not a policy**: a
+crashed, SIGKILLed, or otherwise vanished client MUST leave every node exactly as it was. This is
+what §2's split is for and what §9's M2 criterion tests. It MUST NOT become conditional on a
+setting, a disposition, or anything the dead client might have configured before it died —
+whatever a dying process's last intent was, marion cannot read it, and a guarantee that depends on
+reading it is not a guarantee.
+
+A dropped socket is therefore **not** a quit (§2). The supervisor sees the same thing in both
+cases; only an explicit `session/quit` distinguishes them, and in its absence marion takes the
+reading that preserves work.
+
+Nodes do not change state. Nothing is journaled about the client's death, because from the
+registry's point of view nothing happened: no node was reaped (§7.2 — a reap is a decision marion
+records *before* the fact, and there was none) and nothing is `Orphaned` (§7.2 — orphaning arises
+only where marion stopped holding, and marion never stopped holding: §6.2's channel is still open).
+Re-attach is §7.3.3.
+
+#### 7.3.2 Voluntary — the operator quits
+
+**Quitting is a choice with three dispositions, not two.** The tempting framing is binary — kill
+everything or leave everything — but `ReapedIdle` already exists (§7.2) and it is exactly the
+third answer: stop paying for what is not working without losing it.
+
+| disposition | node state | journaled | what the operator is told |
+|---|---|---|---|
+| **(a) kill the tree** | every non-terminal node → `Cancelled` (§6.7's classification for `node/kill`, applied per node — quitting invents no new terminal state) | a `node/kill` intent and its confirmation per node, exactly as §6.7 already requires; then the supervisor's exit record (§5.7) | an explicit list of what is about to be killed and what each was doing, and a confirmation, **before** anything is signalled |
+| **(b) detach everything** | **unchanged** — every node keeps running, the supervisor keeps holding (§5.7) | nothing per node, because nothing happened to any node; the supervisor does **not** exit (§5.7 forbids it with non-terminal nodes) | how to get back (§7.3.3), and how to stop it — a fleet you cannot find again is a fleet you cannot kill |
+| **(c) reap the idle, detach the busy** | idle nodes → `ReapedIdle` (§7.2: transcript intact, ownership retained, resumable); everything §7.2 refuses to reap — running nodes, any `Blocked(_)` node, and any node a `spawn` is blocked on — is detached as in (b) | the intent-then-confirm reap pair per reaped node (§7.2), unchanged | which nodes were reaped and that they are resumable, plus (b)'s two facts for the remainder |
+
+Two rules govern all three:
+
+- **Never silently kill.** (a) destroys work that cannot be reconstructed from the journal — a
+  transcript survives, a half-finished turn does not — so it MUST be confirmed against a rendered
+  list of the affected nodes. A keybinding that reaches (a) without that list is a bug, not a
+  shortcut.
+- **Never silently detach.** (b) and (c) leave processes running that the operator can no longer
+  see, which is the untracked-runaway shape §6.7 spends a page preventing. They MUST tell the
+  operator both how to re-attach and how to stop the fleet without one. Detaching into silence is
+  worse than killing, because the operator does not know they now own something.
+
+**(b) has a cost that is not obvious and MUST be stated at the point of choosing it, not
+discovered afterwards.** Per **§11 item 22**, marion today has **no route from a node's permission
+request to a human**: an inbound ask is answered by sleeping the node's `Blocked` bound and then
+denying it. Detaching a fleet that can reach a permission gate therefore means those nodes **burn
+their bound and are denied unattended** — and per S9's measurement (§11 item 22) the far side sees
+an `is_error: true` `tool_result`, not a question, and will route around it and finish looking
+clean. So (b) does not merely defer the operator's attention; on any harness that asks at runtime
+it **converts a question into a denial** while nobody is watching. Until item 22 closes, the UI
+offering (b) MUST say so, naming the nodes that could hit a gate. Whether (c)'s reap changes this
+is not a mitigation to lean on: §7.2 already refuses to reap `Blocked(_)` nodes, so (c) detaches
+precisely the nodes most exposed to it.
+
+**Default.** (c), on the reasoning that it is the only disposition that is not lossy in either
+direction — it destroys nothing and it stops paying for nothing. **This is a judgement, not a
+measurement**, and (b) is the defensible alternative for an operator whose fleet is mostly
+long-running. (a) MUST NOT be the default under any reading.
+
+#### 7.3.3 Re-attach
+
+The current one-line rule — *"replays `events.jsonl` per node"* — is right for a node that
+finished and wrong for one that is still running. Re-attach is **both**, and the split is by node,
+not by session:
+
+- **Live nodes: re-subscribe.** The supervisor still holds the channel (§6.2, §5.7), so the client
+  resumes receiving events as they are produced. It MUST NOT re-open, re-connect, or re-spawn
+  anything — §6.2 is explicit that opening a node is *"a view switch in the client, never a
+  connection event"*, which is precisely what makes this safe: the double-open hazard is
+  structurally unreachable because there was never a first close.
+- **Nodes that finished while detached: replay.** `events.jsonl` per node, as before, including
+  nodes that were spawned, ran and terminated entirely within the detached window — the client
+  missed them live and learns them from the journal.
+- **Both, in one attach.** A node that was running at detach and terminated before re-attach is the
+  common case and needs the replay leg; a node still running needs both, since the client must
+  reconstruct what it missed *and* pick up the stream. The seam between the replayed tail and the
+  first live event is the correctness question here, and it is the same ordering question §4.2
+  answers by `src_seq` — replay to the journal's own read point, then subscribe from there.
+
+`ReapedIdle` nodes from disposition (c) re-attach as replay plus their resumable status; they have
+no channel to re-subscribe to until resumed (§7.2).
+
+**Untested.** No fixture covers a re-attach of any kind, live-node re-subscription least of all,
+and the replay-to-subscribe seam has never been exercised against a node producing events during
+the handover.
 
 ### 7.4 Journal corruption
 
@@ -3622,6 +3799,19 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   on no adapter M2 ships, and a `Predecessor` check runs only if M2 includes an `interactive` node.
 - Supervisor SIGKILL → journal replay leaves `ReapedIdle` resumable, `Live` → `Orphaned`, and no
   untracked live process.
+- **A clean quit-and-return, which the three criteria above cannot distinguish from a replay.**
+  All three kill something and then assert over the journal, so a supervisor that only ever
+  *replays* passes every one of them — and a supervisor that dropped its channels and rebuilt the
+  tree from disk would too. This criterion separates them. A client calls `session/quit` with
+  disposition **(b)** (§7.3.2) against a tree with **at least one node mid-turn**; the client
+  exits; the node **keeps producing events while no client exists**; a new client attaches. Pass
+  requires all three: (i) the supervisor was still the same process — same pid, no restart — so it
+  outlived its last client per §5.7; (ii) the new client receives **events emitted after it
+  attached**, not merely history, proving re-subscription to a live channel (§7.3.3) rather than
+  replay of a corpse; and (iii) the events produced during the detached window are present exactly
+  once, from replay, with no gap and no duplicate at the seam. **(ii) is the load-bearing half** —
+  it is the only assertion in §9 that a replay-only implementation fails. Run it also with a node
+  that terminated *during* the detached window, whose journal tail must appear in the same attach.
 
 **M3 — tree UI + embedded terminal.**
 - A real `claude` TUI runs in a marion pane: alt-screen switch handled, pre-alt-screen trust dialog
@@ -3680,7 +3870,7 @@ command is **`marion`**.
 | | socket owner | `marion-supervisor mcp` dials |
 |---|---|---|
 | **M1** | the **`marion`** process itself; the supervisor runs in-process (§9's "no *detached* daemon") | that same `marion` process |
-| **M2+** | a detached **`marion-supervisor`**, which `marion` starts on demand | the detached supervisor |
+| **M2+** | a detached **`marion-supervisor`**, which `marion` starts on demand — and stops on its own terms, **§5.7** | the detached supervisor |
 
 The socket **path** is identical in both (§2), so the bridge resolves it the same way and never
 needs to know which milestone it is running under — which is what makes M2's split invisible to
@@ -4316,6 +4506,11 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     `default_tools_approval_mode` and `trust: true`, except that here it is **marion** producing
     the clean-looking run. The `permission_denials` list and the journal record are the two places
     a human could ever learn it happened, and today neither is read by anything.
+
+    **This item is what makes §7.3.2's detach disposition costly**, and the cost is stated there
+    rather than only here: detaching a fleet leaves every node that can reach a gate to burn its
+    bound and be denied with nobody watching. Closing this item is what turns that from a hazard
+    into a deferral.
 
 23. **`spawn` declares eleven parameters and implements six; the other five were accepted and
     dropped — CLOSED IN PART 2026-08-04, from a read of the code as it stands, not from a spike.**
