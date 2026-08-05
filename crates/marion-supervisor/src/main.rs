@@ -37,7 +37,7 @@ fn handle_tool_call(
     match name {
         "report" => match report_refusal(std::env::var(DEPTH_ENV).ok()) {
             // §5.4, at the execution point. See [`report_refusal`].
-            Some(msg) => bridge::tool_result(id, msg, true),
+            Some(msg) => bridge::tool_result(id, &msg, true),
             // Staged, not delivered: the contract is written at the node's terminal transition.
             None => bridge::tool_result(id, "report recorded", false),
         },
@@ -126,16 +126,73 @@ fn handle_tool_call(
 ///   `LaunchOnly` harnesses it was simply *served* — real processes, real worktrees, no error
 ///   anywhere — until the gate moved to the point where the verb is performed.
 ///
-/// **An unreadable depth is not a refusal here, and that is the opposite call from [`caller_from`]
-/// deliberately.** There, both plausible defaults restore the unbounded recursion the gate exists to
-/// stop, and the thing being refused creates a process tree and a worktree. Here nothing is created
-/// either way — a `report` marion declines to stage has no side effect to prevent — and the refusal
-/// is a *claim about this node* ("you are the root and have no contract") that marion would have no
-/// grounds to make. All four adapters emit `MARION_DEPTH`, swept by `marion_harness::adapter`'s own
-/// test, so the only caller that can land here is a hand-started bridge.
-fn report_refusal(depth: Option<String>) -> Option<&'static str> {
-    let depth: u32 = depth?.trim().parse().ok()?;
-    bridge::authorization_refusal(depth, bridge::REPORT)
+/// **An unreadable depth refuses too — in the other sentence.** It used to serve, on the argument
+/// that nothing is created either way and that the refusal would be a claim about this node marion
+/// has no grounds to make. The first half is true and the second half is the reason for the second
+/// sentence, not for serving: what marion answered instead was `report recorded`, `isError: false`,
+/// which is *also* a claim it has no grounds for, and the expensive one — a receipt for a payload
+/// nothing stages, after which the node exits `Ok` having returned nothing. That is the same
+/// false-success this function was added to delete, still reachable through a declaration written
+/// wrong, and the defect class this repository keeps re-finding: a check that reports success by
+/// failing to look. An absence is recorded as an absence.
+///
+/// So there are two refusals, and they must not read alike. [`bridge::REPORT_ON_A_ROOT`] asserts
+/// something about the node — *you are the root, and a root has no contract* — and marion may only
+/// say it when it knows the depth. The other says what actually happened: the caller's depth could
+/// not be established, so no authorization decision was possible, and the fix is in the node's
+/// declaration (`root::mcp_config_json`) rather than in the call. A node that gets one has broken a
+/// rule; a node that gets the other was started wrong, and only the first is something it can act
+/// on.
+///
+/// [`caller_depth`] is shared with [`caller_from`] so the two gates cannot drift into reading the
+/// same key by different rules; the consequence clause differs because the verbs differ. All four
+/// adapters emit `MARION_DEPTH`, swept by `marion_harness::adapter`'s own test, so the only caller
+/// that can land in the second refusal is a hand-started bridge.
+fn report_refusal(depth: Option<String>) -> Option<String> {
+    match caller_depth(depth) {
+        Ok(depth) => bridge::authorization_refusal(depth, bridge::REPORT).map(str::to_string),
+        Err(e) => Some(format!(
+            "marion: {e}, so this bridge cannot establish the depth of the node calling it and \
+             cannot decide whether §5.4 permits this `report`. Refusing rather than answering that \
+             a result was recorded — marion does not know what this node is, and nothing stages a \
+             report it cannot attribute. This is a broken launch, not a rule: the key belongs in \
+             the node's marion server declaration."
+        )),
+    }
+}
+
+/// **Why `MARION_DEPTH` could not be read**, stated once for both gates that read it.
+///
+/// The two refusals differ in what they protect — one an ungated `spawn`, one an unattributable
+/// `report` — but not in what went wrong, and two hand-rolled parses of one environment variable
+/// with two failure directions is how [`report_refusal`] came to serve where [`caller_from`]
+/// refused. Sharing the parse makes the direction a single decision: unreadable is `Err`, and every
+/// caller of this decides only what to say about it.
+enum UnreadableDepth {
+    Absent,
+    NotADepth(String),
+}
+
+impl std::fmt::Display for UnreadableDepth {
+    /// The clause both refusals open with, so an operator greps one spelling. It names the key and
+    /// quotes the value, because "not set" and "set to something wrong" are different fixes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Absent => write!(f, "{DEPTH_ENV} is not set"),
+            Self::NotADepth(raw) => write!(f, "{DEPTH_ENV}={raw:?} is not a depth"),
+        }
+    }
+}
+
+/// §3.1's depth, off the declaration marion wrote, with the empty and the oversized treated as what
+/// they are: values that are not a depth. `trim` because whitespace survives an env round trip on
+/// some shells and the depth is the number — but an all-whitespace value trims to nothing, which
+/// parses as nothing and is an error rather than a zero.
+fn caller_depth(depth: Option<String>) -> Result<u32, UnreadableDepth> {
+    let raw = depth.ok_or(UnreadableDepth::Absent)?;
+    raw.trim()
+        .parse()
+        .map_err(|_| UnreadableDepth::NotADepth(raw))
 }
 
 /// **A `spawn` parameter marion declares and does not implement, if this request carries one.**
@@ -201,6 +258,8 @@ fn requester() -> String {
 /// exactly the unbounded recursion this is here to stop, silently. All four adapters emit both
 /// keys — `marion_harness::adapter`'s own test sweeps `Harness::ALL` — so the only caller that can
 /// land here is a hand-started bridge, which is the one that most needs to be told.
+///
+/// [`report_refusal`] now fails in the same direction on the same key, through [`caller_depth`].
 fn caller(agent_id: &str) -> Result<run::Caller, String> {
     caller_from(
         agent_id,
@@ -228,15 +287,12 @@ fn caller_from(
                  cannot be read. Refusing rather than spawning ungated."
         )
     })?;
-    let raw = depth.ok_or_else(|| {
+    // The same read as [`report_refusal`]'s, deliberately — see [`caller_depth`]. Only the
+    // consequence clause is this gate's own, because only this gate creates anything.
+    let depth = caller_depth(depth).map_err(|e| {
         format!(
-            "marion: {DEPTH_ENV} is not set, so this bridge does not know how deep in the tree it \
-             is and cannot enforce max_depth (§6.1 step 2). Refusing rather than spawning ungated."
-        )
-    })?;
-    let depth: u32 = raw.trim().parse().map_err(|_| {
-        format!(
-            "marion: {DEPTH_ENV}={raw:?} is not a depth. Refusing rather than spawning ungated."
+            "marion: {e}, so this bridge does not know how deep in the tree it is and cannot \
+             enforce max_depth (§6.1 step 2). Refusing rather than spawning ungated."
         )
     })?;
     Ok(run::Caller {
@@ -547,14 +603,13 @@ mod main_tests {
     /// **§5.4's `report` row as a table, so every row is stated rather than implied.**
     ///
     /// The end-to-end witness is `tests/report_on_a_root.rs`, which drives this binary the way a
-    /// `LaunchOnly` node's MCP client does. This is the decision underneath it, including the two
-    /// rows that test cannot reach: a bridge that was told a depth it cannot read, and one that was
-    /// told nothing at all. Both serve rather than refuse — see [`report_refusal`] for why that is
-    /// the opposite call from `caller_from`'s, on purpose.
+    /// `LaunchOnly` node's MCP client does. This is the decision underneath it. The rows where the
+    /// depth cannot be read at all are the test below's: they are a different refusal, because they
+    /// are a different fact about the world.
     #[test]
     fn only_a_node_that_is_known_to_be_the_root_has_its_report_refused() {
         assert_eq!(
-            report_refusal(Some("0".into())),
+            report_refusal(Some("0".into())).as_deref(),
             Some(bridge::REPORT_ON_A_ROOT),
             "§5.4 rejects `report` on a root, and depth 0 is what being the root means (§3.1)"
         );
@@ -563,8 +618,6 @@ mod main_tests {
             ("a grandchild", Some("2".to_string())),
             // Whitespace survives an env round trip on some shells; the depth is the number.
             ("a padded depth", Some(" 1 ".to_string())),
-            ("a depth that is not a number", Some("deep".to_string())),
-            ("a bridge that was told nothing", None),
         ] {
             assert_eq!(
                 report_refusal(depth.clone()),
@@ -578,6 +631,55 @@ mod main_tests {
             assert!(
                 bridge::REPORT_ON_A_ROOT.contains(needle),
                 "the refusal must name the rule and the way out ({needle:?} missing)"
+            );
+        }
+    }
+
+    /// **A depth marion cannot read is a refusal, and not the same refusal as a root's.**
+    ///
+    /// This was the hole [`report_refusal`] was written to close and then left open one row wider
+    /// than it looked: an absent, empty or unparsable `MARION_DEPTH` fell out of the parse as
+    /// `None` and the bridge answered `report recorded`, `isError: false` — the exact receipt for a
+    /// payload nothing stages that the refusal exists to delete, reachable by any bridge whose
+    /// declaration was written wrong. It is the repository's recurring defect: a check that reports
+    /// success by failing to look. An absence must be recorded as an absence.
+    ///
+    /// **Two sentences, because they are two different pieces of news.** `REPORT_ON_A_ROOT` is a
+    /// claim about the node — *you are the root, roots have no contract* — and marion has no
+    /// grounds for it here: it does not know what this node is. So this one says what it actually
+    /// observed, names the key, and points at the launch rather than at the caller's behaviour. A
+    /// node that reads them has to be able to tell a rule it broke from a bridge that was started
+    /// wrong, because only one of those is something it can act on.
+    #[test]
+    fn a_report_whose_callers_depth_cannot_be_read_is_refused_rather_than_recorded() {
+        for (label, depth) in [
+            ("a bridge that was told nothing", None),
+            ("an empty value", Some(String::new())),
+            ("whitespace only", Some("   ".to_string())),
+            ("a depth that is not a number", Some("deep".to_string())),
+            ("a negative depth", Some("-1".to_string())),
+            // Wider than u32: the parse fails, and failing must mean refusing here too.
+            (
+                "a depth too large to be one",
+                Some("99999999999999".to_string()),
+            ),
+        ] {
+            let msg = report_refusal(depth.clone()).unwrap_or_else(|| {
+                panic!(
+                    "{label}: marion cannot establish the caller's depth, so it cannot authorize \
+                     the call — answering \"report recorded\" is a receipt for a payload nothing \
+                     stages"
+                )
+            });
+            assert!(
+                msg.contains(DEPTH_ENV),
+                "{label}: the refusal must name the key that is missing, since the fix is in the \
+                 node's declaration and not in the call: {msg}"
+            );
+            assert!(
+                !msg.contains(bridge::REPORT_ON_A_ROOT),
+                "{label}: marion does not know this node is a root, so it must not claim to — a \
+                 broken launch and a rule violation must not read alike: {msg}"
             );
         }
     }

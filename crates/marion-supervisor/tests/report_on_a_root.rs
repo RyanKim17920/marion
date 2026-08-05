@@ -47,12 +47,23 @@ use serde_json::{Value, json};
 /// conversation — `initialize` would change nothing about the answer and is left out rather than
 /// performed for decoration.
 fn call_report(depth: u32) -> Value {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_marion-supervisor"))
-        .arg("mcp")
+    call_report_declared(Some(&depth.to_string()))
+}
+
+/// The same call against a declaration that may be missing the depth entirely, which is the state
+/// a hand-written or half-migrated MCP server block leaves the bridge in.
+fn call_report_declared(depth: Option<&str>) -> Value {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion-supervisor"));
+    cmd.arg("mcp")
         // The declaration marion writes for every node, in the three keys this answer reads.
         .env(AGENT_ID_ENV, "019f-report-probe")
-        .env(AGENT_TYPE_ENV, "codex")
-        .env(DEPTH_ENV, depth.to_string())
+        .env(AGENT_TYPE_ENV, "codex");
+    match depth {
+        Some(d) => cmd.env(DEPTH_ENV, d),
+        // Removed rather than merely unset, so an inherited value cannot make this row pass.
+        None => cmd.env_remove(DEPTH_ENV),
+    };
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -135,4 +146,35 @@ fn a_childs_report_is_still_recorded() {
         "a child has a contract and `report` is its return path (§5.4): {v}"
     );
     assert_eq!(text(&v), "report recorded");
+}
+
+/// **A bridge that was never told which node it serves refuses too**, over the same wire.
+///
+/// The rule above needs a depth to evaluate; a declaration missing `MARION_DEPTH` leaves the bridge
+/// unable to evaluate it. It answered `report recorded`, `isError: false` — the same false receipt
+/// the root's refusal deleted, reachable through a wrong declaration instead of a wrong harness.
+/// Refusing here is not the §5.4 claim: marion does not know this node is a root, so the sentence
+/// says what it observed and points at the declaration.
+#[test]
+fn a_bridge_that_cannot_read_its_depth_refuses_the_report_rather_than_recording_it() {
+    let v = call_report_declared(None);
+    let text = text(&v);
+    assert_eq!(
+        v["result"]["isError"],
+        json!(true),
+        "a report marion cannot attribute is not a report marion recorded: {v}"
+    );
+    assert!(
+        !text.contains("report recorded"),
+        "the false receipt is exactly what an unreadable depth used to buy: {text}"
+    );
+    assert!(
+        text.contains(DEPTH_ENV),
+        "the refusal must name the key whose absence caused it, since the fix is in the node's \
+         declaration: {text}"
+    );
+    assert!(
+        !text.contains("This node is the root"),
+        "marion does not know what this node is, and must not claim it does: {text}"
+    );
 }
