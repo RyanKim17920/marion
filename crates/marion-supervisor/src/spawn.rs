@@ -277,6 +277,13 @@ pub fn diff_text(wt: &Path, base: &Oid) -> Result<String, SpawnError> {
 pub struct ChildOutcome {
     pub narrative: Option<String>,
     pub file_change_paths: Vec<PathBuf>,
+    /// The commits the child named in its `report`, carried through to
+    /// `Completion::result_commits` unchanged.
+    ///
+    /// `Oid` here and `String` on [`marion_harness::StreamOutcome`] is the whole of the conversion:
+    /// **wrapping is not validating**, and the newtype must not be read as marion having checked
+    /// anything. See `Completion::result_commits`.
+    pub result_commits: Vec<Oid>,
     /// The child's stream said the run failed. See [`marion_harness::StreamOutcome::failure`]: on
     /// gemini this is the *only* signal, because an auth failure exits 0 (S12).
     pub failure: Option<String>,
@@ -292,6 +299,7 @@ impl ChildOutcome {
         Self {
             narrative: stream.narrative,
             file_change_paths: stream.file_change_paths,
+            result_commits: stream.result_commits.into_iter().map(Oid).collect(),
             failure: stream.failure,
             exit_code: exit.code,
             signal: exit.signal,
@@ -373,10 +381,14 @@ pub fn build_contract(
         live_descendants_at_report: vec![],
         narrative: outcome.narrative.as_deref().map(Capped::whole),
         narrative_synthesized: false,
-        result_commits: vec![],
+        // **The child's, not marion's.** §6.7 calls this the one field the child owns outright, and
+        // it was hardcoded empty here — so a child that committed its work and reported the oids
+        // had them dropped in transit, and the contract then asserted it had committed nothing.
+        result_commits: outcome.result_commits.clone(),
         changed_paths: changed,
         acceptance_criteria_omitted: 0,
         changed_paths_omitted: 0,
+        result_commits_omitted: 0,
         scope_violations_omitted: 0,
         scope_enforced: scope.is_some(),
         scope_violations: violations,
@@ -535,6 +547,115 @@ mod tests {
     fn a_tool_call_from_another_server_is_not_a_report() {
         let s = r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"other","tool":"report","arguments":{"narrative":"nope"}}}"#;
         assert!(marion_harness::codex::parse_stream(s).narrative.is_none());
+    }
+
+    /// **The child's own field reaches the contract, and marion adds nothing to it.**
+    ///
+    /// §6.7 calls `result_commits` the one field the child owns outright, and `build_contract`
+    /// hardcoded `vec![]` — so a child that committed its work and reported the oids produced a
+    /// contract asserting it had committed nothing. That is a *wrong answer*, not a gap: empty is
+    /// how a reader learns nothing was committed, and `worktree_reap.rs` reads it exactly that way.
+    /// It also matters more than it looks, because the commits are real — `git worktree remove`
+    /// leaves `marion/<task_id>` alive holding them, so the contract was denying durable work that
+    /// existed.
+    ///
+    /// Order is asserted too: these are the child's words in the child's sequence, and a set would
+    /// lose the ordering a `git cherry-pick` sequence depends on.
+    #[test]
+    fn the_commits_a_child_reported_are_the_commits_the_contract_records() {
+        let commits = vec![Oid("b".repeat(40)), Oid("c".repeat(40))];
+        let c = build_contract(
+            TaskId("t".into()),
+            AgentId("r".into()),
+            RepoIdentity {
+                git_common_dir: "/r/.git".into(),
+                head_branch: None,
+            },
+            Oid("a".repeat(40)),
+            Workspace::Worktree {
+                path: "/wt".into(),
+                branch: "b".into(),
+            },
+            "do it",
+            &[],
+            &[Glob("**".into())],
+            &[Glob("**".into())],
+            Duration::from_secs(900),
+            now(),
+            &ChildOutcome {
+                narrative: Some("committed twice".into()),
+                result_commits: commits.clone(),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            None,
+            vec![],
+        );
+        let comp = c.completion.unwrap();
+        assert_eq!(
+            comp.result_commits, commits,
+            "verbatim and in order — marion neither validates nor reorders what the child owns"
+        );
+        assert_eq!(
+            comp.result_commits_omitted, 0,
+            "nothing was elided, and the counter must say so rather than being left to a default"
+        );
+    }
+
+    /// The other side of the same claim: a child that names no commits still gets an empty list,
+    /// which is a statement rather than an absence. Pinned so the threading above cannot drift into
+    /// inventing one — the failure mode this repo has hit twice with `child.model`.
+    #[test]
+    fn a_child_that_named_no_commits_records_none() {
+        let c = build_contract(
+            TaskId("t".into()),
+            AgentId("r".into()),
+            RepoIdentity {
+                git_common_dir: "/r/.git".into(),
+                head_branch: None,
+            },
+            Oid("a".repeat(40)),
+            Workspace::Worktree {
+                path: "/wt".into(),
+                branch: "b".into(),
+            },
+            "do it",
+            &[],
+            &[Glob("**".into())],
+            &[Glob("**".into())],
+            Duration::from_secs(900),
+            now(),
+            &ChildOutcome {
+                narrative: Some("did not commit".into()),
+                exit_code: Some(0),
+                ..ChildOutcome::default()
+            },
+            vec![],
+            None,
+            vec![],
+        );
+        assert!(c.completion.unwrap().result_commits.is_empty());
+    }
+
+    /// The seam between the two layers: `StreamOutcome` carries the child's strings, `ChildOutcome`
+    /// carries `Oid`s, and **the conversion is a wrap and nothing else**. A future filter here —
+    /// dropping a malformed or unreachable oid — would make the contract imply a check marion never
+    /// performed, so the non-oid below is carried through deliberately.
+    #[test]
+    fn from_stream_wraps_the_childs_commits_without_validating_them() {
+        let stream = marion_harness::StreamOutcome {
+            narrative: Some("x".into()),
+            result_commits: vec!["not-an-oid".into(), "d".repeat(40)],
+            ..Default::default()
+        };
+        let out = ChildOutcome::from_stream(stream, ChildExit::default(), String::new());
+        assert_eq!(
+            out.result_commits,
+            vec![Oid("not-an-oid".into()), Oid("d".repeat(40))],
+            "wrapping is not validating: §6.7 gives the child this field outright, and a silent \
+             filter would be marion asserting a check it did not run"
+        );
     }
 
     /// A child whose stream said it failed is `Failed`, not `Unreported` — and the harness's own

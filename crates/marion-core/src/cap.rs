@@ -8,6 +8,11 @@
 //! 5 and 6**: JSON escaping can expand control-heavy output several-fold, so no raw-byte budget
 //! can bound the encoded document on its own, and rule 6 is a terminal whose size does not depend
 //! on the input at all.
+//!
+//! **Rule 5(d) and rule 6 both cover `result_commits`.** It is the only unbounded field a *child*
+//! fills rather than marion, and it was hardcoded empty until commits were threaded through — so
+//! rule 6's "size does not depend on the input" was true by accident rather than by construction.
+//! It is now true by construction.
 
 use crate::contract::{Capped, TaskContract};
 
@@ -18,6 +23,13 @@ pub const MAX_EVIDENCE: usize = 16;
 pub const MAX_CRITERIA: usize = 32;
 pub const PATH_CAP: usize = 512;
 pub const MAX_PATHS: usize = 100;
+/// Collection cap on `result_commits`, the one unbounded field a **child** fills.
+///
+/// Separate from [`MAX_PATHS`] despite the equal value: an object name is not a path, and a future
+/// reason to move one must not silently move the other. 100 oids is ~4 KB encoded, which the
+/// backstop can absorb; the field is uncapped nowhere, because rule 6 promises a terminal size
+/// independent of the input and a child-filled list is exactly what could break that.
+pub const MAX_COMMITS: usize = 100;
 pub const BACKSTOP: usize = 48 * 1024;
 
 /// Largest whole-character prefix of `s` fitting `max` bytes.
@@ -146,6 +158,12 @@ pub fn cap_for_return(mut c: TaskContract) -> TaskContract {
         comp.scope_violations_omitted += comp.scope_violations.len() - MAX_PATHS;
         comp.scope_violations.truncate(MAX_PATHS);
     }
+    // The child's own list, elided by the same rule and for the same reason. Unlike the two above
+    // it is filled by a *foreign agent*, so it is the one whose length marion never chose.
+    if comp.result_commits.len() > MAX_COMMITS {
+        comp.result_commits_omitted += comp.result_commits.len() - MAX_COMMITS;
+        comp.result_commits.truncate(MAX_COMMITS);
+    }
     for p in comp
         .changed_paths
         .iter_mut()
@@ -188,12 +206,19 @@ fn stub(mut c: TaskContract) -> TaskContract {
     let dropped_paths = comp.changed_paths.len();
     let dropped_viol = comp.scope_violations.len();
     let dropped_ev = comp.evidence.len();
+    let dropped_commits = comp.result_commits.len();
     comp.changed_paths_omitted += dropped_paths;
     comp.scope_violations_omitted += dropped_viol;
     comp.evidence_omitted += dropped_ev;
+    comp.result_commits_omitted += dropped_commits;
     comp.changed_paths.clear();
     comp.scope_violations.clear();
     comp.evidence.clear();
+    // **Without this line rule 6 is not terminal.** Its whole claim is a size that does not depend
+    // on the input, and `result_commits` is filled by the child: leaving it here makes the last
+    // resort O(n) in whatever a foreign agent sent, so a large enough list defeats every rule and
+    // the contract goes back over the threshold that replaces it with a `<persisted-output>` stub.
+    comp.result_commits.clear();
     if let Some(n) = comp.narrative.as_mut() {
         n.value.clear();
         n.truncated = true;

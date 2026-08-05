@@ -13,7 +13,7 @@ use crate::claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, READY_FILE_ENV,
 };
 use crate::invocation::Invocation;
-use crate::stream::{StreamOutcome, json_frames};
+use crate::stream::{StreamOutcome, json_frames, report_commits};
 
 #[derive(Debug, Clone)]
 pub struct ExecSpec {
@@ -121,6 +121,7 @@ pub fn parse_stream(s: &str) -> StreamOutcome {
                 if let Some(n) = item["arguments"]["narrative"].as_str() {
                     out.narrative = Some(n.to_string());
                 }
+                out.result_commits = report_commits(&item["arguments"]);
             }
             Some("file_change") => {
                 if let Some(cs) = item["changes"].as_array() {

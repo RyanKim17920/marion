@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::adapter::Auth;
 use crate::invocation::Invocation;
-use crate::stream::{StreamOutcome, first_string, json_frames};
+use crate::stream::{StreamOutcome, first_string, json_frames, report_commits};
 
 /// Env var naming the file the bridge touches once it has answered `tools/list`.
 pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
@@ -167,9 +167,15 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
                 for block in v["message"]["content"].as_array().into_iter().flatten() {
                     if block["type"].as_str() == Some("tool_use")
                         && block["name"].as_str() == Some(report_tool)
-                        && let Some(n) = block["input"]["narrative"].as_str()
                     {
-                        out.narrative = Some(n.to_string());
+                        // Both fields off the one call. Narrative stays conditional — `None` is
+                        // load-bearing, it is what `build_contract` turns into `Unreported` — while
+                        // commits are read whenever the call is seen, since an absent list and an
+                        // empty one are the same claim.
+                        if let Some(n) = block["input"]["narrative"].as_str() {
+                            out.narrative = Some(n.to_string());
+                        }
+                        out.result_commits = report_commits(&block["input"]);
                     }
                 }
             }

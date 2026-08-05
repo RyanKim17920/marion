@@ -22,7 +22,7 @@ use crate::claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, READY_FILE_ENV,
 };
 use crate::invocation::Invocation;
-use crate::stream::{StreamOutcome, first_string, json_frames};
+use crate::stream::{StreamOutcome, first_string, json_frames, report_commits};
 
 /// The MCP server alias. opencode exposes MCP tools to the model as `<serverName>_<toolName>`, so
 /// this alias is literally half of `marion_report`.
@@ -260,6 +260,7 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
                         if let Some(n) = state["input"]["narrative"].as_str() {
                             out.narrative = Some(n.to_string());
                         }
+                        out.result_commits = report_commits(&state["input"]);
                     }
                     // The measured rejection shape: `{"status":"error","error":"The user rejected
                     // permission…"}`. The run continues and exits 0, so without this the contract

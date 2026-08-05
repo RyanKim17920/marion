@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
-use marion_core::cap::{BACKSTOP, MAX_EVIDENCE, PATH_CAP, cap_for_return};
+use marion_core::cap::{BACKSTOP, MAX_COMMITS, MAX_EVIDENCE, PATH_CAP, cap_for_return};
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, Millis, SystemTime};
 
@@ -79,6 +79,7 @@ fn completion() -> Completion {
         changed_paths: vec!["src/main.rs".into()],
         acceptance_criteria_omitted: 0,
         changed_paths_omitted: 0,
+        result_commits_omitted: 0,
         scope_violations_omitted: 0,
         scope_enforced: true,
         scope_violations: vec![],
@@ -119,12 +120,92 @@ fn converges_on_pathological_input() {
         .map(|i| PathBuf::from(format!("src/f{i}.rs")))
         .collect();
     comp.scope_violations = comp.changed_paths.clone();
+    // **The one list a foreign agent fills.** Every other field above is marion's own derivation,
+    // bounded by what marion chose to record; `result_commits` is whatever the child sent. Rule 6's
+    // terminal promises a size that does not depend on the input, and this is the input that can
+    // break it — 5 000 object names are ~200 KB encoded, past the backstop on their own.
+    comp.result_commits = (0..5_000).map(|i| Oid(format!("{i:040x}"))).collect();
 
     let out = cap_for_return(contract(comp));
     assert!(
         encoded(&out) <= BACKSTOP,
         "cap must converge; got {} bytes against a {BACKSTOP} backstop",
         encoded(&out)
+    );
+}
+
+/// **Rule 6's terminal claim, asserted rather than commented.**
+///
+/// `stub`'s own comment reads *"field set is fixed and small, so its size does not depend on the
+/// input"*. That was true only while `result_commits` was hardcoded empty in `build_contract`; the
+/// moment a child's commits were threaded through, the last resort became O(n) in whatever a
+/// foreign agent sent.
+///
+/// Reaching rule 6 takes deliberate construction — rules 5(a)–(e) converge on almost everything —
+/// so the criteria here are sized to survive 5(e)'s own cap (32 entries × 2 KiB = 64 KiB, over the
+/// 48 KiB backstop) and force the terminal. The commit list then has to be cleared *there*, not
+/// merely truncated at 5(d), or the stub's size still depends on the child.
+#[test]
+fn the_terminal_stub_clears_the_child_s_commits_and_says_how_many() {
+    let mut comp = completion();
+    comp.result_commits = (0..10_000).map(|i| Oid(format!("{i:040x}"))).collect();
+    let mut c = contract(comp);
+    c.acceptance_criteria = (0..64).map(|_| Capped::whole("c".repeat(8192))).collect();
+
+    let out = cap_for_return(c);
+    let got = out.completion.as_ref().unwrap();
+    assert!(
+        got.narrative
+            .as_ref()
+            .is_some_and(|n| n.value.is_empty() && n.truncated),
+        "the premise: this input must actually reach rule 6, or the assertions below are vacuous"
+    );
+    assert!(
+        encoded(&out) <= BACKSTOP,
+        "the terminal must not depend on the child's input; got {} bytes",
+        encoded(&out)
+    );
+    assert!(
+        got.result_commits.is_empty(),
+        "rule 6 clears every list it counts, and this is the only one a child filled"
+    );
+    assert_eq!(
+        got.result_commits_omitted, 10_000,
+        "and it says how many it dropped, or a reader cannot tell an elided list from an empty one \
+         — the distinction changed_paths_omitted exists for"
+    );
+}
+
+/// The ordinary path: a list marion can afford to keep is kept whole, and one over the cap is
+/// elided **with a count**, so a reader can tell a short list from a shortened one.
+///
+/// The second half needs the document to still be over the backstop when 5(d) runs, since that is
+/// the rule that elides these — hence the oversized `instructions`, which only 5(e) can shrink and
+/// which therefore keeps the document large through (a)–(d) without touching any list.
+#[test]
+fn a_commit_list_over_the_cap_is_elided_with_a_count_and_a_short_one_is_untouched() {
+    let mut comp = completion();
+    comp.result_commits = (0..MAX_COMMITS).map(|i| Oid(format!("{i:040x}"))).collect();
+    let out = cap_for_return(contract(comp.clone()));
+    let kept = out.completion.as_ref().unwrap();
+    assert_eq!(
+        kept.result_commits.len(),
+        MAX_COMMITS,
+        "exactly at the cap is not over it"
+    );
+    assert_eq!(kept.result_commits_omitted, 0);
+
+    comp.result_commits = (0..MAX_COMMITS + 7)
+        .map(|i| Oid(format!("{i:040x}")))
+        .collect();
+    let mut c = contract(comp);
+    c.instructions = Capped::whole("i".repeat(120_000));
+    let out = cap_for_return(c);
+    let got = out.completion.as_ref().unwrap();
+    assert_eq!(got.result_commits.len(), MAX_COMMITS);
+    assert_eq!(
+        got.result_commits_omitted, 7,
+        "the count is the difference, so a reader can reconstruct how many the child claimed"
     );
 }
 

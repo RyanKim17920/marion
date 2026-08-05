@@ -169,12 +169,26 @@ pub struct Completion {
     pub narrative: Option<Capped<String>>,
     pub narrative_synthesized: bool,
     /// The one field the child owns outright.
+    ///
+    /// **Recorded verbatim, and wrapping a string in [`Oid`] here is not a validation.** marion
+    /// does not check that these are well-formed object names, that they exist, or that they are
+    /// reachable from the child's branch. The precedent is `narrative`, the other child-supplied
+    /// field: also unverified, also recorded as it arrived, with provenance carried by a separate
+    /// flag (`narrative_synthesized`) rather than by silently filtering the value. A contract that
+    /// dropped an unreachable oid would imply marion had performed a check it did not perform, and
+    /// making that honest needs a provenance flag of its own. **Do not add a silent filter here.**
     pub result_commits: Vec<Oid>,
     pub changed_paths: Vec<PathBuf>,
     /// All cap metadata lives here, including counters describing `TaskContract` fields: the cap
     /// runs only when the contract is returned, which happens only at the terminal transition.
     pub acceptance_criteria_omitted: usize,
     pub changed_paths_omitted: usize,
+    /// Entries dropped from [`Self::result_commits`] by the cap; 0 iff none.
+    ///
+    /// It exists because `result_commits` is the only unbounded field a *child* fills, and rule 6's
+    /// terminal stub promises a size that "does not depend on the input" — a promise that held only
+    /// while the field was hardcoded empty.
+    pub result_commits_omitted: usize,
     pub scope_violations_omitted: usize,
     /// False only when the workspace affords no git-derived `changed_paths`. Never means
     /// "no violation".

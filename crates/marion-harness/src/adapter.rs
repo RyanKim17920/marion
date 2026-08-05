@@ -2466,6 +2466,74 @@ mod tests {
         );
     }
 
+    /// **`result_commits` reaches marion on all four wires — one derivation, four spellings.**
+    ///
+    /// §6.7 calls this the one field the child owns outright, and it was dropped in transit:
+    /// `build_contract` hardcoded an empty list, so a child that committed its work and reported
+    /// the oids got a contract asserting it had committed nothing. Each harness wraps the same
+    /// `report` arguments under a different key (`input`, `arguments`, `parameters`,
+    /// `part.state.input`), so a single wire quietly failing to read the field would be invisible
+    /// behind the three that still did — which is why this drives all four rather than one.
+    #[test]
+    fn every_harness_carries_the_commits_its_child_reported() {
+        const A: &str = "1111111111111111111111111111111111111111";
+        const B: &str = "2222222222222222222222222222222222222222";
+        for h in Harness::ALL {
+            let adapter = adapter_for(h).unwrap();
+            let tool = adapter.marion_tool_name("report");
+            let args = format!(r#"{{"narrative":"did the work","result_commits":["{A}","{B}"]}}"#);
+            // Codex dispatches on the bare verb beside `server: "marion"`, not on the flat
+            // code-mode identifier — the same wire fact `spawn_tool` records in the matrix.
+            let stream = match h {
+                Harness::ClaudeCode => format!(
+                    r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"{tool}","input":{args}}}]}}}}"#
+                ),
+                Harness::Codex => format!(
+                    r#"{{"type":"item.completed","item":{{"type":"mcp_tool_call","server":"marion","tool":"report","arguments":{args}}}}}"#
+                ),
+                Harness::Gemini => {
+                    format!(r#"{{"type":"tool_use","tool_name":"{tool}","parameters":{args}}}"#)
+                }
+                Harness::OpenCode => format!(
+                    r#"{{"type":"tool_use","part":{{"type":"tool","tool":"{tool}","state":{{"status":"completed","input":{args}}}}}}}"#
+                ),
+            };
+            let out = adapter.parse_stream(&stream, ChildExit::default());
+            assert_eq!(
+                out.narrative.as_deref(),
+                Some("did the work"),
+                "{h}: the premise — this frame must be read as a report at all"
+            );
+            assert_eq!(
+                out.result_commits,
+                vec![A.to_string(), B.to_string()],
+                "{h}: the child named two commits and marion must carry both, in order"
+            );
+        }
+    }
+
+    /// **An absent list and a null one are the same claim: the child named no commits.**
+    ///
+    /// Not a tolerance for sloppiness — codex's `--output-schema` cannot express an optional key
+    /// under `strict: true`, so §9 has marion spell optionality as *nullability* and a conforming
+    /// codex child sends `"result_commits": null` verbatim. A reader that treated null as anything
+    /// other than "none" would turn the schema marion itself writes into a parse failure.
+    #[test]
+    fn a_report_with_no_commits_or_a_null_list_yields_none_rather_than_failing() {
+        for args in [
+            r#"{"narrative":"did the work"}"#,
+            r#"{"narrative":"did the work","result_commits":null}"#,
+            r#"{"narrative":"did the work","result_commits":[]}"#,
+        ] {
+            let stream = format!(
+                r#"{{"type":"item.completed","item":{{"type":"mcp_tool_call","server":"marion","tool":"report","arguments":{args}}}}}"#
+            );
+            let out = CodexAdapter.parse_stream(&stream, ChildExit::default());
+            assert_eq!(out.narrative.as_deref(), Some("did the work"), "{args}");
+            assert!(out.result_commits.is_empty(), "{args}");
+        }
+    }
+
     /// Each harness reads **its own** spelling and no other's. Cross-feeding is the failure this
     /// seam exists to end: before it, every child was read as codex JSONL, so a gemini report was
     /// invisible and the contract said `Unreported` about a run that had reported.

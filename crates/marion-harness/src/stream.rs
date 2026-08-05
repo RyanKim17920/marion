@@ -36,6 +36,15 @@ pub struct StreamOutcome {
     /// for `changed_paths`, so a harness that announces nothing costs marion no fidelity. Only
     /// codex emits such events; gemini and opencode have no equivalent frame and leave this empty.
     pub file_change_paths: Vec<PathBuf>,
+    /// The `result_commits` the child passed to `report`, **exactly as it spelled them**.
+    ///
+    /// `Vec<String>` and not `Vec<Oid>` on purpose: at this layer these are a foreign agent's
+    /// words, not object names marion has stood behind. §6.7 gives the child this field outright,
+    /// so nothing here checks that an entry is well-formed, exists, or is reachable — see
+    /// `Completion::result_commits`, which says the same thing where a reader of the contract will
+    /// find it. An empty vec means the child named no commits, which is what an absent key means
+    /// too: the field is optional in `report`'s schema.
+    pub result_commits: Vec<String>,
     /// The stream said the run failed, whatever the exit code says.
     ///
     /// This exists because **the exit code is not sufficient on every harness**: S12 measured a
@@ -44,6 +53,29 @@ pub struct StreamOutcome {
     /// carries the harness's own words, and `None` here never means "it succeeded", only "the
     /// stream itself made no failure claim".
     pub failure: Option<String>,
+}
+
+/// `result_commits` out of a `report` call's arguments — **one derivation, four wires**.
+///
+/// The four harnesses wrap the same arguments object under four different keys (`input`,
+/// `arguments`, `parameters`, `part.state.input`), so each adapter locates the object and this
+/// reads the field out of it. A per-adapter copy of these four lines is exactly the duplication
+/// that lets one wire quietly drift into accepting something the others reject.
+///
+/// Anything that is not an array of strings yields an empty vec, which is also what an absent key
+/// yields — deliberately, because `report`'s schema makes the field optional and codex's
+/// `--output-schema` expresses that optionality as an explicit JSON `null` (§9). A child that
+/// names no commits and a child that names the field as null are making the same claim.
+///
+/// **No entry is validated.** See `Completion::result_commits`.
+pub fn report_commits(args: &Value) -> Vec<String> {
+    args["result_commits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
 }
 
 /// What marion observed about the child *process*, for the adapters whose success rule needs it.

@@ -21,7 +21,7 @@ use crate::claude_code::{
     READY_FILE_ENV,
 };
 use crate::invocation::Invocation;
-use crate::stream::{StreamOutcome, first_string, json_frames};
+use crate::stream::{StreamOutcome, first_string, json_frames, report_commits};
 
 /// Relocates the **entire** config and auth surface: `settings.json`, `oauth_creds.json`,
 /// `trustedFolders.json`, extensions, sessions. The CLI appends `.gemini` itself, so this names
@@ -281,6 +281,7 @@ pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
                 if let Some(n) = v["parameters"]["narrative"].as_str() {
                     out.narrative = Some(n.to_string());
                 }
+                out.result_commits = report_commits(&v["parameters"]);
             }
             Some("error") => {
                 out.failure = out.failure.take().or_else(|| {
