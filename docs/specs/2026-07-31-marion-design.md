@@ -4313,6 +4313,78 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     the clean-looking run. The `permission_denials` list and the journal record are the two places
     a human could ever learn it happened, and today neither is read by anything.
 
+23. **`spawn` declares eleven parameters and implements six; the other five were accepted and
+    dropped — CLOSED IN PART 2026-08-04, from a read of the code as it stands, not from a spike.**
+    §5.4's schema is reproduced in `bridge::tools` (`crates/marion-supervisor/src/bridge.rs:113-134`)
+    and every key in it is offered to every node. `run::SpawnRequest`
+    (`crates/marion-supervisor/src/run.rs:50-59`) has six fields, and `main::handle_tool_call`
+    (`crates/marion-supervisor/src/main.rs`) reads exactly those six out of `arguments` —
+    `agent_type`, `prompt`, `acceptance_criteria`, `writable_scope`, `timeout_secs`, `model`.
+    **The other five appeared nowhere else in the tree**: a grep for each of `background`,
+    `verification`, `isolation`, `name` and `allow_concurrent_writes` across all crates returns the
+    schema literal in `bridge.rs` and no other non-test occurrence. No caller in the repo sends any
+    of them, so nothing was observably broken and nothing failed — which is the point.
+
+    **The distinction that decides each case is whether dropping the parameter produces a *wrong
+    answer* or merely a *missing feature*.** A missing feature is a gap; a wrong answer is marion
+    performing a different verb while replying `isError: false`, which is §12's accept-and-ignore
+    shape (`default_tools_approval_mode`, `trust: true`, `--permission-prompt-tool stdio`,
+    `--verbose`) with marion on the producing end. Three of the five were the latter and are now
+    **refused by name**, before `spawn` consults its environment and therefore before every side
+    effect; two are the former and are **left accepted**, recorded here instead.
+
+    **Refused — each made marion do something other than what was asked.**
+    - **`background`** (declared `bridge.rs:130`). §5.4 pins it: `"background": false // M1: must be
+      false (§9)`. Dropped, a caller asking for a handle waited out the child's entire synchronous
+      run and received a *completed* `TaskContract` with `isError: false` — verified by disabling
+      the refusal, which returns a contract with a real worktree, a real `codex` process and
+      `status: TimedOut`. It compounds: `run.rs`'s `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER = 0`
+      already documents that `max_concurrent_children` cannot bind while `spawn` is synchronous, so
+      a parent backgrounding four children for concurrency got four serialized ones **and** an
+      inert concurrency gate. Real backgrounding is M2 and entangled with §7.6's descendant gating.
+    - **`isolation`** (declared `bridge.rs:127`, enum `worktree | shared-cwd | remote`). `run_spawn`
+      calls `make_worktree` unconditionally (`run.rs:751`) and builds `Workspace::Worktree`;
+      `Workspace::SharedCwd` is constructed **nowhere** outside its own definition in
+      `marion-core/src/contract.rs:70`, there is **no `Remote` variant at all**, and `AgentType`
+      (`marion-core/src/agent_type.rs:48-71`) carries no `isolation` key for a `spawn` to override.
+      The two dropped values fail in opposite directions and neither is harmless: `shared-cwd →
+      worktree` silently *adds* containment, putting the child's writes in a tree the caller never
+      named — and §6.6 says marion "never auto-merges" — while also skipping the §6.6 write-conflict
+      refusal that was supposed to name the holder; `remote → worktree` is a request to run
+      elsewhere, served by running on the operator's own machine. `worktree` and absence are **not**
+      refused, because that is what marion does.
+    - **`verification`** (declared `bridge.rs:124`) — **the worst of the five, because the lie is
+      durable.** `build_contract` hardcodes `verification: vec![]`
+      (`crates/marion-supervisor/src/spawn.rs:263`), so a caller that asked for `cargo test` and one
+      that asked for nothing receive **byte-identical** contracts, and the contract whose purpose
+      §6.7 states as *"knowing exactly what came back"* records that no verification was requested.
+      `MILESTONES.md` already lists the **execution** gap — *"`verification` never executes, so
+      every contract's `evidence` is always empty"* and *"`verification` command execution, so a
+      contract's `evidence` is always empty"* — but **the silent acceptance of the parameter was
+      never written down anywhere**, and it is the half a caller cannot detect. An empty or absent
+      list is not refused. Refusing rather than implementing is the reversible choice: execution can
+      land later, whereas a caller that learned to read an empty `verification` as "verified"
+      cannot be un-taught.
+
+    **Left accepted — dropped, but contradicting no answer any caller receives.**
+    - **`name`** (declared `bridge.rs:126`, "optional; addressable name"). `TaskContract` has no
+      `name` field (`marion-core/src/contract.rs:192-213`) and no verb addresses a node by one —
+      `status`/`wait`/`list` are undeclared (item 22's neighbouring note, and §9's `ntools=2`
+      measurement). Nothing consumes it and nothing contradicts it.
+    - **`allow_concurrent_writes`** (declared `bridge.rs:129`). §6.6's escape hatch from the
+      *"second write-capable spawn into an occupied cwd is refused, naming the holder"* rule — a
+      refusal that **is not in code**: there is no holder registry and no such check anywhere. It
+      disables a guard that never runs, in a `shared-cwd` mode that is now unreachable by the
+      `isolation` refusal above, for a caller that cannot have a live sibling because `spawn`
+      blocks. Refusing it would cost a working spawn and buy no honesty.
+
+    **What is deliberately *not* claimed here.** This is a read of the request path only. Whether
+    the six implemented parameters are honoured *correctly* is a separate question this item does
+    not touch, and refusing three parameters is not progress toward implementing them — the schema
+    still declares all eleven, which is the right shape only for as long as the refusals are loud.
+    The natural close is to implement `verification` execution and `isolation`, at which point both
+    refusals and this item come out together.
+
 ---
 
 ## 12. History: what was retracted or corrected

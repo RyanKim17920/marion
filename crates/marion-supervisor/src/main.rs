@@ -9,7 +9,7 @@ use std::io::{BufRead, Read, Write};
 use marion_core::ids::{RAND_BYTES, new_task_id as core_new_task_id};
 use marion_core::paths::{ProjectDir, state_dir};
 use marion_supervisor::root::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
-use marion_supervisor::{bridge, run};
+use marion_supervisor::{bridge, run, spawn};
 
 fn usage() -> ! {
     eprintln!("usage: marion-supervisor <mcp|doctor>");
@@ -40,6 +40,16 @@ fn handle_tool_call(
             bridge::tool_result(id, "report recorded", false)
         }
         "spawn" => {
+            // **First, and before the environment is even consulted**, because the answer does not
+            // depend on it. Routed through `spawn_result` so a refusal reads like every other one
+            // a `spawn` can return.
+            if let Some(e) = unimplemented_parameter(args) {
+                return bridge::spawn_result(
+                    id,
+                    args["agent_type"].as_str().unwrap_or("codex-impl"),
+                    Err(e),
+                );
+            }
             let Ok(env) = spawn_env() else {
                 return bridge::tool_result(id, "marion: MARION_REPO is not set", true);
             };
@@ -93,6 +103,45 @@ fn handle_tool_call(
         }
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
     }
+}
+
+/// **A `spawn` parameter marion declares and does not implement, if this request carries one.**
+///
+/// §5.4's schema has eleven keys and `run::SpawnRequest` carries six. The five that were never read
+/// split cleanly in two, and only one half belongs here:
+///
+/// * **A different verb performed quietly** — `background`, `isolation` and `verification`. Each
+///   made marion do something other than what was asked while answering `isError: false`, which is
+///   the §12 accept-and-ignore shape (`default_tools_approval_mode`, `trust: true`). Refused, by
+///   name, with the value that broke it; see each [`spawn::SpawnError`] variant for its own reason.
+/// * **Simply absent** — `name` and `allow_concurrent_writes`. Nothing consumes them and nothing
+///   contradicts them: `TaskContract` has no `name` field and no verb addresses a node by one, and
+///   `allow_concurrent_writes` is §6.6's escape hatch from a shared-cwd write-conflict refusal that
+///   is not in code, for a `shared-cwd` mode the refusal above now makes unreachable. Dropping
+///   either changes no answer any caller receives, so they are left accepted and recorded in §11
+///   item 23 rather than refused — a refusal there would cost callers a working spawn and buy no
+///   honesty.
+///
+/// **The permitted values are not refused**, which is the whole point of reading the field rather
+/// than rejecting its presence: `background: false`, `isolation: "worktree"` and an empty
+/// `verification` all describe exactly what marion does, and an absent key asks for nothing.
+///
+/// Pure, and separate from [`handle_tool_call`], so the table above is testable as a table.
+fn unimplemented_parameter(args: &serde_json::Value) -> Option<spawn::SpawnError> {
+    if args["background"].as_bool() == Some(true) {
+        return Some(spawn::SpawnError::BackgroundUnimplemented);
+    }
+    match args["isolation"].as_str() {
+        None | Some("worktree") => {}
+        Some(other) => return Some(spawn::SpawnError::IsolationUnimplemented(other.into())),
+    }
+    if args["verification"]
+        .as_array()
+        .is_some_and(|v| !v.is_empty())
+    {
+        return Some(spawn::SpawnError::VerificationUnimplemented);
+    }
+    None
 }
 
 /// The node this bridge instance is serving, which becomes `TaskContract.requester`.
@@ -298,6 +347,168 @@ mod main_tests {
     #[test]
     fn task_ids_minted_back_to_back_use_entropy_and_do_not_collide() {
         assert_ne!(new_task_id().unwrap(), new_task_id().unwrap());
+    }
+
+    /// **A declared parameter marion does not implement is refused, not quietly performed as
+    /// something else.**
+    ///
+    /// `background` is in `bridge::tools`' `spawn` schema and §5.4 pins it: `"background": false //
+    /// M1: must be false (§9)`. Before this refusal the field was never read anywhere — a caller
+    /// asking for a handle got a **completed contract** back with `isError: false`, having waited
+    /// out the child's whole run. That is not a failure it can detect and not the verb it asked
+    /// for: a parent backgrounding four children to get concurrency got four serialized ones and
+    /// no signal anywhere. It is the §12 accept-and-ignore shape, in the same family as
+    /// `default_tools_approval_mode` and `trust: true`.
+    ///
+    /// Three assertions, each of which fails against the pre-fix code:
+    ///
+    /// 1. it is an **error result** at all — pre-fix this call ran a child and returned its
+    ///    contract with `isError: false`;
+    /// 2. the message **names the field and says unimplemented**, so the caller can tell "marion
+    ///    will not" from "marion could not";
+    /// 3. it is refused **without an environment**, which is how we know nothing was attempted:
+    ///    this test sets no `MARION_REPO` and no agent declaration, so a `spawn` that got past the
+    ///    refusal could not even build an `Env` — the two later refusals would answer instead, and
+    ///    neither mentions `background`.
+    #[test]
+    fn a_backgrounded_spawn_is_refused_by_name_rather_than_served_synchronously() {
+        let v = handle_tool_call(
+            &serde_json::json!(1),
+            "spawn",
+            &serde_json::json!({
+                "agent_type": "codex-impl",
+                "prompt": "do the task",
+                "acceptance_criteria": [],
+                "background": true
+            }),
+        );
+
+        assert_eq!(
+            v["result"]["isError"],
+            serde_json::json!(true),
+            "a spawn marion will not perform is an error result, not a contract: {v}"
+        );
+        let text = v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            text.contains("background") && text.contains("not implemented"),
+            "the refusal must name the field and say it is unimplemented, got: {text}"
+        );
+        assert!(
+            !text.contains("MARION_REPO"),
+            "and it must precede the environment checks, so nothing was attempted: {text}"
+        );
+    }
+
+    /// **The whole refusing half of the table, matched on the typed variant rather than on prose.**
+    ///
+    /// One case per parameter that made marion perform a different verb quietly. `isolation` gets
+    /// both of its unimplemented values, because they fail in opposite directions and a refusal
+    /// that caught only one would leave the worse one standing: `shared-cwd` silently *added*
+    /// containment the caller did not ask for, while `remote` silently ran on the operator's own
+    /// machine. Each case also asserts the message **names the parameter**, since a caller that
+    /// cannot tell which of its eleven keys was rejected has been told almost nothing.
+    #[test]
+    fn every_unimplemented_spawn_parameter_is_refused_by_name() {
+        use spawn::SpawnError::*;
+        for (label, args, needle) in [
+            (
+                "background",
+                serde_json::json!({"background": true}),
+                "background",
+            ),
+            (
+                "isolation: shared-cwd",
+                serde_json::json!({"isolation": "shared-cwd"}),
+                "shared-cwd",
+            ),
+            (
+                "isolation: remote",
+                serde_json::json!({"isolation": "remote"}),
+                "remote",
+            ),
+            (
+                "verification",
+                serde_json::json!({"verification": ["cargo test -p foo"]}),
+                "verification",
+            ),
+        ] {
+            let e = unimplemented_parameter(&args).unwrap_or_else(|| {
+                panic!(
+                    "{label} is declared and unimplemented, so it must be refused rather than \
+                     dropped"
+                )
+            });
+            let msg = e.to_string();
+            assert!(
+                msg.contains(needle),
+                "{label}: the refusal must name what was rejected, got: {msg}"
+            );
+            assert!(
+                msg.contains("not implemented"),
+                "{label}: and say it is unimplemented, so the caller can tell \"marion will not\" \
+                 from \"marion could not\", got: {msg}"
+            );
+        }
+        // The variants themselves, so a refusal cannot be renamed into a different meaning without
+        // this failing: `isolation` carries the value it rejected, which is what lets a caller fix
+        // the call rather than guess.
+        assert!(matches!(
+            unimplemented_parameter(&serde_json::json!({"background": true})),
+            Some(BackgroundUnimplemented)
+        ));
+        assert!(matches!(
+            unimplemented_parameter(&serde_json::json!({"verification": ["x"]})),
+            Some(VerificationUnimplemented)
+        ));
+        match unimplemented_parameter(&serde_json::json!({"isolation": "remote"})) {
+            Some(IsolationUnimplemented(v)) => assert_eq!(v, "remote"),
+            other => panic!("expected the value to be carried, got {other:?}"),
+        }
+    }
+
+    /// **The accepting half, which is the half that a careless refusal breaks.**
+    ///
+    /// Every one of these describes something marion actually does, so refusing any of them would
+    /// cost a caller a working spawn and buy no honesty:
+    ///
+    /// * absent keys ask for nothing;
+    /// * `background: false` and `isolation: "worktree"` name marion's own behaviour;
+    /// * an **empty** `verification` requests no commands, so no evidence is missing;
+    /// * `name` and `allow_concurrent_writes` are the "merely absent" half of §11 item 23 —
+    ///   dropped, but contradicting no answer the caller receives, and deliberately still accepted.
+    ///
+    /// This is the assertion the refusal above cannot make: it only ever looks at the rejecting
+    /// values, so an over-broad check would pass it and fail here.
+    #[test]
+    fn every_value_marion_actually_performs_is_still_accepted() {
+        for (label, args) in [
+            ("nothing optional at all", serde_json::json!({})),
+            (
+                "background: false",
+                serde_json::json!({"background": false}),
+            ),
+            (
+                "isolation: worktree",
+                serde_json::json!({"isolation": "worktree"}),
+            ),
+            (
+                "an empty verification list",
+                serde_json::json!({"verification": []}),
+            ),
+            (
+                "the two dropped-but-harmless keys",
+                serde_json::json!({"name": "impl-auth", "allow_concurrent_writes": true}),
+            ),
+        ] {
+            assert!(
+                unimplemented_parameter(&args).is_none(),
+                "{label}: marion performs this, so refusing it would break a working spawn — got \
+                 {:?}",
+                unimplemented_parameter(&args)
+            );
+        }
     }
 
     /// The gate's inputs come off the declaration marion wrote, and both are load-bearing: without

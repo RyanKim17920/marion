@@ -32,6 +32,69 @@ pub enum SpawnError {
     /// rather than a message.
     #[error("spawn refused (§6.1 step 2): {0}")]
     Gate(#[from] marion_core::agent_type::SpawnGateError),
+    /// §5.4's `background`, which the tool schema declares and M1 does not implement.
+    ///
+    /// **Refused, not ignored.** §5.4 spells the field `"background": false // M1: must be false
+    /// (§9)`, and accept-and-ignore is the §12 silent-failure shape this codebase keeps finding and
+    /// killing — `default_tools_approval_mode`, `trust: true`, `--permission-prompt-tool stdio`,
+    /// `--verbose`. The caller asked for a handle and would instead get a finished contract, with
+    /// nothing anywhere saying the request was dropped: a parent backgrounding four children to run
+    /// them concurrently gets four serialized ones and no way to tell. Real backgrounding is M2
+    /// (`LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER` in `run` records what it would change), so the
+    /// honest M1 answer is a sentence naming the field, not a different verb performed quietly.
+    #[error(
+        "spawn refused: `background: true` is declared in marion's tool schema but not implemented \
+         — §5.4 requires `background: false` in M1, and backgrounding lands in M2 with §7.6's \
+         descendant gating. Omit the field or pass `false` to spawn synchronously; the contract is \
+         returned when the child reaches a terminal state."
+    )]
+    BackgroundUnimplemented,
+    /// §5.4's `isolation`, for every value but the one marion performs.
+    ///
+    /// **`run_spawn` calls `make_worktree` unconditionally** and builds `Workspace::Worktree`;
+    /// `Workspace::SharedCwd` is constructed nowhere outside `marion_core`'s own definition, there
+    /// is no `Remote` variant at all, and `AgentType` carries no `isolation` key for a `spawn` to
+    /// override. So the field selected nothing: `shared-cwd` and `remote` both got a worktree.
+    ///
+    /// Refused rather than ignored because **the two directions are not symmetrical and neither is
+    /// harmless**. `shared-cwd → worktree` is *more* containment than was asked for, but it puts
+    /// the child's writes in a tree the caller never named and §6.6 says marion "never auto-merges"
+    /// — so the caller's edits are not where it expects them, and the §6.6 write-conflict refusal
+    /// it was relying on to name a holder never runs. `remote → worktree` is the dangerous one: a
+    /// request to run somewhere else, silently served by running on the operator's own machine.
+    /// The contract does say `Worktree`, so a caller reading it carefully could tell — but "the
+    /// artifact contradicts your request and nothing points at the contradiction" is the §12 shape,
+    /// not an excuse for it.
+    ///
+    /// `worktree` and absence are **not** refused: that is what marion does, so accepting it is
+    /// the honest answer rather than a lucky one.
+    #[error(
+        "spawn refused: `isolation: {0:?}` is declared in marion's tool schema but not implemented \
+         — marion creates a git worktree for every child (§6.6), and `shared-cwd` and `remote` \
+         have no code path. Omit the field or pass `\"worktree\"`; a spawn that silently ran \
+         somewhere other than where it was asked to would be worse than this refusal."
+    )]
+    IsolationUnimplemented(String),
+    /// §5.4's `verification`, which is **accepted, dropped, and then contradicted in the artifact**.
+    ///
+    /// The worst of the family, because the lie is durable. `spawn`'s schema declares it, nothing
+    /// reads it, and `build_contract` hardcodes `verification: vec![]` — so the contract, whose
+    /// whole purpose §6.7 states as *"knowing exactly what came back"*, records that no
+    /// verification was requested. A caller that asked for `cargo test` and one that asked for
+    /// nothing get **byte-identical** evidence, and the one that asked has no way to tell its
+    /// commands never ran. `MILESTONES.md` already lists the *execution* gap ("`verification`
+    /// never executes, so every contract's `evidence` is always empty"); what was never written
+    /// down is that marion goes on **accepting the parameter** while that is true.
+    ///
+    /// An empty or absent list is not refused — it asks for nothing, which is what marion does.
+    #[error(
+        "spawn refused: `verification` is declared in marion's tool schema but not implemented — \
+         the commands never run and the contract's `verification` and `evidence` are written empty \
+         (MILESTONES.md), so accepting them would return a contract that reads as \"verified, \
+         nothing to report\" when the truth is \"never ran\". Omit the field and verify the child's \
+         work yourself; §6.7's contract carries its diff and changed paths."
+    )]
+    VerificationUnimplemented,
     #[error("invalid writable scope: {0}")]
     Scope(#[from] marion_core::scope::ScopeError),
     #[error("compiling the child's launch: {0}")]
