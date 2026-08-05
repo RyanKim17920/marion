@@ -579,6 +579,75 @@ fn assert_committed_recording_still_matches(fx: &Fixture, cap: &Capture, stdout_
     );
 }
 
+/// **The answer marion's bridge used to give an allowed root `report`, and no longer gives.**
+///
+/// It is still in `can-use-tool-allow.stdout.jsonl` because that file is a *recording* of a real
+/// 2.1.220 — the version [`marion_testsupport::PINNED_HARNESSES`] pins and the one every prose claim
+/// in `tests/fixtures/s9/README.md` is attributed to — and re-recording it on the `claude` that
+/// happens to be on PATH would rebase the whole capture, CLI version included, off that pin. That is
+/// a measurement decision, not a side effect of a bridge fix.
+///
+/// So the staleness is declared here and *checked*, rather than noted in a comment nobody re-reads:
+/// see [`assert_recorded_answer_is_superseded_by_todays_bridge`] for the two ways this constant
+/// fails, both of which are the drift being caught rather than missed.
+const SUPERSEDED_ALLOW_ANSWER: &str = "report recorded";
+
+/// The block the CLI wrote for the asked-about call, out of a committed recording.
+fn committed_tool_result(stdout_fixture: &str) -> Value {
+    fixture_frames(stdout_fixture)
+        .into_iter()
+        .flat_map(|f| {
+            f.pointer("/message/content")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|b| b["type"] == "tool_result" && b["tool_use_id"] == ROOT_TOOL_USE_ID)
+        .unwrap_or_else(|| panic!("the committed {stdout_fixture} holds the answer to the call"))
+}
+
+/// **The recording's answer is stale in exactly one declared way**, asserted so it cannot become
+/// stale in an undeclared one.
+///
+/// `assert_committed_recording_still_matches` compares the *ask*, which is claude's frame and is
+/// what the fixture is evidence about. The tool *result* is marion's own answer, and nothing
+/// compared it — which is how the recording came to carry `report recorded` for months after the
+/// bridge stopped producing it, with a green suite the whole time. This is the missing comparison,
+/// written so that it is red in both directions:
+///
+/// 1. **the recording no longer says the superseded thing** — someone re-recorded, and this call
+///    should be deleted in favour of comparing the recorded answer with the live one;
+/// 2. **the live answer says it again** — the bridge regressed to the false receipt this fixture is
+///    the last trace of, which is precisely the defect the recording is stale *because of*.
+fn assert_recorded_answer_is_superseded_by_todays_bridge(stdout_fixture: &str, live: &Value) {
+    let recorded = committed_tool_result(stdout_fixture).to_string();
+    assert!(
+        recorded.contains(SUPERSEDED_ALLOW_ANSWER),
+        "tests/fixtures/s9/{stdout_fixture} no longer carries the superseded answer, so it has \
+         been re-recorded: drop SUPERSEDED_ALLOW_ANSWER and assert the recorded result against the \
+         live one instead of declaring the gap.\nrecorded: {recorded}"
+    );
+    assert!(
+        !live.to_string().contains(SUPERSEDED_ALLOW_ANSWER),
+        "the bridge is answering the superseded string again — a receipt for a payload nothing \
+         stages (§5.4): {live}"
+    );
+    // And nowhere else: a future recording that reintroduced it somewhere this call does not look
+    // would otherwise be exactly as invisible as this one was.
+    for other in [
+        "can-use-tool-deny.stdout.jsonl",
+        "can-use-tool-builtin-deny.stdout.jsonl",
+    ] {
+        assert!(
+            !fixture_lines(other)
+                .concat()
+                .contains(SUPERSEDED_ALLOW_ANSWER),
+            "tests/fixtures/s9/{other} carries an answer marion no longer produces, and nothing \
+             declares it"
+        );
+    }
+}
+
 fn require_claude() {
     assert!(
         on_path("claude"),
@@ -647,10 +716,12 @@ fn a_non_allowlisted_verb_makes_the_cli_ask_over_the_control_channel_and_a_denia
 /// same proof was the words `report recorded`, which was a receipt for a payload nothing staged.
 ///
 /// **The committed `can-use-tool-allow` recording predates the refusal and still carries the old
-/// answer.** Nothing asserts against that part of it — `assert_committed_recording_still_matches`
-/// compares the *ask*, which is claude's frame and is unchanged — but the recording is evidence of
-/// a bridge answer that no longer happens, and re-recording it (`MARION_S9_RECORD=1`) is a
-/// deliberate step someone should take with that in mind rather than a side effect of this change.
+/// answer**, and that gap is now itself asserted rather than described:
+/// [`assert_recorded_answer_is_superseded_by_todays_bridge`] fails if the recording stops saying the
+/// superseded thing (someone re-recorded — delete the declaration) or if the bridge starts saying it
+/// again (the regression). Re-recording on a `claude` that is not the pinned 2.1.220 would rebase
+/// the whole capture off the version its prose is attributed to, which is a measurement decision and
+/// not a side effect of a bridge fix — so the gap is declared and checked instead of closed here.
 #[test]
 fn an_allowed_permission_reaches_marions_own_bridge_which_then_refuses_a_roots_report() {
     require_claude();
@@ -683,6 +754,7 @@ fn an_allowed_permission_reaches_marions_own_bridge_which_then_refuses_a_roots_r
     assert_eq!(cap.exit_code, Some(0));
 
     assert_committed_recording_still_matches(&fx, &cap, "can-use-tool-allow.stdout.jsonl");
+    assert_recorded_answer_is_superseded_by_todays_bridge("can-use-tool-allow.stdout.jsonl", &tr);
 
     drop(fx.server);
 }

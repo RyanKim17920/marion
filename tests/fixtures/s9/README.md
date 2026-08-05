@@ -89,9 +89,18 @@ lists the call under the terminal frame's `permission_denials`, and **the turn c
 bound expires, then deny the pending request and let the root proceed — do not kill the root"* — is
 therefore a recorded behaviour, not a design claim. It had never been executed before this run.
 
-**Allow.** The tool actually runs. The `tool_result` carries `report recorded`, which is the string
-marion's *own bridge* returns — so the answer reached the MCP server, not merely the CLI. No
-`permission_denials`, `terminal_reason: "completed"`, exit 0.
+**Allow.** The tool actually runs. The `tool_result` carries a string marion's *own bridge* returns —
+so the answer reached the MCP server, not merely the CLI. No `permission_denials`,
+`terminal_reason: "completed"`, exit 0.
+
+That string, in this recording, is `report recorded`, and **marion no longer produces it**: §5.4
+rejects `report` on a root, and the bridge now answers that rule's refusal
+(`bridge::REPORT_ON_A_ROOT`). The recording is left as recorded — it is a capture of the pinned
+2.1.220, and re-recording it on another `claude` would move the whole capture, CLI version and all,
+off the version everything above is attributed to. What is measured here is the *channel*, which is
+unchanged; the superseded answer is declared and asserted in
+`permission_round_trip.rs`'s `SUPERSEDED_ALLOW_ANSWER`, which fails both if this file stops saying it
+and if the bridge starts saying it again.
 
 ## Also measured, and not previously written down
 
