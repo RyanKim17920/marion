@@ -1605,7 +1605,10 @@ already load-bearing for what a tree-wide signal can reach (§6.7, §12). A supe
 itself a session leader, and the relationship between its session and its children's, decides
 whether §7.3.2's disposition (a) can reach the whole tree or only part of it. **That interaction is
 not measured and no fixture in this repo covers it**; it is a spike, and until it is run, the kill
-disposition's reach is a design claim rather than a recorded behaviour.
+disposition's reach is a design claim rather than a recorded behaviour. **Tracked as §11 item 25**,
+which names the three mechanisms, states what closing it would take, and records why the
+`launchd`/systemd option carries a second question this section's lifetime rules would have to
+settle.
 
 **What this does not claim.** None of this is implemented. The start race, the detach mechanism,
 the grace period and the exit record are all specification ahead of code, and the only measured
@@ -2485,7 +2488,10 @@ Two rules govern all three:
 - **Never silently kill.** (a) destroys work that cannot be reconstructed from the journal — a
   transcript survives, a half-finished turn does not — so it MUST be confirmed against a rendered
   list of the affected nodes. A keybinding that reaches (a) without that list is a bug, not a
-  shortcut.
+  shortcut. **(a)'s reach is bounded by §11 item 25** — it is specified here as a per-node kill by
+  §6.7's existing path, and whether a detached supervisor could instead issue one tree-wide signal
+  depends on a session/group question nothing has measured. Read (a) as the per-node operation the
+  table states; closing item 25 can only widen it.
 - **Never silently detach.** (b) and (c) leave processes running that the operator can no longer
   see, which is the untracked-runaway shape §6.7 spends a page preventing. They MUST tell the
   operator both how to re-attach and how to stop the fleet without one. Detaching into silence is
@@ -4697,6 +4703,60 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     availability axis lands there is nothing to fixture. The matrix cells for these two children
     accordingly still assert that their worktree is **untouched**, and say in
     `cross_product.rs`'s `Node::child_writes_worktree` what to do when that stops being true.
+
+25. **How a detached supervisor detaches is unchosen, and it decides what a quit-time kill can
+    reach — OPEN, newly articulated 2026-08-05, from a read of the design as it stands plus S7's
+    fixture. No new measurement is claimed.** §5.7 specifies when the supervisor starts and stops
+    and leaves the *mechanism* of detaching open; this item is that gap, filed here rather than
+    left as a paragraph, because it is not an implementation detail — it is load-bearing for
+    §7.3.2's kill disposition.
+
+    **Three plausible mechanisms, none chosen.** A **double-`fork` plus `setsid`**, making the
+    supervisor a session leader in a new session with no controlling terminal. A **`posix_spawn`**
+    (or an ordinary spawn) with the launching `marion` exiting immediately, leaving the supervisor
+    reparented to init. A **platform launcher** — `launchd` on macOS, systemd user units on Linux —
+    which detaches by construction and brings its own lifetime policy that would have to be
+    reconciled with §5.7's. They differ in whether the supervisor is a session leader, whether it
+    shares a process group or session with the `marion` that started it, and whether an external
+    supervisor can restart it behind marion's back.
+
+    **Why the choice is not cosmetic.** §6.7 already establishes that a pid kill is not a tree kill:
+    on POSIX a SIGKILL to a pid is not delivered to its descendants, so marion starts every child in
+    **its own process group** (`setpgid` in the pre-exec hook) and expires it with `killpg` — and
+    the new group is also what keeps `killpg` from signalling the supervisor itself. That last
+    clause is the hinge. It is a statement about the supervisor's *own* group membership, and no
+    mechanism above has been chosen, so it is currently a claim about a process whose session and
+    group are undefined. **Spike S7 sharpened the same point one level down**: `codex exec` calls
+    `setsid` for **every** tool-call command, making each tool-call child a session leader in its
+    own session and its own group, which is why §6.7 needs a two-step kill rather than one `killpg`.
+    Session and group membership are therefore already known to govern what a tree-wide signal
+    reaches, from a recorded behaviour and not a guess.
+
+    **What it blocks.** §7.3.2's disposition (a) — *kill the tree* — **cannot be asserted to reach
+    the whole tree until a spike measures this.** As written, (a) kills every non-terminal node by
+    the per-node path §6.7 already specifies, and per-node is the honest scope of the claim. Whether
+    a quit-time kill can also be issued tree-wide, and what it would catch or miss given the
+    supervisor's own session, is unmeasured. **Nothing in §7.3.2 currently depends on the stronger
+    reading**, which is deliberate: the disposition table describes (a) as a per-node operation
+    precisely so that closing this item can only *widen* what is possible, never invalidate what is
+    written. An implementer who reads (a) as "one signal to one group" is reading in something this
+    document does not say.
+
+    **What would close it.** A spike that picks a mechanism, records the supervisor's session and
+    group relative to the `marion` that launched it and relative to its children, and then measures
+    what a single tree-wide signal actually reaches with a real `codex exec` child running a tool
+    call — i.e. S7's scenario re-run from a detached supervisor rather than from a foreground
+    parent. **The `launchd`/systemd option needs a second question answered**: an external launcher
+    that restarts the supervisor after §5.7's idle exit would fight §5.7's lifetime rules, and that
+    conflict is a reason to reject the option, not a detail to settle later.
+
+    **What is deliberately *not* claimed here.** That any mechanism is preferred — the ordering
+    above is alphabetical in spirit, not a ranking. That S7 bears on the supervisor directly: it
+    measured a *child's* sessions, and its relevance here is that it establishes the axis matters,
+    not that it predicts the answer. And no measurement of a detached marion supervisor exists in
+    this repo at all; there is no detached supervisor yet to measure (§10 — M1 runs it in-process).
+    Cross-referenced from **§5.7** (lifetime, where the mechanism is left open) and **§7.3.2**
+    (the kill disposition, whose reach this bounds).
 
 ---
 
