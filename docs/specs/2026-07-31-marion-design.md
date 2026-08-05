@@ -4342,6 +4342,8 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       already documents that `max_concurrent_children` cannot bind while `spawn` is synchronous, so
       a parent backgrounding four children for concurrency got four serialized ones **and** an
       inert concurrency gate. Real backgrounding is M2 and entangled with §7.6's descendant gating.
+      **`allow_concurrent_writes` below is held harmless by this same blocking, and must be
+      revisited in whichever change lifts this refusal** — the two are one decision, not two.
     - **`isolation`** (declared `bridge.rs:127`, enum `worktree | shared-cwd | remote`). `run_spawn`
       calls `make_worktree` unconditionally (`run.rs:751`) and builds `Workspace::Worktree`;
       `Workspace::SharedCwd` is constructed **nowhere** outside its own definition in
@@ -4378,12 +4380,32 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       `isolation` refusal above, for a caller that cannot have a live sibling because `spawn`
       blocks. Refusing it would cost a working spawn and buy no honesty.
 
+      **This one is inverted relative to the other four, and the inversion is the reason it is a
+      "leave it until", not a "leave it".** Because the §6.6 holder check does not exist,
+      concurrent writes are already permitted de facto — so **`true` is the value marion honours,
+      accurately if accidentally, and `false` is the one it cannot honour.** A caller passing
+      `false` is asking marion to refuse a second writer, and marion will not refuse one. If either
+      value were a wrong answer it would be the conservative one, which is the opposite of every
+      other row here, where the permissive value was the refused one.
+
+      It is inert today for exactly one reason: **`spawn` blocks**, so a caller cannot have a live
+      sibling to conflict with. That is the same fact the `background` refusal above rests on, and
+      the dependency runs both ways — **the day backgrounding lands in M2, `allow_concurrent_writes:
+      false` becomes a live silent failure with nobody having touched this parameter or this code.**
+      A second write-capable child could then be running in a shared cwd against a caller that
+      explicitly asked for that not to happen. So this parameter **must be revisited in the same
+      change that implements backgrounding**, alongside lifting the `background` refusal and
+      `run.rs`'s `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER`, and not left standing on the strength of
+      this entry.
+
     **What is deliberately *not* claimed here.** This is a read of the request path only. Whether
     the six implemented parameters are honoured *correctly* is a separate question this item does
     not touch, and refusing three parameters is not progress toward implementing them — the schema
     still declares all eleven, which is the right shape only for as long as the refusals are loud.
-    The natural close is to implement `verification` execution and `isolation`, at which point both
-    refusals and this item come out together.
+    The natural close is to implement `verification` execution and `isolation` — and, in M2,
+    backgrounding, which is the one that also decides `allow_concurrent_writes` — at which point the
+    three refusals and this item come out together. **Closing it earlier than that would mean
+    deleting the refusals while the gaps remain**, which is the state this item was written about.
 
 ---
 
