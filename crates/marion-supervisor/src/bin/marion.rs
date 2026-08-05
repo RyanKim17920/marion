@@ -1057,7 +1057,14 @@ fn main() -> ExitCode {
                 eprintln!("{}", outcome.stderr.trim());
             }
             for tool in &outcome.denied_permissions {
-                eprintln!("marion: denied {tool}: the root's Blocked bound expired unanswered");
+                // Not "the bound expired": since `duplex::decided_permission` a root's `report` is
+                // denied on arrival by §5.4 and no bound is spent, and this line has only the tool
+                // name to go on. The reason the *node* was given is in the transcript printed
+                // above, which is where a reader who needs the specific rule should look.
+                eprintln!(
+                    "marion: denied {tool}: M1 has no permission answerer, and marion does not \
+                     grant what it cannot ask about"
+                );
             }
             if outcome.timed_out {
                 eprintln!(

@@ -148,6 +148,40 @@ pub fn tools() -> Value {
     ])
 }
 
+/// marion's own name for the child's return path, in the vocabulary [`tools`] declares it under.
+///
+/// Stated once because two axes reach for it in two spellings: the bridge is called with this name
+/// verbatim, and `duplex` sees whatever the harness spells it as — which is the *adapter's* mapping
+/// (`HarnessAdapter::marion_tool_name`) applied to this, never a second literal.
+pub const REPORT: &str = "report";
+
+/// **§5.4's answer to a `report` from a node that has no contract**, in that table's own terms.
+///
+/// Written as a sentence rather than a code, for the reason [`tools`] gives about absence: the node
+/// has to be able to tell "marion will not" from "marion could not", and to know what to do
+/// instead. So it says which rule (§5.4), which fact about this node makes it apply (it is the
+/// root, and a root has no contract — §9), and what the verb it wanted actually is (a *child's*
+/// `report`, reached by delegating).
+pub const REPORT_ON_A_ROOT: &str = "marion: `report` is self only, and only on a node that has a \
+     contract (§5.4). This node is the root: it has no contract, so there is nothing a report could \
+     be recorded against — a root's result is its own stream and its exit (§9). Delegate the work \
+     with `spawn`; the child's `report` is what returns a result to you.";
+
+/// **The one row of §5.4's authorization table marion can decide from the caller's identity alone**,
+/// stated once so the two places that enforce it cannot answer differently.
+///
+/// Both callers are asking the same question about the same node and neither can defer it: the
+/// bridge is about to *perform* the verb (`main::handle_tool_call`), and the duplex driver is about
+/// to answer a `can_use_tool` for it with nobody to ask (`duplex::run_duplex`). A rule with two
+/// implementations would eventually deny on one axis and serve on the other, which is exactly the
+/// drift §9 warns about where it blesses the allowlist being wider than the declared surface.
+///
+/// It takes a depth rather than a "is this a root" flag because `ROOT_DEPTH` is the definition
+/// (§3.1: *"counting the root as 0"*), and every other node's depth is derived from it.
+pub fn authorization_refusal(depth: u32, verb: &str) -> Option<&'static str> {
+    (verb == REPORT && depth == crate::root::ROOT_DEPTH).then_some(REPORT_ON_A_ROOT)
+}
+
 pub fn initialize_result(id: &Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": {
         "protocolVersion": PROTOCOL_VERSION,

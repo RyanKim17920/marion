@@ -601,6 +601,7 @@ fn duplex_child(
     ready_file: &Path,
     prompt: &str,
     bound: StdDuration,
+    depth: u32,
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -617,6 +618,9 @@ fn duplex_child(
             init_id: format!("marion-init-{}", agent_id.0),
             mcp_ready_timeout: CHILD_MCP_READY_TIMEOUT.min(bound),
             blocked_bound: StdDuration::ZERO,
+            // The child's own depth, not the caller's — the same value its bridge is told, so the
+            // driver and the bridge answer the same question about the same node.
+            depth,
             wall_clock: Some(bound),
             // **Never `Some` on this path.** This runs inside `marion-supervisor`, whose stdout is
             // the stdio MCP stream the root harness parses; a sink that wrote there would corrupt
@@ -899,6 +903,7 @@ pub fn run_spawn(
                 .expect("the duplex path always mints a marker"),
             &req.prompt,
             bound,
+            ctx.depth,
         )?,
     };
     // §6.1 step 7's confirmation, written the moment marion can truthfully make it. The process is

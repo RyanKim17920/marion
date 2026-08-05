@@ -200,6 +200,41 @@ pub fn unsupported_request_response(request_id: &str, subtype: &str) -> String {
     .to_string()
 }
 
+/// What marion tells a node it denied because there was **nobody to ask** (§9), after holding the
+/// ask for the node's whole `Blocked` budget.
+///
+/// A constant because it is now one of two answers rather than the only one: see
+/// [`decided_permission`] for the asks that never reach it, and why saying this about one of them
+/// would be a false diagnosis rather than merely a slow one.
+pub const NO_ANSWERER: &str =
+    "marion: no permission answerer in M1; the node's Blocked bound expired";
+
+/// **The ask marion can answer itself, without an answerer and without waiting.**
+///
+/// §9's block-then-deny rule is written for a permission marion *has nobody to ask about*: it holds
+/// the node's `Blocked` budget precisely because someone might, in principle, arrive to answer. An
+/// ask whose answer is fixed by §5.4 is not that: a root's `report` is refused by a rule, and no
+/// amount of waiting changes it. Holding one cost a real root **900 s** (`bin/marion.rs`'s
+/// `blocked_bound_secs` default) and then blamed a missing answerer for a decision marion had
+/// already made — a wrong reason after a fifteen-minute stall.
+///
+/// **The spelling comes from the adapters and the rule comes from [`crate::bridge`]**, so this
+/// function contains neither. `tool` arrives in the harness's own vocabulary
+/// (`mcp__marion__report`, `marion_report`, …), and the mapping from marion's verb to that
+/// spelling *is* §3.1's adapter contract — restating one here would keep passing after an adapter
+/// changed it. Every adapter's spelling is checked rather than this node's, deliberately: §3.4
+/// forbids branching on a harness name, and the question being asked ("does this frame name
+/// marion's own `report`?") does not depend on which harness is asking.
+fn decided_permission(depth: u32, tool: &str) -> Option<&'static str> {
+    let is_report = marion_core::harness::Harness::ALL.iter().any(|h| {
+        marion_harness::adapter_for(*h)
+            .is_ok_and(|a| a.marion_tool_name(crate::bridge::REPORT) == tool)
+    });
+    is_report
+        .then(|| crate::bridge::authorization_refusal(depth, crate::bridge::REPORT))
+        .flatten()
+}
+
 /// marion's answer to a permission it has nobody to ask (§9).
 ///
 /// M1 has no TUI, so a genuine permission request blocks until the node's per-episode `Blocked`
@@ -283,6 +318,15 @@ pub struct DuplexSpec<'a> {
     /// §9's per-episode `Blocked` budget: how long an unanswerable permission ask is held before it
     /// is denied and the node allowed to proceed.
     pub blocked_bound: StdDuration,
+    /// Where in the tree the node being driven sits, **root = 0** (§3.1/§6.1 step 2).
+    ///
+    /// The driver needs it for the same reason `main::caller_from` does: some asks have an answer
+    /// that depends on nothing but which node is asking, and a driver that was not told cannot tell
+    /// them from the ones marion genuinely has nobody to ask about. Passed rather than inferred from
+    /// `wall_clock.is_none()` — that a root is the node with no wall clock is a fact about §9's
+    /// budgets, not a definition of a root, and reading one off the other would silently mean
+    /// something else the first time a bounded root exists.
+    pub depth: u32,
     /// A wall-clock ceiling, after which the node's whole process group is killed. `Some` for a
     /// child, which is bounded by its contract's `timeout_secs`; `None` for a root, which marion
     /// offers no wall clock at all (§9).
@@ -313,6 +357,7 @@ impl std::fmt::Debug for DuplexSpec<'_> {
             .field("init_id", &self.init_id)
             .field("mcp_ready_timeout", &self.mcp_ready_timeout)
             .field("blocked_bound", &self.blocked_bound)
+            .field("depth", &self.depth)
             .field("wall_clock", &self.wall_clock)
             .field("sink", &self.sink.map(|_| "<sink>"))
             .finish()
@@ -509,16 +554,17 @@ pub fn run_duplex(
             continue;
         };
         if let Some((request_id, tool)) = can_use_tool_request(&frame) {
-            // Nobody to ask. Consume the episode's budget, then deny and let the node proceed.
-            std::thread::sleep(spec.blocked_bound);
-            writeln!(
-                stdin,
-                "{}",
-                deny_response(
-                    &request_id,
-                    "marion: no permission answerer in M1; the node's Blocked bound expired",
-                )
-            )?;
+            let reason = match decided_permission(spec.depth, &tool) {
+                // marion already knows the answer, so there is nothing for a wait to produce.
+                Some(refusal) => refusal,
+                None => {
+                    // Nobody to ask. Consume the episode's budget, then deny and let the node
+                    // proceed.
+                    std::thread::sleep(spec.blocked_bound);
+                    NO_ANSWERER
+                }
+            };
+            writeln!(stdin, "{}", deny_response(&request_id, reason))?;
             stdin.flush()?;
             outcome.denied_permissions.push(tool);
         } else if let Some((request_id, subtype)) = unanswerable_control_request(&frame) {
@@ -705,6 +751,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 init_id: "marion-init-test".into(),
                 mcp_ready_timeout: StdDuration::from_secs(5),
                 blocked_bound: StdDuration::from_secs(900),
+                depth: crate::root::ROOT_DEPTH,
                 // A **root**: §9 offers it no wall-clock ceiling, so nothing here can rescue a
                 // dropped request. That is the whole point of the test.
                 wall_clock: None,
@@ -742,6 +789,153 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
         assert!(out.denied_permissions.is_empty());
     }
 
+    /// A node that asks permission for one tool, hands back marion's answer, and finishes.
+    ///
+    /// The ask carries the three fields S9 measured as common to every `can_use_tool` 2.1.220
+    /// emits, and nothing else: what marion reads is what a real one would have carried.
+    fn permission_asking_node(marker: &Path, tool: &str, answer: &Path) -> String {
+        std::fs::write(marker, b"ready\n").unwrap();
+        format!(
+            r#"( sleep 30; kill -9 $$ ) 2>/dev/null &
+read init
+printf '{{"type":"control_response","response":{{"subtype":"success","request_id":"marion-init-test","response":{{}}}}}}\n'
+read user
+printf '{{"type":"control_request","request_id":"ask-1","request":{{"subtype":"can_use_tool","tool_name":"{tool}"}}}}\n'
+read reply
+printf '%s\n' "$reply" > '{answer}'
+printf '{{"type":"result","subtype":"success"}}\n'"#,
+            answer = answer.display()
+        )
+    }
+
+    /// The `response.message` of the denial marion wrote, or a panic naming what it wrote instead.
+    fn denial_message(answer: &Path) -> String {
+        let written = std::fs::read_to_string(answer).unwrap_or_default();
+        let reply: Value = serde_json::from_str(written.trim())
+            .unwrap_or_else(|e| panic!("marion never answered the permission ask ({e})"));
+        assert_eq!(reply["response"]["request_id"], "ask-1");
+        assert_eq!(
+            reply["response"]["response"]["behavior"], "deny",
+            "M1 denies; the question here is only how long it takes and what it says: {reply}"
+        );
+        reply["response"]["response"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The bound this pair of tests spends, or refuses to. Long enough that a `sleep` of it is
+    /// unmistakable next to an immediate answer, short enough not to slow the suite when it is
+    /// deliberately spent.
+    const PROBE_BOUND: StdDuration = StdDuration::from_secs(5);
+
+    /// **An ask marion can decide is decided, not waited out.**
+    ///
+    /// §5.4: `report` is self-only and only on a node that has a contract — *"rejected on a root"*.
+    /// A root's `report` is therefore not the kind of ask §9's block-then-deny rule is written for:
+    /// that rule is for asks with **nobody to ask**, and this one has a known answer that depends on
+    /// nothing but which node is calling.
+    ///
+    /// Before this, marion slept the whole `Blocked` bound first and then answered *"no permission
+    /// answerer in M1; the node's Blocked bound expired"*. On a real root that bound defaults to
+    /// **900 s** (`bin/marion.rs`'s `blocked_bound_secs`), so a decidable rule violation cost a
+    /// fifteen-minute stall and then blamed a missing answerer for something marion could have
+    /// decided instantly. Both halves are asserted, because either alone would pass against half
+    /// the bug: the answer is immediate **and** it says why.
+    #[test]
+    fn a_roots_report_is_denied_at_once_in_5_4s_terms_rather_than_costing_the_blocked_bound() {
+        let dir = scratch("duplex-decidable");
+        let marker = dir.join("mcp-ready");
+        let answer = dir.join("answer.jsonl");
+        // The harness's own spelling of marion's verb, from the adapter that owns that mapping.
+        let tool = adapter_for(Harness::ClaudeCode)
+            .expect("claude has an adapter")
+            .marion_tool_name("report");
+        let started = Instant::now();
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &permission_asking_node(&marker, &tool, &answer)]),
+            &DuplexSpec {
+                ready_file: &marker,
+                prompt: "do the task",
+                init_id: "marion-init-test".into(),
+                mcp_ready_timeout: StdDuration::from_secs(5),
+                blocked_bound: PROBE_BOUND,
+                depth: crate::root::ROOT_DEPTH,
+                // A root: §9 offers it no wall clock, so nothing but the answer ends this run.
+                wall_clock: None,
+                sink: None,
+            },
+        )
+        .expect("the run returns");
+        let elapsed = started.elapsed();
+        let message = denial_message(&answer);
+
+        assert!(
+            elapsed < PROBE_BOUND,
+            "the `Blocked` bound is for an ask marion cannot answer; this one it can, and spending \
+             the bound on it stalls a root for as long as the operator's budget says ({elapsed:?} \
+             of {PROBE_BOUND:?})"
+        );
+        for needle in ["§5.4", "contract", "root"] {
+            assert!(
+                message.contains(needle),
+                "the denial must give §5.4's reason ({needle:?} missing), not blame a missing \
+                 answerer for a rule marion decided: {message}"
+            );
+        }
+        assert!(
+            !message.contains("expired"),
+            "nothing expired — the answer was known before the ask arrived: {message}"
+        );
+        assert_eq!(out.denied_permissions, vec![tool]);
+        assert!(
+            out.transcript
+                .iter()
+                .any(|f| f.get("type").and_then(Value::as_str) == Some("result")),
+            "§9: a denied node proceeds — it is not killed"
+        );
+    }
+
+    /// **And an ask marion genuinely cannot answer still spends the bound**, unchanged.
+    ///
+    /// This is the half a careless fix breaks. §9's rule stands for every ask with nobody to ask:
+    /// the node's `Blocked` budget is held, *then* the request is denied and the node proceeds. A
+    /// built-in `Bash` call is such an ask — no rule in §5.4 decides it, and only an operator could
+    /// — so it must arrive at the same denial it always has, at the same cost.
+    #[test]
+    fn an_ask_marion_cannot_answer_still_holds_the_blocked_bound_before_denying() {
+        let dir = scratch("duplex-undecidable");
+        let marker = dir.join("mcp-ready");
+        let answer = dir.join("answer.jsonl");
+        let started = Instant::now();
+        let out = run_duplex(
+            SysCommand::new("sh").args(["-c", &permission_asking_node(&marker, "Bash", &answer)]),
+            &DuplexSpec {
+                ready_file: &marker,
+                prompt: "do the task",
+                init_id: "marion-init-test".into(),
+                mcp_ready_timeout: StdDuration::from_secs(5),
+                blocked_bound: PROBE_BOUND,
+                depth: crate::root::ROOT_DEPTH,
+                wall_clock: None,
+                sink: None,
+            },
+        )
+        .expect("the run returns");
+        let elapsed = started.elapsed();
+        let message = denial_message(&answer);
+        assert!(
+            elapsed >= PROBE_BOUND,
+            "§9: an ask with nobody to ask is held for the node's whole Blocked budget before it is \
+             denied ({elapsed:?})"
+        );
+        assert!(
+            message.contains("no permission answerer"),
+            "and the reason is still the honest one for this kind of ask: {message}"
+        );
+        assert_eq!(out.denied_permissions, vec!["Bash".to_string()]);
+    }
+
     /// Set on the re-executed copy of this test binary that actually drives a child. See
     /// [`a_child_run_writes_not_one_byte_of_the_nodes_stream_to_marions_own_stdout`].
     const CHILD_STDOUT_PROBE: &str = "MARION_DUPLEX_CHILD_STDOUT_PROBE";
@@ -770,6 +964,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 init_id: "marion-init-probe".into(),
                 mcp_ready_timeout: StdDuration::from_secs(5),
                 blocked_bound: StdDuration::ZERO,
+                depth: crate::root::ROOT_DEPTH + 1,
                 // A **child**: bounded, exactly as `run_spawn` bounds one.
                 wall_clock: Some(StdDuration::from_secs(30)),
                 sink: spec_sink,
@@ -988,6 +1183,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 init_id: "marion-init-test".into(),
                 mcp_ready_timeout: StdDuration::from_millis(100),
                 blocked_bound: StdDuration::ZERO,
+                depth: crate::root::ROOT_DEPTH + 1,
                 wall_clock: Some(StdDuration::from_secs(10)),
                 sink: None,
             },
@@ -1021,6 +1217,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 init_id: "marion-init-test".into(),
                 mcp_ready_timeout: StdDuration::from_secs(5),
                 blocked_bound: StdDuration::ZERO,
+                depth: crate::root::ROOT_DEPTH + 1,
                 wall_clock: Some(StdDuration::from_millis(500)),
                 sink: None,
             },

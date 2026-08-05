@@ -15,6 +15,12 @@
 //! (MCP tools are the availability axis) and refuses to run it unasked (the permission axis), so it
 //! asks — over stdout, as a `control_request`.
 //!
+//! **What marion answers that ask with is now two different things**, and the split is §5.4's: a
+//! root's `report` is refused by a rule marion can evaluate on arrival, so it is denied at once with
+//! that rule's sentence, while an ask with nobody to ask — a built-in `Bash` call outside the root's
+//! cwd — is still held for the node's whole `Blocked` budget first (§9). Both are driven here,
+//! because the file's subject is the channel and the channel carries both.
+//!
 //! # Running it
 //!
 //! ```sh
@@ -47,6 +53,11 @@ const ASKED_TOOL: &str = "mcp__marion__report";
 /// The root's per-episode `Blocked` budget for the expiry test. Short enough to keep the suite
 /// fast, long enough that "the bound was actually waited out" is measurable.
 const BLOCKED_BOUND: Duration = Duration::from_millis(750);
+
+/// The budget given to a root whose ask marion can **decide** (§5.4). Large enough that spending it
+/// is unmistakable next to any plausible start-up cost, and never actually spent — so it costs the
+/// suite nothing except on the failure this exists to catch.
+const UNSPENDABLE_BOUND: Duration = Duration::from_secs(120);
 
 const MCP_READY: Duration = Duration::from_secs(60);
 
@@ -656,12 +667,20 @@ fn an_allowed_permission_actually_runs_the_tool_and_the_answer_reaches_marions_o
     drop(fx.server);
 }
 
+/// **§9's block-then-deny, on an ask marion genuinely has nobody to ask about.**
+///
+/// The probe is a built-in `Bash` call and **not** marion's `report`, which is what it used to be.
+/// A root's `report` is now decided by §5.4 the instant the ask arrives (see the test below), so it
+/// no longer spends the bound and could no longer witness this rule: the run would still take
+/// longer than 750 ms — claude has to start — and the assertion would pass while measuring nothing.
+/// A `Bash` call outside the root's cwd is the ask §9 is actually written for: no rule decides it
+/// and only an operator could, so it is held for the whole budget and then denied.
 #[test]
 fn the_supervisors_blocked_bound_expires_into_a_deny_and_the_root_survives_it() {
     // The branch in `root::launch` that §11 item 14 calls out as written-but-unexercised. Every
     // verb the M1 hop reaches is allowlisted, so nothing else in this suite runs it.
     require_claude();
-    let fx = prepare("bound", Target::MarionReport);
+    let fx = prepare("bound", Target::BuiltinBash);
 
     let started = Instant::now();
     let outcome = root::launch(&fx.node, BLOCKED_BOUND, MCP_READY).expect("the root runs");
@@ -669,8 +688,12 @@ fn the_supervisors_blocked_bound_expires_into_a_deny_and_the_root_survives_it() 
 
     assert_eq!(
         outcome.denied_permissions,
-        vec![ASKED_TOOL.to_string()],
+        vec!["Bash".to_string()],
         "the supervisor's own record of what it denied"
+    );
+    assert!(
+        !fx.root_dir.join("outside/marion-s9.txt").exists(),
+        "the denied command must not have run"
     );
     assert!(
         elapsed >= BLOCKED_BOUND,
@@ -707,6 +730,53 @@ fn the_supervisors_blocked_bound_expires_into_a_deny_and_the_root_survives_it() 
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// **An ask marion can decide costs nothing**, through the same real control channel.
+///
+/// §5.4 rejects `report` on a root, so a root's `report` ask has an answer that depends on nothing
+/// but which node is asking. §9's block-then-deny rule is written for the other kind — an ask with
+/// *nobody to ask* — and applying it here made a decidable rule violation cost the root's whole
+/// `Blocked` budget: **900 s** by default (`bin/marion.rs`'s `blocked_bound_secs`), after which the
+/// root was told *"no permission answerer in M1; the node's Blocked bound expired"* — a missing
+/// answerer blamed for a decision marion had already made.
+///
+/// The bound here is deliberately far larger than the run: the property is that it is **not spent**,
+/// and a bound close to a plausible start-up cost could not distinguish that from spending it.
+#[test]
+fn a_roots_report_is_denied_at_once_in_5_4s_terms_rather_than_costing_the_blocked_bound() {
+    require_claude();
+    let fx = prepare("decided", Target::MarionReport);
+
+    let started = Instant::now();
+    let outcome = root::launch(&fx.node, UNSPENDABLE_BOUND, MCP_READY).expect("the root runs");
+    let elapsed = started.elapsed();
+
+    assert_eq!(outcome.denied_permissions, vec![ASKED_TOOL.to_string()]);
+    assert!(
+        elapsed < UNSPENDABLE_BOUND / 2,
+        "the root stalled on an ask marion could answer from §5.4 alone: {elapsed:?} of \
+         {UNSPENDABLE_BOUND:?}"
+    );
+    // The CLI turns a denial's `message` into the call's `tool_result` verbatim (S9), so the
+    // sentence the root was actually given is readable off its own transcript.
+    let said = serde_json::to_string(&outcome.transcript).unwrap();
+    assert!(
+        said.contains("§5.4") && said.contains("no contract"),
+        "the root must be told which rule refused it, not that marion had nobody to ask: {said}"
+    );
+    assert!(
+        !said.contains("Blocked bound expired"),
+        "nothing expired — the answer was known before the ask arrived: {said}"
+    );
+    assert_eq!(
+        outcome.exit_code,
+        Some(0),
+        "§9: a denied root proceeds.\nstderr:\n{}",
+        outcome.stderr
+    );
+
+    drop(fx.server);
 }
 
 #[test]

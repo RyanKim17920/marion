@@ -642,7 +642,16 @@ fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootE
         &node.project,
         &node.agent_id,
         &outcome.denied_permissions,
-        "the root's Blocked bound expired unanswered",
+        // **One sentence for two routes to the same denial**, because `denied_permissions` carries
+        // tool names and not reasons: an ask marion cannot answer is held for the root's whole
+        // `Blocked` budget and then denied (§9), while one §5.4 decides — a root's `report` — is
+        // denied on arrival (`duplex::decided_permission`). Saying "the bound expired" about both
+        // would put a false event in the audit record for the second. The per-ask sentence is not
+        // lost: it is written to the node itself as the denial's `message`, and a root's transcript
+        // is what `marion run` prints.
+        "denied without an answerer: M1 has no permission answerer, so an ask marion cannot decide \
+         is held for the root's Blocked bound and then denied (§9), and one §5.4 decides is denied \
+         at once",
     );
 }
 
@@ -790,6 +799,8 @@ fn launch_duplex(
             init_id: format!("marion-init-{}", node.agent_id.0),
             mcp_ready_timeout,
             blocked_bound,
+            // A root, by construction: this is `root::launch`.
+            depth: ROOT_DEPTH,
             // §9: marion offers a root no wall-clock ceiling on this path, so there is none here.
             wall_clock: None,
             // A root's frames are the only ones with a human on the other end; a child's stream is
