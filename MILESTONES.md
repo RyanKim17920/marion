@@ -438,7 +438,8 @@ Post-M5: ModelProxy translation. Acceptance criteria for each: design doc §9.
 child starts in a worktree, edits a file, and returns through marion's `report` tool over MCP (S6's
 primary branch); the root receives the structured contract as a tool result; a deliberate
 out-of-scope write is caught detectively; the whole run is canned. `cargo test --test m1_hop`,
-~4.7 s *(measured 2026-08-04; **488 tests** across four crates, up from 138 on 2026-08-03 — see
+~4.7 s *(measured 2026-08-04; **570 tests** across five crates at HEAD `08b4fde`, up from 138 on
+2026-08-03 — see
 "The evidence base" below for what that growth is and, more importantly, what it is not)*.
 The contract criterion is asserted on the
 **request** side as §9 requires — the recorded `tool_result` is not a `<persisted-output>` stub, it
@@ -516,6 +517,29 @@ None of the below is covered by any M1 criterion. **Re-checked line by line agai
   `allow_concurrent_writes` remain accepted-and-dropped, deliberately, for the reasons design §11
   item 23 gives.
 
+### What is not built — checked at HEAD `08b4fde`, 2026-08-05
+
+The list above says what is not *done*. This says what does not *exist*, because the two read
+differently and only the second explains why M2 cannot move. Each line is an absence verified in the
+tree on this date, not an unrevised one.
+
+- **No unix socket, anywhere.** Zero occurrences of `UnixListener` or `UnixStream` in the workspace.
+  A supervisor a client could attach to is not partially built; it is absent.
+- **`events.jsonl` is never written.** `crates/marion-core/src/paths.rs:147` is a path accessor and
+  `paths.rs:259` is the test that it returns that name. No other caller, no writer, no reader.
+- **No `marion-tui`, `marion-term` or `marion-proto` crate.** The workspace is five members —
+  `marion-core`, `marion-provider`, `marion-supervisor`, `marion-harness`, `marion-testsupport`
+  (`Cargo.toml`).
+- **`marion doctor --adapter` does not exist.** The `marion` binary refuses any argv[0] but `run`
+  (`bin/marion.rs:107`); `marion-supervisor doctor` is a `println!` of "no adapters registered yet"
+  (`src/main.rs:23-25`).
+- **`verification` execution is unimplemented, so `evidence` is always empty** — and since `77557e3`
+  a `spawn` carrying it is refused rather than accepted and dropped.
+- **`pid` capture is unimplemented.** The field exists on `Spawned` and `registry::replay`
+  propagates it (`registry.rs:228`), but **every production writer sets `None`**: `run.rs:925`
+  ("marion drove the process through a helper that owns the child and surfaces no pid — an absence,
+  recorded as one") and `root.rs:678`. Every non-`None` value in the tree is in a test.
+
 What does exist: `marion run <agent-type> --prompt …` launches the root; contracts persist uncapped
 to `<agent-dir>/contracts/<task_id>.json` with the capped copy returned; timeouts are enforced with
 a descendant-pgid sweep; scope is checked both preventively (at spawn) and detectively (git-derived).
@@ -539,13 +563,84 @@ extrapolation would have hidden: **claude-code never reaches the depth gate at a
 `allowed_tools` denies `spawn` first, so the refusal that protects the other three is unreachable
 on the one harness that reads that list.
 
-**One real defect, found by making the tests general.** An **opencode child worked in the operator's
-own repository rather than its worktree** (`8a69f22`): it resolves its project directory from `$PWD`,
-which marion had left inherited. §6.7 derives `changed_paths` by diffing the worktree the child never
-touched, so the contract read `{"status":"Ok","changed_paths":[],"scope_enforced":true}` — a clean
-bill of health for a run that wrote outside its worktree, outside the repo, and outside every scope
-list. This is the failure mode principle 11 and §6.7 exist to prevent, produced by marion itself, and
-it was invisible while only one pairing wrote anything.
+**Nine real defects, found by making the tests general — this section said "one" and was wrong.**
+Eight changed production code; the ninth (`6803b5b`) changed only tests and is listed because what
+it closed was a live hazard, not a style point. Every one is the same family: **the contract, or
+marion's own reply, claiming something other than what happened.**
+
+1. An **opencode child worked in the operator's own repository rather than its worktree**
+   (`8a69f22`): it resolves its project directory from `$PWD`, which marion had left inherited.
+   §6.7 derives `changed_paths` by diffing the worktree the child never touched, so the contract
+   read `{"status":"Ok","changed_paths":[],"scope_enforced":true}` — a clean bill of health for a
+   run that wrote outside its worktree, outside the repo, and outside every scope list. This is the
+   failure mode principle 11 and §6.7 exist to prevent, produced by marion itself, and it was
+   invisible while only one pairing wrote anything.
+2. **claude and gemini children had no write route at all** — filed as design §11 item 24, fixed by
+   `3c76cae`. `--tools ""` was hardcoded because `AgentType` had no `tools` field to populate it
+   from, and a declared tool was denied anyway because `allowed_tools` was exactly `[report]`. Such
+   a child reports `Ok` with `changed_paths: []` and `scope_enforced: true` — **byte-identical to
+   the escaped-write signature item 1 exists to catch**, which is why this one had to be fixed
+   before the matrix could mean anything. `3c76cae` is §3.1's availability axis.
+3. **`allowed_tools` was hardcoded to `["apply_patch", "shell"]` on every harness** (`45df64a`) —
+   neither the requested value nor the compiled one, a constant left from when codex was the only
+   child, so a gemini child's contract asserted two tools gemini has never had. Third instance of
+   the same defect, after `harness` and `model`.
+4. **`diff_text` omitted an intent-to-add** (`a262887`): it was `git diff <base> HEAD` ++ `git diff
+   HEAD`, and with nothing committed the first term is empty while the second cannot see an
+   untracked path. A child that *created* a file produced `diff: None` while `changed_paths` — which
+   does implement §6.7's three-term union — correctly named it, so the contract attested to an edit
+   whose bytes survived nowhere after the reap.
+5. **`result_commits` was dropped in transit** (`247bf81`) — see the paragraph below.
+6. **`--base-url` was accepted and dropped** (`b4283b4`) — see the paragraph above.
+7. **Three `spawn` parameters declared in the schema and silently dropped** — `background`,
+   `isolation`, `verification` (`77557e3`, design §11 item 23).
+8. **A root's `report` was answered `report recorded`, `isError: false`** (`7ff470e`). §5.4 makes
+   `report` self-only and only on a node that *has* a contract — rejected on a root — and nothing
+   enforced that anywhere a root could reach. The permission axis omits the verb, but only the
+   Claude Code adapter compiles `allowed_tools` into anything, so on codex, gemini and opencode a
+   root's `report` reached the bridge and got a receipt for a payload nothing stages, after which
+   the root exited `Ok` having delegated nothing. Found by reading §5.4's authorization table
+   against the code, not by a failing test. The refusal now sits at the execution point — the one
+   place all four harnesses pass through — which is the same move `check_spawn_gates` made for the
+   child's mirrored hole.
+9. **`Auth::as_wire` and `Auth::from_wire` were never asserted to be inverses** (`6803b5b`). Each
+   carried its own `"inherited"` literal; all four adapters serialise through the first and the only
+   reader goes through the second. Editing one alone breaks the hop **in the silent direction** — an
+   unrecognised value falls back to `Canned`, so a live root's child goes canned with nothing
+   reporting it. No production code changed; what changed is that the drift is now caught.
+
+**`result_commits` — declared, dropped, now carried and capped (`247bf81`).** The field was in
+`report`'s schema and read nowhere: dropped in the bridge, absent from `StreamOutcome` and
+`ChildOutcome`, hardcoded empty in `build_contract`. So a child that committed its work and reported
+its oids had them thrown away in transit and the contract then asserted it had committed nothing — a
+**wrong answer rather than a gap**, because empty is exactly how a reader learns nothing was
+committed, and `worktree_reap.rs` reads it that way. It is now threaded through the stream (one
+derivation, `stream::report_commits`, four wire spellings; absent, `null` and `[]` are one claim,
+because §9 has marion spell optionality as nullability for codex's `strict: true` schema) into
+`Completion::result_commits`. **The cap shipped in the same change because the threading breaks
+§6.7 rule 6 without it** — rule 6's terminal stub is justified by a field set whose size does not
+depend on the input, which was true only while this field was always empty; measured, a pathological
+contract encoded to 216,315 bytes against a 49,152-byte backstop. It is elided at **rule 5(d)** with
+a `result_commits_omitted` count mirroring `changed_paths_omitted`, and **cleared at rule 6**
+(`crates/marion-core/src/cap.rs:163-165, 209-221`); either alone converges, so 5(d) is the graceful
+path and 6 is the guarantee. **A retraction belongs here:** an earlier claim that a child's work had
+no durable route was overstated. The work was never lost — `changed_paths` has a committed term,
+`diff` is against `<base_commit>`, and `workspace.branch` survives the reap still holding the
+commits. What was lost is the **immutable handle**, since a branch is a mutable ref and an oid is
+not. **And it is not yet exercised end to end:** no run produces a non-empty `result_commits` today.
+Every canned fixture that drives a real hop sends `[]` (`cross_product.rs:371`,
+`journal_wiring.rs:187`, `child_stream.rs:78`); the non-empty cases live only in unit tests of the
+parser and the cap.
+
+**All sixteen matrix cells now write.** They did not when this section was first written. `8a69f22`
+found that twelve of the sixteen had children that never wrote anything — `Script::default`'s patch
+applied only on the Responses wire — so `changed_paths` was empty *by construction* for claude,
+gemini and opencode children, and an empty `changed_paths` is also what an escaped write produces.
+The two were indistinguishable and the matrix could not tell them apart. After `8a69f22` and its
+successors, every cell drives its child to write a **worktree-relative** file and asserts its
+**placement** — that the bytes landed in `<state>/<project-hash>/agents/<agent-id>/worktree`, which
+is the node marion says it placed the child in — and criterion 9 is asserted **unconditionally**
+rather than being satisfied by a cell that could not write (`cross_product.rs:40-70, 987-1006`).
 
 **Tests that could pass by failing to look.** Four classes, all closed: leak checks that reported no
 survivors when `ps` itself failed (`305c03d`, `4b147c4`, five files); a corrupt contract dropped by a
@@ -561,14 +656,29 @@ and a task id is single-use for the life of the repo (`1ff90d9`); auth declarati
 `--base-url` no-op are asserted per adapter (`c3e73ca`); the contract provably reaches the **root**
 on all four wires (`5fcfe75`).
 
-**The count, and why it is not the point.** `cargo test` reports **488** tests across four crates,
-up from 138 on 2026-08-03. Read that as evidence-per-claim, not as progress: almost none of it is
-new capability, and the largest single contributor is the same assertion applied to sixteen pairings
-instead of one. **Two caveats on the number.** `tests/journal.rs` re-execs its own binary for the
-two-process test, so a naive count of `test result:` lines over-reports it — it is 6 tests, not 8.
-488 is a full green `cargo test --workspace` with every target compiling, taken after the last
-change of the day landed; an earlier figure of 466 in this file's drafting excluded `auth_mode` and
-`worktree_reap`, which were mid-edit at that moment.
+**`--base-url` is no longer a pinned no-op — it is refused (`b4283b4`).** `c3e73ca` pinned the drop
+so it could not regress quietly; `b4283b4` removed the drop instead. `resolve_base_url`
+(`crates/marion-supervisor/src/bin/marion.rs:238-268`) refuses **two** distinct cases, deliberately
+not collapsed, because the remedy is identical and the diagnosis is not. Without `--canned`, a
+**loopback** URL is refused as a credential hazard: the node presents the operator's real login and
+a loopback endpoint is marion's canned provider or some other local process, so honouring it would
+send a real credential to a fake server. Any **other** URL is refused as *not implemented*: every
+adapter drops it in that mode (no `ANTHROPIC_BASE_URL`, no `GOOGLE_GEMINI_BASE_URL`, no codex
+`model_providers` entry, no opencode provider block), so the run would have reached the vendor
+directly while looking like it honoured the gateway. `--canned` is untouched — with it, an explicit
+URL, then `$MARION_BASE_URL`, then marion's own endpoint. `(false, None)` is the default and the
+premise: no endpoint at all, each harness resolving the vendor it is already logged in to.
+
+**The count, and why it is not the point.** **570** tests, up from 488 on 2026-08-04 and from 138 on
+2026-08-03. Read that as evidence-per-claim, not as progress: almost none of it is new capability,
+and the largest single contributor is the same assertion applied to sixteen pairings instead of one.
+**What 570 was measured on:** `cargo test --workspace` at HEAD `08b4fde`, exit 0, every target
+compiling, 30 test binaries. The raw sum of `test result:` lines is **572**; `tests/journal.rs`
+re-execs its own binary for the two-process test, so that sum over-reports it by two — it is 6
+tests, not 8. It is **five** crates, not the four this paragraph used to say: `marion-testsupport`
+is a workspace member and contributes 22 of them. The figure moves with almost every commit; three
+landed while this line was being written (`45d53b8`, `7ff470e`, `08b4fde`), which is the reason it
+is dated and attributed to a sha rather than left standing as a fact about the project.
 
 ---
 
