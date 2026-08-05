@@ -391,6 +391,30 @@ pub fn config_json(spec: &ConfigSpec, mcp: Option<&BridgeEnv>) -> Value {
     config
 }
 
+/// What §6.7's `allowed_tools` records for an opencode node: **marion compiled no tool constraint
+/// at all, and the harness's own defaults were in force.**
+///
+/// Measured against [`config_json`] directly above, which is the entire document marion writes:
+/// it carries `model`, `small_model`, `provider` and `mcp` and **nothing else**. No `tools` block,
+/// no `permission` block, no `--agent` in [`compile_run`]'s argv. That is also why an opencode
+/// child declares `write`, `edit` and `bash` without marion asking — they are opencode's defaults,
+/// not a grant marion made.
+///
+/// **Why not an empty list.** `[]` in this field reads as *"no tool was allowed"*, which is the
+/// strongest possible understatement of a node that could run `bash` — and understating what a
+/// child was permitted is precisely the failure §6.7's audit record exists to prevent. An absence
+/// of constraint and an absence of permission are opposite facts, and `Vec<String>` spells them
+/// the same way unless one of them is named.
+///
+/// **Why not an opencode-native spelling.** `agent:build` or `permission:allow` would look like
+/// the other three harnesses' records and would assert that marion compiled a constraint it never
+/// wrote — the accept-and-ignore shape one layer up, in the field that exists to catch it. This
+/// says the true thing instead, and is greppable the day opencode grows a surface marion drives.
+///
+/// It is a claim about **this axis only**. An opencode child is still bounded by its worktree, its
+/// wall clock, and §6.7's scope check; none of those are tool permissions.
+pub const NO_COMPILED_TOOL_CONSTRAINT: &str = "harness-default:unconstrained";
+
 /// The `mcp.<alias>` entry, which is identical on both routes: the declaration marion makes does
 /// not change because it travelled by environment instead of by file.
 ///

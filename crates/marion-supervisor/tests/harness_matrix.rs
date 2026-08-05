@@ -7,7 +7,7 @@
 //! recorded `"gemini"` in the contract (§6.7's audit record describing a run that never happened).
 //!
 //! For each harness the run is driven by the in-process [`CannedServer`], which speaks all four
-//! wires, and every cell asserts the same five things:
+//! wires, and every cell asserts the same six things:
 //!
 //! 1. a real binary ran and **reported through marion's bridge** — the persisted
 //!    `contracts/<task_id>.json` deserializes, its narrative is the child's own
@@ -15,10 +15,16 @@
 //! 2. `contract.child.harness` is the harness that **actually ran**, read off the adapter;
 //! 3. `contract.child.model` is the **compiled, harness-native** value — `None` for codex, whose
 //!    `exec` surface carries no model argument however loudly one was asked for;
-//! 4. the provider's request log shows **that harness's wire**. This is what makes (2) more than a
+//! 4. `contract.allowed_tools` is the **constraint that harness actually ran under**, in that
+//!    harness's own vocabulary (§3.1) — a per-tool allowlist on Claude Code, a sandbox mode on
+//!    codex, an approval mode on gemini, and on opencode an explicit record that marion compiled
+//!    no constraint at all. The third field of the same kind as (2) and (3), and the last of the
+//!    three to stop being a constant: it was `["apply_patch", "shell"]` on every harness, which
+//!    named tools three of them have never had;
+//! 5. the provider's request log shows **that harness's wire**. This is what makes (2) more than a
 //!    tautology: a contract stamped `gemini` whose only traffic was OpenAI Responses would mean
 //!    codex ran and something else succeeded by accident;
-//! 5. nothing outlived the run (the S7 class of failure).
+//! 6. nothing outlived the run (the S7 class of failure).
 //!
 //! # Running it
 //!
@@ -71,6 +77,19 @@ struct Cell {
     expected_harness: Harness,
     /// `TaskContract.child.model`: the **compiled** value, not the asked-for one.
     expected_model: Option<&'static str>,
+    /// `TaskContract.allowed_tools`: §6.7's audit record of **the constraint this harness actually
+    /// ran under**, in that harness's own vocabulary — §3.1's *"the compiled, harness-native
+    /// constraint, or the harness's coarsest equivalent where it has no per-tool allowlist at
+    /// all"*.
+    ///
+    /// **Four harnesses, four different shapes of answer, and that is the content of the field.**
+    /// Claude Code has a real per-tool allowlist and records its literal contents; codex has one
+    /// sandbox mode; gemini has one approval mode; opencode has nothing marion compiles at all and
+    /// records that it has nothing. A *uniform* value across the four is what this field carried
+    /// until now — `["apply_patch", "shell"]`, hardcoded in `build_contract` — and it was wrong on
+    /// every one of them: on three it named tools those harnesses have never had, and on codex,
+    /// where it looks plausible, it is exactly the per-tool echo §3.1 forbids.
+    expected_allowed_tools: &'static [&'static str],
     /// The wire the provider must have been spoken to on. The proof that this harness ran.
     expected_wire: &'static str,
 }
@@ -290,10 +309,30 @@ fn assert_cell(cell: &Cell, ev: &Evidence) {
          however loudly one was asked for"
     );
     assert_eq!(
+        persisted.allowed_tools, cell.expected_allowed_tools,
+        "{harness}: `allowed_tools` records the constraint this harness actually ran under, in its \
+         own vocabulary — not marion's words for what was asked for, and not one constant shared \
+         by four harnesses that constrain their children in four different ways"
+    );
+    assert!(
+        !persisted
+            .allowed_tools
+            .iter()
+            .any(|t| t == "apply_patch" || t == "shell" || t == "write"),
+        "{harness}: `apply_patch`/`shell` are the hardcoded constant this field used to carry on \
+         every harness, and `write` is marion's word for the request rather than any harness's \
+         word for the constraint. Got: {:?}",
+        persisted.allowed_tools
+    );
+    assert_eq!(
         contract.child.harness, persisted.child.harness,
         "{harness}: the returned copy and the persisted one describe one run"
     );
     assert_eq!(contract.child.model, persisted.child.model, "{harness}");
+    assert_eq!(
+        contract.allowed_tools, persisted.allowed_tools,
+        "{harness}: the returned copy and the persisted one describe one run"
+    );
 
     // ---- nothing outlived the run. --------------------------------------------------------------
     assert!(
@@ -368,6 +407,9 @@ fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() 
         script: claude_code_script(),
         expected_harness: Harness::ClaudeCode,
         expected_model: None,
+        // A real per-tool allowlist: the literal contents of `--allowedTools`. `claude` declares no
+        // tools, so marion's own verb is the whole of it.
+        expected_allowed_tools: &["mcp__marion__report"],
         expected_wire: "anthropic",
     };
     let ev = drive(&cell);
@@ -392,6 +434,10 @@ fn a_codex_child_edits_a_worktree_and_reports_through_marions_bridge() {
         },
         expected_harness: Harness::Codex,
         expected_model: None,
+        // §3.1's own worked example: `codex exec` has no allowlist to check a call against, so the
+        // sandbox mode is the whole constraint. Named `apply_patch`/`shell` until now, which is
+        // the per-tool echo that section forbids by name.
+        expected_allowed_tools: &["sandbox:workspace-write"],
         expected_wire: "responses",
     };
     let ev = drive(&cell);
@@ -417,6 +463,10 @@ fn a_gemini_child_reports_through_marions_bridge_over_the_gemini_wire() {
         },
         expected_harness: Harness::Gemini,
         expected_model: Some("gemini-2.5-flash"),
+        // The mode IS the constraint on this harness, and the withholding one is recorded quite as
+        // explicitly as the relaxing one: under `default`, 0.53.0 keeps the mutating tools out of
+        // `functionDeclarations` entirely.
+        expected_allowed_tools: &["approval-mode:default"],
         expected_wire: "gemini",
     };
     let ev = drive(&cell);
@@ -442,6 +492,11 @@ fn an_opencode_child_reports_through_marions_bridge_over_the_openai_wire() {
         },
         expected_harness: Harness::OpenCode,
         expected_model: Some("marion/canned-1"),
+        // marion compiles no tool or permission constraint for opencode at all — its generated
+        // config carries `model`, `provider` and `mcp` and nothing else — so the record says so
+        // rather than claiming one. An empty list here would read as "no tool was allowed", which
+        // is the opposite of the truth for a child that can run `bash`.
+        expected_allowed_tools: &["harness-default:unconstrained"],
         expected_wire: "openai",
     };
     let ev = drive(&cell);

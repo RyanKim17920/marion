@@ -416,7 +416,17 @@ pub fn build_contract(
         workspace,
         instructions: Capped::whole(instructions),
         acceptance_criteria: criteria.iter().map(Capped::whole).collect(),
-        allowed_tools: vec!["apply_patch".into(), "shell".into()],
+        // Provisional, like `child` above and for the same reason: `run_spawn` overwrites it from
+        // the **adapter**, which is the only thing that knows what constraint was compiled.
+        //
+        // This used to be the final value — `["apply_patch", "shell"]`, hardcoded, on every child
+        // of every harness. It was wrong on all four. On three it named tools those harnesses have
+        // never had; on codex, where it looks plausible, it is the per-tool echo §3.1 forbids in as
+        // many words (*"echoing marion's own vocabulary there would make the field claim a
+        // constraint that never existed"*), since codex has no allowlist to check a call against
+        // and its real constraint is `sandbox:workspace-write`. §6.7 makes this the audit record,
+        // so a constant here understated some children and invented permissions for others.
+        allowed_tools: vec![],
         scope_ceiling: ceiling.to_vec(),
         scope_requested: requested.to_vec(),
         timeout,

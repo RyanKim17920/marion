@@ -349,6 +349,29 @@ pub trait HarnessAdapter {
         spec.tools.iter().map(|t| self.tool_name(t)).collect()
     }
 
+    /// §6.7's `TaskContract.allowed_tools`: **the constraint this launch actually compiled**, in
+    /// this harness's own vocabulary.
+    ///
+    /// §3.1 defines the field exactly: *"the compiled, harness-native constraint — or the harness's
+    /// coarsest equivalent where it has no per-tool allowlist at all"*. Both halves of that
+    /// sentence are load-bearing, because the four harnesses sit on both sides of it: Claude Code
+    /// has a real per-tool allowlist and the other three have one coarse knob or none at all.
+    ///
+    /// **A function of the same [`LaunchSpec`] `compile` receives, so the record cannot describe a
+    /// launch that did not happen.** This is the third field to reach the contract this way, after
+    /// `child.harness` and `child.model` (`32ec905`): the audit record names what *ran*, never what
+    /// was *asked for*, and the way that stays true is by sourcing it from the thing that ran.
+    ///
+    /// **Never marion's own vocabulary.** §3.1: *"echoing marion's own vocabulary there would make
+    /// the field claim a constraint that never existed"* — said of codex, whose contract records
+    /// `sandbox:workspace-write` precisely *because* `apply_patch` and `shell` are not names any
+    /// allowlist of codex's was ever checked against.
+    ///
+    /// Fallible for one reason only: on a harness that compiles the declaration, the declaration
+    /// has to be mapped, and an unmappable name is [`HarnessError::UnsupportedTool`] here as it is
+    /// in `compile`. A caller reaching this after a successful `compile` cannot see that error.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError>;
+
     /// Which of marion's own verbs this harness's stream shows the node calling, in **marion's**
     /// vocabulary (`spawn`, `report`, …) rather than in the harness's spelling.
     ///
@@ -395,6 +418,21 @@ impl ClaudeCodeAdapter {
     /// two ways to say the same thing could disagree.
     fn prompt_is_written_after_launch(spec: &LaunchSpec) -> bool {
         spec.prompt.is_empty()
+    }
+
+    /// What `--allowedTools` carries: §3.1's *"the same list, plus marion's own `mcp__marion__*`"*.
+    ///
+    /// One derivation, called by `compile` and by `compiled_permissions`, so §6.7's audit record
+    /// and the flag it describes cannot disagree. Two expressions of this would be two chances for
+    /// the contract to name a permission the node was never granted — the class of defect
+    /// `32ec905` fixed for `harness` and this method exists to keep out of `allowed_tools`.
+    fn permission_axis(
+        adapter: &ClaudeCodeAdapter,
+        spec: &LaunchSpec,
+    ) -> Result<Vec<String>, HarnessError> {
+        let mut allowed = spec.allowed_tools.clone();
+        allowed.extend(adapter.native_tools(spec)?);
+        Ok(allowed)
     }
 
     fn mcp_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<McpEnv, HarnessError> {
@@ -485,14 +523,11 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         // availability is the mapped list, permission is *"the same list, plus marion's own
         // `mcp__marion__*`"*. This harness is the one of four where both axes are marion's to set
         // and where opening only the first is a measured dead end (§11 item 24).
-        let native = self.native_tools(spec)?;
-        let mut allowed = spec.allowed_tools.clone();
-        allowed.extend(native.iter().cloned());
         Ok(compile_headless(&HeadlessSpec {
             cwd: spec.cwd.clone(),
             model: spec.model.clone(),
-            tools: native,
-            allowed_tools: allowed,
+            tools: self.native_tools(spec)?,
+            allowed_tools: Self::permission_axis(self, spec)?,
             mcp_config: Self::mcp_config_path(spec),
             base_url,
             api_key,
@@ -551,6 +586,13 @@ impl HarnessAdapter for ClaudeCodeAdapter {
                 tool: tool.to_string(),
             }),
         }
+    }
+
+    /// **The one harness of four with a real per-tool allowlist**, so this is §3.1's first branch
+    /// rather than its "coarsest equivalent" fallback: the record is the literal contents of
+    /// `--allowedTools`, which is the flag the CLI checks a call against.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        Self::permission_axis(self, spec)
     }
 
     /// The prefix is derived from this adapter's own `marion_tool_name`, so the reader and the
@@ -733,6 +775,26 @@ impl HarnessAdapter for CodexAdapter {
         }
     }
 
+    /// **§3.1's worked example, verbatim, and the reason the sentence exists.** That section names
+    /// this harness as the "coarsest equivalent" case and this string as its record: `codex exec`
+    /// exposes only `--sandbox` and `--add-dir`, so `sandbox:workspace-write` is the whole of the
+    /// constraint a codex child ran under.
+    ///
+    /// **It replaces a hardcoded `["apply_patch", "shell"]`** that `build_contract` wrote for every
+    /// child of every harness. Those are marion-side tool *names*, not a list codex ever checked a
+    /// call against — exactly what §3.1 forbids in as many words: *"echoing marion's own vocabulary
+    /// there would make the field claim a constraint that never existed."*
+    ///
+    /// Constant, and correctly so: `codex::config_toml` compiles that one sandbox mode on every
+    /// node, so there is nothing about this launch that could vary it. A declaration changes
+    /// nothing here for the reason [`Self::tool_name`] gives — it is satisfied, not compiled — and
+    /// the record says the same thing whether or not one arrived, because the constraint did not
+    /// move. `native_tools` still runs, so an unmappable name is refused here as it is in `compile`.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        self.native_tools(spec)?;
+        Ok(vec![format!("sandbox:{}", codex::SANDBOX_MODE)])
+    }
+
     /// **No prefix.** codex's stream names the server and the tool as two fields, so the flat
     /// identifier above never appears in it — see [`codex::marion_tool_calls`].
     fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
@@ -753,6 +815,23 @@ impl GeminiAdapter {
     /// system-settings override is that marion writes nothing under the sandbox home the CLI owns.
     fn settings_path(spec: &LaunchSpec) -> PathBuf {
         spec.config_dir.join("marion-settings.json")
+    }
+
+    /// The approval mode this launch runs under — the whole of gemini's tool constraint.
+    ///
+    /// One derivation, shared by `compile` and `compiled_permissions`, for the reason
+    /// `ClaudeCodeAdapter::permission_axis` gives: a second copy could put a mode in the audit
+    /// record that the argv never carried.
+    fn approval_mode(
+        adapter: &GeminiAdapter,
+        spec: &LaunchSpec,
+    ) -> Result<&'static str, HarnessError> {
+        let native = adapter.native_tools(spec)?;
+        Ok(if native.iter().any(|t| gemini::is_edit_tool(t)) {
+            gemini::AUTO_EDIT_APPROVAL_MODE
+        } else {
+            gemini::DEFAULT_APPROVAL_MODE
+        })
     }
 }
 
@@ -790,11 +869,11 @@ impl HarnessAdapter for GeminiAdapter {
         // §3.1's availability axis, in the only form this harness has one: a mode, not a list. The
         // marion → gemini mapping is `Self::tool_name`'s, and which *gemini* names need the mode is
         // `gemini::is_edit_tool`'s, so neither half is restated here.
-        let native = self.native_tools(spec)?;
+        let auto_edit = Self::approval_mode(self, spec)? == gemini::AUTO_EDIT_APPROVAL_MODE;
         Ok(gemini::compile_prompt(&gemini::PromptSpec {
             cwd: spec.cwd.clone(),
             model,
-            auto_edit: native.iter().any(|t| gemini::is_edit_tool(t)),
+            auto_edit,
             prompt: spec.prompt.clone(),
             cli_home: spec.config_dir.clone(),
             settings: Self::settings_path(spec),
@@ -885,6 +964,23 @@ impl HarnessAdapter for GeminiAdapter {
                 tool: tool.to_string(),
             }),
         }
+    }
+
+    /// **The approval mode, because on this harness the mode *is* the constraint.** 0.53.0 has no
+    /// `--tools` flag and no per-tool permission list; what decides whether a gemini child can
+    /// change a file is which of `default` / `auto_edit` / `yolo` it runs under, and under the
+    /// first the mutating tools are withheld from `functionDeclarations` entirely.
+    ///
+    /// `approval-mode:` prefixed, on the shape §3.1 gives codex (`sandbox:workspace-write`): the
+    /// axis and its value, so a reader can tell a *mode* from a *tool name* at a glance and never
+    /// mistake this for a per-tool allowlist gemini does not have.
+    ///
+    /// Recorded in **both** states, not only the relaxed one — see [`gemini::DEFAULT_APPROVAL_MODE`].
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        Ok(vec![format!(
+            "approval-mode:{}",
+            Self::approval_mode(self, spec)?
+        )])
     }
 
     fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
@@ -1066,6 +1162,16 @@ impl HarnessAdapter for OpenCodeAdapter {
                 tool: tool.to_string(),
             }),
         }
+    }
+
+    /// **The one harness where the honest record is that marion compiled nothing** — see
+    /// [`opencode::NO_COMPILED_TOOL_CONSTRAINT`], which carries the measurement and the argument
+    /// against both an empty list and an invented native spelling.
+    ///
+    /// `native_tools` still runs, so an unmappable name is refused here as it is in `compile`.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        self.native_tools(spec)?;
+        Ok(vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()])
     }
 
     fn marion_tool_calls(&self, stdout: &str) -> Vec<String> {
@@ -1552,6 +1658,130 @@ mod tests {
             ClaudeCodeAdapter.compile(&spec, &ctx()),
             Err(HarnessError::UnsupportedTool { tool, .. }) if tool == "bash"
         ));
+    }
+
+    /// **§6.7's audit record names the constraint that was compiled, per harness, in that
+    /// harness's own vocabulary — and it is a different *kind* of answer on each of the four.**
+    ///
+    /// That variety is the whole content of §3.1's *"the compiled, harness-native constraint — or
+    /// the harness's coarsest equivalent where it has no per-tool allowlist at all"*: claude has a
+    /// real allowlist, codex has one sandbox mode, gemini has one approval mode, and opencode has
+    /// nothing marion compiles. A single uniform answer across four harnesses is what the field
+    /// carried before (`["apply_patch", "shell"]`, hardcoded) and it was wrong on all four.
+    #[test]
+    fn the_contract_records_the_constraint_each_harness_actually_compiled() {
+        let want = |name: &str| -> Vec<String> {
+            match name {
+                // A real per-tool allowlist: the literal contents of `--allowedTools`.
+                "claude" => vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
+                // §3.1's own worked example for this harness.
+                "codex" => vec!["sandbox:workspace-write".into()],
+                // The mode is the constraint, and it is recorded when withheld as well as relaxed.
+                "gemini" => vec!["approval-mode:default".into()],
+                "opencode" => vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()],
+                _ => unreachable!(),
+            }
+        };
+        for (name, adapter, spec) in adapters_and_specs() {
+            assert_eq!(
+                adapter.compiled_permissions(&spec).unwrap(),
+                want(name),
+                "{name}"
+            );
+            assert!(
+                !adapter
+                    .compiled_permissions(&spec)
+                    .unwrap()
+                    .iter()
+                    .any(|t| t == "apply_patch" || t == "shell"),
+                "{name}: the pre-fix constant named marion-side tool names on every harness; §3.1 \
+                 forbids echoing marion's vocabulary here even on codex, where it looks plausible"
+            );
+        }
+    }
+
+    /// A declaration moves the record on exactly the harnesses whose constraint it moves.
+    ///
+    /// **The point is that it is not uniform.** On claude the granted tool joins a real allowlist;
+    /// on gemini the mode it forces is what the record names; on codex and opencode the constraint
+    /// did not move, so neither does the record — which is the honest answer, not an oversight,
+    /// because those two grant the write with or without a declaration.
+    #[test]
+    fn a_declaration_moves_the_record_exactly_where_it_moves_the_constraint() {
+        let want = |name: &str| -> Vec<String> {
+            match name {
+                "claude" => vec![
+                    "mcp__marion__spawn".into(),
+                    "mcp__marion__status".into(),
+                    "Write".into(),
+                ],
+                "codex" => vec!["sandbox:workspace-write".into()],
+                "gemini" => vec!["approval-mode:auto_edit".into()],
+                "opencode" => vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()],
+                _ => unreachable!(),
+            }
+        };
+        for (name, adapter, spec) in adapters_and_specs() {
+            assert_eq!(
+                adapter.compiled_permissions(&writing(spec)).unwrap(),
+                want(name),
+                "{name}"
+            );
+        }
+    }
+
+    /// **The record and the argv are one derivation, not two that agree today.**
+    ///
+    /// This is the invariant that keeps `allowed_tools` from drifting back into fiction: whatever
+    /// `compiled_permissions` reports for claude must be exactly the string `--allowedTools`
+    /// carries, and whatever it reports for gemini must be the mode argv actually asked for. Both
+    /// are checked against the *compiled invocation*, so a second derivation appearing in either
+    /// place fails here rather than in a contract someone reads a month later.
+    #[test]
+    fn the_recorded_constraint_is_the_one_the_argv_carries() {
+        for spec in [claude_spec(), writing(claude_spec())] {
+            let inv = ClaudeCodeAdapter.compile(&spec, &ctx()).unwrap();
+            let i = inv.args.iter().position(|a| a == "--allowedTools").unwrap();
+            assert_eq!(
+                inv.args[i + 1],
+                ClaudeCodeAdapter
+                    .compiled_permissions(&spec)
+                    .unwrap()
+                    .join(","),
+                "the record must be the flag, not a parallel derivation of it"
+            );
+        }
+        for spec in [gemini_spec(), writing(gemini_spec())] {
+            let inv = GeminiAdapter.compile(&spec, &ctx()).unwrap();
+            let compiled = match inv.args.iter().position(|a| a == "--approval-mode") {
+                // Absent from argv is not absent from the record: no flag *is* the default mode.
+                None => gemini::DEFAULT_APPROVAL_MODE.to_string(),
+                Some(i) => inv.args[i + 1].clone(),
+            };
+            assert_eq!(
+                GeminiAdapter.compiled_permissions(&spec).unwrap(),
+                vec![format!("approval-mode:{compiled}")]
+            );
+        }
+    }
+
+    /// An unmappable name is refused by `compiled_permissions` too, on every harness.
+    ///
+    /// Not redundant with the `compile` refusal: this method is fallible *only* for this reason,
+    /// and a caller that reached it without compiling — a future replay or a `doctor` — would
+    /// otherwise be handed a record derived from a declaration marion cannot honour.
+    #[test]
+    fn the_record_refuses_a_tool_the_harness_cannot_provide() {
+        for (name, adapter, spec) in adapters_and_specs() {
+            let spec = LaunchSpec {
+                tools: vec!["bash".into()],
+                ..spec
+            };
+            let Err(err) = adapter.compiled_permissions(&spec) else {
+                panic!("{name}: an unmappable tool must not yield a record");
+            };
+            assert!(err.to_string().contains("bash"), "{name}: {err}");
+        }
     }
 
     #[test]

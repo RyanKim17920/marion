@@ -987,6 +987,23 @@ pub fn run_spawn(
     // `None` for codex, whose `exec` surface carries no model argument, even when the request or
     // the agent type named one.
     contract.child.model = inv.model.clone();
+    // **The third field sourced from what ran rather than from what was asked for**, joining
+    // `harness` and `model` above (`32ec905`). §6.7's `allowed_tools` records *"the compiled,
+    // harness-native constraint — or the harness's coarsest equivalent where it has no per-tool
+    // allowlist at all"*, and only the adapter that just compiled `launch` knows which of those
+    // this node got, or what it says.
+    //
+    // Derived from the same `launch` the invocation was compiled from, so the record cannot
+    // describe a launch that did not happen. It varies per node now that an agent type can declare
+    // tools: before this axis every child was `[report]` and a constant lost nothing, which is
+    // exactly why the constant survived so long — the contract is the only durable record of what a
+    // given child was actually permitted, and §11 item 24 is what happens when that record and the
+    // run disagree.
+    //
+    // The `?` cannot fire in practice — `compile` above maps the same declaration and would have
+    // refused first — and it is propagated rather than swallowed because an audit record that
+    // silently guesses is worse than a spawn that stops.
+    contract.allowed_tools = adapter.compiled_permissions(&launch)?;
     // The node's terminal transition, carrying the status and the `ProcessExit` §6.7 derived — so
     // replay reconstructs the outcome **without reading the contract file**, which is the property
     // that lets replay stay a pure function over the journal's bytes. Read off the contract rather
@@ -1714,6 +1731,57 @@ mod tests {
             "",
             "a `claude` child is read-only as it always was"
         );
+    }
+
+    /// **§6.7's `allowed_tools` is the compiled constraint, never the requested one — and codex is
+    /// where those two are visibly different strings.**
+    ///
+    /// A `codex-impl` node asked for marion's `write`; what codex actually ran under is
+    /// `sandbox:workspace-write`, because `codex exec` has no allowlist to check a call against.
+    /// Recording the request would put marion's own vocabulary in a field §3.1 says must never
+    /// carry it: *"echoing marion's own vocabulary there would make the field claim a constraint
+    /// that never existed."*
+    ///
+    /// The four harnesses answer in four different shapes, which is the other half of the claim: a
+    /// uniform answer is what the hardcoded `["apply_patch", "shell"]` was, and it was wrong on all
+    /// four. Driven through `adapter_for` exactly as `run_spawn` drives it; the assignment into the
+    /// contract is one line beside `child.harness` and `child.model`, and is pinned end to end by
+    /// the harness cross-product.
+    #[test]
+    fn the_contract_records_the_compiled_constraint_and_never_the_requested_tool() {
+        // Every harness driven with the SAME request — marion's `write` — so what differs in the
+        // column below is only how each harness expresses the constraint. Declared explicitly
+        // rather than read off a built-in: `codex-impl` and `opencode` state no tools, so a
+        // built-in-only sweep could never put `write` in front of those two adapters and the
+        // "never the requested word" assertion would pass vacuously on the two harnesses where it
+        // is most likely to be violated.
+        let declared = vec![marion_core::agent_type::TOOL_WRITE.to_string()];
+        for (harness, want) in [
+            (Harness::ClaudeCode, vec!["mcp__marion__report", "Write"]),
+            // **The discriminating cell.** `write` in, `sandbox:workspace-write` out: the request
+            // and the compiled constraint are visibly different strings, so a record sourced from
+            // the request cannot pass here by coincidence the way it could where the two agree.
+            (Harness::Codex, vec!["sandbox:workspace-write"]),
+            (Harness::Gemini, vec!["approval-mode:auto_edit"]),
+            (Harness::OpenCode, vec!["harness-default:unconstrained"]),
+        ] {
+            let adapter = adapter_for(harness).unwrap();
+            let launch = LaunchSpec {
+                tools: declared.clone(),
+                allowed_tools: vec![adapter.marion_tool_name("report")],
+                prompt: String::new(),
+                model: Some("m/m".into()),
+                ..launch_spec(None)
+            };
+            let recorded = adapter.compiled_permissions(&launch).unwrap();
+            assert_eq!(recorded, want, "{harness}");
+            assert!(
+                !recorded.iter().any(|r| declared.contains(r)),
+                "{harness}: `write` is marion's word for the request, not any harness's word for \
+                 the constraint — recording it would be the request masquerading as the outcome. \
+                 Got: {recorded:?}"
+            );
+        }
     }
 
     fn request(agent_type: &str, model: Option<&str>) -> SpawnRequest {

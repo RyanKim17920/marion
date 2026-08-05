@@ -95,6 +95,15 @@ pub const LIVE_FALLBACK_AUTH_TYPE: &str = "oauth-personal";
 /// `tools:` is the default `[]` is launched in the default mode it always was.
 pub const AUTO_EDIT_APPROVAL_MODE: &str = "auto_edit";
 
+/// The mode 0.53.0 runs in when marion passes no `--approval-mode` — which is every node that
+/// declares no edit tool, i.e. every node marion has ever launched until now.
+///
+/// Named because §6.7's `allowed_tools` has to record *it* too. A node that ran under the default
+/// mode ran under a real constraint — the mutating tools were withheld from `functionDeclarations`
+/// outright — and a record that mentioned the mode only when it was relaxed would be silent in
+/// exactly the case a reader most wants confirmed.
+pub const DEFAULT_APPROVAL_MODE: &str = "default";
+
 /// Is this gemini-native tool name one [`AUTO_EDIT_APPROVAL_MODE`] is required for?
 ///
 /// The two names 0.53.0 was measured to add under that mode (§11 item 24). `run_shell_command` is
