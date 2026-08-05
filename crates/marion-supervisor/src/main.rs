@@ -560,6 +560,112 @@ mod main_tests {
         }
     }
 
+    /// **An absent `MARION_AUTH` is `Canned`, and the fallback is stated rather than inferred.**
+    ///
+    /// This is the one declaration key that falls back silently where its siblings refuse:
+    /// `caller_from` turns a missing `MARION_AGENT_TYPE` or `MARION_DEPTH` into an error, because
+    /// both plausible defaults there restore the unbounded recursion the gate exists to stop. Here
+    /// the cheap direction is the safe one — every declaration written before this key existed
+    /// meant canned — so the fallback is deliberate, and a silent default that nothing pins is a
+    /// default that can drift into the expensive direction without a test noticing.
+    ///
+    /// The endpoint is asserted alongside the mode because a canned node with no endpoint is not
+    /// canned in any usable sense: it is the third state `auth_from_env` exists to make impossible.
+    #[test]
+    fn an_absent_auth_key_is_canned_rather_than_a_guess_at_live() {
+        let (auth, base_url) = auth_from_env(None, None);
+        assert_eq!(
+            auth,
+            marion_harness::Auth::Canned,
+            "a declaration written before MARION_AUTH existed meant canned; inferring live from an \
+             absent key points a real credential somewhere marion did not choose"
+        );
+        assert_eq!(
+            base_url.as_deref(),
+            Some("http://127.0.0.1:8099/v1"),
+            "a canned node with no endpoint is neither canned nor live"
+        );
+    }
+
+    /// **An unrecognised `MARION_AUTH` is `Canned` too, not a guess in the expensive direction.**
+    ///
+    /// [`marion_harness::Auth::from_wire`] returns `None` for anything it does not know, and the
+    /// asymmetry is the whole point: guessing canned costs a run against an endpoint that is not
+    /// listening — loud, local, free — while guessing live spends the operator's credential on a
+    /// value marion could not even parse. A typo in a declaration must therefore fail cheap.
+    #[test]
+    fn an_unrecognised_auth_value_is_canned_rather_than_a_guess_at_live() {
+        let (auth, base_url) = auth_from_env(Some("Inherited".into()), None);
+        assert_eq!(
+            auth,
+            marion_harness::Auth::Canned,
+            "from_wire is exact: a near-miss spelling must fail toward the cheap error, not spend \
+             a real credential"
+        );
+        assert_eq!(base_url.as_deref(), Some("http://127.0.0.1:8099/v1"));
+    }
+
+    /// **A live root's child is live.** The reading half of the hop; the writing half is
+    /// `tests/auth_mode.rs`, which pins that all four adapters put `MARION_AUTH=inherited` into the
+    /// declaration this reads back. The two meet at the wire spelling and nothing launches.
+    ///
+    /// The endpoint is `None` and that is the point: live means marion overlays no endpoint on the
+    /// child, exactly as it overlays none on the root. A canned child of a live root would launch
+    /// against marion's canned server, which under real auth is not running.
+    #[test]
+    fn a_declaration_saying_inherited_makes_the_child_live_and_names_it_no_endpoint() {
+        let (auth, base_url) = auth_from_env(Some("inherited".into()), None);
+        assert_eq!(auth, marion_harness::Auth::Inherited);
+        assert_eq!(
+            base_url, None,
+            "a live child is overlaid no endpoint, exactly as `marion run` overlays none on a live \
+             root"
+        );
+    }
+
+    /// **The mode is a stated decision, never inferred from a URL.**
+    ///
+    /// An `Inherited` run can legitimately carry a base URL — a proxy or a gateway is a reasonable
+    /// thing to point a real credential at, and `resolve_base_url` accepts a non-loopback one. So a
+    /// carried endpoint must not demote the child to canned: that is the "endpoint-as-mode
+    /// conflation" the design names, and inferring the mode from the URL would send a child that
+    /// was declared live to marion's canned server instead.
+    #[test]
+    fn a_carried_base_url_does_not_demote_a_child_that_was_declared_live() {
+        let (auth, base_url) = auth_from_env(
+            Some("inherited".into()),
+            Some("https://gateway.corp.example/v1".into()),
+        );
+        assert_eq!(
+            auth,
+            marion_harness::Auth::Inherited,
+            "the declaration said inherited; an endpoint beside it is not a second opinion on the \
+             mode"
+        );
+        assert_eq!(
+            base_url, None,
+            "and the endpoint is ignored rather than obeyed — see tests/auth_mode.rs, which pins \
+             that every adapter drops it too"
+        );
+    }
+
+    /// **An empty `MARION_BASE_URL` is absent, not an endpoint.** The measured regression, not a
+    /// hypothetical: `unwrap_or_default()` wrote `MARION_BASE_URL: ""` into a live root's
+    /// declaration, this function's caller read it back as `Ok("")`, and the child was compiled
+    /// canned against an endpoint spelled as the empty string — neither live nor working, with
+    /// nothing anywhere reporting it. A canned child gets marion's own provider instead.
+    #[test]
+    fn an_empty_base_url_falls_back_to_the_canned_endpoint_rather_than_being_obeyed() {
+        let (auth, base_url) = auth_from_env(Some("canned".into()), Some("   ".into()));
+        assert_eq!(auth, marion_harness::Auth::Canned);
+        assert_eq!(
+            base_url.as_deref(),
+            Some("http://127.0.0.1:8099/v1"),
+            "a blank endpoint is a third state — neither live nor canned — and this is where it is \
+             made impossible"
+        );
+    }
+
     #[test]
     fn documented_state_precedence_is_resolved_beneath_the_project_hash() {
         let root = std::path::Path::new("/canonical/project");
