@@ -13,12 +13,15 @@
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
 
 use marion_core::agent_type::{DEFAULT_TIMEOUT_SECS, builtin, builtin_names};
+use marion_core::contract::ExitStatus;
 use marion_core::paths::state_dir;
 use marion_supervisor::duplex::StreamEvent;
 use marion_supervisor::root;
+use marion_supervisor::watch::{ChildEvent, JournalWatch};
 use serde_json::Value;
 
 /// How long the root may take to have marion's tool list before the run is refused. Generous —
@@ -707,6 +710,174 @@ fn render_event(event: StreamEvent<'_>, out: &mut dyn Write) -> io::Result<()> {
     }
 }
 
+/// One [`ChildEvent`], as the line a watcher sees.
+///
+/// **These are the minutes that used to be blank.** The root's own frames stop at
+/// `MARION spawn …`: the child is driven inside the bridge's process, whose stdout is an MCP stream
+/// and which must stay silent, so nothing about it could ever reach here directly. What reaches
+/// here instead is what marion already wrote down — the journal — read back by
+/// [`marion_supervisor::watch`].
+fn render_child(event: &ChildEvent, out: &mut dyn Write) -> io::Result<()> {
+    // A child with no intent record is a real case, not a defect: its intent may predate this
+    // watch's cursor. Naming it "a child" is honest; inventing an agent type would not be.
+    let name = |t: &Option<String>| t.clone().unwrap_or_else(|| "a child".into());
+    match event {
+        ChildEvent::Started {
+            agent_type,
+            harness,
+            depth,
+            pid,
+            ..
+        } => {
+            let mut facts = Vec::new();
+            if let Some(h) = harness {
+                facts.push(h.to_string());
+            }
+            if let Some(d) = depth {
+                facts.push(format!("depth {d}"));
+            }
+            if let Some(p) = pid {
+                facts.push(format!("pid {p}"));
+            }
+            say(
+                out,
+                "CHILD",
+                &format!("{} started ({})", name(agent_type), facts.join(", ")),
+            )
+        }
+        ChildEvent::Aborted {
+            agent_type, reason, ..
+        } => say(
+            out,
+            "FAILED",
+            &format!("{} never started: {reason}", name(agent_type)),
+        ),
+        ChildEvent::Exited {
+            agent_type,
+            status,
+            exit,
+            ..
+        } => {
+            let verdict = match status {
+                Some(s) => format!("{s:?}"),
+                None => "an unrecorded status".into(),
+            };
+            let ok = *status == Some(ExitStatus::Ok);
+            let detail = match exit {
+                Some(e) if !e.description.trim().is_empty() => {
+                    // The same rule the rest of this renderer follows, and it earns its keep here:
+                    // §6.7's description carries the child's own stderr, so a *successful* child
+                    // that merely warned would otherwise drag its warnings across the terminal. A
+                    // failure keeps every byte — that is the text that explains it.
+                    let d = e.description.trim();
+                    match ok {
+                        true => format!(" — {}", brief(d, LINE_CHARS)),
+                        false => format!(" — {d}"),
+                    }
+                }
+                _ => String::new(),
+            };
+            say(
+                out,
+                if ok { "CHILD" } else { "FAILED" },
+                &format!("{} exited {verdict}{detail}", name(agent_type)),
+            )
+        }
+        ChildEvent::Denied {
+            agent_type,
+            tool,
+            reason,
+            ..
+        } => say(
+            out,
+            "PERMIT",
+            &format!("{} was denied {tool}: {reason}", name(agent_type)),
+        ),
+        // The viewer stopping is news in its own right — the alternative is a view that quietly
+        // stops updating, which reads exactly like a run in which nothing further happened.
+        ChildEvent::Stopped { reason } => say(out, "view", reason),
+    }
+}
+
+/// **Two writers, one terminal.**
+///
+/// The root's frames are rendered on the thread driving the run; the journal's child events are
+/// rendered on the polling thread. Both write *multi-line* renders — an assistant turn is as many
+/// lines as it has prose — and two threads writing to one fd will interleave between those lines
+/// unless something stops them. The result is a `CHILD` line spliced into the middle of a
+/// paragraph, which reads as a bug in marion rather than a bug in a renderer, and which shows up
+/// only under load.
+///
+/// **The lock is the writer**, rather than a `Mutex<()>` next to one: a bare flag guarding an
+/// implicit resource is the shape that gets written around six months later, because nothing about
+/// `io::stderr()` says it was supposed to be taken. Here there is no way to reach the writer
+/// without holding it, and it is held across a **whole render** rather than around each `write`
+/// call — the unit that must not be split is the event, not the byte.
+///
+/// A poisoned lock is taken anyway. A viewer must not be the thing that ends a run.
+struct Terminal<W: Write> {
+    out: std::sync::Mutex<W>,
+}
+
+impl<W: Write> Terminal<W> {
+    fn new(out: W) -> Self {
+        Self {
+            out: std::sync::Mutex::new(out),
+        }
+    }
+
+    /// Render one event, whole, with nobody else able to write in the middle of it.
+    ///
+    /// Not held one moment longer: `io::Stderr` flushes per line, so a line reaches the terminal as
+    /// its event is read, which is the entire point of streaming it.
+    fn show(&self, render: &dyn Fn(&mut dyn Write)) {
+        let mut out = self.out.lock().unwrap_or_else(|e| e.into_inner());
+        render(&mut *out);
+    }
+}
+
+/// Follow the journal until the run is over, **and once more after that.**
+///
+/// The order of the loop is the whole content of this function: **the return is decided after a
+/// poll, never before one.** A child that exits in the last moments before the root finishes — the
+/// bridge writes `Exited` and `ContractPersisted` just before returning the `spawn` result, and the
+/// root may finish inside one poll interval of that — is therefore still announced. A loop that
+/// returned on the flag *before* polling would drop exactly those records, and the view would end
+/// on a lie: the last thing a person saw would be a child that started and never finished.
+///
+/// Whether the flag is read before or after the poll within an iteration does not matter, and the
+/// mutation check confirmed it: both orders still poll before returning. Only hoisting the return
+/// above the poll breaks it, which is the version the test kills.
+///
+/// `stopped` and `nap` are parameters so the loop can be tested without a clock or a run.
+fn follow_journal(
+    watch: &mut JournalWatch,
+    stopped: &dyn Fn() -> bool,
+    nap: &dyn Fn(),
+    emit: &mut dyn FnMut(&ChildEvent),
+) {
+    loop {
+        let last = stopped();
+        for event in watch.poll() {
+            emit(&event);
+        }
+        if last {
+            return;
+        }
+        nap();
+    }
+}
+
+/// How often the journal is polled while a run is in flight.
+///
+/// **100 ms, chosen against the writer's own cadence.** Everything but §4.3's barrier records rides
+/// a ~50 ms group-commit timer (`journal::Journal::tick`), so a record becomes visible to any
+/// reader at a ~50 ms granularity and polling faster than that buys latency that does not exist.
+/// Twice the commit interval keeps the worst-case lag around a tenth of a second — under what a
+/// person reads as delay — for ten `open`+`metadata` pairs a second on a local file, and a poll
+/// with no news reads zero bytes. This is a viewer: it is not worth a byte of the run's own budget.
+const JOURNAL_POLL: StdDuration = StdDuration::from_millis(100);
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.iter().any(|a| a == "--help" || a == "-h") {
@@ -838,15 +1009,46 @@ fn main() -> ExitCode {
     //
     // Errors are dropped rather than escalated: a closed stderr must not be what ends a run that is
     // otherwise working, and there is nowhere left to report it to anyway.
-    let watch = |event: StreamEvent<'_>| {
-        // Locked per event rather than held: `render_event` writes whole lines, and stderr is
-        // unbuffered, so a line reaches the terminal the moment its frame is read — which is the
-        // entire point of streaming it.
-        let mut err = io::stderr().lock();
-        let _ = render_event(event, &mut err);
+    // **Two writers, one terminal.** See [`Terminal`].
+    let terminal = std::sync::Arc::new(Terminal::new(io::stderr()));
+
+    // The journal's first production reader (§4.2, §10). Started **before** the run, from the
+    // journal's current end, so this run's own children are the only news it can report.
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let poller = {
+        let journal = node.project.journal();
+        let root_id = node.agent_id.clone();
+        let terminal = std::sync::Arc::clone(&terminal);
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut watch = JournalWatch::at_end(&journal, root_id);
+            follow_journal(
+                &mut watch,
+                &|| stop.load(Ordering::Relaxed),
+                &|| std::thread::sleep(JOURNAL_POLL),
+                &mut |event| {
+                    terminal.show(&|w| {
+                        let _ = render_child(event, w);
+                    })
+                },
+            );
+        })
     };
 
-    match root::launch_watched(&node, blocked_bound, MCP_READY_TIMEOUT, Some(&watch)) {
+    let watch = |event: StreamEvent<'_>| {
+        terminal.show(&|w| {
+            let _ = render_event(event, w);
+        });
+    };
+
+    let launched = root::launch_watched(&node, blocked_bound, MCP_READY_TIMEOUT, Some(&watch));
+    // One more poll after the run, then join. `Relaxed` is enough: the thread's own loop reads the
+    // flag before its final poll, so the ordering that matters is "poll after the flag was seen",
+    // which the loop enforces structurally rather than through this store.
+    stop.store(true, Ordering::Relaxed);
+    let _ = poller.join();
+
+    match launched {
         Ok(outcome) => {
             for frame in &outcome.transcript {
                 println!("{frame}");
@@ -1191,6 +1393,298 @@ mod tests {
                 {"type":"tool_result","tool_use_id":"t","content":"{\"unrelated\":\"json\"}"}]}}"#,
         );
         assert!(plain[0].starts_with("ok"), "{:?}", plain[0]);
+    }
+
+    // --- the child's life, read out of the journal ------------------------------------------------
+
+    fn child_lines(event: &ChildEvent) -> Vec<String> {
+        let mut buf: Vec<u8> = Vec::new();
+        render_child(event, &mut buf).expect("rendering a child event cannot fail");
+        String::from_utf8(buf)
+            .expect("the renderer writes UTF-8")
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .collect()
+    }
+
+    fn agent(n: &str) -> marion_core::contract::AgentId {
+        marion_core::contract::AgentId(n.into())
+    }
+
+    /// A child starting is the event that used to be invisible for the whole of its life. It names
+    /// the child's own agent type, which is the only thing that tells one child from another.
+    #[test]
+    fn a_child_starting_names_what_it_is_and_a_nameless_one_is_not_given_an_invented_name() {
+        let lines = child_lines(&ChildEvent::Started {
+            agent_id: agent("a-1"),
+            agent_type: Some("codex-impl".into()),
+            harness: Some(marion_core::harness::Harness::Codex),
+            depth: Some(1),
+            pid: Some(4242),
+        });
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("CHILD"), "{:?}", lines[0]);
+        assert!(lines[0].contains("codex-impl started"), "{:?}", lines[0]);
+        assert!(lines[0].contains("depth 1"), "{:?}", lines[0]);
+        assert!(lines[0].contains("pid 4242"), "{:?}", lines[0]);
+
+        // A node whose intent record this watch never read is real — its intent can predate the
+        // cursor — and it is described, not named.
+        let anonymous = child_lines(&ChildEvent::Started {
+            agent_id: agent("a-2"),
+            agent_type: None,
+            harness: None,
+            depth: None,
+            pid: None,
+        });
+        assert!(anonymous[0].contains("a child started"), "{anonymous:?}");
+    }
+
+    /// The same truncate-success / keep-failure rule the rest of this renderer follows, and it
+    /// earns its keep here: §6.7's exit description carries the child's own stderr.
+    #[test]
+    fn a_successful_childs_exit_is_brief_and_a_failed_ones_is_kept_whole() {
+        let noisy = format!(
+            "child exited with code 0; stderr: {}",
+            "warning ".repeat(200)
+        );
+        let ok = child_lines(&ChildEvent::Exited {
+            agent_id: agent("a-1"),
+            agent_type: Some("codex-impl".into()),
+            status: Some(ExitStatus::Ok),
+            exit: Some(marion_core::contract::ProcessExit {
+                code: Some(0),
+                signal: None,
+                description: noisy.clone(),
+            }),
+        });
+        assert_eq!(ok.len(), 1, "{ok:?}");
+        assert!(ok[0].starts_with("CHILD"), "{:?}", ok[0]);
+        assert!(ok[0].contains("codex-impl exited Ok"), "{:?}", ok[0]);
+        assert!(
+            ok[0].chars().count() < 300,
+            "a successful child's warnings must not be dragged across the terminal: {} chars",
+            ok[0].chars().count()
+        );
+
+        let failed = child_lines(&ChildEvent::Exited {
+            agent_id: agent("a-1"),
+            agent_type: Some("codex-impl".into()),
+            status: Some(ExitStatus::TimedOut),
+            exit: Some(marion_core::contract::ProcessExit {
+                code: None,
+                signal: Some(9),
+                description: "the child's wall clock expired and its process group was killed"
+                    .into(),
+            }),
+        });
+        assert!(failed[0].starts_with("FAILED"), "{:?}", failed[0]);
+        assert!(failed[0].contains("exited TimedOut"), "{:?}", failed[0]);
+        assert!(
+            failed[0].contains("its process group was killed"),
+            "a failure keeps every byte that explains it: {:?}",
+            failed[0]
+        );
+    }
+
+    /// A child that never started, a denial one layer down, and the viewer itself giving up — none
+    /// of which is silent, and the last of which is the one that would otherwise look like a run
+    /// in which nothing more happened.
+    #[test]
+    fn an_abort_a_childs_denial_and_the_watch_stopping_all_produce_a_line() {
+        let aborted = child_lines(&ChildEvent::Aborted {
+            agent_id: agent("a-1"),
+            agent_type: Some("codex-impl".into()),
+            reason: "the bridge never became ready".into(),
+        });
+        assert!(aborted[0].starts_with("FAILED"), "{aborted:?}");
+        assert!(
+            aborted[0].contains("never started: the bridge never became ready"),
+            "{aborted:?}"
+        );
+
+        let denied = child_lines(&ChildEvent::Denied {
+            agent_id: agent("a-1"),
+            agent_type: Some("codex-impl".into()),
+            tool: "mcp__marion__spawn".into(),
+            reason: "the depth ceiling".into(),
+        });
+        assert!(denied[0].starts_with("PERMIT"), "{denied:?}");
+        assert!(denied[0].contains("mcp__marion__spawn"), "{denied:?}");
+
+        let stopped = child_lines(&ChildEvent::Stopped {
+            reason: "line 4 is not a journal record; the run is unaffected".into(),
+        });
+        assert!(stopped[0].starts_with("view"), "{stopped:?}");
+        assert!(stopped[0].contains("the run is unaffected"), "{stopped:?}");
+    }
+
+    /// **Two threads, one terminal, and not one torn render.**
+    ///
+    /// This is a correctness property, not a formatting one: the frame sink writes from the thread
+    /// driving the run and the journal watch writes from the polling thread, both of them
+    /// *multi-line* renders. Interleaved, a `CHILD` line lands in the middle of the root's prose
+    /// and the first thing anyone suspects is marion, not a renderer. It only ever shows up under
+    /// load, which is why it is asserted here rather than left to be noticed.
+    ///
+    /// The assertion is over **whole renders**: every three-line block must appear contiguously and
+    /// in order. Counting lines would pass against fully interleaved output.
+    #[test]
+    fn two_threads_writing_at_once_cannot_split_each_others_lines() {
+        let terminal = std::sync::Arc::new(Terminal::new(Vec::<u8>::new()));
+        let rounds = 300;
+        let threads: Vec<_> = ["root", "CHILD"]
+            .into_iter()
+            .map(|tag| {
+                let terminal = std::sync::Arc::clone(&terminal);
+                std::thread::spawn(move || {
+                    for i in 0..rounds {
+                        // Three lines per render, which is what makes splitting observable: a
+                        // single-line writer would be atomic by accident and prove nothing.
+                        terminal.show(&|w| {
+                            let _ = say(w, tag, &format!("{tag} {i} first\nsecond\nthird"));
+                        });
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("no writer panicked");
+        }
+        let out = match std::sync::Arc::try_unwrap(terminal) {
+            Ok(t) => t.out.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(_) => panic!("a writer outlived the join"),
+        };
+        let lines: Vec<String> = String::from_utf8(out)
+            .expect("the renderer writes UTF-8")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(lines.len(), rounds * 2 * 3, "every line was written");
+        let mut blocks = 0;
+        let mut i = 0;
+        while i < lines.len() {
+            let tag = lines[i].split_whitespace().next().unwrap_or_default();
+            assert!(
+                lines[i].contains("first"),
+                "a render began mid-block, so two writers were interleaved:\n{}\n{}\n{}",
+                lines[i],
+                lines.get(i + 1).cloned().unwrap_or_default(),
+                lines.get(i + 2).cloned().unwrap_or_default()
+            );
+            for (n, expected) in ["second", "third"].iter().enumerate() {
+                let line = lines
+                    .get(i + 1 + n)
+                    .unwrap_or_else(|| panic!("block starting at {i} is short"));
+                assert!(
+                    line.contains(expected) && line.starts_with("     "),
+                    "the {tag} writer's render was split by the other thread: line {} of the \
+                     block is {line:?}",
+                    n + 2
+                );
+            }
+            blocks += 1;
+            i += 3;
+        }
+        assert_eq!(blocks, rounds * 2);
+    }
+
+    /// **The view must not end on a lie.** A child that exits in the last moments before the root
+    /// finishes — the bridge writes `Exited` just before returning the `spawn` result, and the run
+    /// can end inside one poll interval of that — must still be announced. Reading the stop flag
+    /// after the poll instead of before it would drop exactly those records, and the last thing a
+    /// person saw would be a child that started and never finished.
+    ///
+    /// Deterministic rather than timed: the records land *during* the nap, from the test's own
+    /// `nap`, after the stop flag is already set.
+    #[test]
+    fn a_child_that_exits_in_the_last_moments_of_a_run_is_still_announced() {
+        use marion_core::contract::{AgentId, ProcessExit};
+        use marion_core::journal::{
+            Exited, JournalRecord, RecordKind, SpawnIntent, WriterId, encode,
+        };
+        use std::io::Write as _;
+
+        let dir = marion_testsupport::scratch("marion-final-poll");
+        let path = dir.join("journal.jsonl");
+        let root = AgentId("root".into());
+        let child = AgentId("child".into());
+        let line = |seq: u64, kind: RecordKind| {
+            let mut bytes = encode(&JournalRecord {
+                seq,
+                writer: WriterId("w".into()),
+                ts: marion_core::encoding::SystemTime::from_unix_millis(1_785_625_628_619),
+                mono_ns: seq,
+                provenance: marion_core::ir::Provenance::marion(),
+                src_seq: None,
+                kind,
+            })
+            .expect("a record encodes");
+            bytes.push(b'\n');
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap();
+            f.write_all(&bytes).unwrap();
+        };
+
+        let mut watch = JournalWatch::at_end(&path, root.clone());
+        let naps = std::cell::Cell::new(0);
+        let mut seen: Vec<ChildEvent> = Vec::new();
+        follow_journal(
+            &mut watch,
+            // Not stopped on the first pass; stopped on the second — so the third pass is the one
+            // that must still happen.
+            &|| naps.get() >= 2,
+            &|| {
+                let n = naps.get();
+                naps.set(n + 1);
+                match n {
+                    0 => line(
+                        1,
+                        RecordKind::SpawnIntent(SpawnIntent {
+                            agent_id: child.clone(),
+                            parent_id: Some(root.clone()),
+                            agent_type: "codex-impl".into(),
+                            harness: marion_core::harness::Harness::Codex,
+                            depth: 1,
+                            task_id: None,
+                        }),
+                    ),
+                    // Written after the run is over, in the window between the stop and the last
+                    // poll. This is the record the loop exists to still catch.
+                    _ => line(
+                        2,
+                        RecordKind::Exited(Exited {
+                            agent_id: child.clone(),
+                            status: ExitStatus::Ok,
+                            exit: ProcessExit {
+                                code: Some(0),
+                                signal: None,
+                                description: "child exited with code 0".into(),
+                            },
+                        }),
+                    ),
+                }
+            },
+            &mut |e| seen.push(e.clone()),
+        );
+        assert!(
+            matches!(seen.first(), Some(ChildEvent::Started { .. })),
+            "{seen:?}"
+        );
+        assert!(
+            matches!(
+                seen.last(),
+                Some(ChildEvent::Exited {
+                    status: Some(ExitStatus::Ok),
+                    ..
+                })
+            ),
+            "a child that exited after the run was over went unannounced, so the view ended on a \
+             child that started and never finished: {seen:?}"
+        );
     }
 
     /// A stdout line the node wrote that was not JSON is usually a crash or a warning. It is shown

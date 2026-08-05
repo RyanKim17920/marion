@@ -69,6 +69,12 @@ ready=$(sed -n 's/.*"MARION_READY_FILE"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 if [ -z "$ready" ]; then echo "stub: no MARION_READY_FILE in $cfg" >&2; exit 3; fi
 : > "$ready"
 
+# Corruption arriving *during* the run, which is the only way to reach it: the watch starts its
+# cursor at the journal's end, so anything already there is history it never reads.
+if [ -n "$MARION_TEST_JOURNAL_GARBAGE" ]; then
+  printf 'this complete line is not a journal record\n' >> "$MARION_TEST_JOURNAL_GARBAGE"
+fi
+
 read init
 rid=$(printf '%s' "$init" | sed -n 's/.*"request_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 printf '{{"type":"control_response","response":{{"subtype":"success","request_id":"%s","response":{{"commands":[]}}}}}}\n' "$rid"
@@ -302,4 +308,112 @@ fn a_root_is_rendered_to_stderr_while_it_runs_and_stdout_stays_a_frame_stream() 
             "a rendered line is long enough to be a JSON paste:\n{line}"
         );
     }
+}
+
+/// **A viewer may never end a run.** The journal marion is tailing gains a line that is not a
+/// record while the run is in flight — corruption, on an append-only file — and the outcome is:
+/// the view says it stopped following, and the run finishes exactly as it would have.
+///
+/// The corruption has to arrive *during* the run, and the stub writes it: `JournalWatch::at_end`
+/// starts its cursor at the journal's end, so anything already in the file is history it never
+/// reads. That is also why this cannot be arranged from the test process alone.
+#[test]
+fn a_journal_that_goes_bad_mid_run_costs_the_view_and_not_the_run() {
+    let dir = scratch("run-stream-bad-journal");
+    let repo = dir.join("repo");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let path = format!(
+        "{}:{}",
+        stub_claude(&dir).display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    // The same file `marion run` will journal this run to — derived the way marion derives it, not
+    // guessed, and canonical because the project hash is taken over the resolved repo.
+    let repo = repo.canonicalize().expect("the repo resolves");
+    let journal = marion_core::paths::ProjectDir::new(&state, &repo).journal();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args([
+            "run",
+            "claude",
+            "--prompt",
+            "Delegate the task to a child.",
+            "--repo",
+            &repo.to_string_lossy(),
+            "--state-dir",
+            &state.to_string_lossy(),
+            "--canned",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+            "--timeout",
+            "30",
+        ])
+        .envs([
+            ("PATH", path.as_str()),
+            // Read by the stub, which appends the bad line once the gate has opened.
+            (
+                "MARION_TEST_JOURNAL_GARBAGE",
+                journal.to_string_lossy().as_ref(),
+            ),
+        ])
+        .current_dir(&repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("marion run starts");
+
+    // Both pipes drained concurrently: either one filling while the other is waited on would be a
+    // deadlock, not a failure.
+    let (stderr, stdout) = {
+        use std::io::Read;
+        let mut e = child.stderr.take().expect("stderr is piped");
+        let mut o = child.stdout.take().expect("stdout is piped");
+        let h = std::thread::spawn(move || {
+            let mut stderr = String::new();
+            let _ = e.read_to_string(&mut stderr);
+            stderr
+        });
+        let mut stdout = String::new();
+        let _ = o.read_to_string(&mut stdout);
+        (h.join().unwrap_or_default(), stdout)
+    };
+    let status = reap_after(&mut child, RUN_BOUND)
+        .unwrap_or_else(|| panic!("marion run did not finish inside {RUN_BOUND:?}\n{stderr}"));
+
+    assert!(
+        status.success(),
+        "a journal the viewer could not follow ended the run. It is a viewer: it has no business \
+         ending anything.\nstderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    // The run's own output is untouched — the same frames, still the machine surface.
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        assert!(
+            line.starts_with('{'),
+            "a rendered line reached stdout:\n{line}"
+        );
+    }
+    assert!(
+        stdout.contains(r#""type":"result""#),
+        "the run still produced its whole transcript:\n{stdout}"
+    );
+    // And it said so, once, rather than going quietly dead — which reads exactly like a run in
+    // which nothing further happened.
+    assert!(
+        stderr.contains("not a journal record"),
+        "the view stopped following the journal without saying so:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("the run is unaffected"),
+        "a viewer's failure must not read like the run's:\n{stderr}"
+    );
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|l| l.contains("not a journal record"))
+            .count(),
+        1,
+        "said once, not once per poll:\n{stderr}"
+    );
 }

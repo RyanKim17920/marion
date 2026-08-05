@@ -22,3 +22,6 @@ pub mod journal;
 pub mod root;
 pub mod run;
 pub mod spawn;
+/// The journal's first production reader: what a person watching a run learns about its
+/// children while it is still running.
+pub mod watch;
