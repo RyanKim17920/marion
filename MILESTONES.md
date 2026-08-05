@@ -357,12 +357,17 @@ adapter must handle: opencode **never exits** on a provider hang (a 500 still re
 connection-refused still hung at 180 s), which makes §9's two-step group kill **load-bearing rather
 than defensive**; and **cross-harness contamination** — opencode reads `~/.claude/CLAUDE.md`,
 project `CLAUDE.md` files and `~/.claude/skills/**`, so a marion-spawned opencode child inherits a
-*different* harness's user configuration unless severed. **Why this is [partial]:** opencode has
-never been exercised as a marion child end to end, no opencode adapter exists, and several questions
-remain **unknown** — whether pacote's git-plugin path honours `ignoreScripts`, whether LSP children
-get an explicit kill, whether the `~/.claude/ide` lock scan is gated, whether `--port` on `run` is
-truly unconsumed. The three original server-path claims also remain unfixtured, because S13 did not
-re-measure them. **S7 answered NO** —
+*different* harness's user configuration unless severed. **Why this is [partial] — narrowed
+2026-08-04, and two of its three original grounds are now gone.** An opencode adapter exists
+(`crates/marion-harness/src/opencode.rs`) and opencode has since run as a marion child **and** as a
+marion root, end to end, in every cell of `cross_product` and `journal_wiring` that names it. That
+exercise also found a real defect the characterization had not predicted — an opencode child
+resolved its project directory from `$PWD` and so worked in the operator's own repository rather
+than its worktree (fixed in `8a69f22`; design §12). What keeps it **[partial]** is the remainder:
+several questions are still **unknown** — whether pacote's git-plugin path honours `ignoreScripts`,
+whether LSP children get an explicit kill, whether the `~/.claude/ide` lock scan is gated, whether
+`--port` on `run` is truly unconsumed — and the three original server-path claims remain unfixtured,
+because S13 did not re-measure them. **S7 answered NO** —
 `codex exec` does **not** keep its tool-call children in marion's process group; it `setsid`s each
 one, so a single `killpg` at timeout expiry leaks every runaway tool-call subprocess to pid 1.
 marion's timeout kill must sweep the child's descendants for their process groups *before*
@@ -389,6 +394,9 @@ how much code exists.
   is met and verified.** It does **not** mean marion is usable for real work — read the two
   sections below, in order, before quoting this line.
 - **M2 [open]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
+  **Still [open] as of 2026-08-04 and not upgraded**, though its substrate moved: the journal is now
+  written and provably replayable (all sixteen pairings, `fdf2e7a`). Nothing reads it at runtime, so
+  reattach restores nothing and no M2 criterion is met. Written is not read.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
@@ -400,8 +408,10 @@ Post-M5: ModelProxy translation. Acceptance criteria for each: design doc §9.
 **The delegation core works.** A real `claude` root calls `mcp__marion__spawn`; a real `codex`
 child starts in a worktree, edits a file, and returns through marion's `report` tool over MCP (S6's
 primary branch); the root receives the structured contract as a tool result; a deliberate
-out-of-scope write is caught detectively; the whole run is canned. `cargo test --test m1_hop`, ~2.2 s
-*(measured 2026-08-03; 138 tests across four crates)*. The contract criterion is asserted on the
+out-of-scope write is caught detectively; the whole run is canned. `cargo test --test m1_hop`,
+~4.7 s *(measured 2026-08-04; **488 tests** across four crates, up from 138 on 2026-08-03 — see
+"The evidence base" below for what that growth is and, more importantly, what it is not)*.
+The contract criterion is asserted on the
 **request** side as §9 requires — the recorded `tool_result` is not a `<persisted-output>` stub, it
 deserializes, and it equals the persisted `contracts/<task_id>.json` modulo the cap rules'
 shortening and the metadata recording it.
@@ -433,23 +443,94 @@ to this one.
 
 **Read this before treating M1 [done] as a statement about marion.** M1 was built disposably on
 purpose (design doc §9), so a working hop — and a met acceptance criterion — rests on very little.
-Nothing below exists yet, and none of it is covered by any M1 criterion:
+None of the below is covered by any M1 criterion. **Re-checked line by line against the tree on
+2026-08-04**; each entry now says whether it moved, and all but one did not. Where an entry says
+"unchanged", that is a verified claim rather than an unrevised one.
 
-- **The journal (design §4.3) — the significant one. Nothing survives a supervisor restart today.**
-  `Orphaned` marking and reap recovery both depend on it, so M2's replay criteria have no substrate
-  to stand on.
-- The registry.
+- **The journal (design §4.3) — REVISED 2026-08-04, and the revision is narrower than it looks.**
+  The journal is now **written**: `SpawnIntent`, `Spawned`, `Exited` and `ContractPersisted`, plus
+  `SpawnAborted` and `PermissionDenied` conditionally, from both processes that create nodes, and
+  `journal_wiring.rs` proves a real run's records replay to the tree that run left on disk for
+  **all sixteen** root/child harness pairings. What has **not** changed is the sentence that
+  matters: **nothing reads it at runtime.** `read_path` has no production caller outside the
+  journal module's own tests, so a supervisor restart still recovers nothing, and `Orphaned`
+  marking and reap recovery still have no substrate. A journal that is written and never read is
+  an audit trail, not yet a recovery mechanism — M2's replay criteria are **unmet**, and this
+  bullet stays on this list for that reason.
+- **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
+  exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.
-- `verification` command execution, so a contract's `evidence` is always empty.
-- The `Stop` hook path.
-- `marion doctor --adapter`, `marion-term`, `marion-tui`, `marion-proto`.
+  Unchanged, and now visible in the artifact: `spawn.rs` writes `live_descendants_at_report:
+  vec![]` on every contract, so the field a gate would read is a hardcoded empty list.
+- **`verification` command execution, so a contract's `evidence` is always empty.** Unchanged, and
+  as of `77557e3` a `spawn` carrying `verification` is now **refused by name** rather than accepted
+  and dropped — the commands still never run, but a caller can no longer be told they did.
+  Design §11 item 23.
+- The `Stop` hook path. Unchanged — no production code references it.
+- `marion doctor --adapter`, `marion-term`, `marion-tui`, `marion-proto`. Unchanged; `doctor` is
+  still the stub that prints "no adapters registered yet".
 - `status` / `wait` / `list` appear in `--allowedTools` but are **not implemented** — the bridge
   declares only `spawn` and `report`. An allowlist entry for an undeclared tool is inert.
+  Unchanged, and deliberate: design §9 records the resulting `ntools=2` so a reader does not
+  misdiagnose it as a tool-compilation failure.
+- **`isolation` and `background`, added to this list 2026-08-04.** Neither was ever implemented —
+  `run_spawn` creates a worktree unconditionally and `spawn` blocks — and both were previously
+  *accepted and ignored*. Both are now refused by name (`77557e3`); `name` and
+  `allow_concurrent_writes` remain accepted-and-dropped, deliberately, for the reasons design §11
+  item 23 gives.
 
 What does exist: `marion run <agent-type> --prompt …` launches the root; contracts persist uncapped
 to `<agent-dir>/contracts/<task_id>.json` with the capped copy returned; timeouts are enforced with
 a descendant-pgid sweep; scope is checked both preventively (at spawn) and detectively (git-derived).
 Mechanism for all of it: design doc §5–§7.
+
+### The evidence base — what 2026-08-04 changed, and what it did not
+
+**No milestone status changed on this date, and that is the finding.** M1 was already **[done]** and
+M2 remains **[open]**: the journal is still not read at runtime, the registry does not exist,
+descendant gating is still not in code, and `verification` still never executes. Not one of §9's M2
+acceptance criteria moved. What changed is the **evidence base** — how much of what this file claims
+is now measured rather than asserted, and how much of it is measured *per harness* rather than once.
+
+**Generality, proven rather than assumed.** Several claims held for one harness pairing and were
+extrapolated to sixteen. That extrapolation is now retired in three places: the **depth gate** is
+proven for all four harnesses (`06706a0`), **journal emission and cross-process writer identity**
+for all sixteen root/child pairings (`fdf2e7a`), and every **LaunchOnly root** is driven with
+per-harness evidence (`71c08e8`). The measurement worth carrying forward is an asymmetry that
+extrapolation would have hidden: **claude-code never reaches the depth gate at all** — its
+`allowed_tools` denies `spawn` first, so the refusal that protects the other three is unreachable
+on the one harness that reads that list.
+
+**One real defect, found by making the tests general.** An **opencode child worked in the operator's
+own repository rather than its worktree** (`8a69f22`): it resolves its project directory from `$PWD`,
+which marion had left inherited. §6.7 derives `changed_paths` by diffing the worktree the child never
+touched, so the contract read `{"status":"Ok","changed_paths":[],"scope_enforced":true}` — a clean
+bill of health for a run that wrote outside its worktree, outside the repo, and outside every scope
+list. This is the failure mode principle 11 and §6.7 exist to prevent, produced by marion itself, and
+it was invisible while only one pairing wrote anything.
+
+**Tests that could pass by failing to look.** Four classes, all closed: leak checks that reported no
+survivors when `ps` itself failed (`305c03d`, `4b147c4`, five files); a corrupt contract dropped by a
+`filter_map` so "exactly one contract persisted" passed with one good file beside one unreadable one
+(`0fff646`); scratch directories that leaked on every failing run, 425 of them and 22 MB, now
+removed by an RAII guard whose whole point is the failure path (`cb6ab2e`); and three `spawn`
+parameters **declared in the tool schema and silently dropped** — `background`, `isolation`,
+`verification` — now refused by name (`77557e3`, design §11 item 23). The last is the same
+silent-failure family §12 catalogues in other people's tools, found in marion's own.
+
+**Also pinned, so it cannot regress quietly:** worktree reap is unwired and leaves branch residue,
+and a task id is single-use for the life of the repo (`1ff90d9`); auth declaration and the
+`--base-url` no-op are asserted per adapter (`c3e73ca`); the contract provably reaches the **root**
+on all four wires (`5fcfe75`).
+
+**The count, and why it is not the point.** `cargo test` reports **488** tests across four crates,
+up from 138 on 2026-08-03. Read that as evidence-per-claim, not as progress: almost none of it is
+new capability, and the largest single contributor is the same assertion applied to sixteen pairings
+instead of one. **Two caveats on the number.** `tests/journal.rs` re-execs its own binary for the
+two-process test, so a naive count of `test result:` lines over-reports it — it is 6 tests, not 8.
+488 is a full green `cargo test --workspace` with every target compiling, taken after the last
+change of the day landed; an earlier figure of 466 in this file's drafting excluded `auth_mode` and
+`worktree_reap`, which were mid-edit at that moment.
 
 ---
 
