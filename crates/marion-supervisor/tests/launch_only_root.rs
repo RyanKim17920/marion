@@ -63,6 +63,55 @@ use marion_supervisor::run::run_bounded;
 /// Generous. The bound exists so a hung `marion` fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(60);
 
+/// The `--timeout` every property-3 root is given, as a number the assertions can reason about
+/// rather than a literal repeated between the argv and the checks on what it produced.
+///
+/// **Six seconds and not two, and the extra four are load-bearing.** The stub records its
+/// backgrounded grandchild's pid on its first line, and that pid file is the *only* witness those
+/// tests have for the leak they exist to detect. marion's bound is a wall clock that starts when it
+/// spawns the harness, so everything between that spawn and the stub's first line — `exec`, the
+/// shell starting, the script being read — has to fit inside it. Normally microseconds; on a
+/// machine running several cargo builds, seconds.
+///
+/// Reproduced here rather than inferred: delaying the stub's first line past a 2 s bound fails
+/// `a_codex_root_that_never_exits…` with `the stub recorded its grandchild: []`, in a run of
+/// entirely normal duration — which is the signature of the one unexplained failure this file saw
+/// under load. At 2 s that race was live on a busy machine; the bound is the only lever over it,
+/// because nothing can make the test observe a pid the stub never wrote.
+///
+/// It is not a fail-fast bound: `RUN_BOUND` is what keeps a wedged run from wedging the suite, and
+/// it is 10x this. The three tests that use this run in parallel, so the cost is ~4 s on the target
+/// once, not three times.
+const HANG_BOUND: Duration = Duration::from_secs(6);
+
+/// A **starvation sanity ceiling on `HANG_BOUND`, and deliberately not the property.**
+///
+/// What property 3 is about — the bound fired, and the group died with it — is asserted from
+/// marion's own words and from `kill -0`, neither of which a busy machine can perturb. This is the
+/// one assertion here that reads a wall clock, and a wall clock includes every second the process
+/// spent descheduled. Measured once in this tree, a full-suite run under several concurrent cargo
+/// builds took **45 s for a target that takes 2.3 s alone**, and tripped this check at its previous
+/// value of 30 s while every load-immune assertion beside it passed.
+///
+/// **The property underneath that is marion's, not this test's.** `run_bounded_with` deadlines on
+/// `Instant`, so time a node spends descheduled or blocked counts against its budget exactly like
+/// time it spends working: marion cannot tell a wedged node from a starved one, and a test
+/// measuring the same clock from outside inherits that blindness. The evidence to tell them apart
+/// already exists and the loop does not read it — the `Drain` threads on the node's stdout and
+/// stderr know whether it is still producing output. Changing that would change what
+/// `TaskContract.timeout_secs` *means* (a budget of wall time, or of observed progress), so it
+/// needs its own justification and is not this file's to make. It is recorded here because it is
+/// why a ceiling on this clock can never be both tight and reliable, and why the assertions that
+/// carry the property deliberately read something else.
+///
+/// It is kept, rather than dropped, because it is the only end-to-end witness that the duration
+/// marion *enforced* is the duration it was *asked* for: `bin/marion.rs` prints the value it
+/// parsed, so a `launch_only` that passed some other duration to `run_bounded` would still say
+/// "wall-clock bound" on stderr and still kill the group. Nothing else in the suite covers that
+/// hop. It is raised rather than tightened because a check that fires on a busy machine costs more
+/// than the narrow class it catches.
+const STARVATION_CEILING: Duration = Duration::from_secs(45);
+
 /// A scratch dir that removes itself.
 ///
 /// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
@@ -559,14 +608,20 @@ fn a_hanging_root_is_killed_with_its_group(node: &Node, name: &str) {
         ),
     );
 
-    let run = marion_run(&dir, node, &bin, "Hang forever.", "2");
-
-    assert!(
-        run.elapsed < Duration::from_secs(30),
-        "{}: the wall-clock bound did not fire: {:?}",
-        node.harness,
-        run.elapsed
+    let run = marion_run(
+        &dir,
+        node,
+        &bin,
+        "Hang forever.",
+        &HANG_BOUND.as_secs().to_string(),
     );
+
+    // ---- the property: the bound fired, in marion's own words. ----------------------------------
+    //
+    // Asserted first and read from the run's own report rather than from a clock. A bound that
+    // never fired at all does not reach here: the stub sleeps 600 s, so `marion_run`'s outer
+    // `RUN_BOUND` would have caught it, saying that the thing under test is the thing that was
+    // supposed to be bounded.
     assert_ne!(
         run.code,
         Some(0),
@@ -577,6 +632,42 @@ fn a_hanging_root_is_killed_with_its_group(node: &Node, name: &str) {
         run.stderr.contains("wall-clock bound"),
         "{}: the expiry must be reported as an expiry, not misdiagnosed as a missing bridge:\n{}",
         node.harness,
+        run.stderr
+    );
+
+    // ---- the bound was not cut short. ------------------------------------------------------------
+    //
+    // **The starvation-immune half**, and the reason it is worth stating separately: a busy machine
+    // can only make `elapsed` larger, never smaller, so this direction means the same thing on an
+    // idle box and a loaded one. It fails a root that returned before the bound it was given — a
+    // `--timeout` parsed wrong, or ignored in favour of some shorter constant.
+    assert!(
+        run.elapsed >= HANG_BOUND,
+        "{}: the root came back in {:?}, sooner than the {:?} it was given, so the duration marion \
+         enforced is not the one it was asked for.\nstderr:\n{}",
+        node.harness,
+        run.elapsed,
+        HANG_BOUND,
+        run.stderr
+    );
+    assert!(
+        run.elapsed < STARVATION_CEILING,
+        "{}: the bound FIRED — stderr above says so, and this assertion is downstream of that — \
+         but the run took {:?} against a requested {:?}, over this file's {:?} ceiling.\n\
+         Two things produce that, and they are told apart by what else failed:\n\
+         - if every other assertion in this test passed, the likely cause is the machine rather \
+         than marion. `run_bounded` deadlines on `Instant`, which counts time the process spent \
+         descheduled, so a loaded box inflates this number without anything being wrong. Measured \
+         in this tree: a full suite under concurrent cargo builds took 45 s for a target that \
+         takes 2.3 s alone. Re-run it alone before believing it.\n\
+         - if it reproduces on an idle machine, marion enforced a longer bound than it was asked \
+         for — `root::launch_only` passing something other than its `bound` to `run_bounded` is \
+         the shape, and this is the only test in the suite that would notice.\n\
+         stderr:\n{}",
+        node.harness,
+        run.elapsed,
+        HANG_BOUND,
+        STARVATION_CEILING,
         run.stderr
     );
 
@@ -610,11 +701,23 @@ fn a_hanging_root_is_killed_with_its_group(node: &Node, name: &str) {
     for p in &recorded {
         let _ = Command::new("kill").args(["-9", &p.to_string()]).output();
     }
+    // **The leak check's witness, asserted before the leak check reads it.** An empty set here is
+    // not a clean run and must never be read as one — it is a run whose only evidence never
+    // existed, so it fails rather than passing vacuously.
     assert_eq!(
         recorded.len(),
         1,
-        "{}: the stub recorded its grandchild: {recorded:?}",
-        node.harness
+        "{}: the stub was killed before it recorded its grandchild's pid, so the leak assertion \
+         below has no witness and this run proves nothing either way — it is NOT evidence that the \
+         group kill worked.\n\
+         The stub writes that pid on its first line, so an empty file means it never got there \
+         inside the {:?} it was given: on a loaded machine, `exec` plus shell start-up can exceed \
+         that, and marion's bound is a wall clock that does not know the difference (see \
+         `HANG_BOUND`). Re-run it alone; if it reproduces idle, the stub or the launch is broken \
+         rather than slow.\n\
+         recorded: {recorded:?}",
+        node.harness,
+        HANG_BOUND
     );
     assert!(
         survivors.is_empty(),
