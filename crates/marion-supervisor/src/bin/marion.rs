@@ -527,6 +527,28 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    // The shared self-removing scratch dir, rather than the tenth hand-rolled copy of one.
+    //
+    // **The local copy's stated reason was true when written and quietly stopped being true**, so
+    // it is corrected here rather than merely deleted. It read: *"`marion` ships no dev-dependency
+    // for this and one flag's default does not justify adding one."* `marion-testsupport` has
+    // since become a dev-dependency of this package, and a bin target gets dev-dependencies in its
+    // test build — so the helper this file hand-rolled was already reachable, and had been for a
+    // while. The next person to want a temp dir here should find out it is free rather than
+    // inherit a justification for writing an eleventh copy. Cargo.toml says the same thing from
+    // the other end: a dev-dependency was chosen precisely so that `#[cfg(test)]` code *inside*
+    // this crate could reach the guard, which is exactly this call site.
+    //
+    // **The `AtomicU32` went with it, deliberately.** It disambiguated a tag reused within one
+    // test; the two call sites left use distinct tags once each, and `scratch` already appends the
+    // pid and a thread tag. A counter kept "just in case" would be a second uniqueness scheme
+    // competing with the one in the shared helper.
+    //
+    // **Bind the guard for the whole test.** `scratch("x").join("y")` drops it at the end of that
+    // statement — see the `nogit` test below, which was written in exactly that shape back when it
+    // was harmless.
+    use marion_testsupport::scratch;
+
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
     }
@@ -772,32 +794,25 @@ mod tests {
         }
     }
 
-    /// A scratch directory nobody else is using, made without a temp-file dependency. `marion`
-    /// ships no dev-dependency for this and one flag's default does not justify adding one.
-    fn scratch(tag: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static N: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "marion-cli-{tag}-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        // Resolve the symlinked temp root once, so the ancestor walk compares like with like.
-        dir.canonicalize().unwrap_or(dir)
-    }
-
     /// `--repo`'s default. Running marion from `crates/marion-supervisor/src` must scope the node
     /// to the checkout, not to `src`, which is what the previous plain-cwd default did.
     #[test]
     fn the_repo_default_walks_up_to_the_enclosing_git_root() {
-        let root = scratch("gitroot");
+        let root = scratch("cli-gitroot");
         let deep = root.join("crates/x/src");
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::create_dir(root.join(".git")).unwrap();
-        assert_eq!(git_root(&deep), Some(root.clone()));
-        assert_eq!(default_repo(&deep), root, "from any depth, the same root");
-        assert_eq!(git_root(&root), Some(root.clone()), "the root finds itself");
+        assert_eq!(git_root(&deep), Some(root.to_path_buf()));
+        assert_eq!(
+            default_repo(&deep),
+            root.to_path_buf(),
+            "from any depth, the same root"
+        );
+        assert_eq!(
+            git_root(&root),
+            Some(root.to_path_buf()),
+            "the root finds itself"
+        );
 
         // The nearest `.git` wins, so a nested checkout is not swallowed by its container.
         let inner = root.join("crates/x");
@@ -807,16 +822,19 @@ mod tests {
             Some(inner),
             "a `.git` *file* is a linked worktree or a submodule, and is quite as much a root"
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn with_no_git_anywhere_above_the_repo_default_is_the_working_directory_itself() {
-        let dir = scratch("nogit").join("a/b");
+        // Two bindings, not `scratch("cli-nogit").join("a/b")`. That one-liner is what this test
+        // used to read, and it was safe only because the old local helper returned a bare
+        // `PathBuf`: against a guard it drops at the end of the statement and deletes the
+        // directory out from under the assertions below.
+        let root = scratch("cli-nogit");
+        let dir = root.join("a/b");
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(git_root(&dir), None);
         assert_eq!(default_repo(&dir), dir, "a fallback, never a failure");
-        std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap()).ok();
     }
 
     fn run_picker(input: &str) -> (Option<Chosen>, String) {
