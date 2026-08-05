@@ -21,7 +21,10 @@
 //! cargo test -p marion-supervisor --test m1_hop
 //! ```
 //!
-//! It needs real `claude` (2.1.220) and `codex` (0.146.0) on `PATH`. It is **not** `#[ignore]`d
+//! It needs real `claude` and `codex` on `PATH`, **at the versions
+//! [`marion_testsupport::PINNED_HARNESSES`] lists** — that table is the source, and the gate
+//! refuses a binary of the right name at an unrecognised version rather than attributing this
+//! criterion's result to a build that never ran. It is **not** `#[ignore]`d
 //! and it does **not** skip when they are missing: it fails, naming the binary. A criterion that
 //! quietly passes on a machine that cannot run it is worth less than no criterion, and this
 //! crate's existing process tests take the same line about `perl`.
@@ -34,7 +37,9 @@ use marion_core::contract::TaskContract;
 use marion_provider::script::ROOT_TOOL_USE_ID;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::run_bounded;
-use marion_testsupport::{fixture_repo, judge, on_path, persisted_contracts, scratch, survivors};
+use marion_testsupport::{
+    fixture_repo, judge, on_path, persisted_contracts, pinned_version, scratch, survivors,
+};
 use serde_json::Value;
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite, not to
@@ -164,11 +169,13 @@ fn assert_persisted_copy_records_no_shortening(c: &TaskContract) {
 fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_tool_result() {
     assert!(
         on_path("claude"),
-        "M1's first acceptance criterion is about a REAL claude root; put `claude` (2.1.220) on PATH"
+        "M1's first acceptance criterion is about a REAL claude root; put `claude` ({}) on PATH",
+        pinned_version("claude")
     );
     assert!(
         on_path("codex"),
-        "M1's second acceptance criterion is about a REAL codex child; put `codex` (0.146.0) on PATH"
+        "M1's second acceptance criterion is about a REAL codex child; put `codex` ({}) on PATH",
+        pinned_version("codex")
     );
 
     let root_dir = scratch("m1-hop");

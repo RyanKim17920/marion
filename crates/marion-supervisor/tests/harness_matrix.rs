@@ -26,8 +26,11 @@
 //! cargo test -p marion-supervisor --test harness_matrix
 //! ```
 //!
-//! It needs real `claude` (2.1.220), `codex` (0.146.0), `gemini` (0.53.0) and `opencode` (1.17.3)
-//! on `PATH`. Like `m1_hop` and `timeout_kill` it is **not** `#[ignore]`d and it does **not** skip
+//! It needs real `claude`, `codex`, `gemini` and `opencode` on `PATH`, **at the versions
+//! [`marion_testsupport::PINNED_HARNESSES`] lists** — that table is the source of truth, and the
+//! gate refuses a binary of the right name at an unrecognised version rather than reporting a
+//! matrix result attributed to a build that never ran.
+//! Like `m1_hop` and `timeout_kill` it is **not** `#[ignore]`d and it does **not** skip
 //! when a binary is missing: §9's standing rule is that *a criterion that quietly passes on a
 //! machine that cannot run it is worth less than no criterion*. One `#[test]` per harness, never a
 //! loop over four, so a failure names its own cell instead of hiding the three behind it.
@@ -40,7 +43,8 @@ use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
 use marion_testsupport::{
-    fixture_repo, judge, kill_hard, on_path, persisted_contracts, scratch, survivors,
+    fixture_repo, judge, kill_hard, on_path, persisted_contracts, pinned_version, scratch,
+    survivors,
 };
 use serde_json::{Value, json};
 
@@ -353,7 +357,8 @@ fn claude_code_script() -> Script {
 fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() {
     assert!(
         on_path("claude"),
-        "this cell drives a REAL claude child; put `claude` (2.1.220) on PATH"
+        "this cell drives a REAL claude child; put `claude` ({}) on PATH",
+        pinned_version("claude")
     );
     let cell = Cell {
         agent_type: "claude",
@@ -373,7 +378,8 @@ fn a_claude_code_child_reports_through_marions_bridge_over_the_anthropic_wire() 
 fn a_codex_child_edits_a_worktree_and_reports_through_marions_bridge() {
     assert!(
         on_path("codex"),
-        "this cell drives a REAL codex child; put `codex` (0.146.0) on PATH"
+        "this cell drives a REAL codex child; put `codex` ({}) on PATH",
+        pinned_version("codex")
     );
     let cell = Cell {
         agent_type: "codex-impl",
@@ -396,7 +402,8 @@ fn a_codex_child_edits_a_worktree_and_reports_through_marions_bridge() {
 fn a_gemini_child_reports_through_marions_bridge_over_the_gemini_wire() {
     assert!(
         on_path("gemini"),
-        "this cell drives a REAL gemini child; put `gemini` (0.53.0) on PATH"
+        "this cell drives a REAL gemini child; put `gemini` ({}) on PATH",
+        pinned_version("gemini")
     );
     let cell = Cell {
         agent_type: "gemini",
@@ -420,7 +427,8 @@ fn a_gemini_child_reports_through_marions_bridge_over_the_gemini_wire() {
 fn an_opencode_child_reports_through_marions_bridge_over_the_openai_wire() {
     assert!(
         on_path("opencode"),
-        "this cell drives a REAL opencode child; put `opencode` (1.17.3) on PATH"
+        "this cell drives a REAL opencode child; put `opencode` ({}) on PATH",
+        pinned_version("opencode")
     );
     let cell = Cell {
         agent_type: "opencode",

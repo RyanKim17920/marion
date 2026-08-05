@@ -22,19 +22,19 @@
 //! cargo test -p marion-supervisor --test timeout_kill
 //! ```
 //!
-//! It needs a real `codex` (0.146.0) on `PATH`, and it is not `#[ignore]`d: like `m1_hop`, a
+//! It needs a real `codex` on `PATH` at a version [`marion_testsupport::PINNED_HARNESSES`]
+//! accepts, and it is not `#[ignore]`d: like `m1_hop`, a
 //! criterion that quietly passes on a machine that cannot run it is worth less than no criterion.
 //! No model is called — everything is served by the in-process `CannedServer`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use marion_core::contract::{ExitStatus, TaskId};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, last_kill_sweep, run_spawn};
-use marion_testsupport::{alive, fixture_repo, kill_hard, scratch};
+use marion_testsupport::{alive, fixture_repo, kill_hard, on_path, pinned_version, scratch};
 
 /// The child's bound. Long enough for `codex exec` to boot, take turn one and get its tool call
 /// running (measured at ~4 s here); short enough that the test is not a wait. The tool call is
@@ -105,12 +105,12 @@ fn pids_in(path: &Path) -> Vec<i32> {
 #[test]
 fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
     assert!(
-        Command::new("codex")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false),
-        "M1's sixth acceptance criterion is about a REAL codex child; put `codex` (0.146.0) on PATH"
+        // `on_path`, not an inlined `--version` spawn: this file carried its own copy, which was
+        // the pre-consolidation shape and — once the shared helper started checking the version —
+        // would have been the one gate in the suite that still accepted any binary of that name.
+        on_path("codex"),
+        "M1's sixth acceptance criterion is about a REAL codex child; put `codex` ({}) on PATH",
+        pinned_version("codex")
     );
 
     let root_dir = scratch("s7-timeout");

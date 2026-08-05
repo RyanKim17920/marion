@@ -133,16 +133,205 @@ pub fn survivors(needle: &str) -> Vec<(i32, String)> {
         .collect()
 }
 
-/// Is `program` on `PATH` and runnable?
+// --- the harnesses this suite drives --------------------------------------------------------------
+
+/// One real CLI the matrix drives, and the versions its measured behaviours were taken from.
+pub struct PinnedHarness {
+    /// The name marion `exec`s, which is also the name the binary must have on `PATH`.
+    pub program: &'static str,
+    /// **The first entry is the pin** — the version README, MILESTONES and these tests' own doc
+    /// comments name, and the one a failure message quotes as expected. The rest are versions
+    /// since observed green, each with the observation beside it in [`PINNED_HARNESSES`].
+    pub accepted: &'static [&'static str],
+}
+
+/// **The one table.** Every version check reads from here; nothing else in the workspace decides
+/// what version is acceptable.
+///
+/// The auth wire spelling had exactly the other shape today (`as_wire` and `from_wire` each
+/// carrying their own `"inherited"` literal, nothing tying them), and it broke in the silent
+/// direction. Two tables that must agree and do not know about each other is the bug; this is one.
+///
+/// # Why a set rather than a single pin, and why entries are added and never edited
+///
+/// A version is added here **only after the suite has been observed green against it**, and the pin
+/// — entry zero — is never replaced, because the pin is what the prose claims. That keeps the two
+/// questions apart: *"which version were these behaviours measured on"* is answered by the pin and
+/// does not move; *"which versions has this been checked against since"* is answered by the tail and
+/// grows by deliberate edit. An upgrade that has not been re-checked is a red suite, which is the
+/// point — the four measured behaviours below are version-specific, so attributing them to a version
+/// that never ran is the failure this table exists to prevent.
+pub const PINNED_HARNESSES: &[PinnedHarness] = &[
+    PinnedHarness {
+        program: "claude",
+        // 2.1.220 is the pin: it is the version that sends turn one `"tools":[]` when the prompt
+        // rides argv, and whose `can_use_tool` frame `tests/fixtures/s9` was captured from.
+        //
+        // 2.1.222: observed green on darwin 25.5.0, 2026-08-04. Every test that drives a real
+        // `claude` passed against it on the run that added this check — `m1_hop`,
+        // `permission_round_trip` (6), `journal_wiring` (17), `cross_product` (17),
+        // `harness_matrix` (4), `depth_gate` (4), none `#[ignore]`d — so the turn-one `"tools":[]`
+        // shape and the `can_use_tool` frame were both re-asserted against 2.1.222 rather than
+        // assumed to have survived the bump. **That is the evidence an entry here needs**, and the
+        // reason it is entry one and not a replacement for the pin.
+        accepted: &["2.1.220", "2.1.222"],
+    },
+    PinnedHarness {
+        program: "codex",
+        // The version that accepts a bogus `-c` key with a clean exit, and that leaks the background
+        // `git fetch` MILESTONES records.
+        accepted: &["0.146.0"],
+    },
+    PinnedHarness {
+        program: "gemini",
+        // The version that omits MCP tools entirely without `trust: true`, silently.
+        accepted: &["0.53.0"],
+    },
+    PinnedHarness {
+        program: "opencode",
+        // The version that never exits on a provider hang.
+        accepted: &["1.17.3"],
+    },
+];
+
+/// The pinned version of `program` — entry zero of its [`PinnedHarness::accepted`].
+///
+/// For call sites that need to *say* the version rather than check it, so they say it from the same
+/// table the check reads.
+///
+/// Panics for a program this suite does not drive: there is no honest answer, and returning one
+/// would let a typo silently name a version nothing pins.
+pub fn pinned_version(program: &str) -> &'static str {
+    PINNED_HARNESSES
+        .iter()
+        .find(|p| p.program == program)
+        .unwrap_or_else(|| {
+            panic!("{program:?} is not one of the harnesses this suite pins; see PINNED_HARNESSES")
+        })
+        .accepted[0]
+}
+
+/// The first dotted-numeric token in `--version` output, e.g. `2.1.222` out of
+/// `2.1.222 (Claude Code)`.
+///
+/// **Each of the four formats it differently, so this was measured rather than assumed** (darwin
+/// 25.5.0, 2026-08-04; all four print one line to *stdout* and exit 0):
+///
+/// | program    | `--version` prints         |
+/// |------------|----------------------------|
+/// | `claude`   | `2.1.222 (Claude Code)`    |
+/// | `codex`    | `codex-cli 0.146.0`        |
+/// | `gemini`   | `0.53.0`                   |
+/// | `opencode` | `1.17.3`                   |
+///
+/// Two carry a name and two do not, and the name comes first where it is present — so the rule is
+/// "first token that is digits and dots", which skips `codex-cli` (no leading digit) and takes
+/// `2.1.222` ahead of `(Claude`. `None` is returned for output with no such token, and [`on_path`]
+/// turns that into a failure rather than into a match: a shape this cannot read is a binary this
+/// suite has not identified, which is the `launch_only_root.rs` stub case exactly.
+fn parse_version(output: &str) -> Option<&str> {
+    // One complete predicate rather than a `find` plus a `filter`: the two-stage form rejects the
+    // *whole output* when its first candidate is a truncated `1.`, instead of reading on.
+    output.split_whitespace().find(|tok| {
+        tok.starts_with(|c: char| c.is_ascii_digit())
+            && !tok.ends_with('.')
+            && tok.contains('.')
+            && tok.chars().all(|c| c.is_ascii_digit() || c == '.')
+    })
+}
+
+/// Is `program` on `PATH`, runnable, **and — for a harness this suite pins — the version these
+/// tests' conclusions were measured on?**
 ///
 /// Callers assert on this and name the binary rather than skipping: §9's standing rule is that a
 /// criterion which quietly passes on a machine that cannot run it is worth less than no criterion.
+///
+/// # Why the version is checked here and not in a second function
+///
+/// `<prog> --version` exiting 0 says only that *something named* `codex` exists. That is not a
+/// hypothetical gap in this repository: `launch_only_root.rs` deliberately puts a shell stub named
+/// `codex` on `PATH`, so a name collision is a shape that already occurs here — and the matrix's
+/// whole claim is that it drove the real binary. A separate `require_version(program)` would leave
+/// the weak `on_path` in place beside it, and this crate exists because the weak variant of a
+/// duplicated helper is the one that propagates. Folding the check into the function every call site
+/// already calls means it cannot be forgotten and no call site changes.
+///
+/// # Why a wrong version panics rather than returning `false`
+///
+/// *Absent* and *present but wrong* are different findings and only one of them the caller can
+/// phrase. A caller can write "put `codex` on PATH"; it cannot write "the `codex` on your PATH is
+/// 0.150.0 and these behaviours were measured on 0.146.0", because it does not know what is there.
+/// Returning `false` would file the second finding under the first message. So the diagnosis is
+/// raised where the evidence is, naming the program, the pinned version and what was actually found.
+///
+/// # Why hard failure rather than a warning
+///
+/// Mechanically, first: `cargo test` captures the stdout of a passing test, so a "loud warning" on a
+/// green run is *invisible*. There is no such thing as a warning here — the choice is between
+/// failing and passing quietly, and passing quietly means the matrix reports conclusions about
+/// 0.146.0 that were produced by whatever else was installed. A hard pin does cost a red suite the
+/// day a CLI is upgraded; that cost is the correct one and it is bounded to a one-line edit next to
+/// the reason, made after re-running. The alternative cost is unbounded and silent.
 pub fn on_path(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let Ok(out) = Command::new(program).arg("--version").output() else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let Some(pin) = PINNED_HARNESSES.iter().find(|p| p.program == program) else {
+        // Not a harness this suite pins — `git`, and anything else a caller probes for. Presence is
+        // the whole question for those.
+        return true;
+    };
+    // Only stdout is parsed, because that is where all four measurably print it; stderr is carried
+    // into the diagnosis so a harness that *moved* its version there fails with the evidence in
+    // hand, rather than being read out of a stream this has never checked.
+    match check_version(
+        pin,
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    ) {
+        Ok(()) => true,
+        Err(diagnosis) => panic!("{diagnosis}"),
+    }
+}
+
+/// The judgement [`on_path`] makes, as a pure function of what the binary printed.
+///
+/// Split out so the diagnosis can be *tested* — and tested without touching `PATH`. Putting a stub
+/// on `PATH` from a test would mean `set_var` in a process whose other tests are concurrently
+/// resolving `ps`, `git` and `sh`, which is a data race on the environment block: this crate cannot
+/// preach about leak checks that pass by failing to look and then introduce UB to test a message.
+/// The spawn half is covered by every real `on_path("claude")` in the suite; this is the half that
+/// decides, so this is the half with the assertions on it.
+fn check_version(pin: &PinnedHarness, stdout: &str, stderr: &str) -> Result<(), String> {
+    let program = pin.program;
+    let expected = pin.accepted[0];
+    match parse_version(stdout) {
+        Some(found) if pin.accepted.contains(&found) => Ok(()),
+        Some(found) => Err(format!(
+            "`{program} --version` reports {found}, but this suite's conclusions about {program} \
+             were measured on {expected}.\n\
+             Accepted: {accepted:?}.\n\
+             A matrix cell that runs {found} and reports a result attributed to {expected} is the \
+             silent pass this check exists to rule out. Re-run the cells that drive {program}, and \
+             if they hold, add {found:?} to that program's entry in \
+             `marion_testsupport::PINNED_HARNESSES` with the observation beside it.",
+            accepted = pin.accepted,
+        )),
+        None => Err(format!(
+            "`{program} --version` printed nothing this can read a version out of, so the binary \
+             on PATH is unidentified — and an unidentified binary is not a match. This suite \
+             expects {program} {expected}.\n\
+             stdout: {stdout:?}\n\
+             stderr: {stderr:?}\n\
+             (A shell stub named for a harness is a real shape in this repo — see \
+             `launch_only_root.rs` — which is why this is a failure and not a shrug.)",
+            stdout = stdout.trim(),
+            stderr = stderr.trim(),
+        )),
+    }
 }
 
 // --- scratch directories -------------------------------------------------------------------------
@@ -594,6 +783,168 @@ mod tests {
     fn on_path_answers_for_a_program_that_exists_and_one_that_cannot() {
         assert!(on_path("git"), "this suite cannot run without git");
         assert!(!on_path("marion-no-such-program-anywhere"));
+    }
+
+    /// The measured formats, as a test rather than as a comment. Two of the four carry a program
+    /// name and two do not, so a parser that assumed either shape would be wrong about half the
+    /// matrix — and `codex-cli 0.146.0` is the one that punishes "first token".
+    #[test]
+    fn the_version_parser_reads_all_four_measured_formats() {
+        for (raw, want) in [
+            ("2.1.222 (Claude Code)\n", "2.1.222"), // claude
+            ("codex-cli 0.146.0\n", "0.146.0"),     // codex
+            ("0.53.0\n", "0.53.0"),                 // gemini
+            ("1.17.3\n", "1.17.3"),                 // opencode
+        ] {
+            assert_eq!(
+                parse_version(raw),
+                Some(want),
+                "the measured `--version` output {raw:?} must read as {want}"
+            );
+        }
+    }
+
+    /// **Output this cannot read is not a match**, and that is the whole difference between this
+    /// gate and the exit-status one it replaces. Every line here is something a shell stub named
+    /// for a harness plausibly prints.
+    #[test]
+    fn output_with_no_version_in_it_is_not_read_as_one() {
+        for raw in [
+            "",
+            "\n",
+            "stub\n",
+            "usage: codex [options]\n",
+            "version unknown\n",
+            // A trailing dot is a truncated version, not a version.
+            "1.\n",
+        ] {
+            assert_eq!(
+                parse_version(raw),
+                None,
+                "{raw:?} carries no version, and reading one out of it would let a stub pass the \
+                 gate the real binary is supposed to pass"
+            );
+        }
+    }
+
+    /// The table is the single source, so the pin it hands out must be a real entry — a `program`
+    /// nothing pins is a typo that would otherwise name a version out of thin air.
+    #[test]
+    fn the_pin_comes_from_the_table_and_an_unpinned_program_has_no_pin() {
+        for h in PINNED_HARNESSES {
+            assert!(
+                !h.accepted.is_empty(),
+                "{}: entry zero is the pin, so the list cannot be empty",
+                h.program
+            );
+            assert_eq!(pinned_version(h.program), h.accepted[0]);
+            for v in h.accepted {
+                assert_eq!(
+                    parse_version(v),
+                    Some(*v),
+                    "{}: {v:?} is not a version this could ever match against a real \
+                     `--version`, so the entry could never be satisfied",
+                    h.program
+                );
+            }
+        }
+        assert!(
+            std::panic::catch_unwind(|| pinned_version("git")).is_err(),
+            "`git` is probed by on_path but not pinned; asking for its pin must not invent one"
+        );
+    }
+
+    fn pin(program: &str) -> &'static PinnedHarness {
+        PINNED_HARNESSES
+            .iter()
+            .find(|p| p.program == program)
+            .expect("pinned")
+    }
+
+    /// **The failure a wrong version produces, asserted rather than assumed** — because a check
+    /// whose message does not name both versions leaves the reader with a red suite and no idea
+    /// which upgrade caused it.
+    #[test]
+    fn a_program_reporting_an_unpinned_version_fails_naming_both_versions() {
+        let e = check_version(pin("gemini"), "0.99.0\n", "")
+            .expect_err("a gemini that is not the pinned one must not pass the gate");
+        assert!(e.contains("gemini"), "names the program: {e}");
+        assert!(e.contains("0.99.0"), "names what was actually found: {e}");
+        assert!(
+            e.contains(pinned_version("gemini")),
+            "names the expected version, from the table: {e}"
+        );
+    }
+
+    /// **The stub case the old exit-status gate could not tell from the real thing**: exits 0,
+    /// prints something, is not a harness. `launch_only_root.rs` puts a shell stub named `codex` on
+    /// `PATH`, so this is not a hypothetical collision.
+    #[test]
+    fn a_stub_that_exits_cleanly_without_a_version_fails_rather_than_passing() {
+        let e = check_version(pin("codex"), "codex stub\n", "").expect_err(
+            "`codex --version` exiting 0 is what the OLD gate accepted; a stub satisfies it",
+        );
+        assert!(e.contains("codex"), "{e}");
+        assert!(
+            e.contains("codex stub"),
+            "the diagnosis carries what was actually printed: {e}"
+        );
+        assert!(
+            e.contains(pinned_version("codex")),
+            "and the version that was expected: {e}"
+        );
+    }
+
+    /// **The near-miss, which is the case that actually occurred.** The pin says 2.1.220 and the
+    /// installed CLI is 2.1.222 — two versions differing in one digit, sharing the prefix `2.1.22`.
+    /// A gate that compared with `starts_with`, or that parsed only `major.minor`, would call these
+    /// equal and hand back a pass; the whole point is that `"tools":[]` on turn one is a property of
+    /// a *build*, not of a minor series. So this asserts both halves: 2.1.222 is a distinct token
+    /// from 2.1.220, and a table listing only 2.1.220 rejects it by name.
+    #[test]
+    fn a_patch_bump_is_not_a_match_for_the_version_it_differs_from_by_one_digit() {
+        assert_eq!(parse_version("2.1.222 (Claude Code)\n"), Some("2.1.222"));
+        assert_ne!(
+            parse_version("2.1.222 (Claude Code)\n"),
+            parse_version("2.1.220 (Claude Code)\n"),
+            "2.1.222 and 2.1.220 must not collapse to the same parsed version"
+        );
+        let only_the_pin = PinnedHarness {
+            program: "claude",
+            accepted: &["2.1.220"],
+        };
+        let e = check_version(&only_the_pin, "2.1.222 (Claude Code)\n", "")
+            .expect_err("a table that lists only 2.1.220 must not accept 2.1.222");
+        assert!(e.contains("2.1.222"), "names what is installed: {e}");
+        assert!(e.contains("2.1.220"), "names what was measured: {e}");
+    }
+
+    /// A version on the wrong *stream* is still not a match — and the diagnosis carries the stream
+    /// it was actually on, so the next reader can see what changed rather than guessing.
+    #[test]
+    fn a_version_printed_only_on_stderr_is_reported_with_the_evidence() {
+        let e = check_version(pin("claude"), "", "2.1.220 (Claude Code)\n")
+            .expect_err("stdout is where all four measurably print it");
+        assert!(
+            e.contains("2.1.220 (Claude Code)"),
+            "stderr is in the diagnosis: {e}"
+        );
+    }
+
+    /// Every accepted entry must actually be accepted. This is the check that would have caught an
+    /// entry added with a stray space or a `v` prefix — an unsatisfiable pin fails every run on a
+    /// correct machine, which looks exactly like a real regression.
+    #[test]
+    fn every_accepted_version_is_one_the_gate_accepts() {
+        for h in PINNED_HARNESSES {
+            for v in h.accepted {
+                assert!(
+                    check_version(h, &format!("{v}\n"), "").is_ok(),
+                    "{}: {v:?} is listed as accepted but the gate rejects it",
+                    h.program
+                );
+            }
+        }
     }
 
     #[test]

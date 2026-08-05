@@ -331,7 +331,7 @@ mod tests {
     use marion_core::harness::Harness;
     use marion_core::journal::{Exited, SpawnIntent, Spawned, StateChanged};
     use marion_core::node::NodeState;
-    use marion_testsupport::scratch;
+    use marion_testsupport::{pinned_version, scratch};
 
     fn intent(id: &str, parent: Option<&str>) -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
@@ -353,7 +353,10 @@ mod tests {
             j.append(intent("root", None)).unwrap();
             j.append(RecordKind::Spawned(Spawned {
                 agent_id: AgentId("root".into()),
-                harness_version: "2.1.220".into(),
+                // From the one table rather than a fourth copy of the literal: a bare "2.1.220"
+                // here reads as a claim about the pinned CLI, and a pin that lives in two places
+                // is the shape commit 6803b5b removed from the auth wire spelling.
+                harness_version: pinned_version("claude").into(),
                 model: None,
                 pid: Some(1),
             }))

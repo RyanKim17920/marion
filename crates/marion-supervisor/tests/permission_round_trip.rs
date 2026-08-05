@@ -37,7 +37,7 @@ use marion_supervisor::root::{
     self, RootSpec, can_use_tool_request, deny_response, initialize_request,
     is_control_response_to, user_message,
 };
-use marion_testsupport::{Scratch, on_path, scratch, survivors};
+use marion_testsupport::{Scratch, on_path, pinned_version, scratch, survivors};
 use serde_json::{Value, json};
 
 /// The verb the canned root reaches for. Real, served by marion's own bridge, and **not** in
@@ -571,7 +571,8 @@ fn assert_committed_recording_still_matches(fx: &Fixture, cap: &Capture, stdout_
 fn require_claude() {
     assert!(
         on_path("claude"),
-        "S9 is about a REAL claude control channel; put `claude` (2.1.220) on PATH"
+        "S9 is about a REAL claude control channel; put `claude` ({}) on PATH",
+        pinned_version("claude")
     );
 }
 
