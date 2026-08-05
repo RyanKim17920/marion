@@ -1018,11 +1018,20 @@ mod tests {
         }
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("marion-root-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(p.join("repo")).unwrap();
-        p
+    /// A scratch dir that removes itself, plus the `repo/` every root fixture here expects.
+    ///
+    /// The guard is `marion-testsupport`'s, not a tenth copy: this file's own `temp` returned a
+    /// bare `PathBuf` and cleaned up nowhere, so every run stranded a directory — 26 of them by the
+    /// time it was caught, from a single test added late. That is the shape cb6ab2e removed from
+    /// every other test module, and the reason the guard lives in a dev-dependency crate is
+    /// precisely so `#[cfg(test)]` code in the lib can reach it.
+    ///
+    /// Bind the result for the whole test. `temp("x").join("y")` drops the guard at the end of that
+    /// statement and deletes the directory out from under the test.
+    fn temp(name: &str) -> marion_testsupport::Scratch {
+        let dir = marion_testsupport::scratch(&format!("root-{name}"));
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        dir
     }
 
     /// **Every built-in prepares** — argv compiled, configuration on disk, prompt where its surface
