@@ -492,6 +492,39 @@ mod tests {
     use marion_core::harness::Harness;
     use marion_harness::adapter_for;
 
+    /// A scratch dir that removes itself.
+    ///
+    /// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds
+    /// straight past any trailing cleanup, so an explicit call leaks on exactly the runs that fail
+    /// — the ones a developer re-runs most. `Drop` catches those, plus every `?` and early return.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's
+            // own verdict.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    /// Bind the returned guard for the whole test — `temp("x").join("y")` drops the dir at the end
+    /// of that statement, deleting it out from under the test.
+    fn temp(name: &str) -> Scratch {
+        let p = std::env::temp_dir().join(format!("marion-duplex-{name}-{}", std::process::id()));
+        // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir
+        // behind, and pids recycle, so a later run can inherit that exact name.
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        Scratch(p)
+    }
+
     /// **The routing rule, asserted the way §3.4 requires it to be written.** Not one arm of this
     /// matches on a harness name: the expectation is derived from the adapter's own
     /// `ExecutionSurfaces`, so a fifth harness gets the right path by declaring its surfaces and
@@ -613,10 +646,7 @@ mod tests {
     #[test]
     fn an_unknown_inbound_control_request_is_answered_and_a_root_with_no_wall_clock_does_not_hang()
     {
-        let dir =
-            std::env::temp_dir().join(format!("marion-duplex-unknown-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp("unknown");
         let marker = dir.join("mcp-ready");
         std::fs::write(&marker, b"ready\n").unwrap();
         let answer = dir.join("answer.jsonl");
@@ -677,7 +707,6 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
         // `blocked_bound` above is 900 s: the generic arm must not spend a permission budget it is
         // not a permission, which the elapsed assertion already proves.
         assert!(out.denied_permissions.is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A pty-only surface has no launch path on either axis, and §5.2 forbids inventing one by
@@ -776,9 +805,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
     /// lands must not become a prompt that goes out anyway.
     #[test]
     fn a_node_whose_marker_never_lands_is_killed_and_the_run_refused() {
-        let dir = std::env::temp_dir().join(format!("marion-duplex-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp("gate");
         let marker = dir.join("mcp-ready");
         let seen = dir.join("stdin-seen");
         // A node that echoes anything it is given. It is never given anything, because the marker
@@ -803,16 +830,13 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                     .is_empty(),
             "the prompt was written even though the gate never opened"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The wall clock, and the group kill behind it. A child that hangs between frames must still
     /// be killed — which is why the bound is a watchdog and not a per-read deadline.
     #[test]
     fn a_child_that_hangs_between_frames_is_killed_on_its_wall_clock() {
-        let dir = std::env::temp_dir().join(format!("marion-duplex-hang-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp("hang");
         let marker = dir.join("mcp-ready");
         std::fs::write(&marker, b"ready\n").unwrap();
         // Answers the initialize round trip, then hangs forever without ever emitting `result`.
@@ -837,6 +861,5 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
         );
         assert!(out.timed_out, "marion's own attributed kill (§6.7)");
         assert_eq!(out.signal, Some(9));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

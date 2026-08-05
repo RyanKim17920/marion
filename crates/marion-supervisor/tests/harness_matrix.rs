@@ -57,11 +57,37 @@ unsafe extern "C" {
 }
 const SIGKILL: i32 = 9;
 
-fn scratch(name: &str) -> PathBuf {
+/// A scratch dir that removes itself.
+///
+/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
+/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
+/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
+        // verdict.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
+/// of that statement, deleting it out from under the test.
+fn scratch(name: &str) -> Scratch {
     let p = std::env::temp_dir().join(format!("marion-matrix-{name}-{}", std::process::id()));
+    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
+    // and pids recycle, so a later run can inherit that exact name.
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
-    p.canonicalize().expect("scratch dir canonicalises")
+    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -320,13 +346,14 @@ fn drive(cell: &Cell) -> Evidence {
     };
 
     // Cleanup first, and unconditionally: a failing cell must never become the leak it is testing
-    // for. `timeout_kill` takes the same line for the same reason.
+    // for. `timeout_kill` takes the same line for the same reason. The scratch dir is not swept
+    // here — `root_dir` is a `Scratch`, so it goes on the way out of this function whether the
+    // assertions below pass, fail, or panic.
     drop(server);
     let leaked = survivors(&root_dir.to_string_lossy());
     for (pid, _) in &leaked {
         let _ = unsafe { kill(*pid, SIGKILL) };
     }
-    let _ = std::fs::remove_dir_all(&root_dir);
 
     // Nothing is left running, so a contract marion wrote and this test cannot read back is now
     // safe to fail on — and it must. `filter_map(…ok())` dropped such a file quietly, which let
