@@ -635,8 +635,24 @@ fn a_non_allowlisted_verb_makes_the_cli_ask_over_the_control_channel_and_a_denia
     drop(fx.server);
 }
 
+/// **The allow branch of the same wire — and the second axis it runs into.**
+///
+/// An allow really does run the tool: the CLI hands the call to marion's MCP server, which is the
+/// fact this test exists to record. What the server then answers is §5.4's business, and for
+/// `report` on a **root** the answer is a refusal (`bridge::REPORT_ON_A_ROOT`) — the node has no
+/// contract, so there is nothing a report could be recorded against.
+///
+/// That refusal is still the proof the allow arrived: **only marion's own bridge can produce that
+/// sentence**, and it is not a string the CLI has any way to invent. Before the refusal existed the
+/// same proof was the words `report recorded`, which was a receipt for a payload nothing staged.
+///
+/// **The committed `can-use-tool-allow` recording predates the refusal and still carries the old
+/// answer.** Nothing asserts against that part of it — `assert_committed_recording_still_matches`
+/// compares the *ask*, which is claude's frame and is unchanged — but the recording is evidence of
+/// a bridge answer that no longer happens, and re-recording it (`MARION_S9_RECORD=1`) is a
+/// deliberate step someone should take with that in mind rather than a side effect of this change.
 #[test]
-fn an_allowed_permission_actually_runs_the_tool_and_the_answer_reaches_marions_own_bridge() {
+fn an_allowed_permission_reaches_marions_own_bridge_which_then_refuses_a_roots_report() {
     require_claude();
     let fx = prepare("allow", Target::MarionReport);
     let cap = drive(&fx, Answer::Allow);
@@ -644,14 +660,18 @@ fn an_allowed_permission_actually_runs_the_tool_and_the_answer_reaches_marions_o
 
     assert_eq!(cap.ask()["request"]["tool_name"], ASKED_TOOL);
     let tr = cap.tool_result();
-    assert_ne!(
+    assert_eq!(
         tr["is_error"], true,
-        "an allowed call must not surface as an error"
+        "§5.4 rejects `report` on a root, and a refusal is an error result: {tr}"
     );
     assert!(
-        tr.to_string().contains("report recorded"),
-        "the tool really ran: `report recorded` is what marion's own bridge returns, so the \
-         allow answer reached the MCP server and not merely the CLI: {tr}"
+        tr.to_string().contains("§5.4"),
+        "the tool really ran: this sentence is marion's own bridge's, so the allow answer reached \
+         the MCP server and not merely the CLI: {tr}"
+    );
+    assert!(
+        !tr.to_string().contains("report recorded"),
+        "and the false receipt the refusal replaced is gone: {tr}"
     );
     let result = cap.result();
     assert_eq!(result["terminal_reason"], "completed");

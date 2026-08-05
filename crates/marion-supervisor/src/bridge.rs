@@ -99,13 +99,12 @@ pub fn parse(line: &str) -> Option<Request> {
 ///    wider than the declared surface is "not a bug". A uniform declaration plus a per-call gate is
 ///    a shape the design states, not a gap in it.
 ///
-/// **`report` on a root is the one inconsistency left standing, knowingly.** §7.6 says a root has
-/// no contract and cannot `report`, yet `main::handle_tool_call` answers `report recorded` to a
-/// root today. Closing it means the bridge answering a root's `report` with an error — and that
-/// answer is *inside* `tests/fixtures/s9/can-use-tool-allow.stdout.jsonl`, a committed recording
-/// of a real 2.1.220 run that `permission_round_trip` replays and asserts still matches. Correcting
-/// the behaviour therefore requires re-recording that fixture, which this change does not touch.
-/// It is a real defect, and it is written down here rather than papered over.
+/// **`report` on a root is declared and refused**, which is grounds 1 applied to `report` rather
+/// than an exception to it. §7.6 and §5.4 both say a root has no contract and may not `report`; the
+/// verb stays in this list so the refusal can be a *sentence* ([`REPORT_ON_A_ROOT`], answered by
+/// `main::handle_tool_call`) instead of an absence the root would read as "marion has no `report`".
+/// Until that refusal existed the bridge answered `report recorded`, `isError: false`, to a root —
+/// a receipt for a payload nothing stages, since there is no contract to stage it into.
 pub fn tools() -> Value {
     json!([
         {

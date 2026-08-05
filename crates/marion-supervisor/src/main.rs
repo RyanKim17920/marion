@@ -35,10 +35,12 @@ fn handle_tool_call(
     args: &serde_json::Value,
 ) -> serde_json::Value {
     match name {
-        "report" => {
+        "report" => match report_refusal(std::env::var(DEPTH_ENV).ok()) {
+            // §5.4, at the execution point. See [`report_refusal`].
+            Some(msg) => bridge::tool_result(id, msg, true),
             // Staged, not delivered: the contract is written at the node's terminal transition.
-            bridge::tool_result(id, "report recorded", false)
-        }
+            None => bridge::tool_result(id, "report recorded", false),
+        },
         "spawn" => {
             // **First, and before the environment is even consulted**, because the answer does not
             // depend on it. Routed through `spawn_result` so a refusal reads like every other one
@@ -103,6 +105,37 @@ fn handle_tool_call(
         }
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
     }
+}
+
+/// **§5.4's `report` row, evaluated where all four harnesses pass through.**
+///
+/// §5.4: `report` is *"self only, and only on a node that has a contract — rejected on a root."*
+/// Three axes could carry that rule and only this one reaches every node:
+///
+/// * **Availability** — not declaring `report` to a root. `bridge::tools`' own docs reject that on
+///   three grounds, and the first is decisive: an absent verb carries no sentence, so the root
+///   cannot tell "marion has no `report`" from "I may not report", and nothing anywhere says why.
+/// * **Permission** — `root::ROOT_ALLOWED_TOOLS`, which already omits it. That axis is
+///   **Claude-Code-only**: it is the one adapter that compiles `allowed_tools` into anything
+///   (`claude_code.rs`), so a fix living there is a one-harness fix for a four-harness problem. On
+///   codex, gemini and opencode a root's `report` arrived here and was answered `report recorded`,
+///   `isError: false` — the payload discarded, the root told it had succeeded, and the run exiting
+///   `Ok` having delegated nothing.
+/// * **Execution** — here. This is exactly the precedent `run::check_spawn_gates` set for the
+///   child's mirrored hole: `spawn` is declared to every child and disallowed for it, and on the
+///   `LaunchOnly` harnesses it was simply *served* — real processes, real worktrees, no error
+///   anywhere — until the gate moved to the point where the verb is performed.
+///
+/// **An unreadable depth is not a refusal here, and that is the opposite call from [`caller_from`]
+/// deliberately.** There, both plausible defaults restore the unbounded recursion the gate exists to
+/// stop, and the thing being refused creates a process tree and a worktree. Here nothing is created
+/// either way — a `report` marion declines to stage has no side effect to prevent — and the refusal
+/// is a *claim about this node* ("you are the root and have no contract") that marion would have no
+/// grounds to make. All four adapters emit `MARION_DEPTH`, swept by `marion_harness::adapter`'s own
+/// test, so the only caller that can land here is a hand-started bridge.
+fn report_refusal(depth: Option<String>) -> Option<&'static str> {
+    let depth: u32 = depth?.trim().parse().ok()?;
+    bridge::authorization_refusal(depth, bridge::REPORT)
 }
 
 /// **A `spawn` parameter marion declares and does not implement, if this request carries one.**
@@ -507,6 +540,44 @@ mod main_tests {
                 "{label}: marion performs this, so refusing it would break a working spawn — got \
                  {:?}",
                 unimplemented_parameter(&args)
+            );
+        }
+    }
+
+    /// **§5.4's `report` row as a table, so every row is stated rather than implied.**
+    ///
+    /// The end-to-end witness is `tests/report_on_a_root.rs`, which drives this binary the way a
+    /// `LaunchOnly` node's MCP client does. This is the decision underneath it, including the two
+    /// rows that test cannot reach: a bridge that was told a depth it cannot read, and one that was
+    /// told nothing at all. Both serve rather than refuse — see [`report_refusal`] for why that is
+    /// the opposite call from `caller_from`'s, on purpose.
+    #[test]
+    fn only_a_node_that_is_known_to_be_the_root_has_its_report_refused() {
+        assert_eq!(
+            report_refusal(Some("0".into())),
+            Some(bridge::REPORT_ON_A_ROOT),
+            "§5.4 rejects `report` on a root, and depth 0 is what being the root means (§3.1)"
+        );
+        for (label, depth) in [
+            ("a child", Some("1".to_string())),
+            ("a grandchild", Some("2".to_string())),
+            // Whitespace survives an env round trip on some shells; the depth is the number.
+            ("a padded depth", Some(" 1 ".to_string())),
+            ("a depth that is not a number", Some("deep".to_string())),
+            ("a bridge that was told nothing", None),
+        ] {
+            assert_eq!(
+                report_refusal(depth.clone()),
+                None,
+                "{label}: `report` is a node-with-a-contract's return path, and refusing it here \
+                 would break the verb for every child in the tree"
+            );
+        }
+        // The refusal a caller receives has to be actionable, not a code.
+        for needle in ["§5.4", "contract", "root", "spawn"] {
+            assert!(
+                bridge::REPORT_ON_A_ROOT.contains(needle),
+                "the refusal must name the rule and the way out ({needle:?} missing)"
             );
         }
     }
