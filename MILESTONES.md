@@ -419,9 +419,13 @@ how much code exists.
   is met and verified.** It does **not** mean marion is usable for real work — read the two
   sections below, in order, before quoting this line.
 - **M2 [open]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
-  **Still [open] as of 2026-08-04 and not upgraded**, though its substrate moved: the journal is now
-  written and provably replayable (all sixteen pairings, `fdf2e7a`). Nothing reads it at runtime, so
-  reattach restores nothing and no M2 criterion is met. Written is not read.
+  **Still [open] as of 2026-08-05 and not upgraded**, though its substrate moved twice: the journal
+  is written and provably replayable (all sixteen pairings, `fdf2e7a`), and as of `8a16427` it is
+  also **read at runtime** — `crates/marion-supervisor/src/watch.rs`, polled from a thread in
+  `marion.rs:1018-1036`. "Written is not read" is retired: it is read, on one path, for one
+  purpose. That purpose is the **live watch view**, not reattach, and none of §9's four M2 criteria
+  is a view. What keeps M2 [open] is that **reattach restores nothing**: there is no socket, no
+  registry at runtime, no `events.jsonl`, and no client to attach — see "What is not built" below.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
@@ -472,16 +476,24 @@ None of the below is covered by any M1 criterion. **Re-checked line by line agai
 2026-08-04**; each entry now says whether it moved, and all but one did not. Where an entry says
 "unchanged", that is a verified claim rather than an unrevised one.
 
-- **The journal (design §4.3) — REVISED 2026-08-04, and the revision is narrower than it looks.**
-  The journal is now **written**: `SpawnIntent`, `Spawned`, `Exited` and `ContractPersisted`, plus
+- **The journal (design §4.3) — REVISED 2026-08-04, revised again 2026-08-05.**
+  The journal is **written**: `SpawnIntent`, `Spawned`, `Exited` and `ContractPersisted`, plus
   `SpawnAborted` and `PermissionDenied` conditionally, from both processes that create nodes, and
   `journal_wiring.rs` proves a real run's records replay to the tree that run left on disk for
-  **all sixteen** root/child harness pairings. What has **not** changed is the sentence that
-  matters: **nothing reads it at runtime.** `read_path` has no production caller outside the
-  journal module's own tests, so a supervisor restart still recovers nothing, and `Orphaned`
-  marking and reap recovery still have no substrate. A journal that is written and never read is
-  an audit trail, not yet a recovery mechanism — M2's replay criteria are **unmet**, and this
-  bullet stays on this list for that reason.
+  **all sixteen** root/child harness pairings. It is now also **read**, which retires the sentence
+  this bullet used to turn on. `8a16427` added `crates/marion-supervisor/src/watch.rs` — a byte
+  cursor over the append-only file handing new bytes to `marion_core::registry::replay`
+  (`watch.rs:144`) — run from a polling thread started before the root and joined after it
+  (`crates/marion-supervisor/src/bin/marion.rs:1018-1036`), with a guaranteed final poll because
+  `follow_journal` (`marion.rs:853-869`) reads the stop flag *before* its poll and returns after
+  it. **Precision, because the two are easy to conflate:** `registry::replay` has a second
+  production-code caller — `journal::read_path` → `journal::read`
+  (`crates/marion-supervisor/src/journal.rs:218-228`) — but nothing reachable from a binary calls
+  `read`, so `watch.rs` is the **only journal reader on a live run path**. What it buys is a
+  watcher seeing a child while it runs, and that is all it buys: a supervisor restart still
+  recovers nothing, `Orphaned` marking and reap recovery still have no substrate, and **M2's
+  replay criteria remain unmet**. This bullet stays on the list for that reason, with a different
+  reason than it had yesterday.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.
@@ -512,7 +524,8 @@ Mechanism for all of it: design doc §5–§7.
 ### The evidence base — what 2026-08-04 changed, and what it did not
 
 **No milestone status changed on this date, and that is the finding.** M1 was already **[done]** and
-M2 remains **[open]**: the journal is still not read at runtime, the registry does not exist,
+M2 remains **[open]**: at that date the journal was still not read at runtime (`8a16427` changed
+that on 2026-08-05 without moving M2 — see the bullet above), the registry does not exist,
 descendant gating is still not in code, and `verification` still never executes. Not one of §9's M2
 acceptance criteria moved. What changed is the **evidence base** — how much of what this file claims
 is now measured rather than asserted, and how much of it is measured *per harness* rather than once.
