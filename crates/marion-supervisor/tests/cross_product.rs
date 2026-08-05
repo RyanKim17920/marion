@@ -38,8 +38,8 @@
 //! 7. no verbatim credential reached the canned server;
 //! 8. nothing outlived the run (the S7 class of failure);
 //! 9. **the child's worktree was audited**: `scope_enforced` is true — the check *ran*, which §6.7
-//!    is careful to say is not the same as "no violation" — and, in the cells whose child can
-//!    write at all, `changed_paths` carries the file that child wrote;
+//!    is careful to say is not the same as "no violation" — and `changed_paths` carries the file
+//!    that child wrote, in every cell;
 //! 10. **the contract reached the ROOT**, as the tool result of its own `spawn` call, read back off
 //!     the root's *next request* on its own wire and compared to the persisted copy modulo §6.7's
 //!     cap rules. Everything above it is satisfied by a marion that persists a contract and hands
@@ -47,29 +47,42 @@
 //! 11. **both nodes reached a terminal `NodeState` in the journal** — one root, one child, each
 //!     `Exited(Ok)`, and nothing left `unresolved()`.
 //!
-//! # Eight cells write, and the other eight say why they cannot
+//! # All sixteen cells write
 //!
 //! Criterion 9 is the only one that requires marion to have opened a worktree; every other
 //! criterion is satisfiable from the two nodes' streams and marion's own bookkeeping — the request
-//! log, the persisted contract, the journal. It was also, until now, the one the
-//! matrix did not make: twelve cells had a child that called nothing but `report`, so
-//! `changed_paths` was empty **by construction** and a marion that never diffed anything passed
-//! them.
+//! log, the persisted contract, the journal. It was also, for two rounds, the one the matrix did
+//! not make. First twelve cells had a child that called nothing but `report`, so `changed_paths`
+//! was empty **by construction**. Closing that found a real defect: an opencode child resolved its
+//! project directory from `$PWD` and wrote into the operator's own repository while its contract
+//! read `changed_paths: [], scope_violations: [], scope_enforced: true` — a clean bill of health
+//! for a run that wrote outside every scope list.
 //!
-//! Two of the four harnesses now drive a real edit, each through its own wire's tool-call shape —
-//! codex's `tools.apply_patch` and opencode's declared `write`. The other two **declare no write
-//! tool to the model at all**, which is a property of how marion launches them and not a choice
-//! this file is free to make: a canned provider may only emit calls to tools the harness declared,
-//! and a call to anything else tests the fixture rather than marion. See
-//! `Node::child_writes_worktree` for the per-harness measurement, taken off these cells' own
-//! request logs, and §11 item 24 for why those two harnesses have no write route and what it would
-//! cost to give them one. Those cells pin the gap instead of ignoring it.
+//! Then eight cells wrote and eight could not, because a canned provider may only emit calls to
+//! tools the harness declared and marion declared claude and gemini children none: `--tools ""`
+//! plus an `allowed_tools` of exactly `[report]` (§11 item 24). Those cells asserted their worktree
+//! was **untouched** — which is precisely what an escaped write also produces, so the half of the
+//! matrix that could not write also could not tell the two apart.
 //!
-//! **The gap is a missing route, not an unmeasured containment.** A control experiment — reverted,
-//! unfixtured, recorded in item 24 — opened both harnesses' write routes and drove each child at
-//! the same relative [`CHILD_FILE`] the writing cells use. Both landed in their own worktree. So
-//! all four harnesses are now *measured* to resolve a relative write against the process cwd, and
-//! the `opencode` failure this file's criterion 9 was built around does not extend to them.
+//! §3.1's availability axis closed it. `claude-impl` and `gemini-impl` declare `tools: [write]`,
+//! which the adapters compile to `Write` and `write_file`, so every child now takes a real edit
+//! through its own wire's tool-call shape — codex's `tools.apply_patch`, opencode's `write`, and
+//! those two. All sixteen cells exercise placement, and criterion 9 is asserted unconditionally.
+//!
+//! **One thing these sixteen cells do NOT cover, measured rather than assumed.** The Anthropic
+//! wire's child script is ordered by `marion_provider::script::anthropic_called`, a name-based
+//! predicate, because `classify_root` ends a run on *any* `tool_result` and would send a child that
+//! writes before it reports straight past `report` — its own write's result being the trigger.
+//! Swapping the predicate back fails a unit test and **leaves every cell here green**: the grant is
+//! one word, so a claude child makes exactly one call before reporting and the two predicates agree
+//! on every transcript that occurs. When §3.1's vocabulary grows past `write`, the discriminating
+//! case becomes reachable in a real run and must be re-established here; until then the guard lives
+//! in `marion-provider`'s unit tests and not in this file.
+//!
+//! **The grant is the child's and never the root's.** It rides on [`Node::child_agent_type`], not
+//! on the harness: `claude` and `gemini` declare nothing, because `root::prepare` compiles a root
+//! with `cwd` set to the operator's own repository, and a write tool there points at the user's
+//! tree — the same directory the opencode defect wrote into.
 //!
 //! # The same-wire cells, and why they are not ambiguous
 //!
@@ -177,8 +190,22 @@ fn carries(v: &Value, needle: &str) -> bool {
 /// One harness, in both of the roles it can play.
 #[derive(Debug, Clone, Copy)]
 struct Node {
-    /// The built-in agent type. `codex-impl` is `codex`'s canonical name, so both roles use it.
+    /// The built-in agent type this harness is driven as when it is the **root**.
     agent_type: &'static str,
+    /// The built-in agent type `spawn` is asked for when this harness is the **child**.
+    ///
+    /// Two fields and not one, for the same reason [`Node::model`] and [`Node::child_model`] are
+    /// two: the roles genuinely differ. §3.1's availability axis is declared per *type*, and the
+    /// grant belongs only to the child's — `claude-impl` and `gemini-impl` declare `write` while
+    /// `claude` and `gemini` declare nothing, because a root is compiled with `cwd` set to the
+    /// operator's own repository (`root::prepare`) and a write tool there points at the user's
+    /// tree. `codex-impl` and `opencode` are the same string in both roles, which is what makes the
+    /// asymmetry visible rather than uniform: it is a property of two harnesses, not of the matrix.
+    ///
+    /// **This field decides only what is *asked for*.** That a root receives no availability axis
+    /// whatever type it resolves is an invariant of `root::prepare`, not of the name chosen here —
+    /// see [`assert_cell`]'s worktree criterion for what is asserted about the result.
+    child_agent_type: &'static str,
     harness: Harness,
     /// `--model` for a root, and `spawn`'s `model` for a child. **Every node asks for one**, which
     /// is what makes [`Node::child_model`] worth asserting: a matrix that asked for nothing and
@@ -200,59 +227,11 @@ struct Node {
     wire: &'static str,
     /// The binary that must be on `PATH`.
     program: &'static str,
-    /// **Does this harness's child have any route to edit its worktree at all?**
-    ///
-    /// Not a preference and not a script-authoring choice: it is whether the harness *declares a
-    /// write tool to the model*, read off the request bodies these very cells produce. A canned
-    /// provider may only emit calls to tools the harness declared — a call to anything else is a
-    /// turn no real model could have taken, and answering with one would test the fixture rather
-    /// than marion.
-    ///
-    /// Measured here against the request log of a child spawned through `spawn`, per harness
-    /// (`claude` 2.1.222, `gemini` 0.53.0):
-    ///
-    /// - **codex** — `tools.apply_patch` under code mode. Writes. This is M1's child.
-    /// - **opencode** — declares `write`, `edit` and `bash` alongside marion's MCP tools. Writes.
-    /// - **claude** — declares `mcp__marion__report` and `mcp__marion__spawn` and **nothing else**.
-    /// - **gemini** — declares `update_topic`, `list_directory`, `read_file`, `grep_search`,
-    ///   `glob`, `google_web_search`, `enter_plan_mode`, `invoke_agent` and marion's two.
-    ///   `write_file`, `replace` and `run_shell_command` appear only in the *prose* of its system
-    ///   instruction, never in `functionDeclarations`.
-    ///
-    /// # The two `false`s: a gap that is not this file's to close, and no longer an unknown
-    ///
-    /// **Why they are read-only is now measured, and so is what happens when they are not.** §11
-    /// item 24 carries the whole account; the part that decides this field:
-    ///
-    /// - The block is **two axes**, and finding only the first is the trap. *Availability* —
-    ///   `compile_headless` passes `--tools ""` to every node, hardcoded because
-    ///   `marion_core::agent_type::AgentType` has no `tools` field to populate it from, and
-    ///   gemini's default approval mode withholds the mutating tools. *Permission* —
-    ///   `run::run_spawn` compiles every child with `allowed_tools: [report]` (`run.rs:798`), which
-    ///   claude is the one harness of four to read.
-    /// - Opening only the first is **not** a write. A declared-but-unallowlisted `Write` routes to
-    ///   `--permission-prompt-tool stdio`, marion has no answerer, and the child's `tool_result`
-    ///   reads `marion: no permission answerer in M1; the node's Blocked bound expired` — §11 item
-    ///   22's dead end, reached by a file write rather than by a `spawn`.
-    /// - Opening **both** (`--tools "Write"` + `Write` in `allowed_tools`; on gemini,
-    ///   `--approval-mode auto_edit`, which is *not* `-y` and so is not the mode
-    ///   `security.disableYoloMode` can veto) makes both children write. **Driven at the relative
-    ///   [`CHILD_FILE`], both landed in their own worktree** — `changed_paths` carried it,
-    ///   `scope_violations: []`. Both resolve against the process cwd like codex's `apply_patch`,
-    ///   neither from the environment like opencode did. So **placement is proven on four of four**,
-    ///   and these two cells' `false` is a missing *route*, never an unmeasured *containment*.
-    ///
-    /// **That control experiment was reverted and is not fixtured**, because landing it would widen
-    /// what every claude and gemini node may do in production to make a test green. The close is
-    /// §3.1's availability axis — the `tools` field `AgentType` lacks — not a hardcoded tool name.
-    ///
-    /// Until then [`assert_cell`] pins the gap rather than passing over it: those cells assert that
-    /// the worktree is untouched, and say what to do when that stops being true.
-    child_writes_worktree: bool,
 }
 
 const CLAUDE: Node = Node {
     agent_type: "claude",
+    child_agent_type: "claude-impl",
     harness: Harness::ClaudeCode,
     // Claude Code's `--model` is legitimately omissible, and these cells pass one anyway: an
     // omitted flag makes `child.model == None` true for two unrelated reasons at once — the
@@ -263,11 +242,11 @@ const CLAUDE: Node = Node {
     child_model: Some("haiku"),
     wire: "anthropic",
     program: "claude",
-    child_writes_worktree: false,
 };
 
 const CODEX: Node = Node {
     agent_type: "codex-impl",
+    child_agent_type: "codex-impl",
     harness: Harness::Codex,
     // **Asked for on purpose, and the contract must refuse to record it.** `codex exec` does take
     // `-m` (0.146.0's `--help` lists it), so this is not a harness that cannot carry a model — it
@@ -278,29 +257,28 @@ const CODEX: Node = Node {
     child_model: None,
     wire: "responses",
     program: "codex",
-    child_writes_worktree: true,
 };
 
 const GEMINI: Node = Node {
     agent_type: "gemini",
+    child_agent_type: "gemini-impl",
     harness: Harness::Gemini,
     // Explicit: the adapter REFUSES to compile without `-m` (S12's `auto` router hang).
     model: "gemini-2.5-flash",
     child_model: Some("gemini-2.5-flash"),
     wire: "gemini",
     program: "gemini",
-    child_writes_worktree: false,
 };
 
 const OPENCODE: Node = Node {
     agent_type: "opencode",
+    child_agent_type: "opencode",
     harness: Harness::OpenCode,
     // `provider/model`, the only spelling `-m` accepts; the generated provider block repeats it.
     model: "marion/canned-1",
     child_model: Some("marion/canned-1"),
     wire: "openai",
     program: "opencode",
-    child_writes_worktree: true,
 };
 
 /// marion's `spawn`, in the spelling **this harness's wire** dispatches on.
@@ -345,7 +323,7 @@ fn script(root: &Node, child: &Node) -> Script {
     // `params/model must be string` — an `invalid_tool_params` tool_result, after which the root
     // happily finished its turn having spawned nothing.
     let spawn_args = json!({
-        "agent_type": child.agent_type,
+        "agent_type": child.child_agent_type,
         "prompt": CHILD_PROMPT,
         "acceptance_criteria": ["a file exists under src/ containing the marker"],
         "writable_scope": ["src/**"],
@@ -371,6 +349,15 @@ fn script(root: &Node, child: &Node) -> Script {
             s.root_tool = report;
             s.root_tool_input = json!({ "narrative": NARRATIVE });
             s.root_final_text = "Reported back through marion. Done.".into();
+            // The claude child writes before it reports, through the built-in `Write` that
+            // `claude-impl`'s `tools: [write]` makes the adapter declare. `{file_path, content}` is
+            // read off the live `input_schema`, and the path is **relative** deliberately: claude's
+            // own tool description demands an absolute one, and an absolute path would prove
+            // nothing about where marion placed the node.
+            s.anthropic_edit = Some(EditTurn {
+                tool: "Write".into(),
+                args: json!({ "file_path": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
+            });
         }
         // The Responses child keeps its three steps: patch, report, final message. The patch is
         // re-aimed at this file's own [`CHILD_FILE`] rather than left at the M1 default, so all
@@ -386,6 +373,14 @@ fn script(root: &Node, child: &Node) -> Script {
         Harness::Gemini => {
             s.gemini_report_tool = report;
             s.gemini_report_args = json!({ "narrative": NARRATIVE });
+            // The same step on the Gemini wire, through the `write_file` that `gemini-impl`'s grant
+            // declares — 0.53.0 withholds it under the default approval mode, so its presence here
+            // is the axis having compiled `--approval-mode auto_edit`. Same `{file_path, content}`,
+            // read off the live `parametersJsonSchema`.
+            s.gemini_edit = Some(EditTurn {
+                tool: "write_file".into(),
+                args: json!({ "file_path": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
+            });
         }
         // The opencode child writes before it reports, through the harness's own `write` — the tool
         // it declares to the model as `tools[].function.name == "write"`, taking `{filePath,
@@ -624,7 +619,7 @@ fn argv_that_names_a_loopback_endpoint_always_says_canned() {
 /// Stand up a canned provider, build a fixture repo, run the real `marion` binary on `root`, then
 /// clean up **unconditionally** and hand back what happened.
 fn drive(root: &Node, child: &Node) -> Evidence {
-    let name = format!("{}-{}", root.agent_type, child.agent_type);
+    let name = format!("{}-{}", root.agent_type, child.child_agent_type);
     let dir = scratch(&format!("xp-{name}"));
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
@@ -1005,47 +1000,47 @@ fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
         comp.changed_paths,
         ev.log_summary()
     );
-    if child.child_writes_worktree {
-        assert!(
-            comp.changed_paths
-                .iter()
-                .any(|p| p == Path::new(CHILD_FILE)),
-            "{cell}: the child wrote {CHILD_FILE} through its own harness's write tool, so §6.7's \
-             git derivation must attest to it. changed_paths: {:?}\n\
-             An EMPTY set here with an `Ok` status is the failure this assertion exists for: it is \
-             a clean audit record for a run whose write went somewhere marion never looked. That \
-             is what an opencode child did before `opencode::compile_run` exported `PWD` — it \
-             worked in the directory marion was launched from, not in its worktree, and wrote into \
-             the operator's own repository while the contract recorded changed_paths: [], \
-             scope_violations: [], scope_enforced: true.\nRequest log:\n{}",
-            comp.changed_paths,
-            ev.log_summary()
-        );
-        assert!(
-            comp.scope_violations.is_empty(),
-            "{cell}: {CHILD_FILE} is inside the `src/**` this cell's spawn asked for, so a \
-             violation here means the scope comparison, not the child, is wrong: {:?}",
-            comp.scope_violations
-        );
-    } else {
-        // **A pinned gap, not an assertion that marion is broken.** This harness declares no write
-        // tool to the model at all (see `Node::child_writes_worktree` for the per-harness
-        // measurement), so its child cannot change its worktree and this cell cannot witness
-        // `changed_paths`. Pinned rather than passed over so the gap is visible in the file that
-        // has it: **if this ever fails, that is good news** — the harness has gained a write route,
-        // and this cell should be moved to the branch above by giving the node
-        // `child_writes_worktree: true` and scripting its edit in `script()`.
-        assert!(
-            comp.changed_paths.is_empty(),
-            "{cell}: this cell's child has no write tool declared to it, so it could not have \
-             changed anything — yet changed_paths is {:?}. If the harness has gained a write \
-             route, set `child_writes_worktree: true` on this node and script its edit in \
-             `script()`; the assertion above is the one this cell should be making.\n\
-             Request log:\n{}",
-            comp.changed_paths,
-            ev.log_summary()
-        );
-    }
+    // **Every cell asserts this, unconditionally.** It was a two-branch check while claude and
+    // gemini children had no write route: those cells asserted the worktree was *untouched*, which
+    // is the one thing an escaped write also produces, so half the matrix could not tell a child
+    // that never wrote from one that wrote somewhere marion never looked. §3.1's availability axis
+    // closed that — `claude-impl` and `gemini-impl` declare `write` — and the branch went with it.
+    // A guard that is always true reads as coverage while asserting nothing, and invites someone to
+    // "restore" the false case later.
+    //
+    // What each of the four harnesses writes with, measured off these cells' own request logs
+    // (`claude` 2.1.222, `codex` 0.146.0, `gemini` 0.53.0, `opencode` 1.17.3): codex's
+    // `tools.apply_patch` under code mode, opencode's declared `write`, claude's `Write` and
+    // gemini's `write_file`. The last two arrive only because the child's *agent type* grants them
+    // — see [`Node::child_agent_type`] — and a canned provider may only call a tool the harness
+    // declared, so a cell that stopped being granted one fails here rather than passing vacuously.
+    assert!(
+        comp.changed_paths
+            .iter()
+            .any(|p| p == Path::new(CHILD_FILE)),
+        "{cell}: the child wrote {CHILD_FILE} through its own harness's write tool, so §6.7's \
+         git derivation must attest to it. changed_paths: {:?}\n\
+         An EMPTY set here with an `Ok` status is the failure this assertion exists for: it is \
+         a clean audit record for a run whose write went somewhere marion never looked. That \
+         is what an opencode child did before `opencode::compile_run` exported `PWD` — it \
+         worked in the directory marion was launched from, not in its worktree, and wrote into \
+         the operator's own repository while the contract recorded changed_paths: [], \
+         scope_violations: [], scope_enforced: true.\n\
+         Two other shapes land here. If this cell's child was granted no write tool, the call \
+         the provider scripted was one no real model could have made — check \
+         `Node::child_agent_type` resolves to a type whose `tools` carry `write`. If the write \
+         happened but resolved somewhere else, that is the placement defect above: all four \
+         harnesses are measured to resolve {CHILD_FILE} against the process cwd.\n\
+         Request log:\n{}",
+        comp.changed_paths,
+        ev.log_summary()
+    );
+    assert!(
+        comp.scope_violations.is_empty(),
+        "{cell}: {CHILD_FILE} is inside the `src/**` this cell's spawn asked for, so a \
+         violation here means the scope comparison, not the child, is wrong: {:?}",
+        comp.scope_violations
+    );
 
     // ---- 10: the ROOT received the contract, and it is the one on disk. -------------------------
     //

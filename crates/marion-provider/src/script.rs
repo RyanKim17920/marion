@@ -365,6 +365,25 @@ pub fn classify_root(body: &Value) -> RootStep {
 /// Structured evidence only, for the reason [`classify_child`] gives: `tool` is also named in the
 /// request's `tools` declaration on every single turn, so a substring scan would answer "already
 /// called" to turn one and nothing would ever be called at all.
+///
+/// # This function's only guard is a unit test, and that is a dated fact
+///
+/// **Measured, not supposed:** swap this predicate back for [`classify_root`] and
+/// `an_unrelated_tool_result_does_not_advance_the_anthropic_edit_script` fails — while **every
+/// end-to-end cell in `cross_product.rs` still passes**, claude children included.
+///
+/// The cells do not discriminate it because §3.1's `tools` vocabulary is currently **one word**:
+/// `claude-impl` grants `write` and nothing else, so a claude child makes exactly one tool call
+/// before its `report` and the two predicates agree on every transcript that actually occurs. The
+/// discriminating case — some *other* tool returning before the report — is reachable only in the
+/// unit test, which constructs it deliberately.
+///
+/// **The day that vocabulary grows past one word, this stops being true and nothing will say so.**
+/// A second granted tool makes an unrelated `tool_result` before the report an ordinary event, and
+/// [`classify_root`] would then end the child's run on it: `report` never called, the contract
+/// `Unreported`, and `changed_paths` populated by the write that did happen — a shape no cell would
+/// catch, because the cells would still be green. Whoever adds the second word owes this predicate
+/// an end-to-end case, not just a passing matrix.
 pub fn anthropic_called(body: &Value, tool: &str) -> bool {
     body.get("messages")
         .and_then(Value::as_array)
