@@ -45,6 +45,8 @@ use marion_core::journal::{RecordKind, decode};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
+use marion_testsupport::{fixture_repo, git, judge, on_path, persisted_contracts, scratch};
+use serde_json::Value;
 
 const CHILD_TIMEOUT_SECS: u64 = 60;
 const NARRATIVE: &str = "Edited the worktree and reported back without committing.";
@@ -58,62 +60,6 @@ const CREATE: &str = "*** Begin Patch\n*** Add File: src/marion_m1.txt\n\
 const MODIFY: &str = "*** Begin Patch\n*** Update File: src/keep.txt\n@@\n-keep\n\
                       +keep, edited by the canned codex child\n*** End Patch";
 
-/// A scratch dir that removes itself.
-///
-/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
-/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
-/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
-        // verdict.
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// So the guard can be handed to anything taking `impl AsRef<Path>` — `Deref` alone does not
-/// satisfy that bound, and its omission is what broke two targets when this guard first landed.
-impl AsRef<Path> for Scratch {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
-/// of that statement, deleting it out from under the test. Callers bind `_root`, never a bare `_`,
-/// which would drop it there and then rather than at the end of the test.
-fn scratch(name: &str) -> Scratch {
-    let p = std::env::temp_dir().join(format!("marion-reap-{name}-{}", std::process::id()));
-    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
-    // and pids recycle, so a later run can inherit that exact name.
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("scratch dir");
-    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git runs");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
 /// `git` for the questions whose honest answer may be "there is no such ref".
 fn git_try(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
@@ -126,36 +72,6 @@ fn git_try(dir: &Path, args: &[&str]) -> Result<String, String> {
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
-}
-
-/// A repository for the child to worktree. Its own, not marion's: the run writes to it.
-fn fixture_repo(root: &Path) -> PathBuf {
-    let repo = root.join("repo");
-    std::fs::create_dir_all(repo.join("src")).unwrap();
-    std::fs::write(repo.join("src/keep.txt"), "keep\n").unwrap();
-    git(&repo, &["init", "-q", "-b", "main", "."]);
-    git(&repo, &["add", "-A"]);
-    git(
-        &repo,
-        &[
-            "-c",
-            "user.email=marion@example.invalid",
-            "-c",
-            "user.name=marion",
-            "commit",
-            "-qm",
-            "fixture",
-        ],
-    );
-    repo
-}
-
-fn on_path(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// One repo, one canned provider, and the `Env` `run_spawn` takes — held together so a test can
@@ -219,33 +135,22 @@ fn spawn_one(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {
 /// The contract marion wrote to disk — the **uncapped** copy (`cap_for_return` applies to the
 /// returned one only), and so the only candidate for a durable record of work the worktree no
 /// longer holds.
+/// The `expect` on the walk is the shared helper's now, and it is the same decision: a state dir
+/// that will not enumerate would otherwise report "no contract", and every claim below about what
+/// did or did not survive would be made against a file this test simply failed to look at.
 fn persisted_contract(state: &Path, task_id: &str) -> TaskContract {
-    fn find(dir: &Path, name: &str, out: &mut Vec<PathBuf>) {
-        // `expect`, not a silent skip: a state dir that will not enumerate would report "no
-        // contract", and every claim below about what did or did not survive would be made against
-        // a file this test simply failed to look at.
-        for e in std::fs::read_dir(dir)
-            .unwrap_or_else(|e| panic!("{} does not enumerate: {e}", dir.display()))
-            .flatten()
-        {
-            let p = e.path();
-            if p.is_dir() {
-                find(&p, name, out);
-            } else if p.file_name().is_some_and(|f| f == name)
-                && p.parent().is_some_and(|d| d.ends_with("contracts"))
-            {
-                out.push(p);
-            }
-        }
-    }
-    let mut found = Vec::new();
-    find(state, &format!("{task_id}.json"), &mut found);
-    let [path] = found.as_slice() else {
-        panic!("expected exactly one persisted contract for {task_id}, found {found:?}");
+    let walked = persisted_contracts(state)
+        .unwrap_or_else(|e| panic!("{} does not enumerate: {e}", state.display()));
+    let wanted = format!("{task_id}.json");
+    let found: Vec<(&Path, &Value)> = judge(&walked)
+        .into_iter()
+        .filter(|(p, _)| p.file_name().is_some_and(|f| f == wanted.as_str()))
+        .collect();
+    let [(path, value)] = found.as_slice() else {
+        let paths: Vec<&Path> = found.iter().map(|(p, _)| *p).collect();
+        panic!("expected exactly one persisted contract for {task_id}, found {paths:?}");
     };
-    let bytes =
-        std::fs::read(path).unwrap_or_else(|e| panic!("{} cannot be read: {e}", path.display()));
-    serde_json::from_slice(&bytes)
+    serde_json::from_value((*value).clone())
         .unwrap_or_else(|e| panic!("{} does not parse as a contract: {e}", path.display()))
 }
 
@@ -369,7 +274,7 @@ fn require_codex() {
 #[test]
 fn a_finished_childs_worktree_is_removed_from_disk_and_deregistered() {
     require_codex();
-    let _root = scratch("removed");
+    let _root = scratch("reap-removed");
     let fx = fixture(&_root, CREATE);
     let contract = spawn_one(&fx, "reap-removed").expect("the child runs");
     let (wt, _) = workspace_of(&contract);
@@ -392,7 +297,7 @@ fn a_finished_childs_worktree_is_removed_from_disk_and_deregistered() {
 #[test]
 fn the_reap_reaches_the_journal_as_no_record_at_all() {
     require_codex();
-    let _root = scratch("unjournalled");
+    let _root = scratch("reap-unjournalled");
     let fx = fixture(&_root, CREATE);
     spawn_one(&fx, "reap-unjournalled").expect("the child runs");
     // The run really was journalled. Without this, "no reap record" could just mean "no journal",
@@ -427,7 +332,7 @@ fn the_reap_reaches_the_journal_as_no_record_at_all() {
 #[test]
 fn the_reap_leaves_an_empty_branch_behind_at_the_base_commit() {
     require_codex();
-    let _root = scratch("branch");
+    let _root = scratch("reap-branch");
     let fx = fixture(&_root, CREATE);
     let contract = spawn_one(&fx, "reap-branch").expect("the child runs");
     let (_, branch) = workspace_of(&contract);
@@ -461,7 +366,7 @@ fn the_reap_leaves_an_empty_branch_behind_at_the_base_commit() {
 #[test]
 fn a_second_spawn_of_the_same_task_id_is_refused_by_the_first_ones_leftover_branch() {
     require_codex();
-    let _root = scratch("twice");
+    let _root = scratch("reap-twice");
     let fx = fixture(&_root, CREATE);
     spawn_one(&fx, "reap-twice").expect("the first child runs");
     let branches = git(&fx.repo, &["branch", "--list", "marion/*"]);
@@ -501,7 +406,7 @@ fn a_second_spawn_of_the_same_task_id_is_refused_by_the_first_ones_leftover_bran
 #[test]
 fn a_created_files_content_survives_the_reap_in_the_persisted_contracts_diff() {
     require_codex();
-    let _root = scratch("created");
+    let _root = scratch("reap-created");
     let fx = fixture(&_root, CREATE);
     let contract = spawn_one(&fx, "reap-created").expect("the child runs");
     let (wt, branch) = workspace_of(&contract);
@@ -584,7 +489,7 @@ fn a_created_files_content_survives_the_reap_in_the_persisted_contracts_diff() {
 /// `shared-cwd`, where the workspace *is* the user's own checkout.
 #[test]
 fn deriving_the_diff_leaves_the_workspaces_own_index_byte_for_byte_unchanged() {
-    let _root = scratch("scratch-index");
+    let _root = scratch("reap-scratch-index");
     let repo = fixture_repo(&_root);
     let wt = _root.join("wt");
     let base = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
@@ -654,7 +559,7 @@ fn deriving_the_diff_leaves_the_workspaces_own_index_byte_for_byte_unchanged() {
 #[test]
 fn a_spawn_leaves_the_operators_staged_state_alone() {
     require_codex();
-    let _root = scratch("operator-index");
+    let _root = scratch("reap-operator-index");
     let fx = fixture(&_root, CREATE);
 
     // The operator stages something and walks away, exactly as they might while a child runs.
@@ -688,7 +593,7 @@ fn a_spawn_leaves_the_operators_staged_state_alone() {
 #[test]
 fn a_modified_tracked_files_content_survives_only_as_the_persisted_contracts_diff() {
     require_codex();
-    let _root = scratch("modified");
+    let _root = scratch("reap-modified");
     let fx = fixture(&_root, MODIFY);
     let contract = spawn_one(&fx, "reap-modified").expect("the child runs");
     let (wt, branch) = workspace_of(&contract);

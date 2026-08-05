@@ -181,6 +181,35 @@ impl AsRef<Path> for Scratch {
     }
 }
 
+/// This thread's id as `t<n>`, and **never `{:?}` of the `ThreadId` itself**.
+///
+/// `ThreadId`'s `Debug` is `ThreadId(6)`, and those parentheses cannot go into these directory
+/// names: a scratch path is interpolated into shell commands that a real harness then *parses*.
+/// Measured, not hypothetical — `permission_round_trip.rs` drives Claude Code through a
+/// `touch <scratch>/outside/marion-s9.txt`, and with `ThreadId(6)` in the path the CLI answered
+/// `"decision_reason": "Parse error"` and the permission frame came back missing the fields the
+/// test asserts on. The id is only there to separate parallel tests, so any injective spelling
+/// does; this one is `[A-Za-z0-9]` and safe to interpolate anywhere.
+///
+/// `ThreadId::as_u64` is unstable, so the number is recovered from the `Debug` form rather than
+/// asked for directly.
+fn thread_tag() -> String {
+    let raw = format!("{:?}", std::thread::current().id());
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+    // A `Debug` form carrying no digits would make every thread share a tag, which is the collision
+    // this exists to prevent — so fall back to the sanitised whole string rather than to nothing.
+    if digits.is_empty() {
+        format!(
+            "t{}",
+            raw.chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+        )
+    } else {
+        format!("t{digits}")
+    }
+}
+
 /// A fresh scratch dir under the system temp dir, named `marion-{tag}-{pid}-{thread}`.
 ///
 /// **Bind the returned guard for as long as the test needs the directory.** `scratch("x").join("y")`
@@ -191,7 +220,8 @@ impl AsRef<Path> for Scratch {
 /// Three properties, each of which some copy of this had and some did not:
 ///
 /// - **the thread id is in the name**, so two tests in one binary — which `cargo test` runs in
-///   parallel by default — cannot collide on a tag;
+///   parallel by default — cannot collide on a tag. See [`thread_tag`] for why it is not spelled
+///   the obvious way;
 /// - **the dir is removed on the way *in* as well**, because a run killed hard enough to skip
 ///   `Drop` leaves a name behind and pids recycle, so a later run can inherit that exact name;
 /// - **the path is canonicalised**, because on macOS the temp dir is a symlink (`/var` →
@@ -199,9 +229,9 @@ impl AsRef<Path> for Scratch {
 ///   otherwise compares two spellings of the same directory.
 pub fn scratch(tag: &str) -> Scratch {
     let p = std::env::temp_dir().join(format!(
-        "marion-{tag}-{}-{:?}",
+        "marion-{tag}-{}-{}",
         std::process::id(),
-        std::thread::current().id()
+        thread_tag()
     ));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
@@ -260,6 +290,7 @@ pub fn fixture_repo(root: &Path) -> PathBuf {
 ///
 /// The parse outcome is carried rather than acted on — see [`persisted_contracts`] for why the
 /// judgement is deliberately somewhere else.
+#[derive(Debug)]
 pub struct PersistedContract {
     pub path: PathBuf,
     /// `Err` holds the diagnosis, already formatted: an unreadable file, or one whose bytes are not
@@ -269,12 +300,20 @@ pub struct PersistedContract {
 
 /// Every `contracts/<task_id>.json` under `state`, read back — **without judging any of them**.
 ///
+/// # Why the tree is walked rather than probed at a known path
+///
+/// `depth_gate.rs`'s reason, and it generalises: asserting *"the grandchild's contract is not at
+/// `<x>`"* would pass if the contract had simply been written somewhere else, and the claim those
+/// tests make is that it was **never written at all**. A walk can support that claim; a probe at a
+/// guessed path cannot.
+///
 /// # Why the walk is fallible and the judgement is not here
 ///
 /// These two look like competing designs and are not. The walk propagates its `read_dir` errors
-/// rather than swallowing them, because a directory the test could not enumerate is a contract it
-/// cannot claim is absent, and a helper that answers "none" to that question makes a count
-/// assertion pass for the wrong reason.
+/// rather than swallowing them — `harness_matrix.rs`'s reason, kept in its own terms: a directory
+/// that will not enumerate is a state tree the test cannot see, and reporting the contracts it
+/// happened to reach would let *"exactly one contract is persisted"* pass on a run that **wrote two
+/// and hid one**.
 ///
 /// But the *judgement* — panicking over a contract that will not read back — must not happen here,
 /// and that is the part worth stating. A caller runs this while its canned provider is still up and
@@ -288,7 +327,18 @@ pub struct PersistedContract {
 /// corrupt one count as one, and pass.
 pub fn persisted_contracts(state: &Path) -> std::io::Result<Vec<PersistedContract>> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
+        // **The failing directory is named in the error, not just the root the walk started from.**
+        // `io::Error` from `read_dir` carries the errno and no path, so a caller that reports only
+        // its own `state` argument says "somewhere under here" about a tree that may be several
+        // levels deep — which is what `worktree_reap.rs`'s own copy avoided by panicking with `dir`
+        // in hand. Rebuilding it here keeps that, for every caller rather than one.
+        let entries = std::fs::read_dir(dir).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("{} does not enumerate: {e}", dir.display()),
+            )
+        })?;
+        for entry in entries {
             let p = entry?.path();
             if p.is_dir() {
                 walk(&p, out)?;
@@ -336,11 +386,11 @@ pub fn persisted_contracts(state: &Path) -> std::io::Result<Vec<PersistedContrac
 /// read back is a defect whichever half is wrong, so this panics naming the file.
 ///
 /// **Call it after cleanup, not before.** That is the whole reason it is a second function.
-pub fn judge(contracts: Vec<PersistedContract>) -> Vec<(PathBuf, Value)> {
+pub fn judge(contracts: &[PersistedContract]) -> Vec<(&Path, &Value)> {
     contracts
-        .into_iter()
-        .map(|c| match c.parsed {
-            Ok(v) => (c.path, v),
+        .iter()
+        .map(|c| match &c.parsed {
+            Ok(v) => (c.path.as_path(), v),
             Err(diagnosis) => panic!("{diagnosis}"),
         })
         .collect()
@@ -378,15 +428,38 @@ mod tests {
         // The guard was dropped by the unwind, so nothing it made is left. Re-derived from the same
         // inputs rather than smuggled out of the closure, which `catch_unwind` will not let it be.
         let expected = std::env::temp_dir().join(format!(
-            "marion-unwind-probe-{}-{:?}",
+            "marion-unwind-probe-{}-{}",
             std::process::id(),
-            std::thread::current().id()
+            thread_tag()
         ));
         assert!(
             !expected.exists(),
             "a panicking test left {} behind — the exact asymmetry `Drop` replaced a trailing \
              `remove_dir_all` to remove",
             expected.display()
+        );
+    }
+
+    /// **A scratch path is not just a path: it gets interpolated into shell commands that a real
+    /// harness parses.** The obvious `{:?}` of a `ThreadId` puts `ThreadId(6)` in the name, and
+    /// `permission_round_trip.rs` — which drives Claude Code through a `touch <scratch>/…` — then
+    /// gets `"decision_reason": "Parse error"` back instead of the permission frame it asserts on.
+    /// That is how this was found: by an end-to-end test failing, after review had passed it.
+    ///
+    /// So the whole name is held to `[A-Za-z0-9._-]`, which is safe unquoted in every shell.
+    #[test]
+    fn a_scratch_name_carries_nothing_a_shell_would_have_to_quote() {
+        let dir = scratch("shell-safe");
+        let name = dir
+            .file_name()
+            .expect("the scratch dir has a name")
+            .to_str()
+            .expect("and it is utf-8");
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)),
+            "{name:?} contains a character a shell would take as syntax — parentheses are the one \
+             that actually bit, via `ThreadId(6)`"
         );
     }
 
@@ -553,7 +626,8 @@ mod tests {
         std::fs::write(contracts.join("notes.txt"), b"ignore me").unwrap();
         std::fs::write(dir.join("proj/agents/a1/loose.json"), b"{}").unwrap();
 
-        let found = judge(persisted_contracts(&dir).expect("the walk succeeds"));
+        let all = persisted_contracts(&dir).expect("the walk succeeds");
+        let found = judge(&all);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].0, contracts.join("t1.json"));
         assert_eq!(found[0].1["task_id"], "t1");
@@ -582,19 +656,26 @@ mod tests {
         );
 
         // And judging it is what panics — at a point the caller chose.
-        let panicked = std::panic::catch_unwind(|| judge(persisted_contracts(&dir).unwrap()));
+        let panicked =
+            std::panic::catch_unwind(|| judge(&persisted_contracts(&dir).unwrap()).len());
         assert!(panicked.is_err(), "judge must not tolerate it either");
     }
 
-    /// A state dir that cannot be enumerated is not a state dir with no contracts in it.
+    /// A state dir that cannot be enumerated is not a state dir with no contracts in it — **and the
+    /// error names the directory that failed**, which `read_dir`'s own `io::Error` does not carry.
+    /// A caller that could only report the root it started the walk from would say "somewhere under
+    /// here" about a tree several levels deep.
     #[test]
-    fn a_walk_that_cannot_read_a_directory_is_an_error_and_not_an_empty_answer() {
+    fn a_walk_that_cannot_read_a_directory_is_an_error_that_names_that_directory() {
         let dir = scratch("contracts-missing");
         let gone = dir.join("never-created");
-        assert!(
-            persisted_contracts(&gone).is_err(),
+        let e = persisted_contracts(&gone).expect_err(
             "answering `no contracts` for a directory that could not be read makes a count \
-             assertion pass for the wrong reason"
+             assertion pass for the wrong reason",
+        );
+        assert!(
+            e.to_string().contains(&gone.display().to_string()),
+            "the error must name the directory that would not enumerate, got {e}"
         );
     }
 }

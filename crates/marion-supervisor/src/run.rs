@@ -1019,44 +1019,11 @@ mod tests {
     use super::*;
     use crate::spawn::ChildOutcome;
     use marion_core::harness::Harness;
-
-    /// A scratch dir that removes itself.
-    ///
-    /// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds
-    /// straight past any trailing cleanup, so an explicit call leaks on exactly the runs that fail
-    /// — the ones a developer re-runs most. `Drop` catches those, plus every `?` and early return.
-    struct Scratch(PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            // Ignored: the dir may already be gone (a test that removed it, or a `git worktree
-            // remove` that took it), and a cleanup failure must not mask the test's own verdict.
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    impl std::ops::Deref for Scratch {
-        type Target = Path;
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    /// Bind the returned guard for the whole test — `temp("x").join("y")` drops the dir at the end
-    /// of that statement, deleting it out from under the test.
-    fn temp(name: &str) -> Scratch {
-        let p =
-            std::env::temp_dir().join(format!("marion-supervisor-{name}-{}", std::process::id()));
-        // Removed on the way *in* as well: a prior run that crashed hard enough to skip `Drop`
-        // leaves a dir behind, and a re-run has to start from an empty one to mean anything.
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        Scratch(p)
-    }
+    use marion_testsupport::{Scratch, scratch};
 
     #[test]
     fn an_overrunning_process_group_is_killed_and_reported_as_timed_out() {
-        let dir = temp("timeout");
+        let dir = scratch("supervisor-timeout");
         let marker = dir.join("survived");
         let script = format!("(sleep 1; touch '{}') & sleep 10", marker.display());
         let out = run_bounded(
@@ -1205,7 +1172,7 @@ mod tests {
                 .unwrap_or(false),
             "this test needs perl to build a setsid escapee"
         );
-        let dir = temp("setsid-escape");
+        let dir = scratch("supervisor-setsid-escape");
         let pids = dir.join("pids");
         let script = format!(
             r#"use POSIX ();
@@ -1281,7 +1248,7 @@ mod tests {
             let _ = unsafe { kill(pid, SIGKILL) };
         }
 
-        let dir = temp("drain-bound");
+        let dir = scratch("supervisor-drain-bound");
         let pids = dir.join("pids");
         // The escapee holds stdout open for 900 s and writes nothing, so the pipe stays open long
         // past every bound in this test.
@@ -1408,7 +1375,7 @@ mod tests {
 
     #[test]
     fn persisted_contract_is_complete_while_only_the_return_copy_is_capped() {
-        let root = temp("persist");
+        let root = scratch("supervisor-persist");
         let project = ProjectDir::from_hash(&root, "0123456789ab");
         let agent = project.agent(&AgentId("agent".into()));
         let large = "x".repeat(20 * 1024);
@@ -1532,7 +1499,7 @@ mod tests {
     /// Codex `config.toml` on disk, still fails.
     #[test]
     fn a_claude_agent_type_never_writes_a_codex_config_or_launches_codex() {
-        let root = temp("dispatch");
+        let root = scratch("supervisor-dispatch");
         let repo = fixture_repo(&root);
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();
@@ -1784,7 +1751,7 @@ mod tests {
 
     /// An `Env` and a fixture repo, for the tests that call `run_spawn` for real.
     fn spawn_env(name: &str) -> (Scratch, PathBuf, Env) {
-        let root = temp(name);
+        let root = scratch(&format!("supervisor-{name}"));
         let repo = fixture_repo(&root);
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();

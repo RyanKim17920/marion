@@ -331,43 +331,7 @@ mod tests {
     use marion_core::harness::Harness;
     use marion_core::journal::{Exited, SpawnIntent, Spawned, StateChanged};
     use marion_core::node::NodeState;
-
-    /// A scratch dir that removes itself.
-    ///
-    /// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds
-    /// straight past any trailing cleanup, so an explicit call leaks on exactly the runs that fail
-    /// — the ones a developer re-runs most. `Drop` catches those, plus every `?` and early return.
-    struct Scratch(PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's
-            // own verdict.
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    impl std::ops::Deref for Scratch {
-        type Target = Path;
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    /// Bind the returned guard for the whole test — `temp("x").join("y")` drops the dir at the end
-    /// of that statement, deleting it out from under the test.
-    fn temp(name: &str) -> Scratch {
-        let p = std::env::temp_dir().join(format!(
-            "marion-journal-{name}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir
-        // behind, and pids recycle, so a later run can inherit that exact name.
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        Scratch(p)
-    }
+    use marion_testsupport::scratch;
 
     fn intent(id: &str, parent: Option<&str>) -> RecordKind {
         RecordKind::SpawnIntent(SpawnIntent {
@@ -382,7 +346,7 @@ mod tests {
 
     #[test]
     fn a_written_journal_replays_to_the_tree_that_was_written() {
-        let dir = temp("round-trip");
+        let dir = scratch("journal-round-trip");
         let path = dir.join("journal.jsonl");
         {
             let mut j = Journal::open_path(&path, WriterId("w".into())).unwrap();
@@ -424,7 +388,7 @@ mod tests {
 
     #[test]
     fn a_second_open_appends_rather_than_truncating() {
-        let dir = temp("append");
+        let dir = scratch("journal-append");
         let path = dir.join("journal.jsonl");
         Journal::open_path(&path, WriterId("a".into()))
             .unwrap()
@@ -443,7 +407,7 @@ mod tests {
     fn a_barrier_record_is_durable_before_append_returns() {
         // The property callers order their side effects against. Observable here only as "the
         // writer considers nothing pending"; the fsync itself is the kernel's business.
-        let dir = temp("barrier");
+        let dir = scratch("journal-barrier");
         let path = dir.join("journal.jsonl");
         let mut j = Journal::open_path(&path, WriterId("w".into())).unwrap();
         j.append(intent("root", None)).unwrap();
@@ -465,7 +429,7 @@ mod tests {
 
     #[test]
     fn the_group_commit_timer_flushes_a_pending_record() {
-        let dir = temp("timer");
+        let dir = scratch("journal-timer");
         let path = dir.join("journal.jsonl");
         let mut j = Journal::open_path(&path, WriterId("w".into())).unwrap();
         j.append(RecordKind::StateChanged(StateChanged {
@@ -484,7 +448,7 @@ mod tests {
 
     #[test]
     fn a_missing_journal_is_an_empty_tree_not_an_error() {
-        let dir = temp("missing");
+        let dir = scratch("journal-missing");
         let r = read_path(&dir.join("nope.jsonl")).unwrap();
         assert_eq!(r.records, 0);
         assert!(r.nodes().is_empty());

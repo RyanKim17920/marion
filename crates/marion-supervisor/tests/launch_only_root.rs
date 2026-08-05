@@ -59,6 +59,7 @@ use std::time::{Duration, Instant};
 use marion_core::harness::Harness;
 use marion_harness::adapter_for;
 use marion_supervisor::run::run_bounded;
+use marion_testsupport::scratch;
 
 /// Generous. The bound exists so a hung `marion` fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(60);
@@ -117,40 +118,6 @@ const HANG_BOUND: Duration = Duration::from_secs(6);
 /// hop. It is raised rather than tightened because a check that fires on a busy machine costs more
 /// than the narrow class it catches.
 const STARVATION_CEILING: Duration = Duration::from_secs(45);
-
-/// A scratch dir that removes itself.
-///
-/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
-/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
-/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's
-        // own verdict.
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
-/// of that statement, deleting it out from under the test. Bind it as `dir`, never as a bare `_`,
-/// which drops on the spot.
-fn scratch(name: &str) -> Scratch {
-    let p = std::env::temp_dir().join(format!("marion-lo-{name}-{}", std::process::id()));
-    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
-    // and pids recycle, so a later run can inherit that exact name.
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("scratch dir");
-    Scratch(p.canonicalize().expect("scratch canonicalises"))
-}
 
 // --- the three LaunchOnly harnesses, as data ----------------------------------------------------
 
@@ -487,7 +454,7 @@ fn marion_run(dir: &Path, node: &Node, bin: &Path, prompt: &str, timeout_secs: &
 // toolless turn exits 0 with no diagnostic anywhere and reads exactly like success.
 
 fn a_silent_root_is_refused(node: &Node, name: &str) {
-    let dir = scratch(name);
+    let dir = scratch(&format!("lo-{name}"));
     // The measured failure shape, reproduced: prose on stdout, a clean exit, nothing on stderr.
     let bin = stub_harness(
         &dir,
@@ -572,7 +539,7 @@ fn a_root_that_called_marion_succeeds(node: &Node, name: &str) {
         node.harness
     );
 
-    let dir = scratch(name);
+    let dir = scratch(&format!("lo-{name}"));
     let bin = stub_harness(
         &dir,
         node,
@@ -623,7 +590,7 @@ fn an_opencode_root_succeeds_once_one_marion_call_appears_in_its_stream() {
 // provider hang, with no backoff ceiling.
 
 fn a_hanging_root_is_killed_with_its_group(node: &Node, name: &str) {
-    let dir = scratch(name);
+    let dir = scratch(&format!("lo-{name}"));
     let pids = dir.join("pids");
     // A backgrounded grandchild that outlives its parent's own exit, recording its pid: the class
     // of process a pid-only kill leaves running.

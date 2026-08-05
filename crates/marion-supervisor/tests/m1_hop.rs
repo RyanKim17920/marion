@@ -34,7 +34,7 @@ use marion_core::contract::TaskContract;
 use marion_provider::script::ROOT_TOOL_USE_ID;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::run::run_bounded;
-use marion_testsupport::{fixture_repo, on_path};
+use marion_testsupport::{fixture_repo, judge, on_path, persisted_contracts, scratch, survivors};
 use serde_json::Value;
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite, not to
@@ -46,74 +46,6 @@ const RUN_BOUND: Duration = Duration::from_secs(300);
 /// request and not by the ceiling, which is the case §9's criterion is about.
 const OUT_OF_SCOPE: &str = "out_of_scope/marion_m1.txt";
 const IN_SCOPE: &str = "src/marion_m1.txt";
-
-/// A scratch dir that removes itself.
-///
-/// `Drop`, and not a `remove_dir_all` at the end of the test: a failing assertion unwinds straight
-/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
-/// developer re-runs most. **This file was the worst instance of that in the suite**: its cleanup
-/// was the very last statement, after some thirty assertions and a `survivors` check, so any one of
-/// them stranded the whole dir *including a git repository*. `Drop` catches those, plus every `?`
-/// and early return.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
-        // verdict.
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// `Deref` alone is not enough: it coerces `&Scratch` to `&Path` at a call site expecting one, but
-/// a generic `P: AsRef<Path>` — `std::fs::remove_dir_all`, `Command::current_dir` — never triggers
-/// that coercion and fails to compile instead.
-impl AsRef<Path> for Scratch {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
-/// of that statement, deleting it out from under the run. Bind it as `root_dir`, never as a bare
-/// `_`, which drops on the spot.
-fn scratch(name: &str) -> Scratch {
-    let p = std::env::temp_dir().join(format!("marion-m1-{name}-{}", std::process::id()));
-    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
-    // and pids recycle, so a later run can inherit that exact name.
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("scratch dir");
-    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-/// Every `contracts/<task_id>.json` marion persisted under `state`.
-fn persisted_contracts(state: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, out);
-            } else if p.extension().is_some_and(|x| x == "json")
-                && p.parent().is_some_and(|d| d.ends_with("contracts"))
-            {
-                out.push(p);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(state, &mut out);
-    out
-}
 
 /// The text of the `tool_result` the root sent back for `tool_use_id`, from a recorded request.
 fn tool_result_text(request: &Value, tool_use_id: &str) -> Option<String> {
@@ -228,37 +160,6 @@ fn assert_persisted_copy_records_no_shortening(c: &TaskContract) {
     );
 }
 
-/// Processes still alive with `needle` on their command line. A leak, if any.
-///
-/// `ps` is the *only* witness this file has for a leak, so every way it can fail to answer is a
-/// failure of the test rather than an empty answer. Reporting "no survivors" because `ps` was
-/// missing, errored, or printed nothing would make the leak assertion pass for free on exactly the
-/// machines where it cannot be checked — the silent pass this file exists to rule out.
-fn survivors(needle: &str) -> Vec<String> {
-    let out = Command::new("ps")
-        .args(["-axo", "pid=,command="])
-        .output()
-        .expect("`ps` must run: without it nothing here can tell a clean run from a leak");
-    assert!(
-        out.status.success(),
-        "`ps -axo pid=,command=` exited {}: {}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    let listing = String::from_utf8_lossy(&out.stdout);
-    // `ps -ax` lists at minimum this very test process, so an empty listing means a witness that
-    // did not work, not a machine with nothing running on it.
-    assert!(
-        !listing.trim().is_empty(),
-        "`ps` printed nothing; the leak check would report no survivors whatever had leaked"
-    );
-    listing
-        .lines()
-        .filter(|l| l.contains(needle))
-        .map(str::to_string)
-        .collect()
-}
-
 #[test]
 fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_tool_result() {
     assert!(
@@ -270,7 +171,7 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
         "M1's second acceptance criterion is about a REAL codex child; put `codex` (0.146.0) on PATH"
     );
 
-    let root_dir = scratch("hop");
+    let root_dir = scratch("m1-hop");
     let repo = fixture_repo(&root_dir);
     let state = root_dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
@@ -382,14 +283,14 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
         panic!("the tool result does not deserialize to a TaskContract: {e}\n{result_text}")
     });
 
-    let contracts = persisted_contracts(&state);
+    let walked = persisted_contracts(&state).expect("the state tree enumerates");
+    let contracts = judge(&walked);
     assert_eq!(
         contracts.len(),
         1,
         "exactly one child ran, so exactly one contract is persisted: {contracts:?}"
     );
-    let persisted_json: Value =
-        serde_json::from_slice(&std::fs::read(&contracts[0]).unwrap()).unwrap();
+    let persisted_json: Value = contracts[0].1.clone();
     let persisted: TaskContract = serde_json::from_value(persisted_json.clone()).unwrap();
     assert_persisted_copy_records_no_shortening(&persisted);
     assert_eq!(
@@ -409,6 +310,7 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
     let root_agent_dir = state
         .join(
             contracts[0]
+                .0
                 .parent()
                 .and_then(Path::parent)
                 .and_then(Path::parent)
@@ -481,7 +383,11 @@ fn a_real_claude_root_spawns_a_real_codex_child_and_receives_its_contract_as_a_t
     assert!(
         leaked.is_empty(),
         "processes from this run are still alive — the S7 class of failure:\n{}",
-        leaked.join("\n")
+        leaked
+            .iter()
+            .map(|(_, line)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
     // No `remove_dir_all` here: `root_dir`'s own `Drop` owns that, and owns it on the failing runs
     // too. The leak check above still has to come first, because it names the dir it searches for.

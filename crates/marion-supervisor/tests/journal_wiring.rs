@@ -38,7 +38,7 @@ use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Scri
 use marion_supervisor::journal::read_path;
 use marion_supervisor::root::{RootPath, root_path};
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_bounded, run_spawn};
-use marion_testsupport::{fixture_repo, on_path};
+use marion_testsupport::{fixture_repo, judge, on_path, persisted_contracts, scratch};
 use serde_json::json;
 
 /// Generous: the bound exists so a hung harness fails loudly instead of wedging the suite.
@@ -233,62 +233,6 @@ fn marion_argv(
     args
 }
 
-/// A scratch dir that removes itself.
-///
-/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
-/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
-/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
-        // verdict.
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
-/// of that statement, deleting it out from under the test.
-fn scratch(name: &str) -> Scratch {
-    let p = std::env::temp_dir().join(format!("marion-journal-e2e-{name}-{}", std::process::id()));
-    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
-    // and pids recycle, so a later run can inherit that exact name.
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("scratch dir");
-    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-/// Every `contracts/<task_id>.json` marion actually persisted — the ground truth the journal's
-/// `ContractPersisted` records are compared against.
-fn persisted_contracts(state: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, out);
-            } else if p.extension().is_some_and(|x| x == "json")
-                && p.parent().is_some_and(|d| d.ends_with("contracts"))
-            {
-                out.push(p);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(state, &mut out);
-    out
-}
-
 /// The agent-dirs marion actually created — the ground truth the replayed *nodes* are compared
 /// against. A node in one set and not the other is the M2 failure this file exists to catch.
 fn agent_dirs(project: &ProjectDir) -> BTreeSet<String> {
@@ -361,7 +305,10 @@ fn record_kinds(journal: &Path) -> Vec<&'static str> {
 /// Run one `root → child` pairing end to end through the real `marion` binary, and collect
 /// everything the assertions need before anything is cleaned up.
 fn drive(root: &Node, child: &Node) -> JournalEvidence {
-    let dir = scratch(&format!("{}-{}", root.agent_type, child.agent_type));
+    let dir = scratch(&format!(
+        "journal-e2e-{}-{}",
+        root.agent_type, child.agent_type
+    ));
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
@@ -401,21 +348,24 @@ fn drive(root: &Node, child: &Node) -> JournalEvidence {
         Vec::new()
     };
     let kinds = record_kinds(&journal_path);
-    let contracts: Vec<(PathBuf, TaskContract)> = persisted_contracts(&state)
-        .into_iter()
-        .map(|p| {
-            // A contract marion wrote and cannot read back is a defect whichever half is wrong, so
-            // it fails here naming the file rather than being dropped by a `filter_map`.
-            let bytes =
-                std::fs::read(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()));
-            let parsed = serde_json::from_slice(&bytes)
-                .unwrap_or_else(|e| panic!("parsing {}: {e}", p.display()));
-            (p, parsed)
-        })
-        .collect();
+    let walked = persisted_contracts(&state)
+        .map_err(|e| format!("{} cannot be walked for contracts: {e}", state.display()));
     let agent_dirs = agent_dirs(&project);
 
     drop(server);
+
+    // Judged after the provider is down: a contract marion wrote and cannot read back is a defect
+    // whichever half is wrong, so it fails naming the file — but it must not fail while a server
+    // and a child's processes are still up.
+    let walked = walked.unwrap_or_else(|e| panic!("{e}"));
+    let contracts: Vec<(PathBuf, TaskContract)> = judge(&walked)
+        .into_iter()
+        .map(|(p, v)| {
+            let parsed = serde_json::from_value(v.clone())
+                .unwrap_or_else(|e| panic!("parsing {}: {e}", p.display()));
+            (p.to_path_buf(), parsed)
+        })
+        .collect();
 
     JournalEvidence {
         timed_out: out.timed_out,
@@ -677,7 +627,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
         "this is about a REAL child; put `codex` on PATH"
     );
 
-    let root_dir = scratch("hop");
+    let root_dir = scratch("journal-e2e-hop");
     let repo = fixture_repo(&root_dir);
     let state = root_dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
@@ -823,7 +773,8 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
     );
     assert_eq!(recorded.status, Some(ExitStatus::Ok));
 
-    let files = persisted_contracts(&state);
+    let walked = persisted_contracts(&state).expect("the state tree enumerates");
+    let files: Vec<&Path> = judge(&walked).into_iter().map(|(p, _)| p).collect();
     assert_eq!(files.len(), 1, "exactly one contract on disk: {files:?}");
     assert_eq!(
         files[0],
@@ -831,7 +782,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
         "the journal's contract record must name the path the run actually wrote"
     );
     let persisted: TaskContract =
-        serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(files[0]).unwrap()).unwrap();
     assert_eq!(
         persisted.task_id, recorded.task_id,
         "and the same task id the file itself carries"
@@ -917,7 +868,7 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
         "this drives a REAL claude child, the one harness of four that asks at runtime; put \
          `claude` on PATH"
     );
-    let root_dir = scratch("child-denial");
+    let root_dir = scratch("journal-e2e-child-denial");
     let repo = fixture_repo(&root_dir);
     let state = root_dir.join("state");
     std::fs::create_dir_all(&state).unwrap();

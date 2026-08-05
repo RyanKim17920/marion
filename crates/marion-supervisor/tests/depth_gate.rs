@@ -68,7 +68,6 @@
 //! machine that cannot run it is worth less than no criterion.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use marion_core::agent_type::{DEFAULT_MAX_DEPTH, builtin};
 use marion_core::contract::TaskId;
@@ -78,7 +77,9 @@ use marion_harness::adapter_for;
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
-use marion_testsupport::{fixture_repo, git, kill_hard, on_path};
+use marion_testsupport::{
+    fixture_repo, git, kill_hard, on_path, persisted_contracts, scratch, survivors,
+};
 use serde_json::{Value, json};
 
 /// The child's own bound. Short: a wedged cell must fail fast rather than wedge CI.
@@ -101,75 +102,6 @@ const GRANDCHILD_PROMPT: &str = "Add the depth-gate marker file under src/ and r
 /// only so the grandchild is a *complete* child script; a run that reaches it has already failed.
 const GRANDCHILD_NARRATIVE: &str = "Wrote the depth-gate marker under src/ and reported back.";
 
-/// A scratch dir that removes itself.
-///
-/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds
-/// straight past any trailing cleanup, so an explicit call leaks on exactly the runs that fail
-/// — the ones a developer re-runs most. `Drop` catches those, plus every `?` and early return.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        // Ignored: the dir may already be gone (a `git worktree remove` that took it, say), and a
-        // cleanup failure must not mask the test's own verdict.
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// `Deref` alone is not enough: it coerces `&Scratch` to `&Path` at a call site expecting one, but
-/// a generic `P: AsRef<Path>` — `std::fs::remove_dir_all`, `Command::current_dir` — never triggers
-/// that coercion and fails to compile instead.
-impl AsRef<Path> for Scratch {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// Bind the returned guard for the whole test — `scratch("x").join("y")` drops the dir at the end
-/// of that statement, deleting it out from under the run. Bind it as `dir`, never as a bare `_`,
-/// which drops on the spot.
-fn scratch(name: &str) -> Scratch {
-    let p = std::env::temp_dir().join(format!("marion-depth-{name}-{}", std::process::id()));
-    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
-    // and pids recycle, so a later run can inherit that exact name.
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("scratch dir");
-    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-/// Every `contracts/<task_id>.json` marion persisted under `state`.
-///
-/// Walked rather than probed at a guessed path: asserting "the grandchild's contract is not at
-/// `<x>`" would pass if it had simply been written somewhere else, and the whole claim here is
-/// that it was never written at all.
-fn persisted_contracts(state: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, out);
-            } else if p.extension().is_some_and(|x| x == "json")
-                && p.parent().is_some_and(|d| d.ends_with("contracts"))
-            {
-                out.push(p);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(state, &mut out);
-    out
-}
-
 /// Every agent-dir marion minted under `state`. One node, one dir (§4.3).
 fn agent_dirs(state: &Path) -> Vec<String> {
     std::fs::read_dir(state)
@@ -180,48 +112,6 @@ fn agent_dirs(state: &Path) -> Vec<String> {
         .flatten()
         .flatten()
         .filter_map(|a| a.file_name().into_string().ok())
-        .collect()
-}
-
-/// Processes still alive with `needle` on their command line, as `(pid, line)`.
-///
-/// `ps` is the *only* witness this file has for a leak, so every way it can fail to answer is a
-/// failure of the test rather than an empty answer. Reporting "no survivors" because `ps` was
-/// missing, errored, or printed nothing would make the leak assertion pass for free on exactly the
-/// machines where it cannot be checked — the silent pass this file exists to rule out.
-fn survivors(needle: &str) -> Vec<(i32, String)> {
-    let out = Command::new("ps")
-        .args(["-axo", "pid=,command="])
-        .output()
-        .expect("`ps` must run: without it nothing here can tell a clean run from a leak");
-    assert!(
-        out.status.success(),
-        "`ps -axo pid=,command=` exited {}: {}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    let listing = String::from_utf8_lossy(&out.stdout);
-    // `ps -ax` lists at minimum this very test process, so an empty listing means a witness that
-    // did not work, not a machine with nothing running on it.
-    assert!(
-        !listing.trim().is_empty(),
-        "`ps` printed nothing; the leak check would report no survivors whatever had leaked"
-    );
-    listing
-        .lines()
-        .filter(|l| l.contains(needle))
-        // A matching line whose pid will not parse is a survivor this test cannot name. Dropping it
-        // would be the same silent pass one line down, so say so instead.
-        .map(|l| {
-            let pid = l
-                .split_whitespace()
-                .next()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or_else(|| {
-                    panic!("`ps` line matches {needle:?} but carries no pid: {l:?}")
-                });
-            (pid, l.to_string())
-        })
         .collect()
 }
 
@@ -430,7 +320,7 @@ impl Evidence {
 
 /// Drive one real child of `node`'s harness at `max_depth`, whose script calls `spawn`.
 fn drive(node: &Node) -> Evidence {
-    let dir = scratch(node.agent_type);
+    let dir = scratch(&format!("depth-{}", node.agent_type));
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
@@ -489,7 +379,11 @@ fn drive(node: &Node) -> Evidence {
         .unwrap_or_default();
 
     let requests = server.requests().unwrap_or_default();
-    let contracts = persisted_contracts(&state).len();
+    // Walked now, judged after the cleanup below: the walk is fallible, and a state tree that will
+    // not enumerate must not be reported as a tree with no contracts in it — that is precisely how
+    // "no grandchild contract was written" would pass for the wrong reason.
+    let walked = persisted_contracts(&state)
+        .map_err(|e| format!("{} cannot be walked for contracts: {e}", state.display()));
     let dirs = agent_dirs(&state);
     let branches: Vec<String> = git(&repo, &["branch", "--list", "marion/*"])
         .lines()
@@ -505,6 +399,8 @@ fn drive(node: &Node) -> Evidence {
     // The dir goes with the guard, here rather than at the end of the function, so the order the
     // rest of this block establishes still holds: processes are killed before their cwd is removed.
     drop(dir);
+
+    let contracts = walked.unwrap_or_else(|e| panic!("{e}")).len();
 
     Evidence {
         spawn_result,

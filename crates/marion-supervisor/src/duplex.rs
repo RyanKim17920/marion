@@ -491,39 +491,7 @@ mod tests {
     use marion_core::agent_type::builtin;
     use marion_core::harness::Harness;
     use marion_harness::adapter_for;
-
-    /// A scratch dir that removes itself.
-    ///
-    /// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds
-    /// straight past any trailing cleanup, so an explicit call leaks on exactly the runs that fail
-    /// — the ones a developer re-runs most. `Drop` catches those, plus every `?` and early return.
-    struct Scratch(PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's
-            // own verdict.
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    impl std::ops::Deref for Scratch {
-        type Target = Path;
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    /// Bind the returned guard for the whole test — `temp("x").join("y")` drops the dir at the end
-    /// of that statement, deleting it out from under the test.
-    fn temp(name: &str) -> Scratch {
-        let p = std::env::temp_dir().join(format!("marion-duplex-{name}-{}", std::process::id()));
-        // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir
-        // behind, and pids recycle, so a later run can inherit that exact name.
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        Scratch(p)
-    }
+    use marion_testsupport::scratch;
 
     /// **The routing rule, asserted the way §3.4 requires it to be written.** Not one arm of this
     /// matches on a harness name: the expectation is derived from the adapter's own
@@ -646,7 +614,7 @@ mod tests {
     #[test]
     fn an_unknown_inbound_control_request_is_answered_and_a_root_with_no_wall_clock_does_not_hang()
     {
-        let dir = temp("unknown");
+        let dir = scratch("duplex-unknown");
         let marker = dir.join("mcp-ready");
         std::fs::write(&marker, b"ready\n").unwrap();
         let answer = dir.join("answer.jsonl");
@@ -796,11 +764,11 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
     /// guard already exists and already covers a file placed under it, so this needs no second
     /// guard type; it needs the marker to be somewhere something owns.
     ///
-    /// `dir` is bound for the whole test on purpose. `temp("ready").join(…)` would drop the guard
+    /// `dir` is bound for the whole test on purpose. `scratch("duplex-ready").join(…)` would drop the guard
     /// at the end of that statement and delete the directory out from under `wait_for_ready`.
     #[test]
     fn a_marker_written_after_the_wait_begins_is_still_seen() {
-        let dir = temp("ready");
+        let dir = scratch("duplex-ready");
         let path = dir.join("mcp-ready");
         let p = path.clone();
         let h = std::thread::spawn(move || {
@@ -817,7 +785,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
     /// lands must not become a prompt that goes out anyway.
     #[test]
     fn a_node_whose_marker_never_lands_is_killed_and_the_run_refused() {
-        let dir = temp("gate");
+        let dir = scratch("duplex-gate");
         let marker = dir.join("mcp-ready");
         let seen = dir.join("stdin-seen");
         // A node that echoes anything it is given. It is never given anything, because the marker
@@ -848,7 +816,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
     /// be killed — which is why the bound is a watchdog and not a per-read deadline.
     #[test]
     fn a_child_that_hangs_between_frames_is_killed_on_its_wall_clock() {
-        let dir = temp("hang");
+        let dir = scratch("duplex-hang");
         let marker = dir.join("mcp-ready");
         std::fs::write(&marker, b"ready\n").unwrap();
         // Answers the initialize round trip, then hangs forever without ever emitting `result`.

@@ -4,7 +4,7 @@
 //! as corruption, a concurrent writer's record read as a fragment of someone else's, or a replay
 //! that quietly reconstructs a different tree than the one that was written.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use marion_core::contract::{AgentId, ExitStatus, ProcessExit, TaskId};
 use marion_core::harness::Harness;
@@ -14,43 +14,7 @@ use marion_core::journal::{
 use marion_core::node::NodeState;
 use marion_core::registry::{Truncation, replay};
 use marion_supervisor::journal::{Journal, read_path};
-
-/// A scratch dir that removes itself.
-///
-/// `Drop`, and not a `remove_dir_all` at the end of each test: a failing assertion unwinds straight
-/// past any trailing cleanup, so an explicit call leaks on exactly the runs that fail — the ones a
-/// developer re-runs most. `Drop` catches those, plus every `?` and early return.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        // Ignored: the dir may already be gone, and a cleanup failure must not mask the test's own
-        // verdict.
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// Bind the returned guard for the whole test — `temp("x").join("y")` drops the dir at the end of
-/// that statement, deleting it out from under the test.
-fn temp(name: &str) -> Scratch {
-    let p = std::env::temp_dir().join(format!(
-        "marion-journal-it-{name}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
-    // and pids recycle, so a later run can inherit that exact name.
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).unwrap();
-    Scratch(p)
-}
+use marion_testsupport::scratch;
 
 /// A description carrying multi-byte UTF-8, so the truncation sweep below necessarily cuts one.
 const MULTIBYTE: &str = "killed on marion’s bound — 时限到了 ✂";
@@ -130,7 +94,7 @@ fn write_tree(path: &Path) -> Vec<usize> {
 /// §7.4: *"A truncated final line is discarded on replay."* This is that sentence as a sweep.
 #[test]
 fn a_journal_truncated_at_any_offset_replays_to_its_longest_intact_prefix() {
-    let dir = temp("torn");
+    let dir = scratch("journal-it-torn");
     let path = dir.join("journal.jsonl");
     let boundaries = write_tree(&path);
     let whole = std::fs::read(&path).unwrap();
@@ -190,7 +154,7 @@ fn a_journal_truncated_at_any_offset_replays_to_its_longest_intact_prefix() {
 /// writer would leave if the fragment were ever glued to a following record.
 #[test]
 fn a_complete_but_unparsable_line_stops_replay_rather_than_being_skipped() {
-    let dir = temp("garbage");
+    let dir = scratch("journal-it-garbage");
     let path = dir.join("journal.jsonl");
     write_tree(&path);
     let mut bytes = std::fs::read(&path).unwrap();
@@ -226,7 +190,7 @@ fn a_complete_but_unparsable_line_stops_replay_rather_than_being_skipped() {
 /// must be as boring as the sweep above.
 #[test]
 fn invalid_utf8_anywhere_is_never_a_panic() {
-    let dir = temp("utf8");
+    let dir = scratch("journal-it-utf8");
     let path = dir.join("journal.jsonl");
     write_tree(&path);
     let mut bytes = std::fs::read(&path).unwrap();
@@ -298,7 +262,7 @@ fn assert_all_present(path: &Path, writers: &[&str]) {
 /// **Two threads, one file, separate `Journal`s** — the in-process half of the concurrency claim.
 #[test]
 fn two_concurrent_writers_in_one_process_interleave_at_record_granularity() {
-    let dir = temp("threads");
+    let dir = scratch("journal-it-threads");
     let path = dir.join("journal.jsonl");
     std::thread::scope(|s| {
         for w in ["thread-a", "thread-b"] {
@@ -314,7 +278,7 @@ fn two_concurrent_writers_in_one_process_interleave_at_record_granularity() {
 /// them. The child is this same test binary, re-invoked on the helper below.
 #[test]
 fn two_concurrent_writer_processes_interleave_at_record_granularity() {
-    let dir = temp("processes");
+    let dir = scratch("journal-it-processes");
     let path = dir.join("journal.jsonl");
     let exe = std::env::current_exe().expect("a test binary knows its own path");
     let mut kids = Vec::new();

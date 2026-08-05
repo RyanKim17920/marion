@@ -90,7 +90,7 @@
 //! skip when a binary is missing: §9's standing rule is that *a criterion that quietly passes on a
 //! machine that cannot run it is worth less than no criterion.*
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -105,7 +105,9 @@ use marion_provider::{CannedServer, Config, EditTurn, RootScript, RootTurn, Scri
 use marion_supervisor::journal::read_path;
 use marion_supervisor::root::{RootPath, root_path};
 use marion_supervisor::run::run_bounded;
-use marion_testsupport::{fixture_repo, kill_hard, on_path};
+use marion_testsupport::{
+    fixture_repo, judge, kill_hard, on_path, persisted_contracts, scratch, survivors,
+};
 use serde_json::{Value, json};
 
 /// The outermost safety net. Every cell has its own `--timeout` below; this only exists so a wedged
@@ -151,142 +153,6 @@ const CHILD_FILE: &str = "src/xprod-marker.txt";
 
 /// What that file contains. Distinctive, so a stray copy anywhere on the machine is attributable.
 const CHILD_FILE_CONTENT: &str = "marion cross-product marker\n";
-
-/// A scratch dir that removes itself.
-///
-/// `Drop`, and not a `remove_dir_all` at the end of [`drive`]: that call sits after the provider is
-/// dropped and the survivor loop has run, which is the right *order* but not a guarantee — every
-/// `.expect` above it (the provider failing to bind, `marion run` failing to start) unwinds
-/// straight past it and strands the dir together with the fixture repository. `Drop` catches those.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        // Ignored: the dir may already be gone, and a cleanup failure must not mask the cell's own
-        // verdict.
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// `Deref` alone is not enough: it coerces `&Scratch` to `&Path` at a call site expecting one, but
-/// a generic `P: AsRef<Path>` — `std::fs::remove_dir_all`, `Command::current_dir` — never triggers
-/// that coercion and fails to compile instead.
-impl AsRef<Path> for Scratch {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// Bind the returned guard for as long as the cell needs it — `scratch("x").join("y")` drops the
-/// dir at the end of that statement, deleting it out from under the run. Bind it as `dir`, never as
-/// a bare `_`, which drops on the spot.
-fn scratch(name: &str) -> Scratch {
-    let p = std::env::temp_dir().join(format!("marion-xp-{name}-{}", std::process::id()));
-    // Removed on the way *in* as well: a run killed hard enough to skip `Drop` leaves a dir behind,
-    // and pids recycle, so a later run can inherit that exact name.
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("scratch dir");
-    Scratch(p.canonicalize().expect("scratch dir canonicalises"))
-}
-
-/// Every `contracts/<task_id>.json` marion persisted under `state`, as `(path, parsed)`.
-///
-/// **A file that cannot be read or parsed is a failure naming the file, never a file this function
-/// does not mention.** It used to be dropped by a `filter_map`, and the drop was invisible in
-/// exactly the direction that matters: assertion 2 counts the contracts and requires exactly one,
-/// so one good contract beside one corrupt one counted as one and passed. §6.7 makes a contract an
-/// audit record, and an audit record marion wrote and cannot read back is a defect whichever half
-/// is wrong — so the count and the parse are the same question and are answered in the same place.
-fn persisted_contracts(state: &Path) -> Vec<(PathBuf, Value)> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, out);
-            } else if p.extension().is_some_and(|x| x == "json")
-                && p.parent().is_some_and(|d| d.ends_with("contracts"))
-            {
-                out.push(p);
-            }
-        }
-    }
-    let mut paths = Vec::new();
-    walk(state, &mut paths);
-    paths
-        .into_iter()
-        .map(|p| {
-            let bytes = std::fs::read(&p).unwrap_or_else(|e| {
-                panic!(
-                    "marion persisted {} and this test cannot read it back: {e}",
-                    p.display()
-                )
-            });
-            let v = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                panic!(
-                    "{} is not JSON: {e}\nfirst 512 bytes:\n{}",
-                    p.display(),
-                    String::from_utf8_lossy(&bytes)
-                        .chars()
-                        .take(512)
-                        .collect::<String>()
-                )
-            });
-            (p, v)
-        })
-        .collect()
-}
-
-/// Processes still alive with `needle` on their command line, as `(pid, line)`.
-///
-/// `ps` is the *only* witness this file has for a leak, so every way it can fail to answer is a
-/// failure of the test rather than an empty answer. Reporting "no survivors" because `ps` was
-/// missing, errored, or printed nothing would make the leak assertion pass for free on exactly the
-/// machines where it cannot be checked — the silent pass this file exists to rule out.
-fn survivors(needle: &str) -> Vec<(i32, String)> {
-    let out = Command::new("ps")
-        .args(["-axo", "pid=,command="])
-        .output()
-        .expect("`ps` must run: without it nothing here can tell a clean run from a leak");
-    assert!(
-        out.status.success(),
-        "`ps -axo pid=,command=` exited {}: {}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    let listing = String::from_utf8_lossy(&out.stdout);
-    // `ps -ax` lists at minimum this very test process, so an empty listing means a witness that
-    // did not work, not a machine with nothing running on it.
-    assert!(
-        !listing.trim().is_empty(),
-        "`ps` printed nothing; the leak check would report no survivors whatever had leaked"
-    );
-    listing
-        .lines()
-        .filter(|l| l.contains(needle))
-        // A matching line whose pid will not parse is a survivor this test cannot name. Dropping it
-        // would be the same silent pass one line down, so say so instead.
-        .map(|l| {
-            let pid = l
-                .split_whitespace()
-                .next()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or_else(|| {
-                    panic!("`ps` line matches {needle:?} but carries no pid: {l:?}")
-                });
-            (pid, l.to_string())
-        })
-        .collect()
-}
 
 /// Does any string anywhere in `v` contain `needle`? The same whole-body scan the provider uses to
 /// decide a request's role, restated here so the assertions read the log the way the server read it.
@@ -731,7 +597,7 @@ fn argv_that_names_a_loopback_endpoint_always_says_canned() {
 /// clean up **unconditionally** and hand back what happened.
 fn drive(root: &Node, child: &Node) -> Evidence {
     let name = format!("{}-{}", root.agent_type, child.agent_type);
-    let dir = scratch(&name);
+    let dir = scratch(&format!("xp-{name}"));
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
@@ -763,7 +629,13 @@ fn drive(root: &Node, child: &Node) -> Evidence {
     let requests = server.requests().unwrap_or_default();
     // §4.3's location, resolved the one way marion resolves it — never a second literal here.
     let journal = read_path(&ProjectDir::new(&state, &repo).journal()).map_err(|e| e.to_string());
-    let contracts = persisted_contracts(&state);
+    // Walked here, **judged after the cleanup below.** The walk is fallible and the judgement is
+    // separate for a reason this call site is the reason for: the version that stood here panicked
+    // on an unreadable contract *before* the provider was dropped and the survivors swept, so one
+    // corrupt audit record became the leaked processes and stranded worktree the next block exists
+    // to prevent.
+    let walked = persisted_contracts(&state)
+        .map_err(|e| format!("{} cannot be walked for contracts: {e}", state.display()));
     let agent_dirs_present = std::fs::read_dir(&state)
         .into_iter()
         .flatten()
@@ -784,12 +656,18 @@ fn drive(root: &Node, child: &Node) -> Evidence {
         kill_hard(*pid);
     }
 
+    // Nothing is left running, so a contract marion wrote and this test cannot read back is now
+    // safe to fail on — and it must: §6.7 makes a contract an audit record, and one marion cannot
+    // read back is a defect whichever half is wrong.
+    let walked = walked.unwrap_or_else(|e| panic!("{e}"));
+    let contracts: Vec<Value> = judge(&walked).into_iter().map(|(_, v)| v.clone()).collect();
+
     Evidence {
         timed_out: out.timed_out,
         code: out.code,
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        persisted: contracts.into_iter().map(|(_, v)| v).collect(),
+        persisted: contracts,
         agent_dirs_present,
         requests,
         journal,
