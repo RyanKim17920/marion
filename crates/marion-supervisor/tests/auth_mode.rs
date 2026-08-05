@@ -1,37 +1,36 @@
 //! **What `--base-url` does under real auth, on each of the four harnesses.**
 //!
-//! Every assertion here is a *measurement of what marion does today*, and four of them pin
-//! behaviour that is wrong. Those are labelled `CURRENT BEHAVIOUR, NOT DESIRED` at the assertion,
-//! with the message stating what the right answer would look like — so a fix has a starting point,
-//! and so this file fails loudly when one lands rather than encoding the defect as correct and
-//! quietly outliving it.
+//! Every assertion here is a *measurement of what marion does today*. Four of them pin an adapter
+//! behaviour that is still wrong in itself, labelled `CURRENT BEHAVIOUR, NOT DESIRED` at the
+//! assertion with the message stating what the right answer would look like — so a fix has a
+//! starting point, and so this file fails loudly when one lands rather than encoding the drop as
+//! correct and quietly outliving it.
 //!
-//! # The defect
+//! # The defect, and what was done about it
 //!
 //! `marion run <type> --base-url <url>` under real auth (`Auth::Inherited`, the default since
-//! `--canned` inverted the flag) is **accepted, promised, and silently dropped**:
+//! `--canned` inverted the flag) used to be **accepted, promised, and silently dropped**: the CLI
+//! took the endpoint, the usage text advertised it, `root::compile` copied it into
+//! `LaunchSpec.base_url`, and then every adapter threw it away. An operator pointed marion at a
+//! corporate gateway, marion said nothing, and the node reached the vendor directly with a real
+//! credential — traffic leaving the perimeter the gateway existed to hold, logged nowhere they
+//! could see.
 //!
-//! * *Accepted.* `bin/marion.rs`'s `resolve_base_url` refuses only a **loopback** endpoint under
-//!   real auth — that is the combination that aims a real credential at a fake server. A
-//!   non-loopback one returns `Ok(Some(url))` and is already pinned by that binary's own unit
-//!   tests.
-//! * *Promised.* The refusal's own doc comment says the gate *"is not a ban on `--base-url` under
-//!   real auth: a non-loopback endpoint is a proxy or a gateway, which is a legitimate thing to
-//!   point a real credential at."* The usage text advertises the flag with no mode caveat.
-//! * *Dropped.* `root::compile` copies it into `LaunchSpec.base_url` unconditionally, and then
-//!   **every adapter throws it away** under `Inherited` — see the four tests below, one per
-//!   harness, each naming its own mechanism.
+//! **The CLI now refuses it.** `bin/marion.rs`'s `resolve_base_url` returns an error naming the
+//! flag and saying it is not implemented under real auth, before anything launches; that refusal
+//! and the corrected usage text are pinned by that binary's own unit tests. Refusing rather than
+//! honouring is the reversible direction — the `background` and `verification` precedent in
+//! `spawn::SpawnError` — and honouring a gateway can land later against a stated claim.
 //!
-//! So an operator points marion at a corporate gateway, marion says nothing, and the node reaches
-//! the vendor directly with a real credential. The blast radius is the thing the gateway existed to
-//! prevent: traffic leaving the perimeter, logged nowhere the operator can see.
+//! # Why the four adapter pins stay
 //!
-//! # What the right answer is not decided here
-//!
-//! Two are defensible — honour the endpoint on each harness's provider surface, or refuse
-//! `--base-url` under `Inherited` with a message naming the reason — and choosing between them is a
-//! design decision, not something to make incidentally inside a test file. These tests pin the
-//! present behaviour either way: whichever lands inverts a stated claim.
+//! They now describe a state **unreachable through the CLI**, and that is exactly why they are
+//! worth keeping: the adapters themselves are unchanged, and each still silently drops a base URL
+//! if one reaches it by any other route — `run_spawn`'s child path, a future caller of
+//! `root::compile`, or a `LaunchSpec` built in a test. The CLI gate is one layer; these are the
+//! layer under it. Read them as defence in depth against a recurrence, not as a live operator-facing
+//! defect. If honouring the endpoint ever lands, they invert; if a second entry point appears that
+//! forgets to gate, they are what catches it.
 //!
 //! # Zero cost
 //!
@@ -149,6 +148,12 @@ fn without_the_bridge_declaration(blob: &str) -> String {
 // ---------------------------------------------------------------------------------------------
 // One test per harness. Each states its own mechanism, because the four differ and a fix to one
 // is not a fix to the others.
+//
+// **Defence in depth, not a live operator-facing defect.** `bin/marion.rs` now refuses
+// `--base-url` under real auth before anything launches, so no CLI invocation reaches these code
+// paths carrying an endpoint. The adapters are unchanged, though, and each still drops one
+// silently — so these pin the layer under the gate, against a second entry point that forgets to
+// gate, and against the drop being mistaken for intent if honouring is ever implemented.
 // ---------------------------------------------------------------------------------------------
 
 /// **CURRENT BEHAVIOUR, NOT DESIRED.** `ClaudeCodeAdapter::compile` matches on `spec.auth` and the
@@ -177,11 +182,12 @@ fn claude_code_drops_a_gateway_base_url_under_real_auth() {
         None,
         "CURRENT BEHAVIOUR, NOT DESIRED: marion was handed {GATEWAY} and told this node nothing \
          about it, so a `claude` holding the operator's real OAuth token resolves \
-         api.anthropic.com and leaves the perimeter the gateway exists to hold. The right answer \
-         is one of two, and neither is silence: emit ANTHROPIC_BASE_URL from the endpoint under \
-         Inherited too (live mode withholds a *credential* marion minted, which a gateway URL is \
-         not), or refuse --base-url under Inherited in bin/marion.rs naming the reason. When \
-         either lands, invert this assertion. Compiled env: {:?}",
+         api.anthropic.com and leaves the perimeter the gateway exists to hold. The CLI now \
+         refuses this before it gets here, so this is the layer under that gate rather than a \
+         reachable defect — but the drop is still silent, and the right answer if it is ever \
+         honoured is to emit ANTHROPIC_BASE_URL from the endpoint under Inherited too: live mode \
+         withholds a *credential* marion minted, which a gateway URL is not. When that lands, \
+         invert this assertion. Compiled env: {:?}",
         live.env
     );
 }
@@ -208,12 +214,14 @@ fn gemini_drops_a_gateway_base_url_under_real_auth() {
     assert_eq!(
         env_value(&live, "GOOGLE_GEMINI_BASE_URL"),
         None,
-        "CURRENT BEHAVIOUR, NOT DESIRED: {GATEWAY} passed every gate marion has — non-loopback, \
-         https, accepted by base_url_is_acceptable — and was then discarded by the \
+        "CURRENT BEHAVIOUR, NOT DESIRED: {GATEWAY} passed every gate this adapter has — \
+         non-loopback, https, accepted by base_url_is_acceptable — and was then discarded by the \
          `if spec.auth == Auth::Canned` around the push, so the CLI resolves Google directly with \
-         the operator's own login. The right answer is to push GOOGLE_GEMINI_BASE_URL under \
-         Inherited too, or to refuse the flag in that mode. When either lands, invert this \
-         assertion. Compiled env: {:?}",
+         the operator's own login. `bin/marion.rs` now refuses the flag before it reaches here, so \
+         this is defence in depth; the absurdity it pins is local and unfixed either way, since \
+         this adapter still validates an endpoint it will then ignore. The right answer if it is \
+         ever honoured is to push GOOGLE_GEMINI_BASE_URL under Inherited too. When that lands, \
+         invert this assertion. Compiled env: {:?}",
         live.env
     );
 }
@@ -239,11 +247,11 @@ fn codex_drops_a_gateway_base_url_under_real_auth() {
         !live.contains(GATEWAY_HOST),
         "CURRENT BEHAVIOUR, NOT DESIRED: marion was handed {GATEWAY} and `codex exec` is launched \
          with no model_providers entry at all, so it reaches OpenAI directly with the operator's \
-         ~/.codex/auth.json. The `-c` argv route this mode already uses for mcp_servers.marion is \
-         the channel a gateway would take — writing no file is the §6.4 MUST, writing nothing \
-         anywhere is not. The right answer is to emit the provider override on that same route, or \
-         to refuse --base-url under Inherited. When either lands, invert this assertion. What the \
-         node is told:\n{live}"
+         ~/.codex/auth.json. The CLI now refuses this before it gets here, so this is the layer \
+         under that gate. The `-c` argv route this mode already uses for mcp_servers.marion is the \
+         channel a gateway would take — writing no file is the §6.4 MUST, writing nothing anywhere \
+         is not — so the right answer if it is ever honoured is to emit the provider override on \
+         that same route. When that lands, invert this assertion. What the node is told:\n{live}"
     );
 }
 
@@ -274,11 +282,12 @@ fn opencode_drops_a_gateway_base_url_under_real_auth() {
         !live.contains(GATEWAY_HOST),
         "CURRENT BEHAVIOUR, NOT DESIRED: marion was handed {GATEWAY} and the node's \
          OPENCODE_CONFIG_CONTENT names no provider options at all, so opencode resolves the \
-         provider out of the operator's own config and reaches the vendor directly. That variable \
+         provider out of the operator's own config and reaches the vendor directly. The CLI now \
+         refuses this before it gets here, so this is the layer under that gate. That variable \
          merges last and over the operator's config, which is the property that makes it the right \
-         carrier for a deliberate gateway override. The right answer is to emit \
-         provider.<id>.options.baseURL there, or to refuse --base-url under Inherited. When \
-         either lands, invert this assertion. What the node is told:\n{live}"
+         carrier for a deliberate gateway override — so the right answer if it is ever honoured is \
+         to emit provider.<id>.options.baseURL there. When that lands, invert this assertion. What \
+         the node is told:\n{live}"
     );
 }
 

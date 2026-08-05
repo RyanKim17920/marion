@@ -28,7 +28,7 @@ fn usage_text() -> String {
     format!(
         "usage: marion                                (interactive: pick harness, model, prompt)\n\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
-         \x20                 [--base-url <url>] [--model <name>] [--timeout <secs>] [--canned]\n\
+         \x20                 [--model <name>] [--timeout <secs>] [--canned [--base-url <url>]]\n\
          \n\
          agent types: {}\n\
          \n\
@@ -48,9 +48,15 @@ fn usage_text() -> String {
          useful. `--live` is still accepted and now does nothing — real auth is the default it\n\
          used to have to ask for.\n\
          \n\
-         A loopback --base-url without --canned is refused rather than obeyed: that combination\n\
-         aims a real credential at a fake server, which is the one mistake whose blast radius is\n\
-         the operator's account rather than the run. Pass --canned if that is what was meant.\n\
+         --base-url belongs to --canned and is refused without it. Two different reasons, one\n\
+         remedy. A loopback endpoint aims a real credential at a fake server, which is the one\n\
+         mistake whose blast radius is the operator's account rather than the run. Any other\n\
+         endpoint -- a proxy or a gateway -- is refused because marion does not implement it: no\n\
+         adapter passes an endpoint to a node running on the operator's own login, so the run\n\
+         would reach the vendor directly while looking like it went through the gateway. Pointing\n\
+         a real credential through a proxy is a reasonable thing to want and may land later;\n\
+         marion will not pretend to do it until it does. Pass --canned if the fixture is what was\n\
+         meant.\n\
          \n\
          --repo defaults to the enclosing git repository — the nearest ancestor of the working\n\
          directory holding a `.git` — and to the working directory itself when there is none, so\n\
@@ -193,11 +199,37 @@ fn is_loopback_url(url: &str) -> bool {
 /// and inheriting it silently is precisely the accident below. Under `--canned` it is the flag,
 /// then the environment, then marion's own provider.
 ///
-/// **A loopback `--base-url` without `--canned` is refused.** It is the one combination that aims a
-/// real credential at a fake server: the operator's own key or OAuth token, sent in the clear to
-/// whatever is listening on that port. Every other flag conflict here costs a run; this one can cost
-/// a credential, so it is an error naming the cause rather than a precedence rule. Inverting the
-/// default did not soften it — the gate now guards the *common* path rather than an opt-in one.
+/// **`--base-url` without `--canned` is refused, in two flavours.** Both are errors rather than
+/// precedence rules, and they are kept apart because the operator's diagnosis differs even though
+/// the remedy does not:
+///
+/// 1. **A loopback endpoint** is the one combination that aims a real credential at a fake server:
+///    the operator's own key or OAuth token, sent in the clear to whatever is listening on that
+///    port. Every other flag conflict here costs a run; this one can cost a credential.
+/// 2. **Any other endpoint** — a proxy or a gateway — is refused because *marion does not implement
+///    it*. This is the §12 accept-and-ignore shape, and until this refusal landed marion was the
+///    one producing it: `root::compile` copied the URL into `LaunchSpec.base_url` and **every
+///    adapter then dropped it** under [`Auth::Inherited`] (claude's `(None, None)` arm, gemini's
+///    `GOOGLE_GEMINI_BASE_URL` push gated on `Canned`, codex's and opencode's `config_files` early
+///    returns). So an operator pointed marion at a corporate gateway, got no error, and the node
+///    reached the vendor directly with a real credential — traffic leaving the perimeter the
+///    gateway existed to hold, logged nowhere they could see. `tests/auth_mode.rs` pins each
+///    adapter's drop, which is now defence in depth behind this gate.
+///
+/// **Refusing rather than implementing is the deliberate, reversible direction**, exactly as with
+/// `background` and `verification` in `spawn::SpawnError`. Honouring a gateway is a real feature —
+/// LiteLLM and corporate proxies are ordinary — and it can land later against this refusal. What
+/// cannot be undone is teaching an operator that marion silently reaches the vendor: the missing
+/// capability is merely absent, while advertising one that does not exist is the bug. The usage
+/// text is part of that promise and is corrected alongside this.
+///
+/// **`--canned` is untouched.** Endpoint, environment, then marion's own provider — that is the
+/// whole test suite's launch path, and it is the half a careless refusal breaks.
+///
+/// By default the answer is **no endpoint at all**: each harness resolves the vendor it is already
+/// logged in to, which is the whole premise — marion overlays nothing rather than pointing the node
+/// somewhere. `$MARION_BASE_URL` is ignored there for that reason; it names marion's canned server,
+/// and inheriting it silently is precisely the accident case 1 refuses loudly.
 fn resolve_base_url(
     canned: bool,
     explicit: Option<String>,
@@ -211,9 +243,17 @@ fn resolve_base_url(
              the combination sends a real credential to a fake server. Drop --base-url to let the \
              harness reach its own vendor, or pass --canned to run against the canned endpoint."
         )),
-        // An explicit non-loopback endpoint under real auth is a proxy or a gateway, which is a
-        // legitimate thing to point a real credential at.
-        (false, explicit) => Ok(explicit),
+        (false, Some(u)) => Err(format!(
+            "--base-url ({u}) without --canned is not implemented — marion accepts no endpoint for \
+             a node that presents the operator's own login. Every adapter drops it in that mode \
+             (claude emits no ANTHROPIC_BASE_URL, gemini no GOOGLE_GEMINI_BASE_URL, codex no \
+             model_providers entry, opencode no provider block), so the run would have reached the \
+             vendor directly while looking like it honoured the gateway. Drop --base-url to let \
+             the harness reach its own vendor, or pass --canned to run against marion's canned \
+             endpoint. Pointing a real credential through a proxy is a reasonable thing to want; \
+             marion will not pretend to do it until it does."
+        )),
+        (false, None) => Ok(None),
         (true, explicit) => Ok(Some(
             explicit
                 .or(from_env)
@@ -599,14 +639,77 @@ mod tests {
         }
     }
 
-    /// The gate is not a ban on `--base-url` under real auth: a non-loopback endpoint is a proxy or
-    /// a gateway, which is a legitimate thing to point a real credential at. A check that refused
-    /// those too would be safe and useless.
+    /// **A gateway under real auth is refused because marion does not implement it.**
+    ///
+    /// This assertion used to be its own inverse: the endpoint was returned, on the reasoning that
+    /// a proxy is a legitimate thing to point a real credential at. That reasoning is still sound
+    /// as a *feature* and wrong as a *description* — no adapter ever passed the endpoint on. Under
+    /// `Auth::Inherited` claude compiles `(None, None)`, gemini gates its `GOOGLE_GEMINI_BASE_URL`
+    /// push on `Canned`, and codex and opencode return from `config_files` before reading it. So
+    /// the operator got a run that reached the vendor directly and looked like it had honoured the
+    /// gateway, which is the §12 accept-and-ignore shape with marion on the wrong side of it.
+    ///
+    /// The refusal is the reversible direction (`spawn::SpawnError`'s `background` and
+    /// `verification` are the precedent): honouring can land later, but an operator taught that
+    /// marion silently reaches the vendor cannot be un-taught.
     #[test]
-    fn a_remote_base_url_is_allowed_because_a_proxy_is_a_real_endpoint() {
+    fn a_gateway_base_url_under_real_auth_is_refused_as_unimplemented_not_silently_dropped() {
+        let u = "https://gateway.example.com/v1";
+        let e = resolve_base_url(false, Some(u.into()), None)
+            .expect_err("marion drops this endpoint, so accepting it would be a promise it breaks");
+        assert!(e.contains(u), "the refusal must quote the URL: {e}");
+        assert!(
+            e.contains("not implemented"),
+            "it must say marion *will not*, not merely that the flag is wrong here — the operator \
+             needs to tell an unimplemented capability from a mistyped one: {e}"
+        );
+        assert!(
+            e.contains("--canned"),
+            "it must name the flag that makes the run legal: {e}"
+        );
+        assert!(
+            e.contains("reached the vendor directly"),
+            "it must say what would otherwise have happened, which is the part the operator cannot \
+             observe: {e}"
+        );
+    }
+
+    /// **The refusal must not swallow the loopback diagnosis.** Both arms now refuse and both name
+    /// `--canned`, so the only thing keeping them apart is the reason — and the reasons are not
+    /// interchangeable: one is "marion cannot do this yet", the other is "this would send your
+    /// credential to a fake server". An operator who reads the wrong one draws the wrong lesson.
+    #[test]
+    fn the_two_refusals_stay_distinguishable_by_the_reason_they_give() {
+        let loopback = resolve_base_url(false, Some("http://127.0.0.1:8099/v1".into()), None)
+            .expect_err("loopback is refused");
+        let gateway = resolve_base_url(false, Some("https://gateway.example.com/v1".into()), None)
+            .expect_err("a gateway is refused");
+        assert!(
+            loopback.contains("fake server") && !loopback.contains("not implemented"),
+            "the loopback refusal is a safety diagnosis, not a capability one: {loopback}"
+        );
+        assert!(
+            gateway.contains("not implemented") && !gateway.contains("fake server"),
+            "the gateway refusal is a capability diagnosis, not a safety one: {gateway}"
+        );
+    }
+
+    /// **The half a careless refusal breaks.** `--canned` plus `--base-url` is how every integration
+    /// test in this workspace launches — `m1_hop`, `cross_product`, `journal_wiring` and
+    /// `launch_only_root` all pass the pair — so widening the gate to "any `--base-url` is refused"
+    /// would take the whole suite down with it. Both a loopback fixture endpoint and a non-loopback
+    /// one stay accepted, since `--canned` says where the run is pointed and marion obeys it there.
+    #[test]
+    fn canned_still_accepts_an_explicit_endpoint_which_is_how_the_suite_launches() {
         assert_eq!(
-            resolve_base_url(false, Some("https://gateway.example.com/v1".into()), None),
-            Ok(Some("https://gateway.example.com/v1".into()))
+            resolve_base_url(true, Some(CANNED_BASE_URL.into()), None),
+            Ok(Some(CANNED_BASE_URL.into())),
+            "the exact pair every integration test passes"
+        );
+        assert_eq!(
+            resolve_base_url(true, Some("http://192.0.2.7:8099/v1".into()), None),
+            Ok(Some("http://192.0.2.7:8099/v1".into())),
+            "a canned provider on another host is still a canned provider"
         );
     }
 
@@ -810,6 +913,17 @@ mod tests {
         assert!(u.contains("--canned"), "the flag that reaches the fixture");
         assert!(u.contains(CANNED_BASE_URL), "and where that points");
         assert!(u.contains("`--live` is still accepted"), "{u}");
+        // The stale-promise check. The text used to advertise `--base-url` under real auth as a
+        // legitimate way to reach a proxy, which marion refuses as unimplemented — a promise in
+        // `--help` is the same class of bug as a stale default, one layer out.
+        assert!(
+            u.contains("--base-url belongs to --canned and is refused without it"),
+            "the usage text must not promise an endpoint under real auth that marion refuses: {u}"
+        );
+        assert!(
+            u.contains("marion does not implement it"),
+            "and it must say which of the two refusals is a capability limit: {u}"
+        );
         for name in builtin_names() {
             assert!(u.contains(name), "{name} must be listed");
         }
