@@ -546,7 +546,12 @@ fn contract_summary(text: &str) -> Option<String> {
     let completion = v.get("completion")?;
     let status = completion["status"].as_str().unwrap_or("(no status)");
     let mut summary = format!("the {harness} child returned {status}");
-    if let Some(head) = text[..start].trim().lines().next().filter(|l| !l.is_empty()) {
+    if let Some(head) = text[..start]
+        .trim()
+        .lines()
+        .next()
+        .filter(|l| !l.is_empty())
+    {
         // The failure line marion itself wrote, kept whole: it names what went wrong.
         summary = format!("{}\n{summary}", head.trim());
     }
@@ -570,7 +575,9 @@ fn render_user(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
                 let failed = block["is_error"].as_bool() == Some(true);
                 match (contract_summary(&text), failed) {
                     // A returned contract, in a sentence. See [`contract_summary`].
-                    (Some(summary), _) => say(out, if failed { "FAILED" } else { "CHILD" }, &summary)?,
+                    (Some(summary), _) => {
+                        say(out, if failed { "FAILED" } else { "CHILD" }, &summary)?
+                    }
                     // Verbatim: an error is the one thing worth the width.
                     (None, true) => say(out, "FAILED", text.trim())?,
                     (None, false) => say(out, "ok", &brief(text.trim(), LINE_CHARS))?,
@@ -1105,6 +1112,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The moment the whole live view exists for: a child came back.**
+    ///
+    /// `bridge::spawn_result` answers a `spawn` with the entire contract pretty-printed, so the
+    /// generic tool-result path would render it as 200 characters of `{ "acceptance_criteria": …`
+    /// — a JSON dump, at the one instant a watcher is paying attention. The three fields worth a
+    /// line are which harness ran, how it ended, and what it said.
+    ///
+    /// The literal below is the shape `spawn_result` emits, marion's own `TaskContract` rather than
+    /// a harness's frame — which is why reading specific fields is allowed here. If that shape
+    /// moves, `contract_summary` returns `None` and the generic brief takes over: less detail, and
+    /// never a wrong claim.
+    #[test]
+    fn a_returned_contract_is_a_sentence_about_the_child_and_not_a_wall_of_json() {
+        let contract = r#"{
+  "task_id": "019fd2b4-0000-7000-8000-000000000001",
+  "requester": "019fd2b4-0000-7000-8000-000000000002",
+  "child": {"harness": "codex", "version": "0.146.0", "model": null},
+  "acceptance_criteria": [],
+  "completion": {
+    "status": "Ok",
+    "narrative": {"value": "fixed the failing test and pushed one commit", "truncated": false,
+                  "original_bytes": 43},
+    "result_commits": ["abc1234"],
+    "exit": {"description": "child exited with code 0"}
+  }
+}"#;
+        let ok = shown(&format!(
+            r#"{{"type":"user","message":{{"content":[
+                {{"type":"tool_result","tool_use_id":"toolu_1","content":{}}}]}}}}"#,
+            serde_json::to_string(contract).unwrap()
+        ));
+        assert_eq!(ok.len(), 1, "{ok:?}");
+        assert!(ok[0].starts_with("CHILD"), "{:?}", ok[0]);
+        assert!(ok[0].contains("the codex child returned Ok"), "{:?}", ok[0]);
+        assert!(
+            ok[0].contains("fixed the failing test and pushed one commit"),
+            "the narrative is what the child actually reported: {:?}",
+            ok[0]
+        );
+        assert!(
+            !ok[0].contains("task_id"),
+            "the contract's plumbing belongs in the journal, not on a terminal: {:?}",
+            ok[0]
+        );
+
+        // A failed child: `spawn_result` puts marion's own one-line account **above** the JSON, and
+        // that line is the message — it is kept whole and shown first.
+        let failed = shown(&format!(
+            r#"{{"type":"user","message":{{"content":[
+                {{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":{}}}]}}}}"#,
+            serde_json::to_string(&format!(
+                "marion: the codex child failed — child exited with code 1; the child's stream \
+                 reported: This model is no longer available to new users.\n\n{}",
+                contract.replace(r#""status": "Ok""#, r#""status": "Failed""#)
+            ))
+            .unwrap()
+        ));
+        assert_eq!(failed.len(), 2, "{failed:?}");
+        assert!(failed[0].starts_with("FAILED"), "{:?}", failed[0]);
+        assert!(
+            failed[0].contains("This model is no longer available to new users."),
+            "marion's own diagnosis of the failure is the message: {:?}",
+            failed[0]
+        );
+        assert!(
+            failed[1].contains("the codex child returned Failed"),
+            "{:?}",
+            failed[1]
+        );
+
+        // A tool result that is not a contract still takes the generic path rather than being
+        // forced into a shape it does not have.
+        let plain = shown(
+            r#"{"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":"t","content":"{\"unrelated\":\"json\"}"}]}}"#,
+        );
+        assert!(plain[0].starts_with("ok"), "{:?}", plain[0]);
     }
 
     /// A stdout line the node wrote that was not JSON is usually a crash or a warning. It is shown
