@@ -82,6 +82,16 @@ Baseline: **Claude Code 2.1.220 · opencode 1.17.3 · Gemini CLI 0.53.0 · Codex
 and the alt-screen/`/diff` capture, 0.146.0 for S5**. (The 0.146.0 captures contain no `?1049h` at
 all; the alt-screen evidence is the 0.145.0 file.) Qwen Code and Amp claims are **unstamped and unverified locally**.
 
+**A version here names the binary a behaviour was measured on, not the binary that will run.** The
+installed `claude` on this machine is **2.1.222**, not the 2.1.220 stamped above and throughout this
+file. `5792140` replaced the exact pin with a **set** — `marion_testsupport::PINNED_HARNESSES`, the
+one table every version check in the workspace reads — whose **entry zero never moves**, because
+entry zero is what the prose claims, and whose tail carries versions since observed green with the
+evidence beside each. claude's set is `["2.1.220", "2.1.222"]`; codex, gemini and opencode each pin
+exactly one. So read "2.1.220" as *"the version the turn-one `\"tools\":[]` shape and the
+`tests/fixtures/s9` `can_use_tool` frame were captured from"*, and read a green suite as *"and
+2.1.222 was checked against them too."*
+
 **Session ownership.** Neither Codex nor Claude Code locks a session. Two concurrent `codex resume`
 processes on one id both start and neither is refused; writes are `O_APPEND` so records survive,
 but the two conversations diverge irreconcilably (Codex rollout records carry `turn_id` and no
@@ -212,7 +222,7 @@ routing third-party clients through Pro/Max OAuth — is prohibited and enforced
 | opencode | `provider{}` JSON | `OPENCODE_CONFIG_CONTENT` (inline) | **nothing** — speaks all 4 wire formats natively | trivial |
 | Claude Code | `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` | `--settings` + `--setting-sources ""` / env (**not** `CLAUDE_CONFIG_DIR` — breaks OAuth) | Anthropic Messages, SSE mandatory | easy |
 | Qwen Code † | `OPENAI_BASE_URL/_API_KEY/_MODEL` | `QWEN_HOME` | OpenAI Chat Completions | easy |
-| Gemini CLI | `GOOGLE_GEMINI_BASE_URL` | `GEMINI_CLI_HOME` | Gemini `v1beta` + mandatory `:countTokens`, `:embedContent` | medium |
+| Gemini CLI | `GOOGLE_GEMINI_BASE_URL` | `GEMINI_CLI_HOME` | Gemini `v1beta` + mandatory `:countTokens`, `:embedContent` | medium — **but blocked vendor-side on a personal login; see below** |
 | Codex | `[model_providers.X]` | `CODEX_HOME` / `-c` inline / `-p` profile (isolating `CODEX_HOME` **also** breaks auth — but copying `auth.json` in fully restores it) | **OpenAI Responses ONLY** | hardest |
 | Amp † | — | — | — | **blocked** |
 
@@ -227,6 +237,21 @@ unconditionally; `apply_patch` only as a Lark-grammar custom tool; MCP wrapped i
 auth cannot use a custom `base_url` at all.
 
 **Amp is structurally blocked** — BYOK removed, inference runs on Sourcegraph's machines.
+
+**⚠ Gemini CLI is blocked vendor-side for individual accounts** *(gemini 0.53.0, macOS darwin
+25.5.0, reproduced 2026-08-05 with **bare `gemini -p` and no marion involved**)*. It never reaches
+the model: `Error authenticating: IneligibleTierError: This client is no longer supported for Gemini
+Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of
+products`, with `reasonCode: UNSUPPORTED_CLIENT`, `tierId: free-tier`, **exit 55**. The Override /
+isolation / proxy columns above are statements about the *mechanism* and are unchanged; what is
+closed is the route to a **live** Gemini node on a personal `oauth-personal` login. Everything this
+file measures about Gemini against the **canned** provider is unaffected — the sixteen matrix cells,
+S12, the `trust: true` trap — because those never authenticate to Google. **Do not read a green
+Gemini cell as evidence that a live Gemini child works.** Unblocking needs Vertex or a
+`gemini-api-key`, which marion cannot choose for the operator without writing
+`~/.gemini/settings.json` — design §6.4 forbids it. Antigravity shares `~/.gemini/` and owns the
+`service=gemini` Keychain item S12 found, so S12 is a starting point, but the CLI surface must be
+measured rather than assumed to carry over.
 
 marion need not build the proxy; LiteLLM / Vercel AI Gateway / OpenRouter translate. **Universally
 expect to lose** prompt-caching fidelity (silently — `usage: 0`, not errors), reasoning-state
