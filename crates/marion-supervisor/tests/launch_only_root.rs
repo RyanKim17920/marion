@@ -163,7 +163,7 @@ const OPENCODE: Node = Node {
     model: Some("marion/canned-1"),
 };
 
-/// One frame in **this harness's own stream shape**, carrying exactly one marion tool call.
+/// One marion tool call in **this harness's own stream shape**, made and **answered**.
 ///
 /// The three shapes are not interchangeable and nothing translates between them: codex names the
 /// server and the verb as two fields of an `mcp_tool_call` item, gemini puts the harness-native
@@ -171,13 +171,24 @@ const OPENCODE: Node = Node {
 /// from the adapter's own `marion_tool_name` rather than restated, because that mapping *is* the
 /// §3.1 contract under test — a frame written by hand here would keep passing if the adapter's
 /// spelling changed underneath it.
+///
+/// **gemini's is two frames and used to be one**, which is not a fixture detail: §6.1 step 8 asks
+/// whether a verb was *answered*, and gemini answers a call in a separate `tool_result` frame
+/// paired back by `tool_id` (S12's event set, `tests/fixtures/s12/README.md`). A lone `tool_use`
+/// was never a complete recording of a working gemini turn; it merely satisfied a gate that asked
+/// the weaker question. codex revises its own item in place and opencode emits only terminal
+/// states, so those two already carried their verdict in the frame they had.
 fn reached_the_bridge(node: &Node) -> String {
     let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
     match node.harness {
         Harness::Codex => r#"{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}"#.to_string(),
         Harness::Gemini => format!(
-            r#"{{"type":"tool_use","tool_name":"{}","args":{{}}}}"#,
-            adapter.marion_tool_name("spawn")
+            "{}\n{}",
+            format_args!(
+                r#"{{"type":"tool_use","tool_name":"{}","tool_id":"call-1","args":{{}}}}"#,
+                adapter.marion_tool_name("spawn")
+            ),
+            r#"{"type":"tool_result","tool_id":"call-1","status":"success","output":"ok"}"#,
         ),
         Harness::OpenCode => format!(
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"completed","input":{{}}}}}}}}"#,
@@ -582,6 +593,111 @@ fn a_gemini_root_succeeds_once_one_marion_call_appears_in_its_stream() {
 #[test]
 fn an_opencode_root_succeeds_once_one_marion_call_appears_in_its_stream() {
     a_root_that_called_marion_succeeds(&OPENCODE, "reached-opencode");
+}
+
+// --- property 2b: a call that was refused is not a call that was answered -----------------------
+//
+// The gap between properties 1 and 2. A root can reach marion's bridge and still have delegated
+// nothing — the call goes out and comes back an error, and the harness carries on and exits 0.
+// Measured, not hypothesised: `tasks/todo.md`'s owed item 0 records a gemini root whose `spawn` was
+// refused by gemini's own schema validator, after which the root finished its turn, exited 0, and
+// marion journalled `ExitStatus::Ok` for a run that delegated nothing. Property 2's frame and this
+// one differ in exactly one field, which is the whole point: an *attempted* verb is not evidence.
+
+/// The same one marion call as [`reached_the_bridge`], in the same harness-native shape, **refused**.
+///
+/// One of the three is a recorded shape and two are constructed, and the difference is stated
+/// rather than smoothed over:
+///
+/// * **opencode is measured.** S13 recorded `{"status":"error","error":"The user rejected
+///   permission to use this specific tool call."}` on the tool part, with the run continuing and
+///   exiting 0 — `opencode::parse_stream` has read that shape since S13.
+/// * **codex is constructed.** `tests/fixtures/s6/` records the `mcp_tool_call` item carrying
+///   `result`, `error` and `status`, but only ever with `status: "completed"`, `error: null`. The
+///   failed spelling here is the obvious complement of the recorded success and is **not** a
+///   capture of a real refusal.
+/// * **gemini is constructed.** S12 records the `tool_result` frame and its `status`, but captured
+///   only `"success"`; it also redacted the `tool_id` on the `tool_use` and on the `tool_result`
+///   differently, so even the pairing of a result to its call is an assumption about that stream,
+///   not something the fixture proves.
+fn refused_at_the_bridge(node: &Node) -> String {
+    let adapter = adapter_for(node.harness).expect("every harness in this table has an adapter");
+    match node.harness {
+        Harness::Codex => r#"{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{},"result":null,"error":"spawn is not permitted here","status":"failed"}}"#.to_string(),
+        Harness::Gemini => format!(
+            "{}\n{}",
+            format_args!(
+                r#"{{"type":"tool_use","tool_name":"{}","tool_id":"call-1","parameters":{{}}}}"#,
+                adapter.marion_tool_name("spawn")
+            ),
+            r#"{"type":"tool_result","tool_id":"call-1","status":"error","output":"invalid arguments"}"#,
+        ),
+        Harness::OpenCode => format!(
+            r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","error":"The user rejected permission to use this specific tool call."}}}}}}"#,
+            adapter.marion_tool_name("spawn")
+        ),
+        Harness::ClaudeCode => panic!(
+            "claude-code is the duplex root path and has no LaunchOnly stream to fake (§3.4)"
+        ),
+    }
+}
+
+fn a_root_whose_only_call_was_refused_is_not_a_success(node: &Node, name: &str) {
+    let frame = refused_at_the_bridge(node);
+    let dir = scratch(&format!("lo-{name}"));
+    let bin = stub_harness(
+        &dir,
+        node,
+        "",
+        &format!("cat <<'EOF'\n{frame}\nEOF\nexit 0"),
+    );
+
+    let run = marion_run(&dir, node, &bin, "Delegate the task to a child.", "30");
+
+    assert_ne!(
+        run.code,
+        Some(0),
+        "{}: the root's only marion call was refused, so it delegated nothing; marion must not \
+         pass that on as success.\nstdout:\n{}\nstderr:\n{}",
+        node.harness,
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("was answered"),
+        "{}: the failure must name *this* cause — the bridge was reached and nothing came back \
+         from it — and not the different one property 1 asserts:\n{}",
+        node.harness,
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("never reached marion's bridge"),
+        "{}: a root whose call was refused DID reach the bridge; blaming a missing bridge would \
+         send an operator to the wrong fix:\n{}",
+        node.harness,
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains(node.harness.as_str()),
+        "{}: and it must name the harness:\n{}",
+        node.harness,
+        run.stderr
+    );
+}
+
+#[test]
+fn a_codex_root_whose_only_marion_call_was_refused_is_not_a_success() {
+    a_root_whose_only_call_was_refused_is_not_a_success(&CODEX, "refused-codex");
+}
+
+#[test]
+fn a_gemini_root_whose_only_marion_call_was_refused_is_not_a_success() {
+    a_root_whose_only_call_was_refused_is_not_a_success(&GEMINI, "refused-gemini");
+}
+
+#[test]
+fn an_opencode_root_whose_only_marion_call_was_refused_is_not_a_success() {
+    a_root_whose_only_call_was_refused_is_not_a_success(&OPENCODE, "refused-opencode");
 }
 
 // --- property 3: the bound, and the group kill behind it ----------------------------------------

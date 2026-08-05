@@ -63,8 +63,8 @@ use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_harness::{
-    Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, McpRoute, SpawnCtx,
-    adapter_for, json_frames,
+    Auth, CallOutcome, ChildExit, Extras, Invocation, LaunchSpec, MarionCall, McpDeclaration,
+    McpRoute, SpawnCtx, adapter_for, json_frames,
 };
 use serde_json::Value;
 
@@ -212,10 +212,13 @@ pub struct RootOutcome {
     pub stderr: String,
     /// `tool_name` of each permission request marion denied on expiry of the root's bound.
     pub denied_permissions: Vec<String>,
-    /// marion's verbs the root's stream shows it calling — the post-hoc readiness evidence on a
-    /// `LaunchOnly` root (§6.1 step 8). Empty on the duplex path, where readiness was gated
-    /// *before* the turn instead and this would only restate it.
-    pub marion_tool_calls: Vec<String>,
+    /// marion's verbs the root's stream shows it calling **and what came of each** — the post-hoc
+    /// readiness evidence on a `LaunchOnly` root (§6.1 step 8). Empty on the duplex path, where
+    /// readiness was gated *before* the turn instead and this would only restate it.
+    ///
+    /// The outcome is carried, not just the verb, because a verb that was *called* is not evidence
+    /// the root could delegate — see [`assert_a_verb_was_answered`].
+    pub marion_calls: Vec<MarionCall>,
     /// marion's own wall-clock bound expired and the root's process group was killed.
     pub timed_out: bool,
     /// The root's stream made a failure claim of its own, in the harness's words. Populated on the
@@ -276,6 +279,38 @@ pub enum RootError {
     BridgeNeverReached {
         harness: Harness,
         frames: usize,
+        exit: Option<i32>,
+        /// The harness's own words about the failure, taken from its stream. Pre-formatted, like
+        /// `stderr`. S13 measured opencode failing with **exit 1 and an empty stderr**, its whole
+        /// description in-stream; `spawn::build_contract` already keeps that beside the exit
+        /// numbers, and without it here a live root's refusal read "child exit Some(1)" and nothing
+        /// else — true, and useless for telling a retired model from a dead credential.
+        failure: String,
+        /// Pre-formatted, so the empty case adds no dangling label.
+        stderr: String,
+    },
+    /// The **other half** of §6.1 step 8, and the one that was missing. The root did reach marion's
+    /// bridge — so [`Self::BridgeNeverReached`] is the wrong diagnosis and would send an operator to
+    /// the wrong fix — and every call it made came back refused, or came back not at all.
+    ///
+    /// Measured: a gemini root whose `spawn` was refused by gemini's own schema validator finished
+    /// its turn, exited 0, and was journalled `ExitStatus::Ok` for a run that delegated nothing
+    /// (`tasks/todo.md`, owed item 0). The `exit:?` is in the sentence for the same reason it is in
+    /// the variant above — a clean exit code beside a run that did nothing is the whole trap.
+    #[error(
+        "{harness}: the root reached marion's bridge and not one of the {calls} verb(s) it called \
+         was answered — {detail}. It cannot have delegated anything, so the run is refused rather \
+         than reported as the success its exit code claims (§6.1 step 8). child exit \
+         {exit:?}{failure}{stderr}"
+    )]
+    NoVerbAnswered {
+        harness: Harness,
+        /// How many marion calls the stream showed. Non-zero by construction — zero is the variant
+        /// above — so the two refusals can never be confused by a reader counting.
+        calls: usize,
+        /// Each call and what became of it, pre-formatted. The verb matters as much as the verdict:
+        /// "spawn was refused" and "status was refused" are different runs.
+        detail: String,
         exit: Option<i32>,
         /// The harness's own words about the failure, taken from its stream. Pre-formatted, like
         /// `stderr`. S13 measured opencode failing with **exit 1 and an empty stderr**, its whole
@@ -719,7 +754,7 @@ fn launch_only(node: &RootNode, bound: StdDuration) -> Result<RootOutcome, RootE
     let outcome = RootOutcome {
         exit_code: out.code,
         transcript: json_frames(&stdout),
-        marion_tool_calls: adapter.marion_tool_calls(&stdout),
+        marion_calls: adapter.marion_calls(&stdout),
         // The same reading `spawn::build_contract` gives a child's stream, asked of the root's. A
         // root has no `TaskContract` to record it in, so its only destination is the refusal below.
         failure: adapter.parse_stream(&stdout, exit).failure,
@@ -735,7 +770,7 @@ fn launch_only(node: &RootNode, bound: StdDuration) -> Result<RootOutcome, RootE
     // the expiry wins the report, exactly as §6.7's status derivation lets `TimedOut` outrank every
     // other claim about the same run.
     if !outcome.timed_out {
-        assert_reached_the_bridge(node.harness, &outcome)?;
+        assert_a_verb_was_answered(node.harness, &outcome)?;
     }
     Ok(outcome)
 }
@@ -743,32 +778,99 @@ fn launch_only(node: &RootNode, bound: StdDuration) -> Result<RootOutcome, RootE
 /// §6.1 step 8's post-hoc readiness assertion, as a decision over what the run produced.
 ///
 /// A `LaunchOnly` node's MCP readiness is not observable before its turn — the prompt is already in
-/// argv — so the only honest check is afterwards: **did any marion verb appear in its stream?** If
-/// none did, the node took its turn without marion's tools, and §6.1 is emphatic that such a run
-/// **MUST NOT** be allowed to end as plain text: a toolless turn terminates `exit 0` with no
-/// diagnostic anywhere, which is indistinguishable from success. §12 records the Claude Code
-/// version of exactly this bug — first request toolless, a session title, exit 0 in 63 ms.
+/// argv — so the only honest check is afterwards, over its stream. §6.1 is emphatic that a turn
+/// taken without marion's tools **MUST NOT** be allowed to end as plain text: it terminates
+/// `exit 0` with no diagnostic anywhere, which is indistinguishable from success. §12 records the
+/// Claude Code version of exactly this bug — first request toolless, a session title, exit 0 in
+/// 63 ms.
 ///
-/// It is deliberately *not* keyed on `spawn` specifically. The question is whether the node reached
-/// marion's bridge at all; which verb it reached for is the node's business, and a check that
-/// demanded one would refuse a legitimate root that only listed its children.
-fn assert_reached_the_bridge(harness: Harness, outcome: &RootOutcome) -> Result<(), RootError> {
-    if !outcome.marion_tool_calls.is_empty() {
+/// **The question this asks used to be "was a verb *called*", and that was the defect.** The old
+/// reasoning here argued that a call the bridge refused still proves the node had marion's tools,
+/// *"which is the only thing being asserted"* — and the second half of that sentence is what was
+/// wrong. What §6.1 step 8 is protecting is not the node's possession of a tool list; it is the
+/// operator's ability to tell a run that delegated from one that did not. A gemini root whose
+/// `spawn` was refused by gemini's own schema validator satisfied the old gate, exited 0, and was
+/// journalled `ExitStatus::Ok` having delegated nothing (`tasks/todo.md`, owed item 0) — the same
+/// silent success the gate exists to prevent, one level in. It is also why the root-`report` defect
+/// fixed in `7ff470e` stayed invisible for as long as it did: once marion started *refusing* a
+/// root's `report` (and `36fbbee` widened that to an unreadable depth), every one of those refusals
+/// still read here as evidence the run had worked. A gate that passes on its own refusals is not a
+/// gate.
+///
+/// So the assertion is now: **at least one verb was answered.** Three shapes, three sentences:
+///
+/// * no marion call at all → [`RootError::BridgeNeverReached`], unchanged. The node never got the
+///   tools, and the fix is in the launch;
+/// * calls, none answered → [`RootError::NoVerbAnswered`]. The node had the tools and the bridge
+///   turned it away, and the fix is in whatever refused it. Two different pieces of news, so two
+///   errors — the same split `36fbbee` made between "you broke a rule" and "you were started
+///   wrong";
+/// * one answered call → `Ok`, whatever became of the rest. One is sufficient because the claim
+///   being made is about *the bridge*, not about the run's quality.
+///
+/// It is deliberately *not* keyed on `spawn` specifically. Which verb the node reached for is the
+/// node's business, and a check that demanded one would refuse a legitimate root that only listed
+/// its children.
+///
+/// **What this still cannot see is a limit of the streams, and is written down rather than papered
+/// over.** [`CallOutcome::Refused`] is populated from each harness's *structural* error signal; a
+/// refusal marion's own bridge issued arrives as an MCP result with `isError: true`, and whether
+/// codex and gemini re-surface that as a stream-level error is unmeasured — see
+/// [`marion_harness::CallOutcome`] for exactly which fixtures record what. On opencode the shape is
+/// recorded. Where a harness hides it, this gate will read a marion-side refusal as an answer, and
+/// closing that needs a recording, not a cleverer predicate.
+fn assert_a_verb_was_answered(harness: Harness, outcome: &RootOutcome) -> Result<(), RootError> {
+    if outcome.marion_calls.iter().any(|c| c.outcome.is_answered()) {
         return Ok(());
     }
-    Err(RootError::BridgeNeverReached {
+    // Pre-formatted once, so both variants below quote the run's own words the same way.
+    let failure = match &outcome.failure {
+        Some(f) => format!("; the root's stream reported: {f}"),
+        None => String::new(),
+    };
+    let stderr = match outcome.stderr.trim() {
+        "" => String::new(),
+        s => format!("; stderr: {}", s.chars().take(512).collect::<String>()),
+    };
+    if outcome.marion_calls.is_empty() {
+        return Err(RootError::BridgeNeverReached {
+            harness,
+            frames: outcome.transcript.len(),
+            exit: outcome.exit_code,
+            failure,
+            stderr,
+        });
+    }
+    Err(RootError::NoVerbAnswered {
         harness,
-        frames: outcome.transcript.len(),
+        calls: outcome.marion_calls.len(),
+        detail: outcome
+            .marion_calls
+            .iter()
+            .map(describe_call)
+            .collect::<Vec<_>>()
+            .join(", "),
         exit: outcome.exit_code,
-        failure: match &outcome.failure {
-            Some(f) => format!("; the root's stream reported: {f}"),
-            None => String::new(),
-        },
-        stderr: match outcome.stderr.trim() {
-            "" => String::new(),
-            s => format!("; stderr: {}", s.chars().take(512).collect::<String>()),
-        },
+        failure,
+        stderr,
     })
+}
+
+/// One call, as a clause an operator can act on.
+///
+/// `Unknown` says what was observed — a call with no result frame — rather than guessing which way
+/// it went. It is a different fix from a refusal (a run that stopped mid-call, against a rule that
+/// turned the node away), and naming it "refused" would send someone looking for a rule that does
+/// not exist.
+fn describe_call(call: &MarionCall) -> String {
+    match &call.outcome {
+        CallOutcome::Answered => format!("{} was answered", call.verb),
+        CallOutcome::Refused(why) => format!("{} was refused: {why}", call.verb),
+        CallOutcome::Unknown => format!(
+            "{} was called and its stream never showed a result",
+            call.verb
+        ),
+    }
 }
 
 /// The duplex root: §6.1 step 8's gate, then the prompt — **driven by [`crate::duplex`], the one
@@ -815,7 +917,7 @@ fn launch_duplex(
         stderr: out.stderr,
         denied_permissions: out.denied_permissions,
         // Gated *before* the turn on this path, so restating it post hoc would add nothing.
-        marion_tool_calls: vec![],
+        marion_calls: vec![],
         // Same reason: the duplex driver never reaches the post-hoc assertion, so there is nowhere
         // for a stream failure claim to be read from here.
         failure: None,
@@ -1313,12 +1415,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A run whose marion calls all came back **answered** — the only shape that satisfies the gate,
+    /// so every case below states its own departure from it rather than inheriting one.
     fn ran(calls: &[&str], frames: usize, exit: Option<i32>, stderr: &str) -> RootOutcome {
+        outcome(
+            &calls
+                .iter()
+                .map(|v| (*v, CallOutcome::Answered))
+                .collect::<Vec<_>>(),
+            frames,
+            exit,
+            stderr,
+        )
+    }
+
+    fn outcome(
+        calls: &[(&str, CallOutcome)],
+        frames: usize,
+        exit: Option<i32>,
+        stderr: &str,
+    ) -> RootOutcome {
         RootOutcome {
             exit_code: exit,
             transcript: vec![json!({}); frames],
             stderr: stderr.to_string(),
-            marion_tool_calls: calls.iter().map(|s| s.to_string()).collect(),
+            marion_calls: calls
+                .iter()
+                .map(|(verb, outcome)| MarionCall {
+                    verb: (*verb).to_string(),
+                    outcome: outcome.clone(),
+                })
+                .collect(),
             ..RootOutcome::default()
         }
     }
@@ -1329,7 +1456,7 @@ mod tests {
     #[test]
     fn a_launch_only_root_that_never_reached_the_bridge_is_a_refusal_not_an_exit_zero() {
         let clean_looking = ran(&[], 3, Some(0), "");
-        let err = assert_reached_the_bridge(Harness::Codex, &clean_looking)
+        let err = assert_a_verb_was_answered(Harness::Codex, &clean_looking)
             .expect_err("a run with no marion call must not be reported as a success");
         let msg = err.to_string();
         assert!(msg.contains("codex"), "it must name the harness: {msg}");
@@ -1365,7 +1492,7 @@ mod tests {
             failure: Some("APIError: model gemini-2.5-flash-lite is no longer available".into()),
             ..ran(&[], 1, Some(1), "")
         };
-        let msg = assert_reached_the_bridge(Harness::OpenCode, &silent_but_failed)
+        let msg = assert_a_verb_was_answered(Harness::OpenCode, &silent_but_failed)
             .expect_err("no marion call is still a refusal")
             .to_string();
         assert!(
@@ -1377,7 +1504,7 @@ mod tests {
             "and it must be labelled as the harness's claim, not marion's: {msg}"
         );
         // The empty case adds no dangling label — the same rule `stderr` already follows.
-        let quiet = assert_reached_the_bridge(Harness::OpenCode, &ran(&[], 1, Some(1), ""))
+        let quiet = assert_a_verb_was_answered(Harness::OpenCode, &ran(&[], 1, Some(1), ""))
             .expect_err("still a refusal")
             .to_string();
         assert!(
@@ -1386,21 +1513,127 @@ mod tests {
         );
     }
 
-    /// The other half, so the check above cannot pass by always failing: one call to any marion verb
-    /// is proof the node had marion's tools, whatever the run then did with them.
+    /// The other half, so the check above cannot pass by always failing: one **answered** call to
+    /// any marion verb satisfies the gate, whatever the run then did with it.
     #[test]
-    fn one_marion_call_of_any_verb_satisfies_the_post_hoc_assertion() {
+    fn one_answered_marion_call_of_any_verb_satisfies_the_post_hoc_assertion() {
         for verb in ["spawn", "status", "wait", "list", "report"] {
             assert!(
-                assert_reached_the_bridge(Harness::Gemini, &ran(&[verb], 1, Some(0), "")).is_ok(),
-                "{verb}: the question is whether the bridge was reached, not which verb was used"
+                assert_a_verb_was_answered(Harness::Gemini, &ran(&[verb], 1, Some(0), "")).is_ok(),
+                "{verb}: the question is whether a verb was answered, not which verb it was"
             );
         }
-        // Even a run that then failed: reaching the bridge and succeeding are different facts, and
-        // conflating them would relabel every genuine child failure as a launch failure.
+        // Even a run that then failed: an answered verb and a successful run are different facts,
+        // and conflating them would relabel every genuine child failure as a launch failure.
         assert!(
-            assert_reached_the_bridge(Harness::OpenCode, &ran(&["spawn"], 2, Some(1), "it broke"))
+            assert_a_verb_was_answered(Harness::OpenCode, &ran(&["spawn"], 2, Some(1), "it broke"))
                 .is_ok()
+        );
+    }
+
+    /// **The question the gate now asks, as a table** — because the change is which of these rows
+    /// is a pass, and a table is where that is legible.
+    ///
+    /// Row 3 is the defect owed item 0 recorded: a root that reached the bridge, had its one verb
+    /// refused, and exited 0. Row 5 is why `Unknown` is not folded into an answer: a stream that
+    /// showed a call and never showed its result is a run that stopped mid-call, and reading it as
+    /// success is the "passes because it failed to look" shape this repository keeps re-finding.
+    #[test]
+    fn the_gate_passes_only_on_an_answered_verb() {
+        let refused = || CallOutcome::Refused("§5.4 rejects `report` on a root".into());
+        // (label, the run's marion calls, does the gate pass)
+        let cases = [
+            ("no call at all", vec![], false),
+            (
+                "one answered call",
+                vec![("spawn", CallOutcome::Answered)],
+                true,
+            ),
+            ("one refused call", vec![("spawn", refused())], false),
+            (
+                "every call refused",
+                vec![("report", refused()), ("spawn", refused())],
+                false,
+            ),
+            (
+                "a call with no result",
+                vec![("spawn", CallOutcome::Unknown)],
+                false,
+            ),
+            (
+                "one answered among refusals — the bridge worked, so the run is not refused here",
+                vec![
+                    ("report", refused()),
+                    ("spawn", CallOutcome::Answered),
+                    ("status", CallOutcome::Unknown),
+                ],
+                true,
+            ),
+        ];
+        for (label, calls, ok) in cases {
+            assert_eq!(
+                assert_a_verb_was_answered(Harness::Gemini, &outcome(&calls, 1, Some(0), ""))
+                    .is_ok(),
+                ok,
+                "{label}"
+            );
+        }
+    }
+
+    /// **Two refusals, because they are two different pieces of news** — the split `36fbbee` made
+    /// for the bridge's own refusals, applied here.
+    ///
+    /// A root that never reached the bridge was started wrong and the fix is in the launch. A root
+    /// whose calls were all refused *had* marion's tools and something turned it away; telling that
+    /// operator "the root never reached marion's bridge" sends them to re-check a configuration that
+    /// is working.
+    #[test]
+    fn a_refused_call_is_not_reported_as_a_bridge_that_was_never_reached() {
+        let refused = outcome(
+            &[(
+                "spawn",
+                CallOutcome::Refused("invalid arguments for spawn".into()),
+            )],
+            2,
+            Some(0),
+            "",
+        );
+        let err = assert_a_verb_was_answered(Harness::Gemini, &refused)
+            .expect_err("a root whose only verb was refused delegated nothing");
+        let msg = err.to_string();
+        assert!(matches!(
+            err,
+            RootError::NoVerbAnswered {
+                harness: Harness::Gemini,
+                calls: 1,
+                exit: Some(0),
+                ..
+            }
+        ));
+        assert!(
+            !msg.contains("never reached marion's bridge"),
+            "it reached the bridge; blaming the launch sends the operator to the wrong fix: {msg}"
+        );
+        assert!(
+            msg.contains("spawn was refused: invalid arguments for spawn"),
+            "the refusal must carry the verb AND the refuser's own words: {msg}"
+        );
+        assert!(
+            msg.contains("Some(0)"),
+            "and the clean exit code, which is the whole trap: {msg}"
+        );
+
+        // The other spelling: a call whose result never arrived says so, rather than claiming a
+        // refusal nobody issued.
+        let quiet = assert_a_verb_was_answered(
+            Harness::Codex,
+            &outcome(&[("spawn", CallOutcome::Unknown)], 1, None, ""),
+        )
+        .expect_err("no answer is not an answer")
+        .to_string();
+        assert!(
+            quiet.contains("never showed a result") && !quiet.contains("was refused"),
+            "a stream that showed no result must not be reported as a rule violation: {quiet}"
         );
     }
 
@@ -1409,14 +1642,14 @@ mod tests {
     /// behind it.
     #[test]
     fn the_refusal_quotes_stderr_only_when_there_is_some() {
-        let with = assert_reached_the_bridge(
+        let with = assert_a_verb_was_answered(
             Harness::OpenCode,
             &ran(&[], 0, None, "  no provider configured\n"),
         )
         .unwrap_err()
         .to_string();
         assert!(with.contains("stderr: no provider configured"), "{with}");
-        let without = assert_reached_the_bridge(Harness::OpenCode, &ran(&[], 0, None, "  \n"))
+        let without = assert_a_verb_was_answered(Harness::OpenCode, &ran(&[], 0, None, "  \n"))
             .unwrap_err()
             .to_string();
         assert!(!without.contains("stderr:"), "{without}");
