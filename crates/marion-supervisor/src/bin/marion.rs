@@ -1567,7 +1567,12 @@ mod tests {
             let tag = lines[i].split_whitespace().next().unwrap_or_default();
             assert!(
                 lines[i].contains("first"),
-                "a render began mid-block, so two writers were interleaved:\n{}\n{}\n{}",
+                "a render began mid-block, so two writers were interleaved. `Terminal::show` must \
+                 hold the lock across a WHOLE render, not around each `write`: a per-write lock \
+                 still lets the other thread's line land between two lines of this one. It bites \
+                 only under load, and the symptom — a CHILD line spliced into the middle of the \
+                 root's prose — reads as a protocol bug in marion rather than a formatting bug in \
+                 the viewer, which is where anyone debugging it will start looking.\n{}\n{}\n{}",
                 lines[i],
                 lines.get(i + 1).cloned().unwrap_or_default(),
                 lines.get(i + 2).cloned().unwrap_or_default()
@@ -1578,8 +1583,13 @@ mod tests {
                     .unwrap_or_else(|| panic!("block starting at {i} is short"));
                 assert!(
                     line.contains(expected) && line.starts_with("     "),
-                    "the {tag} writer's render was split by the other thread: line {} of the \
-                     block is {line:?}",
+                    "the {tag} writer's render was split by the other thread: line {} of its \
+                     block is {line:?}. `Terminal::show` must hold the lock across a WHOLE \
+                     render, not around each `write` — a per-write lock still lets the other \
+                     thread's line land between two lines of this one. It bites only under load, \
+                     and the symptom — one writer's line spliced into the middle of the other's \
+                     prose — reads as a protocol bug in marion rather than a formatting bug in \
+                     the viewer, which is where anyone debugging it will start looking.",
                     n + 2
                 );
             }
@@ -1682,8 +1692,17 @@ mod tests {
                     ..
                 })
             ),
-            "a child that exited after the run was over went unannounced, so the view ended on a \
-             child that started and never finished: {seen:?}"
+            "a child that exited after the run was over went unannounced. The direction that \
+             breaks this is hoisting the return ABOVE the poll — `if stopped() {{ return; }}` at \
+             the top of the loop — which drops every record written between the last poll and the \
+             stop signal. That window is not hypothetical: the bridge writes `Exited` and \
+             `ContractPersisted` immediately before returning the `spawn` result, so a root that \
+             finishes inside one poll interval of its child lands squarely in it. By then the \
+             run's own summary is already on screen, so the view would end asserting a child was \
+             still running when marion knew it had finished — a view that ends on a lie, which is \
+             worse than one that ends late. (Reading the flag before rather than after the poll \
+             within an iteration is NOT this bug: both orders still poll before returning, and \
+             the mutation check confirmed both pass.) Saw: {seen:?}"
         );
     }
 
