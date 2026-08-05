@@ -606,15 +606,24 @@ mod main_tests {
     }
 
     /// **A live root's child is live.** The reading half of the hop; the writing half is
-    /// `tests/auth_mode.rs`, which pins that all four adapters put `MARION_AUTH=inherited` into the
-    /// declaration this reads back. The two meet at the wire spelling and nothing launches.
+    /// `tests/auth_mode.rs`, which pins that all four adapters put this exact value into the
+    /// declaration this reads back. Nothing launches.
+    ///
+    /// **The input is `as_wire`, not a typed `"inherited"`**, and that is what keeps the two halves
+    /// from drifting: both ends take the token from the one function every adapter serialises
+    /// through, so a rename cannot leave one side passing against a stale literal. The tables are
+    /// tied to each other by `the_wire_spelling_round_trips_so_the_two_halves_cannot_drift_apart`
+    /// over in that file — `as_wire` and `from_wire` are two independent `match`es.
     ///
     /// The endpoint is `None` and that is the point: live means marion overlays no endpoint on the
     /// child, exactly as it overlays none on the root. A canned child of a live root would launch
     /// against marion's canned server, which under real auth is not running.
     #[test]
     fn a_declaration_saying_inherited_makes_the_child_live_and_names_it_no_endpoint() {
-        let (auth, base_url) = auth_from_env(Some("inherited".into()), None);
+        let (auth, base_url) = auth_from_env(
+            Some(marion_harness::Auth::Inherited.as_wire().to_string()),
+            None,
+        );
         assert_eq!(auth, marion_harness::Auth::Inherited);
         assert_eq!(
             base_url, None,
@@ -633,7 +642,7 @@ mod main_tests {
     #[test]
     fn a_carried_base_url_does_not_demote_a_child_that_was_declared_live() {
         let (auth, base_url) = auth_from_env(
-            Some("inherited".into()),
+            Some(marion_harness::Auth::Inherited.as_wire().to_string()),
             Some("https://gateway.corp.example/v1".into()),
         );
         assert_eq!(
@@ -656,7 +665,10 @@ mod main_tests {
     /// nothing anywhere reporting it. A canned child gets marion's own provider instead.
     #[test]
     fn an_empty_base_url_falls_back_to_the_canned_endpoint_rather_than_being_obeyed() {
-        let (auth, base_url) = auth_from_env(Some("canned".into()), Some("   ".into()));
+        let (auth, base_url) = auth_from_env(
+            Some(marion_harness::Auth::Canned.as_wire().to_string()),
+            Some("   ".into()),
+        );
         assert_eq!(auth, marion_harness::Auth::Canned);
         assert_eq!(
             base_url.as_deref(),

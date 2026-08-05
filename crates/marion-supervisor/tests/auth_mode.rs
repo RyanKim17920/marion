@@ -141,7 +141,7 @@ fn everything_the_node_is_told(
 /// that reaches no vendor.
 fn without_the_bridge_declaration(blob: &str) -> String {
     blob.lines()
-        .filter(|l| !l.contains("MARION_BASE_URL"))
+        .filter(|l| !l.contains(marion_supervisor::root::BASE_URL_ENV))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -317,10 +317,17 @@ fn the_gateway_reaches_the_child_bridge_declaration_and_is_dropped_there_instead
 //
 // The bridge serves a node marion did not start, so the only channel from a live root to the
 // child it spawns is the per-server `env` block marion wrote into that root's declaration. These
-// tests are the writing half; `main_tests`' `auth_from_env` tests are the reading half, and the
-// two meet at the wire spelling `"inherited"`. Split because `auth_from_env` is private to the
-// `marion-supervisor` binary and cannot be called from an integration test — not because a hop is
-// unprovable without launching. Nothing here starts a process.
+// tests are the writing half; `main_tests`' `auth_from_env` tests are the reading half. Split
+// because `auth_from_env` is private to the `marion-supervisor` binary and cannot be called from
+// an integration test — not because a hop is unprovable without launching. Nothing here starts a
+// process.
+//
+// **Neither half spells the token itself.** Two halves that meet at a hand-typed `"inherited"`
+// drift silently: rename the spelling on one side and both tests keep passing while the hop
+// breaks. So every needle below is *built* from `Auth::Inherited.as_wire()`, which is the same
+// function all four adapters serialise through, and the reading half calls `auth_from_env` with
+// that same value — one source, both ends. `the_wire_spelling_round_trips` ties the last knot; see
+// its comment for what is genuinely unpinned today.
 //
 // Each test also asserts `MARION_BASE_URL` is **absent, not empty**. That is a real regression,
 // not a hypothetical: `unwrap_or_default()` once wrote `MARION_BASE_URL: ""` into a live root's
@@ -343,20 +350,61 @@ fn live_spec_without_endpoint(model: Option<&str>) -> LaunchSpec {
     }
 }
 
+/// **The one knot the two halves are tied with.**
+///
+/// `Auth::as_wire` and `Auth::from_wire` are two *independent* match tables sitting next to each
+/// other in `adapter.rs`, and nothing in the workspace asserted they are inverses. Every writer
+/// goes through the first (`claude_code`, `codex`, `gemini` and `opencode` all serialise
+/// `auth.as_wire()`) and the only reader goes through the second (`main::auth_from_env`), so an
+/// edit to one table alone breaks the hop — and does it in the *silent* direction, since
+/// `from_wire` failing to recognise a value falls back to `Canned` rather than refusing.
+///
+/// That is what makes this the tie rather than a tautology: it is the only assertion anywhere that
+/// fails on such an edit, and the declaration tests below take their needle from `as_wire` so the
+/// same rename cannot leave them passing against a stale literal.
+#[test]
+fn the_wire_spelling_round_trips_so_the_two_halves_cannot_drift_apart() {
+    for mode in [Auth::Canned, Auth::Inherited] {
+        assert_eq!(
+            Auth::from_wire(mode.as_wire()),
+            Some(mode),
+            "{mode:?} serialises as {:?} and reads back as something else. as_wire and from_wire \
+             are two separate match tables: a rename in one is a live root whose child is silently \
+             canned, because an unrecognised value falls back to Canned rather than refusing",
+            mode.as_wire()
+        );
+    }
+}
+
+/// The `MARION_AUTH=inherited` needle in one route's own quoting, assembled from the two names
+/// that are actually load-bearing rather than typed out: `root::AUTH_ENV` is the constant
+/// `main::spawn_env` reads the variable by, and `as_wire` is the function all four adapters
+/// serialise the mode through. Only the *quoting* differs per route, and that is the caller's.
+fn auth_needle(quote: fn(&str, &str) -> String) -> String {
+    quote(marion_supervisor::root::AUTH_ENV, Auth::Inherited.as_wire())
+}
+
+/// A pretty-printed `serde_json` object member, which is how claude's `--mcp-config` document and
+/// gemini's settings document both carry it.
+fn json_member(k: &str, v: &str) -> String {
+    format!("\"{k}\": \"{v}\"")
+}
+
 /// The declaration must say the mode outright. Absence would be read back as `Canned`
 /// (`Auth::from_wire` returning `None` and the caller defaulting), and a canned child of a live
 /// root launches against marion's canned server, which under real auth is not running.
-fn assert_declares_inherited_and_no_endpoint(harness: &str, blob: &str, auth_key: &str) {
+fn assert_declares_inherited_and_no_endpoint(harness: &str, blob: &str, auth_needle: &str) {
     assert!(
-        blob.contains(auth_key),
-        "{harness}: the declaration does not carry {auth_key}, so this live root's child would be \
-         compiled canned and launched against a canned server that is not running:\n{blob}"
+        blob.contains(auth_needle),
+        "{harness}: the declaration does not carry {auth_needle}, so this live root's child would \
+         be compiled canned and launched against a canned server that is not running:\n{blob}"
     );
     assert!(
-        !blob.contains("MARION_BASE_URL"),
-        "{harness}: a live declaration must omit MARION_BASE_URL entirely, never write it empty — \
-         an empty value read back as Ok(\"\") produced a child that was neither live nor \
-         canned:\n{blob}"
+        !blob.contains(marion_supervisor::root::BASE_URL_ENV),
+        "{harness}: a live declaration must omit {} entirely, never write it empty — an empty \
+         value read back as Ok(\"\") produced a child that was neither live nor canned. This \
+         asserts the key is ABSENT, not that its value is falsy:\n{blob}",
+        marion_supervisor::root::BASE_URL_ENV
     );
 }
 
@@ -367,7 +415,7 @@ fn a_live_claude_root_declares_its_child_inherited() {
         &ClaudeCodeAdapter,
         &live_spec_without_endpoint(Some("haiku")),
     );
-    assert_declares_inherited_and_no_endpoint("claude", &blob, "\"MARION_AUTH\": \"inherited\"");
+    assert_declares_inherited_and_no_endpoint("claude", &blob, &auth_needle(json_member));
 }
 
 /// The route: repeated `-c mcp_servers.marion.<key>=<toml>` on argv — neither a document nor an
@@ -376,7 +424,10 @@ fn a_live_claude_root_declares_its_child_inherited() {
 #[test]
 fn a_live_codex_root_declares_its_child_inherited() {
     let (_, blob) = everything_the_node_is_told(&CodexAdapter, &live_spec_without_endpoint(None));
-    assert_declares_inherited_and_no_endpoint("codex", &blob, "MARION_AUTH=\\\"inherited\\\"");
+    // A TOML scalar inside a `-c` argument, seen through the `{:?}` the blob is built with — so
+    // the inner quotes arrive escaped.
+    let needle = auth_needle(|k, v| format!("{k}=\\\"{v}\\\""));
+    assert_declares_inherited_and_no_endpoint("codex", &blob, &needle);
 }
 
 /// The route: the system-settings JSON that `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names.
@@ -386,7 +437,7 @@ fn a_live_gemini_root_declares_its_child_inherited() {
         &GeminiAdapter,
         &live_spec_without_endpoint(Some("gemini-2.5-flash")),
     );
-    assert_declares_inherited_and_no_endpoint("gemini", &blob, "\"MARION_AUTH\": \"inherited\"");
+    assert_declares_inherited_and_no_endpoint("gemini", &blob, &auth_needle(json_member));
 }
 
 /// The route: `OPENCODE_CONFIG_CONTENT`, a JSON document inline in the child's environment.
@@ -398,5 +449,7 @@ fn a_live_opencode_root_declares_its_child_inherited() {
     );
     let content = env_value(&inv, "OPENCODE_CONFIG_CONTENT")
         .expect("a live opencode node's declaration rides OPENCODE_CONFIG_CONTENT");
-    assert_declares_inherited_and_no_endpoint("opencode", content, "\"MARION_AUTH\":\"inherited\"");
+    // Compact, not pretty: this document is serialised into an environment variable.
+    let needle = auth_needle(|k, v| format!("\"{k}\":\"{v}\""));
+    assert_declares_inherited_and_no_endpoint("opencode", content, &needle);
 }
