@@ -244,9 +244,32 @@ pub fn wait_for_ready(path: &Path, timeout: StdDuration) -> bool {
     path.exists()
 }
 
+/// Everything the driver observes on a node's stdout, handed to a [`DuplexSpec::sink`] **as it is
+/// observed** rather than after the run returns.
+///
+/// Two variants and not one, because a stdout line that is not JSON is still something the node
+/// said. `DuplexOutcome::stdout` keeps it verbatim either way, but a sink that only ever saw
+/// `Frame` would render a run in which the node printed a stack trace as an unexplained silence —
+/// the failure mode this module exists to stop.
+#[derive(Debug, Clone, Copy)]
+pub enum StreamEvent<'a> {
+    /// One parsed `stream-json` frame, in the order it arrived.
+    Frame(&'a Value),
+    /// A stdout line that did not parse as JSON, verbatim and without its newline.
+    Unparsed(&'a str),
+}
+
+/// Where a driver sends [`StreamEvent`]s while the node is still running.
+///
+/// **`Fn`, not `FnMut`, and borrowed rather than owned.** The driver is a single reader loop that
+/// holds the spec by shared reference, so a sink that needs state carries its own `Cell`/`RefCell`
+/// and a sink that needs none — the renderer in `bin/marion.rs` writes straight to a stream — costs
+/// nothing. Nothing here is `Send`: the sink is called on the reader's own thread, between frames.
+pub type StreamSink<'a> = &'a dyn Fn(StreamEvent<'_>);
+
 /// What one duplex session needs, over and above the compiled [`marion_harness::Invocation`] the
 /// caller has already turned into a `Command`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DuplexSpec<'a> {
     /// The marker the bridge touches **after flushing** its `tools/list` reply (§6.1 step 8).
     pub ready_file: &'a Path,
@@ -264,6 +287,36 @@ pub struct DuplexSpec<'a> {
     /// child, which is bounded by its contract's `timeout_secs`; `None` for a root, which marion
     /// offers no wall clock at all (§9).
     pub wall_clock: Option<StdDuration>,
+    /// Where to send each [`StreamEvent`] the moment it is read, or `None` to observe the run only
+    /// through the returned [`DuplexOutcome`].
+    ///
+    /// **This is why the driver contains no `println!`, and must not grow one.** Both callers reach
+    /// this same function, and only one of them has a human on the other end:
+    ///
+    /// - `marion run` is a person at a terminal, who otherwise learns nothing until the whole run
+    ///   returns. It passes a sink.
+    /// - `run_spawn` drives a child from *inside* `marion-supervisor`, whose own stdout **is** the
+    ///   stdio MCP stream the root harness is parsing. A byte written there that is not a JSON-RPC
+    ///   message corrupts the protocol marion itself speaks. It passes `None`, and
+    ///   `a_child_run_writes_not_one_byte_of_the_nodes_stream_to_marions_own_stdout` is the test
+    ///   that keeps it true whatever a future frame handler decides to be helpful about.
+    pub sink: Option<StreamSink<'a>>,
+}
+
+/// Hand-written because a [`StreamSink`] is a `dyn Fn` and cannot derive it. The sink is reported as
+/// present or absent, which is the only fact about it a debug print could honestly carry.
+impl std::fmt::Debug for DuplexSpec<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DuplexSpec")
+            .field("ready_file", &self.ready_file)
+            .field("prompt", &self.prompt)
+            .field("init_id", &self.init_id)
+            .field("mcp_ready_timeout", &self.mcp_ready_timeout)
+            .field("blocked_bound", &self.blocked_bound)
+            .field("wall_clock", &self.wall_clock)
+            .field("sink", &self.sink.map(|_| "<sink>"))
+            .finish()
+    }
 }
 
 /// What a duplex session produced.
@@ -411,10 +464,21 @@ pub fn run_duplex(
     }
 
     // One round trip through the harness's event loop, after the tool list was flushed to it.
+    // Every stdout line the driver reads passes through here, which is the one place a live
+    // observer can be fed without any handler downstream having to remember to. The sink is called
+    // *before* the frame is dispatched or recorded, so what a watcher sees is the arrival order,
+    // not marion's handling order — and a frame that makes a later step fail has still been shown.
     let record = |outcome: &mut DuplexOutcome, line: &str| -> Option<Value> {
         outcome.stdout.push_str(line);
         outcome.stdout.push('\n');
-        serde_json::from_str::<Value>(line).ok()
+        let frame = serde_json::from_str::<Value>(line).ok();
+        if let Some(sink) = spec.sink {
+            match &frame {
+                Some(v) => sink(StreamEvent::Frame(v)),
+                None => sink(StreamEvent::Unparsed(line)),
+            }
+        }
+        frame
     };
     writeln!(stdin, "{}", initialize_request(&spec.init_id))?;
     stdin.flush()?;
@@ -644,6 +708,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 // A **root**: §9 offers it no wall-clock ceiling, so nothing here can rescue a
                 // dropped request. That is the whole point of the test.
                 wall_clock: None,
+                sink: None,
             },
         )
         .expect("the run returns");
@@ -675,6 +740,131 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
         // `blocked_bound` above is 900 s: the generic arm must not spend a permission budget it is
         // not a permission, which the elapsed assertion already proves.
         assert!(out.denied_permissions.is_empty());
+    }
+
+    /// Set on the re-executed copy of this test binary that actually drives a child. See
+    /// [`a_child_run_writes_not_one_byte_of_the_nodes_stream_to_marions_own_stdout`].
+    const CHILD_STDOUT_PROBE: &str = "MARION_DUPLEX_CHILD_STDOUT_PROBE";
+    /// A string the stub node says on stdout and marion must never repeat on its own.
+    const SENTINEL: &str = "sentinel-4f1a-the-node-said-this";
+
+    /// A node whose stream contains the sentinel in a frame, in a non-JSON line, and in a tool call.
+    fn sentinel_node(marker: &Path) -> String {
+        std::fs::write(marker, b"ready\n").unwrap();
+        format!(
+            r#"read init
+printf '{{"type":"control_response","response":{{"subtype":"success","request_id":"marion-init-probe","response":{{}}}}}}\n'
+read user
+printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{SENTINEL}"}}]}}}}\n'
+printf 'this line is not json at all: {SENTINEL}\n'
+printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
+        )
+    }
+
+    fn drive_sentinel_node(spec_sink: Option<StreamSink<'_>>, marker: &Path) -> DuplexOutcome {
+        run_duplex(
+            SysCommand::new("sh").args(["-c", &sentinel_node(marker)]),
+            &DuplexSpec {
+                ready_file: marker,
+                prompt: "do the task",
+                init_id: "marion-init-probe".into(),
+                mcp_ready_timeout: StdDuration::from_secs(5),
+                blocked_bound: StdDuration::ZERO,
+                // A **child**: bounded, exactly as `run_spawn` bounds one.
+                wall_clock: Some(StdDuration::from_secs(30)),
+                sink: spec_sink,
+            },
+        )
+        .expect("the run returns")
+    }
+
+    /// **The load-bearing test of the streaming change.** A child is driven from inside
+    /// `marion-supervisor`, whose stdout *is* the stdio MCP stream the root harness parses — so a
+    /// driver that prints a frame as it reads it does not merely produce noise, it injects
+    /// non-JSON-RPC bytes into a protocol marion itself is speaking, and the root's tool calls stop
+    /// working for a reason nothing reports.
+    ///
+    /// It cannot be asserted in-process: libtest captures `println!` from the test thread, so an
+    /// in-process check would pass against a driver that prints unconditionally. So the driver runs
+    /// in a **re-executed copy of this test binary** with `--nocapture`, where a stray write reaches
+    /// a real pipe, and the parent asserts the sentinel the node said is nowhere in it.
+    ///
+    /// Mutation check (2026-08-05): with `sink` ignored and the frame `println!`ed unconditionally
+    /// in `record`, this fails —
+    /// *"marion echoed a child node's stream onto its own stdout"* — and passes as written.
+    #[test]
+    fn a_child_run_writes_not_one_byte_of_the_nodes_stream_to_marions_own_stdout() {
+        if std::env::var(CHILD_STDOUT_PROBE).is_ok() {
+            // The re-executed copy: drive a child with no sink and say nothing at all. Whatever
+            // reaches this process's stdout from here on is marion's doing, not the test's.
+            let dir = scratch("duplex-child-silence-probe");
+            let out = drive_sentinel_node(None, &dir.join("mcp-ready"));
+            // The stub must really have spoken, or the parent's assertion would hold vacuously.
+            assert!(
+                out.stdout.contains(SENTINEL),
+                "the stub node never emitted the sentinel; the silence assertion would be vacuous"
+            );
+            return;
+        }
+        let exe = std::env::current_exe().expect("the test binary re-executes itself");
+        // libtest names a test by its path without the crate segment.
+        let name = format!(
+            "{}::a_child_run_writes_not_one_byte_of_the_nodes_stream_to_marions_own_stdout",
+            module_path!().split_once("::").expect("crate::module").1
+        );
+        let probe = SysCommand::new(&exe)
+            .args(["--exact", "--nocapture", "--test-threads", "1", &name])
+            .env(CHILD_STDOUT_PROBE, "1")
+            .output()
+            .expect("the probe runs");
+        let stdout = String::from_utf8_lossy(&probe.stdout);
+        let stderr = String::from_utf8_lossy(&probe.stderr);
+        assert!(
+            probe.status.success(),
+            "the probe itself failed, so it proves nothing:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            !stdout.contains(SENTINEL),
+            "marion echoed a child node's stream onto its own stdout — the stdio MCP stream the \
+             root harness parses. Every byte there must be a JSON-RPC message marion wrote on \
+             purpose.\n{stdout}"
+        );
+        assert!(
+            !stderr.contains(SENTINEL),
+            "marion echoed a child node's stream onto its own stderr; a child's output belongs in \
+             its captured record, not in the supervisor's.\n{stderr}"
+        );
+    }
+
+    /// The other half of the seam: with a sink, **every** line the node wrote is delivered live —
+    /// frames as frames, and a line that was not JSON as itself rather than dropped. Delivery is in
+    /// arrival order and happens before the run returns, which is the whole point.
+    #[test]
+    fn a_sink_sees_every_line_in_arrival_order_including_one_that_is_not_json() {
+        let dir = scratch("duplex-sink-seam");
+        let seen: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+        let sink = |e: StreamEvent<'_>| {
+            seen.borrow_mut().push(match e {
+                Frame(v) => format!("frame:{}", v["type"].as_str().unwrap_or("?")),
+                Unparsed(s) => format!("unparsed:{s}"),
+            });
+        };
+        use StreamEvent::{Frame, Unparsed};
+        let out = drive_sentinel_node(Some(&sink), &dir.join("mcp-ready"));
+        let seen = seen.into_inner();
+        assert_eq!(
+            seen.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "frame:control_response",
+                "frame:assistant",
+                &format!("unparsed:this line is not json at all: {SENTINEL}"),
+                "frame:result",
+            ],
+            "the sink must see the initialize round trip and the turn, in arrival order"
+        );
+        // Streaming is additive: the accumulated record is untouched by the presence of a sink.
+        assert_eq!(out.transcript.len(), 3);
+        assert!(out.stdout.contains("not json at all"));
     }
 
     /// A pty-only surface has no launch path on either axis, and §5.2 forbids inventing one by
@@ -799,6 +989,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 mcp_ready_timeout: StdDuration::from_millis(100),
                 blocked_bound: StdDuration::ZERO,
                 wall_clock: Some(StdDuration::from_secs(10)),
+                sink: None,
             },
         )
         .expect_err("a node that never got marion's tools must be refused");
@@ -831,6 +1022,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 mcp_ready_timeout: StdDuration::from_secs(5),
                 blocked_bound: StdDuration::ZERO,
                 wall_clock: Some(StdDuration::from_millis(500)),
+                sink: None,
             },
         )
         .expect("the bounded run returns");

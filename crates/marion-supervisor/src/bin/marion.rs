@@ -17,7 +17,9 @@ use std::time::Duration as StdDuration;
 
 use marion_core::agent_type::{DEFAULT_TIMEOUT_SECS, builtin, builtin_names};
 use marion_core::paths::state_dir;
+use marion_supervisor::duplex::StreamEvent;
 use marion_supervisor::root;
+use serde_json::Value;
 
 /// How long the root may take to have marion's tool list before the run is refused. Generous —
 /// the measured connect is ~70 ms — because the alternative to waiting is a run that ends in
@@ -372,6 +374,332 @@ fn pick(input: &mut impl BufRead, out: &mut impl Write) -> io::Result<Option<Cho
     }))
 }
 
+// --- the live view ------------------------------------------------------------------------------
+//
+// A run is minutes long and, until this existed, produced not one byte until it was over: a person
+// watching a root delegate to a codex child had a blank terminal and no way to tell a working run
+// from a wedged one. What follows turns the frames `duplex` reads into lines a person can read
+// **while they are still arriving**.
+//
+// Three rules it holds to, all of them things the accumulated transcript did badly or not at all:
+//
+// 1. **No frame is silent.** A kind this renderer has no special handling for still produces one
+//    line naming it. Silence on an unhandled kind is the failure family this repo has spent the
+//    session removing: it is indistinguishable from nothing having happened.
+// 2. **No raw JSON.** A 30 kB `initialize` `control_response` and a 2 kB `tool_result` are both
+//    frames; neither is something to paste at a person. Values are summarised and truncated —
+//    except an error, which is printed verbatim, because a truncated error is a lie about what the
+//    node said.
+// 3. **This is the `marion run` path only.** Nothing here is reachable from a child; see
+//    `duplex::DuplexSpec::sink`.
+
+/// The width of the tag column. Wide enough for the longest tag below, so the bodies line up and
+/// the eye can scan the left edge for the interesting event.
+const TAG_WIDTH: usize = 8;
+
+/// How much of one summarised value is shown before it is cut.
+const VALUE_CHARS: usize = 72;
+/// How much of one summarised line is shown before it is cut.
+const LINE_CHARS: usize = 200;
+
+/// `s` truncated to `n` **characters** with an ellipsis, or `s` if it already fits.
+///
+/// Characters and not bytes: a node's text is arbitrary UTF-8 and slicing it by byte index panics
+/// on the first multibyte character, which would take the whole run down to render a line.
+fn brief(s: &str, n: usize) -> String {
+    let s = s.replace(['\n', '\r', '\t'], " ");
+    if s.chars().count() <= n {
+        return s;
+    }
+    let kept: String = s.chars().take(n).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// One tagged line, or one per line of a multi-line body with the tag on the first only.
+///
+/// An empty body still prints its tag: a frame that arrived is news even when it carries nothing
+/// worth summarising.
+fn say(out: &mut dyn Write, tag: &str, body: &str) -> io::Result<()> {
+    let mut lines = body.lines().filter(|l| !l.trim().is_empty()).peekable();
+    if lines.peek().is_none() {
+        return writeln!(out, "{tag:<TAG_WIDTH$}  ");
+    }
+    let mut first = true;
+    for line in lines {
+        if first {
+            writeln!(out, "{tag:<TAG_WIDTH$}  {line}")?;
+            first = false;
+        } else {
+            writeln!(out, "{:<TAG_WIDTH$}  {line}", "")?;
+        }
+    }
+    Ok(())
+}
+
+/// A tool call's arguments as `key="value"` pairs, truncated.
+///
+/// Deliberately schema-free: it reads whatever keys the object has rather than the ones a
+/// particular tool is known to take, so a new marion verb and a built-in nobody has seen both
+/// render without this function being edited. `serde_json` orders object keys, so the line is
+/// stable enough to assert on.
+fn call_args(input: &Value) -> String {
+    let Some(map) = input.as_object() else {
+        return match input {
+            Value::Null => String::new(),
+            other => brief(&other.to_string(), VALUE_CHARS),
+        };
+    };
+    let parts: Vec<String> = map
+        .iter()
+        .map(|(k, v)| match v {
+            Value::String(s) => format!("{k}={:?}", brief(s, VALUE_CHARS)),
+            Value::Null | Value::Bool(_) | Value::Number(_) => format!("{k}={v}"),
+            Value::Array(a) => format!("{k}=[{} items]", a.len()),
+            Value::Object(o) => format!("{k}={{{} keys}}", o.len()),
+        })
+        .collect();
+    brief(&parts.join(" "), LINE_CHARS)
+}
+
+/// The text a `tool_result` block carries, whether it is a bare string or the block list 2.1.220
+/// also uses.
+fn result_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// One `assistant` frame: its content blocks, in order.
+fn render_assistant(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let blocks = frame["message"]["content"].as_array();
+    let empty = blocks.is_none_or(|b| b.is_empty());
+    if empty {
+        // Rule 1: a turn that carried no blocks is still a turn that happened.
+        return say(
+            out,
+            "root",
+            "(an assistant frame carrying no content blocks)",
+        );
+    }
+    for block in blocks.into_iter().flatten() {
+        match block["type"].as_str().unwrap_or_default() {
+            "text" => say(out, "root", block["text"].as_str().unwrap_or_default())?,
+            // Never the thinking itself: it is long, and it is not what a watcher is here for.
+            "thinking" => say(
+                out,
+                "think",
+                &format!(
+                    "({} characters of reasoning)",
+                    block["thinking"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .chars()
+                        .count()
+                ),
+            )?,
+            "tool_use" => render_tool_use(block, out)?,
+            other => say(out, "block", &format!("an assistant `{other}` block"))?,
+        }
+    }
+    Ok(())
+}
+
+/// One `tool_use` block. **A marion verb is marked, because it is the interesting event** — a
+/// `spawn` is the moment the root stops working alone, and it is what a person running `marion run`
+/// is watching for. Everything else is one line naming the tool and summarising its arguments.
+fn render_tool_use(block: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let name = block["name"]
+        .as_str()
+        .unwrap_or("<a tool_use block with no name>");
+    let args = call_args(&block["input"]);
+    match name.strip_prefix("mcp__marion__") {
+        Some(verb) => say(out, "MARION", format!("{verb}  {args}").trim_end()),
+        None => say(out, "tool", format!("{name}  {args}").trim_end()),
+    }
+}
+
+/// A returned `TaskContract`, as a sentence — **the one tool result worth reading a schema for.**
+///
+/// `bridge::spawn_result` answers a `spawn` with the whole contract pretty-printed, so the moment a
+/// watcher most cares about — a child came back — would otherwise render as 200 characters of
+/// `{ "task_id": …, "requester": …`, which is the JSON dump this renderer exists not to do. The
+/// interesting three fields are the child's harness, its status, and the narrative it reported;
+/// everything else in a contract is for the journal, which keeps all of it.
+///
+/// **This reads marion's own shape, not a harness's**, which is why it is allowed to be specific:
+/// `TaskContract` is defined in this workspace and changing it breaks this compile-adjacent
+/// expectation loudly, in a test. A missing field yields `None` and the caller falls back to the
+/// generic brief, so a contract that grows or loses a field degrades rather than lies.
+fn contract_summary(text: &str) -> Option<String> {
+    // A failed spawn puts a one-line account *above* the contract (`bridge::failure_line`), so the
+    // JSON starts at the first `{` rather than at byte zero.
+    let start = text.find('{')?;
+    let v: Value = serde_json::from_str(text[start..].trim()).ok()?;
+    let harness = v["child"]["harness"].as_str()?;
+    let completion = v.get("completion")?;
+    let status = completion["status"].as_str().unwrap_or("(no status)");
+    let mut summary = format!("the {harness} child returned {status}");
+    if let Some(head) = text[..start].trim().lines().next().filter(|l| !l.is_empty()) {
+        // The failure line marion itself wrote, kept whole: it names what went wrong.
+        summary = format!("{}\n{summary}", head.trim());
+    }
+    match completion["narrative"]["value"].as_str() {
+        Some(n) => Some(format!("{summary}: {}", brief(n, LINE_CHARS))),
+        None => Some(format!("{summary}, reporting no narrative")),
+    }
+}
+
+/// One `user` frame. On this path it is not a person typing: it is the harness feeding tool results
+/// back into the conversation, which is how a watcher learns whether a call worked.
+fn render_user(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let blocks = frame["message"]["content"].as_array();
+    if blocks.is_none_or(|b| b.is_empty()) {
+        return say(out, "user", "(a user frame carrying no content blocks)");
+    }
+    for block in blocks.into_iter().flatten() {
+        match block["type"].as_str().unwrap_or_default() {
+            "tool_result" => {
+                let text = result_text(&block["content"]);
+                let failed = block["is_error"].as_bool() == Some(true);
+                match (contract_summary(&text), failed) {
+                    // A returned contract, in a sentence. See [`contract_summary`].
+                    (Some(summary), _) => say(out, if failed { "FAILED" } else { "CHILD" }, &summary)?,
+                    // Verbatim: an error is the one thing worth the width.
+                    (None, true) => say(out, "FAILED", text.trim())?,
+                    (None, false) => say(out, "ok", &brief(text.trim(), LINE_CHARS))?,
+                }
+            }
+            "text" => say(
+                out,
+                "user",
+                &brief(block["text"].as_str().unwrap_or_default(), LINE_CHARS),
+            )?,
+            other => say(out, "block", &format!("a user `{other}` block"))?,
+        }
+    }
+    Ok(())
+}
+
+/// The terminal `result` frame — the run's own verdict, and the last line a watcher sees.
+fn render_result(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let subtype = frame["subtype"].as_str().unwrap_or("(no subtype)");
+    let errored = frame["is_error"].as_bool() == Some(true) || subtype != "success";
+    let mut facts = vec![subtype.to_string()];
+    if let Some(ms) = frame["duration_ms"].as_u64() {
+        facts.push(format!("{:.1}s", ms as f64 / 1000.0));
+    }
+    if let Some(turns) = frame["num_turns"].as_u64() {
+        facts.push(format!("{turns} turns"));
+    }
+    if let Some(cost) = frame["total_cost_usd"].as_f64().filter(|c| *c > 0.0) {
+        facts.push(format!("${cost:.4}"));
+    }
+    if errored {
+        say(out, "FAILED", &facts.join(", "))?;
+        // The node's own words about its failure, in full — a truncated error misreports it.
+        if let Some(text) = frame["result"].as_str().filter(|t| !t.trim().is_empty()) {
+            return say(out, "", text.trim());
+        }
+        return Ok(());
+    }
+    say(out, "done", &facts.join(", "))
+}
+
+/// Everything `marion run` shows a person, from one [`StreamEvent`].
+fn render_event(event: StreamEvent<'_>, out: &mut dyn Write) -> io::Result<()> {
+    let frame = match event {
+        // A line the node wrote that was not JSON at all is almost always a crash or a warning from
+        // the harness. Verbatim, and marked as coming from the node rather than from marion.
+        StreamEvent::Unparsed(line) => return say(out, "stdout", line.trim_end()),
+        StreamEvent::Frame(f) => f,
+    };
+    let subtype = frame["subtype"].as_str().unwrap_or_default();
+    match frame["type"].as_str().unwrap_or_default() {
+        "assistant" => render_assistant(frame, out),
+        "user" => render_user(frame, out),
+        "result" => render_result(frame, out),
+        "system" if subtype == "init" => {
+            let model = frame["model"].as_str().unwrap_or("(unnamed)");
+            let tools = frame["tools"].as_array().map_or(0, Vec::len);
+            let mcp: Vec<String> = frame["mcp_servers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|s| {
+                    format!(
+                        "{}={}",
+                        s["name"].as_str().unwrap_or("?"),
+                        s["status"].as_str().unwrap_or("?")
+                    )
+                })
+                .collect();
+            say(
+                out,
+                "session",
+                &format!(
+                    "model {model}, {tools} tools, mcp: {}",
+                    if mcp.is_empty() {
+                        "none".to_string()
+                    } else {
+                        mcp.join(" ")
+                    }
+                ),
+            )
+        }
+        "control_request" if frame["request"]["subtype"] == "can_use_tool" => say(
+            out,
+            "PERMIT",
+            &format!(
+                "{} — marion has nobody to ask (§9); it will be denied when the Blocked bound expires",
+                frame["request"]["tool_name"]
+                    .as_str()
+                    .unwrap_or("(unnamed tool)")
+            ),
+        ),
+        "control_request" => say(
+            out,
+            "control",
+            &format!(
+                "{} — marion does not implement it and is answering with an error",
+                frame["request"]["subtype"]
+                    .as_str()
+                    .unwrap_or("(no subtype)")
+            ),
+        ),
+        // Never its body: the `initialize` reply alone is ~30 kB of session catalogue.
+        "control_response" => say(
+            out,
+            "control",
+            &format!(
+                "{} to {}",
+                frame["response"]["subtype"]
+                    .as_str()
+                    .unwrap_or("(no subtype)"),
+                frame["response"]["request_id"]
+                    .as_str()
+                    .unwrap_or("(no request_id)")
+            ),
+        ),
+        // Rule 1. Not a dump and not silence: the kind, and its subtype when it has one.
+        "" => say(out, "frame", "a stdout frame with no `type` field"),
+        other => say(
+            out,
+            "frame",
+            &match subtype {
+                "" => other.to_string(),
+                s => format!("{other}/{s}"),
+            },
+        ),
+    }
+}
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.iter().any(|a| a == "--help" || a == "-h") {
@@ -492,7 +820,26 @@ fn main() -> ExitCode {
         node.agent_dir.path().display()
     );
 
-    match root::launch(&node, blocked_bound, MCP_READY_TIMEOUT) {
+    // **The live view, on stderr.** Deliberately not stdout, and checked rather than assumed:
+    // marion's stdout is a machine surface with a live consumer — `tests/launch_only_root.rs` reads
+    // it back with `adapter.marion_tool_calls(&run.stdout)`, and says why in as many words ("the
+    // frame it emitted must survive onto marion's own stdout, still readable as the marion call it
+    // was"). A root has no `TaskContract` to return (§9), so that frame stream *is* its result, and
+    // prose interleaved into it would be prose in somebody's parse. stderr already carries every
+    // other line marion says to a person — the banner above, the denials below, the node's own
+    // stderr — so the stream joins them, and `2>/dev/null` still leaves clean frames on stdout.
+    //
+    // Errors are dropped rather than escalated: a closed stderr must not be what ends a run that is
+    // otherwise working, and there is nowhere left to report it to anyway.
+    let watch = |event: StreamEvent<'_>| {
+        // Locked per event rather than held: `render_event` writes whole lines, and stderr is
+        // unbuffered, so a line reaches the terminal the moment its frame is read — which is the
+        // entire point of streaming it.
+        let mut err = io::stderr().lock();
+        let _ = render_event(event, &mut err);
+    };
+
+    match root::launch_watched(&node, blocked_bound, MCP_READY_TIMEOUT, Some(&watch)) {
         Ok(outcome) => {
             for frame in &outcome.transcript {
                 println!("{frame}");
@@ -551,6 +898,231 @@ mod tests {
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    // --- the live view ---------------------------------------------------------------------------
+
+    /// One frame through the renderer, as the lines a person would see.
+    fn shown(frame: &str) -> Vec<String> {
+        let v: Value = serde_json::from_str(frame).expect("the fixture frame parses");
+        let mut buf: Vec<u8> = Vec::new();
+        render_event(StreamEvent::Frame(&v), &mut buf).expect("rendering a frame cannot fail");
+        String::from_utf8(buf)
+            .expect("the renderer writes UTF-8")
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .collect()
+    }
+
+    /// The event a person runs `marion run` to watch: the root stopping working alone. It is marked
+    /// differently from every other tool call, and its arguments are readable rather than JSON.
+    #[test]
+    fn a_spawn_is_marked_as_marions_own_verb_and_a_builtin_tool_is_not() {
+        let lines = shown(
+            r#"{"type":"assistant","message":{"content":[
+                {"type":"tool_use","id":"toolu_1","name":"mcp__marion__spawn",
+                 "input":{"agent_type":"codex","prompt":"fix the failing test","timeout_secs":600}}]}}"#,
+        );
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("MARION"), "{:?}", lines[0]);
+        assert!(lines[0].contains("spawn"), "{:?}", lines[0]);
+        assert!(lines[0].contains(r#"agent_type="codex""#), "{:?}", lines[0]);
+        assert!(
+            lines[0].contains(r#"prompt="fix the failing test""#),
+            "{:?}",
+            lines[0]
+        );
+
+        let builtin = shown(
+            r#"{"type":"assistant","message":{"content":[
+                {"type":"tool_use","id":"t2","name":"Bash","input":{"command":"git status"}}]}}"#,
+        );
+        assert_eq!(builtin.len(), 1, "{builtin:?}");
+        assert!(builtin[0].starts_with("tool"), "{:?}", builtin[0]);
+        assert!(
+            builtin[0].contains(r#"Bash  command="git status""#),
+            "{:?}",
+            builtin[0]
+        );
+        assert!(
+            !builtin[0].contains("MARION"),
+            "a built-in must not be dressed up as the interesting event: {:?}",
+            builtin[0]
+        );
+    }
+
+    /// Assistant prose arrives as prose, over as many lines as it has — and thinking is counted,
+    /// never printed, because it is long and it is not what a watcher is here for.
+    #[test]
+    fn assistant_text_is_shown_as_text_and_thinking_is_only_counted() {
+        let lines = shown(
+            r#"{"type":"assistant","message":{"content":[
+                {"type":"thinking","thinking":"twelve chars"},
+                {"type":"text","text":"Delegating to a codex child.\nOne child, then I will report."}]}}"#,
+        );
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("think"), "{:?}", lines[0]);
+        assert!(lines[0].contains("12 characters"), "{:?}", lines[0]);
+        assert!(!lines[0].contains("twelve chars"), "{:?}", lines[0]);
+        assert!(lines[1].starts_with("root"), "{:?}", lines[1]);
+        assert!(
+            lines[1].ends_with("Delegating to a codex child."),
+            "{:?}",
+            lines[1]
+        );
+        // A continuation keeps the body column and drops the tag, so prose reads as prose.
+        assert!(lines[2].starts_with("        "), "{:?}", lines[2]);
+        assert!(
+            lines[2].contains("One child, then I will report."),
+            "{:?}",
+            lines[2]
+        );
+    }
+
+    /// A tool result is brief when it worked and **verbatim when it did not**: a truncated error
+    /// misreports what the node said, which is the one thing worth the width.
+    #[test]
+    fn a_tool_result_is_brief_and_a_failure_is_verbatim() {
+        let long = "x".repeat(4000);
+        let ok = shown(&format!(
+            r#"{{"type":"user","message":{{"content":[
+                {{"type":"tool_result","tool_use_id":"t1","content":"{long}"}}]}}}}"#
+        ));
+        assert_eq!(ok.len(), 1, "{ok:?}");
+        assert!(ok[0].starts_with("ok"), "{:?}", ok[0]);
+        assert!(
+            ok[0].chars().count() < 300,
+            "a 4 kB tool result must not be pasted at a person: {} chars",
+            ok[0].chars().count()
+        );
+        assert!(ok[0].ends_with('…'), "{:?}", ok[0]);
+
+        let failed = shown(
+            r#"{"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":"t1","is_error":true,
+                 "content":[{"type":"text","text":"depth 3 exceeds the gate"}]}]}}"#,
+        );
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert!(failed[0].starts_with("FAILED"), "{:?}", failed[0]);
+        assert!(
+            failed[0].contains("depth 3 exceeds the gate"),
+            "{:?}",
+            failed[0]
+        );
+    }
+
+    /// The run's own verdict, and — when it is a failure — the node's words about it in full.
+    #[test]
+    fn the_terminal_result_reports_the_verdict_and_prints_a_failure_in_full() {
+        let ok = shown(
+            r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":12345,
+                "num_turns":4,"total_cost_usd":0.0213,"result":"done"}"#,
+        );
+        assert_eq!(ok.len(), 1, "{ok:?}");
+        assert!(ok[0].starts_with("done"), "{:?}", ok[0]);
+        assert!(ok[0].contains("12.3s"), "{:?}", ok[0]);
+        assert!(ok[0].contains("4 turns"), "{:?}", ok[0]);
+        assert!(ok[0].contains("$0.0213"), "{:?}", ok[0]);
+
+        let bad = shown(
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,
+                "num_turns":2,"result":"the provider returned 500 for the second request"}"#,
+        );
+        assert_eq!(bad.len(), 2, "{bad:?}");
+        assert!(bad[0].starts_with("FAILED"), "{:?}", bad[0]);
+        assert!(bad[0].contains("error_during_execution"), "{:?}", bad[0]);
+        assert!(
+            bad[1].contains("the provider returned 500 for the second request"),
+            "an error is printed whole: {:?}",
+            bad[1]
+        );
+    }
+
+    /// A permission ask is §9's dead end, and a watcher should see it happening rather than
+    /// wonder why the run stopped moving for the length of the `Blocked` bound.
+    #[test]
+    fn a_permission_ask_says_what_marion_is_about_to_do_about_it() {
+        let lines = shown(
+            r#"{"type":"control_request","request_id":"u-1","request":
+               {"subtype":"can_use_tool","tool_name":"mcp__marion__report"}}"#,
+        );
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("PERMIT"), "{:?}", lines[0]);
+        assert!(lines[0].contains("mcp__marion__report"), "{:?}", lines[0]);
+        assert!(lines[0].contains("denied"), "{:?}", lines[0]);
+    }
+
+    /// **Rule 1: no frame kind is silent, and rule 2: none is a JSON dump.**
+    ///
+    /// The table is every `type`/`subtype` pair the recorded fixtures contain, plus two kinds that
+    /// exist nowhere — a plausible future one and a frame with no `type` at all. Each must produce
+    /// at least one line, and no line may be long enough to be a paste of the frame. The 30 kB
+    /// `initialize` `control_response` is in here for exactly that reason.
+    #[test]
+    fn every_frame_kind_including_one_nobody_has_seen_produces_a_line_and_never_a_json_dump() {
+        let catalogue = &[
+            r#"{"type":"system","subtype":"init","model":"claude-opus-5","tools":["Task","Bash"],
+                "mcp_servers":[{"name":"marion","status":"connected"}],"cwd":"/repo"}"#,
+            r#"{"type":"system","subtype":"status","status":"requesting"}"#,
+            r#"{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}"#,
+            r#"{"type":"system","subtype":"hook_response","hook_name":"SubagentStop","exit_code":0}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"a-1","description":"probe"}"#,
+            r#"{"type":"system","subtype":"task_updated","patch":{"status":"completed"}}"#,
+            r#"{"type":"system","subtype":"task_notification","status":"completed","summary":"ok"}"#,
+            r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":1}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start"}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}"#,
+            r#"{"type":"control_request","request_id":"d-1","request":{"subtype":"request_user_dialog"}}"#,
+            // The one that would be a wall of text if it were dumped.
+            &format!(
+                r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"marion-init-1",
+                   "response":{{"commands":[{}]}}}}}}"#,
+                (0..400)
+                    .map(|i| format!(r#"{{"name":"cmd-{i}","description":"a slash command"}}"#))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            // Nobody has seen either of these. That is the point.
+            r#"{"type":"a_kind_from_a_future_cli","subtype":"nobody_has_measured_this"}"#,
+            r#"{"session_id":"no type field at all"}"#,
+        ];
+        for frame in catalogue {
+            let lines = shown(frame);
+            assert!(
+                !lines.is_empty() && lines.iter().any(|l| !l.trim().is_empty()),
+                "an unhandled frame kind rendered as silence, which reads exactly like nothing \
+                 having happened:\n{frame}"
+            );
+            for line in &lines {
+                assert!(
+                    line.chars().count() <= 240,
+                    "a rendered line is long enough to be a JSON paste ({} chars):\n{line}",
+                    line.chars().count()
+                );
+                assert!(
+                    !line.contains(r#""description":"a slash command""#),
+                    "the initialize catalogue was pasted at a person:\n{line}"
+                );
+            }
+        }
+    }
+
+    /// A stdout line the node wrote that was not JSON is usually a crash or a warning. It is shown
+    /// verbatim and marked as the node's, not marion's.
+    #[test]
+    fn a_line_that_was_not_json_is_shown_verbatim() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_event(
+            StreamEvent::Unparsed("thread 'main' panicked at src/x.rs:1:1"),
+            &mut buf,
+        )
+        .unwrap();
+        let shown = String::from_utf8(buf).unwrap();
+        assert!(shown.starts_with("stdout"), "{shown:?}");
+        assert!(
+            shown.contains("thread 'main' panicked at src/x.rs:1:1"),
+            "{shown:?}"
+        );
     }
 
     #[test]

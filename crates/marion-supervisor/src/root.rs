@@ -513,8 +513,30 @@ pub fn launch(
     bound: StdDuration,
     mcp_ready_timeout: StdDuration,
 ) -> Result<RootOutcome, RootError> {
+    launch_watched(node, bound, mcp_ready_timeout, None)
+}
+
+/// [`launch`], with somewhere to send the root's frames **as they arrive**.
+///
+/// A run is minutes long and, until this existed, produced nothing at all until it returned, so a
+/// person could not tell a root that was delegating from one that was wedged. `watcher` is what
+/// `marion run` passes to render those frames for a human; `launch` is the same call with none, and
+/// is what every non-interactive caller uses.
+///
+/// **Additive, and only on the duplex path.** The accumulated `RootOutcome::transcript` is
+/// unchanged whether a watcher is present or not — many tests read it, and a live view is a second
+/// way to observe the same run, not a replacement for the record of it. A `LaunchOnly` root is
+/// launched through `run_bounded`, which has no frame loop to watch: its prompt is already in argv
+/// and marion reads its stream only after it exits, so there is nothing to stream and this
+/// deliberately does not pretend otherwise.
+pub fn launch_watched(
+    node: &RootNode,
+    bound: StdDuration,
+    mcp_ready_timeout: StdDuration,
+    watcher: Option<duplex::StreamSink<'_>>,
+) -> Result<RootOutcome, RootError> {
     let result = match node.path {
-        RootPath::Duplex => launch_duplex(node, bound, mcp_ready_timeout),
+        RootPath::Duplex => launch_duplex(node, bound, mcp_ready_timeout, watcher),
         RootPath::LaunchOnly => launch_only(node, bound),
     };
     journal_the_roots_outcome(node, &result);
@@ -750,6 +772,7 @@ fn launch_duplex(
     node: &RootNode,
     blocked_bound: StdDuration,
     mcp_ready_timeout: StdDuration,
+    watcher: Option<duplex::StreamSink<'_>>,
 ) -> Result<RootOutcome, RootError> {
     let ready_file = node
         .ready_file
@@ -769,6 +792,9 @@ fn launch_duplex(
             blocked_bound,
             // §9: marion offers a root no wall-clock ceiling on this path, so there is none here.
             wall_clock: None,
+            // A root's frames are the only ones with a human on the other end; a child's stream is
+            // never streamed anywhere, see `duplex::DuplexSpec::sink`.
+            sink: watcher,
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;

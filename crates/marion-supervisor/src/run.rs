@@ -618,6 +618,10 @@ fn duplex_child(
             mcp_ready_timeout: CHILD_MCP_READY_TIMEOUT.min(bound),
             blocked_bound: StdDuration::ZERO,
             wall_clock: Some(bound),
+            // **Never `Some` on this path.** This runs inside `marion-supervisor`, whose stdout is
+            // the stdio MCP stream the root harness parses; a sink that wrote there would corrupt
+            // the protocol marion is speaking to its own root. See [`duplex::DuplexSpec::sink`].
+            sink: None,
         },
     )?;
     Ok(ChildRun {
