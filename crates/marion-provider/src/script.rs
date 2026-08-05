@@ -25,6 +25,12 @@ pub const EDIT_CALL_ID: &str = "call_marion_edit_1";
 /// tied to the call that provoked it.
 pub const ROOT_TOOL_USE_ID: &str = "toolu_marion_spawn_1";
 
+/// `tool_use.id` of an **Anthropic** child's [`EditTurn`]. Distinct from [`ROOT_TOOL_USE_ID`] for
+/// the reason [`ROOT_CALL_ID`] is distinct from [`REPORT_CALL_ID`]: in a same-harness cell the root
+/// and the child speak one wire, and a shared id would make one node's transcript look like the
+/// other's.
+pub const EDIT_TOOL_USE_ID: &str = "toolu_marion_edit_1";
+
 /// `call_id` of a **root's** single tool call on the two wires that use one (Responses, Chat
 /// Completions). Distinct from [`REPORT_CALL_ID`] on purpose: in a same-harness run the root and
 /// its child speak the same wire, and two nodes quoting one id back would make each other's
@@ -348,6 +354,30 @@ pub fn classify_root(body: &Value) -> RootStep {
     }
 }
 
+/// Has this Anthropic transcript already carried a `tool_use` block naming `tool`?
+///
+/// The name-based counterpart to [`classify_root`], which asks only whether *any* `tool_result` has
+/// come back. That coarser question is sufficient for a node with one call to make and wrong for a
+/// node with two: a child that writes before it reports has a `tool_result` in hand the moment its
+/// write returns, and [`classify_root`] would send it straight to its closing message with `report`
+/// never called.
+///
+/// Structured evidence only, for the reason [`classify_child`] gives: `tool` is also named in the
+/// request's `tools` declaration on every single turn, so a substring scan would answer "already
+/// called" to turn one and nothing would ever be called at all.
+pub fn anthropic_called(body: &Value, tool: &str) -> bool {
+    body.get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.get("content").and_then(Value::as_array))
+        .flatten()
+        .any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_use")
+                && block.get("name").and_then(Value::as_str) == Some(tool)
+        })
+}
+
 /// Decide the child's step from the `input` array it sent us.
 ///
 /// Only *call* and *call output* items count as evidence. A substring scan would be wrong: under
@@ -549,6 +579,13 @@ pub struct Script {
     pub root_tool_input: Value,
     /// The root's closing text turn.
     pub root_final_text: String,
+    /// A write into the worktree taken **before** [`Script::root_tool`] is called, on the Anthropic
+    /// wire — see [`EditTurn`].
+    ///
+    /// This wire's script is shared by a Claude Code root and a Claude Code child (the two-step
+    /// shape is the same and only the tool differs), and only the child has a worktree to write
+    /// into. `None` — the default — is the two-step node every existing caller drives.
+    pub anthropic_edit: Option<EditTurn>,
     /// The patch the child feeds to `tools.apply_patch` (a string — S6).
     pub child_patch: String,
     /// Code-mode JavaScript to send *instead of* the `apply_patch` wrapper on the child's first
@@ -570,6 +607,9 @@ pub struct Script {
     pub gemini_report_tool: String,
     /// Arguments the gemini child passes to [`Script::gemini_report_tool`].
     pub gemini_report_args: Value,
+    /// A write into the worktree, taken **before** the report — see [`EditTurn`]. `None` — the
+    /// default — is the two-step child every existing caller drives.
+    pub gemini_edit: Option<EditTurn>,
     /// The gemini child's closing text turn.
     pub gemini_final_text: String,
     /// What to answer a Gemini request that declares no tools — in practice the CLI's model-routing
@@ -613,6 +653,7 @@ impl Default for Script {
             }),
             root_final_text: "The child completed the task and reported back. M1 hop done."
                 .to_string(),
+            anthropic_edit: None,
             child_patch: "*** Begin Patch\n*** Add File: src/marion_m1.txt\n\
                           +marion M1: written by the canned codex child\n*** End Patch"
                 .to_string(),
@@ -621,6 +662,7 @@ impl Default for Script {
             child_final_text: json!({"narrative": narrative, "result_commits": []}).to_string(),
             gemini_report_tool: "mcp_marion_report".to_string(),
             gemini_report_args: json!({"narrative": narrative}),
+            gemini_edit: None,
             gemini_final_text: "Reported back through marion. Done.".to_string(),
             gemini_router_verdict: json!({"model_choice": "flash", "reasoning": "canned"})
                 .to_string(),
@@ -668,16 +710,34 @@ impl Script {
     }
 
     fn respond_anthropic(&self, body: &Value) -> String {
-        match classify_anthropic(body) {
-            RequestKind::SessionTitle => anthropic::session_title_stub(),
-            RequestKind::ScriptedTurn => match classify_root(body) {
-                RootStep::Delegate => anthropic::tool_use_turn(
+        if classify_anthropic(body) == RequestKind::SessionTitle {
+            return anthropic::session_title_stub();
+        }
+        // Three steps when an edit is scripted, and every one of them a function of the transcript,
+        // so replaying a run's turns backwards yields the same answers. `classify_root`'s
+        // any-tool_result rule cannot express this shape — the write's own result would end the
+        // run — so the edit path asks after each tool by name instead.
+        if let Some(edit) = &self.anthropic_edit {
+            if anthropic_called(body, &self.root_tool) {
+                return anthropic::text_turn(&self.root_final_text);
+            }
+            // The report is consulted first and not only for ordering: a child whose write never
+            // landed still reaches `report`, and re-issuing the edit against a transcript that
+            // already carries the report would send it round that loop forever.
+            if anthropic_called(body, &edit.tool) {
+                return anthropic::tool_use_turn(
                     &self.root_tool,
                     ROOT_TOOL_USE_ID,
                     &self.root_tool_input,
-                ),
-                RootStep::Finish => anthropic::text_turn(&self.root_final_text),
-            },
+                );
+            }
+            return anthropic::tool_use_turn(&edit.tool, EDIT_TOOL_USE_ID, &edit.args);
+        }
+        match classify_root(body) {
+            RootStep::Delegate => {
+                anthropic::tool_use_turn(&self.root_tool, ROOT_TOOL_USE_ID, &self.root_tool_input)
+            }
+            RootStep::Finish => anthropic::text_turn(&self.root_final_text),
         }
     }
 
@@ -696,6 +756,16 @@ impl Script {
         match classify_gemini(body) {
             GeminiKind::RouterProbe => gemini::text_turn(&self.gemini_router_verdict, streaming),
             GeminiKind::ScriptedTurn => {
+                // The edit comes first, on the same terms as the Chat Completions path below:
+                // `classify_gemini_step` answers "has this tool been called yet" for whatever name
+                // it is handed, and the report is consulted first so a child whose write never
+                // landed still finishes rather than looping.
+                if let Some(edit) = &self.gemini_edit
+                    && classify_gemini_step(body, &self.gemini_report_tool) == GeminiStep::Report
+                    && classify_gemini_step(body, &edit.tool) == GeminiStep::Report
+                {
+                    return gemini::function_call_turn(&edit.tool, &edit.args, streaming);
+                }
                 match classify_gemini_step(body, &self.gemini_report_tool) {
                     GeminiStep::Report => gemini::function_call_turn(
                         &self.gemini_report_tool,
@@ -1308,6 +1378,203 @@ mod tests {
         assert_ne!(EDIT_CALL_ID, REPORT_CALL_ID);
         assert_ne!(EDIT_CALL_ID, PATCH_CALL_ID);
         assert_ne!(EDIT_CALL_ID, ROOT_CALL_ID);
+        assert_ne!(EDIT_TOOL_USE_ID, ROOT_TOOL_USE_ID);
+    }
+
+    // --- the same edit step on the other two wires ------------------------------------------------
+
+    /// The gemini child's transcript after it has written the file but before it has reported.
+    fn gemini_after_edit() -> Value {
+        let mut b = gemini_turn(json!([{"functionCall": {"name": "write_file",
+                                                         "args": {"file_path": "src/x.txt",
+                                                                  "content": "x"}}}]));
+        b["contents"].as_array_mut().unwrap().push(json!({
+            "role": "user",
+            "parts": [{"functionResponse": {"name": "write_file",
+                                            "response": {"output": "ok"}}}]
+        }));
+        b
+    }
+
+    fn gemini_editing_script() -> Script {
+        Script {
+            gemini_edit: Some(EditTurn {
+                tool: "write_file".into(),
+                args: json!({"file_path": "src/x.txt", "content": "x"}),
+            }),
+            ..Script::default()
+        }
+    }
+
+    /// The gemini child's three steps, and their order-independence, in the one shape the Chat
+    /// Completions child already holds to.
+    #[test]
+    fn a_scripted_gemini_edit_is_taken_before_the_report_and_only_once() {
+        let s = gemini_editing_script();
+        let wire = Wire::Gemini { streaming: true };
+        // Replayed backwards on purpose: a provider that counted turns would answer the finished
+        // transcript with a second write.
+        let third = s.respond(wire, &gemini_after_report());
+        let second = s.respond(wire, &gemini_after_edit());
+        let first = s.respond(wire, &gemini_first_turn());
+        assert!(
+            first.contains("write_file") && !first.contains("mcp_marion_report"),
+            "turn one must be the write: {first}"
+        );
+        assert!(
+            second.contains("mcp_marion_report") && !second.contains("write_file"),
+            "turn two must be the report, never a second write: {second}"
+        );
+        assert!(
+            !third.contains("write_file") && !third.contains("functionCall"),
+            "turn three must end the run; re-issuing the write would never terminate: {third}"
+        );
+    }
+
+    /// With no edit scripted, the gemini child is the two-step child every existing caller drives.
+    #[test]
+    fn a_gemini_script_with_no_edit_is_the_two_step_child_it_always_was() {
+        assert!(Script::default().gemini_edit.is_none());
+        let out = Script::default().respond(Wire::Gemini { streaming: true }, &gemini_first_turn());
+        assert!(out.contains("mcp_marion_report"));
+    }
+
+    /// The Anthropic child's transcript after its write, and after its report. Built here rather
+    /// than reused from [`after_spawn_returned`] because the tool names are the child's.
+    fn anthropic_child_turn(extra: Vec<Value>) -> Value {
+        let mut b = json!({
+            "model": "claude",
+            "tools": [{"name": "Write"}, {"name": "mcp__marion__report"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "do the thing"}]}]
+        });
+        for m in extra {
+            b["messages"].as_array_mut().unwrap().push(m);
+        }
+        b
+    }
+
+    fn anthropic_call_and_result(id: &str, name: &str) -> Vec<Value> {
+        vec![
+            json!({"role": "assistant",
+                   "content": [{"type": "tool_use", "id": id, "name": name, "input": {}}]}),
+            json!({"role": "user",
+                   "content": [{"type": "tool_result", "tool_use_id": id, "content": "ok"}]}),
+        ]
+    }
+
+    fn anthropic_editing_script() -> Script {
+        Script {
+            root_tool: "mcp__marion__report".into(),
+            root_tool_input: json!({"narrative": "x"}),
+            anthropic_edit: Some(EditTurn {
+                tool: "Write".into(),
+                args: json!({"file_path": "src/x.txt", "content": "x"}),
+            }),
+            ..Script::default()
+        }
+    }
+
+    /// The Anthropic child's three steps. **This is the wire the coarse predicate cannot serve**:
+    /// the write's own `tool_result` is in the transcript from turn two onward, so
+    /// [`classify_root`] would answer `Finish` and the child would end its run having reported
+    /// nothing — with `changed_paths` populated and the contract `Unreported`.
+    #[test]
+    fn a_scripted_anthropic_edit_is_taken_before_the_report_and_only_once() {
+        let s = anthropic_editing_script();
+        let after_edit = anthropic_child_turn(anthropic_call_and_result(EDIT_TOOL_USE_ID, "Write"));
+        let mut done = anthropic_call_and_result(EDIT_TOOL_USE_ID, "Write");
+        done.extend(anthropic_call_and_result(
+            ROOT_TOOL_USE_ID,
+            "mcp__marion__report",
+        ));
+        let after_report = anthropic_child_turn(done);
+        // Backwards, for the reason every other classifier in this module is asserted backwards.
+        let third = s.respond(Wire::Anthropic, &after_report);
+        let second = s.respond(Wire::Anthropic, &after_edit);
+        let first = s.respond(Wire::Anthropic, &anthropic_child_turn(vec![]));
+        assert!(
+            first.contains("\"name\":\"Write\"") && !first.contains("mcp__marion__report"),
+            "turn one must be the write: {first}"
+        );
+        assert!(
+            second.contains("mcp__marion__report") && !second.contains("\"name\":\"Write\""),
+            "turn two must be the report — `classify_root` would have ended the run here, because \
+             the write's own tool_result is already in the transcript: {second}"
+        );
+        assert!(
+            third.contains("end_turn") && !third.contains("tool_use"),
+            "turn three must end the run: {third}"
+        );
+    }
+
+    /// **Some other tool's result is not this one's.** The distinction [`classify_root`] cannot
+    /// draw: it ends the run on *any* `tool_result`, so a child that called anything at all before
+    /// its write — 2.1.222 declares whatever `--tools` names, not only the write — would be sent
+    /// straight past both scripted steps and report nothing.
+    #[test]
+    fn an_unrelated_tool_result_does_not_advance_the_anthropic_edit_script() {
+        let body = anthropic_child_turn(anthropic_call_and_result("toolu_other_1", "Read"));
+        assert_eq!(
+            classify_root(&body),
+            RootStep::Finish,
+            "the coarse predicate is satisfied by this transcript, which is the whole point"
+        );
+        let out = anthropic_editing_script().respond(Wire::Anthropic, &body);
+        assert!(
+            out.contains("\"name\":\"Write\""),
+            "the write has not happened yet, whatever else has: {out}"
+        );
+    }
+
+    /// A transcript that shows the report already made must not be answered with the edit, even
+    /// though the write is missing from it — the same non-termination the Chat Completions path
+    /// guards against.
+    #[test]
+    fn a_reported_anthropic_child_is_finished_even_if_its_edit_is_not_in_the_transcript() {
+        let after_report = anthropic_child_turn(anthropic_call_and_result(
+            ROOT_TOOL_USE_ID,
+            "mcp__marion__report",
+        ));
+        let out = anthropic_editing_script().respond(Wire::Anthropic, &after_report);
+        assert!(
+            !out.contains("\"name\":\"Write\""),
+            "the run is over; re-issuing the write would never terminate: {out}"
+        );
+    }
+
+    /// With no edit scripted, the Anthropic node keeps [`classify_root`]'s two steps exactly —
+    /// which is what `m1_hop`'s root and every `harness_matrix` claude child drive.
+    #[test]
+    fn an_anthropic_script_with_no_edit_is_the_two_step_node_it_always_was() {
+        assert!(Script::default().anthropic_edit.is_none());
+        let s = Script::default();
+        assert!(
+            s.respond(Wire::Anthropic, &user_turn())
+                .contains("mcp__marion__spawn")
+        );
+        assert!(
+            s.respond(Wire::Anthropic, &after_spawn_returned())
+                .contains("end_turn")
+        );
+    }
+
+    /// `anthropic_called` reads *structure*, not text. The tool is named in the `tools`
+    /// declaration and in the system instruction on every turn, so a substring scan would answer
+    /// "already called" to turn one and nothing would ever be called at all.
+    #[test]
+    fn anthropic_called_ignores_the_tool_declaration_and_the_system_prompt() {
+        let body = json!({
+            "system": "you may call Write",
+            "tools": [{"name": "Write"}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "please Write"}]}]
+        });
+        assert!(!anthropic_called(&body, "Write"));
+        let called = anthropic_child_turn(anthropic_call_and_result(EDIT_TOOL_USE_ID, "Write"));
+        assert!(anthropic_called(&called, "Write"));
+        assert!(
+            !anthropic_called(&called, "mcp__marion__report"),
+            "one tool's call is not another's"
+        );
     }
 
     #[test]

@@ -62,7 +62,14 @@
 //! this file is free to make: a canned provider may only emit calls to tools the harness declared,
 //! and a call to anything else tests the fixture rather than marion. See
 //! `Node::child_writes_worktree` for the per-harness measurement, taken off these cells' own
-//! request logs. Those cells pin the gap instead of ignoring it.
+//! request logs, and §11 item 24 for why those two harnesses have no write route and what it would
+//! cost to give them one. Those cells pin the gap instead of ignoring it.
+//!
+//! **The gap is a missing route, not an unmeasured containment.** A control experiment — reverted,
+//! unfixtured, recorded in item 24 — opened both harnesses' write routes and drove each child at
+//! the same relative [`CHILD_FILE`] the writing cells use. Both landed in their own worktree. So
+//! all four harnesses are now *measured* to resolve a relative write against the process cwd, and
+//! the `opencode` failure this file's criterion 9 was built around does not extend to them.
 //!
 //! # The same-wire cells, and why they are not ambiguous
 //!
@@ -201,25 +208,46 @@ struct Node {
     /// turn no real model could have taken, and answering with one would test the fixture rather
     /// than marion.
     ///
-    /// Measured here against the request log of a child spawned through `spawn`, per harness:
+    /// Measured here against the request log of a child spawned through `spawn`, per harness
+    /// (`claude` 2.1.222, `gemini` 0.53.0):
     ///
     /// - **codex** — `tools.apply_patch` under code mode. Writes. This is M1's child.
     /// - **opencode** — declares `write`, `edit` and `bash` alongside marion's MCP tools. Writes.
-    /// - **claude** — declares `mcp__marion__report` and `mcp__marion__spawn` and **nothing else**:
-    ///   `compile_headless` passes `--tools ""` to every node, root or child, and
-    ///   `marion_core::agent_type::AgentType` has no `tools` field for anything to populate it
-    ///   from. §3.1's availability axis is unimplemented, so a Claude Code child is read-only by
-    ///   construction.
-    /// - **gemini** — declares `list_directory`, `read_file`, `grep_search`, `glob`,
-    ///   `google_web_search`, `enter_plan_mode`, `invoke_agent` and marion's two. `write_file`,
-    ///   `replace` and `run_shell_command` appear only in the *prose* of its system instruction,
-    ///   never in `functionDeclarations`: 0.53.0 withholds the mutating tools under the default
-    ///   approval mode, and s12 measured them appearing only under `-y` — which marion does not
-    ///   pass, and which an admin can veto anyway (`security.disableYoloMode`).
+    /// - **claude** — declares `mcp__marion__report` and `mcp__marion__spawn` and **nothing else**.
+    /// - **gemini** — declares `update_topic`, `list_directory`, `read_file`, `grep_search`,
+    ///   `glob`, `google_web_search`, `enter_plan_mode`, `invoke_agent` and marion's two.
+    ///   `write_file`, `replace` and `run_shell_command` appear only in the *prose* of its system
+    ///   instruction, never in `functionDeclarations`.
     ///
-    /// The two `false`s are a **coverage gap that is not this file's to close**, and
-    /// [`assert_cell`] pins it rather than passing over it: those cells assert that the worktree is
-    /// untouched, and say what to do when that stops being true.
+    /// # The two `false`s: a gap that is not this file's to close, and no longer an unknown
+    ///
+    /// **Why they are read-only is now measured, and so is what happens when they are not.** §11
+    /// item 24 carries the whole account; the part that decides this field:
+    ///
+    /// - The block is **two axes**, and finding only the first is the trap. *Availability* —
+    ///   `compile_headless` passes `--tools ""` to every node, hardcoded because
+    ///   `marion_core::agent_type::AgentType` has no `tools` field to populate it from, and
+    ///   gemini's default approval mode withholds the mutating tools. *Permission* —
+    ///   `run::run_spawn` compiles every child with `allowed_tools: [report]` (`run.rs:798`), which
+    ///   claude is the one harness of four to read.
+    /// - Opening only the first is **not** a write. A declared-but-unallowlisted `Write` routes to
+    ///   `--permission-prompt-tool stdio`, marion has no answerer, and the child's `tool_result`
+    ///   reads `marion: no permission answerer in M1; the node's Blocked bound expired` — §11 item
+    ///   22's dead end, reached by a file write rather than by a `spawn`.
+    /// - Opening **both** (`--tools "Write"` + `Write` in `allowed_tools`; on gemini,
+    ///   `--approval-mode auto_edit`, which is *not* `-y` and so is not the mode
+    ///   `security.disableYoloMode` can veto) makes both children write. **Driven at the relative
+    ///   [`CHILD_FILE`], both landed in their own worktree** — `changed_paths` carried it,
+    ///   `scope_violations: []`. Both resolve against the process cwd like codex's `apply_patch`,
+    ///   neither from the environment like opencode did. So **placement is proven on four of four**,
+    ///   and these two cells' `false` is a missing *route*, never an unmeasured *containment*.
+    ///
+    /// **That control experiment was reverted and is not fixtured**, because landing it would widen
+    /// what every claude and gemini node may do in production to make a test green. The close is
+    /// §3.1's availability axis — the `tools` field `AgentType` lacks — not a hardcoded tool name.
+    ///
+    /// Until then [`assert_cell`] pins the gap rather than passing over it: those cells assert that
+    /// the worktree is untouched, and say what to do when that stops being true.
     child_writes_worktree: bool,
 }
 

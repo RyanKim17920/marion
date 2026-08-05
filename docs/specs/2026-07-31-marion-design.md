@@ -1947,6 +1947,10 @@ struct Completion {                      // assembled and written ONCE, at the n
                                          //   TaskContract would make a frozen, parent-authored
                                          //   struct carry a value marion writes later.
     changed_paths_omitted: usize,        // elided by cap rule 5 only; 0 iff none
+    result_commits_omitted: usize,       // likewise, and the only one counting a list a CHILD
+                                         //   filled. See rule 5(d) and rule 6: without a cap on
+                                         //   result_commits, rule 6's input-independent size is
+                                         //   not input-independent at all.
     scope_violations_omitted: usize,     // likewise. scope_violations is DERIVED from the full
                                          //   changed_paths before any elision, so a cap can never
                                          //   hide a violation: this counter is non-zero exactly
@@ -2031,10 +2035,10 @@ copy only, after the contract is persisted:
 | 2 | **Text budget.** `diff` gets **16 KiB**; the retained evidence shares **16 KiB**, split as `floor(16 KiB / n_retained)` per outcome, and that share split again as `floor(share / 2)` to **each** of `stdout` and `stderr` — an odd byte is simply unused, since a rounding rule that hands it to one stream is a difference two implementations would have to guess at. An outcome that uses less than its share does **not** donate the remainder — redistribution would need a second pass and buys nothing worth the nondeterminism. With `n_retained = 0` the evidence budget is simply unused. |
 | 3 | **Direction.** `diff` keeps its **leading** bytes (a unified diff is only parseable from the start); `stdout` and `stderr` keep their **trailing** bytes (summaries and errors land at the end). Truncation is to the nearest UTF-8 boundary **inside** the allowance, never past it. |
 | 4 | **Flags.** Any field shortened by **rule 0, rules 2–3, or rule 5** sets its own `Capped.truncated`, with `original_bytes` recording the pre-cap length — **except individual paths inside `changed_paths`/`scope_violations`, whose shortening is signalled by the embedded `…` at or just under 512 B — an imperfect marker, since a real path may legitimately contain `…`, which is why the **persisted contract is authoritative for the full list** and the returned copy is a display artefact; these entries carry no per-entry metadata** (they are `PathBuf`s in a list, not `Capped` values) — per stream for `stdout`/`stderr`, and likewise for `diff`, `narrative`, `instructions` and each retained criterion. There is no outcome-level flag: the streams are capped independently, so only a per-stream one is answerable. |
-| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**, keeping its `original_bytes` at the *pre-rule-0* length so it always means "how long the child's text actually was", never "how long it was when this step found it"; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and, when a retained path exceeds 512 B, replace it with its **leading ≤255 B + `…` (3 B) + trailing ≤254 B — at most 512 B**, each side being the largest whole-character prefix/suffix fitting its allowance. "At most", not "exactly", because a multi-byte character straddling either edge is dropped rather than split; what matters is that the replacement is never *longer* than the 512 B threshold that triggered it. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes a shortened path recognisable in practice; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
-| 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size is bounded independently of the input — its only variable
+| 5 | **Backstop.** Serialize; if the encoded contract still exceeds **48 KiB** — JSON escaping can expand control-heavy output well beyond its raw byte count, so a raw-byte budget alone cannot guarantee the encoded size — apply these in order, re-serializing after each, stopping as soon as it fits: (a) set `diff.value` to `""`, keeping `truncated: true` and `original_bytes`; (b) drop every outcome, folding them into `evidence_omitted`; (c) cut `narrative` to **1 KiB**, keeping its `original_bytes` at the *pre-rule-0* length so it always means "how long the child's text actually was", never "how long it was when this step found it"; (d) elide `changed_paths` past its **first 100 entries** into `changed_paths_omitted`, and `scope_violations` past its **first 100** into `scope_violations_omitted`, and `result_commits` past its **first 100** into `result_commits_omitted` — the only one of the three a *child* fills rather than marion, and therefore the only one whose length marion never chose — and, when a retained path exceeds 512 B, replace it with its **leading ≤255 B + `…` (3 B) + trailing ≤254 B — at most 512 B**, each side being the largest whole-character prefix/suffix fitting its allowance. "At most", not "exactly", because a multi-byte character straddling either edge is dropped rather than split; what matters is that the replacement is never *longer* than the 512 B threshold that triggered it. Not trailing-only: `scope_violations` is judged against globs anchored at the repo root, so the *prefix* is exactly what shows a path to be out of scope — dropping it would leave an entry that cannot be checked, while `scope_violations_omitted` stayed `0` because the entry was shortened rather than dropped. The `…` marker makes a shortened path recognisable in practice; (e) cut `instructions` to its trailing **2 KiB**, and `acceptance_criteria` to its **first 32 entries** into `acceptance_criteria_omitted`, each retained entry cut to its trailing **2 KiB**. |
+| 6 | **Terminal step, so the algorithm cannot fail to converge.** If the contract *still* exceeds 48 KiB, return a **stub completion** instead: `status`, `exit`, `timestamps`, every `*_omitted` counter (raised to the full dropped count), every `truncated` flag set, all text fields empty, and the `contracts/<task_id>.json` path. **`TaskId` is a UUIDv7 rendered as 36 hex-and-dash characters**, so that path has a fixed length and needs no escaping — without that bound the stub would carry an input-derived string and would not be the input-independent terminal this rule requires. Its field set is fixed and small, so it always fits — **which requires clearing `result_commits` here as well as at 5(d)**. That field is the one list a child fills, and while it was hardcoded empty the claim held by accident; once a child's commits are carried into the contract, a stub that retained them would be O(n) in what a foreign agent sent and this rule would no longer be a terminal at all. This step exists because every rule above bounds *raw* bytes while the 48 KiB limit is measured on the *encoded* document: without a terminal action whose size is bounded independently of the input — its only variable
 parts are a handful of integer counters, whose decimal width is bounded by `usize` — a pathological escape ratio leaves rules (a)–(e) exhausted and the contract still over the limit, with nothing left for an engineer to do. Truncation direction is stated for every field above — trailing, except `diff`, which keeps its leading bytes, and individual paths, which keep leading 255 B + `…` + trailing 254 B — and every cut lands on a UTF-8 boundary inside the allowance, so two implementations produce byte-identical output. |
-| — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was twice believed complete and twice was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
+| — | **Every text-bearing field is now covered, which is what makes the result bounded.** The list was believed complete three times and was not: `narrative` was missed because it is the one field a *foreign agent* writes, `scope_violations` because it is deliberately exempt from elision elsewhere — one entry per violating path, so a child that runs an out-of-scope `npm install` produces tens of thousands; and `result_commits` because it was hardcoded empty in `build_contract`, so no input could reach it — the field was *declared* in `report`'s schema and *dropped* in transit, and the omission became live the moment that was fixed. Eliding it here does **not** weaken §6.7's guarantee that a cap can never *hide* a violation: `scope_violations_omitted` is non-zero exactly when paths were dropped, so the fact of the violation always survives even when the path list does not. |
 
 All byte counts are of **raw UTF-8 field bytes before JSON escaping**, except rules 5 and 6, which
 are measured on the encoded document. **That split is deliberate, and only rules 5–6 carry the
@@ -4406,6 +4410,98 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     backgrounding, which is the one that also decides `allow_concurrent_writes` — at which point the
     three refusals and this item come out together. **Closing it earlier than that would mean
     deleting the refusals while the gaps remain**, which is the state this item was written about.
+
+24. **A Claude Code child and a gemini child have no write route at all — OPEN, newly articulated
+    2026-08-04, from a read of the code as it stands plus a control experiment that was reverted
+    and is *not* fixtured.** marion spawns a child to do work and declares it no tool with which to
+    change anything. Two of the four harnesses in the "any harness → any harness" matrix cannot
+    perform the task the matrix is about.
+
+    **Baseline, measured off the request bodies these children actually send** (`claude` **2.1.222**,
+    `gemini` **0.53.0** — note the first is *not* the 2.1.220 this repo pins in 112 places, which is
+    its own question and not this item's). Read from the canned provider's request log of a child
+    spawned through `spawn`, not from `--help` and not from source:
+    - **claude** declares exactly `["mcp__marion__report", "mcp__marion__spawn"]`. Nothing else. No
+      `Write`, no `Edit`, no `Bash`.
+    - **gemini** declares `[update_topic, list_directory, read_file, grep_search, glob,
+      google_web_search, enter_plan_mode, invoke_agent, mcp_marion_spawn, mcp_marion_report]` — all
+      read-only. No `write_file`, no `replace`, no `run_shell_command`.
+
+    **The block is TWO axes, and finding only the first is the trap.** §3.1 names availability and
+    permission as separate concerns and this is the case that shows why:
+    - **Availability** — `claude_code::compile_headless` passes **`--tools ""`** to every node, root
+      or child, which the CLI documents as *"Use `\"\"` to disable all tools"*. It is hardcoded
+      because there is nothing to populate it from: `marion_core::agent_type::AgentType` has no
+      `tools` field. gemini's equivalent is the default approval mode, under which 0.53.0 withholds
+      the mutating tools from `functionDeclarations` entirely.
+    - **Permission** — `run::run_spawn` compiles every child with
+      **`allowed_tools: vec![adapter.marion_tool_name("report")]`** (`run.rs:798`). Claude Code is
+      the one harness of four that reads this list.
+
+    **The second axis is item 22 biting a *write* rather than a spawn, and that is the part worth
+    recording.** Declaring `Write` without also allowlisting it does not produce a denial the model
+    can reason about: the call goes to `--permission-prompt-tool stdio`, marion has no answerer, and
+    the child's `tool_result` comes back verbatim as
+
+    > `marion: no permission answerer in M1; the node's Blocked bound expired`
+
+    which is `duplex.rs`'s one inbound branch, quoted in item 22, reached by a file write. Item 22
+    was articulated against `spawn`; it is not specific to `spawn`, and any future write route runs
+    through the same dead end.
+
+    **Control experiment — three knobs, each measured to move the declaration. Not fixtured: the
+    edits were reverted and nothing in the repo reproduces them.**
+    1. `--tools ""` → `--tools "Write"` makes `Write` appear in `body.tools`. **Necessary and not
+       sufficient** — on its own it produces the item-22 dead end above, not a write.
+    2. Adding `Write` to `run.rs:798`'s `allowed_tools` alongside the first: the child writes.
+    3. gemini `compile_prompt` + **`--approval-mode auto_edit`**: `write_file` and `replace` appear
+       in `functionDeclarations`, and the child writes.
+
+    **`auto_edit` is not `-y`, and §6.4's standing objection to yolo mode does not reach it.** That
+    objection is that `--yolo` auto-approves *everything* and an admin can veto it via
+    `security.disableYoloMode`, so it is not a foundation marion can stand on. `--approval-mode
+    auto_edit` is a third value beside `default` and `yolo` (0.53.0 `--help`: *"auto_edit
+    (auto-approve edit tools)"*), scoped to edit tools and not subject to that veto. Whether it is
+    the *right* grant is a policy question; it is not disqualified by the argument that disqualifies
+    `-y`.
+
+    **A negative result the same experiment produced, and it is good news: placement is correct on
+    both.** Driven through their own declared write tools at the **relative** path
+    `src/xprod-marker.txt` — deliberately relative, and for claude deliberately against its own
+    tool description, which demands an absolute path — both children's writes landed **in their own
+    worktree**: `changed_paths` carried the file with `scope_violations: []` and
+    `scope_enforced: true`. Both resolve against the **process cwd**, as codex's `apply_patch` does,
+    and neither consults the environment as opencode did before `opencode::compile_run` exported
+    `PWD` (§11's containment history, and `8a69f22`). So `Invocation.cwd` is sufficient for all four
+    harnesses, and placement is now **measured on four of four** rather than measured on two and
+    inferred on two.
+
+    **Why this matters beyond a missing feature.** Such a child completes, reports `Ok`, and
+    persists a contract with `changed_paths: []`, `scope_violations: []`, `scope_enforced: true`.
+    That is **byte-identical to the signature of a child whose write escaped its worktree** — which
+    is precisely what an opencode child did, and precisely what `8a69f22` exists to tell apart. An
+    empty `changed_paths` cannot distinguish *"was given no way to write"* from *"wrote somewhere
+    marion never looked"*, so the audit record §6.7 provides to prevent false confidence produces it
+    here instead. It is the §12 silent-failure shape with marion on the producing end, the same
+    family as item 22's denials.
+
+    **The fix is §3.1's availability axis, not a tool name.** Hardcoding `"Write"` into
+    `allowed_tools` would make the matrix green and would be the wrong shape: it special-cases one
+    tool of one harness, widens what the model may do on **every** claude run rather than the ones
+    that need it, and leaves gemini's approval mode untouched. The honest version gives `AgentType`
+    the `tools` field `--tools ""` is hardcoded for want of, and lets an agent type — or a `spawn` —
+    state its own surface, with the permission list derived from it rather than fixed. That decision
+    has security consequences and should be taken deliberately and named as such, exactly as item
+    22 says of narrowing grants so an ask can happen. **The two are the same decision seen from
+    opposite ends**: item 22 is about a node asking for something marion cannot grant, and this is
+    about marion granting so little that nothing is ever asked.
+
+    **What is deliberately *not* claimed here.** That the three knobs above are the right grants, or
+    the only ones — `Edit` and `Bash` were not tried, and opencode's and codex's surfaces were not
+    re-derived. That any of it is reproducible from this repo as it stands: it is not, and until the
+    availability axis lands there is nothing to fixture. The matrix cells for these two children
+    accordingly still assert that their worktree is **untouched**, and say in
+    `cross_product.rs`'s `Node::child_writes_worktree` what to do when that stops being true.
 
 ---
 
