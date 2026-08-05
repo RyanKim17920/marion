@@ -151,9 +151,17 @@ dependencies = [
  "marion-core",
  "marion-harness",
  "marion-provider",
+ "marion-testsupport",
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "marion-testsupport"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

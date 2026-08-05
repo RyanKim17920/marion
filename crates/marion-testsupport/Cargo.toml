@@ -1,0 +1,12 @@
+[package]
+name = "marion-testsupport"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "marion_testsupport"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json.workspace = true

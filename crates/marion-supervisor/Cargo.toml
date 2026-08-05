@@ -33,3 +33,13 @@ marion-harness = { path = "../marion-harness" }
 # assert on directly.
 [dev-dependencies]
 marion-provider = { path = "../marion-provider" }
+
+# A **dev**-dependency for the same reason and by the same rule: nothing in it belongs inside the
+# shipped `marion` command — it kills processes by pid, removes directories on drop, and shells out
+# to `git` and `ps`. It exists because Rust compiles every file in `tests/` as its own crate, so the
+# suite could not share a helper without a mechanism, and the copies had not merely multiplied: the
+# strong variant of `survivors` had failed to propagate to two of five call sites, leaving two files
+# whose leak check could silently under-report. A `tests/common/mod.rs` would have reached the
+# integration files and none of the guards inside this crate's own `#[cfg(test)]` modules; a
+# dev-dependency reaches both.
+marion-testsupport = { path = "../marion-testsupport" }
