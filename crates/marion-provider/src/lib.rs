@@ -19,6 +19,7 @@
 use serde_json::Value;
 
 pub mod anthropic;
+pub mod gate;
 pub mod gemini;
 pub mod openai;
 pub mod reqlog;
@@ -26,6 +27,7 @@ pub mod responses;
 pub mod script;
 pub mod server;
 
+pub use gate::TurnGate;
 pub use script::{
     ChildStep, EditTurn, GeminiKind, GeminiStep, OpenAiStep, RootScript, RootStep, RootTurn,
     Script, Wire, wire_name,

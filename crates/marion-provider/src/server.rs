@@ -19,6 +19,7 @@ use std::thread::JoinHandle;
 
 use serde_json::Value;
 
+use crate::gate::TurnGate;
 use crate::reqlog::RequestLog;
 use crate::script::{Script, Wire, classify_wire, wire_name};
 
@@ -90,6 +91,15 @@ impl CannedServer {
     /// Binding happens on the calling thread so that "the server is up" is established before this
     /// returns — a test that spawned a child against a not-yet-bound port would fail flakily.
     pub fn start(config: Config) -> io::Result<Self> {
+        Self::start_gated(config, None)
+    }
+
+    /// The same, with a [`TurnGate`] holding one wire's turns until a test releases them.
+    ///
+    /// A separate constructor rather than a fourth [`Config`] field: a gate is a *test's* handle on
+    /// this server, not a description of the canned behaviour, and every existing caller builds
+    /// `Config` as a literal.
+    pub fn start_gated(config: Config, gate: Option<Arc<TurnGate>>) -> io::Result<Self> {
         let listener = TcpListener::bind(config.addr)?;
         let addr = listener.local_addr()?;
         let log = Arc::new(RequestLog::create(&config.reqlog)?);
@@ -105,8 +115,9 @@ impl CannedServer {
                     }
                     let Ok(stream) = stream else { continue };
                     let (log, script) = (Arc::clone(&log), Arc::clone(&script));
+                    let gate = gate.clone();
                     std::thread::spawn(move || {
-                        let _ = serve_connection(stream, &log, &script);
+                        let _ = serve_connection(stream, &log, &script, gate.as_deref());
                     });
                 }
             })
@@ -310,7 +321,12 @@ fn content_type_for(wire: Wire) -> &'static str {
     }
 }
 
-fn serve_connection(stream: TcpStream, log: &RequestLog, script: &Script) -> io::Result<()> {
+fn serve_connection(
+    stream: TcpStream,
+    log: &RequestLog,
+    script: &Script,
+    gate: Option<&TurnGate>,
+) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
     loop {
@@ -322,6 +338,13 @@ fn serve_connection(stream: TcpStream, log: &RequestLog, script: &Script) -> io:
         // Log before answering: if the script panics, the evidence is already on disk.
         if !req.method.eq_ignore_ascii_case("GET") {
             let _ = log.append(&req.method, &req.path, &req.headers, &req.body, wire);
+        }
+
+        // **After the log, before the answer.** `gate.rs` argues why that is the only placement
+        // that makes the ordering checkable: the held request is already on disk, so a test can
+        // read the provider's own account of what it has been asked while it is still holding.
+        if let Some(gate) = gate {
+            gate.wait_for(wire);
         }
 
         let (status, content_type, payload) = handle(&req, script);
