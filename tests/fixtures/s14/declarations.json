@@ -1,0 +1,320 @@
+{
+  "claude": {
+    "empty": {
+      "body_tools": [],
+      "system_init_tools": [],
+      "exit": "exit=0",
+      "stderr": "\u26a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00b7 Unset it to load your organization's connectors"
+    },
+    "read": {
+      "body_tools": [
+        "Read"
+      ],
+      "system_init_tools": [
+        "Read"
+      ],
+      "exit": "exit=0",
+      "stderr": "\u26a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00b7 Unset it to load your organization's connectors"
+    },
+    "bogus": {
+      "body_tools": [],
+      "system_init_tools": [],
+      "exit": "exit=0",
+      "stderr": "\u26a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00b7 Unset it to load your organization's connectors"
+    },
+    "readplusbogus": {
+      "body_tools": [
+        "Read"
+      ],
+      "system_init_tools": [
+        "Read"
+      ],
+      "exit": "exit=0",
+      "stderr": "\u26a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00b7 Unset it to load your organization's connectors"
+    },
+    "readbash": {
+      "body_tools": [
+        "Bash",
+        "Read"
+      ],
+      "system_init_tools": [
+        "Bash",
+        "Read"
+      ],
+      "exit": "exit=0",
+      "stderr": "\u26a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00b7 Unset it to load your organization's connectors"
+    },
+    "default": {
+      "body_tools": [
+        "Agent",
+        "Bash",
+        "Edit",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "system_init_tools": [
+        "Task",
+        "Bash",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "DesignSync",
+        "Edit",
+        "EnterWorktree",
+        "ExitWorktree",
+        "Monitor",
+        "NotebookEdit",
+        "PushNotification",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "SendMessage",
+        "Skill",
+        "TaskCreate",
+        "TaskGet",
+        "TaskList",
+        "TaskOutput",
+        "TaskStop",
+        "TaskUpdate",
+        "ToolSearch",
+        "WebFetch",
+        "WebSearch",
+        "Workflow",
+        "Write"
+      ],
+      "exit": "exit=0",
+      "stderr": "\u26a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00b7 Unset it to load your organization's connectors"
+    },
+    "absent": {
+      "body_tools": [
+        "Agent",
+        "Bash",
+        "Edit",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "Skill",
+        "ToolSearch",
+        "Workflow",
+        "DeferredToolPlaceholder",
+        "Write"
+      ],
+      "system_init_tools": [
+        "Task",
+        "Bash",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "DesignSync",
+        "Edit",
+        "EnterWorktree",
+        "ExitWorktree",
+        "Monitor",
+        "NotebookEdit",
+        "PushNotification",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "SendMessage",
+        "Skill",
+        "TaskCreate",
+        "TaskGet",
+        "TaskList",
+        "TaskOutput",
+        "TaskStop",
+        "TaskUpdate",
+        "ToolSearch",
+        "WebFetch",
+        "WebSearch",
+        "Workflow",
+        "Write"
+      ],
+      "exit": "exit=0",
+      "stderr": "\u26a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00b7 Unset it to load your organization's connectors"
+    },
+    "lowercase": {
+      "body_tools": [],
+      "system_init_tools": [],
+      "exit": "exit=0",
+      "stderr": "\u26a0 claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login \u00b7 Unset it to load your organization's connectors"
+    }
+  },
+  "codex": {
+    "readonly": {
+      "code_mode_tool_names": [
+        "apply_patch",
+        "create_goal",
+        "exec_command",
+        "get_goal",
+        "update_goal",
+        "update_plan",
+        "view_image",
+        "write_stdin"
+      ],
+      "top_level_tools_key_present": false,
+      "exit": "exit=0"
+    },
+    "wswrite": {
+      "code_mode_tool_names": [
+        "apply_patch",
+        "create_goal",
+        "exec_command",
+        "get_goal",
+        "update_goal",
+        "update_plan",
+        "view_image",
+        "write_stdin"
+      ],
+      "top_level_tools_key_present": false,
+      "exit": "exit=0"
+    },
+    "unknown_flag": {
+      "argv": "codex exec --tools Read \u2026",
+      "exit": "exit=2",
+      "stderr": "error: unexpected argument '--tools' found\n\n  tip: to pass '--tools' as a value, use '-- --tools'\n\nUsage: codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]\n\nFor more information, try '--help'."
+    }
+  },
+  "gemini": {
+    "default": {
+      "functionDeclarations": [
+        "update_topic",
+        "list_directory",
+        "read_file",
+        "grep_search",
+        "glob",
+        "google_web_search",
+        "enter_plan_mode",
+        "invoke_agent"
+      ],
+      "exit": "exit=0",
+      "stderr_head": [
+        "[STARTUP] Phase 'cleanup_ops' was started but never ended. Skipping metrics."
+      ]
+    },
+    "allowed-read": {
+      "functionDeclarations": [
+        "update_topic",
+        "list_directory",
+        "read_file",
+        "grep_search",
+        "glob",
+        "google_web_search",
+        "enter_plan_mode",
+        "invoke_agent"
+      ],
+      "exit": "exit=0",
+      "stderr_head": [
+        "Warning: --allowed-tools cli argument and tools.allowed in settings.json are deprecated and will be removed in 1.0: Migrate to Policy Engine: https://geminicli.com/docs/core/policy-engine/"
+      ]
+    },
+    "allowed-bogus": {
+      "functionDeclarations": [
+        "update_topic",
+        "list_directory",
+        "read_file",
+        "grep_search",
+        "glob",
+        "google_web_search",
+        "enter_plan_mode",
+        "invoke_agent"
+      ],
+      "exit": "exit=0",
+      "stderr_head": [
+        "Warning: --allowed-tools cli argument and tools.allowed in settings.json are deprecated and will be removed in 1.0: Migrate to Policy Engine: https://geminicli.com/docs/core/policy-engine/"
+      ]
+    },
+    "planmode": {
+      "functionDeclarations": [
+        "update_topic",
+        "list_directory",
+        "read_file",
+        "grep_search",
+        "glob",
+        "replace",
+        "write_file",
+        "google_web_search",
+        "exit_plan_mode",
+        "invoke_agent"
+      ],
+      "exit": "exit=0",
+      "stderr_head": [
+        "[STARTUP] Phase 'cleanup_ops' was started but never ended. Skipping metrics."
+      ]
+    }
+  },
+  "opencode": {
+    "default": {
+      "distinct_tool_lists": [
+        [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "read",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      ],
+      "exit": "exit=124 (124 = the 25s bound; opencode does not exit on a script it cannot satisfy, S13)"
+    },
+    "readdeny": {
+      "distinct_tool_lists": [
+        [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      ],
+      "exit": "exit=124 (124 = the 25s bound; opencode does not exit on a script it cannot satisfy, S13)"
+    },
+    "readallow": {
+      "distinct_tool_lists": [
+        [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "read",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      ],
+      "exit": "exit=124 (124 = the 25s bound; opencode does not exit on a script it cannot satisfy, S13)"
+    },
+    "bogusdeny": {
+      "distinct_tool_lists": [
+        [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "read",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      ],
+      "exit": "exit=124 (124 = the 25s bound; opencode does not exit on a script it cannot satisfy, S13)"
+    }
+  }
+}

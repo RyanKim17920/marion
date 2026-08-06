@@ -1,0 +1,271 @@
+{
+  "seq": 2,
+  "method": "POST",
+  "path": "/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+  "wire": "gemini",
+  "headers": {
+    "accept": "*/*",
+    "accept-encoding": "gzip, deflate",
+    "accept-language": "*",
+    "connection": "keep-alive",
+    "content-length": "39549",
+    "content-type": "application/json",
+    "host": "127.0.0.1:8735",
+    "sec-fetch-mode": "cors",
+    "user-agent": "GeminiCLI-tui/0.53.0/gemini-2.5-flash (darwin; arm64; terminal)",
+    "x-goog-api-client": "google-genai-sdk/1.30.0 gl-node/v26.6.0",
+    "x-goog-api-key": "<REDACTED>"
+  },
+  "body.tools": [
+    {
+      "functionDeclarations": [
+        {
+          "description": "Manages your narrative flow. Include `title` and `summary` only when starting a new Chapter (logical phase) or shifting strategic intent.",
+          "name": "update_topic",
+          "parametersJsonSchema": {
+            "properties": {
+              "strategic_intent": {
+                "description": "A mandatory one-sentence statement of your immediate intent.",
+                "type": "string"
+              },
+              "summary": {
+                "description": "(OPTIONAL) A detailed summary (5-10 sentences) covering both the work completed in the previous topic and the strategic intent of the new topic. This is required when transitioning between topics to maintain continuity.",
+                "type": "string"
+              },
+              "title": {
+                "description": "The title of the new topic or chapter.",
+                "type": "string"
+              },
+              "wait_for_previous": {
+                "description": "Set to true to wait for all previously requested tools in this turn to complete before starting. Set to false (or omit) to run in parallel. Use true when this tool depends on the output of previous tools.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "strategic_intent"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Lists the names of files and subdirectories directly within a specified directory path. Can optionally ignore entries matching provided glob patterns.",
+          "name": "list_directory",
+          "parametersJsonSchema": {
+            "properties": {
+              "dir_path": {
+                "description": "The path to the directory to list",
+                "type": "string"
+              },
+              "file_filtering_options": {
+                "description": "Optional: Whether to respect ignore patterns from .gitignore or .geminiignore",
+                "properties": {
+                  "respect_gemini_ignore": {
+                    "description": "Optional: Whether to respect .geminiignore patterns when listing files. Defaults to true.",
+                    "type": "boolean"
+                  },
+                  "respect_git_ignore": {
+                    "description": "Optional: Whether to respect .gitignore patterns when listing files. Only available in git repositories. Defaults to true.",
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              },
+              "ignore": {
+                "description": "List of glob patterns to ignore",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "dir_path"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Reads and returns the content of a specified file. To maintain context efficiency, you MUST use 'start_line' and 'end_line' for targeted, surgical reads of specific sections. For your safety, the tool will automatically truncate output exceeding 2000 lines, 2000 characters per line, or 20MB in size; however, triggering these limits is considered token-inefficient. Always retrieve only the minimum content necessary for your next step. Handles text, images (PNG, JPG, GIF, WEBP, SVG, BMP), audio files (MP3, WAV, AIFF, AAC, OGG, FLAC), and PDF files.",
+          "name": "read_file",
+          "parametersJsonSchema": {
+            "properties": {
+              "end_line": {
+                "description": "Optional: The 1-based line number to end reading at (inclusive).",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "file_path": {
+                "description": "The path to the file to read.",
+                "type": "string"
+              },
+              "start_line": {
+                "description": "Optional: The 1-based line number to start reading from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file_path"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Searches for a regular expression pattern within file contents. This tool is FAST and optimized, powered by ripgrep. PREFERRED over standard `run_shell_command(\"grep ...\")` due to better performance and automatic output limiting (defaults to 100 matches, but can be increased via `total_max_matches`).",
+          "name": "grep_search",
+          "parametersJsonSchema": {
+            "properties": {
+              "after": {
+                "description": "Show this many lines after each match (equivalent to grep -A). Defaults to 0 if omitted.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "before": {
+                "description": "Show this many lines before each match (equivalent to grep -B). Defaults to 0 if omitted.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "case_sensitive": {
+                "description": "If true, search is case-sensitive. Defaults to false (ignore case) if omitted.",
+                "type": "boolean"
+              },
+              "context": {
+                "description": "Show this many lines of context around each match (equivalent to grep -C). Defaults to 0 if omitted.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "dir_path": {
+                "description": "Directory or file to search. Directories are searched recursively. Relative paths are resolved against current working directory. Defaults to current working directory ('.') if omitted.",
+                "type": "string"
+              },
+              "exclude_pattern": {
+                "description": "Optional: A regular expression pattern to exclude from the search results. If a line matches both the pattern and the exclude_pattern, it will be omitted.",
+                "type": "string"
+              },
+              "fixed_strings": {
+                "description": "If true, treats the `pattern` as a literal string instead of a regular expression. Defaults to false (basic regex) if omitted.",
+                "type": "boolean"
+              },
+              "include_pattern": {
+                "description": "Glob pattern to filter files (e.g., '*.ts', 'src/**'). Recommended for large repositories to reduce noise. Defaults to all files if omitted.",
+                "type": "string"
+              },
+              "max_matches_per_file": {
+                "description": "Optional: Maximum number of matches to return per file. Use this to prevent being overwhelmed by repetitive matches in large files.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "names_only": {
+                "description": "Optional: If true, only the file paths of the matches will be returned, without the line content or line numbers. This is useful for gathering a list of files.",
+                "type": "boolean"
+              },
+              "no_ignore": {
+                "description": "If true, searches all files including those usually ignored (like in .gitignore, build/, dist/, etc). Defaults to false if omitted.",
+                "type": "boolean"
+              },
+              "pattern": {
+                "description": "The pattern to search for. By default, treated as a Rust-flavored regular expression. Use '\\b' for precise symbol matching (e.g., '\\bMatchMe\\b').",
+                "type": "string"
+              },
+              "total_max_matches": {
+                "description": "Optional: Maximum number of total matches to return. Use this to limit the overall size of the response. Defaults to 100 if omitted.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Efficiently finds files matching specific glob patterns (e.g., `src/**/*.ts`, `**/*.md`), returning absolute paths sorted by modification time (newest first). Ideal for quickly locating files based on their name or path structure, especially in large codebases.",
+          "name": "glob",
+          "parametersJsonSchema": {
+            "properties": {
+              "case_sensitive": {
+                "description": "Optional: Whether the search should be case-sensitive. Defaults to false.",
+                "type": "boolean"
+              },
+              "dir_path": {
+                "description": "Optional: The absolute path to the directory to search within. If omitted, searches the root directory.",
+                "type": "string"
+              },
+              "pattern": {
+                "description": "The glob pattern to match against (e.g., '**/*.py', 'docs/*.md').",
+                "type": "string"
+              },
+              "respect_gemini_ignore": {
+                "description": "Optional: Whether to respect .geminiignore patterns when finding files. Defaults to true.",
+                "type": "boolean"
+              },
+              "respect_git_ignore": {
+                "description": "Optional: Whether to respect .gitignore patterns when finding files. Only available in git repositories. Defaults to true.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Performs a grounded Google Search to find information across the internet. Returns a synthesized answer with citations (e.g., [1]) and source URIs. Best for finding up-to-date documentation, troubleshooting obscure errors, or broad research. Use this when you don't have a specific URL. If a search result requires deeper analysis, follow up by using 'web_fetch' on the provided URI.",
+          "name": "google_web_search",
+          "parametersJsonSchema": {
+            "properties": {
+              "query": {
+                "description": "The search query. Supports natural language questions (e.g., 'Latest breaking changes in React 19') or specific technical queries.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Switch to Plan Mode to safely research, design, and plan complex changes using read-only tools.",
+          "name": "enter_plan_mode",
+          "parametersJsonSchema": {
+            "properties": {
+              "reason": {
+                "description": "Short reason explaining why you are entering plan mode.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "description": "Invoke a subagent to perform a specific task or investigation.",
+          "name": "invoke_agent",
+          "parametersJsonSchema": {
+            "properties": {
+              "agent_name": {
+                "description": "Name of the subagent to invoke",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The COMPLETE query to send the subagent. MUST be comprehensive and detailed. Include all context, background, questions, and expected output format. Do NOT send brief or incomplete instructions.",
+                "type": "string"
+              },
+              "wait_for_previous": {
+                "description": "Set to true to wait for all previously requested tools in this turn to complete before starting. Set to false (or omit) to run in parallel. Use true when this tool depends on the output of previous tools.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "agent_name",
+              "prompt"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    }
+  ]
+}

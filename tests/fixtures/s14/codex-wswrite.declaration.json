@@ -1,0 +1,63 @@
+{
+  "seq": 1,
+  "method": "POST",
+  "path": "/v1/responses",
+  "wire": "responses",
+  "headers": {
+    "accept": "text/event-stream",
+    "authorization": "<REDACTED>",
+    "content-length": "48822",
+    "content-type": "application/json",
+    "host": "127.0.0.1:8733",
+    "originator": "codex_exec",
+    "session-id": "019fd461-7421-77d1-b299-ea031db3aab5",
+    "thread-id": "019fd461-7421-77d1-b299-ea031db3aab5",
+    "user-agent": "codex_exec/0.146.0 (Mac OS 26.5.1; arm64) WarpTerminal/v0.2026.07.22.09.01.stable_01 (codex_exec; 0.146.0)",
+    "x-client-request-id": "019fd461-7421-77d1-b299-ea031db3aab5",
+    "x-codex-beta-features": "remote_compaction_v2",
+    "x-codex-turn-metadata": "{\"installation_id\":\"75903a73-9b23-46d3-9c5c-41071a63af46\",\"session_id\":\"019fd461-7421-77d1-b299-ea031db3aab5\",\"thread_id\":\"019fd461-7421-77d1-b299-ea031db3aab5\",\"turn_id\":\"019fd461-7450-70c2-82be-0ca0c783a262\",\"window_id\":\"019fd461-7421-77d1-b299-ea031db3aab5:0\",\"request_kind\":\"turn\",\"thread_source\":\"user\",\"sandbox\":\"seatbelt\",\"turn_started_at_unix_ms\":1785974584402}",
+    "x-codex-window-id": "019fd461-7421-77d1-b299-ea031db3aab5:0",
+    "x-openai-internal-codex-responses-lite": "true"
+  },
+  "body.tools": null,
+  "turn_metadata.code_mode_tool_names": {
+    "apply_patch": {
+      "name": "apply_patch",
+      "namespace": null
+    },
+    "create_goal": {
+      "name": "create_goal",
+      "namespace": null
+    },
+    "exec_command": {
+      "name": "exec_command",
+      "namespace": null
+    },
+    "get_goal": {
+      "name": "get_goal",
+      "namespace": null
+    },
+    "update_goal": {
+      "name": "update_goal",
+      "namespace": null
+    },
+    "update_plan": {
+      "name": "update_plan",
+      "namespace": null
+    },
+    "view_image": {
+      "name": "view_image",
+      "namespace": null
+    },
+    "write_stdin": {
+      "name": "write_stdin",
+      "namespace": null
+    }
+  },
+  "input.additional_tools[].name": [
+    "exec",
+    "wait",
+    "request_user_input",
+    "collaboration"
+  ]
+}
