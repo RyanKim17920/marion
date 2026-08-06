@@ -889,7 +889,12 @@ fn a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_
 /// how it survived to be found by review.
 #[test]
 fn a_root_whose_state_dir_is_inside_the_repository_is_refused_on_the_command_line() {
-    let dir = scratch("root-change-state-inside-run");
+    // A short tag on purpose: this test nests its state dir inside the repository
+    // (`<scratch>/repo/.marion-state`), which is thirteen bytes deeper than the `<scratch>/state`
+    // every other test here uses, and the socket path budget §2 gives is 103 bytes for all of it.
+    // Overrunning it moves this project's lock file into the shared `/tmp/marion-<uid>` fallback,
+    // which nothing may ever unlink -- see `marion_testsupport::SCRATCH_ROOT`.
+    let dir = scratch("rc-state-in-repo");
     let repo = fixture_repo(&dir);
     let state = repo.join(".marion-state");
     std::fs::create_dir_all(&state).unwrap();

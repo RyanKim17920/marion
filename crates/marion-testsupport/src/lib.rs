@@ -40,6 +40,7 @@
 //! `marion` command. It kills processes by pid, removes directories on drop, and shells out to
 //! `git` and `ps`.
 
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -399,14 +400,14 @@ fn thread_tag() -> String {
     }
 }
 
-/// A fresh scratch dir under the system temp dir, named `marion-{tag}-{pid}-{thread}`.
+/// A fresh scratch dir named `marion-{tag}-{pid}-{thread}`, under a **short** private root.
 ///
 /// **Bind the returned guard for as long as the test needs the directory.** `scratch("x").join("y")`
 /// drops the guard at the end of that statement and deletes the dir out from under the run, and a
 /// bare `let _ =` drops it on the spot. That is the one trap in this shape, and it is the reason
 /// the constructor returns the guard rather than a path.
 ///
-/// Three properties, each of which some copy of this had and some did not:
+/// Four properties, each of which some copy of this had and some did not:
 ///
 /// - **the thread id is in the name**, so two tests in one binary — which `cargo test` runs in
 ///   parallel by default — cannot collide on a tag. See [`thread_tag`] for why it is not spelled
@@ -415,16 +416,94 @@ fn thread_tag() -> String {
 ///   `Drop` leaves a name behind and pids recycle, so a later run can inherit that exact name;
 /// - **the path is canonicalised**, because on macOS the temp dir is a symlink (`/var` →
 ///   `/private/var`) and a test that compares a path marion reported against one built here
-///   otherwise compares two spellings of the same directory.
+///   otherwise compares two spellings of the same directory;
+/// - **the root is [`SCRATCH_ROOT`] and not `std::env::temp_dir()`**, which is what keeps a test's
+///   leavings inside the directory this guard deletes. See [`SCRATCH_ROOT`].
 pub fn scratch(tag: &str) -> Scratch {
-    let p = std::env::temp_dir().join(format!(
-        "marion-{tag}-{}-{}",
-        std::process::id(),
-        thread_tag()
-    ));
+    let p = scratch_root().join(leaf(tag));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("scratch dir");
     Scratch(p.canonicalize().expect("scratch dir canonicalises"))
+}
+
+/// The directory name, **bounded**, because a caller cannot be asked to count bytes.
+///
+/// A scratch directory is where a test's supervisor socket ends up, and §2 gives that path 103
+/// bytes before it moves the socket into a shared directory nothing ever cleans (see
+/// [`SCRATCH_ROOT`]). Some tags are built at runtime — `journal_wiring.rs` composes one out of two
+/// agent types — so "keep tags short" is a rule that cannot be checked at the call site and was
+/// measured being broken: that file was the last one still leaving lock files behind after the root
+/// was shortened.
+///
+/// So the bound lives here. A name that fits is used as it is; one that does not keeps its readable
+/// head and ends in a hash of the **whole** tag, so two long tags that share a prefix still get two
+/// directories. Uniqueness is what the name is for; legibility is what is traded, and only for the
+/// tags that could not have both.
+fn leaf(tag: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let whole = format!("marion-{tag}-{}-{}", std::process::id(), thread_tag());
+    if whole.len() <= MAX_SCRATCH_LEAF {
+        return whole;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tag.hash(&mut h);
+    let digest = format!("{:04x}", h.finish() as u16);
+    let suffix = format!("-{digest}-{}-{}", std::process::id(), thread_tag());
+    let head: String = tag
+        .chars()
+        .take(MAX_SCRATCH_LEAF.saturating_sub("marion-".len() + suffix.len()))
+        .collect();
+    format!("marion-{head}{suffix}")
+}
+
+/// How long [`scratch`]'s directory name may be.
+///
+/// Arithmetic, not taste. §2 allows 103 bytes for a socket path; `/private/tmp/mn-<uid>/` spends 20
+/// (the canonical spelling — `/tmp` is a symlink on macOS), `/<project-hash>/supervisor.sock` spends
+/// 29 at the other end, and several tests put their state one directory deeper (`dir.join("state")`)
+/// for another 6. That leaves 48, and this is 48.
+const MAX_SCRATCH_LEAF: usize = 48;
+
+/// Where [`scratch`] puts its directories, and **why it is not the system temp dir**.
+///
+/// `std::env::temp_dir()` on macOS is a 48-byte `/var/folders/…/T` path. A state directory under it
+/// plus a tag, a pid and a thread id runs to ~80 bytes, and a supervisor socket is that plus
+/// `/<project-hash>/supervisor.sock` — over the 103 bytes a `sun_path` may hold. §2's rule then puts
+/// that project's socket, lock, identity and log in the **shared** `/tmp/marion-<uid>` fallback
+/// instead, where they are outside the directory this guard removes and nothing ever deletes them.
+///
+/// The lock file is the one that accumulates, because `socket.rs` never unlinks a lock and must not:
+/// two processes that `open` one path either side of an unlink hold two inodes, `flock` them
+/// independently, and both conclude they are alone. There is no reclamation rule that survives that
+/// argument — an age test proves nothing about a live holder, and a liveness test races the holder
+/// that is about to open it — so the accumulation is fixed at its source instead, which is *this
+/// path being long*. Measured: `/tmp/marion-<uid>` grew by ~122 lock files per full workspace run
+/// and had reached 3,893 of them, one per (project root × run), all of them from tests.
+///
+/// A short root brings every scratch-based project back under §2's primary branch, so its socket
+/// lives inside the scratch directory and leaves with it. It is spelled `/tmp/mn-<uid>` and not
+/// something legible because the budget is 103 bytes for the *whole* socket path and this suite's
+/// longest tag already spends 29 of them — `socket.rs`'s
+/// `a_scratch_projects_socket_fits_without_falling_back_to_the_shared_tmp_directory` is what keeps
+/// that arithmetic honest, and a longer root was measured overrunning it by four bytes. The uid is in the name for the reason
+/// `socket.rs`'s own `/tmp` fallback carries one: `/tmp` is shared, and a directory two users can
+/// both claim is a directory either can serve a socket through.
+pub const SCRATCH_ROOT: &str = "/tmp/mn";
+
+fn scratch_root() -> PathBuf {
+    // SAFETY: `getuid` reads the calling process's real uid and cannot fail.
+    let root = PathBuf::from(format!("{SCRATCH_ROOT}-{}", unsafe { getuid() }));
+    // 0700 rather than the umask's default: /tmp is world-writable, and a test's scratch tree holds
+    // sockets that grant control of a fleet exactly as a real one's does.
+    let _ = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&root);
+    root
+}
+
+unsafe extern "C" {
+    fn getuid() -> u32;
 }
 
 // --- git ------------------------------------------------------------------------------------------
