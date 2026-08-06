@@ -332,7 +332,12 @@ fn a_journal_that_goes_bad_mid_run_costs_the_view_and_not_the_run() {
     // The same file `marion run` will journal this run to — derived the way marion derives it, not
     // guessed, and canonical because the project hash is taken over the resolved repo.
     let repo = repo.canonicalize().expect("the repo resolves");
-    let journal = marion_core::paths::ProjectDir::new(&state, &repo).journal();
+    // §2's key is the git common dir, not the repo's own path — `root::prepare`'s call, made here.
+    let journal = marion_core::paths::ProjectDir::new(
+        &state,
+        &marion_supervisor::socket::project_root(&repo),
+    )
+    .journal();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
@@ -425,7 +430,7 @@ fn a_journal_that_goes_bad_mid_run_costs_the_view_and_not_the_run() {
     // keep serving a tree from a file it no longer recognises"*), which freezes §5.7's exit
     // predicate on a tree taken **before** the root's `Exited` record. The supervisor therefore
     // reports a non-terminal node forever and nothing but a signal ends it. That gap is pinned by
-    // `detached_supervisor.rs::a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_nothing_clears_it`
+    // `detached_supervisor.rs::a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by_name`
     // rather than left as an anecdote, and it is a real limitation and not an artefact of this
     // fixture — a corrupted journal in production produces the same immortal supervisor.
     //

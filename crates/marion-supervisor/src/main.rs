@@ -346,7 +346,10 @@ fn spawn_env() -> Result<run::Env, ()> {
         std::env::var(marion_supervisor::root::BASE_URL_ENV).ok(),
     );
     Ok(run::Env {
-        project_dir: ProjectDir::new(&state, &repo),
+        // §2's key — the git common dir, not the cwd. The bridge is spawned *inside* the node's
+        // worktree in some configurations, so this is the call that stops a child from journalling
+        // into a project of its own. `marion run` and `root::prepare` make the same one.
+        project_dir: ProjectDir::new(&state, &marion_supervisor::socket::project_root(&repo)),
         repo,
         bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
         base_url,

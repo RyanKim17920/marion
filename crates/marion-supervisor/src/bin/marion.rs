@@ -905,16 +905,33 @@ const JOURNAL_POLL: StdDuration = StdDuration::from_millis(100);
 /// and the supervisor would — correctly, per §7.3.1 — treat a finished run as a crash and stay
 /// resident over a journal in which nothing is left to supervise.
 ///
-/// So this guard sends §7.3.2's disposition **(b), `DetachAll`**, on every path out of `main`,
-/// including the failures. Its answer is not discarded: it is the supervisor's own account of what
-/// it is going to do, and it is the only place an operator can learn *why* a fleet outlived their
-/// command. The two answers say opposite things and both are printed.
+/// So this guard sends §7.3.2's disposition **(b), `DetachAll`**, and reports everything the
+/// supervisor answers with.
 ///
-/// **When the supervisor says it is leaving, this waits for it to have left.** That is not the
-/// client dictating the supervisor's lifetime — §5.7 forbids exactly that, and every clause of it
-/// still decides the answer — it is the client declining to return "done" while a process it
-/// started is still running. The wait is bounded and its expiry is reported rather than silent,
-/// because a supervisor that promised to exit and did not is a fact worth one line.
+/// **§7.3.2's "never silently detach" is the whole reason the answer is printed.** *"They MUST tell
+/// the operator both how to re-attach and how to stop the fleet without one. Detaching into silence
+/// is worse than killing, because the operator does not know they now own something."* A guard that
+/// printed only `Resident(NonTerminalNode)` satisfied the letter of *"say something"* and none of
+/// that rule: the nodes still running, the ones that can hit a permission gate unattended (§7.3.2's
+/// stated cost of (b), §11 item 22), the socket to dial and the call that stops the fleet were all
+/// in the response and none of them reached the operator. All of it is printed now, and the
+/// resident and exiting cases print the same detach facts because a fleet is equally detached
+/// either way.
+///
+/// **Where this guard does *not* run, stated rather than implied.** `Drop` covers an ordinary
+/// return from `main` and an unwind. It does **not** run on `std::process::exit`, on a `panic =
+/// "abort"` build, or on any signal — SIGINT from the operator's own Ctrl-C, SIGTERM, SIGKILL. On
+/// every one of those the supervisor sees exactly what it sees when a TUI dies, and §7.3.1 gives
+/// the right answer for that: nothing happens to any node, and the supervisor waits out §5.7's
+/// full grace rather than treating the close as a decision. That is a worse outcome than this
+/// guard's, not an unsafe one, and *"every exit path"* would be a false claim — the honest one is
+/// that marion installs no signal handler and §11 item 27 records what closing that would take.
+///
+/// **What it must not do is turn a failing run into a failing process.** It runs during unwind, so
+/// every step is fallible-and-ignored and nothing here may panic: a `println!`/`eprintln!` panics
+/// when stderr is closed, and a panic during an unwind aborts the process — a `marion run` whose
+/// real error would then never be printed at all. Every write goes through `writeln!` with its
+/// result dropped for that reason, and both waits are bounded by named constants.
 struct SupervisorSession {
     stream: std::os::unix::net::UnixStream,
     socket: PathBuf,
@@ -927,9 +944,116 @@ struct SupervisorSession {
 /// `unlink`. Nothing asserts on how long it takes.
 const SUPERVISOR_EXIT_WAIT: StdDuration = StdDuration::from_secs(5);
 
+/// The §5.7 idle grace `marion run` asks a supervisor it starts to use.
+///
+/// **The supervisor's own default, deliberately not a number this client chose.** See the call
+/// site: whichever client starts a supervisor fixes its grace for every later client, so a value
+/// justified by *this* command's lifetime would be imposed on a TUI that had no say in it.
+const RUN_IDLE_GRACE: StdDuration = marion_supervisor::serve::DEFAULT_IDLE_GRACE;
+
+/// How long [`SupervisorSession::drop`] will wait for the answer to its own quit.
+///
+/// **Named so it cannot be omitted.** `set_read_timeout` is fallible, and a guard that ignored the
+/// failure and read anyway would block for as long as a wedged supervisor cared to hold the
+/// socket — during an unwind, with the run's real error still unprinted. A timeout that cannot be
+/// set is therefore a reason to stop, not a reason to read without one.
+const SUPERVISOR_REPLY_WAIT: StdDuration = StdDuration::from_secs(10);
+
+/// §7.3.2's disclosure, rendered from the supervisor's own answer and nothing else.
+///
+/// Five facts, because §7.3.2 names five and a detach that reports fewer is the *"detaching into
+/// silence"* the rule forbids: what the supervisor is doing and why, **which nodes are still
+/// running**, which of them can burn their permission bound unattended (§11 item 22 — the cost the
+/// section says MUST be stated at the point of choosing (b), not discovered afterwards), how to get
+/// back, and how to stop the fleet without getting back.
+///
+/// A free function so the sentence can be tested without a socket, a supervisor or an unwind. It
+/// hands back the disposition it rendered, because the caller's only remaining decision — whether
+/// to wait for the socket to go — is the same fact and must not be re-derived from a second match.
+fn detach_report(
+    outcome: &marion_proto::QuitOutcome,
+) -> Option<(marion_proto::SupervisorDisposition, String)> {
+    use std::fmt::Write as _;
+    let (supervisor, detached, gate_exposed, guidance, reaped) = match outcome {
+        marion_proto::QuitOutcome::Detached {
+            detached,
+            gate_exposed,
+            guidance,
+            supervisor,
+        } => (supervisor, detached, gate_exposed, guidance, Vec::new()),
+        marion_proto::QuitOutcome::ReapedAndDetached {
+            reaped,
+            detached,
+            gate_exposed,
+            guidance,
+            supervisor,
+        } => (
+            supervisor,
+            detached,
+            gate_exposed,
+            guidance,
+            reaped.iter().map(|n| n.0.clone()).collect(),
+        ),
+        // A `Killed` outcome cannot arrive here: this guard only ever sends `DetachAll`.
+        marion_proto::QuitOutcome::Killed { .. } => return None,
+    };
+    let names = |ids: &[marion_core::contract::AgentId]| {
+        ids.iter()
+            .map(|i| i.0.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out = String::new();
+    match supervisor {
+        marion_proto::SupervisorDisposition::Resident(reason) => {
+            let _ = writeln!(
+                out,
+                "marion: this project's supervisor is still running ({reason:?}); it holds work \
+                 this run did not finish, and the next marion will find it rather than start one \
+                 (§5.7)"
+            );
+        }
+        marion_proto::SupervisorDisposition::Exiting => {
+            let _ = writeln!(
+                out,
+                "marion: nothing in §5.7's exclusion list holds this project's supervisor, so it \
+                 is leaving and journaling that it did"
+            );
+        }
+    }
+    if !reaped.is_empty() {
+        let _ = writeln!(
+            out,
+            "marion: reaped and resumable: {} (§7.2: transcript intact, ownership retained)",
+            reaped.join(", ")
+        );
+    }
+    if detached.is_empty() {
+        let _ = writeln!(out, "marion: no node was left running.");
+    } else {
+        let _ = writeln!(out, "marion: still running, detached: {}", names(detached));
+        if !gate_exposed.is_empty() {
+            let _ = writeln!(
+                out,
+                "marion: unattended at a permission gate: {} — each one that asks burns its bound \
+                 and is denied, and the far side sees an is_error tool_result rather than a \
+                 question (§7.3.2, §11 item 22)",
+                names(gate_exposed)
+            );
+        }
+        let _ = writeln!(out, "marion: to re-attach: {}", guidance.reattach);
+        let _ = writeln!(out, "marion: to stop the fleet: {}", guidance.stop_fleet);
+    }
+    Some((*supervisor, out))
+}
+
 impl Drop for SupervisorSession {
     fn drop(&mut self) {
         use std::io::{BufRead, Write};
+        // Nothing below may panic: this can run during an unwind, and a panic there aborts the
+        // process before the run's own error is printed. `writeln!` to a locked stderr rather than
+        // `eprintln!`, which panics on a write failure, and every result is deliberately dropped.
+        let mut err = io::stderr();
         let frame = marion_proto::Frame::Request(marion_proto::Request::new(
             marion_proto::RequestId::Number(1),
             marion_proto::Call::SessionQuit(marion_proto::params::SessionQuitParams {
@@ -946,9 +1070,15 @@ impl Drop for SupervisorSession {
             // §7.3.1's invariant means the nodes are untouched either way.
             return;
         }
-        let _ = self
+        if self
             .stream
-            .set_read_timeout(Some(StdDuration::from_secs(10)));
+            .set_read_timeout(Some(SUPERVISOR_REPLY_WAIT))
+            .is_err()
+        {
+            // See [`SUPERVISOR_REPLY_WAIT`]: reading without a bound is the one option that is
+            // worse than not reading at all.
+            return;
+        }
         let Some(Ok(line)) = std::io::BufReader::new(&self.stream).lines().next() else {
             return;
         };
@@ -964,33 +1094,23 @@ impl Drop for SupervisorSession {
         else {
             return;
         };
-        let supervisor = match &result.outcome {
-            marion_proto::QuitOutcome::Detached { supervisor, .. }
-            | marion_proto::QuitOutcome::ReapedAndDetached { supervisor, .. } => *supervisor,
-            // A `KillTree` outcome cannot arrive here: this guard only ever sends `DetachAll`.
-            _ => return,
+        let Some((supervisor, report)) = detach_report(&result.outcome) else {
+            return;
         };
-        match supervisor {
-            marion_proto::SupervisorDisposition::Resident(reason) => {
-                eprintln!(
-                    "marion: this project's supervisor is still running ({reason:?}); it holds \
-                     work this run did not finish, and the next marion will find it rather than \
-                     start one (§5.7)"
-                );
+        let _ = write!(err, "{report}");
+        if supervisor == marion_proto::SupervisorDisposition::Exiting {
+            let deadline = std::time::Instant::now() + SUPERVISOR_EXIT_WAIT;
+            while self.socket.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(StdDuration::from_millis(2));
             }
-            marion_proto::SupervisorDisposition::Exiting => {
-                let deadline = std::time::Instant::now() + SUPERVISOR_EXIT_WAIT;
-                while self.socket.exists() && std::time::Instant::now() < deadline {
-                    std::thread::sleep(StdDuration::from_millis(2));
-                }
-                if self.socket.exists() {
-                    eprintln!(
-                        "marion: this project's supervisor said it was exiting and {} is still \
-                         there after {} s; it may still be shutting down",
-                        self.socket.display(),
-                        SUPERVISOR_EXIT_WAIT.as_secs()
-                    );
-                }
+            if self.socket.exists() {
+                let _ = writeln!(
+                    err,
+                    "marion: this project's supervisor said it was exiting and {} is still there \
+                     after {} s; it may still be shutting down",
+                    self.socket.display(),
+                    SUPERVISOR_EXIT_WAIT.as_secs()
+                );
             }
         }
     }
@@ -1097,11 +1217,21 @@ fn main() -> ExitCode {
     // function is what makes that literally true: while a run is in progress the supervisor has one
     // client, and §5.7's absolute zero-client exit predicate is satisfied only after the run ends.
     //
-    // **What this deliberately does not move is who drives the root.** That is a different axis and
-    // §10's table never mentions it: making `marion run` a pure client would need `node/spawn` over
-    // the socket and §11 item 23's backgrounding, neither of which is built, so the alternative to
-    // this line is not a purer split — it is a `marion run` that cannot run. Two processes writing
-    // one journal is not a compromise introduced here either: `journal.rs` already states that
+    // **What this deliberately does not move is who drives the root, and that is not a detail —
+    // it is why §7.3.1 does not hold yet.** The supervisor started below tails the journal. It
+    // holds no node's `Child`, no pid it spawned, no pipe and no channel; `root::launch_watched`
+    // below holds all of them for the whole of the root's turn, and `Spawned` is not journaled
+    // until that blocking call returns. SIGKILL this process mid-root and the child is left unheld
+    // while the supervisor sees an unresolved spawn forever — a process leak *and* a supervisor
+    // leak, which is the inverse of *"a TUI crash cannot kill running agents"*. **Nothing in this
+    // file may be read as delivering §7.3.1's invariant.** §11 item 27 states the gap and names the
+    // four changes that close it — `agent/spawn` as a real handler, the bridge as a socket client,
+    // supervisor-side event sinks and journal writes, and §11 item 23's backgrounding — and
+    // `MILESTONES.md` records that §9's M2 criteria 1 and 4 are unmeetable until they land.
+    //
+    // Making `marion run` a pure client today would not be a purer split, it would be a `marion
+    // run` that cannot run, which is why the wiring landed in this order. Two processes writing one
+    // journal is not a compromise introduced here either: `journal.rs` already states that
     // *"`marion run` and each `marion-supervisor mcp` bridge are separate processes that both cause
     // lifecycle events, so the file has concurrent writers by construction"*, serialised by
     // `O_APPEND` at record granularity.
@@ -1110,34 +1240,43 @@ fn main() -> ExitCode {
     // depends on it: the root is still driven in-process, so a missing supervisor costs the socket
     // and not the work. The day `spawn` goes over the socket, this must become a refusal, and the
     // test that pins the current behaviour is named so that whoever changes it has to say so.
-    // The **repo**, not `socket::project_root`'s git common dir. `root::prepare` keys this
-    // project's journal on `spec.repo` (`ProjectDir::new(&spec.state, &spec.repo)`), and a
-    // supervisor tailing a journal at a different hash would be serving a different project with
-    // the same name. §2 keys the *socket* on the git common dir so that §6.6's worktree children
-    // resolve to their main repository's supervisor, and those two rules disagree —
-    // `socket::resolve` implements §2's and has **no caller in this repo**, so nothing currently
-    // disagrees in practice. Reconciling them moves where the journal lives, which is not this
-    // change.
-    let sock = socket::socket_paths(&state, &repo, uid());
+    // **§2's key, for the socket and the journal both, and it is the git common dir.** *"Both the
+    // supervisor and its state are keyed on the project root (git common-dir, falling back to
+    // cwd) — not cwd, since worktree children (§6.6) have different cwds and would otherwise hash
+    // to different supervisors."* Two rules read out of one sentence: the socket is `resolve`'s and
+    // the journal is `ProjectDir`'s, and until now `marion run` gave them different arguments.
+    //
+    // What that cost is not hypothetical. In a linked worktree `/r-wt` of `/r`, `marion run --repo
+    // /r-wt` hashed `/r-wt` while `socket::resolve(/r-wt)` — which is what a bridge or a TUI calls
+    // — hashes `/r/.git`, and `marion run --repo /r` hashed `/r`: three keys, so the main and the
+    // linked worktree got different supervisors over different journals, which is the exact case
+    // §2's rule names. Submodules divide the same way through `.git/modules/…`.
+    //
+    // `project_root` is applied here, in `root::prepare` and in the bridge's `spawn_env`, so all
+    // three agree; `repo` itself stays the root's cwd and the base of §6.6's worktrees, which is a
+    // different question the key was never answering.
+    let project_key = socket::project_root(&repo);
+    let sock = socket::socket_paths(&state, &project_key, uid());
     let _supervisor = match detach::ensure_supervisor(
         &sock,
         &detach::Launch {
             program: bridge.clone(),
             state_dir: state.clone(),
-            project_root: repo.clone(),
-            // **Not §5.7's 300 s, and the difference is about who the client is.** That default is
-            // justified in §5.7 by an *operator closing one window to open another* — a grace that
-            // bridges between clients so a re-attach does not pay a cold start. `marion run` is not
-            // a window: it is one command, and when it ends it knows no successor is coming from
-            // it. §5.7 says as much about the other end — *"Zero is defensible too"* — and this is
-            // the case its reasoning does not cover. It costs the next `marion run` one process
-            // spawn, which is the start mechanism working rather than a fallback.
+            project_root: project_key.clone(),
+            // **§5.7's own default, because the grace is not this client's to choose.** `marion
+            // run` used to pass zero on the argument that it knows no successor is coming from
+            // *it*. That argument is about one client and the grace is a property of the
+            // supervisor: whichever client happens to *start* one fixes the number for every later
+            // client, so a TUI attaching to a run's supervisor inherited a zero it never asked for
+            // and identical behaviour depended on a startup race. §5.7 chose 300 s for precisely
+            // the case that produced — *"an operator closing one window to open another"* — and a
+            // run that ends moments before a TUI attaches is that case.
             //
-            // Zero does **not** make the supervisor eager to leave. Every other clause of §5.7
-            // still holds it: a client attached (including a TUI that arrived mid-run), any
-            // non-terminal node, any `Blocked(_)`, any outstanding `spawn`, any unconfirmed reap
-            // intent. All zero removes is the wait after the last of them has cleared.
-            idle_grace: StdDuration::ZERO,
+            // It does not make this run's supervisor linger: the run's exit is an explicit
+            // `session/quit` (see [`SupervisorSession`]), and §5.7's grace is what bridges between
+            // clients that did **not** say they were leaving. `Handle::idle_exit_grace_waived` is
+            // where that distinction is spent.
+            idle_grace: RUN_IDLE_GRACE,
         },
     ) {
         Ok(ensured) => Some(SupervisorSession {
@@ -2379,5 +2518,127 @@ mod tests {
             "a zero would expire every Blocked episode instantly"
         );
         assert_eq!(blocked_bound_secs(Some(0), 900), DEFAULT_TIMEOUT_SECS);
+    }
+
+    fn ids(names: &[&str]) -> Vec<marion_core::contract::AgentId> {
+        names
+            .iter()
+            .map(|n| marion_core::contract::AgentId((*n).into()))
+            .collect()
+    }
+
+    fn guidance() -> marion_proto::DetachGuidance {
+        marion_proto::DetachGuidance {
+            reattach: "Reconnect to /s/p/supervisor.sock and call tree/subscribe.".into(),
+            stop_fleet: "Reconnect to /s/p/supervisor.sock and call session/quit with KillTree."
+                .into(),
+        }
+    }
+
+    /// **NC — §7.3.2's "never silently detach" is five facts, and a receipt is not one of them.**
+    ///
+    /// *"They MUST tell the operator both how to re-attach and how to stop the fleet without one.
+    /// Detaching into silence is worse than killing, because the operator does not know they now
+    /// own something."* The version this replaces printed `Resident(NonTerminalNode)` and stopped:
+    /// the operator was told a supervisor existed and not one thing about what it held, what could
+    /// be denied unattended while nobody watched, or how to reach or end it. Every one of those
+    /// was already in the response and was discarded on the way to the terminal.
+    #[test]
+    fn a_detach_reports_every_fact_section_7_3_2_requires_before_leaving_a_fleet_running() {
+        let (supervisor, report) = detach_report(&marion_proto::QuitOutcome::Detached {
+            detached: ids(&["root", "child"]),
+            gate_exposed: ids(&["child"]),
+            guidance: guidance(),
+            supervisor: marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::NonTerminalNode,
+            ),
+        })
+        .expect("a detach renders");
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::NonTerminalNode
+            ),
+            "the caller's wait decision is the rendered fact, never a second match on the outcome"
+        );
+        assert!(report.contains("NonTerminalNode"), "{report}");
+        assert!(
+            report.contains("root, child"),
+            "the nodes left running are named: {report}"
+        );
+        assert!(
+            report.contains("permission gate: child"),
+            "§7.3.2's stated cost of (b) names the exposed nodes: {report}"
+        );
+        assert!(
+            report.contains("§11 item 22"),
+            "and cites where the cost is recorded: {report}"
+        );
+        assert!(
+            report.contains("to re-attach: Reconnect to /s/p/supervisor.sock"),
+            "how to get back: {report}"
+        );
+        assert!(
+            report.contains("to stop the fleet: Reconnect to /s/p/supervisor.sock"),
+            "and how to stop it without getting back: {report}"
+        );
+    }
+
+    /// The other half: a run that left nothing running says so plainly rather than printing
+    /// re-attach instructions for an empty fleet, and disposition (c)'s reaped set — which §7.3.2
+    /// requires be reported *as resumable* — survives the render too.
+    #[test]
+    fn a_detach_that_left_nothing_running_says_so_and_a_reap_names_what_is_resumable() {
+        let (supervisor, report) = detach_report(&marion_proto::QuitOutcome::Detached {
+            detached: Vec::new(),
+            gate_exposed: Vec::new(),
+            guidance: guidance(),
+            supervisor: marion_proto::SupervisorDisposition::Exiting,
+        })
+        .expect("a detach renders");
+        assert_eq!(supervisor, marion_proto::SupervisorDisposition::Exiting);
+        assert!(report.contains("no node was left running"), "{report}");
+        assert!(
+            !report.contains("to re-attach"),
+            "there is nothing to re-attach to: {report}"
+        );
+
+        let (_, reaped) = detach_report(&marion_proto::QuitOutcome::ReapedAndDetached {
+            reaped: ids(&["idle"]),
+            detached: ids(&["busy"]),
+            gate_exposed: Vec::new(),
+            guidance: guidance(),
+            supervisor: marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::NonTerminalNode,
+            ),
+        })
+        .expect("a reap renders");
+        assert!(reaped.contains("reaped and resumable: idle"), "{reaped}");
+        assert!(reaped.contains("still running, detached: busy"), "{reaped}");
+    }
+
+    /// **NC — the idle grace `marion run` asks for is §5.7's, not one this client invented.**
+    ///
+    /// It used to pass zero, reasoning that a finished run knows no successor is coming *from it*.
+    /// The grace is not that client's property: whichever client happens to **start** a supervisor
+    /// fixes it for every later one, so a TUI attaching to a run's supervisor inherited a zero it
+    /// never chose and identical behaviour depended on a startup race. §5.7 picked 300 s for
+    /// exactly the case that produced — *"an operator closing one window to open another"*.
+    ///
+    /// A zero is also no longer merely a policy choice here: `handler.rs`'s exit predicate is now
+    /// §5.7's two clauses alone, so a supervisor launched with no grace could satisfy them and
+    /// leave before the client that started it had finished connecting.
+    #[test]
+    fn marion_run_asks_for_section_5_7s_own_grace_rather_than_choosing_one() {
+        assert_eq!(
+            RUN_IDLE_GRACE,
+            marion_supervisor::serve::DEFAULT_IDLE_GRACE,
+            "the supervisor's default is the only number a client may ask for"
+        );
+        assert_eq!(
+            RUN_IDLE_GRACE,
+            StdDuration::from_secs(300),
+            "§5.7's proposed, explicitly unmeasured grace"
+        );
     }
 }
