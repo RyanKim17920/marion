@@ -209,6 +209,17 @@ pub struct SpawnCtx {
     /// The node's depth in the tree, **root = 0** (§3.1). A `spawn` this node makes creates a node
     /// at `depth + 1`, and is refused when that would pass its type's `max_depth`.
     pub depth: u32,
+    /// **§5.4's per-node capability token**, minted by whoever owns this node's lifecycle and
+    /// written into the declaration this node's bridge reads
+    /// ([`crate::claude_code::NODE_TOKEN_ENV`]).
+    ///
+    /// It rides `SpawnCtx` rather than `LaunchSpec` for the reason [`Self::agent_type`] does: this
+    /// is *what marion knows about the node*, not what was asked for. Nobody asks for a token.
+    ///
+    /// `None` where no owner minted one — every spawn path but the supervisor's own `agent/spawn`,
+    /// until steps 5 and 6 land. A node with no token declares no key at all rather than an empty
+    /// one, so its bridge states no capability rather than a worthless one.
+    pub node_token: Option<String>,
     /// The readiness marker the bridge touches once it has answered `tools/list` (§6.1 step 8).
     /// `None` for a surface whose prompt rides argv and so has no frame to withhold.
     pub ready_file: Option<PathBuf>,
@@ -482,6 +493,7 @@ impl ClaudeCodeAdapter {
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
+            node_token: ctx.node_token.clone(),
             ready_file,
         })
     }
@@ -661,6 +673,7 @@ impl CodexAdapter {
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
+            node_token: ctx.node_token.clone(),
             ready_file: ctx.ready_file.clone(),
         })
     }
@@ -751,6 +764,7 @@ impl HarnessAdapter for CodexAdapter {
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
+            node_token: ctx.node_token.clone(),
             ready_file: ctx.ready_file.clone(),
         });
         Ok(vec![(
@@ -951,6 +965,7 @@ impl HarnessAdapter for GeminiAdapter {
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
+            node_token: ctx.node_token.clone(),
             ready_file: ctx.ready_file.clone(),
         });
         // The one key whose right value is not marion's to choose. Under `Canned` marion supplies
@@ -1097,6 +1112,7 @@ impl OpenCodeAdapter {
             agent_id: ctx.agent_id.clone(),
             agent_type: ctx.agent_type.clone(),
             depth: ctx.depth,
+            node_token: ctx.node_token.clone(),
             ready_file: ctx.ready_file.clone(),
         })
     }
@@ -1277,6 +1293,7 @@ mod tests {
             agent_id: AgentId("019f-root".into()),
             agent_type: "claude".into(),
             depth: 0,
+            node_token: None,
             ready_file: Some("/state/x/mcp-ready".into()),
             repo: "/repo".into(),
             state_dir: "/state".into(),
@@ -2020,6 +2037,7 @@ mod tests {
             agent_id: AgentId("019f-root".into()),
             agent_type: "claude".into(),
             depth: 0,
+            node_token: None,
             ready_file: "/state/x/mcp-ready".into(),
         }))
         .unwrap();
@@ -2043,6 +2061,7 @@ mod tests {
                 agent_id: AgentId("019f-root".into()),
                 agent_type: "claude".into(),
                 depth: 0,
+                node_token: None,
                 ready_file: Some("/state/x/mcp-ready".into()),
             },
             "http://127.0.0.1:8099/v1",
@@ -2271,6 +2290,7 @@ mod tests {
             agent_id: AgentId("019f-root".into()),
             agent_type: "claude".into(),
             depth: 0,
+            node_token: None,
             ready_file: "/state/x/mcp-ready".into(),
         });
         let expected: Vec<&String> = claude["mcpServers"]["marion"]["env"]
@@ -2289,6 +2309,7 @@ mod tests {
             agent_id: AgentId("019f-root".into()),
             agent_type: "gemini".into(),
             depth: 0,
+            node_token: None,
             ready_file: Some("/state/x/mcp-ready".into()),
         }));
         let o = opencode::config_json(
@@ -2307,6 +2328,7 @@ mod tests {
                 agent_id: AgentId("019f-root".into()),
                 agent_type: "opencode".into(),
                 depth: 0,
+                node_token: None,
                 ready_file: Some("/state/x/mcp-ready".into()),
             }),
         );
@@ -2590,6 +2612,7 @@ mod tests {
                     agent_id: AgentId("019f-root".into()),
                     agent_type: "claude".into(),
                     depth: 0,
+                    node_token: None,
                     ready_file: Some("/state/x/mcp-ready".into()),
                 })))
                 .unwrap()
@@ -2618,6 +2641,7 @@ mod tests {
                         agent_id: AgentId("019f-root".into()),
                         agent_type: "claude".into(),
                         depth: 0,
+                        node_token: None,
                         ready_file: Some("/state/x/mcp-ready".into()),
                     })
                 ))
@@ -2671,6 +2695,73 @@ mod tests {
                 doc.contains("\"codex-impl\""),
                 "{h}: §6.1 step 2's gates read the caller's agent type, so its name must \
                  reach the bridge:\n{doc}"
+            );
+        }
+    }
+
+    /// **§5.4's per-node capability token, on every harness** — the other half of the same
+    /// argument, and the one that decides whether §6.1 step 2's gates bind at all.
+    ///
+    /// The identity above travels to the bridge and the bridge states it back over the socket. On
+    /// its own that is a *claim*: `serve_conn` performs no peer-credential check, so any process
+    /// that can `connect(2)` could assert `depth: 0` and spawn. The token is what makes the claim
+    /// checkable — the supervisor minted it, holds the binding, and wrote it into exactly one
+    /// place. A harness whose declaration dropped it would have a bridge that could never spawn,
+    /// which is at least loud; the failure this asserts against is the one that is not, where three
+    /// harnesses carry it and the fourth is silently exempt — precisely the shape
+    /// `a_nodes_depth_and_agent_type_reach_its_bridge_on_every_harness` was written after finding.
+    ///
+    /// Asserted on the emitted bytes, format-agnostically, for the reason the depth test gives.
+    #[test]
+    fn a_nodes_capability_token_reaches_its_bridge_on_every_harness() {
+        for h in Harness::ALL {
+            let ctx = SpawnCtx {
+                node_token: Some("MARION-TOKEN-VALUE-4e1b".into()),
+                ..ctx()
+            };
+            let files = adapter_for(h)
+                .unwrap()
+                .config_files(&spec_for(h), &ctx)
+                .unwrap_or_else(|e| panic!("{h}: {e}"));
+            let doc = files
+                .first()
+                .map(|(_, c)| c.clone())
+                .unwrap_or_else(|| panic!("{h}: emitted no configuration document"));
+            assert!(
+                doc.contains(claude_code::NODE_TOKEN_ENV),
+                "{h}: {} is not in its bridge env:\n{doc}",
+                claude_code::NODE_TOKEN_ENV
+            );
+            assert!(
+                doc.contains("\"MARION-TOKEN-VALUE-4e1b\""),
+                "{h}: the token VALUE must be carried, not just its key:\n{doc}"
+            );
+        }
+    }
+
+    /// **Present or absent, never empty** — [`claude_code::BASE_URL_ENV`]'s rule, applied to the one
+    /// value where breaking it is a security hole rather than a misconfiguration.
+    ///
+    /// `MARION_NODE_TOKEN=""` read back through `var()` is `Ok("")`, which is a capability token
+    /// every process on the machine can guess. A node marion minted no token for must find no key,
+    /// so its bridge states no capability rather than a worthless one that any check asking only
+    /// *"was a token presented?"* would believe.
+    #[test]
+    fn a_node_with_no_token_declares_no_token_key_rather_than_an_empty_one() {
+        for h in Harness::ALL {
+            let ctx = SpawnCtx {
+                node_token: None,
+                ..ctx()
+            };
+            let doc = adapter_for(h)
+                .unwrap()
+                .config_files(&spec_for(h), &ctx)
+                .unwrap_or_else(|e| panic!("{h}: {e}"))[0]
+                .1
+                .clone();
+            assert!(
+                !doc.contains(claude_code::NODE_TOKEN_ENV),
+                "{h}: a node with no token must declare no token key, not an empty one:\n{doc}"
             );
         }
     }

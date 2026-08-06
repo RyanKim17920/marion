@@ -417,9 +417,21 @@ mod tests {
                 }),
             ),
             (
+                // The **child** shape, deliberately, and not the root's. This is the only place a
+                // `Call` travels through a whole `Frame` and back, so the case worth spending it on
+                // is the one carrying the most structure — a `SpawnCaller` nested inside an
+                // `Option` inside the params.
                 Call::AgentSpawn(AgentSpawnParams {
                     agent_type: "codex-impl".into(),
                     prompt: "implement §6.3".into(),
+                    caller: Some(crate::params::SpawnCaller {
+                        agent_id: agent("parent"),
+                        node_token: "tok-9f2c".into(),
+                    }),
+                    acceptance_criteria: vec!["the suite is green".into()],
+                    writable_scope: vec!["src/**".into()],
+                    timeout_secs: Some(900),
+                    model: Some("sonnet".into()),
                 }),
                 MethodResult::AgentSpawn(AgentSpawnResult {
                     agent_id: agent("a"),

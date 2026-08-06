@@ -11,7 +11,7 @@ use marion_core::contract::AgentId;
 // The bridge's own env-var contract, imported rather than respelled — see [`BridgeEnv`].
 use crate::adapter::Auth;
 use crate::claude_code::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, READY_FILE_ENV,
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
 use crate::invocation::Invocation;
 use crate::stream::{CallOutcome, MarionCall, StreamOutcome, json_frames, report_commits};
@@ -244,6 +244,9 @@ pub struct BridgeEnv {
     pub agent_type: String,
     /// The node's depth, root = 0 (§3.1's `max_depth`).
     pub depth: u32,
+    /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
+    /// absent, never empty ([`crate::claude_code::NODE_TOKEN_ENV`]).
+    pub node_token: Option<String>,
     /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
     /// withhold and nothing to wait on (§6.1 step 8). codex is `LaunchOnly` on every path today, so
     /// this is `None` in practice; it is carried so the field cannot be forgotten if that changes.
@@ -309,6 +312,11 @@ pub fn bridge_env_pairs(env: &BridgeEnv) -> Vec<(String, String)> {
     // Present or absent, never empty ([`crate::claude_code::BASE_URL_ENV`]).
     if let Some(u) = &env.base_url {
         pairs.push((BASE_URL_ENV.to_string(), u.clone()));
+    }
+    // Same rule; [`crate::claude_code::NODE_TOKEN_ENV`] argues why an empty one is worse here than
+    // anywhere else this rule applies.
+    if let Some(t) = &env.node_token {
+        pairs.push((NODE_TOKEN_ENV.to_string(), t.clone()));
     }
     if let Some(r) = &env.ready_file {
         pairs.push((READY_FILE_ENV.to_string(), r.display().to_string()));
@@ -473,6 +481,7 @@ mod tests {
             agent_id: AgentId("019f-node".into()),
             agent_type: "codex-impl".into(),
             depth: 1,
+            node_token: None,
             ready_file: None,
         }
     }

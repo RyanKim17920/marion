@@ -70,7 +70,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use marion_core::agent_type;
-use marion_core::contract::{AgentId, ProcessExit};
+use marion_core::contract::{AgentId, ProcessExit, TaskContract, TaskId};
 use marion_core::journal::{
     KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, RecordKind, SupervisorExited,
 };
@@ -202,6 +202,243 @@ struct Shared {
     unprojectable: usize,
 }
 
+/// **One node this supervisor owns**, which until §11 item 28 step 4 was a sentence with nothing
+/// behind it: `detach.rs`'s stage 3 held no `Command`, no `Child`, no pid and no pipe, and every
+/// node in the fleet was owned by a bridge process the harness had started.
+///
+/// **A thread per node, not a poll loop**, and that is the choice worth defending. `run_duplex` is
+/// a blocking, ordered protocol driver — `duplex.rs`'s own doc opens by naming the drift it exists
+/// to prevent — and rewriting it as a state machine an event loop could step would be a second
+/// implementation of the most-measured code in this repo. `background.rs` already proves the shape
+/// under §6.1 step 2's concurrency gate, and this supervisor is already thread-per-thing (accept
+/// loop, connection, follower). **The cost is stated rather than hidden: roughly 3N+2 threads for a
+/// fleet of N nodes** — the driver, its stdout drain and its stderr drain, plus the accept loop and
+/// the follower.
+pub struct NodeHandle {
+    /// §9's contract this node runs under. Kept because it is how a caller names the run in every
+    /// other vocabulary — the contract file on disk, the branch, a `wait`.
+    task_id: TaskId,
+    /// §5.4's per-node capability, minted here and written into exactly one other place: the MCP
+    /// declaration this node's own bridge reads. See [`RegistryHandle::claim`].
+    token: String,
+    /// `None` until the process exists. The window is one `write(2)` plus one fsync wide — step 1
+    /// made `Spawned` durable at `command.spawn()`, and this is filled from the same hook.
+    pid: Option<i32>,
+    /// The node's own process group, read with `getpgid(2)` rather than assumed equal to the pid.
+    /// `socket.rs` already records why assuming it is wrong: a reader that *computes* `getpgid(pid)`
+    /// and then treats it as `pid` has checked nothing. `None` where the call failed.
+    pgid: Option<i32>,
+    /// When the process came into existence — not when the node was claimed. The two differ by a
+    /// worktree, a config document and a `--version` probe, and only the second is a fact about a
+    /// process.
+    started_at: Option<std::time::SystemTime>,
+    /// The node's thread. Kept for §5.7's exit, which needs the *thread* joined and not merely its
+    /// answer read — `background.rs` argues the same distinction for the same reason.
+    join: Option<std::thread::JoinHandle<()>>,
+    /// What `run_spawn` returned. `None` means **still running**, and that is the reading §5.7's
+    /// exit predicate takes as a second guard beside the journal's.
+    outcome: Option<Result<TaskContract, crate::spawn::SpawnError>>,
+}
+
+impl NodeHandle {
+    /// Whether this node is still running, as *this table* sees it.
+    ///
+    /// Deliberately not "the journal says non-terminal". A thread that is running but whose
+    /// terminal journal write failed is exactly the case a journal-only predicate would let the
+    /// supervisor exit through, and it is the case that leaves a live process behind.
+    fn running(&self) -> bool {
+        self.outcome.is_none()
+    }
+}
+
+/// **Constant-time byte comparison, for the one value where a timing difference is a signal.**
+///
+/// `==` on `String` returns at the first differing byte, so an attacker who can call `agent/spawn`
+/// repeatedly learns a token one byte at a time. The token is 32 hex characters; a prefix oracle
+/// turns that from infeasible into a few hundred calls. The whole slice is always read.
+fn tokens_match(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    // The length is not a secret — it is a constant of this build — so comparing it first leaks
+    // nothing, and it is what lets the loop below be a fixed-width fold.
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+unsafe extern "C" {
+    fn getpgid(pid: i32) -> i32;
+}
+
+/// **The wall clock an `agent/spawn` gets when the caller states none.**
+///
+/// The same 900 the bridge's `spawn` tool has always defaulted to (`main::handle_tool_call`), kept
+/// as one constant rather than a second literal so the two surfaces cannot drift into promising
+/// different bounds for the same absent field. `run::effective_timeout` clamps it exactly as it
+/// clamps a stated one.
+const DEFAULT_SPAWN_TIMEOUT_SECS: u64 = 900;
+
+/// **How long `agent/spawn` will hold its caller waiting for a process to exist.**
+///
+/// Not the node's wall clock, and deliberately much shorter than one: this bounds only the span
+/// between `SpawnIntent` and `command.spawn()` — the worktree, the config documents, `compile`, and
+/// `harness_version`'s own five-second probe, which §6.1 step 3 puts on the pre-launch path. A
+/// minute is roughly an order of magnitude above the slowest of those.
+///
+/// It exists because the alternative is a JSON-RPC call with no bound at all. `git worktree add`
+/// blocked on a repository lock is the measured case (`background.rs` found it blocking a `wait`
+/// forever), and a call that never returns is worse here than there: `serve` answers each
+/// connection on its own thread, but a client with no answer has no way to learn whether the node
+/// it asked for exists.
+///
+/// **Expiry is never a verdict on the node.** The thread keeps running, the table keeps the entry,
+/// and the refusal says which node marion has stopped waiting for — see [`launch_bound_expired`].
+const LAUNCH_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// **32 bytes from `/dev/urandom`, as hex** — §5.4's per-node capability.
+///
+/// Not `run::entropy()`, which is 10 bytes and is sized for *uniqueness* in a UUIDv7 whose other
+/// half is a millisecond timestamp. Uniqueness and unguessability are different requirements, and
+/// reusing an id generator for a credential is how the second silently inherits the first's budget.
+///
+/// A failure to read `/dev/urandom` yields `None`, and [`RegistryHandle::claim`]'s caller turns
+/// that into a node with no token — which is a node whose bridge can never spawn, and never a node
+/// with a predictable one.
+fn mint_token() -> String {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)) {
+        Ok(()) => bytes.iter().map(|b| format!("{b:02x}")).collect(),
+        // **A token nothing can present, rather than one anything can guess.** The empty string
+        // never matches: `tokens_match` compares lengths first, and every real `SpawnCaller` must
+        // carry a non-empty `node_token` to deserialize at all. So the node runs and cannot spawn,
+        // which is the safe direction for a machine whose entropy source is unreadable.
+        Err(_) => String::new(),
+    }
+}
+
+/// **A fixed decoy of a real token's shape**, so a `SpawnCaller` naming a node this supervisor does
+/// not own takes the same comparison path as one naming a node it does. Minted once per process and
+/// never written anywhere, so it matches nothing.
+fn decoy_token() -> &'static str {
+    static DECOY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DECOY.get_or_init(mint_token)
+}
+
+/// What a node's own thread tells the call that started it. Three moments, in this order.
+enum Progress {
+    /// The node has an identity and its `SpawnIntent` is durable.
+    Identified(AgentId),
+    /// A process exists and `Spawned { pid: Some(_) }` is journaled.
+    Started,
+    /// `run_spawn` returned, whichever way. Sent last and always, so a launch that fails before
+    /// either of the above cannot leave the call waiting out [`LAUNCH_BOUND`] for nothing.
+    Finished,
+}
+
+/// The supervisor, watching one of its own nodes launch. See [`crate::run::SpawnObserver`].
+struct NodeOwner {
+    handle: Arc<RegistryHandle>,
+    task_id: TaskId,
+    tx: std::sync::mpsc::Sender<Progress>,
+    /// The id this spawn minted, once it has one — read by the thread body after `run_spawn`
+    /// returns, so the outcome can be filed under the node it belongs to.
+    identified: Mutex<Option<AgentId>>,
+}
+
+impl NodeOwner {
+    fn identified_id(&self) -> Option<AgentId> {
+        lock(&self.identified).clone()
+    }
+}
+
+impl crate::run::SpawnObserver for NodeOwner {
+    fn identified(&self, agent_id: &AgentId) -> Option<String> {
+        let token = self.handle.claim(agent_id, self.task_id.clone());
+        *lock(&self.identified) = Some(agent_id.clone());
+        // Ignored: a receiver dropped before this fires means the call that started the spawn has
+        // already given up on it, and the node goes on running either way. Panicking here would
+        // unwind through `AbortOnDrop` and journal `SpawnAborted` over a node that is fine.
+        let _ = self.tx.send(Progress::Identified(agent_id.clone()));
+        (!token.is_empty()).then_some(token)
+    }
+
+    fn started(&self, agent_id: &AgentId, pid: i32) {
+        self.handle.mark_started(agent_id, pid);
+        let _ = self.tx.send(Progress::Started);
+    }
+}
+
+/// §6.1 step 2's refusal, in the caller's own vocabulary rather than as an internal error.
+fn gate_refusal(e: marion_core::agent_type::SpawnGateError) -> RpcError {
+    RpcError::refused(
+        "caller",
+        format!(
+            "{e}. The bound and the value that broke it are read from the **caller's** agent type \
+             and the supervisor's own registry, never from the call — §6.1 step 2 says the gates \
+             read the caller's type, and a caller that could state its own depth or child count \
+             could state one that passes."
+        ),
+        "§6.1, §3.1",
+    )
+}
+
+fn spawn_refused_before_the_node_existed() -> RpcError {
+    RpcError::refused(
+        "agent_type",
+        "marion refused this spawn before it minted a node: the agent type is not one this build \
+         has, or the requested writable scope is outside that type's ceiling. Nothing was \
+         journaled and nothing was started, so there is no node to look up. (§3.1, §5.4)",
+        "§3.1",
+    )
+}
+
+fn spawn_failed_before_the_process_existed(agent_id: &AgentId) -> RpcError {
+    RpcError::of(
+        FailureKind::Internal,
+        Some(&agent_id.0),
+        format!(
+            "node `{}` was journaled and its launch failed before any process existed — a \
+             worktree, a configuration document, or the harness `--version` probe. Its \
+             `SpawnIntent` is resolved by a `SpawnAborted` beside it, which after §11 item 28 step \
+             1 is evidence that **no process exists**, not merely consistent with it (§7.2). A \
+             worktree may be left behind; a process is not.",
+            agent_id.0
+        ),
+        "§7.2",
+    )
+}
+
+/// **Never a verdict on the node**, which is why this is separate from the failure above.
+///
+/// marion has stopped waiting; the node has not stopped launching. The thread runs on, the table
+/// keeps the entry, and the node's own wall clock still bounds it. Saying "the spawn failed" here
+/// would be the false-receipt shape this codebase keeps deleting — in the direction that leaves a
+/// live process a caller believes is dead.
+fn launch_bound_expired(agent_id: Option<&AgentId>) -> RpcError {
+    let subject = match agent_id {
+        Some(id) => format!("node `{}`", id.0),
+        None => "this spawn".to_string(),
+    };
+    RpcError::of(
+        FailureKind::Internal,
+        agent_id.map(|i| i.0.as_str()),
+        format!(
+            "marion started {subject} and did not observe a process within {}s, so it stopped \
+             holding this call. **This is not a statement that the spawn failed**: the node's \
+             thread is still running, the supervisor still owns it, and its own wall clock still \
+             bounds it. Watch it through `tree/subscribe` and `node/attach`; a `SpawnAborted` or a \
+             `Spawned` will say which way it went.",
+            LAUNCH_BOUND.as_secs()
+        ),
+        "§6.1",
+    )
+}
+
 trait QuitRuntime: Send + Sync {
     fn kill_process_tree_and_wait(&self, pid: i32) -> bool;
 }
@@ -221,9 +458,40 @@ impl QuitRuntime for SystemQuitRuntime {
 /// fact back before any client can learn it. The handle remembers only connection/exit bookkeeping,
 /// never a second copy of node state.
 pub struct RegistryHandle {
+    /// This handle, as its own nodes' threads hold it. A node's thread outlives the `Handle::call`
+    /// that started it, so it cannot borrow; `Weak` rather than `Arc` because the alternative is a
+    /// cycle that never drops.
+    me: std::sync::Weak<RegistryHandle>,
     live: Arc<LiveRegistry>,
     shared: Mutex<Shared>,
     runtime: Arc<dyn QuitRuntime>,
+    /// **The nodes this supervisor owns** — §11 item 28's whole point. See [`NodeHandle`].
+    ///
+    /// Separate from [`Self::shared`] rather than a field of it, because the two are held for
+    /// different lengths of time and by different threads: `shared` is taken and released inside a
+    /// single call, while this one is taken by a node's own thread at two moments spread across a
+    /// launch. Folding them together would put a spawning node's `getpgid` inside the lock a
+    /// client's `tree/subscribe` waits on.
+    nodes: Mutex<HashMap<AgentId, NodeHandle>>,
+    /// **What `agent/spawn` runs a node in**, or `None` for a supervisor that cannot spawn.
+    ///
+    /// `None` is not a degenerate case, it is production today: `detach.rs`'s stage 3 builds this
+    /// handle from a journal path, and the *repo* — which `run::Env` needs and a `<project-hash>`
+    /// cannot be inverted back into — reaches that process as `Launch::project_root` and goes no
+    /// further. Wiring it through is §11 item 28 step 5's one-line change there, and until it lands
+    /// a socket `agent/spawn` is refused with a sentence that says exactly this rather than failing
+    /// somewhere further in. See [`RegistryHandle::owning`].
+    spawn_env: Option<crate::run::Env>,
+    /// **One spawn decision at a time**, held from the gate evaluation until the child's
+    /// `SpawnIntent` is durable — and released before the worktree, the compile and the launch.
+    ///
+    /// §6.1 step 2's concurrency gate reads a count off the registry, and the registry is a
+    /// *follower*: it learns of a node when it reads the journal, not when the journal is written.
+    /// Two `agent/spawn` calls for one caller that both evaluated the gate before either wrote its
+    /// intent would both pass a bound only one of them fits under. This is the same shape
+    /// [`Self::quit`] uses and for the same reason — it makes a read and the write derived from it
+    /// one indivisible decision, not a throughput device.
+    spawn_decision: Mutex<()>,
     quit: Mutex<()>,
     /// An explicit `session/quit` arrived and left nothing in §5.7's exclusion list holding.
     ///
@@ -242,11 +510,35 @@ pub struct RegistryHandle {
 }
 
 impl RegistryHandle {
+    /// A handle that describes nodes and does not own any. See [`Self::spawn_env`].
     pub fn new(live: Arc<LiveRegistry>) -> Arc<RegistryHandle> {
-        Arc::new(RegistryHandle {
+        Self::build(live, Arc::new(SystemQuitRuntime), None)
+    }
+
+    /// A handle that **owns the nodes it spawns**: §2's `agent/spawn`, answered rather than refused.
+    ///
+    /// The environment is passed in rather than derived because it cannot be derived — see
+    /// [`Self::spawn_env`].
+    pub fn owning(live: Arc<LiveRegistry>, env: crate::run::Env) -> Arc<RegistryHandle> {
+        Self::build(live, Arc::new(SystemQuitRuntime), Some(env))
+    }
+
+    fn build(
+        live: Arc<LiveRegistry>,
+        runtime: Arc<dyn QuitRuntime>,
+        spawn_env: Option<crate::run::Env>,
+    ) -> Arc<RegistryHandle> {
+        // `new_cyclic` rather than a `Mutex<Option<Weak<_>>>` filled in afterwards: a node's thread
+        // outlives the call that started it and has to hold the handle it reports to, so the
+        // reference is a property of the value and not a step a construction site could forget.
+        Arc::new_cyclic(|me| RegistryHandle {
+            me: me.clone(),
             live,
             shared: Mutex::new(Shared::default()),
-            runtime: Arc::new(SystemQuitRuntime),
+            runtime,
+            nodes: Mutex::new(HashMap::new()),
+            spawn_env,
+            spawn_decision: Mutex::new(()),
             quit: Mutex::new(()),
             quit_waived_grace: AtomicBool::new(false),
             stopped_reported: AtomicBool::new(false),
@@ -256,15 +548,7 @@ impl RegistryHandle {
 
     #[cfg(test)]
     fn with_runtime(live: Arc<LiveRegistry>, runtime: Arc<dyn QuitRuntime>) -> Arc<RegistryHandle> {
-        Arc::new(RegistryHandle {
-            live,
-            shared: Mutex::new(Shared::default()),
-            runtime,
-            quit: Mutex::new(()),
-            quit_waived_grace: AtomicBool::new(false),
-            stopped_reported: AtomicBool::new(false),
-            exiting: AtomicBool::new(false),
-        })
+        Self::build(live, runtime, None)
     }
 
     /// How many nodes the journal knows about that marion could not describe to a client.
@@ -454,6 +738,359 @@ impl RegistryHandle {
             deliver_events(&a.out, &a.agent_id, &fresh)
         });
         read
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // §2's `agent/spawn`, and the node table it fills.
+    // ----------------------------------------------------------------------------------------
+
+    /// **Take ownership of a node the instant it has an identity**, and mint it §5.4's capability.
+    ///
+    /// Called from [`crate::run::SpawnObserver::identified`], which fires with the `SpawnIntent`
+    /// already durable and no side effect yet taken. The token returned is written into the node's
+    /// MCP declaration a few lines later, so this is the last moment it can be decided.
+    ///
+    /// `pub(crate)` rather than private because it is also the whole of what a test needs to put a
+    /// node in this table — and a test that reached in through a back door would be asserting
+    /// against a binding production does not make.
+    pub(crate) fn claim(&self, agent_id: &AgentId, task_id: TaskId) -> String {
+        let token = mint_token();
+        lock(&self.nodes).insert(
+            agent_id.clone(),
+            NodeHandle {
+                task_id,
+                token: token.clone(),
+                pid: None,
+                pgid: None,
+                started_at: None,
+                join: None,
+                outcome: None,
+            },
+        );
+        token
+    }
+
+    /// A process exists for a node this supervisor owns. Called from
+    /// [`crate::run::SpawnObserver::started`], immediately after `Spawned { pid: Some(_) }` is
+    /// journaled.
+    fn mark_started(&self, agent_id: &AgentId, pid: i32) {
+        // SAFETY: reads the process group of a pid this process just created; cannot fail other
+        // than by returning -1, which is recorded as "not known" rather than as a group id.
+        let pgid = unsafe { getpgid(pid) };
+        if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
+            node.pid = Some(pid);
+            node.pgid = (pgid > 0).then_some(pgid);
+            node.started_at = Some(std::time::SystemTime::now());
+        }
+    }
+
+    /// `run_spawn` returned. **The entry is kept, not removed**: it is what tells a later caller
+    /// "that node finished" from "no such node", and §5.7's exit predicate reads liveness off it
+    /// rather than membership.
+    fn mark_finished(
+        &self,
+        agent_id: &AgentId,
+        outcome: Result<TaskContract, crate::spawn::SpawnError>,
+    ) {
+        if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
+            node.outcome = Some(outcome);
+        }
+    }
+
+    /// How many nodes this supervisor owns, finished or not. For tests and a future `doctor`.
+    pub fn owned_nodes(&self) -> usize {
+        lock(&self.nodes).len()
+    }
+
+    /// How many of them are still running, by [`NodeHandle::running`]'s reading.
+    pub fn running_nodes(&self) -> usize {
+        lock(&self.nodes).values().filter(|n| n.running()).count()
+    }
+
+    /// The pid this supervisor recorded for a node it owns, if a process exists yet.
+    pub fn owned_pid(&self, agent_id: &AgentId) -> Option<i32> {
+        lock(&self.nodes).get(agent_id).and_then(|n| n.pid)
+    }
+
+    /// Whether one node this supervisor owns is still running. `None` if it owns no such node.
+    pub fn owned_running(&self, agent_id: &AgentId) -> Option<bool> {
+        lock(&self.nodes).get(agent_id).map(|n| n.running())
+    }
+
+    /// The node's own process group, as `getpgid(2)` reported it — §6.7's `killpg` target.
+    pub fn owned_pgid(&self, agent_id: &AgentId) -> Option<i32> {
+        lock(&self.nodes).get(agent_id).and_then(|n| n.pgid)
+    }
+
+    /// §9's contract this node runs under.
+    pub fn owned_task_id(&self, agent_id: &AgentId) -> Option<TaskId> {
+        lock(&self.nodes).get(agent_id).map(|n| n.task_id.clone())
+    }
+
+    /// When the node's process came into existence.
+    pub fn owned_started_at(&self, agent_id: &AgentId) -> Option<std::time::SystemTime> {
+        lock(&self.nodes).get(agent_id).and_then(|n| n.started_at)
+    }
+
+    /// **Join every finished node's thread**, and answer whether any refused to be joined.
+    ///
+    /// §5.7's exit needs the *thread* joined and not merely its answer read — `background.rs` makes
+    /// the same distinction for the same reason: a thread that has sent its outcome is still
+    /// running its own epilogue (dropping the `Child`, removing the worktree, unwinding
+    /// `AbortOnDrop`), and a process that exits underneath that leaves the epilogue undone.
+    ///
+    /// Only *finished* nodes, so this can never block: a handle whose `outcome` is set has had
+    /// `run_spawn` return on that thread, so the join is a formality. A running node is not joined
+    /// here because [`Handle::idle_exit_eligible`] has already refused to exit while one exists.
+    fn join_finished_nodes(&self) {
+        let joins: Vec<_> = lock(&self.nodes)
+            .values_mut()
+            .filter(|n| !n.running())
+            .filter_map(|n| n.join.take())
+            .collect();
+        for j in joins {
+            // A panicking node's thread is not this supervisor's failure to report at exit — the
+            // panic already reached the caller as `SpawnError::Panicked` through the outcome.
+            let _ = j.join();
+        }
+    }
+
+    /// **§6.1 step 2's third argument, read off the registry rather than off a caller's table.**
+    ///
+    /// `background.rs` used to argue the opposite and was right at the time: a bridge's table was
+    /// authoritative *by construction*, because every child of a node went through that node's own
+    /// bridge, while a journal read could not see a child between "thread started" and "process
+    /// observed" — `Spawned` was written after the whole run. **Step 1 inverted the premise.**
+    /// `SpawnIntent` is journaled before any side effect and `Spawned` at `command.spawn()`, so a
+    /// node counted here exists from the first instant it exists at all, and the count survives a
+    /// restart, which no in-process table does.
+    ///
+    /// Counted from the **intent**, not from `Spawned`: a child whose worktree is still being made
+    /// occupies its parent's slot exactly as much as one already running, and counting the case it
+    /// cannot rule out is `background.rs`'s own over-count-is-the-safe-direction rule.
+    fn live_children_of(&self, parent: &AgentId) -> u32 {
+        let n = self.live.read(|r| {
+            r.tree()
+                .nodes()
+                .iter()
+                .filter(|n| {
+                    n.parent_id().as_ref() == Some(&parent)
+                        && !n.state.is_exited()
+                        && n.reap_state == ReapState::Live
+                        && !Self::abandoned(n)
+                })
+                .count()
+        });
+        // Saturating for `Background::live_children`'s reason: a count that wrapped to 0 would
+        // silently *open* the gate.
+        u32::try_from(n).unwrap_or(u32::MAX)
+    }
+
+    /// **Who is asking, checked rather than believed** — F2, and the whole reason `SpawnCaller`
+    /// carries a token instead of a depth.
+    ///
+    /// `serve_conn` performs no peer-credential check: `Handle::call` receives a [`ConnId`] and
+    /// nothing about the process on the other end. So an `agent/spawn` that took the caller's word
+    /// for its own `depth` would let any process that can `connect(2)` assert `depth: 0` and spawn,
+    /// and §6.1 step 2's gates — the ones `depth_gate.rs`'s seven tests exist for — would be
+    /// advisory. Here the caller states only *which node it is*, proves it with the secret marion
+    /// wrote into that node's own declaration, and every gated fact is read back out of the
+    /// registry marion itself wrote.
+    fn resolve_caller(
+        &self,
+        c: &marion_proto::SpawnCaller,
+    ) -> Result<crate::run::Caller, RpcError> {
+        // **The token is checked before anything else is said about the node**, so a caller who
+        // guesses an `AgentId` learns nothing from the shape of the refusal beyond "no".
+        let known = {
+            let nodes = lock(&self.nodes);
+            // **A node this supervisor does not own is still compared**, against a decoy of the
+            // same shape, so "no such node" and "wrong token" take the same path and cost the same.
+            // Returning early on the absent case would turn the *existence* of a node into an
+            // oracle a caller could probe with ids alone.
+            let (stored, owned) = match nodes.get(&c.agent_id) {
+                Some(n) => (n.token.clone(), true),
+                None => (decoy_token().to_string(), false),
+            };
+            tokens_match(&stored, &c.node_token) & owned
+        };
+        if !known {
+            return Err(RpcError::refused(
+                &c.agent_id.0,
+                "this supervisor did not mint that node token, so it cannot tell the caller it \
+                 claims to be from any other process that can reach this socket. §5.4 binds a \
+                 capability token to an `AgentId`; the supervisor holds the binding and there is \
+                 no round trip that could establish one for a node it does not own. A node whose \
+                 supervisor has restarted is in this case and it is not a mistake the caller made \
+                 — its parent is `Orphaned` (§7.2) and needs an operator, not a retry.",
+                "§5.4, §6.1",
+            ));
+        }
+        let (agent_type, depth) = self.live.read(|r| {
+            let node = r.tree().get(&c.agent_id).ok_or_else(|| {
+                RpcError::internal(format!(
+                    "this supervisor owns node `{}` and its journal has no `SpawnIntent` for it, \
+                     so §6.1 step 2's gates have no agent type and no depth to read. Refusing \
+                     rather than assuming a default: an assumed `max_depth` is a constant \
+                     pretending to be a lookup.",
+                    c.agent_id.0
+                ))
+            })?;
+            let intent = node
+                .intent
+                .as_ref()
+                .ok_or_else(|| Unprojectable::NoIntent.as_error(&c.agent_id))?;
+            let ty = agent_type::builtin(&intent.agent_type).ok_or_else(|| {
+                Unprojectable::UnknownAgentType(intent.agent_type.clone()).as_error(&c.agent_id)
+            })?;
+            Ok::<_, RpcError>((ty, intent.depth))
+        })?;
+        Ok(crate::run::Caller {
+            agent_id: c.agent_id.0.clone(),
+            agent_type,
+            depth,
+            live_children: self.live_children_of(&c.agent_id),
+        })
+    }
+
+    /// §2's `agent/spawn` — see [`agent_spawn`](Self::agent_spawn)'s doc for the whole shape.
+    fn agent_spawn(
+        &self,
+        p: &marion_proto::params::AgentSpawnParams,
+    ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
+        let me = self.me.upgrade().ok_or_else(|| {
+            RpcError::internal(
+                "this supervisor is being dropped and will not start a node it could not then own",
+            )
+        })?;
+        let Some(env) = self.spawn_env.clone() else {
+            return Err(RpcError::unimplemented(
+                "agent/spawn",
+                "this supervisor was booted without a spawn environment, so it can describe nodes \
+                 and cannot start one. `run::Env` needs the repository path, and a supervisor \
+                 recovers only `<state>/<project-hash>` from its journal — a hash it cannot invert. \
+                 The path reaches this process as `Launch::project_root` and stops there; §11 item \
+                 28 step 5 is what carries it in. Refused here rather than further in, where the \
+                 failure would be about a directory instead of about a build.",
+                "§2",
+            ));
+        };
+        let Some(caller_id) = p.caller.as_ref() else {
+            return Err(RpcError::unimplemented(
+                "agent/spawn",
+                "a client creating a **root** is §11 item 28 step 6, and this build does not \
+                 serve it. `root::prepare` owns a root's launch — its own agent-dir layout, its \
+                 `ROOT_DEPTH`, its change record and the `parent_id: None` that makes it a root — \
+                 and `run_spawn` would give it a parent it does not have. A spawn with a `caller` \
+                 is served; one without is refused rather than served as a child of nobody.",
+                "§2",
+            ));
+        };
+
+        // **Held from here to the child's durable intent, and no further.** See
+        // [`Self::spawn_decision`]: the registry is a follower, so two callers that both evaluated
+        // the gate before either wrote its intent would both pass a bound only one fits under.
+        let decision = lock(&self.spawn_decision);
+        self.live.refresh();
+        let caller = self.resolve_caller(caller_id)?;
+        // §6.1 step 2, before every side effect — the same pure function `run_spawn` calls, run
+        // here as well so the refusal arrives in the frame that asked for it rather than as a node
+        // that was never going to start. Two call sites of one function, never two rules.
+        agent_type::check_spawn_gates(&caller.agent_type, caller.depth, caller.live_children)
+            .map_err(gate_refusal)?;
+
+        // Minted here rather than by the caller, for §9's reason: the contract id names a run
+        // marion performed, and a caller-chosen one would let two runs share a contract file.
+        let task_id = crate::run::entropy()
+            .map(|e| marion_core::ids::new_task_id(crate::run::unix_millis(), e))
+            .map_err(|e| {
+                RpcError::internal(format!(
+                    "marion could not mint a task id for this spawn, so nothing was started: {e}"
+                ))
+            })?;
+        let req = crate::run::SpawnRequest {
+            agent_type: p.agent_type.clone(),
+            prompt: p.prompt.clone(),
+            acceptance_criteria: p.acceptance_criteria.clone(),
+            writable_scope: p.writable_scope.clone(),
+            // **Resolved here, not defaulted in the params.** `params.rs` argues why the wire
+            // carries `Option`; this is the one place that turns absence into a number, and
+            // `effective_timeout` clamps it exactly as it clamps a stated one.
+            timeout_secs: p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
+            model: p.model.clone(),
+        };
+
+        let (tx, progress) = std::sync::mpsc::channel();
+        let observer = NodeOwner {
+            handle: me.clone(),
+            task_id: task_id.clone(),
+            tx,
+            identified: Mutex::new(None),
+        };
+        // **Everything the thread needs is owned**, for `Background::start`'s reason: this work
+        // outlives the JSON-RPC frame that asked for it, so it cannot borrow from this stack frame.
+        let owner = me.clone();
+        let join = std::thread::spawn(move || {
+            let outcome = crate::run::run_spawn_watched(&env, &req, &task_id, &caller, &observer);
+            // The agent id is known only if `identified` fired. A spawn refused above it — an
+            // unknown agent type, a scope outside the ceiling — never minted a node, so there is
+            // nothing to file the outcome under and nothing holding the supervisor open.
+            if let Some(agent_id) = observer.identified_id() {
+                owner.mark_finished(&agent_id, outcome);
+            }
+            // Sent last and unconditionally, so a launch that failed before either earlier moment
+            // cannot leave the call waiting out `LAUNCH_BOUND` for something that will not come.
+            let _ = observer.tx.send(Progress::Finished);
+        });
+
+        // **The response is sent when the process exists, not when the run finishes.** A child
+        // spawn that blocked until its contract was written would put a minutes-long call on the
+        // JSON-RPC surface, which `background.rs` records as taking a whole bridge down when it
+        // hangs.
+        let deadline = std::time::Instant::now() + LAUNCH_BOUND;
+        let recv = |deadline: std::time::Instant| {
+            progress.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        };
+        let agent_id = match recv(deadline) {
+            Ok(Progress::Identified(id)) => id,
+            // `run_spawn` refused before it minted an id — an unknown agent type, or a writable
+            // scope outside that type's ceiling. There is no node and nothing to report on.
+            Ok(_) => return Err(spawn_refused_before_the_node_existed()),
+            Err(_) => return Err(launch_bound_expired(None)),
+        };
+        // The node is in the table and its intent is durable, so no later spawn can miss it in the
+        // count. Everything from here on is this one node's own launch, which no other caller's
+        // gate depends on.
+        drop(decision);
+        // The join handle is filed now rather than at `spawn`, because the table's key is the id
+        // this call has only just learned. Nothing races: `Progress::Identified` is sent from
+        // inside `claim`, so the entry exists before this line can run.
+        //
+        // **A call that gave up before this point leaves the thread detached**, and that is
+        // deliberate rather than overlooked: the node is still claimed, so §5.7 still refuses to
+        // exit while it runs, and the alternative — holding the handle somewhere keyed by nothing
+        // — would be a second table to keep consistent with this one.
+        if let Some(node) = lock(&self.nodes).get_mut(&agent_id) {
+            node.join = Some(join);
+        }
+        match recv(deadline) {
+            Ok(Progress::Started) => {}
+            // The launch failed between the intent and the process: no worktree, a config that
+            // would not compile, a `--version` probe that expired.
+            Ok(_) => return Err(spawn_failed_before_the_process_existed(&agent_id)),
+            Err(_) => return Err(launch_bound_expired(Some(&agent_id))),
+        }
+        self.live.refresh();
+        Ok(marion_proto::result::AgentSpawnResult {
+            // **Read back off the registry, not asserted.** The state this returns is the state the
+            // journal says, which is the point of answering at `Spawned` rather than before it: a
+            // client that renders `Spawning` here is rendering a record it could have read itself.
+            state: self
+                .live
+                .read(|r| r.tree().get(&agent_id).map(|n| n.state))
+                .unwrap_or(NodeState::Spawning),
+            agent_id,
+        })
     }
 
     /// §7.3.2's voluntary path. The mutex is not throughput machinery; it makes the rendered-set
@@ -946,6 +1583,12 @@ impl Handle for RegistryHandle {
             Call::NodeAttach(p) => self
                 .node_attach(&p.agent_id, out)
                 .map(MethodResult::NodeAttach),
+            // **Not keyed by the connection**, and that is §7.3.1 restated on the way *in*
+            // rather than defended on the way out: a node this supervisor owns is not a resource
+            // of the client that asked for it, so nothing here records which connection called.
+            // That is what makes `gone` able to touch nothing — there is no per-connection node
+            // list for it to reap, structurally, rather than by a rule someone must remember.
+            Call::AgentSpawn(p) => self.agent_spawn(p).map(MethodResult::AgentSpawn),
             Call::SessionQuit(p) => self
                 .session_quit(&p.disposition)
                 .map(MethodResult::SessionQuit),
@@ -956,8 +1599,8 @@ impl Handle for RegistryHandle {
                 other.method().as_str(),
                 format!(
                     "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
-                     `tree/subscribe`, `node/attach` and `session/quit`; the remaining eleven \
-                     methods land with the milestone that needs them.",
+                     `tree/subscribe`, `node/attach`, `agent/spawn` and `session/quit`; the \
+                     remaining ten methods land with the milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",
@@ -976,6 +1619,20 @@ impl Handle for RegistryHandle {
     /// What does happen is bookkeeping this connection's subscription is dropped, so a supervisor
     /// with no clients holds no queues. It may make a previously requested exit eligible for the
     /// serve loop's grace timer, but `gone` itself neither journals nor exits.
+    ///
+    /// **After §11 item 28 step 4 that invariant covers a *bridge* connection, and that is the
+    /// whole win.** While every node was owned by the bridge process the harness started, a
+    /// SIGKILL of that bridge — which s16 measured as what a Claude Code harness really sends,
+    /// uncatchable, ~450 ms after its SIGTERM — orphaned a live process at pid 1 with an
+    /// unresolved `SpawnIntent` and no pid to recover it by. Once the *supervisor* owns the node,
+    /// the same SIGKILL kills a courier: the supervisor sees `Departure::Eof`, this method runs,
+    /// and the node's thread, process, worktree and `events.jsonl` are untouched.
+    ///
+    /// **`self.nodes` is not mentioned below, and that is structural rather than remembered.**
+    /// `Handle::call` never records which connection asked for a node, so there is no
+    /// per-connection node list here to reap even by accident. Asserted in
+    /// `a_departing_client_does_not_touch_a_node_the_supervisor_owns` rather than left to this
+    /// comment, because a comment is not a test.
     fn gone(&self, conn: ConnId, gone: &ClientGone, _why: &Departure) {
         debug_assert!(
             gone.nodes_must_be_untouched() || gone.disposition().is_some(),
@@ -1022,8 +1679,28 @@ impl Handle for RegistryHandle {
     /// grace is five minutes. See [`crate::serve::DEFAULT_IDLE_GRACE`] — a supervisor launched with
     /// a grace of zero really could leave before its launcher arrived, which is one of the reasons
     /// `marion run` no longer asks for one.
+    /// **The node table is a second guard, not a replacement for the journal's.**
+    ///
+    /// §5.7's clause is *"zero non-terminal nodes"*, and [`Self::residency`] answers it from the
+    /// journal — which is the right primary source, because it is the only one that survives a
+    /// restart and the only one that knows about nodes this process did not start.
+    ///
+    /// What it cannot see is a node whose thread is running and whose **terminal journal write
+    /// failed**. `journal::record` does not propagate its error, so a full disk or a revoked
+    /// directory leaves a node that is running with a tree that says it finished — and a
+    /// journal-only predicate would let the supervisor exit straight through it, leaving exactly
+    /// the untracked live process §9's M2 criteria forbid. The table cannot be wrong in that
+    /// direction: an entry's `outcome` is set by the node's own thread, in this process, after
+    /// `run_spawn` has returned.
+    ///
+    /// It is a **second** guard rather than the guard, because it is wrong in the other direction:
+    /// it is empty after a restart, and it never knew about a node another process started. Both
+    /// have to hold.
     fn idle_exit_eligible(&self) -> bool {
         if !lock(&self.shared).clients.is_empty() {
+            return false;
+        }
+        if self.running_nodes() > 0 {
             return false;
         }
         self.live.refresh();
@@ -1039,6 +1716,9 @@ impl Handle for RegistryHandle {
         if !self.idle_exit_eligible() {
             return false;
         }
+        // Every node this supervisor owns has finished — that is what the predicate above just
+        // established — so this is the epilogue, not a wait. See [`Self::join_finished_nodes`].
+        self.join_finished_nodes();
         let result = self.journal().and_then(|mut journal| {
             journal
                 .append(RecordKind::SupervisorExited(SupervisorExited {}))
@@ -3633,5 +4313,595 @@ mod tests {
             unreachable!()
         };
         assert!(payload.get("Oversized").is_some(), "{payload}");
+    }
+
+    /// **§11 item 28 step 4** — the supervisor owning a node's lifecycle: the table, the capability
+    /// token, and `agent/spawn` answered rather than refused.
+    ///
+    /// Driven by a **test client** and no bridge, which is what makes this landable ahead of step 5.
+    /// The design's point 4 says (a) and (b) are atomic on the wire — a handler with no client is dead
+    /// code and a client with no handler cannot spawn — and names exactly this as what can split off.
+    /// So the client here is `RegistryHandle::call` itself, reached the way `serve` reaches it.
+    #[cfg(test)]
+    mod owns_nodes {
+        use super::*;
+        use marion_core::paths::ProjectDir;
+        use marion_proto::SpawnCaller;
+        use marion_proto::params::AgentSpawnParams;
+        use marion_testsupport::{fixture_repo, scratch};
+
+        /// A handle that **owns** what it spawns, over a real repo and a real project directory.
+        struct Owning {
+            handle: Arc<RegistryHandle>,
+            project: ProjectDir,
+            /// **Declared last so it is dropped last.** Rust drops fields in declaration order,
+            /// and a scratch directory removed while a node's thread is still writing into it
+            /// would turn a clean failure into an unrelated io error.
+            _dir: marion_testsupport::Scratch,
+        }
+
+        fn owning(tag: &str, records: Vec<RecordKind>) -> Owning {
+            let dir = scratch(tag);
+            let repo = fixture_repo(&dir);
+            let state = dir.join("state");
+            let project = ProjectDir::new(&state, &repo);
+            std::fs::create_dir_all(project.path()).unwrap();
+            let journal = project.journal();
+            // Booted before the records are written, which is the production order — `tests::fx_with`
+            // gives the argument, and it matters more here: a node already `Live` at boot is one this
+            // supervisor never decided the fate of and `restart.rs` marks `Orphaned`.
+            let live = Arc::new(crate::registry::LiveRegistry::follow(
+                Registry::boot_path(&journal).unwrap(),
+                std::time::Duration::from_millis(2),
+            ));
+            for (seq, kind) in records.into_iter().enumerate() {
+                append(&journal, &line(seq as u64, 1_000 + seq as u64, kind));
+            }
+            live.refresh();
+            let handle = RegistryHandle::owning(
+                live,
+                crate::run::Env {
+                    repo,
+                    project_dir: project.clone(),
+                    bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
+                    // Answers nothing, which is what bounds the two tests below that really launch.
+                    base_url: Some("http://127.0.0.1:8099/v1".into()),
+                    auth: marion_harness::Auth::Canned,
+                },
+            );
+            Owning {
+                handle,
+                project,
+                _dir: dir,
+            }
+        }
+
+        fn params(caller: Option<SpawnCaller>, secs: u64) -> AgentSpawnParams {
+            AgentSpawnParams {
+                agent_type: "claude".into(),
+                prompt: "do the task".into(),
+                caller,
+                acceptance_criteria: vec![],
+                writable_scope: vec!["src/**".into()],
+                timeout_secs: Some(secs),
+                model: None,
+            }
+        }
+
+        fn spawn(
+            fx: &Owning,
+            p: AgentSpawnParams,
+        ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
+            let out = crate::serve::sink(ConnId(3));
+            match fx.handle.call(ConnId(3), &Call::AgentSpawn(p), &out)? {
+                MethodResult::AgentSpawn(r) => Ok(r),
+                other => panic!("wrong result: {}", other.method().as_str()),
+            }
+        }
+
+        fn journal_len(fx: &Owning) -> usize {
+            std::fs::read_to_string(fx.project.journal())
+                .map(|s| s.lines().count())
+                .unwrap_or(0)
+        }
+
+        // ------------------------------------------------------------------------------------
+        // F2: the caller states who it is and proves it, and every gated fact is derived.
+        // ------------------------------------------------------------------------------------
+
+        /// **T6's required regression: a socket spawn with a forged `SpawnCaller.agent_id` is
+        /// refused.**
+        ///
+        /// This is the whole of F2. `serve_conn` performs no peer-credential check — `Handle::call`
+        /// receives a `ConnId` and learns nothing about the process on the other end — so once
+        /// `agent/spawn` is on the socket, *any* process that can `connect(2)` can name a node. The
+        /// token is what separates naming from being.
+        ///
+        /// Both halves are asserted, because only together do they mean anything: the call is refused,
+        /// **and nothing was journaled**. A refusal that arrived after the `SpawnIntent` was written
+        /// would leave a node in the tree that no caller was ever entitled to create, and §5.7 would
+        /// then hold the supervisor resident for it.
+        #[test]
+        fn a_socket_spawn_with_a_forged_caller_is_refused_and_journals_nothing() {
+            let fx = owning("owns-forged", vec![intent("root", None, "claude", 0)]);
+            let real = fx
+                .handle
+                .claim(&id("root"), marion_core::contract::TaskId("t".into()));
+            let before = journal_len(&fx);
+
+            for (token, why) in [
+                ("not-the-token".to_string(), "a guess"),
+                (String::new(), "an empty token"),
+                (format!("{real}x"), "the real token with a byte appended"),
+                (real[..real.len() - 1].to_string(), "a truncated prefix"),
+                (
+                    format!("{}0", &real[..real.len() - 1]),
+                    "the real token with its last byte changed",
+                ),
+            ] {
+                let e = spawn(
+                    &fx,
+                    params(
+                        Some(SpawnCaller {
+                            agent_id: id("root"),
+                            node_token: token,
+                        }),
+                        1,
+                    ),
+                )
+                .expect_err(&format!("{why} must not be accepted"));
+                assert_eq!(e.kind(), Some(FailureKind::Refused), "{why}: {e:?}");
+                assert!(
+                    e.message.contains("did not mint that node token"),
+                    "{why}: the refusal must say what was not established: {}",
+                    e.message
+                );
+            }
+            assert_eq!(
+                journal_len(&fx),
+                before,
+                "a refused spawn must journal nothing at all — not even an intent"
+            );
+            assert_eq!(
+                fx.handle.owned_nodes(),
+                1,
+                "…and must not add a node to the table"
+            );
+        }
+
+        /// A caller naming a node **no supervisor ever owned** is refused by the same sentence and the
+        /// same path. Distinguishing "no such node" from "wrong token" in the answer would make node
+        /// existence an oracle a caller could probe with ids alone.
+        #[test]
+        fn a_caller_naming_a_node_this_supervisor_does_not_own_is_refused_the_same_way() {
+            let fx = owning("owns-unknown", vec![intent("root", None, "claude", 0)]);
+            let e = spawn(
+                &fx,
+                params(
+                    Some(SpawnCaller {
+                        agent_id: id("nobody"),
+                        node_token: "anything".into(),
+                    }),
+                    1,
+                ),
+            )
+            .expect_err("an unowned node cannot spawn");
+            assert_eq!(e.kind(), Some(FailureKind::Refused));
+            assert!(
+                e.message.contains("did not mint that node token"),
+                "{}",
+                e.message
+            );
+            // A node that *is* in the journal but was not claimed is the same case: the journal is not
+            // the ownership record, the table is.
+            let e = spawn(
+                &fx,
+                params(
+                    Some(SpawnCaller {
+                        agent_id: id("root"),
+                        node_token: "anything".into(),
+                    }),
+                    1,
+                ),
+            )
+            .expect_err("a journalled node this supervisor never claimed cannot spawn either");
+            assert!(
+                e.message.contains("did not mint that node token"),
+                "{}",
+                e.message
+            );
+        }
+
+        /// **§6.1 step 2's depth, read from the registry rather than from the call.** `SpawnCaller`
+        /// carries no depth to forge, so the only way to be refused is for the supervisor to have gone
+        /// and looked — and the only way to pass is to genuinely be shallow enough.
+        ///
+        /// The pair is the assertion: the *same* call shape is refused for a node the journal places at
+        /// `max_depth` and admitted for one it places below it. A gate that read a constant, or that
+        /// read anything the caller sent, could not tell the two apart.
+        #[test]
+        fn the_depth_gate_reads_the_callers_depth_from_the_registry() {
+            let ty = agent_type::builtin("claude").unwrap();
+            let deep = owning(
+                "owns-depth-deep",
+                vec![intent("deep", None, "claude", ty.max_depth)],
+            );
+            let token = deep
+                .handle
+                .claim(&id("deep"), marion_core::contract::TaskId("t".into()));
+            let before = journal_len(&deep);
+            let e = spawn(
+                &deep,
+                params(
+                    Some(SpawnCaller {
+                        agent_id: id("deep"),
+                        node_token: token,
+                    }),
+                    1,
+                ),
+            )
+            .expect_err("a caller at max_depth may not spawn");
+            assert_eq!(e.kind(), Some(FailureKind::Refused));
+            assert!(
+                e.message.contains("max_depth"),
+                "the refusal must name the bound: {}",
+                e.message
+            );
+            assert_eq!(
+                journal_len(&deep),
+                before,
+                "§6.1 step 2 runs before every side effect, so a gated spawn creates nothing"
+            );
+        }
+
+        /// **`live_children` inverted: counted off the registry, not off a caller's table.**
+        ///
+        /// `background.rs` argued the bridge's table was authoritative *by construction* because
+        /// `Spawned` was written after the whole run, so a journal read could not see a child between
+        /// "thread started" and "process observed". Step 1 inverted that premise — `SpawnIntent` is
+        /// journaled before every side effect — and this is the assertion that the count now comes from
+        /// there. Nothing in the call says how many children the caller has; the journal does.
+        ///
+        /// The boundary is asserted from both sides, so a count that was simply always zero (which is
+        /// what the constant `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER` was, and never `>= 4`) fails the
+        /// first half, and a count that was always saturated fails the second.
+        #[test]
+        fn the_concurrency_gate_counts_the_callers_children_in_the_journal() {
+            let ty = agent_type::builtin("claude").unwrap();
+            let max = ty.max_concurrent_children;
+            let mut records = vec![intent("root", None, "claude", 0)];
+            for i in 0..max {
+                records.push(intent(&format!("kid{i}"), Some("root"), "claude", 1));
+            }
+            let fx = owning("owns-concurrency", records);
+            let token = fx
+                .handle
+                .claim(&id("root"), marion_core::contract::TaskId("t".into()));
+            assert_eq!(
+                fx.handle.live_children_of(&id("root")),
+                max,
+                "the journal places exactly {max} live children under this caller"
+            );
+            let before = journal_len(&fx);
+            let e = spawn(
+                &fx,
+                params(
+                    Some(SpawnCaller {
+                        agent_id: id("root"),
+                        node_token: token,
+                    }),
+                    1,
+                ),
+            )
+            .expect_err("a caller at max_concurrent_children may not spawn");
+            assert!(
+                e.message.contains("max_concurrent_children"),
+                "the refusal must name the bound: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), before, "a gated spawn creates nothing");
+
+            // The other side of the boundary, and the reason it is a *count* rather than a constant: a
+            // child that has exited has released its slot.
+            append(
+                &fx.project.journal(),
+                &line(
+                    900,
+                    9_000,
+                    RecordKind::Exited(marion_core::journal::Exited {
+                        agent_id: id("kid0"),
+                        status: marion_core::contract::ExitStatus::Ok,
+                        exit: ProcessExit {
+                            code: Some(0),
+                            signal: None,
+                            description: "done".into(),
+                        },
+                    }),
+                ),
+            );
+            fx.handle.live.refresh();
+            assert_eq!(
+                fx.handle.live_children_of(&id("root")),
+                max - 1,
+                "a terminal child no longer occupies a §3.1 concurrency slot"
+            );
+        }
+
+        /// A client creating a **root** is step 6, and this build says so rather than serving it as a
+        /// child of nobody. `run_spawn` writes `parent_id: Some(caller)` unconditionally, so serving
+        /// this would put a node in the tree whose parent is a fabrication.
+        #[test]
+        fn a_client_creating_a_root_over_the_socket_is_refused_naming_the_step_that_serves_it() {
+            let fx = owning("owns-root", vec![]);
+            let e = spawn(&fx, params(None, 1)).expect_err("a root spawn is not served yet");
+            assert_eq!(e.kind(), Some(FailureKind::Unimplemented));
+            assert!(
+                e.message.contains("step 6"),
+                "the refusal must name what would serve it: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), 0, "and nothing was created");
+        }
+
+        /// A supervisor with no spawn environment refuses in its **own voice**, naming the build rather
+        /// than failing further in on a directory. See `RegistryHandle::spawn_env`.
+        #[test]
+        fn a_supervisor_that_cannot_spawn_refuses_by_naming_the_build_not_a_missing_directory() {
+            let fx = fx("owns-no-env");
+            let out = crate::serve::sink(ConnId(4));
+            let e = fx
+                .handle
+                .call(ConnId(4), &Call::AgentSpawn(params(None, 1)), &out)
+                .expect_err("a handle built by `new` owns nothing");
+            assert_eq!(e.kind(), Some(FailureKind::Unimplemented));
+            assert!(e.message.contains("spawn environment"), "{}", e.message);
+        }
+
+        // ------------------------------------------------------------------------------------
+        // The token itself.
+        // ------------------------------------------------------------------------------------
+
+        /// Two nodes never share a capability, and a token is long enough that guessing is not a
+        /// strategy. 32 bytes of `/dev/urandom` as hex is 64 characters.
+        #[test]
+        fn every_node_gets_its_own_unguessable_token() {
+            let fx = owning("owns-tokens", vec![]);
+            let a = fx
+                .handle
+                .claim(&id("a"), marion_core::contract::TaskId("t".into()));
+            let b = fx
+                .handle
+                .claim(&id("b"), marion_core::contract::TaskId("t".into()));
+            assert_ne!(
+                a, b,
+                "a per-node token that is not per-node is a fleet token"
+            );
+            assert_eq!(a.len(), 64, "32 bytes as hex");
+            assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
+        }
+
+        /// The comparison reads the whole slice, so a caller cannot learn a token one byte at a time
+        /// from the shape of a refusal. Asserted as *correctness over every boundary a short-circuit
+        /// would get right anyway* — the timing property itself is not measurable in a unit test, so
+        /// what is pinned here is the behaviour, and the loop is what a reader must not "simplify".
+        #[test]
+        fn a_token_comparison_is_total_over_the_slice() {
+            assert!(tokens_match("abc", "abc"));
+            assert!(!tokens_match("abc", "abd"), "a differing last byte");
+            assert!(!tokens_match("abc", "bbc"), "a differing first byte");
+            assert!(!tokens_match("abc", "abcd"), "a longer candidate");
+            assert!(!tokens_match("abcd", "abc"), "a shorter candidate");
+            // The empty stored token — what `mint_token` produces when `/dev/urandom` cannot be read.
+            // It matches only the empty string, which `SpawnCaller` cannot carry: `node_token` has no
+            // serde default, so an absent one fails deserialization rather than becoming this.
+            assert!(!tokens_match("", "x"));
+        }
+
+        // ------------------------------------------------------------------------------------
+        // §5.7's exit predicate, and §7.3.1's departure.
+        // ------------------------------------------------------------------------------------
+
+        // ------------------------------------------------------------------------------------
+        // The two that really launch a process.
+        // ------------------------------------------------------------------------------------
+
+        /// How long this file will wait for a node's thread to finish before calling it a leak.
+        /// Never a verdict: every assertion below is over an identity, a pid or a count.
+        const SETTLE: std::time::Duration = std::time::Duration::from_secs(90);
+
+        /// Wait for **this node's** thread to reach an outcome, so the scratch directory is not
+        /// removed out from under it. Asserts rather than returns: a node that never settles is
+        /// exactly the leak these tests exist to catch.
+        ///
+        /// Per node and not `running_nodes() == 0`, because the *caller* in these fixtures is a
+        /// node this supervisor also owns — `claim`ed to give it a token — and nothing ever
+        /// finishes it. Waiting on the whole table would wait for a node that is a fixture.
+        fn settle(fx: &Owning, agent_id: &AgentId) {
+            let deadline = std::time::Instant::now() + SETTLE;
+            while fx.handle.owned_running(agent_id) == Some(true) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "a node's thread never produced an outcome within {}s",
+                    SETTLE.as_secs()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        /// Spawn a real child and hand back the node's id, once the response has arrived.
+        fn spawn_a_real_child(fx: &Owning, secs: u64) -> AgentId {
+            let token = fx
+                .handle
+                .claim(&id("root"), marion_core::contract::TaskId("t".into()));
+            spawn(
+                fx,
+                params(
+                    Some(SpawnCaller {
+                        agent_id: id("root"),
+                        node_token: token,
+                    }),
+                    secs,
+                ),
+            )
+            .expect("the spawn is admitted and a process starts")
+            .agent_id
+        }
+
+        /// **The response's `state` is a claim the journal already backs.**
+        ///
+        /// This is the whole reason `agent/spawn` returns at the `on_started` hook rather than
+        /// before it or after the run. Before it, the answer would be a promise: a client told
+        /// `Spawning` would have nothing on disk to read, and a supervisor that then died would
+        /// leave a `SpawnIntent` meaning either "nothing was started" or "something is running and
+        /// marion cannot name it" — §11 item 30's two indistinguishable shapes. After the run, the
+        /// call would be a minutes-long synchronous JSON-RPC request, which is what
+        /// `background.rs` records as taking a whole bridge down when it hangs.
+        ///
+        /// So the assertion is not that the pid is plausible but that **the record is already
+        /// there when the caller has the answer**, with the same pid the table holds. The journal
+        /// is read from the file rather than from the follower, because the follower is a poll and
+        /// would let a record that had not been written yet appear a few milliseconds later.
+        #[test]
+        fn the_spawn_response_names_a_node_whose_spawned_record_is_already_on_disk() {
+            let fx = owning("owns-launch", vec![intent("root", None, "claude", 0)]);
+            let agent_id = spawn_a_real_child(&fx, 5);
+
+            let journalled = std::fs::read_to_string(fx.project.journal()).unwrap();
+            let spawned: Vec<serde_json::Value> = journalled
+                .lines()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .filter(|v| v["kind"]["Spawned"]["agent_id"] == serde_json::json!(agent_id.0))
+                .collect();
+            assert_eq!(
+                spawned.len(),
+                1,
+                "the caller has its answer, so the node's `Spawned` must already be on disk:\n{journalled}"
+            );
+            let journal_pid = spawned[0]["kind"]["Spawned"]["pid"]
+                .as_i64()
+                .map(|p| p as i32);
+            assert!(
+                journal_pid.is_some_and(|p| p > 0),
+                "step 1 makes this a real signal target, not a `None`: {:?}",
+                spawned[0]
+            );
+            assert_eq!(
+                fx.handle.owned_pid(&agent_id),
+                journal_pid,
+                "the table and the journal must name one pid, or a `session/quit` KillTree and \
+                 this supervisor's own handle would signal different processes"
+            );
+            assert!(
+                fx.handle.owned_pgid(&agent_id).is_some_and(|g| g > 0),
+                "§6.7 kills a per-node process group, so the group has to be recorded — and read \
+                 with getpgid(2), never assumed equal to the pid"
+            );
+            assert!(
+                fx.handle.owned_started_at(&agent_id).is_some(),
+                "the instant the process came into existence"
+            );
+            assert!(
+                fx.handle.owned_task_id(&agent_id).is_some(),
+                "the contract this node runs under"
+            );
+            assert_eq!(fx.handle.owned_nodes(), 2, "the caller and its child");
+            settle(&fx, &agent_id);
+        }
+
+        /// **§7.3.1: `gone` touches nothing — and after this step that covers a *bridge*.**
+        ///
+        /// The comment on `Handle::gone` has always said so; this asserts it, because a comment is
+        /// not a test and this is the step that makes the invariant load-bearing. While every node
+        /// was owned by the bridge process the harness started, a SIGKILL of that bridge — which
+        /// s16 measured as what a real Claude Code harness sends, uncatchable, ~450 ms after its
+        /// SIGTERM — orphaned a live process at pid 1 with an unresolved `SpawnIntent` and no pid
+        /// to recover it by. Once the supervisor owns the node, the same kill closes a socket.
+        ///
+        /// **Liveness by S15's three-valued `ps`, never `kill(pid, 0)`**, which reports a zombie as
+        /// alive and would let a node that died a millisecond before the departure satisfy this.
+        #[test]
+        fn a_departing_client_does_not_touch_a_node_the_supervisor_owns() {
+            let fx = owning("owns-departure", vec![intent("root", None, "claude", 0)]);
+            let agent_id = spawn_a_real_child(&fx, 30);
+
+            let before = (
+                fx.handle.owned_pid(&agent_id),
+                fx.handle.owned_pgid(&agent_id),
+                fx.handle.owned_task_id(&agent_id),
+                fx.handle.owned_started_at(&agent_id),
+                fx.handle.owned_nodes(),
+                fx.handle.running_nodes(),
+            );
+            let pid = before.0.expect("a process exists");
+            assert_eq!(
+                marion_testsupport::liveness(pid),
+                marion_testsupport::Liveness::Alive,
+                "the premise of this test is a live node; without it the assertions below are \
+                 vacuous"
+            );
+
+            fx.handle
+                .gone(ConnId(3), &ClientGone::SocketClosed, &Departure::Eof);
+
+            assert_eq!(
+                marion_testsupport::liveness(pid),
+                marion_testsupport::Liveness::Alive,
+                "a client's departure must not reach the node's process (§7.3.1)"
+            );
+            assert_eq!(
+                (
+                    fx.handle.owned_pid(&agent_id),
+                    fx.handle.owned_pgid(&agent_id),
+                    fx.handle.owned_task_id(&agent_id),
+                    fx.handle.owned_started_at(&agent_id),
+                    fx.handle.owned_nodes(),
+                    fx.handle.running_nodes(),
+                ),
+                before,
+                "…and must not reach the supervisor's record of it either"
+            );
+
+            // The node is still held, so §5.7 still refuses to exit — the other half of the same
+            // invariant, and what stops a departure from becoming a fleet-wide shutdown.
+            assert!(
+                !fx.handle.idle_exit_eligible(),
+                "a supervisor whose last client left still owns a running node"
+            );
+
+            // Ended deliberately rather than left to the 30 s bound, so the file leaves no
+            // survivor and no scratch directory behind. This is cleanup, not an assertion.
+            crate::run::kill_process_tree_and_wait(pid);
+            settle(&fx, &agent_id);
+        }
+
+        /// **The node table as §5.7's second guard.**
+        ///
+        /// The journal here says nothing at all — no node, no intent — so `resident_reason` is `None`
+        /// and a journal-only predicate would let this supervisor exit. A node whose thread is running
+        /// and whose journal write failed is exactly that shape, and exiting through it leaves the
+        /// untracked live process §9's M2 criteria forbid.
+        #[test]
+        fn a_node_this_supervisor_still_runs_holds_it_even_when_the_journal_says_nothing() {
+            let fx = owning("owns-exit-guard", vec![]);
+            assert!(
+                fx.handle.idle_exit_eligible(),
+                "an empty supervisor with no clients may exit"
+            );
+            fx.handle
+                .claim(&id("ghost"), marion_core::contract::TaskId("t".into()));
+            assert!(
+                !fx.handle.idle_exit_eligible(),
+                "a node this process still owns and has no outcome for must hold the supervisor, \
+                 however quiet the journal is"
+            );
+            fx.handle.mark_finished(
+                &id("ghost"),
+                Err(crate::spawn::SpawnError::UnknownAgentType("x".into())),
+            );
+            assert!(
+                fx.handle.idle_exit_eligible(),
+                "…and must stop holding it once its thread has produced an outcome"
+            );
+        }
     }
 }
