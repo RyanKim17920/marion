@@ -253,7 +253,10 @@ fn writers_by_agent(journal: &Path) -> Vec<(String, String)> {
         .split(|b| *b == b'\n')
         .filter(|l| !l.is_empty())
         .filter_map(decode)
-        .map(|r| (r.agent_id().0.clone(), r.writer.0.clone()))
+        .filter_map(|r| {
+            r.agent_id()
+                .map(|agent| (agent.0.clone(), r.writer.0.clone()))
+        })
         .collect()
 }
 
@@ -296,10 +299,13 @@ fn record_kinds(journal: &Path) -> Vec<&'static str> {
             RecordKind::Exited(_) => "Exited",
             RecordKind::ReapIntent(_) => "ReapIntent",
             RecordKind::ReapConfirmed(_) => "ReapConfirmed",
+            RecordKind::KillIntent(_) => "KillIntent",
+            RecordKind::KillConfirmed(_) => "KillConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
+            RecordKind::SupervisorExited(_) => "SupervisorExited",
         })
         .collect()
 }
@@ -834,10 +840,13 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
             RecordKind::Exited(_) => "Exited",
             RecordKind::ReapIntent(_) => "ReapIntent",
             RecordKind::ReapConfirmed(_) => "ReapConfirmed",
+            RecordKind::KillIntent(_) => "KillIntent",
+            RecordKind::KillConfirmed(_) => "KillConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
+            RecordKind::SupervisorExited(_) => "SupervisorExited",
         })
         .collect();
     for expected in ["SpawnIntent", "Spawned", "Exited", "ContractPersisted"] {

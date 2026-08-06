@@ -312,8 +312,12 @@ impl Replay {
     }
 
     fn apply(&mut self, r: JournalRecord) {
+        let Some(agent_id) = r.agent_id().cloned() else {
+            debug_assert!(matches!(r.kind, RecordKind::SupervisorExited(_)));
+            return;
+        };
         let ts = r.ts;
-        let node = self.node_mut(r.agent_id());
+        let node = self.node_mut(&agent_id);
         node.records += 1;
         if node.first_ts.is_none() {
             node.first_ts = Some(ts);
@@ -352,7 +356,15 @@ impl Replay {
                 node.exit = Some(e.exit);
             }
             RecordKind::ReapIntent(i) => node.reap_intent = Some(i.reason),
-            RecordKind::ReapConfirmed(_) => node.reap_state = ReapState::ReapedIdle,
+            RecordKind::ReapConfirmed(_) => {
+                node.reap_state = ReapState::ReapedIdle;
+                node.reap_intent = None;
+            }
+            RecordKind::KillIntent(_) => {}
+            RecordKind::KillConfirmed(k) => {
+                node.state = NodeState::Exited(crate::contract::ExitStatus::Cancelled);
+                node.exit = Some(k.exit);
+            }
             RecordKind::ContractPersisted(c) => {
                 let ContractPersisted {
                     task_id,
@@ -385,6 +397,9 @@ impl Replay {
             // keeping the first has the same justification as the arm above: a second record for
             // one agent id cannot happen in a run, so the later one is the one that was true last.
             RecordKind::RootGrantDecided(g) => node.root_grant = Some(g),
+            RecordKind::SupervisorExited(_) => {
+                unreachable!("the process-wide record returned before selecting a node")
+            }
         }
         if (node.state, node.reap_state) != before {
             node.state_ts = Some(ts);
@@ -485,7 +500,10 @@ mod tests {
     use super::*;
     use crate::encoding::SystemTime;
     use crate::ir::Provenance;
-    use crate::journal::{Exited, ReapConfirmed, ReapIntent, Spawned, StateChanged, encode};
+    use crate::journal::{
+        Exited, KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, Spawned, StateChanged,
+        SupervisorExited, encode,
+    };
 
     fn record(seq: u64, kind: RecordKind) -> JournalRecord {
         JournalRecord {
@@ -683,6 +701,50 @@ mod tests {
             r.get(&id("child")).unwrap().reap_state,
             ReapState::ReapedIdle
         );
+        assert_eq!(
+            r.get(&id("child")).unwrap().reap_intent,
+            None,
+            "a confirmation resolves the intent; §5.7 blocks only an unconfirmed one"
+        );
+    }
+
+    #[test]
+    fn a_kill_pair_replays_cancelled_and_a_supervisor_exit_creates_no_node() {
+        let mut j = m1_journal();
+        j.retain(|r| !matches!(&r.kind, RecordKind::Exited(e) if e.agent_id == id("root")));
+        let n = j.len() as u64;
+        j.extend([
+            record(
+                n,
+                RecordKind::KillIntent(KillIntent {
+                    agent_id: id("root"),
+                    was: NodeState::Spawning,
+                }),
+            ),
+            record(
+                n + 1,
+                RecordKind::KillConfirmed(KillConfirmed {
+                    agent_id: id("root"),
+                    exit: ProcessExit {
+                        code: None,
+                        signal: Some(9),
+                        description: "marion sent SIGKILL".into(),
+                    },
+                }),
+            ),
+            record(n + 2, RecordKind::SupervisorExited(SupervisorExited {})),
+        ]);
+        let r = replay(&bytes(&j));
+        assert_eq!(r.records, j.len());
+        assert_eq!(
+            r.nodes().len(),
+            2,
+            "supervisor exit is not a synthetic node"
+        );
+        let root = r.get(&id("root")).unwrap();
+        assert_eq!(root.state, NodeState::Exited(ExitStatus::Cancelled));
+        assert_eq!(root.exit.as_ref().unwrap().signal, Some(9));
+        assert!(!root.is_unresolved());
     }
 
     #[test]

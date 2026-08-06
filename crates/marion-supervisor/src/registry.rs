@@ -390,6 +390,16 @@ impl LiveRegistry {
         f(&lock(&self.inner))
     }
 
+    /// Fold bytes that are already on disk now, without waiting for the follower's next tick.
+    ///
+    /// A lifecycle handler cannot append an intent or confirmation and then answer from a stale
+    /// tree: that would let a second quit race the poll interval and repeat an irreversible act.
+    /// The background follower remains the ordinary path; decision points use this synchronous
+    /// path because ordering, not elapsed time, is their contract.
+    pub fn refresh(&self) -> usize {
+        lock(&self.inner).poll()
+    }
+
     /// Stop following and hand back the final reading, after one last poll.
     pub fn stop(mut self) -> Registry {
         self.halt();

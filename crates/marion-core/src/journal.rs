@@ -86,9 +86,12 @@ impl JournalRecord {
         self.kind.is_barrier()
     }
 
-    /// The `AgentId` this record is about. Every record is about exactly one node — there is no
-    /// tree-wide record — which is what lets replay be a single pass with no second index.
-    pub fn agent_id(&self) -> &AgentId {
+    /// The `AgentId` this record is about, or `None` for the supervisor's own exit.
+    ///
+    /// §5.7 makes that one absence load-bearing: assigning an arbitrary node to a process-wide
+    /// exit would make the journal claim a relationship that did not occur. The replay remains a
+    /// single pass because the exceptional record changes no node at all.
+    pub fn agent_id(&self) -> Option<&AgentId> {
         self.kind.agent_id()
     }
 }
@@ -124,6 +127,12 @@ pub enum RecordKind {
     /// The process was observed dead. §7.2: an unconfirmed intent resolves to `ReapedIdle` either
     /// way — that resolution is restart policy and is **not** replay's job.
     ReapConfirmed(ReapConfirmed),
+    /// §6.7/§7.3.2(a), durable before the first signal. `was` is the state in the rendered list the
+    /// operator confirmed; omitting it would leave the audit record unable to say what was lost.
+    KillIntent(KillIntent),
+    /// The process was observed dead after marion's per-node two-step group kill. This is the
+    /// terminal transition to `Cancelled`; an additional `Exited` would assert the same fact twice.
+    KillConfirmed(KillConfirmed),
     /// §4.3's `contracts/<task_id>.json` was written. The journal records *that a contract exists
     /// and how it ended*, never its contents: the file is the contract, and copying it here would
     /// be a second source of truth for a document §6.7 already makes authoritative.
@@ -148,6 +157,9 @@ pub enum RecordKind {
     /// [`Self::SpawnIntent`] — write the intent, do the act, confirm — applied to the other thing
     /// `root::prepare` does.
     RootGrantDecided(crate::root_change::RootGrant),
+    /// §5.7's ordinary exit record. It deliberately carries no node id: the supervisor serves a
+    /// forest, and choosing one node would fabricate ownership of a process-wide event.
+    SupervisorExited(SupervisorExited),
 }
 
 impl RecordKind {
@@ -168,6 +180,9 @@ impl RecordKind {
                 | RecordKind::Exited(_)
                 | RecordKind::ReapIntent(_)
                 | RecordKind::ReapConfirmed(_)
+                | RecordKind::KillIntent(_)
+                | RecordKind::KillConfirmed(_)
+                | RecordKind::SupervisorExited(_)
                 // A record whose *whole purpose* is to survive a crash, and which is therefore
                 // worth nothing on the ~50 ms group-commit timer: the window it exists to cover
                 // opens the instant `prepare` returns. §4.3's rule — fsync the intent, then do the
@@ -177,19 +192,22 @@ impl RecordKind {
         )
     }
 
-    pub fn agent_id(&self) -> &AgentId {
+    pub fn agent_id(&self) -> Option<&AgentId> {
         match self {
-            RecordKind::SpawnIntent(r) => &r.agent_id,
-            RecordKind::Spawned(r) => &r.agent_id,
-            RecordKind::SpawnAborted(r) => &r.agent_id,
-            RecordKind::StateChanged(r) => &r.agent_id,
-            RecordKind::Exited(r) => &r.agent_id,
-            RecordKind::ReapIntent(r) => &r.agent_id,
-            RecordKind::ReapConfirmed(r) => &r.agent_id,
-            RecordKind::ContractPersisted(r) => &r.agent_id,
-            RecordKind::PermissionDenied(r) => &r.agent_id,
-            RecordKind::RootChanged(r) => &r.agent_id,
-            RecordKind::RootGrantDecided(r) => &r.agent_id,
+            RecordKind::SpawnIntent(r) => Some(&r.agent_id),
+            RecordKind::Spawned(r) => Some(&r.agent_id),
+            RecordKind::SpawnAborted(r) => Some(&r.agent_id),
+            RecordKind::StateChanged(r) => Some(&r.agent_id),
+            RecordKind::Exited(r) => Some(&r.agent_id),
+            RecordKind::ReapIntent(r) => Some(&r.agent_id),
+            RecordKind::ReapConfirmed(r) => Some(&r.agent_id),
+            RecordKind::KillIntent(r) => Some(&r.agent_id),
+            RecordKind::KillConfirmed(r) => Some(&r.agent_id),
+            RecordKind::ContractPersisted(r) => Some(&r.agent_id),
+            RecordKind::PermissionDenied(r) => Some(&r.agent_id),
+            RecordKind::RootChanged(r) => Some(&r.agent_id),
+            RecordKind::RootGrantDecided(r) => Some(&r.agent_id),
+            RecordKind::SupervisorExited(_) => None,
         }
     }
 }
@@ -266,6 +284,21 @@ pub struct ReapIntent {
 pub struct ReapConfirmed {
     pub agent_id: AgentId,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KillIntent {
+    pub agent_id: AgentId,
+    pub was: NodeState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KillConfirmed {
+    pub agent_id: AgentId,
+    pub exit: ProcessExit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorExited {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractPersisted {
@@ -433,6 +466,18 @@ mod tests {
             RecordKind::ReapConfirmed(ReapConfirmed {
                 agent_id: AgentId("a-1".into()),
             }),
+            RecordKind::KillIntent(KillIntent {
+                agent_id: AgentId("a-1".into()),
+                was: NodeState::Running,
+            }),
+            RecordKind::KillConfirmed(KillConfirmed {
+                agent_id: AgentId("a-1".into()),
+                exit: ProcessExit {
+                    code: None,
+                    signal: Some(9),
+                    description: "marion sent SIGKILL".into(),
+                },
+            }),
             RecordKind::ContractPersisted(ContractPersisted {
                 agent_id: AgentId("a-1".into()),
                 task_id: TaskId("t-1".into()),
@@ -444,6 +489,7 @@ mod tests {
                 tool: "Bash".into(),
                 reason: "the root's Blocked bound expired unanswered".into(),
             }),
+            RecordKind::SupervisorExited(SupervisorExited {}),
         ];
         for kind in kinds {
             let r = rec(kind);
@@ -480,6 +526,25 @@ mod tests {
             })
             .is_barrier()
         );
+        assert!(
+            RecordKind::KillIntent(KillIntent {
+                agent_id: a.clone(),
+                was: NodeState::Running,
+            })
+            .is_barrier()
+        );
+        assert!(
+            RecordKind::KillConfirmed(KillConfirmed {
+                agent_id: a.clone(),
+                exit: ProcessExit {
+                    code: None,
+                    signal: Some(9),
+                    description: "confirmed".into(),
+                },
+            })
+            .is_barrier()
+        );
+        assert!(RecordKind::SupervisorExited(SupervisorExited {}).is_barrier());
         // Not barriers: losing one costs a stale replay, not an untracked process (§4.3).
         assert!(
             !RecordKind::StateChanged(StateChanged {
@@ -518,6 +583,16 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// **NC — the supervisor exit is not assigned to a convenient node.** A fabricated id would
+    /// make a process-wide event look like part of one task's history, and on an empty forest there
+    /// is not even a candidate to fabricate.
+    #[test]
+    fn the_supervisor_exit_record_has_no_agent_id() {
+        let r = rec(RecordKind::SupervisorExited(SupervisorExited {}));
+        assert_eq!(r.agent_id(), None);
+        assert_eq!(r.kind.agent_id(), None);
     }
 
     #[test]

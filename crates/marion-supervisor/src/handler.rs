@@ -1,4 +1,4 @@
-//! The registry, answering (design §2's `node/get` and `tree/subscribe`; §7.3.3's seam).
+//! The registry, answering `node/get`, `tree/subscribe`, and §7.3.2's `session/quit`.
 //!
 //! [`serve`](crate::serve) knows about frames and connections and nothing about nodes;
 //! [`registry`](crate::registry) knows about nodes and nothing about clients. This is the seam, and
@@ -42,6 +42,20 @@
 //! cannot be produced between (b) and (c), because nothing else can hold the lock, so the new
 //! subscriber can neither miss an event nor be told twice about one it already has.
 //!
+//! # Quit acts here; departure never does
+//!
+//! §7.3 gives two events one name and makes confusing them the crash-safety failure. The explicit
+//! [`Call::SessionQuit`] is handled under `quit`'s decision lock: validate a confirmed render,
+//! durably append an intent, perform one per-node §6.7 kill, observe death, then durably confirm.
+//! [`Handle::gone`] performs none of those steps. Even when the transport reports
+//! [`ClientGone::Quit`], the disposition was already accepted or refused by the call; applying it
+//! again at EOF would make every successful quit happen twice and every refused quit happen once.
+//!
+//! §5.7's exit is deliberately split once more. A successful call can make exit *eligible*, but
+//! the serve loop alone knows whether the client count stayed at zero for the configured grace.
+//! Only its later [`Handle::begin_idle_exit`] callback appends `SupervisorExited` and flips
+//! `exiting`; this is why the record cannot be written while the response's socket is still open.
+//!
 //! # What is deliberately not built
 //!
 //! `TreeSubscribeResult` has nowhere to say *"and there are N nodes I could not describe"*. Rather
@@ -50,17 +64,23 @@
 //! see it and a `doctor` will read it. Naming the gap is not the same as closing it, and this one is
 //! open until the vocabulary has a field for it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use marion_core::agent_type;
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, ProcessExit};
+use marion_core::journal::{
+    KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, RecordKind, SupervisorExited,
+};
 use marion_core::node::{NodeState, ReapState};
 use marion_core::registry::{Replay, ReplayedNode};
 use marion_proto::notify::Event;
-use marion_proto::result::{NodeGetResult, TreeSubscribeResult};
+use marion_proto::result::{NodeGetResult, SessionQuitResult, TreeSubscribeResult};
 use marion_proto::{
-    Call, ClientGone, FailureKind, MethodResult, NodeSummary, ReplayPoint, RpcError,
+    Call, ClientGone, DetachGuidance, FailureKind, KilledNode, MethodResult, NodeSummary,
+    QuitDisposition, QuitOutcome, ReplayPoint, ResidentReason, RpcError, SupervisorDisposition,
 };
 
 use crate::registry::{LiveRegistry, Registry};
@@ -157,17 +177,36 @@ struct Told {
 #[derive(Default)]
 struct Shared {
     subs: Vec<Outbound>,
+    clients: HashSet<ConnId>,
     told: HashMap<AgentId, Told>,
     unprojectable: usize,
 }
 
+trait QuitRuntime: Send + Sync {
+    fn kill_process_tree_and_wait(&self, pid: i32) -> bool;
+}
+
+struct SystemQuitRuntime;
+
+impl QuitRuntime for SystemQuitRuntime {
+    fn kill_process_tree_and_wait(&self, pid: i32) -> bool {
+        crate::run::kill_process_tree_and_wait(pid)
+    }
+}
+
 /// A [`Handle`](crate::serve::Handle) backed by a running registry.
 ///
-/// Everything a client can learn from it comes from the journal; nothing here probes a process,
-/// consults a clock, or remembers a fact the journal does not carry.
+/// Descriptions still come only from the journal. Quit is the deliberately different half: it
+/// uses the journal's PID to apply §6.7's process-tree kill, observes death, and writes that new
+/// fact back before any client can learn it. The handle remembers only connection/exit bookkeeping,
+/// never a second copy of node state.
 pub struct RegistryHandle {
     live: Arc<LiveRegistry>,
     shared: Mutex<Shared>,
+    runtime: Arc<dyn QuitRuntime>,
+    quit: Mutex<()>,
+    exit_pending: AtomicBool,
+    exiting: AtomicBool,
 }
 
 impl RegistryHandle {
@@ -175,6 +214,22 @@ impl RegistryHandle {
         Arc::new(RegistryHandle {
             live,
             shared: Mutex::new(Shared::default()),
+            runtime: Arc::new(SystemQuitRuntime),
+            quit: Mutex::new(()),
+            exit_pending: AtomicBool::new(false),
+            exiting: AtomicBool::new(false),
+        })
+    }
+
+    #[cfg(test)]
+    fn with_runtime(live: Arc<LiveRegistry>, runtime: Arc<dyn QuitRuntime>) -> Arc<RegistryHandle> {
+        Arc::new(RegistryHandle {
+            live,
+            shared: Mutex::new(Shared::default()),
+            runtime,
+            quit: Mutex::new(()),
+            exit_pending: AtomicBool::new(false),
+            exiting: AtomicBool::new(false),
         })
     }
 
@@ -238,22 +293,306 @@ impl RegistryHandle {
                 .map_err(|e| e.as_error(id)),
         })
     }
+
+    /// §7.3.2's voluntary path. The mutex is not throughput machinery; it makes the rendered-set
+    /// comparison and the first intent one indivisible decision. Without it, two clients can both
+    /// confirm the same live render and each signal it after the other's confirmation.
+    fn session_quit(&self, disposition: &QuitDisposition) -> Result<SessionQuitResult, RpcError> {
+        let _decision = lock(&self.quit);
+        self.live.refresh();
+        match disposition {
+            QuitDisposition::KillTree { confirmed } => self.kill_tree(confirmed),
+            QuitDisposition::DetachAll => Ok(SessionQuitResult {
+                outcome: self.detach_all(),
+            }),
+            QuitDisposition::ReapIdleDetachBusy => self.reap_idle_detach_busy(),
+        }
+    }
+
+    fn nodes(&self) -> Vec<marion_core::registry::ReplayedNode> {
+        self.live.read(|r| r.tree().nodes().to_vec())
+    }
+
+    fn journal_path(&self) -> PathBuf {
+        self.live.read(|r| r.path().to_path_buf())
+    }
+
+    fn journal(&self) -> Result<crate::journal::Journal, RpcError> {
+        crate::journal::Journal::open_path(&self.journal_path(), crate::journal::writer_id())
+            .map_err(|e| {
+                RpcError::internal(format!(
+                    "session/quit could not open the journal, so it refused before changing any \
+                     node: {e}"
+                ))
+            })
+    }
+
+    fn guidance(&self) -> DetachGuidance {
+        let socket = self
+            .journal_path()
+            .parent()
+            .map(|p| p.join("supervisor.sock"))
+            .unwrap_or_else(|| PathBuf::from("supervisor.sock"));
+        DetachGuidance {
+            reattach: format!(
+                "Reconnect to {} and call tree/subscribe. Until then, any named gate_exposed node \
+                 that reaches a permission request burns its bound and is denied unattended; the \
+                 far side receives an is_error:true tool_result (§7.3.2, §11 item 22, S9).",
+                socket.display()
+            ),
+            stop_fleet: format!(
+                "Reconnect to {} and call session/quit with KillTree confirmed against a fresh \
+                 tree/subscribe render.",
+                socket.display()
+            ),
+        }
+    }
+
+    fn active(nodes: &[marion_core::registry::ReplayedNode]) -> Vec<AgentId> {
+        nodes
+            .iter()
+            .filter(|n| !n.state.is_exited() && n.reap_state == ReapState::Live)
+            .map(|n| n.agent_id.clone())
+            .collect()
+    }
+
+    fn resident_reason(nodes: &[marion_core::registry::ReplayedNode]) -> Option<ResidentReason> {
+        if nodes.iter().any(|n| n.reap_intent.is_some()) {
+            Some(ResidentReason::UnconfirmedReapIntent)
+        } else if nodes
+            .iter()
+            .any(|n| matches!(n.state, NodeState::Blocked(_)))
+        {
+            Some(ResidentReason::BlockedNode)
+        } else if nodes.iter().any(|n| n.state == NodeState::Spawning) {
+            Some(ResidentReason::SpawnOutstanding)
+        } else if nodes.iter().any(|n| !n.state.is_exited()) {
+            Some(ResidentReason::NonTerminalNode)
+        } else {
+            None
+        }
+    }
+
+    fn detach_all(&self) -> QuitOutcome {
+        let nodes = self.nodes();
+        let detached = Self::active(&nodes);
+        let supervisor = match Self::resident_reason(&nodes) {
+            Some(reason) => SupervisorDisposition::Resident(reason),
+            None => {
+                self.exit_pending.store(true, Ordering::SeqCst);
+                SupervisorDisposition::Exiting
+            }
+        };
+        QuitOutcome::Detached {
+            gate_exposed: detached.clone(),
+            detached,
+            guidance: self.guidance(),
+            supervisor,
+        }
+    }
+
+    fn kill_tree(&self, confirmed: &[AgentId]) -> Result<SessionQuitResult, RpcError> {
+        let nodes = self.nodes();
+        let targets: Vec<_> = nodes.iter().filter(|n| !n.state.is_exited()).collect();
+        let mut expected: Vec<_> = targets.iter().map(|n| n.agent_id.0.clone()).collect();
+        let mut stated: Vec<_> = confirmed.iter().map(|id| id.0.clone()).collect();
+        expected.sort();
+        stated.sort();
+        if expected != stated {
+            return Err(RpcError::refused(
+                "confirmed",
+                format!(
+                    "the confirmed kill list does not equal the supervisor's current non-terminal \
+                     set; confirmed {stated:?}, current {expected:?}. Nothing was signalled. Render \
+                     the list again and confirm that exact set (§7.3.2)."
+                ),
+                "§7.3.2",
+            ));
+        }
+        if let Some(node) = targets
+            .iter()
+            .find(|n| n.reap_state != ReapState::ReapedIdle && n.pid.is_none())
+        {
+            return Err(RpcError::conflict(
+                &node.agent_id.0,
+                "the confirmed node has no recorded PID yet, so marion cannot prove a signal \
+                 reaches it. Nothing was signalled; retry after its spawn resolves.",
+                "§6.7, §7.3.2",
+            ));
+        }
+
+        let mut journal = self.journal()?;
+        let mut killed = Vec::with_capacity(targets.len());
+        for node in targets {
+            journal
+                .append(RecordKind::KillIntent(KillIntent {
+                    agent_id: node.agent_id.clone(),
+                    was: node.state,
+                }))
+                .map_err(journal_failure_before_signal)?;
+            let signal = node.reap_state != ReapState::ReapedIdle;
+            if signal
+                && !self.runtime.kill_process_tree_and_wait(
+                    node.pid.expect("preflight required a signal target PID"),
+                )
+            {
+                return Err(RpcError::internal(format!(
+                    "marion journaled the kill intent for `{}` and signalled its per-node process \
+                     tree, but could not observe its PID dead; the intent remains unconfirmed and \
+                     the supervisor will not exit (§6.7, §5.7)",
+                    node.agent_id.0
+                )));
+            }
+            journal
+                .append(RecordKind::KillConfirmed(KillConfirmed {
+                    agent_id: node.agent_id.clone(),
+                    exit: ProcessExit {
+                        code: None,
+                        signal: signal.then_some(9),
+                        description: if signal {
+                            "marion sent SIGKILL for confirmed session/quit KillTree".into()
+                        } else {
+                            "confirmed session/quit retired an already ReapedIdle node; no process \
+                             existed to signal"
+                                .into()
+                        },
+                    },
+                }))
+                .map_err(journal_failure_after_signal)?;
+            killed.push(KilledNode {
+                agent_id: node.agent_id.clone(),
+                was: node.state,
+            });
+        }
+        self.live.refresh();
+        self.exit_pending.store(true, Ordering::SeqCst);
+        Ok(SessionQuitResult {
+            outcome: QuitOutcome::Killed {
+                nodes: killed,
+                supervisor: SupervisorDisposition::Exiting,
+            },
+        })
+    }
+
+    fn reap_idle_detach_busy(&self) -> Result<SessionQuitResult, RpcError> {
+        let nodes = self.nodes();
+        let reaping: Vec<_> = nodes
+            .iter()
+            .filter(|n| {
+                n.state == NodeState::Idle
+                    && n.reap_state == ReapState::Live
+                    && n.reap_intent.is_none()
+                    // A non-terminal child is the node its parent's blocking `spawn` is waiting
+                    // on. §7.2 names that as a separate refusal even if the child happens to be
+                    // between turns and reports `Idle`; reaping it would strand the caller because
+                    // ReapedIdle writes no Completion. Roots have no waiting spawn by construction.
+                    && n.parent_id().is_none()
+            })
+            .collect();
+        if let Some(node) = reaping.iter().find(|n| n.pid.is_none()) {
+            return Err(RpcError::conflict(
+                &node.agent_id.0,
+                "the idle node has no recorded PID, so marion cannot perform and confirm §7.2's \
+                 reap without inventing an observation. Nothing was reaped.",
+                "§7.2",
+            ));
+        }
+        let reaped_ids: Vec<_> = reaping.iter().map(|n| n.agent_id.clone()).collect();
+        let detached: Vec<_> = nodes
+            .iter()
+            .filter(|n| {
+                !n.state.is_exited()
+                    && n.reap_state == ReapState::Live
+                    && !reaped_ids.contains(&n.agent_id)
+            })
+            .map(|n| n.agent_id.clone())
+            .collect();
+        let mut journal = self.journal()?;
+        for node in reaping {
+            journal
+                .append(RecordKind::ReapIntent(ReapIntent {
+                    agent_id: node.agent_id.clone(),
+                    reason: "session/quit reaped an idle node before detaching busy work".into(),
+                }))
+                .map_err(journal_failure_before_signal)?;
+            let pid = node.pid.expect("preflight required every reap PID");
+            if !self.runtime.kill_process_tree_and_wait(pid) {
+                return Err(RpcError::internal(format!(
+                    "marion journaled the reap intent for `{}` and signalled its per-node process \
+                     tree, but could not observe PID {pid} dead; the intent remains unconfirmed and \
+                     the supervisor will not exit (§7.2, §5.7)",
+                    node.agent_id.0
+                )));
+            }
+            journal
+                .append(RecordKind::ReapConfirmed(ReapConfirmed {
+                    agent_id: node.agent_id.clone(),
+                }))
+                .map_err(journal_failure_after_signal)?;
+        }
+        self.live.refresh();
+        let after = self.nodes();
+        let supervisor = Self::resident_reason(&after)
+            .map(SupervisorDisposition::Resident)
+            .unwrap_or_else(|| {
+                self.exit_pending.store(true, Ordering::SeqCst);
+                SupervisorDisposition::Exiting
+            });
+        let mut guidance = self.guidance();
+        // §7.3.2(c) requires the reaped list and the fact that it is resumable. The ids already
+        // have a typed field; the latter does not, so omitting it here would make a structurally
+        // complete response still leave out the operator's most important recovery fact.
+        guidance.reattach.push_str(
+            " Nodes named in `reaped` are ReapedIdle, retain their transcripts and ownership, and \
+             are resumable.",
+        );
+        Ok(SessionQuitResult {
+            outcome: QuitOutcome::ReapedAndDetached {
+                reaped: reaped_ids,
+                gate_exposed: detached.clone(),
+                detached,
+                guidance,
+                supervisor,
+            },
+        })
+    }
+}
+
+fn journal_failure_before_signal(error: crate::journal::JournalError) -> RpcError {
+    RpcError::internal(format!(
+        "session/quit could not durably journal its intent, so it refused before signalling the \
+         node: {error}"
+    ))
+}
+
+fn journal_failure_after_signal(error: crate::journal::JournalError) -> RpcError {
+    RpcError::internal(format!(
+        "session/quit changed a process but could not durably journal its confirmation; its intent \
+         remains for restart recovery and the supervisor will not exit: {error}"
+    ))
 }
 
 impl Handle for RegistryHandle {
+    fn connected(&self, conn: ConnId) {
+        lock(&self.shared).clients.insert(conn);
+    }
+
     fn call(&self, _conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError> {
         match call {
             Call::NodeGet(p) => self.node_get(&p.agent_id).map(MethodResult::NodeGet),
             Call::TreeSubscribe(_) => Ok(MethodResult::TreeSubscribe(self.subscribe(out))),
+            Call::SessionQuit(p) => self
+                .session_quit(&p.disposition)
+                .map(MethodResult::SessionQuit),
             // Everything else is specified and not built. `Unimplemented` and not `Unsupported`,
             // per `error.rs`: the gap is marion's, not the harness's, and the operator's next move
             // is to check the milestone rather than the node.
             other => Err(RpcError::unimplemented(
                 other.method().as_str(),
                 format!(
-                    "`{}` is specified (§2) and not built. This supervisor answers `node/get` and \
-                     `tree/subscribe`; the rest of §2's fifteen land with the milestone that needs \
-                     them.",
+                    "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
+                     `tree/subscribe`, and `session/quit`; the remaining twelve methods land with \
+                     the milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",
@@ -263,15 +602,15 @@ impl Handle for RegistryHandle {
 
     /// §7.3.1, and the whole of what this handler does about a departure.
     ///
-    /// **Nothing happens to any node**, in either case. That is not an omission — for
-    /// [`ClientGone::SocketClosed`] it is the invariant, stated as *"nodes do not change state and
-    /// nothing is journaled, because from the registry's point of view nothing happened"*; and for
-    /// [`ClientGone::Quit`] it is because §7.3.2's three dispositions are not built, which the
-    /// `session/quit` call itself already said in words before the client closed.
+    /// **Nothing happens to any node here**, in either case. For [`ClientGone::SocketClosed`] that
+    /// is §7.3.1's invariant: no state, journal, reap, or orphan transition. For
+    /// [`ClientGone::Quit`], the explicit call already completed or refused the disposition; doing
+    /// it at departure would repeat a successful kill and, worse, turn a refused stale
+    /// confirmation into an unconfirmed kill triggered by EOF.
     ///
     /// What does happen is bookkeeping this connection's subscription is dropped, so a supervisor
-    /// with no clients holds no queues. §5.7 is explicit that this changes nothing about the
-    /// supervisor's own lifetime.
+    /// with no clients holds no queues. It may make a previously requested exit eligible for the
+    /// serve loop's grace timer, but `gone` itself neither journals nor exits.
     fn gone(&self, conn: ConnId, gone: &ClientGone, _why: &Departure) {
         debug_assert!(
             gone.nodes_must_be_untouched() || gone.disposition().is_some(),
@@ -279,6 +618,43 @@ impl Handle for RegistryHandle {
         );
         let mut g = lock(&self.shared);
         g.subs.retain(|s| s.conn() != conn);
+        g.clients.remove(&conn);
+    }
+
+    fn exiting(&self) -> bool {
+        self.exiting.load(Ordering::SeqCst)
+    }
+
+    fn idle_exit_eligible(&self) -> bool {
+        if !self.exit_pending.load(Ordering::SeqCst) || !lock(&self.shared).clients.is_empty() {
+            return false;
+        }
+        self.live.refresh();
+        Self::resident_reason(&self.nodes()).is_none()
+    }
+
+    fn begin_idle_exit(&self) -> bool {
+        let _decision = lock(&self.quit);
+        if !self.idle_exit_eligible() {
+            return false;
+        }
+        let result = self.journal().and_then(|mut journal| {
+            journal
+                .append(RecordKind::SupervisorExited(SupervisorExited {}))
+                .map(|_| ())
+                .map_err(journal_failure_after_signal)
+        });
+        match result {
+            Ok(()) => {
+                self.live.refresh();
+                self.exiting.store(true, Ordering::SeqCst);
+                true
+            }
+            Err(error) => {
+                eprintln!("marion: {error}");
+                false
+            }
+        }
     }
 }
 
@@ -443,6 +819,7 @@ mod tests {
     use marion_core::journal::{
         Exited, JournalRecord, RecordKind, SpawnIntent, Spawned, StateChanged, WriterId, encode,
     };
+    use marion_core::node::BlockReason;
     use marion_proto::Frame;
     use marion_testsupport::scratch;
     use std::io::Write;
@@ -611,6 +988,101 @@ mod tests {
             path,
             handle: RegistryHandle::new(live),
         }
+    }
+
+    fn fx_with(tag: &str, records: Vec<RecordKind>) -> Fx {
+        fx_with_runtime(tag, records, Arc::new(SystemQuitRuntime))
+    }
+
+    fn fx_with_runtime(tag: &str, records: Vec<RecordKind>, runtime: Arc<dyn QuitRuntime>) -> Fx {
+        let dir = scratch(tag);
+        let path = dir.join("journal.jsonl");
+        for (seq, kind) in records.into_iter().enumerate() {
+            append(&path, &line(seq as u64, 1_000 + seq as u64, kind));
+        }
+        let live = Arc::new(LiveRegistry::follow(
+            Registry::boot_path(&path).unwrap(),
+            std::time::Duration::from_millis(2),
+        ));
+        Fx {
+            _dir: dir,
+            path,
+            handle: RegistryHandle::with_runtime(live, runtime),
+        }
+    }
+
+    /// Records the process-tree operations selected by a disposition without asking the host
+    /// process table to cooperate. The real runtime delegates to `run.rs`; these tests are about
+    /// the handler's selection and ordering, so an injected observation makes a missed or extra
+    /// per-node operation an exact assertion rather than a timing-dependent survivor check.
+    #[derive(Default)]
+    struct RecordingRuntime {
+        killed: Mutex<Vec<i32>>,
+    }
+
+    impl RecordingRuntime {
+        fn killed(&self) -> Vec<i32> {
+            lock(&self.killed).clone()
+        }
+    }
+
+    impl QuitRuntime for RecordingRuntime {
+        fn kill_process_tree_and_wait(&self, pid: i32) -> bool {
+            lock(&self.killed).push(pid);
+            true
+        }
+    }
+
+    fn recording_fx_with(tag: &str, records: Vec<RecordKind>) -> (Fx, Arc<RecordingRuntime>) {
+        let runtime = Arc::new(RecordingRuntime::default());
+        let fx = fx_with_runtime(tag, records, runtime.clone());
+        (fx, runtime)
+    }
+
+    fn spawned(agent: &str, pid: i32) -> RecordKind {
+        RecordKind::Spawned(Spawned {
+            agent_id: id(agent),
+            harness_version: "test".into(),
+            model: None,
+            pid: Some(pid),
+        })
+    }
+
+    fn state(agent: &str, state: NodeState) -> RecordKind {
+        RecordKind::StateChanged(StateChanged {
+            agent_id: id(agent),
+            state,
+        })
+    }
+
+    fn quit(
+        fx: &Fx,
+        disposition: marion_proto::QuitDisposition,
+    ) -> Result<marion_proto::result::SessionQuitResult, RpcError> {
+        let out = crate::serve::sink(ConnId(9));
+        match fx.handle.call(
+            ConnId(9),
+            &Call::SessionQuit(marion_proto::params::SessionQuitParams { disposition }),
+            &out,
+        )? {
+            MethodResult::SessionQuit(r) => Ok(r),
+            other => panic!("wrong result: {}", other.method().as_str()),
+        }
+    }
+
+    fn journal_tags(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value["kind"]
+                    .as_object()
+                    .and_then(|o| o.keys().next())
+                    .cloned()
+                    .unwrap_or_else(|| value["kind"].as_str().unwrap_or("unknown").to_string())
+            })
+            .collect()
     }
 
     /// A pair of `Outbound`s is only obtainable from a live connection, so the subscription tests
@@ -913,6 +1385,400 @@ mod tests {
             w.fx.handle.live.read(|r| r.tree().nodes().len()),
             before,
             "§7.3.1: from the registry's point of view nothing happened"
+        );
+    }
+
+    /// **NC — disposition (b) changes no node and cannot end the supervisor.**
+    ///
+    /// The journal bytes are the authority on the first half: comparing a summary before and after
+    /// could miss an appended record that happens not to project into state. The second call on the
+    /// same socket is the authority on the second half: a `Resident` word in a response is not proof
+    /// that the server actually remained resident.
+    #[test]
+    fn detach_all_leaves_the_journal_and_node_untouched_and_the_supervisor_serving() {
+        let fx = fx("handler-quit-detach");
+        let before = std::fs::read(&fx.path).unwrap();
+        let state = fx
+            .handle
+            .live
+            .read(|r| r.tree().get(&id("root")).unwrap().state);
+        let out = crate::serve::sink(ConnId(1));
+
+        let result = fx
+            .handle
+            .call(
+                ConnId(1),
+                &Call::SessionQuit(marion_proto::params::SessionQuitParams {
+                    disposition: marion_proto::QuitDisposition::DetachAll,
+                }),
+                &out,
+            )
+            .expect("detach is implemented, not refused");
+        let MethodResult::SessionQuit(result) = result else {
+            panic!("wrong result type")
+        };
+        let marion_proto::QuitOutcome::Detached {
+            detached,
+            gate_exposed,
+            guidance,
+            supervisor,
+        } = result.outcome
+        else {
+            panic!("detach returned another disposition's outcome")
+        };
+        assert_eq!(detached, [id("root")]);
+        assert_eq!(gate_exposed, [id("root")]);
+        assert!(guidance.reattach.contains("tree/subscribe"));
+        assert!(guidance.stop_fleet.contains("session/quit"));
+        assert!(guidance.reattach.contains("denied unattended"));
+        assert!(guidance.reattach.contains("is_error:true"));
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::SpawnOutstanding
+            )
+        );
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+        assert_eq!(
+            fx.handle
+                .live
+                .read(|tree| tree.tree().get(&id("root")).unwrap().state),
+            state
+        );
+
+        assert!(matches!(
+            fx.handle.call(
+                ConnId(1),
+                &Call::NodeGet(marion_proto::params::NodeGetParams {
+                    agent_id: id("root")
+                }),
+                &out,
+            ),
+            Ok(MethodResult::NodeGet(_))
+        ));
+        assert!(!fx.handle.exiting());
+        assert!(!fx.handle.idle_exit_eligible());
+    }
+
+    /// **NC — disposition (a) is unreachable when the confirmation is not the live render.**
+    ///
+    /// The empty runtime trace is the negative control: checking only for a refusal could pass
+    /// after a buggy implementation signalled first and noticed the mismatch second. It and the
+    /// byte-identical journal prove the refusal preceded every side effect.
+    #[test]
+    fn kill_tree_refuses_a_missing_or_stale_confirmed_list_before_signalling_anything() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-kill-unconfirmed",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", 101),
+                state("root", NodeState::Running),
+            ],
+        );
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let error = quit(
+            &fx,
+            marion_proto::QuitDisposition::KillTree { confirmed: vec![] },
+        )
+        .expect_err("an empty render did not confirm a live root");
+        assert_eq!(error.kind(), Some(FailureKind::Refused));
+        assert!(error.message.contains("confirmed"), "{error}");
+        assert!(
+            runtime.killed().is_empty(),
+            "the mismatch was checked after signalling"
+        );
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// Disposition (a), positively: every live node is killed through its own recorded PID, its
+    /// prior activity is returned, each intent precedes its confirmation, and only then is the
+    /// supervisor exit recorded. Two distinct recorded PIDs make a one-node or one-group
+    /// implementation visible in the runtime trace.
+    #[test]
+    fn kill_tree_kills_each_non_terminal_node_and_journals_each_pair_before_exit() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-kill",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", 101),
+                state("root", NodeState::Running),
+                intent("child", Some("root"), "codex-impl", 1),
+                spawned("child", 202),
+                state("child", NodeState::Blocked(BlockReason::Permission)),
+                intent("done", Some("root"), "codex-impl", 1),
+                RecordKind::Exited(Exited {
+                    agent_id: id("done"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "already done".into(),
+                    },
+                }),
+            ],
+        );
+
+        let disposition = marion_proto::QuitDisposition::KillTree {
+            confirmed: vec![id("child"), id("root")],
+        };
+        fx.handle.connected(ConnId(9));
+        let result = quit(&fx, disposition.clone()).expect("the exact set was confirmed");
+        let marion_proto::QuitOutcome::Killed { nodes, supervisor } = result.outcome else {
+            panic!("kill returned another disposition's outcome")
+        };
+        assert_eq!(
+            nodes,
+            [
+                marion_proto::KilledNode {
+                    agent_id: id("root"),
+                    was: NodeState::Running,
+                },
+                marion_proto::KilledNode {
+                    agent_id: id("child"),
+                    was: NodeState::Blocked(BlockReason::Permission),
+                },
+            ]
+        );
+        assert_eq!(supervisor, marion_proto::SupervisorDisposition::Exiting);
+        assert_eq!(runtime.killed(), [101, 202], "one operation per live node");
+        let mut tags = journal_tags(&fx.path);
+        assert_eq!(
+            &tags[8..],
+            ["KillIntent", "KillConfirmed", "KillIntent", "KillConfirmed",],
+            "one intent/act/confirm pair per node"
+        );
+        assert!(
+            !fx.handle.begin_idle_exit(),
+            "§5.7 forbids the exit record while even the quitting client remains"
+        );
+        fx.handle.gone(
+            ConnId(9),
+            &ClientGone::Quit(disposition),
+            &Departure::QuitCompleted,
+        );
+        assert!(
+            fx.handle.begin_idle_exit(),
+            "after the configured grace, zero clients and zero non-terminals permit exit"
+        );
+        tags = journal_tags(&fx.path);
+        assert_eq!(tags.last().unwrap(), "SupervisorExited");
+        assert!(fx.handle.exiting());
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        assert_eq!(
+            replay.get(&id("root")).unwrap().state,
+            NodeState::Exited(ExitStatus::Cancelled)
+        );
+        assert_eq!(
+            replay.get(&id("child")).unwrap().state,
+            NodeState::Exited(ExitStatus::Cancelled)
+        );
+        assert_eq!(
+            replay.get(&id("done")).unwrap().state,
+            NodeState::Exited(ExitStatus::Ok),
+            "quitting does not rewrite an existing terminal"
+        );
+    }
+
+    /// **NC — disposition (c) applies §7.2's predicate, not a convenient approximation.**
+    ///
+    /// Idle processes die and get exactly one reap pair. Running, every `Blocked(_)`, and a
+    /// spawning node survive untouched and are returned with detach guidance; an already-terminal
+    /// node appears in neither list. The exact runtime trace is the mutation control against an
+    /// implementation that simply sweeps every PID it can see.
+    #[test]
+    fn reap_idle_detach_busy_reaps_only_idle_and_detaches_every_refusal_class() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-reap",
+            vec![
+                intent("idle", None, "claude", 0),
+                spawned("idle", 11),
+                state("idle", NodeState::Idle),
+                intent("running", Some("idle"), "codex-impl", 1),
+                spawned("running", 22),
+                state("running", NodeState::Running),
+                intent("permission", Some("idle"), "codex-impl", 1),
+                spawned("permission", 33),
+                state("permission", NodeState::Blocked(BlockReason::Permission)),
+                intent("elicitation", Some("idle"), "codex-impl", 1),
+                spawned("elicitation", 44),
+                state("elicitation", NodeState::Blocked(BlockReason::Elicitation)),
+                intent("descendants", Some("idle"), "codex-impl", 1),
+                spawned("descendants", 55),
+                state("descendants", NodeState::Blocked(BlockReason::Descendants)),
+                intent("waiting-parent", None, "claude", 0),
+                spawned("waiting-parent", 66),
+                state(
+                    "waiting-parent",
+                    NodeState::Blocked(BlockReason::Descendants),
+                ),
+                intent("idle-spawn-target", Some("waiting-parent"), "codex-impl", 1),
+                spawned("idle-spawn-target", 77),
+                state("idle-spawn-target", NodeState::Idle),
+                intent("spawning", Some("idle"), "codex-impl", 1),
+                intent("done", Some("idle"), "codex-impl", 1),
+                RecordKind::Exited(Exited {
+                    agent_id: id("done"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "already done".into(),
+                    },
+                }),
+            ],
+        );
+
+        let result = quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+            .expect("the default disposition is implemented");
+        let marion_proto::QuitOutcome::ReapedAndDetached {
+            reaped,
+            detached,
+            gate_exposed,
+            guidance,
+            supervisor,
+        } = result.outcome
+        else {
+            panic!("reap returned another disposition's outcome")
+        };
+        assert_eq!(reaped, [id("idle")]);
+        assert_eq!(
+            detached,
+            [
+                id("running"),
+                id("permission"),
+                id("elicitation"),
+                id("descendants"),
+                id("waiting-parent"),
+                id("idle-spawn-target"),
+                id("spawning"),
+            ]
+        );
+        assert_eq!(gate_exposed, detached);
+        assert!(guidance.reattach.contains("tree/subscribe"));
+        assert!(guidance.reattach.contains("reaped"));
+        assert!(guidance.reattach.contains("resumable"));
+        assert!(guidance.stop_fleet.contains("session/quit"));
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::BlockedNode
+            )
+        );
+        assert!(!fx.handle.idle_exit_eligible());
+        assert_eq!(runtime.killed(), [11], "§7.2 refusal classes were detached");
+        let tags = journal_tags(&fx.path);
+        assert_eq!(&tags[24..], ["ReapIntent", "ReapConfirmed"]);
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        assert_eq!(
+            replay.get(&id("idle")).unwrap().reap_state,
+            ReapState::ReapedIdle
+        );
+        for agent in [
+            "running",
+            "permission",
+            "elicitation",
+            "descendants",
+            "waiting-parent",
+            "idle-spawn-target",
+            "spawning",
+        ] {
+            let node = replay.get(&id(agent)).unwrap();
+            assert_eq!(node.reap_state, ReapState::Live, "{agent}");
+            assert!(node.reap_intent.is_none(), "{agent}");
+        }
+    }
+
+    /// `ReapedIdle` is resumable and therefore not `Exited(_)`. §5.7's zero-non-terminal rule is
+    /// literal: reaping the last process does not permit the supervisor to journal an exit while
+    /// that resumable node remains in the registry.
+    #[test]
+    fn a_reaped_idle_node_still_keeps_the_supervisor_resident() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-reaped-resident",
+            vec![
+                intent("idle", None, "claude", 0),
+                spawned("idle", 88),
+                state("idle", NodeState::Idle),
+            ],
+        );
+        let outcome = quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+            .unwrap()
+            .outcome;
+        let marion_proto::QuitOutcome::ReapedAndDetached { supervisor, .. } = outcome else {
+            panic!("wrong disposition outcome")
+        };
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::NonTerminalNode
+            )
+        );
+        assert_eq!(runtime.killed(), [88]);
+        assert!(!fx.handle.idle_exit_eligible());
+        assert!(
+            journal_tags(&fx.path)
+                .iter()
+                .all(|tag| tag != "SupervisorExited")
+        );
+    }
+
+    #[test]
+    fn an_unconfirmed_reap_intent_forbids_the_supervisor_exit_record() {
+        let fx = fx_with(
+            "handler-quit-unconfirmed-reap",
+            vec![
+                intent("idle", None, "claude", 0),
+                state("idle", NodeState::Idle),
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("idle"),
+                    reason: "a prior supervisor decided to reap".into(),
+                }),
+            ],
+        );
+        let outcome = quit(&fx, marion_proto::QuitDisposition::DetachAll)
+            .unwrap()
+            .outcome;
+        let marion_proto::QuitOutcome::Detached { supervisor, .. } = outcome else {
+            panic!("wrong disposition outcome")
+        };
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::UnconfirmedReapIntent
+            )
+        );
+        assert!(!fx.handle.idle_exit_eligible());
+        assert!(
+            journal_tags(&fx.path)
+                .iter()
+                .all(|tag| tag != "SupervisorExited")
+        );
+    }
+
+    /// **NC — EOF has no default disposition.** An idle node is the sharp control because the
+    /// explicit default would reap it; `gone(SocketClosed)` must leave both its runtime trace and
+    /// every journal byte alone.
+    #[test]
+    fn a_dropped_socket_is_not_any_quit_disposition_and_does_not_apply_the_default() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-eof",
+            vec![
+                intent("idle", None, "claude", 0),
+                spawned("idle", 77),
+                state("idle", NodeState::Idle),
+            ],
+        );
+        let before = std::fs::read(&fx.path).unwrap();
+        fx.handle
+            .gone(ConnId(44), &ClientGone::SocketClosed, &Departure::Eof);
+        assert!(runtime.killed().is_empty());
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+        assert_eq!(
+            fx.handle
+                .live
+                .read(|r| r.tree().get(&id("idle")).unwrap().reap_state),
+            ReapState::Live
         );
     }
 

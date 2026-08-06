@@ -391,6 +391,41 @@ pub(crate) fn kill_process_tree(child_pid: i32) {
     }
 }
 
+/// Apply §6.7's two-step kill and wait until the addressed process is absent or a zombie.
+///
+/// The journal's confirmation means *observed dead*, not merely "SIGKILL was sent". A zombie is
+/// dead for that purpose — it can run no code and its parent alone owns the remaining wait record
+/// — while `kill(pid, 0)` would misclassify it as alive. `ps` supplies that distinction. The bound
+/// is a safety refusal, not a grace period: SIGKILL has no graceful leg, and a caller that cannot
+/// observe death leaves its already-durable intent unconfirmed for §7.2-style recovery.
+pub(crate) fn kill_process_tree_and_wait(child_pid: i32) -> bool {
+    kill_process_tree(child_pid);
+    let deadline = Instant::now() + StdDuration::from_secs(5);
+    while Instant::now() < deadline {
+        let observation = SysCommand::new("ps")
+            .args(["-o", "stat=", "-p", &child_pid.to_string()])
+            .output();
+        match observation {
+            Ok(output) => {
+                let state = String::from_utf8_lossy(&output.stdout);
+                let state = state.trim();
+                if state.starts_with('Z') {
+                    return true;
+                }
+                if state.is_empty() && output.stderr.is_empty() {
+                    return true;
+                }
+                std::thread::yield_now();
+            }
+            // Failing to observe is not observing death. In particular, treating an unavailable
+            // `ps` as an absent PID would append the confirmation whose claim this loop exists to
+            // earn.
+            Err(_) => std::thread::yield_now(),
+        }
+    }
+    false
+}
+
 /// Run `command` to completion or to `timeout`, whichever comes first, killing its whole
 /// descendant tree on expiry. Public because the end-to-end test bounds a real `marion run` with
 /// it: a test that leaked a `claude`, a `codex` and their tool-call grandchildren would be the

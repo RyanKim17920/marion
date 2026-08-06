@@ -195,10 +195,13 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::Exited(_) => "Exited",
             RecordKind::ReapIntent(_) => "ReapIntent",
             RecordKind::ReapConfirmed(_) => "ReapConfirmed",
+            RecordKind::KillIntent(_) => "KillIntent",
+            RecordKind::KillConfirmed(_) => "KillConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
+            RecordKind::SupervisorExited(_) => "SupervisorExited",
         })
         .collect()
 }

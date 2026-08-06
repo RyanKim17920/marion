@@ -53,18 +53,27 @@
 //!
 //! This module records exactly that evidence and nothing else: a `session/quit` frame that *parses*
 //! sets the connection's stated disposition, and every other departure yields
-//! [`marion_proto::ClientGone::SocketClosed`]. The recording is deliberately independent of what the
-//! handler answers — the client said what it wanted whether or not marion could do it — and §7.3.2's
-//! three dispositions are **not** implemented here, so today the handler refuses the call while the
-//! transport still tells the truth about what was asked. That split is what makes the distinction
-//! testable now rather than after the dispositions land.
+//! [`marion_proto::ClientGone::SocketClosed`]. The recording is deliberately independent of what
+//! the handler answers — the client said what it wanted whether or not marion could do it. Only a
+//! **successful** quit response closes that connection; a refused stale kill confirmation stays
+//! open so the operator can render and retry. The handler performs dispositions during the call,
+//! never from [`Handle::gone`], so EOF has no route to the default or to any other policy.
+//!
+//! # Exit is zero clients, then grace, then a record
+//!
+//! A handled quit makes exit eligible; it does not let the handler pretend the response socket has
+//! already vanished. The accept loop owns the client count, resets its idle clock whenever any
+//! client exists, and calls [`Handle::begin_idle_exit`] only after [`DEFAULT_IDLE_GRACE`] (or the
+//! configured replacement). The callback journals the ordinary exit record before `exiting`
+//! becomes true. Reversing those steps recreates the §5.7 ambiguity between *finished and left*
+//! and *died*.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use marion_proto::notify::Event;
 use marion_proto::{
@@ -101,6 +110,10 @@ pub const OUTBOUND_CAPACITY: usize = 1024;
 /// machinery than a sleep, and both of which can fail in ways a sleep cannot.
 const ACCEPT_POLL: Duration = Duration::from_millis(5);
 
+/// §5.7's proposed, explicitly unmeasured idle grace. Public because a supervisor launcher may
+/// configure it; `Server::start` uses it rather than making zero the accidental default.
+pub const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(300);
+
 /// How long a connection's writer waits on its queue before re-checking whether the connection has
 /// departed. See the writer loop for why it cannot simply wait for the channel to close.
 const WRITER_POLL: Duration = Duration::from_millis(20);
@@ -134,6 +147,10 @@ pub enum Departure {
     ReadFailed(String),
     /// The write failed — the peer went away mid-answer, or the socket broke.
     WriteFailed(String),
+    /// A `session/quit` completed and its response was queued, so marion closed this connection on
+    /// purpose. Not `Eof`: the peer did not vanish, and calling it that would erase the voluntary
+    /// half of §7.3 at the transport layer immediately after preserving it at the protocol layer.
+    QuitCompleted,
     /// [`Server::stop`] ended it, not the client. Named so a shutdown is never mistaken for a
     /// fleet of clients crashing at once.
     ServerStopping,
@@ -144,6 +161,10 @@ pub enum Departure {
 /// One method per shape, and both take a [`ConnId`], because a subscription is per connection: the
 /// same supervisor answers `tree/subscribe` on four sockets and must be able to tell them apart.
 pub trait Handle: Send + Sync + 'static {
+    /// A client was accepted. Separate from its first call: a silent connected client still counts
+    /// against §5.7's absolute zero-client exit predicate.
+    fn connected(&self, _conn: ConnId) {}
+
     /// Answer one call.
     ///
     /// `out` is this connection's notification channel. A handler that wants to *subscribe* the
@@ -157,6 +178,25 @@ pub trait Handle: Send + Sync + 'static {
     /// A connection ended. Both readings are supplied: §7.3.1's, which is what may act on nodes,
     /// and the transport's, which is what can be reported.
     fn gone(&self, conn: ConnId, gone: &ClientGone, why: &Departure);
+
+    /// Whether an explicit, fully handled `session/quit` has journaled the supervisor's exit.
+    /// False by default so a handler that knows nothing about lifecycle can never acquire an
+    /// implicit disposition merely by implementing transport.
+    fn exiting(&self) -> bool {
+        false
+    }
+
+    /// All non-client §5.7 predicates are clear and an explicit quit made exit relevant.
+    fn idle_exit_eligible(&self) -> bool {
+        false
+    }
+
+    /// Journal the exit and commit to stopping, after the server observed zero clients for its
+    /// configured grace. False leaves the server resident; an exit record that could not be made
+    /// durable must never be followed by the process disappearing cleanly.
+    fn begin_idle_exit(&self) -> bool {
+        false
+    }
 }
 
 /// One connection's outbound half: a bounded queue drained by that connection's writer thread.
@@ -217,6 +257,16 @@ impl Outbound {
         if slot.is_none() {
             *slot = Some(why);
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn sink(conn: ConnId) -> Outbound {
+    let (tx, _rx) = sync_channel(OUTBOUND_CAPACITY);
+    Outbound {
+        conn,
+        tx,
+        departed: Arc::new(Mutex::new(None)),
     }
 }
 
@@ -313,12 +363,22 @@ impl Server {
     /// Start accepting. Returns as soon as the loop is running; the loop outlives this call and is
     /// ended by [`Self::stop`] or by dropping the returned value.
     pub fn start(serving: Serving, handle: Arc<dyn Handle>) -> Server {
+        Self::start_with_idle_grace(serving, handle, DEFAULT_IDLE_GRACE)
+    }
+
+    /// Start with an explicit §5.7 idle grace. This is the configuration seam; tests may choose
+    /// zero to assert ordering without sleeping, while production's default remains 300 seconds.
+    pub fn start_with_idle_grace(
+        serving: Serving,
+        handle: Arc<dyn Handle>,
+        idle_grace: Duration,
+    ) -> Server {
         let stop = Arc::new(AtomicBool::new(false));
         let conns: Conns = Arc::new(Mutex::new(HashMap::new()));
         let accept = {
             let stop = Arc::clone(&stop);
             let conns = Arc::clone(&conns);
-            std::thread::spawn(move || accept_loop(serving, handle, stop, conns))
+            std::thread::spawn(move || accept_loop(serving, handle, stop, conns, idle_grace))
         };
         Server {
             stop,
@@ -354,14 +414,30 @@ impl Drop for Server {
     }
 }
 
-fn accept_loop(serving: Serving, handle: Arc<dyn Handle>, stop: Arc<AtomicBool>, conns: Conns) {
+fn accept_loop(
+    serving: Serving,
+    handle: Arc<dyn Handle>,
+    stop: Arc<AtomicBool>,
+    conns: Conns,
+    idle_grace: Duration,
+) {
     let next = AtomicU64::new(1);
+    let mut idle_since: Option<Instant> = None;
     if serving.listener().set_nonblocking(true).is_err() {
         // Nothing else can be done from here and going quiet is the one forbidden option, so the
         // loop still runs: a blocking accept simply makes shutdown wait for a connection.
     }
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
-    while !stop.load(Ordering::SeqCst) {
+    while !stop.load(Ordering::SeqCst) && !handle.exiting() {
+        let no_clients = lock(&conns).is_empty();
+        if no_clients && handle.idle_exit_eligible() {
+            let since = idle_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= idle_grace && handle.begin_idle_exit() {
+                break;
+            }
+        } else {
+            idle_since = None;
+        }
         match serving.listener().accept() {
             Ok((stream, _)) => {
                 let id = ConnId(next.fetch_add(1, Ordering::SeqCst));
@@ -369,6 +445,7 @@ fn accept_loop(serving: Serving, handle: Arc<dyn Handle>, stop: Arc<AtomicBool>,
                 if let Ok(dup) = stream.try_clone() {
                     lock(&conns).insert(id, dup);
                 }
+                handle.connected(id);
                 let handle = Arc::clone(&handle);
                 let conns = Arc::clone(&conns);
                 let stopping = Arc::clone(&stop);
@@ -384,6 +461,9 @@ fn accept_loop(serving: Serving, handle: Arc<dyn Handle>, stop: Arc<AtomicBool>,
             Err(_) => std::thread::sleep(ACCEPT_POLL),
         }
         threads.retain(|t| !t.is_finished());
+    }
+    for (_, stream) in lock(&conns).iter() {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
     }
     for t in threads {
         let _ = t.join();
@@ -456,8 +536,13 @@ fn serve_conn(
             Err(LineError::NotUtf8) => break Departure::NotUtf8,
             Err(LineError::Io(e)) => break Departure::ReadFailed(e),
             Ok(Some(line)) => {
-                if let Some(answer) = answer_one(id, &line, &handle, &out, &mut stated) {
+                if let Some((answer, quit_completed)) =
+                    answer_one(id, &line, &handle, &out, &mut stated)
+                {
                     out.send(&Frame::Response(answer));
+                    if quit_completed {
+                        break Departure::QuitCompleted;
+                    }
                 }
             }
         }
@@ -491,7 +576,7 @@ fn answer_one(
     handle: &Arc<dyn Handle>,
     out: &Outbound,
     stated: &mut Option<QuitDisposition>,
-) -> Option<Response> {
+) -> Option<(Response, bool)> {
     match Frame::from_line(line) {
         Ok(Frame::Request(Request { id: rid, call, .. })) => {
             if let Call::SessionQuit(p) = &call {
@@ -500,35 +585,43 @@ fn answer_one(
             let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 handle.call(id, &call, out)
             }));
-            Some(match answered {
-                Ok(Ok(result)) => Response::ok(rid, &result),
-                Ok(Err(e)) => Response::err(rid, e),
-                Err(_) => Response::err(
-                    rid,
-                    RpcError::internal(
-                        "the supervisor's handler panicked answering this call; the call did not \
+            let quit_completed =
+                matches!(call, Call::SessionQuit(_)) && matches!(&answered, Ok(Ok(_)));
+            Some((
+                match answered {
+                    Ok(Ok(result)) => Response::ok(rid, &result),
+                    Ok(Err(e)) => Response::err(rid, e),
+                    Err(_) => Response::err(
+                        rid,
+                        RpcError::internal(
+                            "the supervisor's handler panicked answering this call; the call did not \
                          complete and nothing about any node changed. The connection is still \
                          open, because a client that can end the supervisor by sending a request \
                          is a client that can end the fleet (§5.7).",
+                        ),
                     ),
-                ),
-            })
+                },
+                quit_completed,
+            ))
         }
         // A client sending a *response* or a *notification* is a protocol error: §2's traffic is
         // client→supervisor requests and supervisor→client notifications, and nothing else. A
         // response at least carries an id, so the confusion can be named back to its sender.
-        Ok(Frame::Response(r)) => Some(Response::err(
-            r.id,
-            RpcError::invalid_request(
-                "this is a response, and the supervisor sends no requests for a client to answer \
+        Ok(Frame::Response(r)) => Some((
+            Response::err(
+                r.id,
+                RpcError::invalid_request(
+                    "this is a response, and the supervisor sends no requests for a client to answer \
                  (§2). Nothing was done with it.",
+                ),
             ),
+            false,
         )),
         Ok(Frame::Notification(n)) => {
             let _ = n;
             None
         }
-        Err(e) => recover_id(line).map(|rid| Response::err(rid, e)),
+        Err(e) => recover_id(line).map(|rid| (Response::err(rid, e), false)),
     }
 }
 
@@ -587,6 +680,11 @@ mod tests {
             v.push(line);
         }
         v
+    }
+
+    #[test]
+    fn the_default_idle_grace_is_section_5_7s_configurable_five_minutes() {
+        assert_eq!(DEFAULT_IDLE_GRACE, Duration::from_secs(300));
     }
 
     /// **NC — a torn frame is read once, when it completes: not twice, and not never.**
@@ -706,6 +804,7 @@ mod tests {
         gone: Mutex<Vec<(ConnId, ClientGone, Departure)>>,
         subs: Mutex<Vec<Outbound>>,
         panic_on: Mutex<Option<Method>>,
+        quit_ok: AtomicBool,
     }
 
     fn a_node() -> NodeSummary {
@@ -745,6 +844,21 @@ mod tests {
                         },
                     }))
                 }
+                Call::SessionQuit(_) if self.quit_ok.load(Ordering::SeqCst) => Ok(
+                    MethodResult::SessionQuit(marion_proto::result::SessionQuitResult {
+                        outcome: marion_proto::QuitOutcome::Detached {
+                            detached: vec![AgentId("a".into())],
+                            gate_exposed: vec![AgentId("a".into())],
+                            guidance: marion_proto::DetachGuidance {
+                                reattach: "call tree/subscribe".into(),
+                                stop_fleet: "call session/quit KillTree".into(),
+                            },
+                            supervisor: marion_proto::SupervisorDisposition::Resident(
+                                marion_proto::ResidentReason::NonTerminalNode,
+                            ),
+                        },
+                    }),
+                ),
                 other => Err(RpcError::unimplemented(
                     other.method().as_str(),
                     "this fixture answers node/get and tree/subscribe only",
@@ -835,6 +949,35 @@ mod tests {
         Call::NodeGet(marion_proto::params::NodeGetParams {
             agent_id: AgentId(agent.into()),
         })
+    }
+
+    #[test]
+    fn a_successful_quit_marks_its_connection_complete_only_after_building_the_response() {
+        let rec = Arc::new(Recorder::default());
+        rec.quit_ok.store(true, Ordering::SeqCst);
+        let handle = Arc::clone(&rec) as Arc<dyn Handle>;
+        let out = sink(ConnId(1));
+        let request = Frame::Request(Request::new(
+            RequestId::Number(1),
+            Call::SessionQuit(marion_proto::params::SessionQuitParams {
+                disposition: QuitDisposition::DetachAll,
+            }),
+        ));
+        let mut stated = None;
+        let (response, completed) = answer_one(
+            ConnId(1),
+            request.to_line().trim_end(),
+            &handle,
+            &out,
+            &mut stated,
+        )
+        .expect("a request has a correlated response");
+        assert!(
+            completed,
+            "only a successful quit closes after its response"
+        );
+        assert!(matches!(response.outcome, marion_proto::Outcome::Result(_)));
+        assert_eq!(stated, Some(QuitDisposition::DetachAll));
     }
 
     /// The request/response shape, end to end over the real socket: a call goes out, its answer
@@ -994,6 +1137,64 @@ mod tests {
         for (_, _, why) in &gone {
             assert_eq!(*why, Departure::Eof, "identical from the socket's side");
         }
+    }
+
+    /// A successful detach ends **that client connection** with its result already delivered and
+    /// leaves the same transport/handler able to serve another client. This is disposition (b)'s
+    /// transport negative control: returning `Resident` in JSON is not proof if the connection
+    /// path commits the supervisor to exiting anyway. `socketpair` keeps the assertion at the
+    /// transport seam without making it depend on the host permitting a filesystem socket bind.
+    #[test]
+    fn a_successful_detach_closes_only_its_client_and_leaves_the_supervisor_serving() {
+        let rec = Arc::new(Recorder::default());
+        rec.quit_ok.store(true, Ordering::SeqCst);
+        let handle = Arc::clone(&rec) as Arc<dyn Handle>;
+        let stopping = Arc::new(AtomicBool::new(false));
+
+        let (mut quitter, server_half) = UnixStream::pair().unwrap();
+        let first = {
+            let handle = Arc::clone(&handle);
+            let stopping = Arc::clone(&stopping);
+            std::thread::spawn(move || serve_conn(ConnId(1), server_half, handle, &stopping))
+        };
+        let mut qr = std::io::BufReader::new(quitter.try_clone().unwrap());
+        send(
+            &mut quitter,
+            Call::SessionQuit(marion_proto::params::SessionQuitParams {
+                disposition: QuitDisposition::DetachAll,
+            }),
+            1,
+        );
+        let Frame::Response(response) = read_frame(&mut qr) else {
+            panic!("quit answers before closing")
+        };
+        assert!(matches!(response.outcome, marion_proto::Outcome::Result(_)));
+        let mut eof = String::new();
+        assert_eq!(qr.read_line(&mut eof).unwrap(), 0, "successful quit closes");
+        first.join().unwrap();
+        assert!(matches!(
+            &lock(&rec.gone)[0],
+            (
+                _,
+                ClientGone::Quit(QuitDisposition::DetachAll),
+                Departure::QuitCompleted
+            )
+        ));
+
+        let (mut next, server_half) = UnixStream::pair().unwrap();
+        let second = {
+            let stopping = Arc::clone(&stopping);
+            std::thread::spawn(move || serve_conn(ConnId(2), server_half, handle, &stopping))
+        };
+        let mut nr = std::io::BufReader::new(next.try_clone().unwrap());
+        send(&mut next, node_get("a"), 2);
+        let Frame::Response(response) = read_frame(&mut nr) else {
+            panic!("detach ended the supervisor")
+        };
+        assert_eq!(response.id, RequestId::Number(2));
+        drop(nr);
+        drop(next);
+        second.join().unwrap();
     }
 
     /// **NC — a client that stops reading is disconnected, not obeyed.**
