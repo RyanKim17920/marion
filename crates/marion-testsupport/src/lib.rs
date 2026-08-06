@@ -77,6 +77,60 @@ pub fn alive(pid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
 }
 
+/// What `ps` says about one pid, in the four readings that are genuinely different.
+///
+/// [`alive`] answers a different question and keeps its own implementation on purpose: it is a
+/// *poll for a death*, where "not yet gone" is the whole answer and a zombie counts as not gone.
+/// A test that asserts a recorded pid **names a running process** cannot use that reading, because
+/// a zombie satisfies `kill(pid, 0)` while being a process that can never run another instruction.
+/// Those are two different claims and collapsing them is how a leak check passes over a corpse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    /// The kernel has this pid and it is not a zombie: it can still run code.
+    Alive,
+    /// Signalled and gone, but not yet reaped by its parent. Dead for every purpose except the
+    /// parent's outstanding `wait`, and `kill(pid, 0)` cannot tell it from [`Liveness::Alive`].
+    Zombie,
+    /// No such pid.
+    Gone,
+    /// `ps` could not be asked, or answered in a way this cannot read. **Never folded into
+    /// `Gone`** — S15's rule, and this repo's documented history of reading a failure to observe
+    /// as an observation of absence. A caller asserting liveness must fail on this, not pass.
+    CannotTell,
+}
+
+/// Three-valued liveness for one pid — plus the zombie, which is the fourth reading that matters.
+///
+/// `ps -o stat=` rather than `kill(pid, 0)`, for the reason on [`Liveness::Zombie`]. This is the
+/// Rust home of spike S15's `procid.liveness`, and `run.rs`'s `kill_process_tree_and_wait` makes
+/// the same `Z`-versus-empty distinction inline while waiting for a death it caused; a test that
+/// needs the classification rather than the wait reads it from here instead of growing a copy.
+///
+/// An empty `stat` with empty stderr is the only reading taken as [`Liveness::Gone`]: `ps` prints
+/// nothing *and complains* about a pid it cannot look at, so requiring both is what keeps a
+/// permissions failure from being reported as a death.
+pub fn liveness(pid: i32) -> Liveness {
+    let Ok(out) = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+    else {
+        return Liveness::CannotTell;
+    };
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    if state.starts_with('Z') {
+        return Liveness::Zombie;
+    }
+    if !state.is_empty() {
+        return Liveness::Alive;
+    }
+    if out.stderr.is_empty() {
+        Liveness::Gone
+    } else {
+        Liveness::CannotTell
+    }
+}
+
 /// Kill a leaked process outright, ignoring the result.
 ///
 /// The result is ignored on purpose and in one place, so no call site has to decide: by the time a
