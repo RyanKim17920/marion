@@ -148,11 +148,18 @@ pub struct Caller {
     /// `agent_type` are, and §6.1 step 2 reads all three off the same node. Living here also means
     /// [`Caller::root`] answers it once for every test and call site that does not background.
     ///
-    /// The count's source is the bridge's own [`crate::background::Background`], not the journal:
-    /// every child of a node is spawned through **that node's own bridge instance**, so the
-    /// bridge's table is the complete set by construction rather than by a read that could be
-    /// stale. A journal read would additionally be wrong in the dangerous direction — it cannot
-    /// see a child that has been started and not yet journaled `Spawned`.
+    /// **The count has two sources, and which one is right depends on who owns the node.** The
+    /// argument that used to sit here — that the bridge's own [`crate::background::Background`] is
+    /// the complete set by construction, and that a journal read cannot see a child started but
+    /// not yet journaled `Spawned` — was true and its second half is now false. §11 item 28 step 1
+    /// journals `SpawnIntent` before every side effect, so a child is in the journal from the first
+    /// instant it exists. `background.rs`'s module docs carry the whole inversion.
+    ///
+    /// A caller reached through a **bridge** still fills this from that bridge's table, because
+    /// that process follows no journal. A caller reached through the **supervisor's**
+    /// `agent/spawn` fills it from the registry (`handler::RegistryHandle::live_children_of`),
+    /// which is exact, survives a restart, and can see a sibling this caller's own bridge never
+    /// started.
     pub live_children: u32,
 }
 

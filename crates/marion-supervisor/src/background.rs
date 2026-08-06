@@ -73,16 +73,34 @@
 //! right for the clients marion controls is worth having even when it is unreachable from the one
 //! it does not.
 //!
-//! # The one thing this table is authoritative about
+//! # What this table used to be authoritative about, and why it no longer is
 //!
-//! **Every child of a node is spawned through that node's own bridge instance**, so this table is
-//! the complete set of that node's children by construction. That is what makes
-//! [`Background::live_children`] a sound input to §6.1 step 2's concurrency gate without a journal
-//! read — and a journal read would be wrong in the dangerous direction anyway, since `Spawned` is
-//! journaled only once marion has *observed* a process (`run.rs`), so a child between "thread
-//! started" and "process observed" is invisible to it. A gate that cannot see a child it is
-//! supposed to be counting is the S7 lesson restated: a check which cannot see a survivor is worse
-//! than none.
+//! This section used to argue that [`Background::live_children`] was a *sound* input to §6.1 step
+//! 2's concurrency gate, on two grounds: every child of a node is spawned through that node's own
+//! bridge instance, so the table is that node's complete child set **by construction**; and a
+//! journal read would be wrong in the dangerous direction anyway, since `Spawned` was journaled
+//! only once marion had observed a process — which, `spawn` being synchronous, meant after the
+//! child had *finished*. A child between "thread started" and "process observed" was invisible to
+//! the journal, and a gate that cannot see a child it is supposed to count is the S7 lesson
+//! restated.
+//!
+//! **§11 item 28 step 1 inverted the second half, and the first half was always narrower than it
+//! read.** `run_spawn` now journals `SpawnIntent` before every side effect and `Spawned` between
+//! `command.spawn()` and the child's first byte of stdin, so a child is in the journal from the
+//! first instant it exists at all — earlier than it is in this table, not later. The blind window
+//! the argument turned on is gone, and it has moved to the other side: **a journal read is now
+//! exact where this table is merely local.** This table is per bridge *process*; it is empty after
+//! a restart, it cannot see a sibling started through another bridge, and §5.4 permits `wait` on
+//! descendants it has never heard of ([`Wait::Unknown`] says so).
+//!
+//! So `handler::RegistryHandle::live_children_of` counts the caller's non-terminal children out of
+//! the registry, and that is the count the supervisor's own `agent/spawn` gates on. **This table
+//! stays and stays correct for what it is**: the set of children *this bridge process* started and
+//! has not yet handed back, which is what a `wait` resolves against and what `join_all` holds the
+//! process open for. It remains the gate's input on the bridge path only because that path has no
+//! registry to read — the bridge is a short-lived process the harness started, not a follower of
+//! the journal — and §11 item 28 step 5 is what removes the last caller by making the bridge dial
+//! the supervisor instead of spawning.
 //!
 //! # Why a channel and a deadline, rather than a bare `JoinHandle`
 //!
