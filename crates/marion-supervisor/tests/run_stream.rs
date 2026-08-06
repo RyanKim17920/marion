@@ -416,4 +416,34 @@ fn a_journal_that_goes_bad_mid_run_costs_the_view_and_not_the_run() {
         1,
         "said once, not once per poll:\n{stderr}"
     );
+
+    // **This test strands a supervisor, and it is this test's job to reap it.**
+    //
+    // §10's split makes `marion run` start a detached `marion-supervisor` that follows this
+    // project's journal — and this test deliberately writes a line into that journal which no
+    // registry can parse. `registry.rs` then stops following, correctly (*"an authority may not
+    // keep serving a tree from a file it no longer recognises"*), which freezes §5.7's exit
+    // predicate on a tree taken **before** the root's `Exited` record. The supervisor therefore
+    // reports a non-terminal node forever and nothing but a signal ends it. That gap is pinned by
+    // `detached_supervisor.rs::a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_nothing_clears_it`
+    // rather than left as an anecdote, and it is a real limitation and not an artefact of this
+    // fixture — a corrupted journal in production produces the same immortal supervisor.
+    //
+    // What is an artefact of this fixture is the *scratch directory*: `dir` is about to be removed,
+    // so leaving the process alive would leave one holding a path that no longer exists, for as
+    // long as the machine is up.
+    for line in String::from_utf8_lossy(
+        &Command::new("ps")
+            .args(["-A", "-o", "pid=,command="])
+            .output()
+            .expect("ps runs")
+            .stdout,
+    )
+    .lines()
+    .filter(|l| l.contains(&dir.display().to_string()) && l.contains("--detached"))
+    {
+        if let Some(Ok(pid)) = line.split_whitespace().next().map(str::parse) {
+            marion_testsupport::kill_hard(pid);
+        }
+    }
 }

@@ -19,8 +19,10 @@ use std::time::Duration as StdDuration;
 use marion_core::agent_type::{DEFAULT_TIMEOUT_SECS, builtin, builtin_names};
 use marion_core::contract::ExitStatus;
 use marion_core::paths::state_dir;
+use marion_supervisor::detach;
 use marion_supervisor::duplex::StreamEvent;
 use marion_supervisor::root;
+use marion_supervisor::socket;
 use marion_supervisor::watch::{ChildEvent, JournalWatch};
 use serde_json::Value;
 
@@ -894,6 +896,115 @@ fn follow_journal(
 /// with no news reads zero bytes. This is a viewer: it is not worth a byte of the run's own budget.
 const JOURNAL_POLL: StdDuration = StdDuration::from_millis(100);
 
+/// `marion run`'s half of §7.3's voluntary quit: **a run that ends says so.**
+///
+/// §7.3.1 is absolute — *"a crashed, SIGKILLed, or otherwise vanished client MUST leave every node
+/// exactly as it was"*, and the supervisor sees an identical close either way, so *"the only
+/// evidence of intent that can ever exist is a `session/quit` that arrived first"*. A `marion run`
+/// that simply dropped its socket would therefore be indistinguishable from one that was killed,
+/// and the supervisor would — correctly, per §7.3.1 — treat a finished run as a crash and stay
+/// resident over a journal in which nothing is left to supervise.
+///
+/// So this guard sends §7.3.2's disposition **(b), `DetachAll`**, on every path out of `main`,
+/// including the failures. Its answer is not discarded: it is the supervisor's own account of what
+/// it is going to do, and it is the only place an operator can learn *why* a fleet outlived their
+/// command. The two answers say opposite things and both are printed.
+///
+/// **When the supervisor says it is leaving, this waits for it to have left.** That is not the
+/// client dictating the supervisor's lifetime — §5.7 forbids exactly that, and every clause of it
+/// still decides the answer — it is the client declining to return "done" while a process it
+/// started is still running. The wait is bounded and its expiry is reported rather than silent,
+/// because a supervisor that promised to exit and did not is a fact worth one line.
+struct SupervisorSession {
+    stream: std::os::unix::net::UnixStream,
+    socket: PathBuf,
+}
+
+/// How long [`SupervisorSession::drop`] will wait for a supervisor that answered `Exiting`.
+///
+/// **A bound, not a measurement**, and it decides nothing: a supervisor that is going has already
+/// journaled its exit record before the accept loop breaks, so what is being waited for is one
+/// `unlink`. Nothing asserts on how long it takes.
+const SUPERVISOR_EXIT_WAIT: StdDuration = StdDuration::from_secs(5);
+
+impl Drop for SupervisorSession {
+    fn drop(&mut self) {
+        use std::io::{BufRead, Write};
+        let frame = marion_proto::Frame::Request(marion_proto::Request::new(
+            marion_proto::RequestId::Number(1),
+            marion_proto::Call::SessionQuit(marion_proto::params::SessionQuitParams {
+                disposition: marion_proto::QuitDisposition::DetachAll,
+            }),
+        ));
+        if self
+            .stream
+            .write_all(frame.to_line().as_bytes())
+            .and_then(|()| self.stream.flush())
+            .is_err()
+        {
+            // The supervisor is already gone or unreachable. Nothing to report and nothing to do:
+            // §7.3.1's invariant means the nodes are untouched either way.
+            return;
+        }
+        let _ = self
+            .stream
+            .set_read_timeout(Some(StdDuration::from_secs(10)));
+        let Some(Ok(line)) = std::io::BufReader::new(&self.stream).lines().next() else {
+            return;
+        };
+        let Ok(marion_proto::Frame::Response(response)) = marion_proto::Frame::from_line(&line)
+        else {
+            return;
+        };
+        let marion_proto::Outcome::Result(body) = response.outcome else {
+            return;
+        };
+        let Ok(marion_proto::MethodResult::SessionQuit(result)) =
+            marion_proto::Method::SessionQuit.decode_result(&body)
+        else {
+            return;
+        };
+        let supervisor = match &result.outcome {
+            marion_proto::QuitOutcome::Detached { supervisor, .. }
+            | marion_proto::QuitOutcome::ReapedAndDetached { supervisor, .. } => *supervisor,
+            // A `KillTree` outcome cannot arrive here: this guard only ever sends `DetachAll`.
+            _ => return,
+        };
+        match supervisor {
+            marion_proto::SupervisorDisposition::Resident(reason) => {
+                eprintln!(
+                    "marion: this project's supervisor is still running ({reason:?}); it holds \
+                     work this run did not finish, and the next marion will find it rather than \
+                     start one (§5.7)"
+                );
+            }
+            marion_proto::SupervisorDisposition::Exiting => {
+                let deadline = std::time::Instant::now() + SUPERVISOR_EXIT_WAIT;
+                while self.socket.exists() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(StdDuration::from_millis(2));
+                }
+                if self.socket.exists() {
+                    eprintln!(
+                        "marion: this project's supervisor said it was exiting and {} is still \
+                         there after {} s; it may still be shutting down",
+                        self.socket.display(),
+                        SUPERVISOR_EXIT_WAIT.as_secs()
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// This user's real uid, which §2's `/tmp` fallback keys on.
+fn uid() -> u32 {
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    // SAFETY: reads the calling process's real uid and cannot fail.
+    unsafe { getuid() }
+}
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.iter().any(|a| a == "--help" || a == "-h") {
@@ -976,6 +1087,67 @@ fn main() -> ExitCode {
     let bridge = match std::env::current_exe().map(|p| p.with_file_name("marion-supervisor")) {
         Ok(p) if p.exists() => p,
         _ => PathBuf::from("marion-supervisor"),
+    };
+
+    // **§10's ownership move, and the whole of it.** The table moves the socket exactly once —
+    // M1 *"the `marion` process itself"*, M2+ *"a detached `marion-supervisor`, which `marion`
+    // starts on demand"* — and until this line marion owned it in neither milestone, because it
+    // never bound anything at all. `marion run` is §5.7's *"first client that dials the §2 socket
+    // path and finds nothing listening"*, and holding the returned connection for the rest of this
+    // function is what makes that literally true: while a run is in progress the supervisor has one
+    // client, and §5.7's absolute zero-client exit predicate is satisfied only after the run ends.
+    //
+    // **What this deliberately does not move is who drives the root.** That is a different axis and
+    // §10's table never mentions it: making `marion run` a pure client would need `node/spawn` over
+    // the socket and §11 item 23's backgrounding, neither of which is built, so the alternative to
+    // this line is not a purer split — it is a `marion run` that cannot run. Two processes writing
+    // one journal is not a compromise introduced here either: `journal.rs` already states that
+    // *"`marion run` and each `marion-supervisor mcp` bridge are separate processes that both cause
+    // lifecycle events, so the file has concurrent writers by construction"*, serialised by
+    // `O_APPEND` at record granularity.
+    //
+    // **A supervisor that will not start is reported, not fatal — today.** Nothing in this run
+    // depends on it: the root is still driven in-process, so a missing supervisor costs the socket
+    // and not the work. The day `spawn` goes over the socket, this must become a refusal, and the
+    // test that pins the current behaviour is named so that whoever changes it has to say so.
+    // The **repo**, not `socket::project_root`'s git common dir. `root::prepare` keys this
+    // project's journal on `spec.repo` (`ProjectDir::new(&spec.state, &spec.repo)`), and a
+    // supervisor tailing a journal at a different hash would be serving a different project with
+    // the same name. §2 keys the *socket* on the git common dir so that §6.6's worktree children
+    // resolve to their main repository's supervisor, and those two rules disagree —
+    // `socket::resolve` implements §2's and has **no caller in this repo**, so nothing currently
+    // disagrees in practice. Reconciling them moves where the journal lives, which is not this
+    // change.
+    let sock = socket::socket_paths(&state, &repo, uid());
+    let _supervisor = match detach::ensure_supervisor(
+        &sock,
+        &detach::Launch {
+            program: bridge.clone(),
+            state_dir: state.clone(),
+            project_root: repo.clone(),
+            // **Not §5.7's 300 s, and the difference is about who the client is.** That default is
+            // justified in §5.7 by an *operator closing one window to open another* — a grace that
+            // bridges between clients so a re-attach does not pay a cold start. `marion run` is not
+            // a window: it is one command, and when it ends it knows no successor is coming from
+            // it. §5.7 says as much about the other end — *"Zero is defensible too"* — and this is
+            // the case its reasoning does not cover. It costs the next `marion run` one process
+            // spawn, which is the start mechanism working rather than a fallback.
+            //
+            // Zero does **not** make the supervisor eager to leave. Every other clause of §5.7
+            // still holds it: a client attached (including a TUI that arrived mid-run), any
+            // non-terminal node, any `Blocked(_)`, any outstanding `spawn`, any unconfirmed reap
+            // intent. All zero removes is the wait after the last of them has cleared.
+            idle_grace: StdDuration::ZERO,
+        },
+    ) {
+        Ok(ensured) => Some(SupervisorSession {
+            stream: ensured.stream,
+            socket: sock.socket().to_path_buf(),
+        }),
+        Err(e) => {
+            eprintln!("marion: {e}");
+            None
+        }
     };
 
     let blocked_bound = StdDuration::from_secs(blocked_bound_secs(
