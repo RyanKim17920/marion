@@ -596,11 +596,39 @@ fn a_fresh_projects_stage_three_writes_its_failures_to_the_projects_log() {
 /// the one below it, which does not sample at all: **the pid serving at the end is the first pid
 /// ever published.** Both are single observations, so no rate can hide anything between them — a
 /// takeover in either direction makes them differ, whatever the sampler saw.
+///
+/// **Why a non-terminal node is seeded before the race starts.** This test used to race the
+/// supervisor's own correct behaviour and lose. Nothing here holds a client: the racers dial, then
+/// exit, and every assertion below happens after the last of them has been waited on. That leaves
+/// the winner with zero clients and an empty exclusion list, so §5.7 *permits* it to journal a
+/// `SupervisorExited` and leave — and on a loaded machine sixteen processes take longer to finish
+/// than this file's 300 ms grace, so it did. Both halves then failed for the same reason and looked
+/// like two different bugs: `bed.supervisors()` read `[]` when the winner left mid-assertion, and
+/// `seen` grew to two pids when it left mid-*race* and a later racer legitimately took the socket
+/// over. Neither was a second enforcer; both were one enforcer that had already gone.
+///
+/// The fix is not a longer grace or a wider bound — those measure the machine. §5.7's exclusion
+/// list is the structural lever: **a supervisor holding a non-terminal node must not exit**, at
+/// every instant and under any load. So the journal names a running node before the first racer is
+/// spawned, which makes the idle exit unreachable rather than unlikely, and the node is finished at
+/// the end so [`goes_on_its_own`] still proves the winner leaves of its own accord. What the race
+/// measures is unchanged: the sixteen still contend for the same lock and the same path, and both
+/// takeover assertions still stand exactly as written.
 #[test]
 fn sixteen_racing_processes_produce_one_supervisor_and_never_a_second() {
     const N: usize = 16;
     let bed = Bed::new("race");
     let launch = bed.launch();
+
+    // §5.7's exclusion list, armed before anything races: whoever wins may not idle-exit while the
+    // test is still reading it. A real process, so the journal names something that is really
+    // running (see [`a_running_node`]).
+    let journal = marion_core::paths::ProjectDir::new(&bed.state, &bed.root).journal();
+    let mut held = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .expect("a real process to be non-terminal about");
+    a_running_node(&journal, "root", held.id() as i32);
 
     // Released as close to together as separate processes can be: every one is spawned before any
     // is waited on, so they overlap in the window that matters — between the first `connect` and
@@ -675,6 +703,23 @@ fn sixteen_racing_processes_produce_one_supervisor_and_never_a_second() {
     );
     // And it is a supervisor, not merely a process: it answers.
     std::os::unix::net::UnixStream::connect(bed.paths.socket()).expect("the winner is serving");
+
+    // The one clause holding it is cleared, and only then. The winner of a sixteen-way race is an
+    // ordinary supervisor in every other respect, so it must leave on its own once nothing in
+    // §5.7's exclusion list is left — which is also the control that the seeding above was what
+    // kept it, and not some other reason it could not exit at all.
+    assert!(
+        !journal_tags(&journal).contains(&"SupervisorExited".to_string()),
+        "the winner has a non-terminal node and must not have journaled a departure: {:?}",
+        journal_tags(&journal)
+    );
+    let _ = held.kill();
+    let _ = held.wait();
+    a_node_exited(
+        &journal,
+        "root",
+        "the node finished once the race was decided",
+    );
     goes_on_its_own(&bed);
 }
 
@@ -757,11 +802,15 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
     );
 }
 
-/// The same node, having exited: nothing in §5.7's exclusion list is left holding.
-fn a_finished_node(path: &Path, agent: &str) {
+/// The record that clears [`a_running_node`] from §5.7's exclusion list, appended after it.
+///
+/// Written by a test rather than by the node's own writer, which is the only way to end a node
+/// *while a supervisor is already reading the journal* — the supervisor's own view of what is
+/// non-terminal is the records, so appending one is how a test says "it finished" to a process it
+/// is not otherwise talking to.
+fn a_node_exited(path: &Path, agent: &str, description: &str) {
     use marion_core::contract::{ExitStatus, ProcessExit};
     use marion_core::journal::{Exited, RecordKind};
-    a_running_node(path, agent, 1);
     seed(
         path,
         3,
@@ -771,10 +820,16 @@ fn a_finished_node(path: &Path, agent: &str) {
             exit: ProcessExit {
                 code: Some(0),
                 signal: None,
-                description: "the node finished".into(),
+                description: description.into(),
             },
         }),
     );
+}
+
+/// The same node, having exited: nothing in §5.7's exclusion list is left holding.
+fn a_finished_node(path: &Path, agent: &str) {
+    a_running_node(path, agent, 1);
+    a_node_exited(path, agent, "the node finished");
 }
 
 /// Ask a running supervisor to quit, and read what it answered.
@@ -900,18 +955,10 @@ fn a_supervisor_holding_a_non_terminal_node_refuses_to_exit_until_that_node_fini
     // by a supervisor that can never exit at all.
     let _ = held.kill();
     let _ = held.wait();
-    seed(
+    a_node_exited(
         &journal,
-        3,
-        marion_core::journal::RecordKind::Exited(marion_core::journal::Exited {
-            agent_id: marion_core::contract::AgentId("root".into()),
-            status: marion_core::contract::ExitStatus::Ok,
-            exit: marion_core::contract::ProcessExit {
-                code: Some(0),
-                signal: None,
-                description: "the node finished while nobody was attached".into(),
-            },
-        }),
+        "root",
+        "the node finished while nobody was attached",
     );
     assert!(
         until(|| !alive(id.pid)),

@@ -4428,6 +4428,19 @@ mod tests {
                 .handle
                 .claim(&id("root"), marion_core::contract::TaskId("t".into()));
             let before = journal_len(&fx);
+            // **Derived from the real token, never a fixed digit.** Spelling this as
+            // `format!("{}0", &real[..real.len() - 1])` made the case *conditional on the token's
+            // own last character*: one token in sixteen already ends in `0`, and for those this row
+            // handed the handler the genuine token, which was accepted — a `Spawning` result where
+            // a refusal was asserted, and a suite failure that came and went with the entropy.
+            let last_byte_changed = {
+                let (head, tail) = real.split_at(real.len() - 1);
+                format!("{head}{}", if tail == "0" { '1' } else { '0' })
+            };
+            assert_ne!(
+                last_byte_changed, real,
+                "a forgery must differ from the real token"
+            );
 
             for (token, why) in [
                 ("not-the-token".to_string(), "a guess"),
@@ -4435,7 +4448,7 @@ mod tests {
                 (format!("{real}x"), "the real token with a byte appended"),
                 (real[..real.len() - 1].to_string(), "a truncated prefix"),
                 (
-                    format!("{}0", &real[..real.len() - 1]),
+                    last_byte_changed,
                     "the real token with its last byte changed",
                 ),
             ] {
