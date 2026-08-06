@@ -47,11 +47,22 @@ pub enum Event {
 
     /// One event from a node's stream, for a client attached to it.
     ///
-    /// `src_seq` is carried per event and not per batch: it is §4.2's loss evidence and §7.3.3's
-    /// replay-to-subscribe seam, and a client stitching a replayed tail to a live stream compares
-    /// exactly this field against the [`crate::ReplayPoint`] its attach returned. `Provenance`
-    /// rides along for the reason §4.1 gives — *"what the UI keys on before claiming anything about
-    /// loss"*.
+    /// **`agent_seq` is the node's own `events.jsonl` ordinal, and it is the field §7.3.3's seam is
+    /// actually stated in.** [`crate::ReplayPoint`] counts `records` of exactly these ordinals, so
+    /// an attach that hands a client `ResubscribeFrom(records: N)` and then sends it events with no
+    /// ordinal has handed it a read point it cannot check anything against. It is carried
+    /// separately from `src_seq` because the two answer different questions and only one of them is
+    /// usually answerable: `src_seq` is the *harness's* ordering evidence, `None` on Codex
+    /// app-server and on Claude Code `headless` — which is most of what marion runs — while
+    /// `agent_seq` is **marion's own**, assigned by the single writer of that one file
+    /// (`marion_supervisor::events::EventWriter`), and therefore always present and always dense.
+    /// A client checking for a gap or a repeat across the replay/live join checks this one.
+    ///
+    /// `src_seq` is carried per event and not per batch: it is §4.2's loss evidence, and where a
+    /// harness does supply it, it is the only thing that can report loss *upstream of marion* —
+    /// which `agent_seq` cannot, because a frame marion never saw got no ordinal from marion.
+    /// `Provenance` rides along for the reason §4.1 gives — *"what the UI keys on before claiming
+    /// anything about loss"*.
     ///
     /// `payload` is opaque. marion is the courier for a harness's own event body; §4's full `Event`
     /// with its typed `Payload` lands with `events.jsonl`, and inventing a normalization here would
@@ -59,6 +70,7 @@ pub enum Event {
     #[serde(rename = "node/event")]
     NodeEvent {
         agent_id: AgentId,
+        agent_seq: u64,
         ts: SystemTime,
         provenance: Provenance,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +186,7 @@ mod tests {
             },
             Event::NodeEvent {
                 agent_id: AgentId("a".into()),
+                agent_seq: 7,
                 ts: ts(),
                 provenance: Provenance {
                     source: Source::Transcript,
@@ -255,12 +268,35 @@ mod tests {
         );
     }
 
+    /// **`agent_seq` is never omitted, and zero is a real ordinal.**
+    ///
+    /// `src_seq` is skipped when absent because absent is what §4.2 requires it to say; `agent_seq`
+    /// has no absent case — every event in an `events.jsonl` was numbered by the writer that
+    /// appended it — so a `skip_serializing_if` on it would make the *first* event of every node
+    /// indistinguishable on the wire from an event whose ordinal marion does not know. The first
+    /// event of every node is exactly the one a re-attaching client is stitching against.
+    #[test]
+    fn a_node_events_own_ordinal_is_always_on_the_wire_including_zero() {
+        let e = Event::NodeEvent {
+            agent_id: AgentId("a".into()),
+            agent_seq: 0,
+            ts: ts(),
+            provenance: Provenance::marion(),
+            src_seq: None,
+            payload: serde_json::json!({"type": "system"}),
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        assert!(s.contains(r#""agent_seq":0"#), "{s}");
+        assert_eq!(serde_json::from_str::<Event>(&s).unwrap(), e);
+    }
+
     #[test]
     fn a_node_event_without_ordering_evidence_omits_the_field() {
         // §4.2 again, on the live leg: Codex app-server and Claude Code headless supply none, and
         // an `Ordinal(0)` here would tell a client it can detect loss when it cannot.
         let e = Event::NodeEvent {
             agent_id: AgentId("a".into()),
+            agent_seq: 0,
             ts: ts(),
             provenance: Provenance {
                 source: Source::Protocol,
