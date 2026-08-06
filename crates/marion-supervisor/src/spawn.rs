@@ -50,23 +50,59 @@ pub enum SpawnError {
     /// rather than a message.
     #[error("spawn refused (§6.1 step 2): {0}")]
     Gate(#[from] marion_core::agent_type::SpawnGateError),
-    /// §5.4's `background`, which the tool schema declares and M1 does not implement.
+    /// §5.4's `allow_concurrent_writes`, in the **only** direction marion cannot serve.
     ///
-    /// **Refused, not ignored.** §5.4 spells the field `"background": false // M1: must be false
-    /// (§9)`, and accept-and-ignore is the §12 silent-failure shape this codebase keeps finding and
-    /// killing — `default_tools_approval_mode`, `trust: true`, `--permission-prompt-tool stdio`,
-    /// `--verbose`. The caller asked for a handle and would instead get a finished contract, with
-    /// nothing anywhere saying the request was dropped: a parent backgrounding four children to run
-    /// them concurrently gets four serialized ones and no way to tell. Real backgrounding is M2
-    /// (`LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER` in `run` records what it would change), so the
-    /// honest M1 answer is a sentence naming the field, not a different verb performed quietly.
+    /// §11 item 23 left this parameter accepted-and-dropped and called it *inverted* relative to
+    /// the other four: with no §6.6 holder check in code, concurrent writes were permitted de
+    /// facto, so `true` was said to be honoured accidentally and `false` to be the value marion
+    /// could not honour. **That analysis assumed `isolation` was live, and it is not** — the
+    /// [`Self::IsolationUnimplemented`] refusal above makes `shared-cwd` unreachable,
+    /// `run_spawn` calls `make_worktree` unconditionally, and `Workspace::SharedCwd` is
+    /// constructed nowhere. Item 23 is corrected in the same commit that lifts the `background`
+    /// refusal, because the two were always one decision.
+    ///
+    /// Under worktree-always the two values swap:
+    /// * **`false` (the default) is honoured, and structurally rather than by a check marion has
+    ///   to remember to run.** It asks marion to refuse a second write-capable spawn into an
+    ///   occupied cwd; every child gets its own worktree, so no cwd is ever occupied by a second
+    ///   writer. The guarantee is a property of the code path, not a promise — which is the
+    ///   stronger form of the same answer, and is why `false` is not refused here.
+    /// * **`true` asks marion to disable that guard** so the caller can share a cwd with a live
+    ///   write-capable sibling. Its only entry point is `isolation: "shared-cwd"`, which is
+    ///   refused by name. It is a request whose subject does not exist, and serving it silently
+    ///   would tell a caller that marion had granted something it has no code to grant.
+    ///
+    /// **Why this had to be decided now rather than left.** Item 23 said so: the parameter was
+    /// inert *"for exactly one reason: `spawn` blocks"*, and *"the day backgrounding lands in M2,
+    /// `allow_concurrent_writes: false` becomes a live silent failure with nobody having touched
+    /// this parameter or this code."* This is that day. The answer turned out to be that `false`
+    /// is safe for a reason item 23 did not have in view, and that `true` is the half needing a
+    /// sentence — but the answer had to be *reached*, not inherited.
+    ///
+    /// It comes out together with `isolation` when §6.6's holder registry lands.
     #[error(
-        "spawn refused: `background: true` is declared in marion's tool schema but not implemented \
-         — §5.4 requires `background: false` in M1, and backgrounding lands in M2 with §7.6's \
-         descendant gating. Omit the field or pass `false` to spawn synchronously; the contract is \
-         returned when the child reaches a terminal state."
+        "spawn refused: `allow_concurrent_writes: true` is declared in marion's tool schema but \
+         not implemented, and has nothing to permit — it is §6.6's escape hatch from the \
+         shared-cwd write-conflict \
+         rule, and marion creates a git worktree for every child, so no two children ever share a \
+         cwd. `isolation: \"shared-cwd\"` is itself refused. Omit the field or pass `false`: with \
+         a worktree per child, \"no second writer in my tree\" is what marion already guarantees."
     )]
-    BackgroundUnimplemented,
+    ConcurrentWritesUnimplemented,
+    /// A **backgrounded** child's thread unwound.
+    ///
+    /// It exists because `Background::wait` must answer with something. Re-raising the panic into
+    /// the bridge's JSON-RPC loop would end the bridge and every *other* live child with it, so a
+    /// node's fault would become contagious to its siblings; and answering `Ok` with no contract
+    /// would be the silent-success shape. A panic is a marion bug, so the sentence says so and
+    /// does not invite the caller to retry.
+    #[error(
+        "spawn failed: marion's own thread running the {0} child panicked, so there is no contract \
+         and no way to say what the child did. This is a defect in marion, not in the request; the \
+         child's process may have been left running and its journal records end at its \
+         `SpawnIntent`."
+    )]
+    Panicked(String),
     /// §5.4's `isolation`, for every value but the one marion performs.
     ///
     /// **`run_spawn` calls `make_worktree` unconditionally** and builds `Workspace::Worktree`;
@@ -150,8 +186,54 @@ fn now() -> SystemTime {
     SystemTime(std::time::SystemTime::now())
 }
 
+/// **Serializes every git command that writes the shared repository**, which backgrounding made
+/// necessary and which nothing before it needed.
+///
+/// While `spawn` was synchronous there was exactly one worktree operation in flight per process and
+/// no lock could be contended. A backgrounded `spawn` runs `run_spawn` on a thread, so two children
+/// of one parent reach `git worktree add` — and later `git worktree remove` — against **the same
+/// `.git`** at the same time. git guards its own refs and index with `index.lock` /
+/// `worktrees/<name>/locked` and does **not** wait for them: it fails the second caller with
+/// *"Unable to create '…/index.lock': File exists"*.
+///
+/// That failure is the worst available shape. It is intermittent, it depends on process scheduling
+/// rather than on anything the caller did, and it surfaces as `SpawnError::Git` — a spawn that
+/// simply did not happen, attributed to git. Widening a timeout or retrying would encode the race
+/// rather than remove it; a mutex removes it, because the operations are short and marion is the
+/// only writer it needs to coordinate.
+///
+/// **UNVERIFIED, and stated as such.** `tests/background_spawn.rs` runs
+/// `max_concurrent_children` background spawns at once and asserts every one gets its own
+/// worktree, which is the observation this guard is supposed to protect — but removing the guard
+/// does **not** make that test fail (10 consecutive runs, 2026-08-06). The contention window is
+/// evidently narrower than four concurrent `worktree add`s on a two-commit fixture repo. So this
+/// is a guard against a documented git behaviour with **no failing witness in this repo**: keep it
+/// because it is cheap and the failure it prevents is a scheduling-dependent flake attributed to
+/// git, but do not read the passing test as evidence that it was needed.
+///
+/// **What it does not claim.** It serializes marion's *own* concurrent writers inside one process.
+/// A second `marion` process, or the operator's own `git`, is outside it — that is git's problem
+/// and git's lock, and it was already so before backgrounding. `PoisonError` is unwrapped through
+/// rather than propagated: a panic inside a git call leaves the *repository* consistent (git is
+/// transactional over its own locks) and refusing every subsequent spawn for the rest of the
+/// process's life would be a larger failure than the one it guards.
+static REPO_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Hold [`REPO_WRITE`] for the duration of a repository-mutating git call.
+pub fn repo_write_guard() -> std::sync::MutexGuard<'static, ()> {
+    REPO_WRITE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Create the child's worktree at `base_commit`.
+///
+/// `rev-parse HEAD` is inside the guard as well as `worktree add`, deliberately: the two are one
+/// operation — *"branch this child off whatever HEAD is now"* — and reading HEAD outside the lock
+/// would let a concurrent sibling's `worktree add` land between them, so two children could record
+/// different `base_commit`s for the same instant, or one could record a base its worktree was not
+/// actually created at. §6.7 calls `base_commit` an audit record; an audit record raced against the
+/// thing it describes is worse than a slower spawn.
 pub fn make_worktree(repo: &Path, path: &Path, branch: &str) -> Result<Oid, SpawnError> {
+    let _serialized = repo_write_guard();
     let head = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
     git(
         repo,

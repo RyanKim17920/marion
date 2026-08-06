@@ -109,8 +109,11 @@ pub fn tools() -> Value {
     json!([
         {
             "name": "spawn",
-            "description": "Delegate a task to a child agent. Blocks until the child reaches a \
-                            terminal state, then returns the completed task contract.",
+            "description": "Delegate a task to a child agent. By default this blocks until the \
+                            child reaches a terminal state and returns its completed task \
+                            contract. With `background: true` it returns immediately with a \
+                            handle and the child runs while you keep working; call `wait` with \
+                            that handle's task_id to collect the contract.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -129,6 +132,38 @@ pub fn tools() -> Value {
                     "background": {"type": "boolean"}
                 },
                 "required": ["agent_type", "prompt", "acceptance_criteria"]
+            }
+        },
+        {
+            // **Declared because `spawn` now hands out a handle**, and §5.4 is explicit that the
+            // handle's holder *"must be able to `wait` a node that may already have exited —
+            // denying that would make the handle useless."* §7.6's worked example is blunter: a
+            // handle with no primitive to resolve it is the anti-pattern marion exists to delete,
+            // and shipping one would be `verification`'s accept-and-ignore wearing a handle's
+            // clothes.
+            //
+            // It also closes a gap that predates backgrounding: `root::ROOT_ALLOWED_TOOLS` has
+            // permitted `wait` since M1 (§9 records the allowlist being wider than the declared
+            // surface as "not a bug", since an allowlist entry for an undeclared tool is inert).
+            // The entry stops being inert here.
+            //
+            // **Scoped to this bridge's own children, which is exactly §5.4's rule.** `wait` is
+            // permitted against *descendants only*; a bridge instance serves one node and its
+            // table holds that node's children, so "unknown to me" and "not yours" are one
+            // lookup. There is deliberately no timeout parameter: the child's own contract
+            // `timeout_secs` bounds the run, and a second clock here could disagree with the
+            // contract about whether the run had ended.
+            "name": "wait",
+            "description": "Collect a backgrounded child's task contract, blocking until that \
+                            child reaches a terminal state. Takes the task_id from the handle \
+                            `spawn` returned. Returns immediately if the child has already \
+                            finished. The child's own timeout bounds the wait.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"}
+                },
+                "required": ["task_id"]
             }
         },
         {
@@ -317,6 +352,72 @@ pub fn spawn_result(
     }
 }
 
+/// **What a backgrounded `spawn` hands back**, written as a sentence for the reason
+/// [`REPORT_ON_A_ROOT`] is: the caller is a language model, and a bare identifier teaches it
+/// nothing about what to do next.
+///
+/// §7.6's worked example is the specification for this string. It records a Codex integration that
+/// returned `task-ms9ifb08-bkcgol` plus "check `/codex:status`" and calls that *correct for its
+/// constraints and missing a layer* — the cost being that **the caller is obliged to know it must
+/// poll**, and that a handle in the result slot is *"indistinguishable to it from an answer"*. So
+/// this says three things in order: that no result is here yet, what the child is, and the one verb
+/// that turns the handle into the contract. It never says "poll" and offers no cadence, because
+/// `wait` blocks — marion owns the lifecycle, which is the whole reason it may hand out a handle at
+/// all.
+pub fn background_result(id: &Value, started: &crate::background::Started) -> Value {
+    tool_result(
+        id,
+        &format!(
+            "marion: the {agent_type} child is running in the background — this is a handle, not \
+             a result, and it carries no answer yet. Keep working; when you need what the child \
+             produced, call `wait` with task_id {task_id:?} and marion will return its completed \
+             task contract, blocking only if the child has not finished yet. You do not need to \
+             poll and there is nothing to check in the meantime.",
+            agent_type = started.agent_type,
+            task_id = started.task_id.0,
+        ),
+        false,
+    )
+}
+
+/// **`wait` against an id this bridge never started.**
+///
+/// A sentence rather than a code, and it says *why* the lookup was the whole lookup: §5.4 permits
+/// `wait` against descendants only, this bridge's table is this node's children, so marion did not
+/// look further and is not implying that it did. The alternative — "not found" — would leave the
+/// caller unable to tell "you may not wait on that" from "marion lost it".
+pub fn wait_unknown(id: &Value, task_id: &str) -> Value {
+    tool_result(
+        id,
+        &bounded(&format!(
+            "marion: no child of yours carries task_id {task_id:?}. `wait` addresses your own \
+             descendants only (§5.4), so this is the whole of the lookup — marion did not search \
+             elsewhere and did not lose anything. Use the task_id from the handle a `background: \
+             true` spawn returned; a synchronous `spawn` returns its contract directly and has no \
+             handle to wait on."
+        )),
+        true,
+    )
+}
+
+/// **`wait` on a child an earlier `wait` already collected.**
+///
+/// Kept apart from [`wait_unknown`] because the two mistakes have opposite fixes: this caller
+/// already holds the contract, and the other is asking about a node that does not exist. Answering
+/// both with one sentence is how a caller learns to retry the one that can never succeed.
+pub fn wait_already_collected(id: &Value, task_id: &str) -> Value {
+    tool_result(
+        id,
+        &bounded(&format!(
+            "marion: the contract for task_id {task_id:?} was already returned to an earlier \
+             `wait`. A contract is delivered once; marion does not keep a second copy to hand out, \
+             and re-waiting would block on a child that has already been collected. If you no \
+             longer have it, the contract is on disk under that child's agent directory."
+        )),
+        true,
+    )
+}
+
 pub fn method_not_found(id: &Value, method: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id,
            "error": {"code": -32601, "message": format!("no method {method}")}})
@@ -368,7 +469,10 @@ mod tests {
             .iter()
             .map(|x| x["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["spawn", "report"]);
+        // `wait` joined the list when `spawn` started handing out handles: §5.4 makes the
+        // handle's holder's ability to resolve it a requirement, not an ergonomic. The order is
+        // pinned too — `spawn` then `wait` then `report` is the order a caller meets them in.
+        assert_eq!(names, vec!["spawn", "wait", "report"]);
         let s = t.to_string();
         assert!(
             !s.contains("mcp__marion"),
@@ -379,7 +483,17 @@ mod tests {
     #[test]
     fn report_says_the_final_message_is_not_the_return_value() {
         let t = tools();
-        let desc = t[1]["description"].as_str().unwrap();
+        // Found by name rather than by index: this assertion broke when `wait` was inserted
+        // before `report`, and an index is exactly the kind of coupling that turns adding a verb
+        // into a false failure about a different verb's wording.
+        let desc = t
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["name"] == "report")
+            .expect("report is declared")["description"]
+            .as_str()
+            .unwrap();
         assert!(
             desc.contains("NOT the return value"),
             "this is the confusion 7.6 exists for"

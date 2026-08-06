@@ -1171,7 +1171,7 @@ a 53 MB Codex child.
 | `spawn` | create a child node; returns the task contract (or a handle if backgrounded) |
 | `send` | message a node — authorization below |
 | `report` | explicit result return (§7.6) |
-| `status` / `wait` / `cancel` / `list` | state, block-until-idle, interrupt, discovery |
+| `status` / `wait` / `cancel` / `list` | state, block-until-idle, interrupt, discovery. **`wait` is declared and implemented as of 2026-08-06**, scoped to the caller's own backgrounded children — a handle `spawn` hands out must be resolvable (§7.6's worked example). The other three remain undeclared |
 
 **`spawn`'s schema**, since it is M1's most load-bearing interface:
 
@@ -1193,9 +1193,18 @@ a 53 MB Codex child.
   "isolation":   "worktree",          // optional; overrides the agent type
   "timeout_secs": 900,                // optional
   "allow_concurrent_writes": false,   // optional, default false; §6.6's escape hatch for
+                                      //   **`true` is refused by name** (§11 item 23): its only
+                                      //   entry point, `isolation: "shared-cwd"`, is refused, so
+                                      //   there is nothing for it to permit. `false` is honoured
+                                      //   structurally — a worktree per child means no cwd ever
+                                      //   has a second writer. Escape hatch for
                                       //   sharing a cwd with a live write-capable sibling.
                                       //   A per-spawn act, not a property of the agent type
-  "background":   false               // M1: must be false (§9)
+  "background":   false               // M1: must be false (§9). **Implemented 2026-08-06**
+                                      //   (§11 items 23 and 27): `true` returns a handle in the
+                                      //   same frame and the child runs on a thread inside the
+                                      //   bridge. `wait` resolves the handle. §7.6's descendant
+                                      //   gating is NOT built — item 27
 }
 // → returns a completed TaskContract
 ```
@@ -4590,16 +4599,28 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     effect; two are the former and are **left accepted**, recorded here instead.
 
     **Refused — each made marion do something other than what was asked.**
-    - **`background`** (declared `bridge.rs:130`). §5.4 pins it: `"background": false // M1: must be
-      false (§9)`. Dropped, a caller asking for a handle waited out the child's entire synchronous
-      run and received a *completed* `TaskContract` with `isError: false` — verified by disabling
-      the refusal, which returns a contract with a real worktree, a real `codex` process and
-      `status: TimedOut`. It compounds: `run.rs`'s `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER = 0`
-      already documents that `max_concurrent_children` cannot bind while `spawn` is synchronous, so
-      a parent backgrounding four children for concurrency got four serialized ones **and** an
-      inert concurrency gate. Real backgrounding is M2 and entangled with §7.6's descendant gating.
-      **`allow_concurrent_writes` below is held harmless by this same blocking, and must be
-      revisited in whichever change lifts this refusal** — the two are one decision, not two.
+    - **`background`** (declared `bridge.rs:130`) — **REFUSAL LIFTED 2026-08-06; it is implemented.**
+      §5.4 pinned it `"background": false // M1: must be false (§9)`, and while it was dropped a
+      caller asking for a handle waited out the child's entire synchronous run and received a
+      *completed* `TaskContract` with `isError: false`. It compounded: `run.rs`'s
+      `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER = 0` documented that `max_concurrent_children` could
+      not bind while `spawn` was synchronous, so a parent backgrounding four children for
+      concurrency got four serialized ones **and** an inert concurrency gate.
+
+      **What landed.** `spawn { background: true }` starts the child on a thread inside the
+      **bridge** process and returns a handle in the same frame; `wait` collects it, declared
+      because §5.4 requires the handle's holder to be able to resolve it and §7.6's worked example
+      calls an unresolvable handle the anti-pattern marion exists to delete. The constant became
+      `Caller.live_children`, read from the bridge's own table, so `max_concurrent_children`
+      refuses — never queues (§3.1) — from the first excess spawn. `allow_concurrent_writes` was
+      decided in the same change, below.
+
+      **What did not land, and it is not a detail: §7.6's descendant gating is still absent.**
+      `spawn.rs` still writes `live_descendants_at_report: vec![]` and no exit path consults a
+      subtree. A parent can now stop while its children run, which is the hole §7.6 exists to
+      close, so **L1 is no longer vacuously true** — it was, while a child was always terminal
+      before its parent regained control, and it is not now. Item 27 records that together with
+      the runaway-process consequence s16 measured, and the two must be closed together.
     - **`isolation`** (declared `bridge.rs:127`, enum `worktree | shared-cwd | remote`). `run_spawn`
       calls `make_worktree` unconditionally (`run.rs:751`) and builds `Workspace::Worktree`;
       `Workspace::SharedCwd` is constructed **nowhere** outside its own definition in
@@ -4636,23 +4657,31 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       `isolation` refusal above, for a caller that cannot have a live sibling because `spawn`
       blocks. Refusing it would cost a working spawn and buy no honesty.
 
-      **This one is inverted relative to the other four, and the inversion is the reason it is a
-      "leave it until", not a "leave it".** Because the §6.6 holder check does not exist,
-      concurrent writes are already permitted de facto — so **`true` is the value marion honours,
-      accurately if accidentally, and `false` is the one it cannot honour.** A caller passing
-      `false` is asking marion to refuse a second writer, and marion will not refuse one. If either
-      value were a wrong answer it would be the conservative one, which is the opposite of every
-      other row here, where the permissive value was the refused one.
+      **This entry claimed the parameter was inverted, and that claim was wrong — CORRECTED
+      2026-08-06, in the change that implemented backgrounding, which is the change it said would
+      force the question.** The original reasoning: because the §6.6 holder check does not exist,
+      concurrent writes are already permitted de facto, so `true` is the value marion honours
+      accurately-if-accidentally and `false` is the one it cannot honour. **That inference assumed
+      `isolation` was live.** It is not — the `isolation` refusal above makes `shared-cwd`
+      unreachable, `run_spawn` calls `make_worktree` unconditionally, and `Workspace::SharedCwd` is
+      constructed nowhere. Under worktree-always the two values swap:
 
-      It is inert today for exactly one reason: **`spawn` blocks**, so a caller cannot have a live
-      sibling to conflict with. That is the same fact the `background` refusal above rests on, and
-      the dependency runs both ways — **the day backgrounding lands in M2, `allow_concurrent_writes:
-      false` becomes a live silent failure with nobody having touched this parameter or this code.**
-      A second write-capable child could then be running in a shared cwd against a caller that
-      explicitly asked for that not to happen. So this parameter **must be revisited in the same
-      change that implements backgrounding**, alongside lifting the `background` refusal and
-      `run.rs`'s `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER`, and not left standing on the strength of
-      this entry.
+      - **`false` (the default) is honoured, structurally.** It asks marion to refuse a second
+        write-capable spawn into an occupied cwd. Every child gets its own worktree, so no cwd is
+        ever occupied by a second writer: the guarantee is a property of the code path rather than
+        of a check marion has to remember to run, which is the stronger form of the same answer.
+        Pinned by `tests/background_spawn.rs`, which runs `max_concurrent_children` children **at
+        once** and asserts every workspace path is distinct and none is the caller's cwd.
+      - **`true` is refused by name**, joining `isolation` and `verification`. It asks marion to
+        disable that guard so the caller may share a cwd with a live write-capable sibling; its
+        only entry point is `isolation: "shared-cwd"`, which is itself refused. It is a request
+        whose subject does not exist, and serving it silently would tell a caller marion had
+        granted something it has no code to grant.
+
+      The dependency this entry named was real even though its conclusion was not: the question
+      genuinely could not be answered until backgrounding forced it, because only then can a caller
+      have a live sibling at all. It comes out together with `isolation` when §6.6's holder
+      registry lands.
 
     **What is deliberately *not* claimed here.** This is a read of the request path only. Whether
     the six implemented parameters are honoured *correctly* is a separate question this item does
@@ -4913,6 +4942,60 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     events"* from *"I have read events 900–940"*. Neither is hard; both are vocabulary decisions
     that must be made before a reader can be honest about a trimmed file, which is why this is filed
     rather than deferred silently. Cross-referenced from **§4.3** and **§7.3.3**.
+
+27. **A backgrounded child outlives its harness as an untracked process, and nothing gates a
+    parent's exit on it — OPEN, newly articulated 2026-08-06, from the change that implemented
+    `background` plus spike S16.** Two holes with one cause: `spawn { background: true }` runs the
+    child on a thread inside the **bridge** process (`marion-supervisor mcp`), which the *harness*
+    started and which marion is not the parent of.
+
+    **The runaway, measured (S16, `tests/fixtures/s16/`, `claude` 2.1.222, four runs agreeing on
+    every discriminating reading).** The mitigation that was designed first — hold the bridge open
+    at stdin EOF while a child is outstanding — does not apply, because **there is no EOF**.
+    `stdin_eof` never appears in any harness run, though the no-harness control records one. The
+    harness sends **SIGINT, then SIGTERM 100 ms later** (100 / 100 / 101 / 100 ms — a fixed timer,
+    not a race), then a third signal a probe holding handlers on **29 signals** could not catch:
+    **SIGKILL by elimination**, 430–475 ms after the SIGTERM. The signals are **pid-targeted at the
+    server**, not sent to its process group — a run with `claude` as its own group leader, marion's
+    own `setpgid` arrangement with `killpg` fully available, is identical. And a **grandchild
+    survives untouched**: zero signals, 58 further heartbeats, `ppid: 1`, alive at the end of the
+    watch.
+
+    So a backgrounded child whose parent harness exits becomes exactly what §9's M2 criterion
+    forbids — an **untracked live process**: reparented to pid 1, its wall clock unenforced because
+    the enforcer (`run_bounded`) was in the bridge, its `SpawnIntent` journaled with no resolution
+    so §7.2 will mark it `Orphaned` — asserting marion *lost* it — and its worktree left behind.
+    This is §11 item 18's runaway shape reached by a new route. `Background::join_all` is kept
+    because it is correct for every client marion itself writes (`marion run`, the tests, a future
+    TUI) and is exercised by `tests/background_spawn.rs`; it is **not** reachable from the harness.
+
+    **The descendant gate, absent.** §7.6's L1 invariant — *"marion never emits an agent-initiated
+    `Exited` for a node with a non-terminal descendant, unless `reported_early == true` or
+    `held_to_timeout == true`"* — was **vacuously true** until this change, because a blocking
+    `spawn` made every child terminal before its parent regained control. It is not vacuous now and
+    it is not enforced: `spawn.rs` writes `live_descendants_at_report: vec![]`, no exit path
+    performs a subtree scan, and neither flag is ever set by production code. §7.6's five-step
+    procedure is likewise unbuilt — steps 2 and 4 need a `Stop` hook and a resume, and §7.6's own
+    hookless path (steps 2–4 skipped, step 5 re-checks, step 3 holds) is the shape that would
+    satisfy L1 without either.
+
+    **Why they are one item.** Both are consequences of the child's lifetime being the bridge's.
+    A hold at the parent's stop can only wait for a child the parent's process can still observe;
+    a child that survives as an orphan can never resolve, so holding on it would burn the parent's
+    whole bound — which is the unbounded-ancestor failure §7.6's bounded hold exists to prevent,
+    reintroduced from the other side. **Closing either properly means (B): `spawn` over the socket
+    to the detached `marion-supervisor serve`, which owns the child's lifecycle**;
+    `Method::AgentSpawn` already exists in `marion-proto` and `handler.rs` answers it
+    `Unimplemented`. A narrower interim fix exists and is not pretended to be equivalent — carry
+    each child's pid and process group in the bridge's table and kill them from a SIGTERM handler
+    inside the measured ~450 ms grace, which converts a silent runaway into a recorded abandonment
+    but still cannot let a descendant outlive its parent (§7.5).
+
+    **What would change the measurement**, from S16's own list: a different CLI version (these are
+    2.1.222's timers and nothing says they are contractual); an *interrupted or crashed* harness
+    rather than the clean `exit 0` that was measured; or a server that exits promptly on SIGTERM —
+    S16's probe deliberately refuses to, so whether the harness *waits* for a well-behaved one is
+    unmeasured.
 
 ---
 

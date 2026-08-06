@@ -43,9 +43,16 @@ fn main() {
     }
 }
 
-/// `spawn` blocks for the child's whole run and returns the completed contract; `report` stages
-/// the child's payload, which the parent's own `spawn` then returns.
+/// `spawn` runs the child and returns its completed contract — or, with `background: true`,
+/// returns a handle immediately and runs the child on a thread this bridge owns; `wait` collects
+/// that child; `report` stages the child's payload, which the parent's own `spawn` then returns.
+///
+/// **`bg` is threaded through rather than being a `static`** so the table's lifetime is the
+/// bridge's, and so the unit tests below can each hold their own. A process-wide table would make
+/// one test's live-children count depend on which other tests had run — the exact defect class this
+/// repo keeps finding, one level down.
 fn handle_tool_call(
+    bg: &marion_supervisor::background::Background,
     id: &serde_json::Value,
     name: &str,
     args: &serde_json::Value,
@@ -75,8 +82,17 @@ fn handle_tool_call(
             // only place that knows which node it is serving. A bridge that was not told cannot
             // evaluate them, so it refuses rather than spawning ungated — which is exactly the
             // hazard this path exists to close, and the same shape as `spawn_env`'s refusal above.
+            //
+            // The **live-children count** is stamped on here rather than inside `caller()`, because
+            // it is the one field of the three that is a property of this bridge's own table and
+            // not of the declaration marion wrote. It was the constant
+            // `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER = 0` until backgrounding landed; `run_spawn`
+            // reads it off the `Caller` and refuses before every side effect.
             let caller = match caller(&requester()) {
-                Ok(c) => c,
+                Ok(c) => run::Caller {
+                    live_children: bg.live_children(),
+                    ..c
+                },
                 Err(e) => return bridge::tool_result(id, &e, true),
             };
             let req = run::SpawnRequest {
@@ -110,6 +126,39 @@ fn handle_tool_call(
             let Ok(task_id) = new_task_id() else {
                 return bridge::tool_result(id, "marion: could not generate task id", true);
             };
+            // **§5.4's `background`, read for its value.** Absent and `false` both mean "block",
+            // which is what marion did for every spawn until now and what the schema's own comment
+            // pinned for M1. `true` starts the child on a thread and returns a handle in the same
+            // frame — see `background`'s module docs for why the thread lives in this process and
+            // what that costs.
+            //
+            // **§6.1 step 2 is evaluated here as well as inside `run_spawn`, and that is not
+            // drift.** It is the *same function* — `marion_core::agent_type::check_spawn_gates`,
+            // pure and idempotent — called from two places, not two implementations of one rule.
+            // §9's warning is about two derivations that can disagree; this cannot.
+            //
+            // It has to be here because of what a handle *means*. `run_spawn` refuses before every
+            // side effect, which is right, but on the background path that refusal happens inside
+            // the thread and would reach the caller only through a later `wait` — so a `spawn`
+            // that marion had already decided to refuse would answer *"the child is running"*.
+            // That is a lie in the result slot, and deleting lies in the result slot is what this
+            // whole change is about. A refused background spawn is refused in the same frame that
+            // asked for it, in the same shape a synchronous one takes.
+            //
+            // `run_spawn` keeps its own call: it is a public library entry point with callers
+            // (`marion run`, the tests) that do not come through here, and a gate that only ran at
+            // one call site is the hole `depth_gate` was written about.
+            if args["background"].as_bool() == Some(true) {
+                if let Err(e) = marion_core::agent_type::check_spawn_gates(
+                    &caller.agent_type,
+                    caller.depth,
+                    caller.live_children,
+                ) {
+                    return bridge::spawn_result(id, &req.agent_type, Err(e.into()));
+                }
+                let started = bg.start(env, req, task_id, caller);
+                return bridge::background_result(id, &started);
+            }
             // A child that ran and failed and a spawn that never launched are the same news to
             // the parent, and used to arrive in two different shapes. `bridge::spawn_result` is
             // where that is decided, in one place, so both read alike.
@@ -118,6 +167,35 @@ fn handle_tool_call(
                 &req.agent_type,
                 run::run_spawn(&env, &req, &task_id, &caller),
             )
+        }
+        // **The handle's resolving verb** (§5.4). Deliberately the same `bridge::spawn_result`
+        // that a synchronous `spawn` returns through: the two paths differ in *when* the caller
+        // gets the contract and in nothing else, so a model that has learnt to read one reads the
+        // other. Answering a `wait` in a second shape would make backgrounding a different verb
+        // rather than the same verb, later.
+        "wait" => {
+            let Some(task_id) = args["task_id"].as_str() else {
+                return bridge::tool_result(
+                    id,
+                    "marion: `wait` needs the `task_id` from the handle a `background: true` \
+                     spawn returned. Refusing rather than guessing which of your children you \
+                     meant — a wait on the wrong child would block on work you were not asking \
+                     about.",
+                    true,
+                );
+            };
+            match bg.wait(task_id) {
+                marion_supervisor::background::Wait::Finished(outcome) => {
+                    // The agent type for the "could not be launched" line comes from the table,
+                    // not from these arguments: a `wait` carries no `agent_type`, and inventing
+                    // one would put a name in a refusal that names the wrong thing.
+                    bridge::spawn_result(id, "backgrounded", *outcome)
+                }
+                marion_supervisor::background::Wait::Unknown => bridge::wait_unknown(id, task_id),
+                marion_supervisor::background::Wait::AlreadyCollected => {
+                    bridge::wait_already_collected(id, task_id)
+                }
+            }
         }
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
     }
@@ -213,29 +291,41 @@ fn caller_depth(depth: Option<String>) -> Result<u32, UnreadableDepth> {
 
 /// **A `spawn` parameter marion declares and does not implement, if this request carries one.**
 ///
-/// §5.4's schema has eleven keys and `run::SpawnRequest` carries six. The five that were never read
-/// split cleanly in two, and only one half belongs here:
+/// §5.4's schema has eleven keys. `run::SpawnRequest` carries six, `background` is now the
+/// seventh, and the remaining four split in two — only one half belongs here:
 ///
-/// * **A different verb performed quietly** — `background`, `isolation` and `verification`. Each
-///   made marion do something other than what was asked while answering `isError: false`, which is
-///   the §12 accept-and-ignore shape (`default_tools_approval_mode`, `trust: true`). Refused, by
-///   name, with the value that broke it; see each [`spawn::SpawnError`] variant for its own reason.
-/// * **Simply absent** — `name` and `allow_concurrent_writes`. Nothing consumes them and nothing
-///   contradicts them: `TaskContract` has no `name` field and no verb addresses a node by one, and
-///   `allow_concurrent_writes` is §6.6's escape hatch from a shared-cwd write-conflict refusal that
-///   is not in code, for a `shared-cwd` mode the refusal above now makes unreachable. Dropping
-///   either changes no answer any caller receives, so they are left accepted and recorded in §11
-///   item 23 rather than refused — a refusal there would cost callers a working spawn and buy no
-///   honesty.
+/// * **A different verb performed quietly** — `isolation`, `verification` and
+///   `allow_concurrent_writes: true`. Each makes marion do something other than what was asked
+///   while answering `isError: false`, which is the §12 accept-and-ignore shape
+///   (`default_tools_approval_mode`, `trust: true`). Refused, by name, with the value that broke
+///   it; see each [`spawn::SpawnError`] variant for its own reason.
+/// * **Simply absent** — `name`. `TaskContract` has no `name` field and no verb addresses a node
+///   by one, so dropping it changes no answer any caller receives. Left accepted and recorded in
+///   §11 item 23; a refusal would cost callers a working spawn and buy no honesty.
+///
+/// **`background` left this table** when it was implemented, which is the shape §11 item 23 asked
+/// for: *"the natural close is to implement… backgrounding, at which point the three refusals and
+/// this item come out together."* It comes out one at a time, and the item records which.
+///
+/// **`allow_concurrent_writes` entered it in the same change, and only in the `true` direction.**
+/// Item 23 called this parameter inverted — `true` honoured accidentally, `false` unhonourable —
+/// on the premise that the §6.6 holder check being absent meant concurrent writes were permitted
+/// de facto. That premise assumed `isolation` was live. It is not: the refusal below makes
+/// `shared-cwd` unreachable, so `false` is delivered by construction and `true` is a request whose
+/// subject does not exist. The `SpawnError` variant carries the argument, and §11 item 23 is
+/// corrected in the same commit rather than left standing with a justification that is measurably
+/// wrong.
 ///
 /// **The permitted values are not refused**, which is the whole point of reading the field rather
-/// than rejecting its presence: `background: false`, `isolation: "worktree"` and an empty
-/// `verification` all describe exactly what marion does, and an absent key asks for nothing.
+/// than rejecting its presence: `isolation: "worktree"`, an empty `verification` and
+/// `allow_concurrent_writes: false` all describe exactly what marion does, and an absent key asks
+/// for nothing. `background` is now read for its value rather than refused for its presence, by
+/// [`handle_tool_call`].
 ///
 /// Pure, and separate from [`handle_tool_call`], so the table above is testable as a table.
 fn unimplemented_parameter(args: &serde_json::Value) -> Option<spawn::SpawnError> {
-    if args["background"].as_bool() == Some(true) {
-        return Some(spawn::SpawnError::BackgroundUnimplemented);
+    if args["allow_concurrent_writes"].as_bool() == Some(true) {
+        return Some(spawn::SpawnError::ConcurrentWritesUnimplemented);
     }
     match args["isolation"].as_str() {
         None | Some("worktree") => {}
@@ -315,6 +405,11 @@ fn caller_from(
         agent_id: agent_id.to_string(),
         agent_type,
         depth,
+        // A placeholder the *caller* of this function overwrites from the bridge's own background
+        // table before any gate reads it (`handle_tool_call`). It is not a default that stands: a
+        // zero left standing here would be `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER` reintroduced
+        // under a new name, with the concurrency gate inert again and nothing saying so.
+        live_children: 0,
     })
 }
 
@@ -406,8 +501,25 @@ fn new_task_id() -> std::io::Result<marion_core::contract::TaskId> {
     Ok(core_new_task_id(ms, entropy))
 }
 
-/// Serve MCP over stdio until the harness closes our stdin.
+/// Serve MCP over stdio until the harness closes our stdin — **and then wait for any child still
+/// running before leaving.**
+///
+/// The hold is §5.7's exit rule one level down: a supervisor MUST NOT exit while *"any `spawn` is
+/// outstanding"*, and while `spawn` was synchronous that was free — a spawn in flight meant this
+/// loop was inside `handle_tool_call` and could not reach EOF. Backgrounding makes it a real
+/// obligation. Exiting at EOF with a live child would kill that child's process group mid-run and
+/// leave a `SpawnIntent` journaled with no resolution, which §7.2 reads as a node marion **lost** —
+/// asserting an accident about a process marion in fact chose to abandon.
+///
+/// **This hold is unreachable under a real Claude Code harness, and that is measured.** s16
+/// (2026-08-06, `claude` 2.1.222, four runs) found **no EOF at all**: SIGINT, SIGTERM 100 ms later,
+/// then SIGKILL ~450 ms after that, all pid-targeted at the server rather than sent to its group.
+/// So the loop above does not end — the process is killed inside it. The hold is kept because it is
+/// correct for every client marion itself writes (`marion run`, the tests, a future TUI), and the
+/// gap it leaves is §11 item 27: a backgrounded child outlives the SIGKILL as an untracked process
+/// reparented to pid 1, which is what §9's *"no untracked live process"* forbids.
 fn run_bridge() {
+    let bg = marion_supervisor::background::Background::new();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -430,7 +542,7 @@ fn run_bridge() {
                 id,
                 name,
                 arguments,
-            } => Some(handle_tool_call(&id, &name, &arguments)),
+            } => Some(handle_tool_call(&bg, &id, &name, &arguments)),
             bridge::Request::Notification => None,
             bridge::Request::Unknown { id, method } => Some(bridge::method_not_found(&id, &method)),
         };
@@ -443,6 +555,8 @@ fn run_bridge() {
             signal_ready();
         }
     }
+    // EOF. Every child this bridge started and nobody collected is finished here, not abandoned.
+    bg.join_all();
 }
 
 #[cfg(test)]
@@ -454,55 +568,60 @@ mod main_tests {
         assert_ne!(new_task_id().unwrap(), new_task_id().unwrap());
     }
 
-    /// **A declared parameter marion does not implement is refused, not quietly performed as
-    /// something else.**
+    /// **`wait` answers a handle it does not recognise with a sentence, not by blocking.**
     ///
-    /// `background` is in `bridge::tools`' `spawn` schema and §5.4 pins it: `"background": false //
-    /// M1: must be false (§9)`. Before this refusal the field was never read anywhere — a caller
-    /// asking for a handle got a **completed contract** back with `isError: false`, having waited
-    /// out the child's whole run. That is not a failure it can detect and not the verb it asked
-    /// for: a parent backgrounding four children to get concurrency got four serialized ones and
-    /// no signal anywhere. It is the §12 accept-and-ignore shape, in the same family as
-    /// `default_tools_approval_mode` and `trust: true`.
+    /// This test replaces `a_backgrounded_spawn_is_refused_by_name_rather_than_served_synchronously`,
+    /// which pinned the `background` refusal that this change lifts. The refusal is gone because
+    /// the feature arrived; what took its place is the obligation §5.4 attaches to a handle —
+    /// *"the holder must be able to `wait` a node that may already have exited"* — and the way
+    /// that obligation is most easily broken is a `wait` that waits on nothing.
     ///
-    /// Three assertions, each of which fails against the pre-fix code:
+    /// Three assertions, each failing against a plausible wrong implementation:
     ///
-    /// 1. it is an **error result** at all — pre-fix this call ran a child and returned its
-    ///    contract with `isError: false`;
-    /// 2. the message **names the field and says unimplemented**, so the caller can tell "marion
-    ///    will not" from "marion could not";
-    /// 3. it is refused **without an environment**, which is how we know nothing was attempted:
-    ///    this test sets no `MARION_REPO` and no agent declaration, so a `spawn` that got past the
-    ///    refusal could not even build an `Env` — the two later refusals would answer instead, and
-    ///    neither mentions `background`.
+    /// 1. a `wait` with **no `task_id`** is refused rather than defaulting to "some child of
+    ///    mine", which would block on work the caller was not asking about;
+    /// 2. a `wait` on an **unknown** id is refused *and says the lookup was the whole lookup*
+    ///    (§5.4 scopes `wait` to descendants), so the caller cannot read it as "marion lost it";
+    /// 3. neither refusal needs an environment, which is how we know nothing was attempted.
+    ///
+    /// It needs no `MARION_REPO` and starts no child, so it is a unit test rather than the
+    /// end-to-end control in `tests/background_spawn.rs`.
     #[test]
-    fn a_backgrounded_spawn_is_refused_by_name_rather_than_served_synchronously() {
-        let v = handle_tool_call(
-            &serde_json::json!(1),
-            "spawn",
-            &serde_json::json!({
-                "agent_type": "codex-impl",
-                "prompt": "do the task",
-                "acceptance_criteria": [],
-                "background": true
-            }),
-        );
+    fn wait_refuses_by_name_rather_than_blocking_on_a_child_it_never_started() {
+        let bg = marion_supervisor::background::Background::new();
 
-        assert_eq!(
-            v["result"]["isError"],
-            serde_json::json!(true),
-            "a spawn marion will not perform is an error result, not a contract: {v}"
-        );
-        let text = v["result"]["content"][0]["text"]
+        let no_id = handle_tool_call(&bg, &serde_json::json!(1), "wait", &serde_json::json!({}));
+        assert_eq!(no_id["result"]["isError"], serde_json::json!(true));
+        let text = no_id["result"]["content"][0]["text"]
             .as_str()
             .unwrap_or_default();
         assert!(
-            text.contains("background") && text.contains("not implemented"),
-            "the refusal must name the field and say it is unimplemented, got: {text}"
+            text.contains("task_id"),
+            "a wait with nothing to wait on must name what is missing, got: {text}"
+        );
+
+        let unknown = handle_tool_call(
+            &bg,
+            &serde_json::json!(2),
+            "wait",
+            &serde_json::json!({"task_id": "task-never-started"}),
+        );
+        assert_eq!(unknown["result"]["isError"], serde_json::json!(true));
+        let text = unknown["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            text.contains("task-never-started"),
+            "the refusal names the id it was asked about, got: {text}"
+        );
+        assert!(
+            text.contains("descendants"),
+            "and says why the lookup was the whole lookup (§5.4), so \"not yours\" is not read as \
+             \"marion lost it\", got: {text}"
         );
         assert!(
             !text.contains("MARION_REPO"),
-            "and it must precede the environment checks, so nothing was attempted: {text}"
+            "and it precedes every environment check, so nothing was attempted: {text}"
         );
     }
 
@@ -519,9 +638,9 @@ mod main_tests {
         use spawn::SpawnError::*;
         for (label, args, needle) in [
             (
-                "background",
-                serde_json::json!({"background": true}),
-                "background",
+                "allow_concurrent_writes",
+                serde_json::json!({"allow_concurrent_writes": true}),
+                "allow_concurrent_writes",
             ),
             (
                 "isolation: shared-cwd",
@@ -560,8 +679,8 @@ mod main_tests {
         // this failing: `isolation` carries the value it rejected, which is what lets a caller fix
         // the call rather than guess.
         assert!(matches!(
-            unimplemented_parameter(&serde_json::json!({"background": true})),
-            Some(BackgroundUnimplemented)
+            unimplemented_parameter(&serde_json::json!({"allow_concurrent_writes": true})),
+            Some(ConcurrentWritesUnimplemented)
         ));
         assert!(matches!(
             unimplemented_parameter(&serde_json::json!({"verification": ["x"]})),
@@ -603,8 +722,23 @@ mod main_tests {
                 serde_json::json!({"verification": []}),
             ),
             (
-                "the two dropped-but-harmless keys",
-                serde_json::json!({"name": "impl-auth", "allow_concurrent_writes": true}),
+                // `background: true` is here rather than in the refusing table because it is now
+                // implemented. Its presence in *this* list is the assertion that the refusal was
+                // lifted rather than merely reworded.
+                "background: true, now that it is implemented",
+                serde_json::json!({"background": true}),
+            ),
+            (
+                // `false` is §6.6's default and marion honours it structurally: every child gets
+                // its own worktree, so there is never a second writer in an occupied cwd. It is
+                // here, not in the refusing table, and the difference between the two values is
+                // the whole of §11 item 23's correction.
+                "allow_concurrent_writes: false",
+                serde_json::json!({"allow_concurrent_writes": false}),
+            ),
+            (
+                "the dropped-but-harmless key",
+                serde_json::json!({"name": "impl-auth"}),
             ),
         ] {
             assert!(
