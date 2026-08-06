@@ -92,12 +92,22 @@
 //! immediately after the bind and removed by [`Serving::drop`] beside the socket. Finding one is the
 //! same evidence as finding a socket, and neither outlives a clean exit.
 //!
-//! A **child's MCP bridge learns it without being told.** Inheritance is unavailable by construction
-//! — a bridge is a grandchild of a process that may already be dead, and the supervisor is not any
-//! of its ancestors at all — so there is no environment variable and nothing passed down. The bridge
-//! derives the socket *directory* with [`socket_paths`], the same pure function this module already
-//! insists must not be written twice, and reads the identity beside the socket it was going to dial
-//! anyway.
+//! **Nothing in production reads it.** That sentence replaces a paragraph that described a child's
+//! MCP bridge deriving the socket directory and reading the identity beside the socket it was going
+//! to dial — a shape that is buildable and is not built. The bridge does not read this file, and no
+//! other code in this workspace does either; the only readers today are this crate's tests. A module
+//! doc that describes a consumer which does not exist is worse than silence about a file whose whole
+//! subject is *who is really there*, because the next reader budgets for a channel marion has not
+//! got. §11 item 28's design says the same thing from the other side: it proposes putting a per-node
+//! capability token into the bridge's **environment block** precisely because no supervisor→bridge
+//! channel exists today.
+//!
+//! What the carry is *for* is §7.3.2 (a)'s operator-facing kill, which is not built: S15 measured
+//! that `killpg(pid)` is wrong for a double-forked supervisor and that the pgid must be carried
+//! rather than derived, so the number has to be written down somewhere before the operation that
+//! needs it can be written at all. Publishing it now costs one small file with a lifetime that is
+//! already enforced ([`Serving::drop`]) and one that cannot lie ([`read_identity`] answers only
+//! while the lock behind it is held). Reading it is what does not exist yet.
 //!
 //! # What this module does not do
 //!
@@ -874,6 +884,38 @@ fn take_lock(path: &Path) -> Result<Option<std::fs::File>, SocketError> {
 /// an unlink hold descriptors to two different inodes, `flock` them independently, and both
 /// conclude they are alone. An empty 0600 file left behind costs nothing and is what keeps the
 /// exclusion honest across a restart.
+///
+/// # And there is no reclamation rule, which is a conclusion rather than an omission
+///
+/// The obvious repair for the leftovers is a sweep: take each lock, and unlink the ones nobody
+/// holds. It does not survive its own argument. A reclaimer holding the `flock` on inode *I* and
+/// unlinking its name does not stop a process that opened *I* a moment earlier from acquiring it
+/// afterwards — and the next caller, finding no file, creates inode *J* at the same name and
+/// acquires that. Two supervisors, by exactly the mechanism the "never unlink" rule exists to
+/// prevent. Age does not help: an old lock file says nothing about whether a process is inside the
+/// window between its `open` and its `flock`. Neither does liveness, because the pid that would be
+/// checked is in the identity file, whose truth is the lock's. Every version of the sweep needs an
+/// interlock outside the directory, and marion has none.
+///
+/// So the accumulation is bounded at its source instead, and the two sources are different:
+///
+/// * **In production it is already bounded.** Four small files per project — `.sock`, `.lock`,
+///   `.identity`, `.log` — and a project is a repository a person works in. The `.lock` is the only
+///   one that outlives a clean exit, at zero bytes. A machine with fifty checkouts has fifty of
+///   them.
+/// * **In tests it was not, and that was the whole of the 3,893 files measured in
+///   `/tmp/marion-<uid>`.** A suite invents a fresh project root per run, so each run hashed to a
+///   name nothing would ever revisit — ~122 new lock files per full workspace run. They arrived
+///   here rather than in a scratch directory only because `std::env::temp_dir()` on macOS is long
+///   enough to push §2's derivation into this fallback. `marion_testsupport::SCRATCH_ROOT` is now
+///   short, so those projects stay under the primary branch and leave with the directory their test
+///   already deletes, and this module's
+///   `a_scratch_projects_socket_fits_without_falling_back_to_the_shared_tmp_directory` pins the
+///   arithmetic that makes it true. Measured across one full `cargo test --workspace` after the
+///   change: **+8 files, against the ~122 before it.**
+///
+/// What is left in this directory is the real fallback population: projects whose *own* `<state>`
+/// path is too long, which is §2's *"normal case, not an exotic one"* and is per-project.
 fn ensure_dir(paths: &SocketPaths, uid: u32) -> Result<(), SocketError> {
     let dir = paths.dir();
     match std::fs::symlink_metadata(dir) {
@@ -1327,6 +1369,59 @@ mod tests {
         let Acquired::Serving(_next) = acquire(&p).unwrap() else {
             panic!("the previous supervisor is gone; this one must be able to serve")
         };
+    }
+
+    /// **NC — a test's own project does not land in the shared `/tmp` fallback.**
+    ///
+    /// §2's fallback is correct and is not the problem. What it cannot do is clean up after itself:
+    /// the lock file is **never** unlinked (see [`ensure_dir`]) and must not be, so every project
+    /// that ever overflows leaves one behind forever, in a directory shared by every project on the
+    /// machine that also overflowed. In production that is bounded — a handful of files per project
+    /// a person actually works in. In a test suite it is one per *run*, because every run invents a
+    /// fresh project root: `/tmp/marion-<uid>` was measured growing by ~122 lock files per full
+    /// workspace run, to 3,893.
+    ///
+    /// There is no reclamation rule that survives the inode argument, so the fix is the length of
+    /// the path a test builds on, and this is what pins it.
+    ///
+    /// **The tags are not this suite's longest, they are absurd** — deliberately. A test that pinned
+    /// today's worst case would pass until somebody composed a tag at runtime, which is exactly how
+    /// the last two files per run were still arriving (`journal_wiring.rs` builds its tag out of two
+    /// agent types). The claim being made is the one a caller can rely on without counting bytes:
+    /// *whatever* you name a scratch directory, your project stays out of the shared fallback. The
+    /// second case adds the `state` subdirectory several tests put their state in, because that is
+    /// six bytes the budget has to survive too.
+    #[test]
+    fn a_scratch_projects_socket_fits_without_falling_back_to_the_shared_tmp_directory() {
+        let absurd = "journal-e2e-claude-code-impl-with-a-very-long-agent-type-codex-impl-likewise";
+        for (case, state) in [
+            ("the directory itself", scratch(absurd)),
+            ("a state subdirectory", scratch(&format!("{absurd}-two"))),
+        ] {
+            let state = if case.starts_with("a state") {
+                let s = state.join("state");
+                std::fs::create_dir_all(&s).expect("state dir");
+                s
+            } else {
+                state.to_path_buf()
+            };
+            let p = socket_paths(&state, &state.join("repo/.git"), 501);
+            let len = p.socket().as_os_str().as_encoded_bytes().len();
+            assert_eq!(
+                p.overflow(),
+                None,
+                "{case}: a test project that falls back leaves a lock file in the shared directory \
+                 that nothing may ever unlink; the socket is {len} bytes and the limit is \
+                 {MAX_SOCKET_PATH_BYTES}: {}",
+                p.socket().display()
+            );
+            assert!(
+                p.socket().starts_with(&state),
+                "{case}: and it is inside the directory the scratch guard removes, which is what \
+                 makes the cleanup happen at all: {}",
+                p.socket().display()
+            );
+        }
     }
 
     /// **NC — a socket that answers over a lock nobody holds is a corpse, not a supervisor.**
