@@ -63,7 +63,7 @@ use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::root_change::{
-    Reason, RootChange, RootChanged, RootDelta, RootObservation, RootScope,
+    Reason, RootChange, RootChanged, RootDelta, RootGrant, RootObservation, RootScope,
 };
 use marion_harness::{
     Auth, CallOutcome, ChildExit, Extras, Invocation, LaunchSpec, MarionCall, McpDeclaration,
@@ -136,6 +136,17 @@ pub const ROOT_ALLOWED_TOOLS: [&str; 4] = [
 ///   behind it produces `changed_paths: []` and no record — byte-identical to a child whose write
 ///   escaped its worktree (§11 item 24), which is the ambiguity `8a69f22` exists to destroy.
 ///   **Rule: no audit, no grant.** Not "grant it anyway and note the absence".
+///
+/// # What the audit is, exactly — because that bullet used to claim more than it delivers
+///
+/// The record behind the grant is a **git-visible** working-tree delta ([`crate::spawn::TreeSnapshot`]),
+/// and `git add -A` respects `.gitignore`. A root that writes only `.env`, in a repository that
+/// ignores `.env`, therefore produces the very reading the bullet above calls indistinguishable.
+/// So what this gate buys is the difference between *a measurement* and *no measurement*, which is
+/// the rule it enforces; it is **not** the difference between a complete account of the root's
+/// writes and a partial one, and nothing here can be. §11 item 26 has always said so, and
+/// `marion_core::root_change::RootDelta::Observed::ignored_not_measured` is what lets a reader see
+/// the size of the gap instead of taking this comment's word for it.
 ///
 /// # Why this is a gate and not a refusal to run
 ///
@@ -364,6 +375,13 @@ pub enum RootError {
     /// separately actionable: the wrong directory, the wrong agent type, or a git that is not
     /// installed are three different fixes.
     ///
+    /// **The sentence says "git-visible", and that word is load-bearing rather than hedging.** The
+    /// record this refusal is protecting is a diff of two git tree objects, and `git add -A`
+    /// respects `.gitignore` (§11 item 26) — so an operator told they would get "a record of what
+    /// the root did" and then handed one that cannot see `.env` was promised something marion never
+    /// builds. An error message is the one place that promise is made to a person, so it is the
+    /// first place the narrowing has to appear.
+    ///
     /// It fires **only** when a grant would otherwise be issued. A root whose type declares no tool
     /// never reaches it — see [`availability_axis`] for why the gate is co-extensive with the grant
     /// rather than with the snapshot.
@@ -371,9 +389,10 @@ pub enum RootError {
         "the agent type declares built-in tool(s) [{declared}] and marion cannot record what a \
          root does with them in {repo}: {reason}. A grant with no diff behind it produces \
          `changed_paths: []` and no record — indistinguishable from a write that escaped (§11 \
-         item 24) — so the grant is refused rather than issued blind. Either `git init` that \
-         directory, or run an agent type that declares no tools, or pass `--no-change-record` to \
-         launch with no built-in tool at all."
+         item 24) — so the grant is refused rather than issued blind. What the grant would have \
+         bought is a git-visible working-tree delta: paths git ignores are outside it either way \
+         (§11 item 26). Either `git init` that directory, or run an agent type that declares no \
+         tools, or pass `--no-change-record` to launch with no built-in tool at all."
     )]
     NoChangeRecord {
         repo: PathBuf,
@@ -695,6 +714,36 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
             task_id: None,
         }),
     );
+    // **§6.1 step 7's shape, applied to the other thing this function decides.**
+    //
+    // `journal_the_roots_outcome` writes the change record when `launch_watched` *returns*, so
+    // until this record existed a marion that panicked, was SIGKILLed or lost power mid-run left
+    // the journal saying nothing at all — not that a grant had been issued, not what the operator's
+    // tree looked like when it was. Written **after** the intent, because a record about a node the
+    // journal has not yet introduced is a record with nowhere to attach; written **before** the
+    // process, because that is the whole point, and it is a barrier so "before" survives the crash
+    // it is about.
+    //
+    // The oid is recoverable evidence and not a bare number: the tree object lives in
+    // `<agent-dir>/objects`, so it can be read back after the run that produced no post-tree.
+    crate::journal::record(
+        &project,
+        RecordKind::RootGrantDecided(RootGrant {
+            agent_id: agent_id.clone(),
+            base_commit: match &change_base {
+                RootChangeBase::Taken { base_commit, .. } => base_commit.clone(),
+                _ => None,
+            },
+            pre_tree: match &change_base {
+                RootChangeBase::Taken { pre_tree, .. } => Some(pre_tree.clone()),
+                _ => None,
+            },
+            // The **compiled** axis, not `agent_type.tools`: what a crash investigator needs is
+            // what the root was actually handed, and those two differ in exactly the case this
+            // record is most useful in — a declaration the gate withheld.
+            granted: Reason::new(launch.tools.join(", ")),
+        }),
+    );
 
     Ok(RootNode {
         agent_id,
@@ -783,8 +832,20 @@ pub fn launch_watched(
 ///
 /// Every failure of `launch` is recorded too, and none of them is left as silence: §7.2 is emphatic
 /// that a node marion decided the fate of must never be mistaken for one marion *lost*.
+///
+/// **"Every exit path" below means every path on which this function is called — that is, every way
+/// `launch_watched` can *return*.** It does not and cannot mean every way a run can end. If marion
+/// itself panics, is SIGKILLed or loses power while the root is running, nothing here executes and
+/// there is no change record, because there is no post-snapshot: the tree was never read a second
+/// time. That window is covered by a different record and not by a stronger claim about this one —
+/// `RecordKind::RootGrantDecided`, written in `prepare` before the process starts, which leaves the
+/// grant and the pre-tree oid on disk so a crashed run is evidence rather than silence. The old
+/// sentence said "survives every exit path" flatly, and a reader who took it at face value would
+/// have concluded the crash case was covered when it was the one case it was not.
 fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootError>) {
-    // **First, and before the match on `result`** — §9's change record survives every exit path.
+    // **First, and before the match on `result`** — §9's change record is written on every path
+    // that reaches this function, which is every path `launch_watched` returns on. (A crash inside
+    // the run reaches nothing here; see this function's doc comment for what covers that instead.)
     //
     // The record derives from the filesystem at two instants, not from the stream, so it does not
     // inherit the visibility asymmetry `RootOutcome::marion_calls` exists to paper over: a duplex
@@ -1015,6 +1076,13 @@ fn observe(
     };
     let (scope, scope_violations) = judge_scope(&node.scope, &changed_paths);
     let patch = snapshot.diff(repo, pre_tree, &post_tree)?;
+    // **Not `?`.** Every term above is part of the delta, and a delta assembled from two different
+    // pairs of trees would be a lie — hence one fallible expression. This is not part of the delta:
+    // it is a statement about how much the delta could not see, and losing it must not turn a
+    // measured run into `Failed`. `None` says the count was not obtained, which is a weaker record
+    // than `Some(0)` and a truthful one; `Some(0)` obtained by swallowing an error would be the
+    // strongest claim in this record made by accident.
+    let ignored_not_measured = snapshot.ignored_entries(repo).ok();
     Ok((
         scope,
         RootDelta::Observed {
@@ -1029,6 +1097,7 @@ fn observe(
             // trees were identical — and the sidecar is authoritative, so it is stored complete
             // and uncapped. `Capped` is the type only so a reader never has to guess whether it is.
             diff: Some(Capped::whole(patch)),
+            ignored_not_measured,
         },
     ))
 }
@@ -1638,6 +1707,72 @@ mod tests {
                 args[i + 1]
             );
         }
+    }
+
+    /// **The grant is durable before the process is, and the base point with it.**
+    ///
+    /// `prepare` decides the grant and takes the pre-tree; `journal_the_roots_outcome` writes the
+    /// change record only once `launch_watched` **returns**. Between the two there is a whole run,
+    /// and a marion that panics, is SIGKILLed, or loses power inside it used to leave the journal
+    /// saying nothing at all — not that a grant was issued, not what the tree looked like when it
+    /// was. The evidence is recoverable, too: the pre-tree object is in the agent dir's own object
+    /// store, so an oid in the journal is a handle on the real tree and not a bare number.
+    ///
+    /// This test is the crash: `prepare` returns and nothing is ever launched. What must already
+    /// be on disk at that instant is the grant and the base.
+    #[test]
+    fn a_prepared_root_journals_its_grant_and_its_base_before_any_process_exists() {
+        let (dir, repo) = temp_repo("grant-before-launch");
+        let node = prepare(&RootSpec {
+            repo,
+            state: dir.join("state"),
+            ..root_spec(&dir, "claude-impl")
+        })
+        .expect("a git worktree is snapshottable, so the grant is issued");
+        let RootChangeBase::Taken { pre_tree, .. } = &node.change_base else {
+            panic!(
+                "this test is vacuous unless a base was taken: {:?}",
+                node.change_base
+            );
+        };
+        let journal = String::from_utf8_lossy(
+            &std::fs::read(node.project.journal()).expect("prepare journals before it returns"),
+        )
+        .into_owned();
+        assert!(
+            journal.contains(&pre_tree.0),
+            "the tree the grant was issued against is not in the journal, so a crash before \
+             `launch_watched` returns leaves no evidence of any kind — not even that a grant was \
+             issued. §6.1's intent-then-confirm split says the intent is written before the act; \
+             a grant is an act.\n{journal}"
+        );
+        assert!(
+            journal.contains("read") && journal.contains("write"),
+            "…and what was granted must be in it too: `read` and a `write` on the operator's own \
+             checkout are different runs to audit.\n{journal}"
+        );
+
+        // The same claim structurally, through the reader an operator would actually use. A
+        // substring search passes on a journal that merely mentions the oid somewhere; this
+        // asserts replay folds it into the node, and that the pair of fields says *which* run this
+        // was — granted, and no outcome recorded.
+        let tree = marion_core::registry::replay(journal.as_bytes());
+        let n = tree
+            .get(&node.agent_id)
+            .expect("the intent introduced the node");
+        let grant = n.root_grant.as_ref().expect("the grant is journalled");
+        assert_eq!(grant.pre_tree.as_ref(), Some(pre_tree));
+        assert_eq!(grant.granted.as_str(), "read, write");
+        assert!(
+            n.granted_without_a_record(),
+            "this is the crash: a grant on the operator's checkout with nothing yet saying what \
+             came of it. A reader that could not see this would read the run as one that never \
+             started."
+        );
+        assert!(
+            !n.did_marion_look(),
+            "and no measurement exists yet — the post-snapshot happens at exit, which never came"
+        );
     }
 
     /// A root's scope is its type's **ceiling and nothing else**, because no parent authored a

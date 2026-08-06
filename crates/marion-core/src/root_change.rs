@@ -37,11 +37,23 @@
 //!
 //! # What this record does not claim
 //!
-//! M1 has no filesystem attribution, and there is no honest way to separate the operator's
+//! **It is a *git-visible* delta, and every sentence above is about one.** The measurement is `git
+//! add -A .` at two instants, and `git add -A` respects `.gitignore`, so a root writing only
+//! `.env` in a repository that ignores `.env` produces `pre_tree == post_tree`, an empty
+//! `changed_paths` and an empty patch — *the very bytes the paragraph at the top of this file says
+//! this module destroys*. That boundary was always documented (§11 item 26) and the surrounding
+//! prose still spoke as though the record were exhaustive, which is a claim marion cannot make and
+//! now does not: what it can measure is what git can see. The instrument cannot be widened without
+//! a different instrument entirely, so the record instead carries the **size of the blind spot** —
+//! `RootDelta::Observed::ignored_not_measured` — and an empty delta beside `Some(0)` is exhaustive
+//! where an empty delta beside `Some(3)` is not.
+//!
+//! M1 has no filesystem attribution either, and there is no honest way to separate the operator's
 //! keystrokes from the agent's writes inside one directory. Hence [`RootChange::changed_paths`] is
-//! *everything that changed in that directory between launch and exit, whoever did it* — the same
-//! discipline `Completion::scope_enforced` holds to. A field named `root_writes` would claim a
-//! measurement marion did not make. See §11 item 26 for what the delta cannot see at all.
+//! *everything git can see changed in that directory between launch and exit, whoever did it* — the
+//! same discipline `Completion::scope_enforced` holds to. A field named `root_writes` would claim a
+//! measurement marion did not make. See §11 item 26 for the two classes of write — outside the
+//! repository, and ignored inside it — that no field here can carry.
 
 use std::path::PathBuf;
 
@@ -148,6 +160,14 @@ pub enum RootObservation {
         /// Pre-cap byte length of the patch. 0 iff the trees are identical.
         diff_bytes: usize,
         scope_violation_count: usize,
+        /// **How big the blind spot behind this delta is** — the count carried by
+        /// [`RootDelta::Observed`], derived like every other number here.
+        ///
+        /// `#[serde(default)]` so records written before this field existed still deserialize
+        /// (`journal.rs:99-101`), and they deserialize to `None`, which is the truthful reading of
+        /// them: nobody counted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ignored_not_measured: Option<usize>,
     },
     /// marion did not look, and why. **The variant that makes an absence legible**: a run that
     /// produced no delta because nobody measured one must never read as a run that changed nothing.
@@ -156,6 +176,59 @@ pub enum RootObservation {
     /// [`Self::NotAttempted`] because a decision not to measure and a measurement that broke send a
     /// reader to different fixes.
     Failed { reason: Reason },
+}
+
+/// **What was granted, and against which tree — written before the process exists** (§9).
+///
+/// # Why an intent record, and not just the change record
+///
+/// The change record is written when `launch_watched` *returns*. Between `prepare` deciding the
+/// grant and that return there is a whole run, and a marion that panics, is SIGKILLed, or loses
+/// power inside it used to leave the journal saying **nothing of any kind**: not that a grant was
+/// issued, not what the operator's tree looked like when it was. A record that only exists on the
+/// paths where marion is healthy is not an audit record; the runs an auditor most wants are the
+/// ones that ended badly.
+///
+/// This is the shape §6.1 step 7 already uses — [`crate::journal::RecordKind::SpawnIntent`] before
+/// the act, `Spawned` after it — applied to the *other* thing `prepare` does. It is a barrier for
+/// the same reason `SpawnIntent` is: a crash-evidence record that is not durable before the act it
+/// is evidence about buys nothing at all.
+///
+/// # Why the oid is worth writing down
+///
+/// `pre_tree` is not a bare number. The tree object it names is in `<agent-dir>/objects`, written
+/// by the snapshot and not removed by [`crate::paths::AgentDir`] cleanup, so a `git
+/// --git-dir=… cat-file` against that store reconstructs the operator's working tree as it stood
+/// when marion handed out the grant — after a crash that produced no post-tree at all.
+///
+/// # Size
+///
+/// Two oids and one capped string, so this is O(1) in what the root does for [`RootChanged`]'s
+/// reason and by the same mechanism. `granted` goes through [`Reason`] — the module's one
+/// truncating constructor — rather than being a `Vec<String>`: an agent type's `tools:` list is
+/// small today because the built-in table is small, which is a fact about today's configuration
+/// and not an invariant the journal's atomicity constant can rest on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootGrant {
+    pub agent_id: AgentId,
+    /// `HEAD` at `prepare` — context, exactly as on [`RootChanged`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<Oid>,
+    /// The working tree as a tree object at `prepare`, when one could be taken.
+    ///
+    /// `None` is the honest reading for every base marion did not get — the directory is not a
+    /// worktree, or the operator declined the record. **Why there is none is not repeated here**:
+    /// the change record carries that sentence, and a second copy would be a second thing to keep
+    /// true. What this record is for is the pair *(a grant was issued, against this)*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_tree: Option<Oid>,
+    /// The availability axis marion compiled, in **marion's** vocabulary, comma-joined.
+    ///
+    /// Empty where nothing was granted, and that case is written too rather than skipped: the
+    /// record then says *marion got as far as deciding, and decided nothing* — which is a third
+    /// reading beside a missing record and a grant, and the one that separates "crashed before
+    /// `prepare` finished" from "ran with no tools".
+    pub granted: Reason,
 }
 
 /// The scope a root's writes are judged against (§5.4).
@@ -193,7 +266,9 @@ pub enum RootDelta {
         pre_tree: Oid,
         post_tree: Oid,
         /// Everything that differs between `pre_tree` and `post_tree`, in `git diff --name-only
-        /// --no-renames` order.
+        /// --no-renames` order — so, everything **git could see** differ. A path under an ignore
+        /// rule is in neither tree and cannot appear here however much it changed; the count of
+        /// what was passed over that way is `ignored_not_measured` below.
         changed_paths: Vec<PathBuf>,
         /// Paths already differing from `base_commit` at launch — the operator's uncommitted work.
         /// Recorded so a reader can see what the tree base subtracted, which a path-list base point
@@ -206,6 +281,45 @@ pub enum RootDelta {
         /// prefix (`contract.rs:13-24`). One field and not a second `.diff` file: two files would
         /// be two sources of truth for the same bytes.
         diff: Option<Capped<String>>,
+        /// **How many entries the delta was never able to look at** — `git status --porcelain
+        /// --ignored` at exit, counted.
+        ///
+        /// # Why a count exists at all
+        ///
+        /// The delta is `git add -A .` twice, and `git add -A` respects `.gitignore` (§11 item
+        /// 26). A root whose only write is `.env`, in a repository that ignores `.env`, therefore
+        /// moves no tree: `pre_tree == post_tree`, `changed_paths: []`, an empty patch — **the same
+        /// bytes as a root that wrote nothing, and the same bytes as the escaped-write signature
+        /// this whole record exists to distinguish from** (§11 item 24, `8a69f22`). The prose
+        /// around this module used to claim the distinction unconditionally; it was a claim about
+        /// a *git-visible* delta and did not say so, and that gap is the reason this field is here
+        /// rather than the record simply being documented as lossy.
+        ///
+        /// The instrument cannot be widened — it is git, and this is git's boundary — so what the
+        /// record adds instead is the **size** of the blind spot. `Some(0)` says the empty delta is
+        /// exhaustive: there was nothing under an ignore rule for it to have missed. `Some(n)` says
+        /// it is not, and how much it is not by. That is the same triple the whole record is built
+        /// on — *nothing was counted* / *nothing is there* / *something is there and unmeasured* —
+        /// applied one level down.
+        ///
+        /// # What it deliberately is not
+        ///
+        /// **Not a delta.** It is a count of ignored entries present at exit, so an edit to an
+        /// ignored file that already existed does not move it. Making it a delta would mean a
+        /// second `git status --ignored` at `prepare`, on the latency path before the root starts,
+        /// for a reading that is still not a diff — the ignored bytes are not in any tree object,
+        /// so there is nothing to diff them against. A reader is owed the honest cheap thing, and
+        /// this is it.
+        ///
+        /// **Not paths.** `changed_paths` is bounded by what git tracks; an ignored listing is
+        /// bounded by `target/` and `node_modules/`, so putting the names in the sidecar would put
+        /// a build directory in an audit record. `git status --porcelain --ignored` collapses to
+        /// directory entries, which is also why the count is of *entries* and not of files.
+        ///
+        /// `None` means the count could not be taken — git failed, or the reading was never
+        /// attempted. An absence, never a zero: a zero here is the strongest thing this record can
+        /// say, and it must not be sayable by accident.
+        ignored_not_measured: Option<usize>,
     },
     NotAttempted {
         reason: Reason,
@@ -229,7 +343,13 @@ pub struct RootChange {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_at_exit: Option<Oid>,
     pub scope: RootScope,
-    /// **Everything that changed in the root's directory between launch and exit, whoever did it.**
+    /// **Everything git could see change in the root's directory between launch and exit, whoever
+    /// did it.**
+    ///
+    /// Two honesties in one field, and only one of them is in the name. *Whoever did it* is the
+    /// attribution half, and the name carries it. *Everything git could see* is the completeness
+    /// half, and no name can carry both — it lives here, in `RootDelta::Observed::changed_paths`,
+    /// and in the count of what was passed over.
     ///
     /// Named `working_tree_delta` and not `root_writes` because M1 has no filesystem attribution:
     /// an operator hand-edit, a background `cargo build` touching a tracked generated file, and a
@@ -257,7 +377,9 @@ impl RootChange {
                     pre_dirty_paths,
                     scope_violations,
                     diff,
+                    ignored_not_measured,
                 } => RootObservation::Observed {
+                    ignored_not_measured: *ignored_not_measured,
                     pre_tree: pre_tree.clone(),
                     post_tree: post_tree.clone(),
                     changed_count: changed_paths.len(),
@@ -313,6 +435,7 @@ mod tests {
                 dirty_at_launch: 0,
                 diff_bytes: if changed == 0 { 0 } else { 120 },
                 scope_violation_count: 0,
+                ignored_not_measured: Some(0),
             },
         }
     }
@@ -399,6 +522,7 @@ mod tests {
                 pre_dirty_paths: vec![],
                 scope_violations: paths.clone(),
                 diff: Some(Capped::whole("x".repeat(4 * 1024 * 1024))),
+                ignored_not_measured: Some(4),
             },
         };
         // The sidecar is unbounded on purpose — it is a file, not a `write(2)`.
@@ -422,6 +546,7 @@ mod tests {
                 pre_dirty_paths: vec![],
                 scope_violations: vec![],
                 diff: Some(Capped::whole("+hi\n")),
+                ignored_not_measured: Some(0),
             },
             ..sidecar.clone()
         };
@@ -491,6 +616,7 @@ mod tests {
                 dirty_at_launch: usize::MAX,
                 diff_bytes: usize::MAX,
                 scope_violation_count: usize::MAX,
+                ignored_not_measured: Some(usize::MAX),
             },
             ..observed(0)
         };
@@ -515,6 +641,7 @@ mod tests {
                 pre_dirty_paths: vec!["operator.txt".into()],
                 scope_violations: vec!["b/c.rs".into()],
                 diff: Some(Capped::whole("+hello\n")),
+                ignored_not_measured: Some(3),
             },
         };
         match sidecar.record().observation {
@@ -554,6 +681,10 @@ mod tests {
                     truncated: true,
                     original_bytes: 900_000,
                 }),
+                // `None`, so the one case in this module where the count was not obtained is
+                // constructed somewhere: a reader must never meet a shape only the happy path
+                // builds.
+                ignored_not_measured: None,
             },
         };
         match sidecar.record().observation {

@@ -147,6 +147,46 @@ fn a_dirty_repo_where_nothing_moved_still_reports_nothing_moved() {
     assert!(snap.diff(&repo, &pre, &post).unwrap().is_empty());
 }
 
+/// **The instrument's blind spot, and the one number that says how big it is** (§11 item 26).
+///
+/// `git add -A .` respects `.gitignore`, so an ignored write moves no tree at all: the two
+/// snapshots are the same object name, the path list is empty, the patch is empty. That is the
+/// whole hole, asserted here on the instrument rather than argued in prose — and beside it the
+/// count that lets a reader tell this reading from a genuinely quiet run.
+///
+/// Watched red before `ignored_entries` existed: the first three assertions passed and there was
+/// nothing to ask the fourth question of.
+#[test]
+fn an_ignored_write_moves_no_tree_and_the_count_is_what_says_so() {
+    let dir = scratch("root-change-ignored");
+    let repo = fixture_repo(&dir);
+    let agent = dir.join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::write(repo.join(".gitignore"), ".env\n").unwrap();
+
+    let snap = TreeSnapshot::open(&repo, &agent).unwrap();
+    let pre = snap.take(&repo).unwrap();
+    assert_eq!(
+        snap.ignored_entries(&repo).unwrap(),
+        0,
+        "nothing is ignored yet, so an empty delta here would be exhaustive"
+    );
+
+    std::fs::write(repo.join(".env"), "SECRET=1\n").unwrap();
+    let post = snap.take(&repo).unwrap();
+    assert_eq!(
+        pre.0, post.0,
+        "the hole itself: git cannot see an ignored write, so the tree is unmoved"
+    );
+    assert!(snap.changed_paths(&repo, &pre, &post).unwrap().is_empty());
+    assert!(snap.diff(&repo, &pre, &post).unwrap().is_empty());
+    assert_eq!(
+        snap.ignored_entries(&repo).unwrap(),
+        1,
+        "…and this is the only thing that distinguishes that empty delta from a quiet run"
+    );
+}
+
 /// **NC-3 — marion does not mutate the repository it is measuring.**
 ///
 /// Five witnesses, and the load-bearing one is the object count. `git add -A` and `git write-tree`
@@ -230,6 +270,38 @@ fn a_directory_that_is_not_a_worktree_is_refused_by_name() {
     );
 }
 
+/// **A state directory inside the repository under measurement is refused, by name.**
+///
+/// `marion run --repo /r --state-dir /r/.marion-state` puts the agent dir — and therefore the
+/// copied index, the snapshot object store, the journal, the configuration and the sidecar —
+/// *inside the tree `git add -A .` is about to walk. Three things go wrong at once and none of
+/// them announces itself: marion's own files are measured as root activity, the object store the
+/// snapshot is writing into changes underneath it while it is being written, and the record that
+/// comes out is a record of marion rather than of the root.
+///
+/// Refusing is this repository's stated direction for a configuration it cannot honour, and the
+/// refusal names **both** directories because the fix is to move one of them and an operator has
+/// to know which two are in conflict. Excluding the state dir from the snapshot instead was
+/// considered and rejected: the delta's claim is that it is the whole tree, and an exclusion would
+/// weaken that claim for every run to rescue one misconfiguration.
+#[test]
+fn a_state_dir_inside_the_measured_repository_is_refused_naming_both_directories() {
+    let dir = scratch("root-change-state-inside");
+    let repo = fixture_repo(&dir);
+    let agent = repo.join(".marion-state/project/agents/a");
+    std::fs::create_dir_all(&agent).unwrap();
+    let e = TreeSnapshot::open(&repo, &agent)
+        .expect_err("marion must not measure a tree it is writing its own state into");
+    let msg = e.to_string();
+    for needle in [&*repo.display().to_string(), &*agent.display().to_string()] {
+        assert!(
+            msg.contains(needle),
+            "the refusal must name both directories — the fix is to move one of them: `{needle}` \
+             is missing from: {msg}"
+        );
+    }
+}
+
 // --- the record, through a real `marion run` ----------------------------------------------------
 
 /// A `codex` stub on a directory prepended to `PATH`.
@@ -273,6 +345,29 @@ const REACHED_THE_BRIDGE_GEMINI: &str = concat!(
     r#"echo '{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}'"#,
     "\n",
     r#"echo '{"type":"tool_result","tool_id":"g1","status":"success","output":"ok"}'"#,
+);
+
+/// The file the gemini stub writes **only when it was actually granted an edit tool**.
+///
+/// gemini has no `--tools` flag: its availability axis *is* `--approval-mode auto_edit`, which is
+/// what makes `write_file` and `replace` exist at all (§11 item 24, `gemini::AUTO_EDIT_APPROVAL_MODE`).
+/// So a stub that consults its own argv and writes only under that mode is doing exactly what the
+/// real harness does with the same grant, one layer down.
+const WRITE_GRANT_WITNESS: &str = "granted.txt";
+
+/// A gemini stub that honours its own permission axis.
+///
+/// **Not a stub that always writes.** A test whose harness writes unconditionally proves the file
+/// got there, never that the grant did — and the failure being guarded against is precisely a
+/// marion that hands out a declaration it has no record behind.
+const GRANT_HONOURING_GEMINI: &str = concat!(
+    "case \" $* \" in *auto_edit*) printf 'the grant reached the harness\\n' > ",
+    "granted.txt",
+    " ;; esac\n",
+    r#"echo '{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}'"#,
+    "\n",
+    r#"echo '{"type":"tool_result","tool_id":"g1","status":"success","output":"ok"}'"#,
+    "\nexit 0",
 );
 
 struct Run {
@@ -351,6 +446,34 @@ fn marion_run(dir: &Path, body: &str, timeout_secs: &str) -> Run {
     std::fs::create_dir_all(&state).unwrap();
     let bin = stub_codex(dir, body);
     run_marion(dir, &repo, &state, &bin, timeout_secs)
+}
+
+/// [`marion_run`], in a repository whose `.gitignore` names `.env` — the blind spot §11 item 26
+/// describes, set up so a test can drive a root straight into it.
+///
+/// The ignore rule is **committed**, not merely written, because `git add -A .` consults the
+/// working tree's rules either way and a test whose fixture differed from a real repository's in
+/// that respect would be measuring something else.
+fn marion_run_ignoring_env(dir: &Path, body: &str) -> Run {
+    let repo = fixture_repo(dir);
+    std::fs::write(repo.join(".gitignore"), ".env\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.email=marion@example.invalid",
+            "-c",
+            "user.name=marion",
+            "commit",
+            "-qm",
+            "ignore .env",
+        ],
+    );
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let bin = stub_codex(dir, body);
+    run_marion(dir, &repo, &state, &bin, "30")
 }
 
 /// Every file named `leaf` anywhere under `root`.
@@ -507,6 +630,81 @@ fn a_root_that_wrote_and_a_root_that_did_not_produce_different_records() {
     );
 }
 
+/// **NC-9 — a root that wrote only an ignored path must not read as a root that wrote nothing.**
+///
+/// `git add -A .` respects `.gitignore` (§11 item 26), so a root whose only write is `.env` moves
+/// no tree: `pre_tree == post_tree`, `changed_paths: []`, an empty patch. That reading is
+/// **byte-identical to the escaped-write signature the whole gate exists to distinguish from**, and
+/// the record used to have no way to say so. The delta cannot be widened — the instrument is git
+/// and git is what has the blind spot — so what the record must carry instead is the *size of the
+/// blind spot*, which is the same triple-distinction principle as `None` / `NotAttempted` /
+/// `Observed{0}`: an empty delta beside `ignored_not_measured: Some(0)` is exhaustive, and one
+/// beside `Some(1)` is not.
+///
+/// Two runs, one fixture, one `#[test]`, for NC-1's reason. Case A writes the ignored path and case
+/// B writes nothing; **both are `Observed` with an empty delta**, which is the hole stated rather
+/// than hidden, and the closing assertion is that the two records nevertheless differ. Neither case
+/// can make that assertion alone.
+#[test]
+fn a_root_that_wrote_only_an_ignored_path_does_not_read_as_a_root_that_wrote_nothing() {
+    let dir_a = scratch("root-change-ignored-wrote");
+    let a = marion_run_ignoring_env(
+        &dir_a,
+        &format!("printf 'SECRET=1\\n' > .env\n{REACHED_THE_BRIDGE}\nexit 0"),
+    );
+    assert_eq!(a.code, Some(0), "case A: {}", a.stderr);
+    assert!(a.repo.join(".env").is_file(), "the stub really did write");
+    let (rec_a, side_a) = change_record(&a);
+    let (paths, patch, bytes) = observed(&side_a);
+    assert!(
+        paths.is_empty() && patch.is_empty() && bytes == 0,
+        "this is the hole, asserted rather than assumed: git cannot see an ignored write, so the \
+         delta is empty even though the root wrote — {paths:?}"
+    );
+
+    let dir_b = scratch("root-change-ignored-quiet");
+    let b = marion_run_ignoring_env(&dir_b, &format!("{REACHED_THE_BRIDGE}\nexit 0"));
+    assert_eq!(b.code, Some(0), "case B: {}", b.stderr);
+    let (rec_b, side_b) = change_record(&b);
+    let (paths, _, bytes) = observed(&side_b);
+    assert!(paths.is_empty() && bytes == 0);
+
+    assert_ne!(
+        rec_a.observation, rec_b.observation,
+        "a root that wrote an ignored file and a root that wrote nothing produced the same \
+         record. The delta is a **git-visible** delta and always was; what a reader must still be \
+         able to tell apart is an empty delta that is exhaustive from one with a blind spot behind \
+         it, and today they are the same bytes — which is exactly the ambiguity §11 item 24 and \
+         `8a69f22` are about"
+    );
+    match (&rec_a.observation, &rec_b.observation) {
+        (
+            RootObservation::Observed {
+                ignored_not_measured: a,
+                ..
+            },
+            RootObservation::Observed {
+                ignored_not_measured: b,
+                ..
+            },
+        ) => {
+            assert_eq!(
+                *b,
+                Some(0),
+                "case B's empty delta is exhaustive: there is nothing under an ignore rule for it \
+                 to have missed, and `Some(0)` is how the record says so"
+            );
+            assert_eq!(
+                *a,
+                Some(1),
+                "case A's empty delta is not exhaustive: one ignored entry exists that the delta \
+                 never looked at"
+            );
+        }
+        other => panic!("both cases must be measurements: {other:?}"),
+    }
+}
+
 /// **NC-6 — the record survives every exit path.**
 ///
 /// The post-snapshot sits at the **top** of `journal_the_roots_outcome`, before the match on the
@@ -579,9 +777,9 @@ fn a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_
     let state = dir.join("state");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&state).unwrap();
-    // A stub for the second half only. The first half never starts a process: the gate is decided
+    // A stub for every half but the first. The first never starts a process: the gate is decided
     // in `prepare`, before anything is spawned or written.
-    let bin = stub_gemini(&dir, &format!("{REACHED_THE_BRIDGE_GEMINI}\nexit 0"));
+    let bin = stub_gemini(&dir, GRANT_HONOURING_GEMINI);
 
     let refused = run_marion_as(&dir, &repo, &state, &bin, "30", "gemini-impl", &[]);
     assert_ne!(
@@ -635,6 +833,86 @@ fn a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_
             "the flag must journal a decision not to look, never `Failed`, which would put a git \
              failure that never happened into the audit record: {other:?}"
         ),
+    }
+    assert!(
+        !repo.join(WRITE_GRANT_WITNESS).exists(),
+        "the harness was launched with an edit grant it should not have had"
+    );
+
+    // **The paired control, and the reason the halves above are not enough.** Everything up to here
+    // can be satisfied by a marion that hands a declined root its full declaration: the stub is
+    // never asked to write, so nothing looks at the grant at all, and only the exit codes and the
+    // journalled `NotAttempted` go red. So: same fixture, same stub, one flag different, and the
+    // stub does with its axis what a real harness does — writes only if it was granted the tool.
+    let recordable = fixture_repo(&dir);
+    let granted = run_marion_as(&dir, &recordable, &state, &bin, "30", "gemini-impl", &[]);
+    assert_eq!(
+        granted.code,
+        Some(0),
+        "a recordable repository is the configuration the grant exists for:\n{}",
+        granted.stderr
+    );
+    assert!(
+        recordable.join(WRITE_GRANT_WITNESS).is_file(),
+        "the grant never reached the harness, so the negative half below asserts nothing:\n{}",
+        granted.stderr
+    );
+
+    // Removed **before** the declined run, or its absence afterwards would be the granted run's
+    // file still sitting there and the assertion would pass on a marion that granted both.
+    std::fs::remove_file(recordable.join(WRITE_GRANT_WITNESS)).expect("the granted run wrote it");
+    let declined = run_marion_as(
+        &dir,
+        &recordable,
+        &state,
+        &bin,
+        "30",
+        "gemini-impl",
+        &["--no-change-record"],
+    );
+    assert_eq!(declined.code, Some(0), "{}", declined.stderr);
+    assert!(
+        !recordable.join(WRITE_GRANT_WITNESS).exists(),
+        "a root whose change record was declined was handed the edit grant anyway — the witness is \
+         the harness's own, so this is the grant reaching the model and not merely the flag:\n{}",
+        declined.stderr
+    );
+}
+
+/// The same refusal, reached the way an operator would reach it: `--state-dir` pointed inside
+/// `--repo`, on the command line, with a type that declares a grant.
+///
+/// The unit test above pins the instrument; this pins that the instrument's refusal actually
+/// travels — through `RootChangeBase::Unavailable`, through the grant gate, into an exit code and a
+/// sentence an operator can act on. **Every other snapshot test in this file puts the state dir
+/// outside the fixture, so without this one the configuration has no coverage at all**, which is
+/// how it survived to be found by review.
+#[test]
+fn a_root_whose_state_dir_is_inside_the_repository_is_refused_on_the_command_line() {
+    let dir = scratch("root-change-state-inside-run");
+    let repo = fixture_repo(&dir);
+    let state = repo.join(".marion-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let bin = stub_gemini(&dir, &format!("{REACHED_THE_BRIDGE_GEMINI}\nexit 0"));
+    let run = run_marion_as(&dir, &repo, &state, &bin, "30", "gemini-impl", &[]);
+    assert_ne!(
+        run.code,
+        Some(0),
+        "marion measured a tree it was writing its own journal, index and object store into, and \
+         called the result a record of what the root did:\n{}",
+        run.stderr
+    );
+    for needle in [
+        &*repo.display().to_string(),
+        &*state.display().to_string(),
+        "--no-change-record",
+    ] {
+        assert!(
+            run.stderr.contains(needle),
+            "the refusal must name both directories and the way out; `{needle}` is missing \
+             from:\n{}",
+            run.stderr
+        );
     }
 }
 

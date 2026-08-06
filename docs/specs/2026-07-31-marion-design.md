@@ -4781,6 +4781,28 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     into `target/`, produces no delta. Inherited unchanged from item 19's stated boundary — it is
     the same mechanism, applied to a root rather than a child.
 
+    **Narrowed 2026-08-06, after review.** This paragraph was always here; the *rest* of the
+    record's vocabulary was not written to match it. `root::availability_axis`, `RootError::
+    NoChangeRecord`'s operator-facing sentence and `marion_core::root_change`'s module doc all
+    described the delta as though it were exhaustive — as the thing that tells a root's write apart
+    from the escaped-write signature of item 24 — when a root writing only `.env` produces exactly
+    that signature. Every one of those now says **git-visible**, with the reason attached. The
+    boundary itself is unchanged and unclosable in git; what changed is that the record now carries
+    **the size of the blind spot**, `RootDelta::Observed::ignored_not_measured` — a count of
+    `git status --porcelain --ignored` entries at exit. An empty delta beside `Some(0)` is
+    exhaustive; beside `Some(3)` it is not; `None` means even the count was not obtained. That is
+    the same three-way distinction the record is built on, applied one level down, and it is the
+    most the instrument can honestly say.
+
+    **A configuration the record refuses.** `--state-dir` inside `--repo` is now refused by name
+    (`spawn::SpawnError::StateDirInsideRepo`). marion's own index, object store, journal and
+    configuration would otherwise be walked by `git add -A .` and recorded as the root's work,
+    while the object store the snapshot writes into changed underneath it. Refused rather than
+    excluded from the walk: the delta's claim is that it is the working tree, and an exclusion
+    would weaken that claim on every run to rescue one misconfiguration. Refused even when the
+    directory is gitignored, because a record whose correctness depends on a file the operator can
+    edit mid-run is not a record.
+
     **Attribution.** The record cannot say the *root* changed a path, only that the path changed
     while the root ran. An operator's hand edit, a background `cargo build` touching a tracked
     generated file, and a concurrent `marion run` all land in it. M1 has no filesystem attribution

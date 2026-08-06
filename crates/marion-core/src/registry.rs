@@ -36,7 +36,7 @@ use crate::journal::{
     ContractPersisted, JournalRecord, PermissionDenied, RecordKind, SpawnIntent, WriterId, decode,
 };
 use crate::node::{NodeState, ReapState};
-use crate::root_change::{RootChanged, RootObservation};
+use crate::root_change::{RootChanged, RootGrant, RootObservation};
 
 /// A contract, as the journal knows it: that it exists, whose it is, and how it ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +79,9 @@ pub struct ReplayedNode {
     /// a record that could fail to fold would put a `Result` in the one place §7.4 already fixed
     /// the policy for.
     pub root_change: Option<RootChanged>,
+    /// §9's grant, as the journal knew it **before the process started**. See
+    /// [`Self::granted_without_a_record`] for the reading it makes possible.
+    pub root_grant: Option<RootGrant>,
     /// How many records mentioned this node — the audit handle for "the journal says nothing
     /// more about it than that it started".
     pub records: usize,
@@ -103,6 +106,7 @@ impl ReplayedNode {
             contracts: Vec::new(),
             denied_permissions: Vec::new(),
             root_change: None,
+            root_grant: None,
             records: 0,
         }
     }
@@ -155,6 +159,22 @@ impl ReplayedNode {
             self.root_change.as_ref().map(|c| &c.observation),
             Some(RootObservation::Observed { .. })
         )
+    }
+
+    /// **A grant was issued and nothing ever said what came of it** — the run marion did not
+    /// survive (§9).
+    ///
+    /// [`Self::did_marion_look`] answers *is there a measurement*; this answers *was there
+    /// something to measure*. The pair distinguishes a root that ran with no tools and produced an
+    /// honest empty record from one that was handed `write` on the operator's own checkout and then
+    /// disappeared — a distinction the journal could not make at all until the grant was written
+    /// before the process rather than after it.
+    ///
+    /// **A reading, not a policy.** Like [`Self::is_unresolved`], it says what the journal shows;
+    /// what to *do* about a root whose grant has no outcome is §7.2's restart question, and replay
+    /// deliberately does not answer it.
+    pub fn granted_without_a_record(&self) -> bool {
+        self.root_grant.is_some() && self.root_change.is_none()
     }
 
     /// **The node §7.2's `Orphaned` marking will be about**: recorded live, no exit observed, no
@@ -329,6 +349,10 @@ impl Replay {
             // happen, or a rewrite marion made deliberately — either way the later reading is the
             // one that was true last.
             RecordKind::RootChanged(c) => node.root_change = Some(c),
+            // Written once, in `prepare`, before the process exists. Overwriting rather than
+            // keeping the first has the same justification as the arm above: a second record for
+            // one agent id cannot happen in a run, so the later one is the one that was true last.
+            RecordKind::RootGrantDecided(g) => node.root_grant = Some(g),
         }
     }
 
@@ -793,6 +817,7 @@ mod tests {
             dirty_at_launch: 0,
             diff_bytes: 0,
             scope_violation_count: 0,
+            ignored_not_measured: Some(0),
         };
         let cases = [
             ("the journal says nothing", None, false),

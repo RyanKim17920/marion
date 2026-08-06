@@ -140,6 +140,14 @@ pub enum RecordKind {
     /// `AgentId` ([`crate::paths::AgentDir::root_change`]) — exactly as `ContractPersisted` carries
     /// none. See [`crate::root_change`] for why a path list cannot live in a journal record.
     RootChanged(crate::root_change::RootChanged),
+    /// §9: a root's availability axis was decided, and this is the tree it was decided against.
+    ///
+    /// **The intent half of [`Self::RootChanged`]**, and it exists for §6.1 step 7's reason rather
+    /// than for symmetry: `RootChanged` is written when the run *returns*, so a marion that dies
+    /// mid-run left no evidence that a grant had been issued at all. Same discipline as
+    /// [`Self::SpawnIntent`] — write the intent, do the act, confirm — applied to the other thing
+    /// `root::prepare` does.
+    RootGrantDecided(crate::root_change::RootGrant),
 }
 
 impl RecordKind {
@@ -160,6 +168,12 @@ impl RecordKind {
                 | RecordKind::Exited(_)
                 | RecordKind::ReapIntent(_)
                 | RecordKind::ReapConfirmed(_)
+                // A record whose *whole purpose* is to survive a crash, and which is therefore
+                // worth nothing on the ~50 ms group-commit timer: the window it exists to cover
+                // opens the instant `prepare` returns. §4.3's rule — fsync the intent, then do the
+                // act — is the same argument that puts `SpawnIntent` in this set, and the act here
+                // is handing a root a tool on the operator's own checkout.
+                | RecordKind::RootGrantDecided(_)
         )
     }
 
@@ -175,6 +189,7 @@ impl RecordKind {
             RecordKind::ContractPersisted(r) => &r.agent_id,
             RecordKind::PermissionDenied(r) => &r.agent_id,
             RecordKind::RootChanged(r) => &r.agent_id,
+            RecordKind::RootGrantDecided(r) => &r.agent_id,
         }
     }
 }

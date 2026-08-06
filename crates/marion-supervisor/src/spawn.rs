@@ -17,6 +17,23 @@ use marion_harness::{ChildExit, StreamOutcome};
 pub enum SpawnError {
     #[error("git {0} failed: {1}")]
     Git(&'static str, String),
+    /// marion's own state directory is **inside** the repository a root's change record would
+    /// measure ([`TreeSnapshot::open`]).
+    ///
+    /// A separate variant and not a `Git` failure, because git never failed: marion refused to ask
+    /// it a question whose answer would have been about marion. The distinction reaches an operator
+    /// — "git is not installed" and "your two directories are nested" are different fixes — and it
+    /// reaches a reader of the journal, where this arrives as `RootObservation::Failed` with this
+    /// sentence rather than as git's own words.
+    #[error(
+        "marion's state directory is inside the repository it would measure: {agent_dir} is under \
+         {repo}. `git add -A .` would walk marion's own index, object store, journal and \
+         configuration and record them as the root's work, and the object store would be changing \
+         underneath the snapshot that is writing it — so the measurement is refused rather than \
+         taken against a tree marion is itself writing into. Point `--state-dir` outside `--repo`; \
+         the default state directory already is."
+    )]
+    StateDirInsideRepo { repo: PathBuf, agent_dir: PathBuf },
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
@@ -334,6 +351,39 @@ impl TreeSnapshot {
     /// `RootObservation::NotAttempted` or `Failed` with this error's own words, because a root that
     /// produced no delta because nobody looked must never read as a root that changed nothing.
     pub fn open(repo: &Path, agent_dir: &Path) -> Result<Self, SpawnError> {
+        // **The state directory must not be inside the repository being measured** — refused
+        // first, because every other failure here is git's and this one is marion's own.
+        //
+        // `marion run --repo /r --state-dir /r/.marion-state` is accepted by the CLI and, until
+        // this check, by everything downstream: the agent dir is created before the pre-snapshot,
+        // so the copied index and the snapshot object store land *inside the tree `add -A .` is
+        // about to walk*. Three things then go wrong at once and not one of them announces itself.
+        // marion's own journal, configuration, sidecar and loose objects are measured as root
+        // activity, so the record describes marion. The object store the snapshot is writing into
+        // changes underneath it while `write-tree` runs. And the delta grows by whatever marion
+        // wrote between the two snapshots, which is a number nobody can subtract afterwards.
+        //
+        // **Refused rather than excluded.** Skipping the state dir inside the walk was the other
+        // option and is worse: the delta's whole claim is that it is the working tree, and an
+        // exclusion weakens that claim for every run to rescue one misconfiguration — the class of
+        // trade §6.7 refuses elsewhere. This is one directory the operator can move.
+        //
+        // **Refused even when the state dir is gitignored**, where the walk would in fact skip it.
+        // Making the refusal conditional on an ignore rule would make the record's correctness
+        // depend on a file the operator owns and can edit mid-run, and the failure when they do is
+        // the silent one this whole record exists to end.
+        //
+        // Both paths are canonicalised first: `/var` and `/private/var` are the same directory on
+        // macOS and a textual `starts_with` says they are not, which would make the refusal fire
+        // for nobody. A path that cannot be canonicalised is compared as given — a check that
+        // cannot resolve its subject must not silently pass.
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        if real(agent_dir).starts_with(real(repo)) {
+            return Err(SpawnError::StateDirInsideRepo {
+                repo: repo.to_path_buf(),
+                agent_dir: agent_dir.to_path_buf(),
+            });
+        }
         // Asked of git rather than by probing for a `.git` entry: a linked worktree's `.git` is a
         // *file*, a bare repo has no worktree at all, and `$GIT_DIR` can point anywhere. One
         // question, answered by the tool that owns it.
@@ -399,6 +449,29 @@ impl TreeSnapshot {
         Ok(Oid(git_env(repo, &self.env(), &["write-tree"])?
             .trim()
             .into()))
+    }
+
+    /// **How many entries [`Self::take`] was never allowed to look at**, right now.
+    ///
+    /// `git add -A .` respects `.gitignore`, so the tree it writes is the tree *git can see* and a
+    /// root writing only `.env` moves nothing (§11 item 26). That is the instrument's boundary and
+    /// no amount of git widens it — but the boundary's *size* is one cheap question, and a reader
+    /// who can ask it can tell an empty delta that is exhaustive from one that is not.
+    ///
+    /// `--porcelain --ignored` and not `--ignored=matching`: the default collapses an ignored
+    /// directory to one entry, so `target/` costs one line rather than forty thousand. The answer
+    /// is therefore a count of *entries* — which is what
+    /// `marion_core::root_change::RootDelta::Observed::ignored_not_measured` says it is.
+    ///
+    /// The snapshot's own environment, for the reason every other call here uses it: this walk must
+    /// not be the one thing in this type that touches the operator's index.
+    pub fn ignored_entries(&self, repo: &Path) -> Result<usize, SpawnError> {
+        Ok(
+            git_env(repo, &self.env(), &["status", "--porcelain", "--ignored"])?
+                .lines()
+                .filter(|l| l.starts_with("!!"))
+                .count(),
+        )
     }
 
     /// `HEAD`, as **context** and never as a diff base. `None` where there is no commit yet.
