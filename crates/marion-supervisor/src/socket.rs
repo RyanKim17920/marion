@@ -92,12 +92,22 @@
 //! immediately after the bind and removed by [`Serving::drop`] beside the socket. Finding one is the
 //! same evidence as finding a socket, and neither outlives a clean exit.
 //!
-//! A **child's MCP bridge learns it without being told.** Inheritance is unavailable by construction
-//! — a bridge is a grandchild of a process that may already be dead, and the supervisor is not any
-//! of its ancestors at all — so there is no environment variable and nothing passed down. The bridge
-//! derives the socket *directory* with [`socket_paths`], the same pure function this module already
-//! insists must not be written twice, and reads the identity beside the socket it was going to dial
-//! anyway.
+//! **Nothing in production reads it.** That sentence replaces a paragraph that described a child's
+//! MCP bridge deriving the socket directory and reading the identity beside the socket it was going
+//! to dial — a shape that is buildable and is not built. The bridge does not read this file, and no
+//! other code in this workspace does either; the only readers today are this crate's tests. A module
+//! doc that describes a consumer which does not exist is worse than silence about a file whose whole
+//! subject is *who is really there*, because the next reader budgets for a channel marion has not
+//! got. §11 item 28's design says the same thing from the other side: it proposes putting a per-node
+//! capability token into the bridge's **environment block** precisely because no supervisor→bridge
+//! channel exists today.
+//!
+//! What the carry is *for* is §7.3.2 (a)'s operator-facing kill, which is not built: S15 measured
+//! that `killpg(pid)` is wrong for a double-forked supervisor and that the pgid must be carried
+//! rather than derived, so the number has to be written down somewhere before the operation that
+//! needs it can be written at all. Publishing it now costs one small file with a lifetime that is
+//! already enforced ([`Serving::drop`]) and one that cannot lie ([`read_identity`] answers only
+//! while the lock behind it is held). Reading it is what does not exist yet.
 //!
 //! # What this module does not do
 //!
