@@ -50,7 +50,15 @@ impl NodeState {
 /// §7.2. `Orphaned` is **not** an exit: it is what marion writes about a node whose fate it has no
 /// record of deciding, and it is reached only by the restart policy — never by an observation.
 /// Journal replay therefore never *produces* it (see [`crate::registry`]); the marking is a
-/// decision taken over a replayed tree, and it is not this milestone's work.
+/// decision taken over a replayed tree.
+///
+/// **`Orphaned` is not a claim that the process died, and no consumer may read it as one.** §7.2 is
+/// explicit that it covers two physically different worlds — *"the process may be gone **or still
+/// running with marion no longer attached**"* — and marion takes no liveness probe before writing
+/// it, so it cannot distinguish them. It says what marion **knows**, which is nothing. A consumer
+/// that needs "the process is gone" wants `NodeState::Exited(_)`, which is written from an
+/// observation; a consumer that needs "marion will see nothing more from this node" wants
+/// [`ReapState::is_terminal_for_gating`], which is what this state actually supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReapState {
     Live,
@@ -60,8 +68,21 @@ pub enum ReapState {
 
 impl ReapState {
     /// §7.6, stated totally there: *"a descendant counts as terminal for descendant-gating iff
-    /// `state == Exited(_)` OR `reap_state ∈ {Orphaned, ReapedIdle}`."* Both non-`Live` states
-    /// share the property that forces it — the process is gone and the node cannot resolve itself.
+    /// `state == Exited(_)` OR `reap_state ∈ {Orphaned, ReapedIdle}`."*
+    ///
+    /// The property both non-`Live` states share is **not** that the process is gone — an earlier
+    /// reading of this comment said so, and §7.2 contradicts it in as many words for `Orphaned`,
+    /// which explicitly covers a node *"still running with marion no longer attached"*. What they
+    /// share is that **marion will observe no further transition of this node**: `ReapedIdle`
+    /// because marion ended the process itself and holds the transcript, `Orphaned` because marion
+    /// is not attached to whatever may still be running. Neither can resolve itself *to marion*,
+    /// and a gate waiting on one waits forever — which is what §7.6's rule is about, and why the
+    /// rule survives the correction unchanged.
+    ///
+    /// The distinction matters because the two premises license different things. "The process is
+    /// gone" would license reporting a death, reusing the node's resources, or telling an operator
+    /// there is nothing running; none of those follow here, and §7.2's marking takes no liveness
+    /// probe that could make them follow.
     pub fn is_terminal_for_gating(self) -> bool {
         matches!(self, ReapState::ReapedIdle | ReapState::Orphaned)
     }
