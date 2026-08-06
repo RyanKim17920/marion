@@ -586,6 +586,55 @@ mod tests {
         );
     }
 
+    /// **A later truthful `Exited` supersedes the marking in the registry that made it** — the
+    /// production path, not a re-derivation.
+    ///
+    /// The marking is derived rather than journaled precisely because a node marion lost may still
+    /// be driven by a live process that writes a truthful terminal record afterwards (§11 items 28
+    /// and 30). That argument is about **this** registry: the supervisor that marked the node is
+    /// the one following the journal when the record lands, and it is the one whose subscribers
+    /// read the tree. A test that replays the whole journal afresh proves only that a *reboot*
+    /// re-derives correctly, which was never in doubt.
+    #[test]
+    fn an_exit_appended_after_the_marking_supersedes_it_in_the_registry_that_marked_it() {
+        let dir = scratch("registry-restart-superseded");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("lost", None)));
+        append(&path, &line("w", 1, spawned("lost")));
+
+        let mut r = Registry::boot_path(&path).expect("a readable journal boots");
+        assert_eq!(
+            r.tree().get(&id("lost")).unwrap().reap_state,
+            marion_core::node::ReapState::Orphaned,
+            "the boot marked it, which is the premise of the rest of this test",
+        );
+
+        // The bridge that was in fact still driving it finished and wrote its exit.
+        append(&path, &line("w", 2, exited("lost")));
+        assert_eq!(r.poll(), 1, "the exit was folded in");
+
+        let n = r.tree().get(&id("lost")).unwrap();
+        assert_eq!(
+            n.state,
+            marion_core::node::NodeState::Exited(ExitStatus::Ok),
+            "the journal now records the fate",
+        );
+        assert_eq!(
+            n.reap_state,
+            marion_core::node::ReapState::Live,
+            "§7.2: a derived marking is superseded by the record that decides the fate; a tree \
+             reading Exited and Orphaned at once contradicts itself",
+        );
+        assert_eq!(
+            n.reap_state,
+            marion_core::registry::replay(&std::fs::read(&path).unwrap())
+                .get(&id("lost"))
+                .unwrap()
+                .reap_state,
+            "and it agrees with what a fresh boot over the same bytes would read",
+        );
+    }
+
     /// A journal whose nodes all reached a recorded fate leaves the restart pass with nothing to
     /// say — the negative control for the test above, so "everything is orphaned" cannot pass it.
     #[test]
