@@ -345,6 +345,19 @@ pub struct DuplexSpec<'a> {
     ///   `a_child_run_writes_not_one_byte_of_the_nodes_stream_to_marions_own_stdout` is the test
     ///   that keeps it true whatever a future frame handler decides to be helpful about.
     pub sink: Option<StreamSink<'a>>,
+    /// Called **once**, with the child's pid, at the first instant a process exists — between
+    /// `command.spawn()` and the first byte written to its stdin.
+    ///
+    /// §6.1 step 7's confirmation is the caller's to write, not the driver's, but only the driver
+    /// knows the pid and only the driver knows when the process came into being. This is that
+    /// seam, and the position is the whole of it: a hook called after the run would name a process
+    /// its caller had already watched die, which is exactly the record item 28 step 1 replaces.
+    ///
+    /// `&dyn Fn` for [`StreamSink`]'s reason — the driver holds the spec by shared reference and a
+    /// hook that needs state carries its own cell. Called on the driver's own thread, so a hook
+    /// that blocks delays the node's first turn; the one production hook appends one journal
+    /// record and fsyncs it, which is the cost §6.1 step 7 is written to pay.
+    pub on_started: Option<&'a dyn Fn(i32)>,
 }
 
 /// Hand-written because a [`StreamSink`] is a `dyn Fn` and cannot derive it. The sink is reported as
@@ -360,6 +373,7 @@ impl std::fmt::Debug for DuplexSpec<'_> {
             .field("depth", &self.depth)
             .field("wall_clock", &self.wall_clock)
             .field("sink", &self.sink.map(|_| "<sink>"))
+            .field("on_started", &self.on_started.map(|_| "<on_started>"))
             .finish()
     }
 }
@@ -437,6 +451,14 @@ pub fn run_duplex(
     }
     let mut child = command.spawn()?;
     let pid = child.id() as i32;
+    // **Before one byte reaches the node.** §6.1 step 7's confirmation is the caller's to write and
+    // this is the first instant it can be written truthfully; putting it here rather than after the
+    // ready gate means the window in which a process exists and no durable record names it is one
+    // append and one fsync wide, instead of the node's whole first turn. See
+    // [`DuplexSpec::on_started`].
+    if let Some(started) = spec.on_started {
+        started(pid);
+    }
 
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -756,6 +778,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 // dropped request. That is the whole point of the test.
                 wall_clock: None,
                 sink: None,
+                on_started: None,
             },
         )
         .expect("the run returns");
@@ -864,6 +887,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 // A root: §9 offers it no wall clock, so nothing but the answer ends this run.
                 wall_clock: None,
                 sink: None,
+                on_started: None,
             },
         )
         .expect("the run returns");
@@ -919,6 +943,7 @@ printf '{{"type":"result","subtype":"success"}}\n'"#,
                 depth: crate::root::ROOT_DEPTH,
                 wall_clock: None,
                 sink: None,
+                on_started: None,
             },
         )
         .expect("the run returns");
@@ -968,6 +993,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 // A **child**: bounded, exactly as `run_spawn` bounds one.
                 wall_clock: Some(StdDuration::from_secs(30)),
                 sink: spec_sink,
+                on_started: None,
             },
         )
         .expect("the run returns")
@@ -1186,6 +1212,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 depth: crate::root::ROOT_DEPTH + 1,
                 wall_clock: Some(StdDuration::from_secs(10)),
                 sink: None,
+                on_started: None,
             },
         )
         .expect_err("a node that never got marion's tools must be refused");
@@ -1220,6 +1247,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                 depth: crate::root::ROOT_DEPTH + 1,
                 wall_clock: Some(StdDuration::from_millis(500)),
                 sink: None,
+                on_started: None,
             },
         )
         .expect("the bounded run returns");

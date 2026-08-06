@@ -506,7 +506,22 @@ pub fn run_bounded(
     command: &mut SysCommand,
     timeout: StdDuration,
 ) -> Result<CommandOutput, SpawnError> {
-    run_bounded_with(command, timeout, kill_process_tree)
+    run_bounded_with(command, timeout, kill_process_tree, None)
+}
+
+/// [`run_bounded`], plus the pid of the process it started, handed over at the instant it exists.
+///
+/// The counterpart of [`crate::duplex::DuplexSpec::on_started`], and it exists for exactly the same
+/// reason: §6.1 step 7's confirmation belongs to the caller, but only this function knows the pid
+/// and only this function knows when there is one. A separate entry point rather than a fourth
+/// parameter on [`run_bounded`] — that signature is public, has callers outside `run_spawn`, and
+/// widening it would make every one of them state an absence they have nothing to say about.
+pub(crate) fn run_bounded_watched(
+    command: &mut SysCommand,
+    timeout: StdDuration,
+    on_started: &dyn Fn(i32),
+) -> Result<CommandOutput, SpawnError> {
+    run_bounded_with(command, timeout, kill_process_tree, Some(on_started))
 }
 
 /// `run_bounded` with the expiry kill injected, so tests can run the path where the sweep *fails*
@@ -515,6 +530,7 @@ fn run_bounded_with(
     command: &mut SysCommand,
     timeout: StdDuration,
     kill_tree: fn(i32),
+    on_started: Option<&dyn Fn(i32)>,
 ) -> Result<CommandOutput, SpawnError> {
     command
         .process_group(0)
@@ -522,6 +538,13 @@ fn run_bounded_with(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn()?;
+    // **Before the pipes are drained, let alone before the process is waited on.** Everything below
+    // this line can block for the child's whole lifetime, so a hook called anywhere else would be
+    // reporting the existence of a process the caller had already finished with — see
+    // [`run_bounded_watched`].
+    if let Some(started) = on_started {
+        started(child.id() as i32);
+    }
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
     let stdout_drain = Drain::start(stdout);
@@ -685,6 +708,7 @@ fn launch_only_child(
     inv: &Invocation,
     auth: Auth,
     bound: StdDuration,
+    on_started: &dyn Fn(i32),
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -693,7 +717,7 @@ fn launch_only_child(
     if auth == Auth::Canned {
         cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
     }
-    let output = run_bounded(&mut cmd, bound)?;
+    let output = run_bounded_watched(&mut cmd, bound, on_started)?;
     Ok(ChildRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -740,7 +764,7 @@ fn launch_only_child(
 /// What a child's duplex launch needs beyond its compiled [`Invocation`] — the node, rather than the
 /// program.
 ///
-/// A struct because these six travel together and always have: they are one node's identity, its
+/// A struct because these travel together and always have: they are one node's identity, its
 /// turn and its bounds, and every one of them is read straight into a [`DuplexSpec`] field. Passing
 /// them positionally was already at the edge of readable and went over it when recording landed.
 struct ChildDuplex<'a> {
@@ -751,6 +775,10 @@ struct ChildDuplex<'a> {
     depth: u32,
     /// Where this node's stream is recorded, or `None` if nothing is recording it (§7.3.3).
     events: Option<&'a crate::events::EventSink>,
+    /// §6.1 step 7's confirmation, run at the instant the child's process exists. Not `Option`
+    /// here the way it is on [`DuplexSpec`]: a child marion journals an intent for is a child
+    /// marion must journal a confirmation for, so this path has nothing to say about an absence.
+    on_started: &'a dyn Fn(i32),
 }
 
 fn duplex_child(
@@ -765,6 +793,7 @@ fn duplex_child(
         bound,
         depth,
         events,
+        on_started,
     } = child;
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -804,6 +833,7 @@ fn duplex_child(
             depth,
             wall_clock: Some(bound),
             sink,
+            on_started: Some(on_started),
         },
     )?;
     Ok(ChildRun {
@@ -1098,8 +1128,60 @@ pub fn run_spawn(
     if let Some(es) = &events {
         es.lifecycle(marion_core::event::Lifecycle::Opened);
     }
+    // **§6.1 step 3's position, and it is a move rather than a new call.** The version used to be
+    // asked for after the child had been run and reaped, which was the only place it *could* be
+    // asked while `Spawned` was written there too. Step 7's confirmation now goes out at the
+    // instant the process exists, and it carries this field, so the probe has to precede the
+    // launch — which is where §6.1 step 3 put it in the first place.
+    //
+    // The cost is stated rather than hidden: [`HARNESS_VERSION_TIMEOUT`] now sits on the
+    // pre-launch critical path, so a harness that hangs answering `--version` delays the child by
+    // that bound instead of delaying its caller by that bound after the child is done. It is the
+    // same total, spent before rather than after, and it is bounded for the same reason.
+    //
+    // Asked **once**, not once per reader. The `Spawned` record below and `contract.child.version`
+    // further down both need it, and each used to run its own `--version` — two processes, two
+    // deadlines to hang on, and two chances for the journal and the contract to disagree about the
+    // version of a single node's harness.
+    let version = harness_version(&inv.program);
+    // **§6.1 step 7's confirmation, moved to the instant it becomes true.**
+    //
+    // It used to be written here-ish in the source but *after* the whole run: `spawn` is
+    // synchronous, so the first instant marion had observed a process was also the instant it had
+    // observed the exit, and the record could only honestly carry `pid: None`. That absence was
+    // load-bearing in the wrong direction — `session/quit`'s `KillTree` preflight refused whenever
+    // there was anything to kill, and §11 item 30's two runaway shapes, a live reparented process
+    // and a process already dead, were indistinguishable on disk.
+    //
+    // Handed to the launch path as a hook because only the launch path knows the pid and when
+    // there is one. `Spawned` is in §4.3's barrier set, so the append fsyncs before the driver
+    // writes a byte to the child's stdin.
+    //
+    // **The window this creates, named rather than apologised for.** Between `command.spawn()` and
+    // this append a process exists and the journal does not say so — one `write(2)` plus one
+    // fsync wide. It cannot be made smaller: the pid does not exist before the spawn, so there is
+    // nothing earlier to record. Today's equivalent window was the child's *entire lifetime*, and
+    // what it left behind was a `SpawnIntent` that could mean either "no process was ever started"
+    // or "a process is running and marion cannot name it". After this, `SpawnIntent` alone means
+    // **no process exists**, full stop — a worktree leak, never a process leak.
+    let announce_started = |pid: i32| {
+        crate::journal::record(
+            &env.project_dir,
+            RecordKind::Spawned(Spawned {
+                agent_id: agent_id.clone(),
+                harness_version: version.clone(),
+                // The **compiled** value, for §6.7's reason: what went on the wire, never what was
+                // asked for. `None` on codex, whose `exec` surface carries no model argument.
+                model: inv.model.clone(),
+                // A real signal target, for the first time. Not an identity: marion records no
+                // pid-plus-start-time and no command line, so this proves where to send a signal
+                // now, not who a pid was later (see `restart.rs`).
+                pid: Some(pid),
+            }),
+        );
+    };
     let run = match path {
-        LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound)?,
+        LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound, &announce_started)?,
         LaunchPath::Duplex => duplex_child(
             &inv,
             env.auth,
@@ -1112,6 +1194,7 @@ pub fn run_spawn(
                 bound,
                 depth: ctx.depth,
                 events: events.as_ref(),
+                on_started: &announce_started,
             },
         )?,
     };
@@ -1126,30 +1209,6 @@ pub fn run_spawn(
     {
         es.record_capture(&run.stdout);
     }
-    // §6.1 step 7's confirmation, written the moment marion can truthfully make it. The process is
-    // started and reaped inside the call above — `spawn` is synchronous — so this is the first
-    // instant marion has *observed* that a process existed at all. Written before it, this would be
-    // a confirmation of something that had not happened, which is the whole point of splitting
-    // intent from confirmation; a crash in the window between the two therefore leaves an
-    // unconfirmed intent, which is the correct reading of a node whose fate marion does not know.
-    // Asked **once**, not once per reader. The journal record below and `contract.child.version`
-    // further down both need it, and each used to run its own `--version` — two processes, two
-    // deadlines to hang on, and two chances for the journal and the contract to disagree about the
-    // version of a single node's harness.
-    let version = harness_version(&inv.program);
-    crate::journal::record(
-        &env.project_dir,
-        RecordKind::Spawned(Spawned {
-            agent_id: agent_id.clone(),
-            harness_version: version.clone(),
-            // The **compiled** value, for §6.7's reason: what went on the wire, never what was
-            // asked for. `None` on codex, whose `exec` surface carries no model argument.
-            model: inv.model.clone(),
-            // marion drove the process through a helper that owns the child and surfaces no pid.
-            // An absence, recorded as one.
-            pid: None,
-        }),
-    );
     // **Every permission marion refused on this child's behalf**, through the same emitter the root
     // uses (`journal::record_permission_denials`), which is also where the argument for the journal
     // being the *only* destination lives. Until this call existed `duplex_child` discarded
@@ -1590,6 +1649,7 @@ mod tests {
                 SysCommand::new("perl").args(["-e", &script]),
                 StdDuration::from_millis(300),
                 kill_only_the_direct_child,
+                None,
             );
             let _ = tx.send(out);
         });

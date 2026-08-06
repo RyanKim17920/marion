@@ -507,8 +507,22 @@ impl RegistryHandle {
     /// through the reap, and dropping a `Child` does not signal it. A reap intent present is §7.2's
     /// own crash window and holds regardless of how the spawn ended.
     ///
+    /// **The first sentence became true rather than aspirational with §11 item 28 step 1**, and
+    /// this predicate got stricter in the safe direction as a result. `run_spawn` now appends
+    /// `Spawned { pid: Some(_) }` between `command.spawn()` and the child's first byte of stdin,
+    /// so the two middle clauses have teeth on a child: any failure *after* the process exists
+    /// leaves a record marion cannot mistake for a spawn that never happened. It is still
+    /// aspirational for a **root**, whose record is written after the run with `pid: None`
+    /// (`root.rs`'s `spawned_record`) — item 28's step 6.
+    ///
     /// The b600d82 case — `SpawnIntent` then `SpawnAborted`, nothing else, which is exactly what a
-    /// `marion run` whose root failed to launch journals — still satisfies all four.
+    /// `marion run` whose root failed to launch journals — still satisfies all four, and now does
+    /// so for a stronger reason: a launch that fails before there is a process writes no `Spawned`
+    /// at all, so the shape is *evidence* that no process exists rather than merely consistent
+    /// with it. `background_spawn.rs`'s
+    /// `a_launch_that_fails_before_the_process_exists_journals_no_spawned_record` produces that
+    /// shape from a real failing launch; the residency reading of it is
+    /// `an_aborted_spawn_does_not_keep_the_supervisor_resident_but_an_outstanding_one_does`.
     fn abandoned(n: &marion_core::registry::ReplayedNode) -> bool {
         n.spawn_aborted.is_some()
             && !n.spawn_confirmed
@@ -1735,6 +1749,95 @@ mod tests {
             replay.get(&id("done")).unwrap().state,
             NodeState::Exited(ExitStatus::Ok),
             "quitting does not rewrite an existing terminal"
+        );
+    }
+
+    /// **Disposition (a) reaches a real process and leaves it dead** — the other half of §11 item
+    /// 28 step 1, and the half no other test in this file can make.
+    ///
+    /// Every other `KillTree` test injects [`RecordingRuntime`], which records a pid and signals
+    /// nothing. That is deliberate — they are about *selection and ordering* — but it means the
+    /// whole set could stay green over a `kill_process_tree_and_wait` that did nothing at all. This
+    /// one runs the **real** [`SystemQuitRuntime`] against a **real** process started in its own
+    /// process group, which is what a child marion spawns is (`run_bounded_with`'s
+    /// `process_group(0)`), and asserts the process is gone afterwards.
+    ///
+    /// It is only reachable because `Spawned` now carries a pid. Until item 28 step 1 every
+    /// production writer recorded `pid: None`, the preflight below refused whenever there was
+    /// anything to kill, and this disposition could not fire on a real fleet at all — a
+    /// mutation-audited path with no production path to it. The refusal itself is pinned
+    /// separately, over the record shape rather than over a live process, by
+    /// `kill_tree_refuses_a_confirmed_node_whose_pid_is_not_recorded_yet`.
+    ///
+    /// **Two negative controls, because "everything is already dead" passes vacuously.** The
+    /// confirmed set is asserted non-empty before the call, and the process is asserted *alive*
+    /// before it — a `kill_tree` over an all-terminal tree signals nothing and succeeds, and would
+    /// satisfy every other assertion here.
+    ///
+    /// Liveness is read three-valued through `ps`: the test is the killed process's parent, so
+    /// between the signal and the reap it is a **zombie**, which `kill(pid, 0)` reports as alive
+    /// and which `kill_process_tree_and_wait` correctly counts as dead.
+    #[test]
+    fn kill_tree_over_the_real_runtime_leaves_the_recorded_process_dead() {
+        use marion_testsupport::{Liveness, liveness};
+        use std::os::unix::process::CommandExt;
+
+        // Its own group, so the group-addressed kill reaches it and cannot reach the test runner:
+        // `signal_targets` refuses marion's own pgid, so without this the signal lands nowhere.
+        let mut victim = std::process::Command::new("sleep")
+            .arg("600")
+            .process_group(0)
+            .spawn()
+            .expect("a `sleep` starts");
+        let pid = victim.id() as i32;
+        assert_eq!(
+            liveness(pid),
+            Liveness::Alive,
+            "NC: the victim must be alive before the kill, or every assertion below is vacuous"
+        );
+
+        let fx = fx_with(
+            "handler-quit-kill-real",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", pid),
+                state("root", NodeState::Running),
+            ],
+        );
+        let confirmed = vec![id("root")];
+        assert!(
+            !confirmed.is_empty(),
+            "NC: an empty confirmed set means an all-terminal tree, which this disposition \
+             satisfies without signalling anything"
+        );
+
+        let result = quit(&fx, marion_proto::QuitDisposition::KillTree { confirmed });
+        // Reap before asserting, unconditionally: a failure here must not also leak the victim.
+        let outcome = result.map(|r| r.outcome);
+        let after = liveness(pid);
+        let _ = victim.kill();
+        let _ = victim.wait();
+
+        let marion_proto::QuitOutcome::Killed { nodes, .. } =
+            outcome.expect("the exact live set was confirmed")
+        else {
+            panic!("kill returned another disposition's outcome")
+        };
+        assert_eq!(nodes.len(), 1, "one live node, one kill: {nodes:?}");
+        assert_ne!(
+            after,
+            Liveness::Alive,
+            "the journal named pid {pid}, marion said it killed it, and it is still running"
+        );
+        assert_ne!(
+            after,
+            Liveness::CannotTell,
+            "`ps` could not be asked, so nothing here was measured"
+        );
+        assert_eq!(
+            liveness(pid),
+            Liveness::Gone,
+            "and once reaped it is absent outright"
         );
     }
 

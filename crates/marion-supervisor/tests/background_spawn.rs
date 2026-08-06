@@ -40,7 +40,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
-use marion_testsupport::{Scratch, fixture_repo, scratch};
+use marion_testsupport::{Liveness, Scratch, fixture_repo, liveness, scratch};
 use serde_json::{Value, json};
 
 /// A bound that exists **only to fail**, never to be reached on a passing run.
@@ -98,15 +98,16 @@ fn shim(
         r#"#!/bin/sh
 case "$1" in
   --version)
-    # **A harness that answers its run and then hangs on `--version`.** Opt-in, because every other
-    # test in this file needs the probe to be instant. `run_spawn` asks for the version *after* the
-    # child has been reaped, which is the point: the child's own `timeout_secs` has already been
-    # spent and bounds nothing here, so an unbounded probe is an unbounded `run_spawn` — and, on
-    # the background path, a `wait` that never returns.
+    # **A harness that hangs on `--version`.** Opt-in, because every other test in this file needs
+    # the probe to be instant — which, since §11 item 28 step 1 moved the probe ahead of the launch
+    # (§6.1 step 3), is now a claim about the *pre-launch* path rather than about a caller waiting
+    # after its child is done. The child's `timeout_secs` bounds the run and never this, so an
+    # unbounded probe is an unbounded `run_spawn` either way, and on the background path a `wait`
+    # that never returns.
     #
-    # It sleeps rather than waiting for the gate: by the time this runs the gate is already open,
-    # and the hang has to outlast marion's own probe bound to be a hang at all. The sleep is the
-    # shim's own life cap, so no bad run strands it indefinitely.
+    # It sleeps rather than waiting for the gate, so the hang does not depend on the gate's state
+    # in either ordering; it only has to outlast marion's own probe bound to be a hang at all. The
+    # sleep is the shim's own life cap, so no bad run strands it indefinitely.
     if [ -e {slow_version} ]; then sleep {life_secs}; fi
     echo "codex-cli 0.146.0-marion-shim"; exit 0 ;;
 esac
@@ -182,11 +183,27 @@ impl Bridge {
     /// state and a test that mutated its own would leak the shim into every other test in this
     /// binary, including ones that expect a real harness.
     fn start(repo: &Path, state: &Path, shim_dir: &Path) -> Self {
-        let path = format!(
-            "{}:{}",
-            shim_dir.to_string_lossy(),
-            std::env::var("PATH").unwrap_or_default()
-        );
+        Self::start_with_path(
+            repo,
+            state,
+            &format!(
+                "{}:{}",
+                shim_dir.to_string_lossy(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+    }
+
+    /// [`Bridge::start`] with the `PATH` stated outright, for the one test that needs to control
+    /// what marion can and cannot find.
+    ///
+    /// **`execvp` does not stop at the first match.** A `PATH` entry whose `codex` fails to exec is
+    /// skipped and the search continues, so putting a deliberately unlaunchable shim first proves
+    /// nothing while a real `codex` sits further along — which is exactly what this file's own
+    /// fixture did on the first run of that test, launching the machine's real harness. The only
+    /// way to make "the harness cannot be launched" a fact rather than a hope is to state the whole
+    /// search path.
+    fn start_with_path(repo: &Path, state: &Path, path: &str) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_marion-supervisor"))
             .arg("mcp")
             .env("PATH", path)
@@ -279,6 +296,15 @@ impl Bridge {
     /// a real Claude Code harness does **not** do this — see the module note on that test.
     fn close_stdin(&mut self) {
         self.stdin = None;
+    }
+
+    /// The bridge's **own** pid — the process that calls `run_spawn`, not the process it starts.
+    ///
+    /// Held only so the pid assertion can name the mutation it rules out: a `Spawned` record
+    /// filled in with `std::process::id()` names a live process and would satisfy any assertion
+    /// that only asked for liveness.
+    fn pid(&self) -> i32 {
+        self.child.id() as i32
     }
 
     /// Close stdin and wait for the bridge to leave.
@@ -375,6 +401,38 @@ impl Fixture {
     fn bridge(&self) -> Bridge {
         Bridge::start(&self.repo, &self.state, &self.shim_dir)
     }
+    /// A bridge whose **only** `codex` is a deliberately unlaunchable one.
+    ///
+    /// The shim is rewritten with an interpreter that does not exist, so it is still found and
+    /// still executable and the failure lands inside `command.spawn()` — and the `PATH` is cut
+    /// down to the system directories, because `execvp` skips a match that fails to exec and keeps
+    /// searching. With the ordinary `PATH` this test launched the machine's real `codex` instead,
+    /// which is how that was discovered rather than reasoned about.
+    ///
+    /// The two system directories are asserted to hold no `codex` rather than assumed to, so the
+    /// test states its own precondition instead of depending on how the machine was set up. `git`
+    /// and `ps` — the only other programs the spawn path shells out to — live in them.
+    fn bridge_with_an_unlaunchable_harness(&self) -> Bridge {
+        let bin = self.shim_dir.join("codex");
+        std::fs::write(&bin, "#!/marion/no/such/interpreter\nexit 0\n")
+            .expect("the broken shim is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("the broken shim is executable");
+        for dir in ["/usr/bin", "/bin"] {
+            assert!(
+                !Path::new(dir).join("codex").exists(),
+                "{dir} holds a `codex`, so the reduced PATH below would let marion launch a real \
+                 harness and this test would assert nothing"
+            );
+        }
+        Bridge::start_with_path(
+            &self.repo,
+            &self.state,
+            &format!("{}:/usr/bin:/bin", self.shim_dir.to_string_lossy()),
+        )
+    }
+
     /// Make the shim hang when asked its version, from the next invocation on.
     fn make_version_slow(&self) {
         std::fs::write(&self.slow_version, b"hang").expect("the slow-version marker is written");
@@ -391,6 +449,25 @@ impl Fixture {
             .map(|d| d.flatten().count())
             .unwrap_or(0)
     }
+    /// The pids of the shim children that have actually started, **as the children named
+    /// themselves**.
+    ///
+    /// The shim's marker file is named `$$` — the started process's own pid, written by that
+    /// process. So this is the one measurement in the file that can contradict marion about
+    /// *which* process it started, rather than only about how many. Every other route to a pid
+    /// here would be marion's own bookkeeping restated.
+    fn started_pids(&self) -> Vec<i32> {
+        let mut pids: Vec<i32> = std::fs::read_dir(&self.started)
+            .map(|d| {
+                d.flatten()
+                    .filter_map(|e| e.file_name().to_string_lossy().parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        pids.sort_unstable();
+        pids
+    }
+
     /// How many shim children have actually *exited*. The other end of the same measurement, and
     /// the one the EOF-hold control orders the bridge's own exit against.
     fn finished_children(&self) -> usize {
@@ -422,6 +499,25 @@ impl Fixture {
         walk(&self.state, &mut out);
         out
     }
+}
+
+/// The `pid` field of every `Spawned` record in a journal, in order.
+///
+/// `Option<i32>` and not `i32`, because the two absences this file has to keep apart are *"no
+/// `Spawned` record has been written yet"* (an empty vector) and *"a `Spawned` record was written
+/// and records no pid"* (a `None` element). Collapsing them would let the record's own regression
+/// — going back to `pid: None` — read as a record that had not arrived yet, which is the one
+/// mutation the pid assertion exists to catch.
+fn spawned_pids(journal: &str) -> Vec<Option<i32>> {
+    journal
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| {
+            v.get("kind")
+                .and_then(|k| k.get("Spawned"))
+                .map(|s| s.get("pid").and_then(Value::as_i64).map(|p| p as i32))
+        })
+        .collect()
 }
 
 /// **THE ordering control: the caller regains the turn while its child is still running.**
@@ -493,6 +589,172 @@ fn a_backgrounded_spawn_returns_while_its_child_is_still_running() {
         "and a collected child has a completion, since it reached a terminal state: {text}"
     );
 
+    assert!(bridge.close().success());
+}
+
+/// **`Spawned` is durable at the instant the process exists, and it names *that* process** —
+/// design §11 item 28 step 1, and the record §6.1 step 7 asks for.
+///
+/// Until this, `run_spawn` journalled `Spawned` after the child had already been run **and
+/// reaped**, so `pid` was `None` at every production writer and a pid captured there would have
+/// named a process marion had watched die. Two live consequences, both closed by the assertion
+/// below: `session/quit`'s `KillTree` preflight refused whenever there was anything to kill, and
+/// item 30's two runaway shapes — *a live reparented process* and *a process already dead* — were
+/// indistinguishable on disk.
+///
+/// **Three properties, and each rules out a different way of passing cheaply.**
+///
+/// 1. *A pid is recorded at all.* `pid: None` leaves `spawned_pids` reading `[None]`, which is
+///    deliberately distinguishable from the record not having arrived.
+/// 2. *It is the child's pid, not some live pid.* The shim names its own marker file `$$`, so the
+///    journal is checked against a number the child wrote about itself. `std::process::id()` — the
+///    bridge's own pid, the obvious wrong fill-in — is never in that set, and is named separately
+///    so the failure says which mutation it caught.
+/// 3. *The record is durable while the process is still running.* The gate is shut for the whole
+///    of the assertion, so no child can have exited; moving the append back after `child.wait()`
+///    means there is no record to read at all here, and the deadlock bound fails naming it.
+///
+/// Liveness is read three-valued through `ps` ([`marion_testsupport::liveness`]) and never as
+/// `kill(pid, 0)`, which calls a zombie alive — the reading that would let property 3 pass over a
+/// corpse the bridge had not yet reaped.
+///
+/// **The journal is read from a second process.** The bridge writes it; this test reads it. That
+/// is not incidental: the whole value of the record is to a process that did not start the child,
+/// and a same-process assertion could be satisfied by in-memory state that never reached disk.
+#[test]
+fn the_journal_names_the_childs_own_live_pid_while_the_child_is_still_running() {
+    let fx = fixture("background-spawned-pid");
+    let mut bridge = fx.bridge();
+
+    let reply = bridge.tool("spawn", spawn_args(true));
+    assert!(!is_error(&reply), "the spawn started: {reply}");
+    let task_id = handle_task_id(&reply);
+
+    // The child's own side of the world first: a process exists and has told us its pid.
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    while fx.started_children() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the handle came back but no child process ever started"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let started = fx.started_pids();
+    assert_eq!(
+        started.len(),
+        1,
+        "exactly one child was asked for: {started:?}"
+    );
+
+    // Then marion's side, read off the file the bridge wrote.
+    let mut pids = Vec::new();
+    while pids.is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "a child process is running and no `Spawned` record names it. Either the record is \
+             still written after the child is reaped — which is what this test exists to forbid — \
+             or it was never written at all."
+        );
+        pids = spawned_pids(&fx.journal_text());
+        if pids.is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert_eq!(pids.len(), 1, "one child, one Spawned record: {pids:?}");
+
+    // Property 3, asserted **before** the pid is looked at: the gate has not been opened, so the
+    // process this record is about cannot have exited between the record and this line.
+    assert!(
+        !fx.gate.exists() && fx.finished_children() == 0,
+        "the gate is shut and no child has exited, so `Spawned` is on disk about a process that \
+         is still running — not a post-mortem"
+    );
+
+    // Property 1.
+    let pid = pids[0].expect(
+        "`Spawned` records no pid. An absence here is the state item 28 step 1 removes: a \
+         non-terminal node marion cannot prove a signal reaches, and a runaway indistinguishable \
+         from a process already dead.",
+    );
+    // Property 2.
+    assert!(
+        started.contains(&pid),
+        "`Spawned` records pid {pid}, which is not a pid any child claimed for itself \
+         ({started:?})"
+    );
+    assert_ne!(
+        pid,
+        bridge.pid(),
+        "the recorded pid is the bridge's own, so the record names the process that did the \
+         spawning rather than the one that was spawned"
+    );
+    assert_eq!(
+        liveness(pid),
+        Liveness::Alive,
+        "the recorded pid must name a process that can still run code; a zombie or an absence \
+         means the record was written about a child marion had already finished with"
+    );
+
+    // Only now is the child allowed to finish, and the run completes normally around the record.
+    fx.open_gate();
+    let collected = bridge.tool("wait", json!({"task_id": &task_id}));
+    assert!(
+        text_of(&collected).contains("\"completion\""),
+        "the child still reaches a terminal state: {collected}"
+    );
+    assert_eq!(
+        spawned_pids(&fx.journal_text()),
+        vec![Some(pid)],
+        "and the record is written once, at the spawn, not again at the reap"
+    );
+    assert!(bridge.close().success());
+}
+
+/// **A launch that fails before a process exists journals no `Spawned` record at all** — the other
+/// half of item 28 step 1's claim, and the one that keeps `abandoned()` honest.
+///
+/// The pid assertion above says a record that *is* written names a live process. This says the
+/// record is not written when there is nothing to name. Together they are what makes
+/// `SpawnIntent`-and-nothing-after mean **no process exists, full stop** — §11 item 30's shapes 1
+/// and 2 ceasing to be indistinguishable on disk — and what lets `handler.rs`'s `abandoned()` read
+/// `SpawnIntent` + `SpawnAborted` as a node that strands nothing.
+///
+/// **The strictness is the safe direction and this is what pins it.** `abandoned()` requires no
+/// `Spawned` and no pid; step 1 makes `Spawned` arrive far earlier, so a change that fired the
+/// hook one line too early — before `command.spawn()` could fail — would leave a `Spawned` beside
+/// the abort and hold the supervisor resident over a process that never existed. That is the
+/// b600d82 case in reverse, and no argument distinguishes the two: only the record does.
+///
+/// `started_children() == 0` is the half that cannot be faked from marion's side. The shim writes
+/// its own marker, so this is the child's account of never having run, not marion's.
+#[test]
+fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
+    let fx = fixture("background-launch-fails");
+    let mut bridge = fx.bridge_with_an_unlaunchable_harness();
+
+    let reply = bridge.tool("spawn", spawn_args(false));
+    assert!(
+        is_error(&reply),
+        "a harness that cannot be executed is a refused spawn, not a silent one: {reply}"
+    );
+
+    assert_eq!(
+        fx.started_children(),
+        0,
+        "no child process ever ran, by the children's own account"
+    );
+    assert_eq!(
+        spawned_pids(&fx.journal_text()),
+        Vec::new(),
+        "and no `Spawned` record was written, so the intent alone means what it now claims to \
+         mean: there is no process and there never was one"
+    );
+    let journal = fx.journal_text();
+    assert!(
+        journal.contains("SpawnIntent") && journal.contains("SpawnAborted"),
+        "the intent is still resolved as an abort — §7.2: a node marion decided the fate of is \
+         never one marion lost: {journal}"
+    );
     assert!(bridge.close().success());
 }
 
