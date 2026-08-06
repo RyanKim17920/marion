@@ -1,0 +1,23 @@
+[package]
+name = "marion-proto"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# The domain types these messages carry. §10 puts the registry model, the journal and the task
+# contract in `marion-core`, so a wire vocabulary that re-declared `NodeState` or `AgentId` would
+# be a second source of truth for the thing the supervisor is authoritative about.
+marion-core = { path = "../marion-core" }
+serde.workspace = true
+# Not merely a serializer here: a JSON-RPC frame is classified by which keys it carries (§
+# envelope.rs), and `Value` is also the honest type for the two payloads marion couriers rather
+# than interprets — a harness's elicitation schema and a harness's own event body.
+serde_json.workspace = true
+thiserror.workspace = true
+
+# Deliberately **not** a dependency: `marion-harness`. §3.3's `Capabilities` and
+# `ExecutionSurfaces` would be the natural content of a `node/get` result, but `ExecutionSurfaces`
+# lives there beside ~170 KB of per-harness adapter code, and a protocol crate that pulls in four
+# harness adapters to name a boolean has inverted §10's dependency direction. See `model.rs` for
+# what `NodeSummary` therefore does not carry, and why that is an omission rather than a copy.

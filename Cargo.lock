@@ -137,6 +137,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "marion-proto"
+version = "0.1.0"
+dependencies = [
+ "marion-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "marion-provider"
 version = "0.1.0"
 dependencies = [
