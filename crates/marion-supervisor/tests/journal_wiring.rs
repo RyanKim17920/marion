@@ -298,6 +298,7 @@ fn record_kinds(journal: &Path) -> Vec<&'static str> {
             RecordKind::ReapConfirmed(_) => "ReapConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
+            RecordKind::RootChanged(_) => "RootChanged",
         })
         .collect()
 }
@@ -834,6 +835,7 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
             RecordKind::ReapConfirmed(_) => "ReapConfirmed",
             RecordKind::ContractPersisted(_) => "ContractPersisted",
             RecordKind::PermissionDenied(_) => "PermissionDenied",
+            RecordKind::RootChanged(_) => "RootChanged",
         })
         .collect();
     for expected in ["SpawnIntent", "Spawned", "Exited", "ContractPersisted"] {

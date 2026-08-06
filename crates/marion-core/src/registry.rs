@@ -35,6 +35,7 @@ use crate::journal::{
     ContractPersisted, JournalRecord, PermissionDenied, RecordKind, SpawnIntent, WriterId, decode,
 };
 use crate::node::{NodeState, ReapState};
+use crate::root_change::{RootChanged, RootObservation};
 
 /// A contract, as the journal knows it: that it exists, whose it is, and how it ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,14 @@ pub struct ReplayedNode {
     pub exit: Option<ProcessExit>,
     pub contracts: Vec<ReplayedContract>,
     pub denied_permissions: Vec<PermissionDenied>,
+    /// §9's root change record, as the journal knows it. **Last record wins**, and `None` means
+    /// *the journal says nothing* — which is a third reading beside "marion did not look" and
+    /// "marion looked and nothing changed". See [`Self::did_marion_look`].
+    ///
+    /// One `Option` and one match arm, because replay is total and infallible (see [`replay`]) and
+    /// a record that could fail to fold would put a `Result` in the one place §7.4 already fixed
+    /// the policy for.
+    pub root_change: Option<RootChanged>,
     /// How many records mentioned this node — the audit handle for "the journal says nothing
     /// more about it than that it started".
     pub records: usize,
@@ -92,6 +101,7 @@ impl ReplayedNode {
             exit: None,
             contracts: Vec::new(),
             denied_permissions: Vec::new(),
+            root_change: None,
             records: 0,
         }
     }
@@ -119,6 +129,31 @@ impl ReplayedNode {
 
     pub fn exit_status(&self) -> Option<ExitStatus> {
         self.state.exit_status()
+    }
+
+    /// **Is there a measurement behind this node's silence?** (§9, and `8a69f22`'s subject.)
+    ///
+    /// The question is not "did anything change" — it is whether marion *has a reading at all*.
+    /// Before [`RootChanged`] existed, a root that wrote and a root that did not produced the same
+    /// nothing, which is the exact byte pattern §11 item 24 describes and `8a69f22` was written to
+    /// destroy for children. Three inputs, three answers, and a reader that keys on
+    /// [`Self::root_change`] being `Some` would collapse two of them:
+    ///
+    /// | journal | `root_change` | this |
+    /// |---|---|---|
+    /// | says nothing | `None` | `false` |
+    /// | `NotAttempted` | `Some` | `false` |
+    /// | `Failed` | `Some` | `false` |
+    /// | `Observed { changed_count: 0 }` | `Some` | `true` |
+    ///
+    /// **`Failed` is `false`, and that is not an oversight.** An attempt that could not see
+    /// produced no delta, so reading it as a look would let a broken `git` masquerade as a clean
+    /// bill of health — which is precisely the shape of failure this method exists to name.
+    pub fn did_marion_look(&self) -> bool {
+        matches!(
+            self.root_change.as_ref().map(|c| &c.observation),
+            Some(RootObservation::Observed { .. })
+        )
     }
 
     /// **The node §7.2's `Orphaned` marking will be about**: recorded live, no exit observed, no
@@ -265,6 +300,11 @@ impl Replay {
                 }
             }
             RecordKind::PermissionDenied(d) => node.denied_permissions.push(d),
+            // Last record wins. A root is snapshotted twice in one run and journalled once, so a
+            // second record for one node means a *re*-run of the same agent id, which cannot
+            // happen, or a rewrite marion made deliberately — either way the later reading is the
+            // one that was true last.
+            RecordKind::RootChanged(c) => node.root_change = Some(c),
         }
     }
 
@@ -655,6 +695,182 @@ mod tests {
         assert_eq!(r.records, 0);
         assert!(r.nodes().is_empty());
         assert_eq!(r.truncation, None);
+    }
+
+    /// A root's journal, with whatever change record it was given. `None` is the third case: a
+    /// journal from a build that had no such record, or a run whose record was lost.
+    fn root_journal(change: Option<RootObservation>) -> Vec<u8> {
+        let mut j = vec![record(
+            0,
+            RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: id("root"),
+                parent_id: None,
+                agent_type: "claude".into(),
+                harness: Harness::ClaudeCode,
+                depth: 0,
+                task_id: None,
+            }),
+        )];
+        if let Some(observation) = change {
+            j.push(record(
+                1,
+                RecordKind::RootChanged(RootChanged {
+                    agent_id: id("root"),
+                    base_commit: Some(crate::contract::Oid("a".repeat(40))),
+                    head_at_exit: Some(crate::contract::Oid("a".repeat(40))),
+                    observation,
+                }),
+            ));
+        }
+        bytes(&j)
+    }
+
+    /// **NC-4 — the three readings, through replay.**
+    ///
+    /// *The journal is silent* / *marion did not look, here is why* / *marion looked and nothing
+    /// changed*. That triple is what the whole record exists to produce, and the assertion is
+    /// stated on [`ReplayedNode::did_marion_look`] rather than only on the `Option`, because a
+    /// reader keying on `Some` gets two of the three right and the important one wrong.
+    #[test]
+    fn replay_tells_a_silent_journal_from_a_refusal_to_look_from_a_clean_reading() {
+        let clean = RootObservation::Observed {
+            pre_tree: crate::contract::Oid("b".repeat(40)),
+            post_tree: crate::contract::Oid("b".repeat(40)),
+            changed_count: 0,
+            dirty_at_launch: 0,
+            diff_bytes: 0,
+            scope_violation_count: 0,
+        };
+        let cases = [
+            ("the journal says nothing", None, false),
+            (
+                "marion did not look",
+                Some(RootObservation::NotAttempted {
+                    reason: crate::root_change::Reason::new("not a git worktree"),
+                }),
+                false,
+            ),
+            (
+                "marion looked and could not see",
+                Some(RootObservation::Failed {
+                    reason: crate::root_change::Reason::new("git: command not found"),
+                }),
+                false,
+            ),
+            ("marion looked and nothing changed", Some(clean), true),
+        ];
+        let mut seen = Vec::new();
+        for (label, observation, looked) in cases {
+            let present = observation.is_some();
+            let r = replay(&root_journal(observation));
+            let n = r.get(&id("root")).unwrap();
+            assert_eq!(n.root_change.is_some(), present, "{label}");
+            assert_eq!(
+                n.did_marion_look(),
+                looked,
+                "{label}: pre-`8a69f22` a root that wrote and a root that did not produced the \
+                 same empty `changed_paths` and no record at all; collapsing these readings \
+                 re-creates exactly that byte pattern (§11 item 24)"
+            );
+            seen.push(n.root_change.clone());
+        }
+        // …and the three are not merely differently *labelled*: no two of the four readings are
+        // the same value, so nothing downstream can conflate them by accident.
+        for i in 0..seen.len() {
+            for k in i + 1..seen.len() {
+                assert_ne!(
+                    seen[i], seen[k],
+                    "readings {i} and {k} are indistinguishable"
+                );
+            }
+        }
+    }
+
+    /// The fold is last-record-wins, like `ContractPersisted`'s update — and one `Option`, so a
+    /// second record cannot accumulate a list nobody reads.
+    #[test]
+    fn a_second_change_record_replaces_the_first() {
+        let mut j = vec![record(
+            0,
+            RecordKind::RootChanged(RootChanged {
+                agent_id: id("root"),
+                base_commit: None,
+                head_at_exit: None,
+                observation: RootObservation::NotAttempted {
+                    reason: crate::root_change::Reason::new("first"),
+                },
+            }),
+        )];
+        j.push(record(
+            1,
+            RecordKind::RootChanged(RootChanged {
+                agent_id: id("root"),
+                base_commit: None,
+                head_at_exit: None,
+                observation: RootObservation::Failed {
+                    reason: crate::root_change::Reason::new("second"),
+                },
+            }),
+        ));
+        let r = replay(&bytes(&j));
+        assert!(matches!(
+            r.get(&id("root"))
+                .unwrap()
+                .root_change
+                .as_ref()
+                .unwrap()
+                .observation,
+            RootObservation::Failed { .. }
+        ));
+    }
+
+    /// **NC-8 — replay stays total across a change record it cannot read.**
+    ///
+    /// Three journals: one whose `RootChanged` line is cut mid-record, one whose `observation` tag
+    /// is a name no build ever wrote, and one that is valid. No panic and no `Result` — §7.4 fixes
+    /// the policy already, and the reading is reported as [`Truncation`] exactly as
+    /// `registry.rs`'s two variants specify.
+    #[test]
+    fn a_torn_or_garbled_change_record_ends_the_prefix_without_a_panic() {
+        let valid = root_journal(Some(RootObservation::NotAttempted {
+            reason: crate::root_change::Reason::new("not a git worktree"),
+        }));
+        assert_eq!(replay(&valid).truncation, None);
+        assert!(
+            replay(&valid)
+                .get(&id("root"))
+                .unwrap()
+                .root_change
+                .is_some()
+        );
+
+        // A crash mid-append: the last line has no terminator. §7.4 discards it, and the node
+        // keeps the identity the intact prefix gave it.
+        let torn = &valid[..valid.len() - 20];
+        let r = replay(torn);
+        assert!(
+            matches!(r.truncation, Some(Truncation::UnterminatedTail { .. })),
+            "{:?}",
+            r.truncation
+        );
+        assert!(
+            !r.get(&id("root")).unwrap().did_marion_look(),
+            "a record that was never finished must not be read as a reading"
+        );
+
+        // A complete line naming a variant that does not exist. On an append-only file that is
+        // corruption rather than a torn write, so the prefix ends here rather than skipping it.
+        let garbled = String::from_utf8_lossy(&valid)
+            .replace("NotAttempted", "SomethingNobodyWrote")
+            .into_bytes();
+        let r = replay(&garbled);
+        assert!(
+            matches!(r.truncation, Some(Truncation::Unparsable { line: 1, .. })),
+            "{:?}",
+            r.truncation
+        );
+        assert_eq!(r.records, 1, "the intact prefix is the intent alone");
+        assert!(!r.get(&id("root")).unwrap().did_marion_look());
     }
 
     #[test]

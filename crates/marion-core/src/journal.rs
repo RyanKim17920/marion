@@ -132,6 +132,14 @@ pub enum RecordKind {
     /// §9 says so in as many words, because the node it happens to may be a root, and a root has
     /// no contract to record it in.
     PermissionDenied(PermissionDenied),
+    /// §9: what a **root** did to the operator's own repository, and whether marion looked at all.
+    ///
+    /// The same shape as [`Self::ContractPersisted`], for the same reason: this record is O(1) in
+    /// what the root did, and `<agent-dir>/root-change.json` is authoritative for the paths and the
+    /// patch. It carries no path to that file — the leaf is a constant derivable from the
+    /// `AgentId` ([`crate::paths::AgentDir::root_change`]) — exactly as `ContractPersisted` carries
+    /// none. See [`crate::root_change`] for why a path list cannot live in a journal record.
+    RootChanged(crate::root_change::RootChanged),
 }
 
 impl RecordKind {
@@ -166,6 +174,7 @@ impl RecordKind {
             RecordKind::ReapConfirmed(r) => &r.agent_id,
             RecordKind::ContractPersisted(r) => &r.agent_id,
             RecordKind::PermissionDenied(r) => &r.agent_id,
+            RecordKind::RootChanged(r) => &r.agent_id,
         }
     }
 }
