@@ -24,13 +24,28 @@
 //! then releases them. Nothing here waits a fixed interval and hopes; the ordering is the
 //! mechanism, per this repo's rule about `socket::acquire` and darwin's descriptor visibility.
 //!
-//! # The negative control
+//! # Two tests, and only one of them is good news
 //!
-//! [`concurrent_runs_in_distinct_projects_never_share_a_supervisor_a_journal_or_a_record`] is built
-//! so that a marion which keyed *anything* per-machine instead of per-project goes red three
-//! independent ways: the supervisor census would be one rather than `N`, the state directory would
-//! hold one project dir rather than `N`, and the surviving journal would carry `N` `RootChanged`
-//! records rather than one. Watched red by hand — see the doc comment on the test.
+//! [`concurrent_runs_in_distinct_projects_never_share_a_supervisor_a_journal_or_a_record`] pins
+//! what **works**: different projects do not interfere. It is built so that a marion which keyed
+//! *anything* per-machine instead of per-project goes red three independent ways — the supervisor
+//! census would be one rather than `N`, the state directory would hold one project dir rather than
+//! `N`, and the surviving journal would carry `N` `RootChanged` records rather than one. Each was
+//! watched red on its own.
+//!
+//! [`two_concurrent_roots_in_one_repository_each_record_the_others_work_as_their_own`] pins what
+//! does **not** work, and asserts marion's *current* behaviour rather than its desired one: inside
+//! one repository, two overlapping roots each journal the other's writes as theirs. It is a
+//! recorded limitation in the sense
+//! `detached_supervisor.rs::a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by_name`
+//! established — green today, and whoever fixes the limitation has to delete it deliberately. Its
+//! own negative control is the sequential case: run the same two roots one after the other and each
+//! record names only its own file, which is what proves the concurrent assertion is measuring
+//! overlap and not something that was always true.
+//!
+//! Design §11 item 31 carries the same-repo limitations in full, including the git-level one
+//! (S17, `tests/fixtures/s17/README.md`) that no test here asserts because a test whose verdict is
+//! *"a race occurred"* is a flake by construction.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -82,7 +97,13 @@ struct Fleet {
 }
 
 impl Fleet {
-    fn new(tag: &str) -> Fleet {
+    /// `repos` distinct checkouts under one shared `--state-dir`.
+    ///
+    /// The count is a parameter because the two tests in this file differ in exactly it: four
+    /// projects for the isolation claim, **one** for the same-repo limitation below. Everything
+    /// else — the short state dir, the barrier, the cleanup — is the same bed, which is what makes
+    /// the second test's failure attributable to the shared repository and to nothing else.
+    fn new(tag: &str, repos: usize) -> Fleet {
         let scratch = marion_testsupport::scratch(tag);
         let state = PathBuf::from(format!("/tmp/mcp-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
@@ -90,7 +111,7 @@ impl Fleet {
         let barrier = scratch.join("barrier");
         std::fs::create_dir_all(&barrier).expect("barrier dir");
 
-        let repos = (0..PROJECTS)
+        let repos = (0..repos)
             .map(|i| {
                 let home = scratch.join(format!("p{i}"));
                 std::fs::create_dir_all(&home).expect("project home");
@@ -186,32 +207,12 @@ impl Drop for Fleet {
     }
 }
 
-/// A `codex` stub for project `i`: announce, park on the barrier, write one file, answer the bridge.
-///
-/// The bound on the wait loop is the stub's own, so a fleet that is never released fails as `N`
-/// timed-out runs rather than as a hung suite.
-fn stub_for(dir: &Path, i: usize, barrier: &Path) -> PathBuf {
+/// A `codex` stub with `body` as its whole behaviour, on a `PATH` `dir/bin`.
+fn stub(dir: &Path, body: &str) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).expect("stub bin dir");
     let program = bin.join("codex");
-    let b = barrier.display();
-    std::fs::write(
-        &program,
-        format!(
-            "#!/bin/sh\n\
-             : > '{b}/{i}.started'\n\
-             n=0\n\
-             while [ ! -f '{b}/go' ]; do\n\
-             n=$((n+1))\n\
-             if [ \"$n\" -gt 4000 ]; then break; fi\n\
-             sleep 0.05\n\
-             done\n\
-             printf 'project {i} wrote this\\n' > agent-{i}.txt\n\
-             {REACHED_THE_BRIDGE}\n\
-             exit 0\n"
-        ),
-    )
-    .expect("write stub");
+    std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).expect("write stub");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -221,10 +222,75 @@ fn stub_for(dir: &Path, i: usize, barrier: &Path) -> PathBuf {
     bin
 }
 
-/// One project's `marion run`, started but **not** waited on.
-fn spawn_run(fleet: &Fleet, i: usize) -> std::process::Child {
-    let home = fleet.scratch.join(format!("p{i}"));
-    let bin = stub_for(&home, i, &fleet.barrier);
+/// **Announce, park until the test releases the fleet, write one file, answer the bridge.**
+///
+/// The wait's bound is the stub's own, so a fleet that is never released fails as `N` timed-out
+/// runs rather than as a hung suite.
+fn barrier_body(i: usize, barrier: &Path) -> String {
+    let b = barrier.display();
+    format!(
+        ": > '{b}/{i}.started'\n\
+         n=0\n\
+         while [ ! -f '{b}/go' ]; do\n\
+         n=$((n+1))\n\
+         if [ \"$n\" -gt 4000 ]; then break; fi\n\
+         sleep 0.05\n\
+         done\n\
+         printf 'project {i} wrote this\\n' > agent-{i}.txt\n\
+         {REACHED_THE_BRIDGE}\n\
+         exit 0"
+    )
+}
+
+/// **A two-phase rendezvous that makes the same-repo overlap total rather than likely.**
+///
+/// The obvious one phase — write, then wait for the other file — is not enough, and the bug it
+/// hides is subtle. A root's `pre_tree` is taken in `root::prepare`, *before* its harness launches.
+/// With a single phase the second `marion` could reach `prepare` after the first root had already
+/// written, so its `pre_tree` would contain that file, its delta would correctly name only its own,
+/// and the test would fail on a fast machine and pass on a slow one. Neither outcome would mean
+/// anything.
+///
+/// So there are two barriers, and the first one is the load-bearing one:
+///
+/// 1. **Announce and wait for the other announcement.** A stub only runs after its own `prepare`,
+///    so once both have announced, **both `pre_tree`s are taken** — and neither file exists yet.
+/// 2. **Write, then wait for the other file.** Neither root can exit until both files exist, so
+///    **both `post_tree`s contain both**.
+///
+/// Together those two make the intervals strictly overlapping by construction. No sleep decides
+/// anything; the loops' bounds only turn a wedged pair into a loud failure. The announcements live
+/// in the barrier directory and not the repository, because a marker written *inside* the measured
+/// tree would show up in the very deltas under assertion.
+fn rendezvous_body(mine: &str, theirs: &str, barrier: &Path) -> String {
+    let b = barrier.display();
+    format!(
+        ": > '{b}/{mine}.ready'\n\
+         n=0\n\
+         while [ ! -f '{b}/{theirs}.ready' ]; do\n\
+         n=$((n+1))\n\
+         if [ \"$n\" -gt 4000 ]; then break; fi\n\
+         sleep 0.05\n\
+         done\n\
+         printf 'written by the root that owns {mine}\\n' > {mine}\n\
+         n=0\n\
+         while [ ! -f {theirs} ]; do\n\
+         n=$((n+1))\n\
+         if [ \"$n\" -gt 4000 ]; then break; fi\n\
+         sleep 0.05\n\
+         done\n\
+         {REACHED_THE_BRIDGE}\n\
+         exit 0"
+    )
+}
+
+/// One `marion run` against `repo`, started but **not** waited on.
+///
+/// `home` is only the process's cwd and where its stub lives; `repo` is what marion is pointed at.
+/// Keeping them separate is what lets two runs share a repository while still having distinct stubs.
+fn spawn_run(fleet: &Fleet, home: &Path, repo: &Path, body: &str) -> std::process::Child {
+    std::fs::create_dir_all(home).expect("run home");
+    let bin = stub(home, body);
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -237,7 +303,7 @@ fn spawn_run(fleet: &Fleet, i: usize) -> std::process::Child {
             "--prompt",
             "Delegate the task to a child.",
             "--repo",
-            &fleet.repos[i].to_string_lossy(),
+            &repo.to_string_lossy(),
             "--state-dir",
             &fleet.state.to_string_lossy(),
             // Nothing listens there; the stub is the whole model side of the run.
@@ -248,7 +314,7 @@ fn spawn_run(fleet: &Fleet, i: usize) -> std::process::Child {
             "120",
         ])
         .env("PATH", path)
-        .current_dir(&home)
+        .current_dir(home)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -329,9 +395,15 @@ fn changed_paths(sidecar: &RootChange) -> Vec<PathBuf> {
 /// which is the fourth way and the reason that helper panics rather than returning a count.
 #[test]
 fn concurrent_runs_in_distinct_projects_never_share_a_supervisor_a_journal_or_a_record() {
-    let fleet = Fleet::new("conc-proj");
+    let fleet = Fleet::new("conc-proj", PROJECTS);
 
-    let children: Vec<std::process::Child> = (0..PROJECTS).map(|i| spawn_run(&fleet, i)).collect();
+    let children: Vec<std::process::Child> = (0..PROJECTS)
+        .map(|i| {
+            let home = fleet.scratch.join(format!("p{i}"));
+            let repo = fleet.repos[i].clone();
+            spawn_run(&fleet, &home, &repo, &barrier_body(i, &fleet.barrier))
+        })
+        .collect();
 
     // Every root is now inside its harness, and none of them can finish until this test says so.
     fleet.await_all_started();
@@ -427,5 +499,118 @@ fn concurrent_runs_in_distinct_projects_never_share_a_supervisor_a_journal_or_a_
             "supervisors outlived their runs: {left:?}"
         );
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// **A RECORDED LIMITATION, asserted as it currently behaves: two concurrent roots in one
+/// repository each claim the other's work.**
+///
+/// This test does not describe something marion does right. It pins something marion does *wrong*,
+/// so that the day it is fixed the fix has to say so out loud, in the pattern
+/// `detached_supervisor.rs::a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by_name`
+/// established.
+///
+/// # What breaks, and why it is structural
+///
+/// A root runs in `RootSpec::repo` — the operator's live checkout — and not in a worktree
+/// (`root_change.rs`'s header, and the decision recorded in `tasks/design-root-change-record.md`
+/// that roots get `read` + `write` there). Its change record is a delta between two git tree
+/// snapshots, `pre_tree` at prepare and `post_tree` at exit. A tree delta is a statement about a
+/// *directory over an interval*; it carries no attribution and cannot be made to. So two roots
+/// whose intervals overlap in one repository each measure a post-tree containing the other's
+/// writes, and each journals them as its own.
+///
+/// `tasks/design-root-change-record.md` states this under *"what this does NOT solve"* — *"Two runs
+/// produce overlapping deltas each attributing the other's work to itself. No locking proposed."*
+/// Nothing in `root.rs` refuses a second root, and `marion run` does not consult the registry for
+/// one. This test is that sentence made falsifiable.
+///
+/// # Why the assertion is exact rather than "at least one is wrong"
+///
+/// Both roots write, then each waits for the other's file before finishing ([`rendezvous_body`]).
+/// So **both** post-trees contain **both** files by construction, and the correct assertion is the
+/// strong one: each record names two paths where its root wrote one. A weaker assertion — *"some
+/// record folded something"* — would also pass on a machine that happened to serialise the two
+/// runs, which is precisely the reading that must not be allowed to look like success.
+///
+/// The record is not merely imprecise, it is **wrong in the direction that matters**: an auditor
+/// reading either sidecar is told this agent edited a file it never touched. That is `8a69f22`'s
+/// failure class with the sign flipped, which the design document names in the same breath.
+///
+/// # What would close it
+///
+/// Three options, none of them this test's to pick, and all three recorded as design §11 item 31:
+///
+/// 1. **Refuse the second root.** `marion run` replays the journal and declines when a root for
+///    this project is `is_unresolved()`. Cheapest, and the design document calls it *"a stated
+///    refusal … and a separate decision"* — it changes what marion is willing to do, not just what
+///    it records.
+/// 2. **Lock the repository for a root's lifetime.** Turns concurrent roots into queued ones. Costs
+///    the operator the ability to run two agents on one checkout at all, which may be the feature.
+/// 3. **Accept and label.** Keep the behaviour, and have the record say the interval overlapped
+///    another root's — which needs the registry read of option 1 anyway, and still leaves
+///    `changed_paths` unattributable.
+///
+/// **This test goes red under option 1 or 2 and must be deleted or rewritten by whoever picks one.**
+/// That is the point of pinning it.
+#[test]
+fn two_concurrent_roots_in_one_repository_each_record_the_others_work_as_their_own() {
+    let fleet = Fleet::new("conc-same-repo", 1);
+    let repo = fleet.repos[0].clone();
+
+    let a = spawn_run(
+        &fleet,
+        &fleet.scratch.join("run-a"),
+        &repo,
+        &rendezvous_body("a.txt", "b.txt", &fleet.barrier),
+    );
+    let b = spawn_run(
+        &fleet,
+        &fleet.scratch.join("run-b"),
+        &repo,
+        &rendezvous_body("b.txt", "a.txt", &fleet.barrier),
+    );
+
+    for (name, child) in [("a", a), ("b", b)] {
+        let out = child.wait_with_output().expect("marion run is waitable");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "run {name} did not succeed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Both roots really did write, and each really did see the other's file — otherwise the
+    // rendezvous timed out and what follows would be measuring two runs that never overlapped.
+    assert!(repo.join("a.txt").is_file() && repo.join("b.txt").is_file());
+
+    // One repository is one project, so one journal — this is the *correct* half of the behaviour
+    // and it is asserted so that a change to §2's key shows up here too.
+    let dir = fleet.project_dir(0).path().to_path_buf();
+    let records = root_changes(&dir.join("journal.jsonl"));
+    assert_eq!(
+        records.len(),
+        2,
+        "two roots ran in one project, so one journal carries two records; O_APPEND at record \
+         granularity is what makes that safe (`journal.rs`'s MAX_RECORD_BYTES)"
+    );
+
+    let found = sidecars(&dir);
+    assert_eq!(found.len(), 2, "one sidecar per root: {found:?}");
+
+    let both = vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")];
+    for (i, sidecar) in found.iter().enumerate() {
+        let mut paths = changed_paths(sidecar);
+        paths.sort();
+        assert_eq!(
+            paths, both,
+            "RECORDED LIMITATION, not a passing feature: root {i} wrote exactly one of these files \
+             and its change record claims both. A tree delta is a statement about a directory over \
+             an interval and cannot attribute; see this test's doc comment and design §11 item 31 \
+             for the three things that would close it. If this assertion has started failing, \
+             marion has stopped attributing another root's work — delete this test rather than \
+             repairing it."
+        );
     }
 }
