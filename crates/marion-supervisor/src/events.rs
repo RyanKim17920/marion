@@ -61,6 +61,7 @@
 //! file cannot heal a bad line and a reader that narrated past bytes it does not understand would
 //! be inventing a stream.
 
+use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -68,7 +69,7 @@ use std::time::Instant;
 
 use marion_core::contract::AgentId;
 use marion_core::encoding::SystemTime;
-use marion_core::event::{EncodeError, Event, EventLog, Payload, bound, encode};
+use marion_core::event::{EncodeError, Event, EventLog, Lifecycle, Payload, bound, encode};
 use marion_core::harness::Harness;
 use marion_core::ir::{Completeness, EventId, Provenance, Source, SrcSeq, Transformation};
 use marion_core::paths::AgentDir;
@@ -159,16 +160,165 @@ pub fn from_stream_event(harness: Harness, ev: StreamEvent<'_>) -> Draft {
     let payload = match ev {
         StreamEvent::Frame(json) => Payload::Vendor {
             harness,
-            key: json
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            key: frame_key(json).to_string(),
             json: json.clone(),
         },
         StreamEvent::Unparsed(line) => Payload::Raw(line.to_string()),
     };
     Draft::observed(payload, Source::Protocol)
+}
+
+/// **A node's stream, being recorded** — an [`EventWriter`] plus the two facts the mapping needs,
+/// and the thing a launcher actually holds.
+///
+/// Exists rather than having call sites drive the writer directly because it owns the one rule that
+/// must not be re-derived per call site: §5.2's MUST about the `initialize` reply (see
+/// [`Self::record`]). A launcher that built drafts itself would have to remember it, and
+/// `root::launch` and `run::run_spawn` are exactly the two places this document warns about drifting
+/// apart.
+///
+/// **Interior mutability, because `duplex::StreamSink` is `&dyn Fn`.** That module already states
+/// the contract — *"a sink that needs state carries its own `Cell`/`RefCell`"* — and this is that
+/// sink. Nothing here is `Send`; it is called on the driver's own reader thread, between frames.
+pub struct EventSink {
+    writer: RefCell<EventWriter>,
+    harness: Harness,
+    /// The `request_id` this node's `initialize` went out with. What separates the one
+    /// `control_response` §5.2 forbids keeping from every other one, which must be kept.
+    init_id: String,
+}
+
+impl EventSink {
+    /// Open a node's stream for recording, or **`None` and a warning** if it cannot be opened.
+    ///
+    /// The failure policy, stated once, for the reason `journal::record` states its own: a viewer
+    /// may never fail a run. A full disk must not kill a real child mid-edit, and recording is not
+    /// something any decision depends on — nothing reads this file to decide whether a process may
+    /// be spawned.
+    ///
+    /// **`None` is not silently equivalent to a node that produced nothing**, which is why this is
+    /// an `Option` a caller can see rather than a no-op writer: no file is written at all, and
+    /// [`EventReader::ever_written`] reports that as the distinct fact it is.
+    pub fn open(
+        agent: &AgentDir,
+        agent_id: &AgentId,
+        harness: Harness,
+        init_id: String,
+    ) -> Option<Self> {
+        match EventWriter::open(agent, agent_id) {
+            Ok(w) => Some(Self::new(w, harness, init_id)),
+            Err(e) => {
+                eprintln!(
+                    "marion: cannot record {}'s events to {}: {e}",
+                    agent_id.0,
+                    agent.events().display()
+                );
+                None
+            }
+        }
+    }
+
+    pub fn new(writer: EventWriter, harness: Harness, init_id: String) -> Self {
+        Self {
+            writer: RefCell::new(writer),
+            harness,
+            init_id,
+        }
+    }
+
+    /// Record one live [`StreamEvent`] — the body of the `duplex::DuplexSpec::sink` closure.
+    ///
+    /// **Best-effort by policy**: a viewer may never affect the run, so an I/O fault is loud on
+    /// stderr and the node keeps going. Same argument as `EventWriter::record` and
+    /// `journal::record`.
+    ///
+    /// **§5.2's MUST is applied here and nowhere else.** A `control_response` to *this node's*
+    /// `initialize` is recorded as `Payload::Withheld` — the fact, its size, and the rule — and its
+    /// body never reaches disk. Narrowly, on the request id: S11's interrupt reply is a
+    /// `control_response` too, it is 100 bytes of `{"still_queued":[]}`, and it is precisely what a
+    /// re-attaching client wants to see. Withholding by frame *type* would discard it.
+    pub fn record(&self, ev: StreamEvent<'_>) {
+        let draft = self.draft(ev, true);
+        self.writer.borrow_mut().record(draft);
+    }
+
+    /// Record a whole captured stdout **after the fact** — the `LaunchOnly` path, which has no live
+    /// seam to hook: `run_bounded` drains the pipe whole and hands back a `String`.
+    ///
+    /// Every event is `observed_live: false`, which is not a lesser recording but a true one. §4.1
+    /// keeps that axis separate from `completeness` for this reason: a capture read after the
+    /// process died is *exact* and *not live*, and those are different claims.
+    ///
+    /// Splitting is `marion_harness::stream::json_frames`, the same splitter every adapter reads
+    /// with, so a line this records as `Raw` is exactly a line the adapter also failed to parse.
+    pub fn record_capture(&mut self, stdout: &str) {
+        for line in stdout.lines() {
+            let line = line.trim_end_matches('\r');
+            if line.is_empty() {
+                continue;
+            }
+            let draft = match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(v) if v.is_object() => self.draft(StreamEvent::Frame(&v), false),
+                _ => self.draft(StreamEvent::Unparsed(line), false),
+            };
+            self.writer.borrow_mut().record(draft);
+        }
+    }
+
+    /// A lifecycle bookend. Barrier-fsynced before it returns (`Event::is_barrier`), because a lost
+    /// terminal bookend makes a finished node read as one that stopped mid-turn.
+    pub fn lifecycle(&self, l: Lifecycle) {
+        self.writer
+            .borrow_mut()
+            .record(Draft::marion(Payload::Lifecycle(l)));
+    }
+
+    pub fn next_seq(&self) -> u64 {
+        self.writer.borrow().next_seq()
+    }
+
+    fn draft(&self, ev: StreamEvent<'_>, live: bool) -> Draft {
+        let mut d = match ev {
+            StreamEvent::Frame(json) if self.is_own_initialize_reply(json) => {
+                let bytes = serde_json::to_vec(json).map(|v| v.len()).unwrap_or(0);
+                let mut d = Draft::observed(
+                    Payload::Withheld {
+                        key: frame_key(json).to_string(),
+                        bytes,
+                        reason: "§5.2: a launcher that sends `initialize` MUST NOT journal the \
+                                 reply verbatim — it is the session catalogue (S9: ~30 kB of \
+                                 commands, model prices, account.tokenSource and the CLI's pid)"
+                            .into(),
+                    },
+                    Source::Protocol,
+                );
+                // The body is absent by rule, which is still absent: §4.1's word for having part of
+                // a thing, and what stops a reader presenting this as the whole frame.
+                d.provenance.completeness = Completeness::Partial;
+                d
+            }
+            ev => from_stream_event(self.harness, ev),
+        };
+        d.provenance.observed_live = live;
+        d
+    }
+
+    /// Whether a frame is the `control_response` to **this node's** `initialize`.
+    ///
+    /// Reuses `duplex::is_control_response_to`, which is the same predicate the driver waits on, so
+    /// the frame withheld here is exactly the frame the driver identified as its own reply. A second
+    /// spelling of this shape could match a different set.
+    fn is_own_initialize_reply(&self, frame: &serde_json::Value) -> bool {
+        crate::duplex::is_control_response_to(frame, &self.init_id)
+    }
+}
+
+/// A frame's own discriminator, or `""`. See [`from_stream_event`] for why it is `type` and why an
+/// absent one is not invented.
+fn frame_key(json: &serde_json::Value) -> &str {
+    json.get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
 }
 
 /// An open `events.jsonl` for one node, with the next ordinal it will use.
@@ -554,7 +704,7 @@ mod tests {
         let path = dir.join("events.jsonl");
         {
             let mut w = EventWriter::open_path(&path, &node()).unwrap();
-            w.append(Draft::marion(Payload::Lifecycle(Lifecycle::Spawned)))
+            w.append(Draft::marion(Payload::Lifecycle(Lifecycle::Opened)))
                 .unwrap();
             w.append(frame("item.started")).unwrap();
             w.append(Draft::observed(
@@ -689,7 +839,7 @@ mod tests {
         let dir = scratch("events-barrier");
         let path = dir.join("events.jsonl");
         let mut w = EventWriter::open_path(&path, &node()).unwrap();
-        w.append(Draft::marion(Payload::Lifecycle(Lifecycle::Spawned)))
+        w.append(Draft::marion(Payload::Lifecycle(Lifecycle::Opened)))
             .unwrap();
         assert!(!w.dirty, "a bookend fsyncs before append returns");
 
@@ -827,7 +977,7 @@ mod tests {
         let path = dir.join("events.jsonl");
         {
             let mut w = writer(&path);
-            w.append(Draft::marion(Payload::Lifecycle(Lifecycle::Spawned)))
+            w.append(Draft::marion(Payload::Lifecycle(Lifecycle::Opened)))
                 .unwrap();
             w.append(frame("item.completed")).unwrap();
             w.append(Draft::marion(Payload::Lifecycle(Lifecycle::Exited {
@@ -844,7 +994,7 @@ mod tests {
         assert_eq!(replay.len(), 3);
         assert!(matches!(
             replay[0].payload,
-            Payload::Lifecycle(Lifecycle::Spawned)
+            Payload::Lifecycle(Lifecycle::Opened)
         ));
         assert!(
             matches!(
@@ -1034,6 +1184,218 @@ mod tests {
         assert_eq!(seen[0].agent_seq, 0);
     }
 
+    // --- the sink, and §5.2's MUST -----------------------------------------------------------
+
+    fn sink_over(path: &std::path::Path) -> EventSink {
+        EventSink::new(
+            EventWriter::open_path(path, &node()).unwrap(),
+            Harness::ClaudeCode,
+            "marion-init-a-1".into(),
+        )
+    }
+
+    /// **§5.2's MUST, end to end.** The `initialize` reply is ~30 kB of the operator's slash-command
+    /// catalogue, model prices, `account.tokenSource` and the CLI's pid. An events file is a journal
+    /// in every sense that MUST cares about, so the body must not reach disk.
+    #[test]
+    fn the_initialize_reply_is_withheld_because_section_5_2_forbids_journaling_it_verbatim() {
+        let dir = scratch("events-withheld");
+        let path = dir.join("events.jsonl");
+        let catalogue = "s".repeat(30_000);
+        // Sentinel *values*, not key names: the withheld marker's own `reason` text names the keys
+        // §5.2 is about, so asserting on those would be the test matching marion's prose about the
+        // hazard rather than the hazard.
+        let reply = json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "marion-init-a-1",
+                "response": {
+                    "commands": catalogue,
+                    "account": {"tokenSource": "SENTINEL-account-source"},
+                    "pid": "SENTINEL-cli-pid",
+                },
+            }
+        });
+        {
+            let s = sink_over(&path);
+            s.record(StreamEvent::Frame(&reply));
+        }
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("SENTINEL-account-source") && !raw.contains("SENTINEL-cli-pid"),
+            "the reply's body reached disk; §5.2 forbids exactly this"
+        );
+        assert!(!raw.contains(&catalogue), "nor the command catalogue");
+        assert!(raw.len() < 1_000, "{} bytes written", raw.len());
+
+        let (_, events) = read(&path);
+        match &events[0].payload {
+            Payload::Withheld { key, bytes, reason } => {
+                assert_eq!(key, "control_response");
+                assert!(*bytes > 30_000, "{bytes}");
+                assert!(reason.contains("5.2"), "{reason}");
+            }
+            other => panic!("a withheld frame must still be an event, not a hole: {other:?}"),
+        }
+        assert_eq!(events[0].provenance.completeness, Completeness::Partial);
+    }
+
+    /// **The negative control against over-withholding.** §5.2 names the reply to *`initialize`*,
+    /// not every `control_response`: S11's interrupt reply is 100 bytes of `{"still_queued":[]}` and
+    /// is exactly the kind of thing a client re-attaching wants to see. A rule that swallowed the
+    /// whole frame *type* would silently discard it.
+    #[test]
+    fn a_control_response_that_is_not_the_initialize_reply_is_kept_whole() {
+        let dir = scratch("events-not-withheld");
+        let path = dir.join("events.jsonl");
+        let interrupt = json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "marion-interrupt-7",
+                "response": {"still_queued": []},
+            }
+        });
+        {
+            let s = sink_over(&path);
+            s.record(StreamEvent::Frame(&interrupt));
+        }
+        let (_, events) = read(&path);
+        match &events[0].payload {
+            Payload::Vendor { key, json, .. } => {
+                assert_eq!(key, "control_response");
+                assert_eq!(json, &interrupt, "carried verbatim");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A capture read after the process died is not a live observation, and §4.1 has an axis that
+    /// says so. The `LaunchOnly` harnesses have no live seam at all — `run_bounded` drains the pipe
+    /// whole — so their events are honestly `observed_live: false` rather than falsely live.
+    #[test]
+    fn events_recovered_from_a_finished_capture_do_not_claim_to_have_been_observed_live() {
+        let dir = scratch("events-capture");
+        let path = dir.join("events.jsonl");
+        let stdout = "{\"type\":\"thread.started\"}\nReading additional input from stdin...\n\
+                      {\"type\":\"turn.completed\"}\n";
+        {
+            let mut s = EventSink::new(
+                EventWriter::open_path(&path, &node()).unwrap(),
+                Harness::Codex,
+                "unused".into(),
+            );
+            s.record_capture(stdout);
+        }
+        let (log, events) = read(&path);
+        assert_eq!(
+            log.records, 3,
+            "two frames and the non-JSON line between them"
+        );
+        assert!(
+            events.iter().all(|e| !e.provenance.observed_live),
+            "read after the fact, and the provenance must say so"
+        );
+        match &events[1].payload {
+            Payload::Raw(s) => assert_eq!(s, "Reading additional input from stdin..."),
+            other => panic!("a non-JSON line is still something the node said: {other:?}"),
+        }
+    }
+
+    /// Set on the re-executed copy of this binary that actually drives a node with a recording sink.
+    const SINK_PROBE: &str = "MARION_EVENTS_SINK_STDOUT_PROBE";
+    /// What the stub node says, and what marion must never repeat on its own streams.
+    const SENTINEL: &str = "sentinel-9c3e-the-node-said-this";
+
+    /// **NC — lifting `sink: None` did not put a byte of a node's stream on marion's own stdout.**
+    ///
+    /// `run_spawn` held `sink: None` because it runs inside `marion-supervisor`, whose stdout *is*
+    /// the stdio MCP stream the root harness parses. The wiring lifts that, and the argument for why
+    /// it is safe — an `EventSink` writes to a file — is exactly the kind of reasoning that is true
+    /// until someone adds a `println!` to a frame handler for debugging. So it is asserted against a
+    /// run that **has** a sink, rather than inferred.
+    ///
+    /// It cannot be checked in-process: libtest captures `println!` from the test thread, so an
+    /// in-process assertion would pass against a driver that prints unconditionally. The driver
+    /// therefore runs in a re-executed copy of this binary with `--nocapture`, where a stray write
+    /// reaches a real pipe. Same mechanism as
+    /// `duplex::tests::a_child_run_writes_not_one_byte_of_the_nodes_stream_to_marions_own_stdout`,
+    /// which proves the `None` case; this proves the case marion now actually takes.
+    #[test]
+    fn a_child_run_with_a_recording_sink_still_writes_not_one_byte_to_marions_own_stdout() {
+        if std::env::var(SINK_PROBE).is_ok() {
+            let dir = scratch("events-sink-probe");
+            let path = dir.join("events.jsonl");
+            let marker = dir.join("mcp-ready");
+            std::fs::write(&marker, b"ready\n").unwrap();
+            let script = format!(
+                r#"read init
+printf '{{"type":"control_response","response":{{"subtype":"success","request_id":"marion-init-probe","response":{{}}}}}}\n'
+read user
+printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{SENTINEL}"}}]}}}}\n'
+printf 'this line is not json at all: {SENTINEL}\n'
+printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
+            );
+            let es = EventSink::new(
+                EventWriter::open_path(&path, &node()).unwrap(),
+                Harness::ClaudeCode,
+                "marion-init-probe".into(),
+            );
+            let record = |ev: StreamEvent<'_>| es.record(ev);
+            let out = crate::duplex::run_duplex(
+                std::process::Command::new("sh").args(["-c", &script]),
+                &crate::duplex::DuplexSpec {
+                    ready_file: &marker,
+                    prompt: "do the task",
+                    init_id: "marion-init-probe".into(),
+                    mcp_ready_timeout: Duration::from_secs(5),
+                    blocked_bound: Duration::ZERO,
+                    depth: crate::root::ROOT_DEPTH + 1,
+                    wall_clock: Some(Duration::from_secs(30)),
+                    sink: Some(&record),
+                },
+            )
+            .expect("the run returns");
+            drop(es);
+            // **Both halves, or the silence proves nothing.** The stub must really have spoken, and
+            // the sink must really have recorded it — a sink that silently did nothing would pass a
+            // stdout-silence assertion trivially.
+            assert!(out.stdout.contains(SENTINEL), "the stub never spoke");
+            let recorded = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                recorded.contains(SENTINEL),
+                "the sink recorded nothing, so the silence below is vacuous"
+            );
+            return;
+        }
+        let exe = std::env::current_exe().expect("the test binary re-executes itself");
+        let name = format!(
+            "{}::a_child_run_with_a_recording_sink_still_writes_not_one_byte_to_marions_own_stdout",
+            module_path!().split_once("::").expect("crate::module").1
+        );
+        let probe = std::process::Command::new(&exe)
+            .args(["--exact", "--nocapture", "--test-threads", "1", &name])
+            .env(SINK_PROBE, "1")
+            .output()
+            .expect("the probe runs");
+        let stdout = String::from_utf8_lossy(&probe.stdout);
+        let stderr = String::from_utf8_lossy(&probe.stderr);
+        assert!(
+            probe.status.success(),
+            "the probe itself failed, so it proves nothing:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            !stdout.contains(SENTINEL),
+            "recording a node's stream put it on marion's own stdout — the stdio MCP stream the \
+             root harness parses. An `EventSink` must write to its file and nowhere else.\n{stdout}"
+        );
+        assert!(
+            !stderr.contains(SENTINEL),
+            "recording a node's stream put it on marion's stderr\n{stderr}"
+        );
+    }
+
     #[test]
     fn a_frame_is_never_marions_own_observation() {
         let v = json!({"type": "result"});
@@ -1045,7 +1407,7 @@ mod tests {
         );
         assert!(d.provenance.observed_live);
         assert_eq!(
-            Draft::marion(Payload::Lifecycle(Lifecycle::Spawned)).provenance,
+            Draft::marion(Payload::Lifecycle(Lifecycle::Opened)).provenance,
             Provenance::marion()
         );
     }
