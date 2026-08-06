@@ -4758,6 +4758,47 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     Cross-referenced from **§5.7** (lifetime, where the mechanism is left open) and **§7.3.2**
     (the kill disposition, whose reach this bounds).
 
+26. **A root's change record sees the repository and nothing else — OPEN, newly articulated
+    2026-08-05, filed with the record itself (`marion_core::root_change`, `spawn::TreeSnapshot`).
+    No new measurement is claimed; this is a stated boundary of a thing that now exists.** §9 gives
+    a root a change record derived from two git tree objects of `RootSpec::repo`, taken at launch
+    and at exit. Four classes of write are outside that derivation, and each is recorded here rather
+    than left to be rediscovered from a record that reads clean.
+
+    **Writes outside the repository.** A `Bash` tool in a root can write `/etc`, `~/.ssh`, a sibling
+    checkout, or anywhere else on the machine. The tree delta is a diff of one directory and sees
+    none of it. Same class as item 19 and one level up: item 19 is about paths *inside* the
+    repository that git does not track, this is about everything outside it. **Nothing bounds a
+    root's reach today**, because `ROOT_TOOLS` is empty and its `Bash` would have to come from a
+    grant nobody has made; the item exists so that the grant is not made on the strength of a record
+    that cannot see where the writes went.
+
+    **Writes to gitignored paths.** `git add -A` respects ignore rules, so a root writing `.env`, or
+    into `target/`, produces no delta. Inherited unchanged from item 19's stated boundary — it is
+    the same mechanism, applied to a root rather than a child.
+
+    **Attribution.** The record cannot say the *root* changed a path, only that the path changed
+    while the root ran. An operator's hand edit, a background `cargo build` touching a tracked
+    generated file, and a concurrent `marion run` all land in it. M1 has no filesystem attribution
+    and no honest way to acquire one for a single directory, so the field is named
+    `working_tree_delta` rather than `root_writes`, and the name is the only place that honesty can
+    live — the same discipline `Completion::scope_enforced` holds to.
+
+    **Concurrent roots in one repository.** Two runs produce overlapping deltas, each attributing
+    the other's work to itself. **No locking is proposed and none is implied.** A stated refusal —
+    detect a live root by replay and refuse the second — is `is_unresolved()` policy and a separate
+    decision, of the same kind as §7.2's `Orphaned` marking: a reading of the journal turned into
+    a rule, which replay deliberately does not do.
+
+    **What would close it.** For the first two, nothing in git: they need a different instrument
+    (an fs-level audit, or a sandbox that bounds the reach instead of measuring it), which is a
+    containment decision and not a record one. For attribution, per-process filesystem attribution,
+    which M1 has no source for. For concurrency, a decision about refusal, which needs §7.2's
+    restart policy settled first. **What is deliberately *not* claimed:** that the record is
+    containment. It is not — it never refuses a write, and the grant gate at
+    `root::availability_axis` refuses the *grant* when the *audit* is unavailable, which is a
+    different act. Cross-referenced from **§9** and from **item 19**.
+
 ---
 
 ## 12. History: what was retracted or corrected

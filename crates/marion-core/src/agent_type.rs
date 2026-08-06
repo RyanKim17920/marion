@@ -102,6 +102,16 @@ pub struct AgentType {
     /// Neither is sufficient alone — an operator can type `marion run claude-impl` — so
     /// `root::prepare` compiles **no** availability axis at all, whatever type it resolves. That is
     /// the invariant; this field's naming convention is only the signpost.
+    ///
+    /// **The second protection made two arguments, and one of them is now answered elsewhere.**
+    /// A root's cwd was dangerous for two reasons: nothing contains it, and — the one this comment
+    /// leant on hardest — nothing *records* it, so a root that wrote produced the same empty
+    /// `changed_paths` as a child whose write escaped its worktree (§11 item 24, and `8a69f22`).
+    /// The audit half exists now: `root::RootChangeBase` takes the operator's working tree as a git
+    /// tree object at launch and at exit, and `root::availability_axis` is the seam that joins the
+    /// two — a non-empty axis is reachable only through the arm that has a base point. So the
+    /// remaining argument for `root::ROOT_TOOLS` being empty is **containment alone**, and that
+    /// constant, this comment, and the grant gate move together or they disagree.
     pub tools: Vec<String>,
     /// Ceiling only. `spawn` may narrow it and never widen it (§5.4).
     pub scope_ceiling: Vec<Glob>,
