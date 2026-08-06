@@ -345,7 +345,8 @@ fn drive(root: &Node, child: &Node) -> JournalEvidence {
     )
     .expect("marion run starts");
 
-    let project = ProjectDir::new(&state, &repo);
+    // §2's key: the git common dir, the same call `root::prepare` makes.
+    let project = ProjectDir::new(&state, &marion_supervisor::socket::project_root(&repo));
     let journal_path = project.journal();
     let replay = journal_path
         .is_file()
@@ -679,7 +680,8 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
     );
 
     // §4.3's location, resolved the one way marion resolves it — never a second literal.
-    let project = ProjectDir::new(&state, &repo);
+    // §2's key: the git common dir, the same call `root::prepare` makes.
+    let project = ProjectDir::new(&state, &marion_supervisor::socket::project_root(&repo));
     let journal = project.journal();
     assert!(
         journal.is_file(),

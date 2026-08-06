@@ -655,7 +655,9 @@ fn drive(root: &Node, child: &Node) -> Evidence {
 
     let requests = server.requests().unwrap_or_default();
     // §4.3's location, resolved the one way marion resolves it — never a second literal here.
-    let journal = read_path(&ProjectDir::new(&state, &repo).journal()).map_err(|e| e.to_string());
+    // §2's key is the git common dir, not the cwd, which is what `root::prepare` now hashes.
+    let key = marion_supervisor::socket::project_root(&repo);
+    let journal = read_path(&ProjectDir::new(&state, &key).journal()).map_err(|e| e.to_string());
     // Walked here, **judged after the cleanup below.** The walk is fallible and the judgement is
     // separate for a reason this call site is the reason for: the version that stood here panicked
     // on an unreadable contract *before* the provider was dropped and the survivors swept, so one

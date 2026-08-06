@@ -186,8 +186,23 @@ pub trait Handle: Send + Sync + 'static {
         false
     }
 
-    /// All non-client §5.7 predicates are clear and an explicit quit made exit relevant.
+    /// Every non-client clause of §5.7's exclusion list is clear. The client clause is this loop's.
     fn idle_exit_eligible(&self) -> bool {
+        false
+    }
+
+    /// Whether a client **said** it was leaving, which is the only thing §5.7's grace is about.
+    ///
+    /// The grace is justified in §5.7 as a wait that *"should outlast an operator closing one
+    /// window to open another"* — it bridges between clients that did not announce themselves. An
+    /// explicit `session/quit` is that announcement, so waiting it out after one buys nothing and
+    /// costs the operator a process they were told was going. A departure marion could not read —
+    /// §7.3.1's crash — waits the whole grace, because for all marion knows a replacement window is
+    /// already opening.
+    ///
+    /// False by default, so a handler that knows nothing about §7.3 can never shorten a wait it
+    /// does not understand.
+    fn idle_exit_grace_waived(&self) -> bool {
         false
     }
 
@@ -445,7 +460,8 @@ fn accept_loop(
         let no_clients = lock(&conns).is_empty();
         if no_clients && handle.idle_exit_eligible() {
             let since = idle_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= idle_grace && handle.begin_idle_exit() {
+            let waited = since.elapsed() >= idle_grace || handle.idle_exit_grace_waived();
+            if waited && handle.begin_idle_exit() {
                 break;
             }
         } else {
@@ -706,6 +722,7 @@ mod tests {
     #[derive(Default)]
     struct Leaver {
         eligible: AtomicBool,
+        waived: AtomicBool,
         asked: AtomicU64,
         exiting: AtomicBool,
     }
@@ -727,6 +744,10 @@ mod tests {
 
         fn idle_exit_eligible(&self) -> bool {
             self.eligible.load(Ordering::SeqCst)
+        }
+
+        fn idle_exit_grace_waived(&self) -> bool {
+            self.waived.load(Ordering::SeqCst)
         }
 
         fn begin_idle_exit(&self) -> bool {
@@ -795,6 +816,53 @@ mod tests {
             leaver.asked.load(Ordering::SeqCst),
             1,
             "the loop stopped once the exit was recorded, rather than asking again"
+        );
+
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **NC — a client that *said* it was leaving is not made to wait as though it had vanished.**
+    ///
+    /// §5.7's grace is argued for one case: *"it should outlast an operator closing one window to
+    /// open another"* — a wait for a client that never announced itself. §7.3 is the whole design's
+    /// insistence that an announcement and a disappearance are different events, and this is that
+    /// distinction spent on time rather than on nodes: an explicit `session/quit` skips the wait,
+    /// a dropped socket serves every millisecond of it.
+    ///
+    /// The failure this rules out is not cosmetic. A grace of five minutes is what makes the
+    /// predicate safe for a supervisor whose starting client has not connected yet, so the wait
+    /// cannot simply be shortened for everyone — and without the waiver every `marion run` would
+    /// leave a process behind for five minutes after saying goodbye.
+    #[test]
+    fn an_explicit_quit_waives_the_grace_and_a_silent_departure_does_not() {
+        const GRACE: Duration = Duration::from_secs(120);
+        const SETTLE: Duration = Duration::from_millis(150);
+
+        let dir = std::path::PathBuf::from(format!("/tmp/ms-waived-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = crate::socket::socket_paths(&dir, std::path::Path::new("/p"), 1);
+        let Acquired::Serving(serving) = acquire(&paths).unwrap() else {
+            panic!("nothing was listening")
+        };
+        let leaver = Arc::new(Leaver::default());
+        let server =
+            Server::start_with_idle_grace(serving, Arc::clone(&leaver) as Arc<dyn Handle>, GRACE);
+
+        // Eligible under §5.7's two clauses, and nobody said anything: two minutes to go.
+        leaver.eligible.store(true, Ordering::SeqCst);
+        std::thread::sleep(SETTLE);
+        assert_eq!(
+            leaver.asked.load(Ordering::SeqCst),
+            0,
+            "a departure marion could not read waits the whole grace"
+        );
+
+        leaver.waived.store(true, Ordering::SeqCst);
+        assert!(
+            until(|| leaver.asked.load(Ordering::SeqCst) == 1),
+            "an explicit quit does not wait out a grace justified by clients that say nothing"
         );
 
         server.stop();

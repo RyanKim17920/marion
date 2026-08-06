@@ -484,7 +484,12 @@ pub enum RootError {
 /// Mint the root's identity, write its configuration, and compile its argv.
 pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
     let agent_id = new_agent_id(unix_millis(), entropy()?);
-    let project = ProjectDir::new(&spec.state, &spec.repo);
+    // §2: *"both the supervisor and its state are keyed on the project root (git common-dir,
+    // falling back to cwd)"*. `spec.repo` is the root's cwd and the base of §6.6's worktrees, which
+    // is a different question — keying the journal on it gave a linked worktree its own tree while
+    // `socket::resolve` pointed every bridge and TUI at the main repository's supervisor. The same
+    // call is made in `marion run` and in the bridge's `spawn_env`, so the three cannot drift.
+    let project = ProjectDir::new(&spec.state, &crate::socket::project_root(&spec.repo));
     let agent_dir = project.agent(&agent_id);
     std::fs::create_dir_all(agent_dir.config_dir())?;
 
