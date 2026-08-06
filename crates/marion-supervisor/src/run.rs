@@ -47,6 +47,10 @@ use crate::spawn::{
 /// child may not spend longer waiting to be ready than it is allowed to live.
 const CHILD_MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
+/// `Clone` because a **backgrounded** spawn runs on a thread that outlives the JSON-RPC frame the
+/// request arrived on ([`crate::background`]). Borrowing was fine while every spawn was served
+/// inside `handle_tool_call`'s own stack frame; a `'static` thread body cannot borrow from it.
+#[derive(Clone)]
 pub struct SpawnRequest {
     pub agent_type: String,
     pub prompt: String,
@@ -78,6 +82,28 @@ pub struct Caller {
     pub agent_type: AgentType,
     /// The caller's depth, **root = 0**. The child lands at `depth + 1`.
     pub depth: u32,
+    /// **How many children of this caller are live and unreaped right now** — §6.1 step 2's
+    /// concurrency gate reads exactly this, and it is a field rather than a constant since
+    /// backgrounding landed.
+    ///
+    /// It was `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER: u32 = 0`, a constant whose own doc comment
+    /// said *"this constant is the one place to revisit when backgrounding lands"*. The reasoning
+    /// that justified the zero was true and is now false: `spawn` ran the child to completion
+    /// before returning, and the bridge answered one JSON-RPC line at a time, so a caller could
+    /// not have a second live child. A backgrounded `spawn` returns while its child runs, so it
+    /// can — and 0 is never `>= 4`, which means leaving the constant would have left
+    /// `max_concurrent_children` inert on the very change that made it bind.
+    ///
+    /// It belongs on `Caller` because it is a fact *about the caller*, exactly as `depth` and
+    /// `agent_type` are, and §6.1 step 2 reads all three off the same node. Living here also means
+    /// [`Caller::root`] answers it once for every test and call site that does not background.
+    ///
+    /// The count's source is the bridge's own [`crate::background::Background`], not the journal:
+    /// every child of a node is spawned through **that node's own bridge instance**, so the
+    /// bridge's table is the complete set by construction rather than by a read that could be
+    /// stale. A journal read would additionally be wrong in the dangerous direction — it cannot
+    /// see a child that has been started and not yet journaled `Spawned`.
+    pub live_children: u32,
 }
 
 impl Caller {
@@ -90,30 +116,25 @@ impl Caller {
             // The same constant `root::prepare` writes into the root's own declaration, not a
             // second literal beside it: two spellings of "the root is 0" could disagree.
             depth: crate::root::ROOT_DEPTH,
+            // A caller that is not going through a bridge has no background table to count, and a
+            // `marion run` root calling this has not spawned anything yet. Zero is the measurement,
+            // not the old constant's assumption: the bridge overwrites it from
+            // `Background::live_children` on every `spawn` it serves.
+            live_children: 0,
         }
     }
 }
 
-/// The caller's live-children count handed to §6.1 step 2's concurrency gate, and **why it is a
-/// constant rather than a lookup today.**
+/// Where `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER` went, since §11 item 23, `MILESTONES.md` and
+/// `spawn::SpawnError` all cite that name and a reader grepping it should land somewhere.
 ///
-/// `spawn` is fully synchronous: [`run_spawn`] runs the child to completion and only then returns
-/// its contract, and the bridge that calls it (`marion-supervisor mcp`) serves JSON-RPC on a
-/// single-threaded loop that reads a line, answers it, and only then reads the next. So at the
-/// instant this gate runs, the number of the caller's children that are live and unreaped is
-/// **zero** — the one about to be created is this one. `background: true` is accepted by the tool
-/// schema and ignored (M2+); until it is honoured there is no second child to count.
+/// It was a `u32 = 0` whose own doc said *"this constant is the one place to revisit when
+/// backgrounding lands"*. Backgrounding landed; the count is now [`Caller::live_children`], read
+/// from the bridge's [`crate::background::Background`] table, and that field carries the reasoning.
 ///
-/// The honest consequence, stated rather than hidden: **`max_concurrent_children` cannot bind
-/// today.** 0 is never `>= 4`, so the concurrency half of the gate is wired and inert while the
-/// depth half is live. It is deliberately *not* faked into looking enforced — a registry of live
-/// children is a read of the journal, and the journal does not exist yet (`MILESTONES.md`: "Not
-/// started"), so anything else here would be a number invented to make a test pass.
-///
-/// This constant is the one place to revisit when backgrounding lands: the count then comes from
-/// the caller's live children, and nothing else about the call site changes.
-const LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER: u32 = 0;
-
+/// `Clone` here is part of the same change: a backgrounded child's thread owns its environment
+/// outright rather than borrowing the bridge's stack frame.
+#[derive(Clone)]
 pub struct Env {
     pub repo: PathBuf,
     pub project_dir: ProjectDir,
@@ -782,11 +803,13 @@ pub fn run_spawn(
     // grandchild another, without bound. Only Claude Code reads `allowed_tools`, so on the other
     // three harnesses the ungated `spawn` was simply *served* — real processes, real worktrees, no
     // error anywhere.
-    check_spawn_gates(
-        &caller.agent_type,
-        caller.depth,
-        LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER,
-    )?;
+    //
+    // The third argument was the constant `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER = 0` until
+    // backgrounding landed, which made the concurrency half of this gate unreachable while the
+    // depth half was live. It is now the caller's real count (see [`Caller::live_children`]), so a
+    // parent that backgrounds more children than its type allows is refused here — before the
+    // worktree, before the process — rather than served.
+    check_spawn_gates(&caller.agent_type, caller.depth, caller.live_children)?;
     let requested: Vec<Glob> = if req.writable_scope.is_empty() {
         vec![Glob("**".into())]
     } else {
@@ -1177,7 +1200,13 @@ pub fn run_spawn(
     Ok(returned)
 }
 
+/// The other half of [`crate::spawn::make_worktree`]'s serialization, and it needs the guard for
+/// the same reason: `git worktree remove` takes the repository's own locks, so a sibling thread's
+/// `worktree add` racing it fails with `index.lock: File exists`. The failure lands on the
+/// *sibling's* spawn — a child refused because an unrelated child happened to be finishing — which
+/// is exactly the kind of scheduling-dependent flake the guard exists to make impossible.
 fn cleanup(repo: &Path, wt: &Path) {
+    let _serialized = crate::spawn::repo_write_guard();
     let _ = SysCommand::new("git")
         .current_dir(repo)
         .args(["worktree", "remove", "--force", &wt.to_string_lossy()])
@@ -2063,6 +2092,7 @@ mod tests {
             agent_id: "caller".into(),
             agent_type: builtin("claude").unwrap(),
             depth: marion_core::agent_type::DEFAULT_MAX_DEPTH,
+            live_children: 0,
         };
         // codex-impl: a type whose child would really launch a process, so a missing gate is a real
         // grandchild rather than a failure somewhere else.
@@ -2135,6 +2165,7 @@ mod tests {
             agent_type: builtin("claude").unwrap(),
             // 2 → the child lands at 3, which is exactly `max_depth` and therefore legal.
             depth: marion_core::agent_type::DEFAULT_MAX_DEPTH - 1,
+            live_children: 0,
         };
         let mut req = request("codex-impl", None);
         req.timeout_secs = 1;
@@ -2167,6 +2198,7 @@ mod tests {
             agent_id: "caller".into(),
             agent_type: builtin("claude").unwrap(),
             depth: 1,
+            live_children: 0,
         };
         let mut req = request("codex-impl", None);
         req.timeout_secs = 1;
@@ -2189,31 +2221,51 @@ mod tests {
         );
     }
 
-    /// The concurrency half, stated honestly rather than asserted into existence.
+    /// **The concurrency half, now that it can bind.**
     ///
-    /// `spawn` is synchronous and the bridge's JSON-RPC loop is sequential, so the count handed to
-    /// the gate is 0 and `max_concurrent_children` **cannot bind today**. This test pins the two
-    /// facts that make that safe to have wired: the constant really is 0, and 0 really does pass
-    /// the gate on every built-in. When backgrounding lands, the count changes and this test is the
-    /// one that should start failing.
+    /// This test used to be called
+    /// `the_concurrency_gate_is_wired_and_cannot_bind_while_spawn_is_synchronous` and its doc said
+    /// *"when backgrounding lands, the count changes and this test is the one that should start
+    /// failing"*. It is that test, rewritten rather than deleted, because the fact it pinned has
+    /// not gone away — it has inverted, and the inversion is the whole point of the change.
+    ///
+    /// What it pins now: the gate reads a *field*, so the caller's count is whatever the bridge
+    /// measured, and the bound refuses at exactly `max_concurrent_children` on every built-in —
+    /// refuses, never queues (§3.1). The end-to-end witness that a second **backgrounded** spawn
+    /// is refused is `tests/background_spawn.rs`; this is the unit that would catch an off-by-one
+    /// in the bound itself, which no end-to-end test could localize.
     #[test]
-    fn the_concurrency_gate_is_wired_and_cannot_bind_while_spawn_is_synchronous() {
-        assert_eq!(
-            LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER, 0,
-            "a synchronous caller has no other live child; anything else here would be invented"
-        );
+    fn the_concurrency_gate_refuses_at_the_bound_and_admits_below_it() {
         for name in marion_core::agent_type::builtin_names() {
             let t = builtin(name).unwrap();
+            let max = t.max_concurrent_children;
             assert!(
-                check_spawn_gates(&t, 0, LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER).is_ok(),
-                "{name}: the concurrency bound is unreachable at a live count of 0"
+                check_spawn_gates(&t, 0, max - 1).is_ok(),
+                "{name}: a caller one below its bound may still spawn"
             );
             assert!(
-                check_spawn_gates(&t, 0, t.max_concurrent_children).is_err(),
-                "{name}: and the gate itself still refuses at the bound, so what is inert is the \
-                 count and not the rule"
+                check_spawn_gates(&t, 0, max).is_err(),
+                "{name}: at the bound the spawn is refused, not queued (§3.1)"
+            );
+            assert!(
+                check_spawn_gates(&t, 0, max + 1).is_err(),
+                "{name}: and above it too — the gate is `>=`, so a count that somehow overshot is \
+                 still refused rather than wrapping back to admitted"
             );
         }
+    }
+
+    /// `Caller::root` answers the live count with a measurement, not with the old constant.
+    ///
+    /// Separate from the gate test above because it guards a different mistake: re-introducing a
+    /// hardcoded zero by giving the field a default that no bridge ever overwrites. A root that
+    /// `marion run` just minted genuinely has no children — that is why 0 is right here — and the
+    /// bridge overwrites it on every `spawn` it serves.
+    #[test]
+    fn a_freshly_minted_root_has_no_live_children() {
+        let c = Caller::root("root", builtin("claude").unwrap());
+        assert_eq!(c.live_children, 0);
+        assert_eq!(c.depth, crate::root::ROOT_DEPTH);
     }
 
     #[test]

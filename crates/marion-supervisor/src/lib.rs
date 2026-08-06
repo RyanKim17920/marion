@@ -12,6 +12,9 @@
 //! `marion-supervisor mcp` call the *same* `run::run_spawn`, not two copies that could drift while
 //! the socket is not yet there to force agreement.
 
+/// §5.4's `background`, honoured: the bridge's table of children running while their caller has
+/// the turn back, and the `wait` that resolves the handle it hands out.
+pub mod background;
 pub mod bridge;
 /// §5.7's start and S15's detach: how a `marion-supervisor` comes to exist detached, and how a
 /// client that finds nothing listening asks for one without becoming a second start race.

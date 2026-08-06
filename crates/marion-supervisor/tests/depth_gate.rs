@@ -358,6 +358,10 @@ fn drive(node: &Node) -> Evidence {
         agent_id: "delegator-parent".into(),
         agent_type: builtin(node.agent_type).expect("the child's own type resolves"),
         depth: DEFAULT_MAX_DEPTH - 1,
+        // This test is about the **depth** half of §6.1 step 2, so the concurrency half is held
+        // at a value that cannot fire. A non-zero here would make a depth assertion pass or fail
+        // for the other gate's reason.
+        live_children: 0,
     };
 
     let task_id = TaskId(format!("depth-gate-{}", node.agent_type));
