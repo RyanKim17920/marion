@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use crate::adapter::Auth;
 use crate::claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV as MARION_BASE_URL_ENV, DEPTH_ENV,
-    READY_FILE_ENV,
+    NODE_TOKEN_ENV, READY_FILE_ENV,
 };
 use crate::invocation::Invocation;
 use crate::stream::{
@@ -439,6 +439,9 @@ pub struct BridgeEnv {
     pub agent_type: String,
     /// The node's depth, root = 0 (§3.1's `max_depth`).
     pub depth: u32,
+    /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
+    /// absent, never empty ([`crate::claude_code::NODE_TOKEN_ENV`]).
+    pub node_token: Option<String>,
     /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
     /// withhold and nothing to wait on (§6.1 step 8).
     pub ready_file: Option<PathBuf>,
@@ -497,6 +500,10 @@ pub fn settings_json_with_auth(mcp: Option<&BridgeEnv>, selected_type: &str) -> 
         if let Some(u) = &b.base_url {
             env[MARION_BASE_URL_ENV] = json!(u);
         }
+        // Same rule; see [`crate::claude_code::NODE_TOKEN_ENV`].
+        if let Some(t) = &b.node_token {
+            env[NODE_TOKEN_ENV] = json!(t);
+        }
         if let Some(r) = &b.ready_file {
             env[READY_FILE_ENV] = json!(r.to_string_lossy());
         }
@@ -554,6 +561,7 @@ mod tests {
             agent_id: AgentId("019f-child".into()),
             agent_type: "gemini".into(),
             depth: 1,
+            node_token: None,
             ready_file: None,
         }
     }

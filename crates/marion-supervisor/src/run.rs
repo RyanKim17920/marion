@@ -887,11 +887,81 @@ impl Drop for AbortOnDrop<'_> {
     }
 }
 
+/// **Whoever owns this node's lifecycle, watching the spawn from outside it.**
+///
+/// `run_spawn` is a blocking call that returns a finished node. That was the whole story while
+/// every caller *was* the owner — `marion run` holds the root for its entire turn, and the bridge
+/// holds a backgrounded child on a thread of its own. §11 item 28 moves ownership into the
+/// supervisor, and a supervisor that learned a node's identity from the **return value** would
+/// learn it after the node had run: too late to answer `agent/spawn`, too late to mint the node a
+/// capability, and too late to hold a handle on it.
+///
+/// So two facts are pushed out at the instant they become true, and each hook is placed *before*
+/// the thing it is about becomes irreversible:
+///
+/// * [`Self::identified`] — the node has an identity and nothing else. Its `SpawnIntent` is
+///   fsynced and no side effect has been taken: no worktree, no config document, no process. The
+///   token it returns is written into the declaration a few lines later, so minting it here is
+///   what makes it reach the one file the node's own bridge reads.
+/// * [`Self::started`] — a process exists and this is its pid, at the same instant step 1's
+///   `Spawned { pid: Some(_) }` is journaled. An owner that answers its caller when this fires is
+///   making a claim the journal already backs, rather than one it is about to.
+///
+/// **Not a channel, and not a return value.** A channel would let the spawn proceed past a point
+/// the owner has not yet recorded; the declaration is written between the two hooks, so
+/// `identified` has to be answered *synchronously* or the token is decided after the file that
+/// carries it. `&dyn` for [`crate::duplex::DuplexSpec::on_started`]'s reason.
+///
+/// Neither hook may block or panic. Both run on the spawning thread inside the node's own critical
+/// path — a hook that blocks delays a real process's launch, and one that panics unwinds through
+/// [`AbortOnDrop`], journaling `SpawnAborted` for a node that was fine.
+pub trait SpawnObserver: Sync {
+    /// The node's identity, the instant it has one and nothing more. Returns §5.4's per-node
+    /// capability token to write into its declaration, or `None` for an owner that mints none.
+    fn identified(&self, agent_id: &AgentId) -> Option<String>;
+    /// A process exists. `pid` is a signal target, not an identity — see the `Spawned` writer below
+    /// and `restart.rs` for why those are different claims.
+    fn started(&self, agent_id: &AgentId, pid: i32);
+}
+
+/// The observer for a caller that owns the node **by holding this call** — which is every caller
+/// but the supervisor's `agent/spawn`.
+///
+/// `marion run` blocks on the root for its whole turn and the bridge holds a backgrounded child on
+/// a thread it owns, so both already know everything these hooks announce. Neither mints a token:
+/// §5.4's capability is bound to a node whose lifecycle the *supervisor* owns, and a token minted
+/// by a process that is about to exit would be a credential with nothing behind it.
+pub struct Unwatched;
+
+impl SpawnObserver for Unwatched {
+    fn identified(&self, _: &AgentId) -> Option<String> {
+        None
+    }
+    fn started(&self, _: &AgentId, _: i32) {}
+}
+
+/// [`run_spawn_watched`] for a caller that owns the node by holding this call.
+///
+/// Kept as the name with the plain signature — rather than making every caller pass [`Unwatched`] —
+/// for the reason [`run_bounded`] keeps its own next to [`run_bounded_watched`]: it is `pub`, it
+/// has callers outside this crate's spawn path, and a widened signature would make five integration
+/// files re-state a parameter none of them has an opinion about.
 pub fn run_spawn(
     env: &Env,
     req: &SpawnRequest,
     task_id: &TaskId,
     caller: &Caller,
+) -> Result<TaskContract, SpawnError> {
+    run_spawn_watched(env, req, task_id, caller, &Unwatched)
+}
+
+/// §6.1's spawn, with the node's owner told about it as it happens. See [`SpawnObserver`].
+pub fn run_spawn_watched(
+    env: &Env,
+    req: &SpawnRequest,
+    task_id: &TaskId,
+    caller: &Caller,
+    observer: &dyn SpawnObserver,
 ) -> Result<TaskContract, SpawnError> {
     let agent_type = builtin(&req.agent_type)
         .ok_or_else(|| SpawnError::UnknownAgentType(req.agent_type.clone()))?;
@@ -953,6 +1023,12 @@ pub fn run_spawn(
             task_id: Some(task_id.clone()),
         }),
     );
+    // **§11 item 28 step 4's first hook, and its position is the argument.** The intent is on disk,
+    // so a supervisor that crashes after this line has a record naming the node; and nothing below
+    // has happened yet, so the token this returns is decided before the document that carries it is
+    // written. Between the two there is exactly one durable fact and no side effect — which is the
+    // only window in which "the node exists and nothing about it is irreversible" is true.
+    let node_token = observer.identified(&agent_id);
     // Every path out of this function from here on resolves that intent — including the `?`
     // returns below, which is what this guard is for. See [`AbortOnDrop`].
     let mut resolution = AbortOnDrop {
@@ -1070,6 +1146,11 @@ pub fn run_spawn(
         // is no frame to withhold and no marker to wait on (§6.1 step 8); its MCP readiness is
         // asserted post hoc from its JSONL stream.
         ready_file: ready_file.clone(),
+        // §5.4's capability, from whoever owns this node — `None` under [`Unwatched`], which is
+        // every caller that owns the node by holding this call. It reaches the child's bridge
+        // through the same per-server `env` block `agent_id` and `depth` ride, because that block
+        // is the only channel marion has to a process the *harness* starts.
+        node_token: node_token.clone(),
         repo: env.repo.clone(),
         // §4.3's `<state>` **root**, which is `<state>/<project-hash>`'s parent — not the project
         // dir itself. This used to be the project dir behind a `TODO(phase-3)` that called itself
@@ -1179,6 +1260,10 @@ pub fn run_spawn(
                 pid: Some(pid),
             }),
         );
+        // **After the append, never before.** The owner's whole reason for wanting this instant is
+        // that the response it sends is a claim the journal already backs; telling it first would
+        // let it answer "the node exists" a `write(2)` before the only record that says so.
+        observer.started(&agent_id, pid);
     };
     let run = match path {
         LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound, &announce_started)?,
@@ -1368,6 +1453,7 @@ mod tests {
     use crate::spawn::ChildOutcome;
     use marion_core::harness::Harness;
     use marion_testsupport::{Scratch, scratch};
+    use std::sync::Mutex;
 
     /// **`run_bounded` survives a duration no clock can hold, having already started a process.**
     ///
@@ -1945,6 +2031,162 @@ mod tests {
         }
     }
 
+    /// **The two instants an owner outside `run_spawn` has to be told about**, and the fact that
+    /// each is told *before* the thing it is about becomes irreversible.
+    ///
+    /// §11 item 28 step 4 moves node ownership into the supervisor, and an owner that learns a
+    /// node's identity only from `run_spawn`'s **return** has learned it after the node has run.
+    /// Two hooks, and the ordering of each is the whole assertion:
+    ///
+    /// * `identified` fires once the `SpawnIntent` is on disk and **before any side effect** — no
+    ///   worktree, no config document, no process. That is what lets it mint §5.4's token in time
+    ///   for the declaration this test then reads off disk. Firing it later would put the token in
+    ///   a file already written; firing it before the intent would name a node no restart could
+    ///   find.
+    /// * `started` fires at `command.spawn()`, carrying a real pid. It is the same instant
+    ///   `Spawned` is journaled (step 1), so an owner that returns when this fires is making a
+    ///   claim the journal already backs rather than one it is about to.
+    ///
+    /// The token is asserted **on the bytes marion wrote**, not on what the observer returned: the
+    /// value only means anything if it reached the one file the node's own bridge reads. A run
+    /// whose observer was consulted and whose answer was dropped would pass every other assertion
+    /// here.
+    ///
+    /// The run itself is allowed to fail — the base URL answers nothing and the bound is a second,
+    /// exactly as the dispatch test above arranges. What is asserted is what happened *before* it
+    /// failed.
+    #[test]
+    fn an_owner_learns_a_nodes_identity_before_its_first_side_effect_and_its_pid_at_launch() {
+        struct Recorder {
+            project: ProjectDir,
+            identified: Mutex<Vec<AgentId>>,
+            /// What the world looked like **at the instant `identified` fired** — recorded from
+            /// inside the hook, because no assertion afterwards can see that instant. Pairs of
+            /// (the intent is already durable, a side effect has already been taken).
+            at_identify: Mutex<Vec<(bool, bool)>>,
+            started: Mutex<Vec<(AgentId, i32)>>,
+        }
+        const TOKEN: &str = "MARION-OBSERVER-TOKEN-b17f";
+        impl SpawnObserver for Recorder {
+            fn identified(&self, agent_id: &AgentId) -> Option<String> {
+                // Read back through the same replay a restarted supervisor would use, not by
+                // grepping the file: what matters is that a *reader* can find the node.
+                let intent_durable = crate::registry::Registry::boot(&self.project)
+                    .map(|r| r.tree().get(agent_id).is_some())
+                    .unwrap_or(false);
+                let side_effect_taken = self.project.agent(agent_id).config_dir().exists();
+                self.at_identify
+                    .lock()
+                    .unwrap()
+                    .push((intent_durable, side_effect_taken));
+                self.identified.lock().unwrap().push(agent_id.clone());
+                Some(TOKEN.to_string())
+            }
+            fn started(&self, agent_id: &AgentId, pid: i32) {
+                self.started.lock().unwrap().push((agent_id.clone(), pid));
+            }
+        }
+
+        let root = scratch("supervisor-observer");
+        let repo = fixture_repo(&root);
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let env = Env {
+            repo: repo.clone(),
+            project_dir: ProjectDir::new(&state, &repo),
+            bridge: PathBuf::from("/bin/marion-supervisor"),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: Auth::Canned,
+        };
+        let req = SpawnRequest {
+            agent_type: "claude".into(),
+            prompt: "do the task".into(),
+            acceptance_criteria: vec![],
+            writable_scope: vec!["src/**".into()],
+            timeout_secs: 1,
+            model: None,
+        };
+        let observer = Recorder {
+            project: env.project_dir.clone(),
+            identified: Mutex::default(),
+            at_identify: Mutex::default(),
+            started: Mutex::default(),
+        };
+        let _ = run_spawn_watched(
+            &env,
+            &req,
+            &TaskId("observer".into()),
+            &Caller::root("root", builtin("claude").unwrap()),
+            &observer,
+        );
+
+        let identified = observer.identified.lock().unwrap().clone();
+        assert_eq!(
+            identified.len(),
+            1,
+            "exactly one node was spawned, so exactly one identity was announced"
+        );
+        // **The position of the hook, asserted rather than described.** Both halves fail against a
+        // different placement: announcing before the intent is journaled gives an owner a node no
+        // restart could find, and announcing after the first side effect gives it a token decided
+        // too late for the document that has to carry it.
+        assert_eq!(
+            observer.at_identify.lock().unwrap().as_slice(),
+            &[(true, false)],
+            "at the instant the owner is told, the SpawnIntent must be durable (first) and no side \
+             effect taken (second)"
+        );
+        let started = observer.started.lock().unwrap().clone();
+        assert_eq!(started.len(), 1, "one process, one pid: {started:?}");
+        assert_eq!(
+            started[0].0, identified[0],
+            "the pid must be announced for the node whose identity was announced, or an owner \
+             keyed by AgentId files it under a node that does not exist"
+        );
+        assert!(
+            started[0].1 > 0,
+            "a pid a signal could reach, not a placeholder: {}",
+            started[0].1
+        );
+
+        // The identity marion told the owner is the identity marion journaled. Reading it back off
+        // the tree rather than trusting the hook is what stops a hook that announces some *other*
+        // node's id from passing.
+        let journalled: Vec<_> = crate::registry::Registry::boot(&env.project_dir)
+            .expect("the journal this run wrote is readable")
+            .tree()
+            .nodes()
+            .iter()
+            .map(|n| n.agent_id.clone())
+            .collect();
+        assert!(
+            journalled.contains(&identified[0]),
+            "the announced identity must be the journalled one: announced {identified:?}, \
+             journalled {journalled:?}"
+        );
+
+        // And the token reached the one file the node's own bridge reads.
+        let mut written = Vec::new();
+        files_under(&state, &mut written);
+        let mcp = written
+            .iter()
+            .find(|p| p.file_name().is_some_and(|n| n == "mcp.json"))
+            .unwrap_or_else(|| panic!("the adapter wrote no declaration: {written:?}"));
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(mcp).unwrap()).unwrap();
+        assert_eq!(
+            doc["mcpServers"]["marion"]["env"][marion_harness::claude_code::NODE_TOKEN_ENV],
+            serde_json::json!(TOKEN),
+            "the token the owner minted must be in the declaration, beside MARION_AGENT_ID — a \
+             token nobody wrote down is a capability nothing can present:\n{doc:#}"
+        );
+        assert_eq!(
+            doc["mcpServers"]["marion"]["env"][marion_harness::claude_code::AGENT_ID_ENV],
+            serde_json::json!(identified[0].0),
+            "…and beside the identity it is bound to"
+        );
+    }
+
     /// The other half of item 1: the Codex path still resolves to the Codex adapter, so the
     /// dispatch change is observably a no-op for every M1 spawn.
     #[test]
@@ -2000,6 +2242,7 @@ mod tests {
             agent_id: AgentId("019f-child".into()),
             agent_type: "codex-impl".into(),
             depth: 1,
+            node_token: None,
             ready_file: None,
             repo: "/repo".into(),
             state_dir: "/state".into(),

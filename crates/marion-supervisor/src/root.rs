@@ -608,6 +608,13 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         // this is the value that makes the whole chain measurable — without it every node in the
         // tree would look like a root to its own bridge.
         depth: ROOT_DEPTH,
+        // **`None`, and it is a gap rather than a decision about roots.** §5.4's capability token is
+        // minted by whoever owns the node's lifecycle, and this root's owner is `marion run` itself
+        // — a process that blocks for the whole turn and then exits, so a token it minted would be
+        // a credential with nothing behind it and no map to check it against. A root whose owner is
+        // the supervisor gets one; that is §11 item 28 step 6, and until it lands a `marion run`
+        // root's bridge states no capability and the socket's `agent/spawn` refuses it by name.
+        node_token: None,
         ready_file: ready_file.clone(),
         repo: spec.repo.clone(),
         state_dir: spec.state.clone(),
@@ -1506,6 +1513,7 @@ mod tests {
             agent_id: AgentId("019f-root".into()),
             agent_type: "claude".into(),
             depth: ROOT_DEPTH,
+            node_token: None,
             ready_file: "/state/x/mcp-ready".into(),
         }
     }

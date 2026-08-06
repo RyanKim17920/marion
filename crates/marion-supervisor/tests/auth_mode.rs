@@ -69,6 +69,7 @@ fn ctx() -> SpawnCtx {
         agent_id: AgentId("019f-root".into()),
         agent_type: "claude".into(),
         depth: 0,
+        node_token: None,
         ready_file: Some("/state/x/mcp-ready".into()),
         repo: "/repo".into(),
         state_dir: "/state".into(),

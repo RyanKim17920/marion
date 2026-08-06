@@ -57,6 +57,23 @@ pub const BASE_URL_ENV: &str = "MARION_BASE_URL";
 /// nothing anywhere computed a depth, so `max_depth` was inert and a child could spawn a
 /// grandchild — and that grandchild another — without bound.
 pub const DEPTH_ENV: &str = "MARION_DEPTH";
+/// Env var carrying the node's **per-node capability token** to its bridge — §5.4's *"a per-node
+/// capability token bound to its `AgentId`"*, which until §11 item 28 step 4 was a sentence in the
+/// design with nothing implementing it.
+///
+/// [`AGENT_ID_ENV`] tells the bridge who it serves, and once `agent/spawn` is on the socket the
+/// bridge states that identity back over a connection nobody authenticated: `serve_conn` performs
+/// no `SO_PEERCRED`/`getpeereid` check, so **any process that can `connect(2)` could assert
+/// `depth: 0` and spawn**, and §6.1 step 2's gates would be a check the caller chooses whether to
+/// fail. This is what makes the identity provable rather than merely stated: the supervisor minted
+/// the value, holds the `AgentId → token` binding in memory, and wrote it into exactly one place —
+/// this declaration, which only the node's own bridge reads.
+///
+/// **Present or absent, never empty**, for [`BASE_URL_ENV`]'s reason sharpened: `MARION_NODE_TOKEN=""`
+/// read back through `var()` is `Ok("")`, and a capability token every process on the machine can
+/// guess is worse than none, because the bridge would present it and be believed by any check that
+/// only asked whether a token was stated.
+pub const NODE_TOKEN_ENV: &str = "MARION_NODE_TOKEN";
 
 /// What marion needs to compile a headless invocation — **root or child.**
 ///
@@ -330,6 +347,10 @@ pub struct McpEnv {
     pub agent_type: String,
     /// The node's depth, root = 0. Its `spawn` creates a node at `depth + 1`.
     pub depth: u32,
+    /// §5.4's capability token for this node. `None` where the supervisor minted none — a node
+    /// spawned by a path that does not own it, which is every path but the socket's `agent/spawn`
+    /// until steps 5 and 6 land. See [`NODE_TOKEN_ENV`].
+    pub node_token: Option<String>,
     pub ready_file: PathBuf,
 }
 
@@ -361,6 +382,11 @@ pub fn mcp_config_json(node_env: &McpEnv) -> Value {
     // Present or absent, never empty — see [`BASE_URL_ENV`].
     if let Some(u) = &node_env.base_url {
         env[BASE_URL_ENV] = json!(u);
+    }
+    // Same rule, and see [`NODE_TOKEN_ENV`] for why breaking it here is worse than a
+    // misconfiguration.
+    if let Some(t) = &node_env.node_token {
+        env[NODE_TOKEN_ENV] = json!(t);
     }
     json!({
         "mcpServers": {
