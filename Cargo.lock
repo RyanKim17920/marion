@@ -160,6 +160,7 @@ version = "0.1.0"
 dependencies = [
  "marion-core",
  "marion-harness",
+ "marion-proto",
  "marion-provider",
  "marion-testsupport",
  "serde",

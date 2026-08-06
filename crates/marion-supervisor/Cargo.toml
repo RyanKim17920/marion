@@ -25,6 +25,14 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 marion-harness = { path = "../marion-harness" }
+# The wire vocabulary (§10), for **one** type: `ReplayPoint`. §7.3.3 makes the replay-to-subscribe
+# seam the correctness question of re-attach, and the registry is what computes the point. Declaring
+# a second two-field struct here and converting at the handler is the "one derivation, two names"
+# shape `run.rs` argues against — the conversion is exactly where the two would drift. No socket and
+# no handler is built against this; see `registry.rs` for what the registry deliberately does *not*
+# answer yet (`NodeSummary`, `AttachMode`) and why each would require fabricating a fact the journal
+# does not carry.
+marion-proto = { path = "../marion-proto" }
 
 # A **dev**-dependency, not a dependency: only the end-to-end test starts a provider. Linking the
 # canned provider into the user-facing `marion` binary would put a fake-model server inside the

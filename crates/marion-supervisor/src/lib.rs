@@ -19,6 +19,9 @@ pub mod duplex;
 /// §4.3's append-only registry journal, writer side. The records and the replay are
 /// `marion-core`'s — this crate is where I/O is allowed.
 pub mod journal;
+/// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
+/// than a pure function only tests call.
+pub mod registry;
 pub mod root;
 pub mod run;
 pub mod spawn;
