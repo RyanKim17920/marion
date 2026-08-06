@@ -1,19 +1,37 @@
-//! **The root change record's instrument** (design §9, `marion_core::root_change`).
+//! **The root change record** (design §9, `marion_core::root_change`), instrument and record both.
 //!
-//! A root writes in the operator's own repository, so the two things that decide whether its change
-//! record is worth anything are *what the delta is measured against* and *what measuring costs the
-//! operator*. Both are properties of `spawn::TreeSnapshot` and neither needs a process, so they are
-//! asserted here against a real fixture repository rather than inferred from a run.
+//! A root writes in the operator's own repository, so the three things that decide whether its
+//! change record is worth anything are *what the delta is measured against*, *what measuring costs
+//! the operator*, and *whether the record survives the run's own ending*. The first two are
+//! properties of `spawn::TreeSnapshot` and need no process; the third can only be asserted through
+//! a real `marion run`, so the second half of this file drives the binary against a stub harness.
 //!
-//! Every test in this file is a **negative control** in the sense the design uses: it is built so
-//! that it cannot be satisfied by failing to look. NC-2 goes red the day someone "simplifies" the
-//! base point to `HEAD`; NC-3 goes red the moment `GIT_OBJECT_DIRECTORY` is dropped. Both were
-//! watched red before they were watched green — see each test's own note.
+//! Every test here is a **negative control** in the sense the design uses: it is built so that it
+//! cannot be satisfied by failing to look, and each one was watched red — with the break named in
+//! its own doc comment — before it was watched green.
+//!
+//! # Why the harness is a stub
+//!
+//! `launch_only_root.rs`'s reason, unchanged: what is under test is *marion's* record of what
+//! happened to a directory, and a stub lets the directory's history be the input — including the
+//! two histories no real CLI produces on demand (a root that writes and then hangs forever, and one
+//! that writes and never reaches marion's bridge). codex is the harness because it is `LaunchOnly`,
+//! which is the path where the wall-clock kill lives, and the kill is the exit path a record is
+//! most easily lost on.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
+use marion_core::journal::{RecordKind, decode};
+use marion_core::root_change::{RootChange, RootChanged, RootDelta, RootObservation};
+use marion_supervisor::run::run_bounded;
 use marion_supervisor::spawn::TreeSnapshot;
 use marion_testsupport::{fixture_repo, git, scratch};
+
+/// Generous. The bound exists so a hung `marion` fails the suite loudly instead of wedging it —
+/// `launch_only_root.rs`'s `RUN_BOUND`, and the same reasoning.
+const RUN_BOUND: Duration = Duration::from_secs(60);
 
 /// Files under a directory, counted. The witness NC-3 rests on, so it is a real walk and not a
 /// `read_dir` of the top level: git's loose objects live two levels down in `objects/ab/cdef…`.
@@ -194,8 +212,8 @@ fn taking_two_snapshots_writes_nothing_into_the_operators_own_git_dir() {
 }
 
 /// A directory that is not a git worktree is a **refusal that names the directory**, never a silent
-/// skip — the caller turns this into `RootObservation::NotAttempted`, and a record that says why is
-/// the whole point of that variant existing.
+/// skip — the caller turns this into `RootObservation::Failed`, and a record that says why is the
+/// whole point of that variant existing.
 #[test]
 fn a_directory_that_is_not_a_worktree_is_refused_by_name() {
     let dir = scratch("root-change-nogit");
@@ -210,4 +228,327 @@ fn a_directory_that_is_not_a_worktree_is_refused_by_name() {
         msg.contains("git") && !msg.is_empty(),
         "the refusal must be git's own words or marion's, not an empty failure: {msg}"
     );
+}
+
+// --- the record, through a real `marion run` ----------------------------------------------------
+
+/// A `codex` stub on a directory prepended to `PATH`.
+///
+/// `body` is shell, run with the **root's own cwd**, which is the repository under measurement —
+/// so a `> a.txt` in the body is a write by the node marion is recording, arriving through exactly
+/// the route a real harness's write would.
+fn stub_codex(dir: &Path, body: &str) -> PathBuf {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let program = bin.join("codex");
+    std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    bin
+}
+
+/// One marion verb, called and answered, in codex's stream shape. Without it the run is refused as
+/// `BridgeNeverReached` — which is a case this file tests deliberately and must not stumble into.
+const REACHED_THE_BRIDGE: &str = r#"echo '{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}'"#;
+
+struct Run {
+    code: Option<i32>,
+    stderr: String,
+    state: PathBuf,
+    repo: PathBuf,
+}
+
+/// `marion run codex` with `bin` ahead of any real binary on `PATH`.
+fn run_marion(dir: &Path, repo: &Path, state: &Path, bin: &Path, timeout_secs: &str) -> Run {
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
+    cmd.args([
+        "run",
+        "codex",
+        "--prompt",
+        "Delegate the task to a child.",
+        "--repo",
+        &repo.to_string_lossy(),
+        "--state-dir",
+        &state.to_string_lossy(),
+        // Nothing listens there. The stub is the whole model side of the run, and `--canned` is
+        // what makes that legible to the binary.
+        "--canned",
+        "--base-url",
+        "http://127.0.0.1:9/v1",
+        "--timeout",
+        timeout_secs,
+    ]);
+    cmd.env("PATH", path).current_dir(dir);
+    let out = run_bounded(&mut cmd, RUN_BOUND).expect("marion run starts");
+    assert!(
+        !out.timed_out,
+        "marion run did not finish inside {RUN_BOUND:?} — the bound under test is marion's own"
+    );
+    Run {
+        code: out.code,
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        state: state.to_path_buf(),
+        repo: repo.to_path_buf(),
+    }
+}
+
+/// `marion run codex` in a **real one-commit repository**.
+///
+/// A git fixture and not a bare directory, because that is the only configuration in which there is
+/// a delta to record at all — a test that ran in an unversioned directory would assert against
+/// `Failed` and could never tell a working measurement from a missing one.
+fn marion_run(dir: &Path, body: &str, timeout_secs: &str) -> Run {
+    let repo = fixture_repo(dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let bin = stub_codex(dir, body);
+    run_marion(dir, &repo, &state, &bin, timeout_secs)
+}
+
+/// Every file named `leaf` anywhere under `root`.
+///
+/// A **walk**, not a probe at a computed path, for `persisted_contracts`' reason: asserting that a
+/// record is at a guessed location passes if marion wrote it somewhere else entirely, and the claim
+/// these tests make is about what marion wrote, not about where a test looked.
+fn find_all(root: &Path, leaf: &str, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            find_all(&p, leaf, out);
+        } else if p.file_name().is_some_and(|n| n == leaf) {
+            out.push(p);
+        }
+    }
+}
+
+/// The run's change record, both halves, read back off disk.
+///
+/// Returned as a pair because the pair is the design: the journal's counts are worth something only
+/// if the sidecar behind them exists, and a test that read one half could not tell a complete
+/// record from a dangling pointer.
+fn change_record(run: &Run) -> (RootChanged, RootChange) {
+    let mut journals = Vec::new();
+    find_all(&run.state, "journal.jsonl", &mut journals);
+    assert_eq!(journals.len(), 1, "one project, one journal: {journals:?}");
+    let records: Vec<RootChanged> = std::fs::read(&journals[0])
+        .unwrap()
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .filter_map(decode)
+        .filter_map(|r| match r.kind {
+            RecordKind::RootChanged(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        records.len(),
+        1,
+        "exactly one change record per run — none means the record was lost on this exit path, \
+         which is the whole of NC-6"
+    );
+
+    let mut sidecars = Vec::new();
+    find_all(&run.state, "root-change.json", &mut sidecars);
+    assert_eq!(
+        sidecars.len(),
+        1,
+        "the journal's counts are authoritative only because this file exists: {sidecars:?}"
+    );
+    let sidecar: RootChange =
+        serde_json::from_slice(&std::fs::read(&sidecars[0]).unwrap()).expect("the sidecar parses");
+    assert_eq!(
+        sidecar.record(),
+        records[0],
+        "the two halves must be one reading — the journal's half is derived from the file's, so a \
+         difference here means they were assembled twice"
+    );
+    (records[0].clone(), sidecar)
+}
+
+/// What was observed, or a panic naming what was there instead — every assertion below is about a
+/// *measurement*, so a record that measured nothing must fail loudly rather than compare equal to
+/// zero.
+fn observed(sidecar: &RootChange) -> (&Vec<PathBuf>, &str, usize) {
+    match &sidecar.working_tree_delta {
+        RootDelta::Observed {
+            changed_paths,
+            diff,
+            ..
+        } => (
+            changed_paths,
+            diff.as_ref().map(|d| d.value.as_str()).unwrap_or(""),
+            diff.as_ref().map(|d| d.original_bytes).unwrap_or(0),
+        ),
+        other => panic!("marion did not measure this run: {other:?}"),
+    }
+}
+
+/// **NC-1 — the paired control, and the primary guard.**
+///
+/// Two runs of the same harness against the same fixture, differing only in whether the root wrote
+/// a file. **Case A is what every silent-stop mode fails**: a snapshot that never ran, a diff never
+/// taken, a record never journalled, a sidecar never written — each of them yields no `a.txt` and
+/// no bytes. **Case B alone would pass under all of them**, which is exactly why B alone is not the
+/// test, and why the two are one `#[test]` rather than two: neither can be `#[ignore]`d without the
+/// other, and the closing assertion is that the two records *differ*, which no single-case test can
+/// make at all.
+#[test]
+fn a_root_that_wrote_and_a_root_that_did_not_produce_different_records() {
+    let content = "the agent wrote this line";
+
+    let dir_a = scratch("root-change-wrote");
+    let a = marion_run(
+        &dir_a,
+        &format!("printf '{content}\\n' > a.txt\n{REACHED_THE_BRIDGE}\nexit 0"),
+        "30",
+    );
+    assert_eq!(a.code, Some(0), "case A: {}", a.stderr);
+    assert!(a.repo.join("a.txt").is_file(), "the stub really did write");
+    let (rec_a, side_a) = change_record(&a);
+    let (paths, patch, bytes) = observed(&side_a);
+    assert_eq!(paths, &vec![PathBuf::from("a.txt")]);
+    assert!(
+        patch.contains(content),
+        "the patch must carry the bytes, not merely the path — `changed_paths` says a root touched \
+         a file, a patch says whether it fixed the bug or deleted the file:\n{patch}"
+    );
+    assert!(bytes > 0);
+    match rec_a.observation {
+        RootObservation::Observed {
+            changed_count,
+            diff_bytes,
+            dirty_at_launch,
+            ..
+        } => {
+            assert_eq!(changed_count, 1);
+            assert_eq!(diff_bytes, bytes);
+            assert_eq!(dirty_at_launch, 0, "the fixture is committed clean");
+        }
+        other => panic!("case A measured nothing: {other:?}"),
+    }
+
+    let dir_b = scratch("root-change-quiet-run");
+    let b = marion_run(&dir_b, &format!("{REACHED_THE_BRIDGE}\nexit 0"), "30");
+    assert_eq!(b.code, Some(0), "case B: {}", b.stderr);
+    let (rec_b, side_b) = change_record(&b);
+    let (paths, patch, bytes) = observed(&side_b);
+    assert!(paths.is_empty(), "case B wrote nothing: {paths:?}");
+    assert!(patch.is_empty());
+    assert_eq!(bytes, 0);
+    match rec_b.observation {
+        RootObservation::Observed {
+            changed_count,
+            diff_bytes,
+            ..
+        } => {
+            assert_eq!(changed_count, 0);
+            assert_eq!(diff_bytes, 0);
+        }
+        other => panic!("case B measured nothing: {other:?}"),
+    }
+
+    // **The assertion neither case can make alone.** A marion that always journalled the same
+    // reading — the failure a single-case test cannot see — passes A or B and fails this.
+    assert_ne!(
+        rec_a.observation, rec_b.observation,
+        "a root that wrote and a root that did not must not produce the same record; that \
+         identity is the pre-`8a69f22` byte pattern this whole record exists to break"
+    );
+}
+
+/// **NC-6 — the record survives every exit path.**
+///
+/// The post-snapshot sits at the **top** of `journal_the_roots_outcome`, before the match on the
+/// run's result, and this is the test that says why. Three endings, one of them `Ok`:
+///
+/// * a **wall-clock kill** on the `LaunchOnly` path — the node wrote and then hung, and marion
+///   killed its process group. A write that already happened is not undone by the kill, and this is
+///   precisely the run whose record it would be worst to lose;
+/// * **`BridgeNeverReached`** — the node wrote and never called a marion verb, so marion refuses
+///   the *result*. The write is still on disk;
+/// * a **clean exit**, so the other two cannot pass by a record that is written only for failures.
+///
+/// Red if the snapshot moves onto the `Ok` arm: the first two cases then find no record at all and
+/// `change_record` fails on "exactly one change record per run".
+#[test]
+fn the_record_is_written_on_every_exit_path_and_not_only_a_clean_one() {
+    // (label, stub body, does marion exit 0)
+    let cases: [(&str, String, bool); 3] = [
+        (
+            "killed-on-marions-wall-clock",
+            format!("printf 'x\\n' > a.txt\n{REACHED_THE_BRIDGE}\nsleep 120"),
+            false,
+        ),
+        (
+            "refused-the-bridge-was-never-reached",
+            "printf 'x\\n' > a.txt\necho 'Here is a summary of the repository.'\nexit 0".into(),
+            false,
+        ),
+        (
+            "clean-exit",
+            format!("printf 'x\\n' > a.txt\n{REACHED_THE_BRIDGE}\nexit 0"),
+            true,
+        ),
+    ];
+    for (label, body, clean) in cases {
+        let dir = scratch(&format!("root-change-exit-{label}"));
+        // Short only for the hang; the other two exit on their own and never reach the bound.
+        let run = marion_run(&dir, &body, if clean { "30" } else { "4" });
+        assert_eq!(run.code == Some(0), clean, "{label}: {}", run.stderr);
+        let (_, sidecar) = change_record(&run);
+        let (paths, patch, bytes) = observed(&sidecar);
+        assert_eq!(
+            paths,
+            &vec![PathBuf::from("a.txt")],
+            "{label}: the write happened before the ending, and an ending marion disliked does \
+             not unwrite it"
+        );
+        assert!(bytes > 0 && patch.contains("+x"), "{label}: {patch}");
+    }
+}
+
+/// A root in a directory that is **not** a git worktree still runs, and records that nothing was
+/// measured.
+///
+/// `Failed` and not silence: this is the third of the three readings, and the one an operator
+/// reaches by pointing `marion run` at a directory they never `git init`ed. Every existing root
+/// fixture in this repository is such a directory, which is why the run must not be refused — see
+/// `ROOT_TOOLS` for what changes the day the availability axis is non-empty.
+#[test]
+fn a_root_outside_a_repository_runs_and_records_that_nothing_was_measured() {
+    let dir = scratch("root-change-nonrepo");
+    let repo = dir.join("plain");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let bin = stub_codex(&dir, &format!("{REACHED_THE_BRIDGE}\nexit 0"));
+    let run = run_marion(&dir, &repo, &state, &bin, "30");
+    assert_eq!(
+        run.code,
+        Some(0),
+        "a directory with no repository is not a reason to refuse the run — there is no grant to \
+         gate while ROOT_TOOLS is empty:\n{}",
+        run.stderr
+    );
+    let (record, sidecar) = change_record(&run);
+    match (&record.observation, &sidecar.working_tree_delta) {
+        (RootObservation::Failed { reason }, RootDelta::Failed { .. }) => assert!(
+            reason.as_str().contains("git"),
+            "an absence must name its cause or it is only a shorter silence: {}",
+            reason.as_str()
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(record.base_commit, None, "there was no HEAD to read");
 }

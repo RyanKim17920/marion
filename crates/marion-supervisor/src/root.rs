@@ -57,11 +57,14 @@ use std::process::Command as SysCommand;
 use std::time::Duration as StdDuration;
 
 use marion_core::agent_type::builtin;
-use marion_core::contract::{AgentId, ExitStatus, ProcessExit};
+use marion_core::contract::{AgentId, Capped, ExitStatus, Oid, ProcessExit};
 use marion_core::harness::Harness;
 use marion_core::ids::{new_agent_id, uuid_v7};
 use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
 use marion_core::paths::{AgentDir, ProjectDir};
+use marion_core::root_change::{
+    Reason, RootChange, RootChanged, RootDelta, RootObservation, RootScope,
+};
 use marion_harness::{
     Auth, CallOutcome, ChildExit, Extras, Invocation, LaunchSpec, MarionCall, McpDeclaration,
     McpRoute, SpawnCtx, adapter_for, json_frames,
@@ -130,7 +133,36 @@ pub const ROOT_ALLOWED_TOOLS: [&str; 4] = [
 /// *convention*: it says which types are meant for the job. This constant is the *invariant*: it
 /// holds for every agent type that exists now and every one added later, including one whose name
 /// carries no warning at all. **The convention alone is not a guarantee; the two together are.**
+///
+/// # The audit half is now built, and it is what a grant here must be gated on
+///
+/// The paragraph above makes two arguments and only one of them is about containment. The other is
+/// **audit**: a root that writes with no diff behind it produces the same nothing as a child whose
+/// write escaped its worktree (§11 item 24), which is the ambiguity `8a69f22` exists to destroy.
+/// That half no longer has to be answered by keeping the list empty — [`RootChangeBase`] records
+/// what the root's directory did between launch and exit, and [`availability_axis`] is the seam
+/// where the two are joined: **a non-empty axis is reachable only through the arm that has a
+/// pre-tree**. So this list stays empty for containment's sake and for no other reason, and the
+/// commit that fills it must also decide what `prepare` does when the snapshot is unavailable.
+/// `agent_type.rs:98-104` states the same two-protections argument and must move with it.
 pub const ROOT_TOOLS: [&str; 0] = [];
+
+/// §3.1's availability axis for a root — **and the seam a future grant is gated at.**
+///
+/// The value is [`ROOT_TOOLS`] either way today, because that list is empty. What matters is the
+/// shape: the only route to a non-empty axis is the [`RootChangeBase::Taken`] arm, so a later edit
+/// that fills `ROOT_TOOLS` grants tools **only** to a root whose change is being recorded, and
+/// cannot grant them to one whose snapshot failed without deleting an arm of this match. A
+/// `debug_assert` or a runtime check would be a reminder; this is a compile-time one.
+///
+/// It is deliberately not a read of `AgentType::tools` — see [`ROOT_TOOLS`] for the whole argument.
+fn availability_axis(base: &RootChangeBase) -> Vec<String> {
+    match base {
+        RootChangeBase::Taken { .. } => ROOT_TOOLS.iter().map(|s| s.to_string()).collect(),
+        // **No audit, no grant.** Not "grant it anyway and note the absence".
+        RootChangeBase::Unavailable { .. } => Vec::new(),
+    }
+}
 
 /// Which of the two launch paths a root takes, derived from its adapter's `ExecutionSurfaces`.
 ///
@@ -169,6 +201,31 @@ pub struct RootSpec {
     pub auth: Auth,
 }
 
+/// The base point of the root's change record, or why there is none (§9).
+///
+/// Taken at `prepare`, **before** the launch spec is compiled, because [`availability_axis`] reads
+/// it: what a root may do has to be decided after marion knows whether it can record what was done.
+///
+/// Two arms and not an `Option<Oid>`: an absence has to say *why*, or the record it produces is
+/// only a shorter silence — the same reason `marion_core::root_change::RootObservation` has a
+/// `reason` on both of its non-measuring variants.
+#[derive(Debug, Clone)]
+pub enum RootChangeBase {
+    Taken {
+        /// The isolated git environment, kept so the **post**-snapshot is taken with the same
+        /// index copy and the same object store. Re-deriving it at exit would mean a second
+        /// resolution of the same three paths, and a warm stat cache thrown away.
+        snapshot: std::sync::Arc<crate::spawn::TreeSnapshot>,
+        /// `HEAD` at prepare — context only. See `RootChanged::base_commit`.
+        base_commit: Option<Oid>,
+        pre_tree: Oid,
+    },
+    /// marion looked and could not see: the directory is not a git worktree, `git` is not on
+    /// `PATH`, the object directory could not be created. Journalled as
+    /// `RootObservation::Failed` with this sentence, never as a clean reading.
+    Unavailable { reason: String },
+}
+
 /// A prepared, not-yet-started root node.
 #[derive(Debug, Clone)]
 pub struct RootNode {
@@ -200,6 +257,15 @@ pub struct RootNode {
     /// Carried onto the node because the credential decision is not finished at `compile`: the
     /// `LaunchOnly` run below pushes `MARION_DUMMY_KEY`, and under [`Auth::Inherited`] it must not.
     pub auth: Auth,
+    /// §9's change record, half-built: what the root's directory looked like when it started.
+    pub change_base: RootChangeBase,
+    /// The scope the root's writes are judged against (§5.4).
+    ///
+    /// Resolved here rather than at exit because the agent type is resolved here, and re-resolving
+    /// `spec.agent_type` at the terminal transition would be a second lookup that could answer
+    /// differently. `CeilingOnly` and not a ceiling-plus-request pair: **no parent authored a
+    /// request** — see `marion_core::root_change::RootScope`.
+    pub scope: RootScope,
 }
 
 /// What the root's run produced.
@@ -351,6 +417,38 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         RootPath::LaunchOnly => None,
     };
 
+    // **§9's change record, first half — taken before anything decides what the root may do.**
+    //
+    // The order is the point. `availability_axis` below reads this value, so marion knows whether
+    // it can record what the root did *before* it decides what the root is allowed to do. Taking
+    // the snapshot after compiling the launch would put the two in the other order and make the
+    // gate a comment rather than a control flow.
+    //
+    // A failure here is **not** fatal today, because `ROOT_TOOLS` is empty and there is no grant to
+    // refuse: a root in a directory that is not a git worktree still runs, and its record says
+    // `Failed` with git's own words. The day the axis is non-empty that changes — see `ROOT_TOOLS`.
+    let change_base = match crate::spawn::TreeSnapshot::open(&spec.repo, agent_dir.path()) {
+        Ok(snapshot) => {
+            let base_commit = snapshot.head(&spec.repo);
+            match snapshot.take(&spec.repo) {
+                Ok(pre_tree) => RootChangeBase::Taken {
+                    snapshot: std::sync::Arc::new(snapshot),
+                    base_commit,
+                    pre_tree,
+                },
+                Err(e) => RootChangeBase::Unavailable {
+                    reason: format!("snapshotting the working tree at launch: {e}"),
+                },
+            }
+        }
+        Err(e) => RootChangeBase::Unavailable {
+            reason: format!(
+                "preparing an isolated git environment for {}: {e}",
+                spec.repo.display()
+            ),
+        },
+    };
+
     let token = per_run_token()?;
     // The adapter decides argv, env, and which configuration files exist. marion writes what it is
     // handed and derives none of those paths itself — one derivation, so `--mcp-config` can never
@@ -366,7 +464,9 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         // §3.1's availability axis, and a root compiles **none of it** — deliberately not
         // `agent_type.tools`, which is what `run::run_spawn` gives a child. The whole argument is
         // at [`ROOT_TOOLS`], beside `ROOT_ALLOWED_TOOLS`, which is a constant for the same reason.
-        tools: ROOT_TOOLS.iter().map(|s| s.to_string()).collect(),
+        // It goes through `availability_axis` so the list and the audit that would justify it are
+        // decided in one place rather than two.
+        tools: availability_axis(&change_base),
         allowed_tools: ROOT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
         mcp: McpDeclaration::Marion,
         base_url: spec.base_url.clone(),
@@ -520,6 +620,10 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         path,
         prompt: spec.prompt.clone(),
         auth: spec.auth,
+        change_base,
+        scope: RootScope::CeilingOnly {
+            ceiling: agent_type.scope_ceiling.clone(),
+        },
     })
 }
 
@@ -592,6 +696,16 @@ pub fn launch_watched(
 /// Every failure of `launch` is recorded too, and none of them is left as silence: §7.2 is emphatic
 /// that a node marion decided the fate of must never be mistaken for one marion *lost*.
 fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootError>) {
+    // **First, and before the match on `result`** — §9's change record survives every exit path.
+    //
+    // The record derives from the filesystem at two instants, not from the stream, so it does not
+    // inherit the visibility asymmetry `RootOutcome::marion_calls` exists to paper over: a duplex
+    // root and a `LaunchOnly` one produce the same shape of record, which is the point. Putting
+    // this on the `Ok` arm would lose it for exactly the runs that need it most — a `LaunchOnly`
+    // root killed on the wall-clock bound (`launch_only`), and a root refused as
+    // `BridgeNeverReached` below, both of which are runs where a write already happened and marion
+    // is about to say the run failed.
+    record_the_roots_change(node);
     let outcome = match result {
         Ok(o) => o,
         // The run happened, the process exited, and marion refused the *result* — so this is an
@@ -688,6 +802,158 @@ fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootE
          is held for the root's Blocked bound and then denied (§9), and one §5.4 decides is denied \
          at once",
     );
+}
+
+/// §9's change record, written: the sidecar first, then the journal's pointer at it.
+///
+/// **The order is load-bearing and the failure is not silent.** `RootChanged` carries counts whose
+/// authority rests on `<agent-dir>/root-change.json` being there — that is the whole
+/// `ContractPersisted` shape. So if the file cannot be written, the journal is told marion could
+/// not see, rather than being handed counts with nothing behind them. A record pointing at a file
+/// that does not exist is a *worse* artifact than an honest `Failed`.
+fn record_the_roots_change(node: &RootNode) {
+    let change = observe_the_roots_change(node);
+    let record = match serde_json::to_vec_pretty(&change)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| {
+            std::fs::write(node.agent_dir.root_change(), bytes).map_err(|e| e.to_string())
+        }) {
+        Ok(()) => change.record(),
+        Err(e) => {
+            let path = node.agent_dir.root_change();
+            eprintln!("marion: writing {}: {e}", path.display());
+            RootChanged {
+                agent_id: node.agent_id.clone(),
+                base_commit: change.base_commit.clone(),
+                head_at_exit: change.head_at_exit.clone(),
+                observation: RootObservation::Failed {
+                    reason: Reason::new(format!(
+                        "the delta was measured and {} could not be written: {e}",
+                        path.display()
+                    )),
+                },
+            }
+        }
+    };
+    crate::journal::record(&node.project, RecordKind::RootChanged(record));
+}
+
+/// Take the second snapshot and assemble what the two say.
+///
+/// **The subject is `invocation.cwd`, the directory the process actually had** — not `RootSpec::repo`
+/// re-read from somewhere. They are the same value by construction, and reading the compiled one
+/// keeps them one value: a record measuring a directory the root did not run in would be the same
+/// class of lie as `TaskContract.child.harness` sourced from the request rather than the adapter.
+///
+/// Nothing here reads `RootOutcome::transcript` or `marion_calls`. §6.7 is explicit that a stream's
+/// `locations` are **corroboration and never a source**, and a root would be the one place that
+/// rule got quietly inverted.
+fn observe_the_roots_change(node: &RootNode) -> RootChange {
+    let repo = &node.invocation.cwd;
+    let (snapshot, base_commit, pre_tree) = match &node.change_base {
+        RootChangeBase::Taken {
+            snapshot,
+            base_commit,
+            pre_tree,
+        } => (snapshot, base_commit.clone(), pre_tree.clone()),
+        // marion never got a base point. `Failed` and not `NotAttempted`: it tried and could not
+        // see. `NotAttempted` is for a decision not to look, which nothing in M1 can express yet.
+        RootChangeBase::Unavailable { reason } => {
+            return RootChange {
+                agent_id: node.agent_id.clone(),
+                base_commit: None,
+                head_at_exit: None,
+                scope: node.scope.clone(),
+                working_tree_delta: RootDelta::Failed {
+                    reason: Reason::new(reason),
+                },
+            };
+        }
+    };
+    let head_at_exit = snapshot.head(repo);
+    let (scope, delta) = match observe(node, snapshot, repo, &pre_tree) {
+        Ok(v) => v,
+        Err(e) => (
+            node.scope.clone(),
+            RootDelta::Failed {
+                reason: Reason::new(format!("snapshotting the working tree at exit: {e}")),
+            },
+        ),
+    };
+    // Both snapshots are taken; the copied index has nothing left to carry.
+    snapshot.release();
+    RootChange {
+        agent_id: node.agent_id.clone(),
+        base_commit,
+        head_at_exit,
+        scope,
+        working_tree_delta: delta,
+    }
+}
+
+/// The measurement itself, as one fallible expression so a partial reading is impossible: either
+/// every term of the delta was derived from the same pair of trees, or there is no delta at all.
+fn observe(
+    node: &RootNode,
+    snapshot: &crate::spawn::TreeSnapshot,
+    repo: &std::path::Path,
+    pre_tree: &Oid,
+) -> Result<(RootScope, RootDelta), SpawnError> {
+    let post_tree = snapshot.take(repo)?;
+    let changed_paths = snapshot.changed_paths(repo, pre_tree, &post_tree)?;
+    // Against `base_commit`, which is what that field is *for*. Absent where there is no commit to
+    // measure from — an empty list, not a failure, because "no commits yet" is a normal repository.
+    let pre_dirty_paths = match &node.change_base {
+        RootChangeBase::Taken {
+            base_commit: Some(b),
+            ..
+        } => snapshot.changed_paths(repo, b, pre_tree)?,
+        _ => Vec::new(),
+    };
+    let (scope, scope_violations) = judge_scope(&node.scope, &changed_paths);
+    let patch = snapshot.diff(repo, pre_tree, &post_tree)?;
+    Ok((
+        scope,
+        RootDelta::Observed {
+            pre_tree: pre_tree.clone(),
+            post_tree,
+            changed_paths,
+            pre_dirty_paths,
+            scope_violations,
+            // **`Some("")` for an empty patch, never `None`.** `run_spawn` used to drop an empty
+            // diff, and `worktree_reap.rs` pins what that cost: a contract carrying `changed_paths`
+            // with no bytes anywhere behind them. Here an empty patch is a *measurement* — the
+            // trees were identical — and the sidecar is authoritative, so it is stored complete
+            // and uncapped. `Capped` is the type only so a reader never has to guess whether it is.
+            diff: Some(Capped::whole(patch)),
+        },
+    ))
+}
+
+/// §5.4's detective check, asked with **one** list.
+///
+/// `Scope::new(ceiling, ceiling)` and not `Scope::new(ceiling, &["**"])`: the conjunction of a list
+/// with itself is that list, so this puts the one-list question to the two-list API without
+/// inventing a second author. `["**"]` in the request slot would be a *fabricated* request — the
+/// exact thing `RootScope::CeilingOnly` exists to make unsayable in the record.
+///
+/// A ceiling that will not compile yields `NotEnforced` with globset's own words. Never an empty
+/// violation list beside a `CeilingOnly` claim, which would read as "checked, nothing wrong".
+fn judge_scope(scope: &RootScope, changed: &[PathBuf]) -> (RootScope, Vec<PathBuf>) {
+    let RootScope::CeilingOnly { ceiling } = scope else {
+        return (scope.clone(), Vec::new());
+    };
+    match marion_core::scope::Scope::new(ceiling, ceiling) {
+        Ok(s) => (scope.clone(), s.violations(changed)),
+        Err(e) => (
+            RootScope::NotEnforced {
+                reason: Reason::new(format!(
+                    "the agent type's scope ceiling does not compile: {e}"
+                )),
+            },
+            Vec::new(),
+        ),
+    }
 }
 
 /// §6.1 step 7's confirmation for a root. `harness_version` and `model` are resolved by *launching*
@@ -1086,6 +1352,86 @@ mod tests {
                 "",
                 "{agent_type}: a root's availability axis is empty by construction"
             );
+        }
+    }
+
+    /// **NC-5's companion — the grant gate, as a structure rather than a promise.**
+    ///
+    /// The design's gate is *"whenever `LaunchSpec.tools` is non-empty on a root, `RootNode` carries
+    /// a pre-tree"*, and it has to be structural, so that the commit which fills [`ROOT_TOOLS`]
+    /// cannot compile past it silently. It is: the only source of a root's availability axis is
+    /// [`availability_axis`], and only one of its two arms can ever return a non-empty list — the
+    /// arm holding a [`RootChangeBase::Taken`]. Filling `ROOT_TOOLS` therefore grants tools to a
+    /// recorded root and to no other, without anybody having to remember.
+    ///
+    /// This test asserts the implication on both shapes, over roots `prepare` really built: one in
+    /// a directory that is not a repository, one in a git fixture. Vacuously true today for the
+    /// same reason `ROOT_TOOLS` is empty today, and stated now because the day it stops being
+    /// vacuous is the day nobody will be looking at this file.
+    #[test]
+    fn a_non_empty_availability_axis_is_reachable_only_from_a_recorded_base() {
+        // The unrecorded arm, direct: no audit, no grant — even if the constant were full.
+        assert!(
+            availability_axis(&RootChangeBase::Unavailable {
+                reason: "not a git worktree".into()
+            })
+            .is_empty(),
+            "a root whose change marion cannot record must never be handed a built-in tool, \
+             whatever ROOT_TOOLS says"
+        );
+
+        let outside = temp("gate-outside");
+        let a = prepare(&root_spec(&outside, "claude-impl")).expect("the root still runs");
+        match &a.change_base {
+            RootChangeBase::Unavailable { reason } => assert!(
+                reason.contains("git"),
+                "the absence must name its cause: {reason}"
+            ),
+            other => panic!("a bare directory is not a worktree: {other:?}"),
+        }
+
+        let inside = marion_testsupport::scratch("root-gate-inside");
+        let repo = marion_testsupport::fixture_repo(&inside);
+        let b = prepare(&RootSpec {
+            repo,
+            state: inside.join("state"),
+            ..root_spec(&inside, "claude-impl")
+        })
+        .expect("a git worktree is snapshottable");
+        assert!(
+            matches!(b.change_base, RootChangeBase::Taken { .. }),
+            "a real repository must yield a base point, or every record below is vacuous"
+        );
+
+        // The implication itself, on both.
+        for node in [&a, &b] {
+            let args = &node.invocation.args;
+            let i = args.iter().position(|x| x == "--tools").expect("compiled");
+            if !args[i + 1].is_empty() {
+                assert!(
+                    matches!(node.change_base, RootChangeBase::Taken { .. }),
+                    "a root was granted `{}` with no change record behind it — that is \
+                     `8a69f22`'s ambiguity taken on purpose (see ROOT_TOOLS)",
+                    args[i + 1]
+                );
+            }
+        }
+    }
+
+    /// A root's scope is its type's **ceiling and nothing else**, because no parent authored a
+    /// request. `["**"]` in a request slot would fabricate an author; `CeilingOnly` says there was
+    /// never one to fabricate.
+    #[test]
+    fn a_roots_scope_is_a_ceiling_with_no_request_beside_it() {
+        let dir = temp("scope");
+        let node = prepare(&root_spec(&dir, "claude")).unwrap();
+        match &node.scope {
+            RootScope::CeilingOnly { ceiling } => assert_eq!(
+                ceiling,
+                &builtin("claude").unwrap().scope_ceiling,
+                "the agent type's own ceiling, not a copy that could drift"
+            ),
+            other => panic!("{other:?}"),
         }
     }
 
