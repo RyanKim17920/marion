@@ -53,7 +53,7 @@ use marion_proto::notify::Event as Note;
 use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script, TurnGate};
 use marion_supervisor::socket::{SocketPaths, read_identity, socket_paths};
-use marion_testsupport::{fixture_repo, kill_hard, scratch, survivors};
+use marion_testsupport::{fixture_repo, scratch, sweep};
 use serde_json::json;
 
 unsafe extern "C" {
@@ -147,9 +147,11 @@ impl Drop for Run {
             let _ = c.kill();
             let _ = c.wait();
         }
-        for (pid, _) in survivors(&self.needle) {
-            kill_hard(pid);
-        }
+        // **Waited on, not merely signalled.** See `marion_testsupport::sweep`: the `Scratch` guard
+        // removes this tree the moment this returns, and a process that has been `SIGKILL`ed but
+        // has not died yet can still land the write it was already inside — which is how a run
+        // that cleaned up after itself left one `contracts/<task>.json` behind.
+        sweep(&self.needle);
     }
 }
 
@@ -413,9 +415,7 @@ impl Drop for Supervisor {
     /// Leave nothing behind whatever the assertions did. Every stage of the launch carries the
     /// state directory in its argv, so the needle names exactly the processes this test started.
     fn drop(&mut self) {
-        for (pid, _) in survivors(&self.needle) {
-            kill_hard(pid);
-        }
+        sweep(&self.needle);
     }
 }
 

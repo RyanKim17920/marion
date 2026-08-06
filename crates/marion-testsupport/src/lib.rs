@@ -43,6 +43,7 @@
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -186,6 +187,36 @@ pub fn survivors(needle: &str) -> Vec<(i32, String)> {
             (pid, l.to_string())
         })
         .collect()
+}
+
+/// Kill everything carrying `needle` and **do not return until it is gone**.
+///
+/// `kill_hard` on each of [`survivors`] is the shape every fixture here reached for, and it has a
+/// gap that only shows up when a [`Scratch`] guard removes the tree immediately afterwards:
+/// `SIGKILL` is asynchronous. It marks a process for death; it does not unwind the syscall that
+/// process is already inside. So a supervisor caught mid-spawn finishes its `create_dir_all` and
+/// its `File::create` *after* the signal was sent — and if the tree was removed in between, what it
+/// finishes writing is a fresh `state/<hash>/agents/<id>/contracts/<task>.json` under a directory
+/// nothing will ever clean up again. That is exactly the shape of the leftovers found under
+/// `/tmp/mn-501` after a full suite run: one contract file and the three empty directories above
+/// it, with everything else the test wrote correctly gone.
+///
+/// Waiting closes it, and the wait is on an **event** rather than a duration — reaped or not, by
+/// the time `ps` stops listing a pid its last write has landed. The bound only decides how a
+/// pathological machine gives up; it never decides a verdict, because the return value is the
+/// survivors that outlived it and a caller that cares can assert on it.
+pub fn sweep(needle: &str) -> Vec<(i32, String)> {
+    for (pid, _) in survivors(needle) {
+        kill_hard(pid);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let left = survivors(needle);
+        if left.is_empty() || Instant::now() >= deadline {
+            return left;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 // --- the harnesses this suite drives --------------------------------------------------------------
