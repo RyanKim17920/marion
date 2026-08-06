@@ -345,6 +345,39 @@ fn the_published_identity_lives_and_dies_with_the_socket() {
     goes_on_its_own(&bed);
 }
 
+/// **NC — a client does not report that it reached a supervisor because a dead one's socket
+/// answered.**
+///
+/// This is the flake in this file made deterministic, and it was a real defect rather than a test
+/// artifact. `socket.rs` measured that `connect` to a listener's path keeps succeeding for a window
+/// after that listener's process is gone, so a client that took a successful dial as its answer
+/// would return a stream to nobody: `marion run` would report it had attached to a fleet that no
+/// process is enforcing, and the corpse would still be there for the next client. The race is not
+/// what is posed here — the *state* is, and it is a state no supervisor can ever be in, because a
+/// supervisor binds only while holding the lock.
+#[test]
+fn a_client_that_dials_a_dead_supervisors_socket_starts_a_live_one() {
+    let bed = Bed::new("answering");
+    std::fs::create_dir_all(bed.paths.dir()).expect("the project's directory");
+    let impostor =
+        std::os::unix::net::UnixListener::bind(bed.paths.socket()).expect("a socket that answers");
+    assert!(
+        std::os::unix::net::UnixStream::connect(bed.paths.socket()).is_ok(),
+        "the fixture only means something if the dial really does succeed"
+    );
+
+    let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor is startable");
+    assert!(
+        ensured.started,
+        "the dial reached a socket with no supervisor behind it, so one had to be started"
+    );
+    let id = published(&bed.paths);
+    assert_eq!(bed.supervisors(), vec![id.pid]);
+    drop(impostor);
+    drop(ensured);
+    goes_on_its_own(&bed);
+}
+
 /// **NC — a supervisor whose project directory is removed under it stands down instead of becoming
 /// immortal.**
 ///

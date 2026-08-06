@@ -210,7 +210,19 @@ pub fn ensure_supervisor_within(
     let mut last_spawn: Option<DetachError> = None;
     loop {
         match std::os::unix::net::UnixStream::connect(paths.socket()) {
-            Ok(stream) => return Ok(Ensured { stream, started }),
+            // **A connection is not proof of a supervisor.** `socket.rs` measured on darwin 25.5.0
+            // that closing a descriptor is not synchronous with another descriptor's view of it: for
+            // a window after a listener's process is gone, `connect` to its path still *succeeds*.
+            // A client that took that as an answer would hand its operator a stream to a supervisor
+            // that does not exist — no notifications, no responses, and a `marion run` that reports
+            // it attached to a fleet nobody is enforcing. The lock is the proof this module already
+            // uses everywhere else, and a bound socket implies a held lock by construction, so a
+            // successful dial over a *free* lock is a corpse and is dialed again rather than
+            // returned.
+            Ok(stream) if !crate::socket::nobody_is_serving(paths) => {
+                return Ok(Ensured { stream, started });
+            }
+            Ok(_corpse) => {}
             Err(e) if nobody_answered(&e) => {}
             Err(e) => {
                 return Err(DetachError::Socket(SocketError::Dial {
