@@ -192,8 +192,16 @@ fn handle_tool_call(
                     bridge::spawn_result(id, "backgrounded", *outcome)
                 }
                 marion_supervisor::background::Wait::Unknown => bridge::wait_unknown(id, task_id),
-                marion_supervisor::background::Wait::AlreadyCollected => {
-                    bridge::wait_already_collected(id, task_id)
+                marion_supervisor::background::Wait::AlreadyCollected(what) => {
+                    bridge::wait_already_collected(id, task_id, what)
+                }
+                // Deliberately **not** routed through `spawn_result`: every other arm here carries
+                // an outcome, and this one carries the absence of an outcome about a child that is
+                // still going. Flattening it into the contract-shaped reply would make "still
+                // running" indistinguishable from "ran and produced nothing", which is the exact
+                // confusion §7.6's worked example is about.
+                marion_supervisor::background::Wait::StillRunning { agent_type, waited } => {
+                    bridge::wait_still_running(id, task_id, &agent_type, waited.as_secs())
                 }
             }
         }
@@ -521,6 +529,12 @@ fn new_task_id() -> std::io::Result<marion_core::contract::TaskId> {
 /// correct for every client marion itself writes (`marion run`, the tests, a future TUI), and the
 /// gap it leaves is §11 item 30: a backgrounded child outlives the SIGKILL as an untracked process
 /// reparented to pid 1, which is what §9's *"no untracked live process"* forbids.
+///
+/// **§11 item 30 lists six journal shapes that kill can leave, not one**, because it can land
+/// anywhere in `run_spawn`'s timeline and that timeline separates intent, confirmation and
+/// persistence. Nothing in this function recovers any of them, and nothing pretends to: a restarted
+/// bridge starts with an empty `Background` table and no pid, so a survivor cannot be re-associated
+/// with the handle this process handed out.
 fn run_bridge() {
     let bg = marion_supervisor::background::Background::new();
     let stdin = std::io::stdin();
@@ -583,9 +597,25 @@ mod main_tests {
     ///
     /// 1. a `wait` with **no `task_id`** is refused rather than defaulting to "some child of
     ///    mine", which would block on work the caller was not asking about;
-    /// 2. a `wait` on an **unknown** id is refused *and says the lookup was the whole lookup*
-    ///    (§5.4 scopes `wait` to descendants), so the caller cannot read it as "marion lost it";
+    /// 2. a `wait` on an **unknown** id is refused *and is honest about how narrow the lookup was*;
     /// 3. neither refusal needs an environment, which is how we know nothing was attempted.
+    ///
+    /// **Assertion 2 used to require the opposite of what it now requires, and that is the point.**
+    /// It read: *says the lookup was the whole lookup (§5.4 scopes `wait` to descendants), so the
+    /// caller cannot read it as "marion lost it"* — and the sentence it pinned ended *"marion did
+    /// not search elsewhere and did not lose anything"*. The first half is true. The second is
+    /// false in two ways that §5.4 itself makes reachable:
+    ///
+    /// * a **grandchild** is a descendant, so waiting on one is legitimate — and it is not in this
+    ///   table, because it was started through its own parent's bridge instance. `Unknown` here is
+    ///   marion's limit, not the caller's mistake.
+    /// * the table lives only in this bridge **process**. A bridge that was restarted has lost the
+    ///   exact handle it is being shown, and telling that caller "you are asking about nothing"
+    ///   blames it for marion's own discontinuity.
+    ///
+    /// So the assertion now pins the honest sentence and pins the retracted claim as *absent*. A
+    /// test that asserted the old wording would have kept the falsehood alive, which is why it was
+    /// changed rather than accommodated.
     ///
     /// It needs no `MARION_REPO` and starts no child, so it is a unit test rather than the
     /// end-to-end control in `tests/background_spawn.rs`.
@@ -618,9 +648,19 @@ mod main_tests {
             "the refusal names the id it was asked about, got: {text}"
         );
         assert!(
-            text.contains("descendants"),
-            "and says why the lookup was the whole lookup (§5.4), so \"not yours\" is not read as \
-             \"marion lost it\", got: {text}"
+            text.contains("grandchild"),
+            "and names the §5.4-permitted relationship this lookup cannot resolve, so `Unknown` is \
+             not read as `you may not wait on that`, got: {text}"
+        );
+        assert!(
+            text.contains("restarted"),
+            "and admits the case where the handle was marion's to keep and marion lost it, got: \
+             {text}"
+        );
+        assert!(
+            !text.contains("did not lose"),
+            "and never claims nothing was lost, which is the sentence this refusal used to end \
+             with and cannot support, got: {text}"
         );
         assert!(
             !text.contains("MARION_REPO"),

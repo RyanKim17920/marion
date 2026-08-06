@@ -47,6 +47,56 @@ use crate::spawn::{
 /// child may not spend longer waiting to be ready than it is allowed to live.
 const CHILD_MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
+/// **The longest wall clock marion will hold for one child**, and the reason there has to be one.
+///
+/// `timeout_secs` is caller-controlled and the caller is a *language model* — on the background path
+/// it is a child agent, which §3.1 item 2 says is data and never authority. It arrives as a bare
+/// `u64` off the JSON-RPC frame, and every value in that type is syntactically legal. Without a cap
+/// the value reached `Instant::now() + Duration::from_secs(n)` in [`run_bounded`], which **panics**
+/// on overflow — and it panicked *after* `Command::spawn` had already started an OS process, so the
+/// unwind left a live child behind (dropping `std::process::Child` kills nothing), plus its
+/// worktree, branch and agent directory. On the synchronous path the panic was on the bridge's own
+/// thread and took the whole MCP server, and every *other* live child of that node, with it.
+///
+/// **24 hours, and the number is a policy rather than a measurement.** It is chosen to be far
+/// beyond any plausible agent run — s16 measured the harness that hosts the bridge tearing it down
+/// in under a second at its own exit, so nothing marion can hold is bounded by this in practice —
+/// and far below the point where a deadline stops being representable. What matters is not the
+/// particular number but that it is finite and stated: any finite cap makes the arithmetic below
+/// total, and an unstated one would be rediscovered as a panic.
+///
+/// **Clamped, not refused, and it is recorded.** §6.7's rule throughout this file is that the
+/// contract records *the compiled value, never the asked-for one* — `harness`, `model` and
+/// `allowed_tools` are all sourced that way. The wall clock joins them: `TaskContract`'s `timeout`
+/// is built from [`effective_timeout`]'s output, so a caller that asked for more can read exactly
+/// what it got. Refusing instead would fail a spawn over a number marion is perfectly able to
+/// honour a defensible version of, and would put the refusal in the one place — the result slot —
+/// this whole design keeps free of surprises.
+pub const MAX_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+
+/// The wall clock a request of `secs` actually gets: **its own, or [`MAX_TIMEOUT_SECS`]**.
+///
+/// One function rather than a `min` at each use, so the bound the child runs under and the bound
+/// its contract records cannot diverge — two spellings of one clamp are two chances to disagree
+/// about how long a node was allowed to live, which is the same class of defect as two derivations
+/// of one status.
+pub fn effective_timeout(secs: u64) -> StdDuration {
+    StdDuration::from_secs(secs.min(MAX_TIMEOUT_SECS))
+}
+
+/// How long `program --version` may take before marion records the version as unknown.
+///
+/// The probe is a second process marion starts on the spawn path, and until it was bounded it was
+/// the one step with **no deadline at all**: the child's `timeout_secs` bounds the harness
+/// invocation and nothing else, so a harness that answered its run and then hung on `--version`
+/// left `run_spawn` unable to return — and, on the background path, left `wait` blocked on a thread
+/// that would never finish, which stalls every later frame the bridge would have read.
+///
+/// Generous against the measurement (a real `--version` answers in milliseconds) and short against
+/// the thing it protects: a node's whole run must not be lost to a version string, which is why
+/// expiry degrades to `"unknown"` rather than failing the spawn.
+const HARNESS_VERSION_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+
 /// `Clone` because a **backgrounded** spawn runs on a thread that outlives the JSON-RPC frame the
 /// request arrived on ([`crate::background`]). Borrowing was fine while every spawn was served
 /// inside `handle_tool_call`'s own stack frame; a `'static` thread body cannot borrow from it.
@@ -477,7 +527,21 @@ fn run_bounded_with(
     let stdout_drain = Drain::start(stdout);
     let stderr_drain = Drain::start(stderr);
 
-    let deadline = Instant::now() + timeout;
+    // **`checked_add`, because the child is already running by this line.** `Instant + Duration`
+    // panics on overflow, and every escape from this function from here on abandons the process
+    // started four lines above — `Child`'s `Drop` does not kill it. `run_spawn` clamps its caller's
+    // number to [`MAX_TIMEOUT_SECS`] before it ever gets here, so this is unreachable through the
+    // bridge; it is kept because `run_bounded` is `pub`, has callers that are not `run_spawn` (the
+    // end-to-end test bounds a real `marion run` with it), and a public function whose liveness
+    // depends on an invariant enforced by one of its callers is a defect waiting for the second one.
+    //
+    // The fallback is the cap rather than `Instant::now()`: saturating to *now* would kill a
+    // healthy child instantly, turning an unrepresentable request into the most aggressive possible
+    // answer, and saturating to "never" would leave the process unbounded — the failure this whole
+    // function exists to prevent. The cap is the only choice that is both finite and honest.
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(|| Instant::now() + StdDuration::from_secs(MAX_TIMEOUT_SECS));
     let (status, timed_out) = loop {
         if let Some(status) = child.try_wait()? {
             break (status, false);
@@ -573,12 +637,25 @@ pub(crate) fn init_request_id(agent_id: &AgentId) -> String {
     format!("marion-init-{}", agent_id.0)
 }
 
+/// Ask a harness what version it is, **under a deadline**, degrading to `"unknown"` rather than
+/// hanging.
+///
+/// Driven through [`run_bounded`] rather than `Command::output` for the one property `output` does
+/// not have: `output` blocks until the process closes its pipes, with no bound and no way out. A
+/// harness that hangs here — or that forks something holding the write end — stalled `run_spawn`
+/// forever, after the child had already run and been reaped. `run_bounded` gives it
+/// [`HARNESS_VERSION_TIMEOUT`] and kills its whole process group on expiry, which is the same
+/// treatment the child itself gets and for the same reason.
+///
+/// A timed-out or failed probe is `"unknown"`, never an error: the version is a field in an audit
+/// record, and losing a whole node's contract because a version string did not arrive would trade a
+/// large truth for a small one.
 fn harness_version(program: &str) -> String {
-    SysCommand::new(program)
-        .arg("--version")
-        .output()
+    let mut cmd = SysCommand::new(program);
+    cmd.arg("--version");
+    run_bounded(&mut cmd, HARNESS_VERSION_TIMEOUT)
         .ok()
-        .filter(|o| o.status.success())
+        .filter(|o| !o.timed_out && o.code == Some(0))
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".into())
@@ -994,7 +1071,11 @@ pub fn run_spawn(
         std::fs::write(path, contents)?;
     }
     let inv = adapter.compile(&launch, &ctx)?;
-    let bound = StdDuration::from_secs(req.timeout_secs);
+    // **The caller's number, clamped once, here.** Everything downstream — the child's wall clock,
+    // the MCP readiness cap, the contract's recorded `timeout` — reads this one value, so the bound
+    // the node ran under and the bound its audit record claims are the same by construction. See
+    // [`MAX_TIMEOUT_SECS`] for why an unclamped `u64` was a live process left behind.
+    let bound = effective_timeout(req.timeout_secs);
     // **§7.3.3's replay leg, for the node it needs most.** A child spawned, run and terminated
     // entirely inside a detached window is the case re-attach cannot answer from anything else: it
     // has no live channel to re-subscribe to, and the journal records that it existed and how it
@@ -1051,11 +1132,16 @@ pub fn run_spawn(
     // a confirmation of something that had not happened, which is the whole point of splitting
     // intent from confirmation; a crash in the window between the two therefore leaves an
     // unconfirmed intent, which is the correct reading of a node whose fate marion does not know.
+    // Asked **once**, not once per reader. The journal record below and `contract.child.version`
+    // further down both need it, and each used to run its own `--version` — two processes, two
+    // deadlines to hang on, and two chances for the journal and the contract to disagree about the
+    // version of a single node's harness.
+    let version = harness_version(&inv.program);
     crate::journal::record(
         &env.project_dir,
         RecordKind::Spawned(Spawned {
             agent_id: agent_id.clone(),
-            harness_version: harness_version(&inv.program),
+            harness_version: version.clone(),
             // The **compiled** value, for §6.7's reason: what went on the wire, never what was
             // asked for. `None` on codex, whose `exec` surface carries no model argument.
             model: inv.model.clone(),
@@ -1107,7 +1193,11 @@ pub fn run_spawn(
         &req.acceptance_criteria,
         &agent_type.scope_ceiling,
         &requested,
-        Duration::from_secs(req.timeout_secs),
+        // **`bound`, not `req.timeout_secs`** — §6.7's compiled-value rule applied to the wall
+        // clock. The contract is the audit record of what marion did, so it must name the clock the
+        // node actually ran under; recording the asked-for number would let a clamped request
+        // (see [`MAX_TIMEOUT_SECS`]) produce a contract asserting a bound that was never enforced.
+        Duration::from_secs(bound.as_secs()),
         spawned_at,
         &outcome,
         changed,
@@ -1128,7 +1218,7 @@ pub fn run_spawn(
     // sourcing it here makes that an invariant the code enforces rather than one a reader has to
     // check, and it is the reason a divergence between the two could never again be silent.
     contract.child.harness = adapter.harness();
-    contract.child.version = harness_version(&inv.program);
+    contract.child.version = version;
     // Read off the **compiled invocation** for the same reason, one step further: §3.1 makes the
     // marion-name → harness-name mapping the adapter's, and §6.7's `allowed_tools` records "the
     // compiled, harness-native constraint". So this records what went on the wire — which is
@@ -1219,6 +1309,34 @@ mod tests {
     use crate::spawn::ChildOutcome;
     use marion_core::harness::Harness;
     use marion_testsupport::{Scratch, scratch};
+
+    /// **`run_bounded` survives a duration no clock can hold, having already started a process.**
+    ///
+    /// The order is what makes this a leak rather than an error: `Command::spawn` runs first, the
+    /// deadline is computed second, and `Instant + Duration` panics on overflow. Dropping a
+    /// `std::process::Child` kills nothing, so the unwind abandoned a live process — and on the
+    /// bridge's own thread it took the whole MCP server down with it.
+    ///
+    /// Asserted here rather than only through `run_spawn` because the clamp
+    /// ([`effective_timeout`]) lives in `run_spawn`, and a `pub` function whose liveness depends on
+    /// a guard one of its callers happens to apply is a defect waiting for the second caller.
+    /// `run_bounded` already has one that is not `run_spawn`: the end-to-end test bounds a real
+    /// `marion run` with it.
+    #[test]
+    fn a_duration_the_clock_cannot_represent_bounds_the_run_rather_than_unwinding_it() {
+        let out = run_bounded(SysCommand::new("true").arg("--"), StdDuration::MAX)
+            .expect("an unrepresentable bound is still a bound, not a panic");
+        assert!(
+            !out.timed_out,
+            "the fallback deadline is the cap, not `now` — saturating to now would kill a healthy \
+             child instantly, which is the most aggressive possible reading of `too long`"
+        );
+        assert_eq!(
+            out.code,
+            Some(0),
+            "and the process really ran, and was really reaped"
+        );
+    }
 
     #[test]
     fn an_overrunning_process_group_is_killed_and_reported_as_timed_out() {

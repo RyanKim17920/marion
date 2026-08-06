@@ -5064,11 +5064,50 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
 
     So a backgrounded child whose parent harness exits becomes exactly what §9's M2 criterion
     forbids — an **untracked live process**: reparented to pid 1, its wall clock unenforced because
-    the enforcer (`run_bounded`) was in the bridge, its `SpawnIntent` journaled with no resolution
-    so §7.2 will mark it `Orphaned` — asserting marion *lost* it — and its worktree left behind.
-    This is §11 item 18's runaway shape reached by a new route. `Background::join_all` is kept
-    because it is correct for every client marion itself writes (`marion run`, the tests, a future
-    TUI) and is exercised by `tests/background_spawn.rs`; it is **not** reachable from the harness.
+    the enforcer (`run_bounded`) was in the bridge, and its worktree left behind. This is §11 item
+    18's runaway shape reached by a new route. `Background::join_all` is kept because it is correct
+    for every client marion itself writes (`marion run`, the tests, a future TUI) and is exercised
+    by `tests/background_spawn.rs`; it is **not** reachable from the harness.
+
+    **The journal is left in one of six shapes, not one, and this item used to name only the
+    first.** SIGKILL cannot be handled, deferred or observed, so where it lands is uniform chance
+    over `run_spawn`'s timeline — and that timeline deliberately separates intent from confirmation
+    and confirmation from persistence, which multiplies the resting states. `Spawned` is written
+    only once marion has *observed* a process, which means after the harness has already been run
+    **and reaped** (`run.rs`); `Exited`, the contract write, disarming `AbortOnDrop`, the
+    `ContractPersisted` record and `cleanup` are five further steps after it. A kill between any
+    adjacent pair leaves a different reading:
+
+    1. **`SpawnIntent`, with the child still alive** — killed during the run. The process is
+       reparented to pid 1 and nothing bounds it. Worktree, branch, agent and config directories
+       all remain. This is the runaway above and the only shape this item previously described.
+    2. **`SpawnIntent`, with the child already dead** — killed after `run_bounded` returned but
+       before `Spawned` was written. Identical on disk to shape 1, and **not distinguishable from
+       it by reading the journal**, which is what makes recovery from these records alone
+       impossible rather than merely unbuilt. Same leaked worktree, no live process.
+    3. **`Spawned` with no `Exited`** — and the writer had *necessarily* already reaped the child,
+       since that is the precondition for writing `Spawned` at all. So the node reads as "started,
+       fate unknown" while the process is certainly gone. §7.2 would mark it `Orphaned`, asserting
+       marion *lost* a node whose exit marion had in fact already observed.
+    4. **`Exited` with a missing or partial contract** — killed during or before
+       `persist_then_cap`. The node's status is on the record, and the §6.7 audit file the status
+       refers to may not exist, or may be a truncated JSON document. Worktree leaked.
+    5. **`ContractPersisted`, worktree leaked** — killed between that record and `cleanup`. The
+       only shape where every record is present and correct; what is lost is the handle (the
+       bridge's table is memory) and the workspace.
+    6. **A torn final record** — killed mid-`write`. The last line of `journal.jsonl` is a prefix
+       of a JSON object, and any reader must treat a trailing unparseable line as absent rather
+       than as corruption of the whole file.
+
+    **And a restarted bridge cannot repair any of them.** Its handle table is empty, so no `wait`
+    resolves a survivor (`background::Wait::Unknown` says so). Every production `Spawned` carries
+    `pid: None` — marion drives the child through a helper that owns the `Child` and surfaces no
+    pid, and the record is written post-reap anyway, so even a pid there would name a dead process.
+    marion therefore cannot wait on, signal, reap, or associate a survivor with the handle it
+    issued. **No recovery is claimed and none is built.** The narrower interim fix below — carry
+    each child's pid and process group in the bridge's table and kill from a SIGTERM handler inside
+    the measured ~450 ms grace — would collapse shapes 1 and 2 into a recorded abandonment; it
+    would do nothing for 3–6, which are already post-mortem.
 
     **The descendant gate, absent.** §7.6's L1 invariant — *"marion never emits an agent-initiated
     `Exited` for a node with a non-terminal descendant, unless `reported_early == true` or

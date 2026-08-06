@@ -147,17 +147,26 @@ pub fn tools() -> Value {
             // surface as "not a bug", since an allowlist entry for an undeclared tool is inert).
             // The entry stops being inert here.
             //
-            // **Scoped to this bridge's own children, which is exactly §5.4's rule.** `wait` is
-            // permitted against *descendants only*; a bridge instance serves one node and its
-            // table holds that node's children, so "unknown to me" and "not yours" are one
-            // lookup. There is deliberately no timeout parameter: the child's own contract
-            // `timeout_secs` bounds the run, and a second clock here could disagree with the
-            // contract about whether the run had ended.
+            // **Scoped to this bridge's own children, which is *narrower* than §5.4's rule.**
+            // §5.4 permits `wait` against *descendants*; this bridge instance serves one node and
+            // its table holds that node's **direct children**, so a grandchild — legitimately
+            // waitable under §5.4 — is answered `Unknown` here. That gap is marion's, not the
+            // caller's, and `wait_unknown` says so rather than implying the lookup was exhaustive.
+            // Closing it needs the cross-process registry (`Method::AgentSpawn` over the socket).
+            //
+            // There is deliberately no timeout parameter, and that is not the same as there being
+            // no timeout. A caller-supplied one could disagree with the contract about whether the
+            // run had ended, so the bound is derived instead: the child's own `timeout_secs` plus
+            // `background::WAIT_GRACE` for the work `run_spawn` does around the run. Expiry is not
+            // a verdict on the child (`wait_still_running`) — it exists because a `wait` that never
+            // returns stops this bridge reading *any* later frame, from anyone.
             "name": "wait",
             "description": "Collect a backgrounded child's task contract, blocking until that \
                             child reaches a terminal state. Takes the task_id from the handle \
                             `spawn` returned. Returns immediately if the child has already \
-                            finished. The child's own timeout bounds the wait.",
+                            finished. If the child is still running well past its own timeout, \
+                            this returns saying so instead of blocking forever — the child keeps \
+                            running and the handle stays valid, so you can wait on it again.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -380,39 +389,106 @@ pub fn background_result(id: &Value, started: &crate::background::Started) -> Va
     )
 }
 
-/// **`wait` against an id this bridge never started.**
+/// **`wait` against an id this bridge process has no row for.**
 ///
-/// A sentence rather than a code, and it says *why* the lookup was the whole lookup: §5.4 permits
-/// `wait` against descendants only, this bridge's table is this node's children, so marion did not
-/// look further and is not implying that it did. The alternative — "not found" — would leave the
-/// caller unable to tell "you may not wait on that" from "marion lost it".
+/// A sentence rather than a code, and it has to say **which lookup happened**, because the lookup
+/// is narrower than §5.4's rule. §5.4 permits `wait` against *descendants*; the table this searched
+/// holds only the caller's **direct children, in this bridge process**. Two things therefore land
+/// here that are not caller mistakes at all:
+///
+/// * a **grandchild or permitted peer** — inside §5.4, outside the table, because that node was
+///   started through a different bridge instance. Nothing marion can do about it here; it needs the
+///   cross-process registry (`Method::AgentSpawn` over the socket to the detached `serve`).
+/// * a handle this bridge really did issue and really has **lost**, because the bridge process was
+///   restarted since. The table holds no journal and survives nothing.
+///
+/// The earlier wording ended *"marion did not search elsewhere and did not lose anything"*. The
+/// first half is true and the second is not: on the restart path marion lost the exact handle it
+/// was shown. Telling a caller its handle is invalid when marion dropped it is the accept-and-blame
+/// shape, so the sentence now names both possibilities and does not claim the search was complete.
 pub fn wait_unknown(id: &Value, task_id: &str) -> Value {
     tool_result(
         id,
         &bounded(&format!(
-            "marion: no child of yours carries task_id {task_id:?}. `wait` addresses your own \
-             descendants only (§5.4), so this is the whole of the lookup — marion did not search \
-             elsewhere and did not lose anything. Use the task_id from the handle a `background: \
-             true` spawn returned; a synchronous `spawn` returns its contract directly and has no \
-             handle to wait on."
+            "marion: this supervisor has no record of task_id {task_id:?}. It looked only at the \
+             children it started itself, in this process — that is the whole of the lookup, and it \
+             is narrower than what §5.4 permits: a handle for a *grandchild* or for another node's \
+             child is not resolvable here even though waiting on it would be legitimate, and a \
+             handle marion issued before this supervisor was restarted is gone with the table. So \
+             this may be your mistake or it may be marion's, and marion cannot tell which. If the \
+             handle came from your own `spawn {{ background: true }}` in this session, it should \
+             have \
+             been found; treat the child as no longer observable rather than as finished. A \
+             synchronous `spawn` returns its contract directly and has no handle to wait on."
         )),
         true,
     )
 }
 
-/// **`wait` on a child an earlier `wait` already collected.**
+/// **`wait` on a child an earlier `wait` already collected**, told apart by *what* that earlier
+/// `wait` received.
 ///
 /// Kept apart from [`wait_unknown`] because the two mistakes have opposite fixes: this caller
-/// already holds the contract, and the other is asking about a node that does not exist. Answering
-/// both with one sentence is how a caller learns to retry the one that can never succeed.
-pub fn wait_already_collected(id: &Value, task_id: &str) -> Value {
+/// already holds the answer, and the other is asking about a node this process cannot see.
+///
+/// **The two variants exist because the old single sentence ended with a claim that is sometimes
+/// false**: *"the contract is on disk under that child's agent directory"*. A backgrounded spawn
+/// that failed inside its thread — an unknown agent type, a scope refusal, a harness that would not
+/// compile, a panicked thread — produces a `SpawnError` and **no contract and no file**. Sending a
+/// caller to read a path that was never written is a receipt for something that does not exist,
+/// which is the shape §7.6 and this whole bridge exist to delete.
+pub fn wait_already_collected(
+    id: &Value,
+    task_id: &str,
+    collected: crate::background::Collected,
+) -> Value {
+    let tail = match collected {
+        crate::background::Collected::Contract => {
+            "If you no longer have it, that contract was persisted before it was returned, so it \
+             is on disk under that child's agent directory."
+        }
+        crate::background::Collected::NoContract => {
+            "That child produced no contract — it failed before reaching a terminal state, and the \
+             error text you were given the first time is the whole of what marion knows. There is \
+             no file to re-read, and waiting again cannot produce one."
+        }
+    };
     tool_result(
         id,
         &bounded(&format!(
-            "marion: the contract for task_id {task_id:?} was already returned to an earlier \
-             `wait`. A contract is delivered once; marion does not keep a second copy to hand out, \
-             and re-waiting would block on a child that has already been collected. If you no \
-             longer have it, the contract is on disk under that child's agent directory."
+            "marion: the outcome for task_id {task_id:?} was already returned to an earlier \
+             `wait`. An outcome is delivered once; marion does not keep a second copy to hand out, \
+             and re-waiting would block on a child that has already been collected. {tail}"
+        )),
+        true,
+    )
+}
+
+/// **`wait` gave up blocking, and the child is still running.**
+///
+/// The one answer here that is neither a result nor a mistake, and the sentence has to be careful
+/// in both directions at once. It must not read as a failure — the child is fine, its handle is
+/// valid, and its own wall clock is still running — and it must not read as a terminal state, which
+/// would be the accept-and-ignore shape wearing a timeout's clothes.
+///
+/// It also has to say what the caller should actually do, because "wait again" is only sometimes
+/// right. A child that overran this bound is either doing something slow outside its own clock
+/// (`git`, a contract write) or is genuinely stuck, and marion cannot tell which from here — so the
+/// sentence offers the choice rather than a cadence, and says plainly that marion has not stopped
+/// the child and will not, since stopping it is the child's own `timeout_secs`' job.
+pub fn wait_still_running(id: &Value, task_id: &str, agent_type: &str, waited_secs: u64) -> Value {
+    tool_result(
+        id,
+        &bounded(&format!(
+            "marion: the {agent_type} child for task_id {task_id:?} has not finished after \
+             {waited_secs} s, which is its own wall clock plus the allowance marion adds for the \
+             work around a run, so marion stopped blocking rather than hold your turn open \
+             indefinitely. Nothing has failed and nothing was cancelled: the child is still \
+             running under its own timeout, this handle is still valid, and the slot it occupies \
+             is still counted against your concurrency bound. You may keep working and `wait` on \
+             it again later. A child that overruns this far is usually blocked on something \
+             outside its own clock rather than thinking, so if a second `wait` returns this same \
+             answer, treat the node as stuck rather than slow."
         )),
         true,
     )
@@ -449,6 +525,94 @@ mod tests {
 
         let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
         assert_eq!(parse(note), Some(Request::Notification));
+    }
+
+    /// **A `wait` that gave up blocking must not read as a result, and must not read as a
+    /// failure.**
+    ///
+    /// [`wait_still_running`] is the one answer in the `wait` family that reports *neither* an
+    /// outcome nor a mistake, and it is the easiest to get wrong in both directions at once. A
+    /// caller that reads it as terminal stops waiting on a child that is going to produce a
+    /// contract; a caller that reads it as an error may abandon or re-spawn work that is already
+    /// running. §7.6's worked example is exactly this hazard — a handle in the result slot being
+    /// *"indistinguishable to it from an answer"*.
+    ///
+    /// The sentence is asserted rather than the shape because the sentence *is* the interface: the
+    /// caller is a language model, and there is no code path here for it to branch on.
+    ///
+    /// This has no end-to-end counterpart on purpose. Reaching this arm through the real bridge
+    /// means outlasting a child's whole wall clock plus `background::WAIT_GRACE`, and no test may
+    /// hold the suite for minutes to observe a string. `background.rs`'s own unit test covers
+    /// *reaching* the state; this covers what is said about it.
+    #[test]
+    fn a_wait_that_stopped_blocking_says_the_child_is_alive_and_the_handle_still_good() {
+        let r = wait_still_running(&json!(1), "task-abc", "codex-impl", 240);
+        let text = r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert_eq!(
+            r["result"]["isError"],
+            json!(true),
+            "no contract came back, so this is not a result; the alternative is a success-shaped \
+             reply carrying no answer"
+        );
+        assert!(
+            text.contains("task-abc") && text.contains("codex-impl"),
+            "it names the child it is about — a wait frame carries no agent type: {text}"
+        );
+        assert!(
+            text.contains("still running") && text.contains("still valid"),
+            "and says the child is alive and the handle is good, which is what keeps this from \
+             reading as terminal: {text}"
+        );
+        assert!(
+            text.contains("240"),
+            "and says how long marion actually blocked, so the caller can judge the next move: \
+             {text}"
+        );
+        assert!(
+            !text.contains("cancelled") || text.contains("nothing was cancelled"),
+            "marion did not stop the child and must not imply it did: {text}"
+        );
+    }
+
+    /// **A second `wait` points at a file only when there is one.**
+    ///
+    /// [`wait_already_collected`] ended, unconditionally, *"the contract is on disk under that
+    /// child's agent directory"*. For a backgrounded spawn that failed inside its thread there is
+    /// no contract and no file, so that was a receipt for something that does not exist. The two
+    /// variants are asserted together because the defect is only visible as a contrast.
+    #[test]
+    fn a_second_wait_promises_a_persisted_contract_only_when_one_was_produced() {
+        let with =
+            wait_already_collected(&json!(1), "task-ok", crate::background::Collected::Contract);
+        let with = with["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            with.contains("on disk"),
+            "a delivered contract really was persisted before it was returned: {with}"
+        );
+
+        let without = wait_already_collected(
+            &json!(2),
+            "task-bad",
+            crate::background::Collected::NoContract,
+        );
+        let without = without["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !without.contains("on disk"),
+            "but a spawn that failed wrote no contract, and sending the caller to read one is a \
+             receipt for a file that was never written: {without}"
+        );
+        assert!(
+            without.contains("no contract"),
+            "and it says so plainly rather than staying silent about it: {without}"
+        );
     }
 
     #[test]
