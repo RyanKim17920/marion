@@ -1,0 +1,2630 @@
+{
+  "case": "control",
+  "versions": {
+    "claude": "2.1.222 (Claude Code)",
+    "claude_path": "<HOME>/.local/bin/claude",
+    "python": "3.14.6",
+    "uname": "Darwin 25.5.0 arm64"
+  },
+  "runner": {
+    "label": "runner",
+    "pid": 45826,
+    "ppid": 45820,
+    "pgid": 45817,
+    "sid": 45817
+  },
+  "harness": null,
+  "t_spawn": 1818901.168322,
+  "t_stdin_closed": 1818902.307039,
+  "probe_start": {
+    "t": 1818901.189238,
+    "wall": 1786011742.821091,
+    "event": "start",
+    "tag": "control",
+    "pid": 45843,
+    "ppid": 45826,
+    "pgid": 45817,
+    "sid": 45817,
+    "grandchild_pid": 45844,
+    "life_secs": 90.0,
+    "argv": [
+      "<HOME>/Desktop/CODING/marion-s16/spikes/s16/mcp_probe.py"
+    ],
+    "gc_log": "<SCRATCH>/control/grandchild.jsonl",
+    "handlers": [
+      "SIGHUP",
+      "SIGINT",
+      "SIGQUIT",
+      "SIGILL",
+      "SIGTRAP",
+      "SIGABRT",
+      "SIGEMT",
+      "SIGFPE",
+      "SIGBUS",
+      "SIGSEGV",
+      "SIGSYS",
+      "SIGPIPE",
+      "SIGALRM",
+      "SIGTERM",
+      "SIGURG",
+      "SIGTSTP",
+      "SIGCONT",
+      "SIGCHLD",
+      "SIGTTIN",
+      "SIGTTOU",
+      "SIGIO",
+      "SIGXCPU",
+      "SIGXFSZ",
+      "SIGVTALRM",
+      "SIGPROF",
+      "SIGWINCH",
+      "SIGINFO",
+      "SIGUSR1",
+      "SIGUSR2"
+    ],
+    "handlers_refused": []
+  },
+  "observe_secs": 15.0,
+  "samples": [
+    {
+      "t": 1818902.322787,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818902.609721,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818902.907659,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818903.214468,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818903.539712,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818903.869935,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818904.182447,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818904.502069,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818904.828508,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818905.15144,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818905.480868,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818905.807057,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818906.126255,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818906.442331,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818906.76841,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818907.09923,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818907.402895,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818907.718162,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818908.049607,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818908.358295,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818908.672512,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818908.992983,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818909.315983,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818909.625671,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818909.938984,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818910.249093,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818910.547841,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818910.851785,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818911.170883,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818911.478141,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818911.788704,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818912.099361,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818912.42181,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818912.732316,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818913.021036,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818913.337603,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818913.652357,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818913.972958,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818914.288095,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818914.613448,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818914.938511,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818915.252532,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818915.54822,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818915.859698,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818916.174102,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818916.494122,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818916.818598,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    },
+    {
+      "t": 1818917.137105,
+      "state": {
+        "45843": "ALIVE",
+        "45844": "ALIVE"
+      },
+      "rows": [
+        {
+          "pid": 45843,
+          "ppid": 45826,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 45844,
+          "ppid": 45843,
+          "pgid": 45817,
+          "sess_ps": 0,
+          "sid": 45817,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Thu Aug  6 05:22:22 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ]
+    }
+  ],
+  "probe_log": [
+    {
+      "t": 1818901.189238,
+      "wall": 1786011742.821091,
+      "event": "start",
+      "tag": "control",
+      "pid": 45843,
+      "ppid": 45826,
+      "pgid": 45817,
+      "sid": 45817,
+      "grandchild_pid": 45844,
+      "life_secs": 90.0,
+      "argv": [
+        "<HOME>/Desktop/CODING/marion-s16/spikes/s16/mcp_probe.py"
+      ],
+      "gc_log": "<SCRATCH>/control/grandchild.jsonl",
+      "handlers": [
+        "SIGHUP",
+        "SIGINT",
+        "SIGQUIT",
+        "SIGILL",
+        "SIGTRAP",
+        "SIGABRT",
+        "SIGEMT",
+        "SIGFPE",
+        "SIGBUS",
+        "SIGSEGV",
+        "SIGSYS",
+        "SIGPIPE",
+        "SIGALRM",
+        "SIGTERM",
+        "SIGURG",
+        "SIGTSTP",
+        "SIGCONT",
+        "SIGCHLD",
+        "SIGTTIN",
+        "SIGTTOU",
+        "SIGIO",
+        "SIGXCPU",
+        "SIGXFSZ",
+        "SIGVTALRM",
+        "SIGPROF",
+        "SIGWINCH",
+        "SIGINFO",
+        "SIGUSR1",
+        "SIGUSR2"
+      ],
+      "handlers_refused": []
+    },
+    {
+      "t": 1818901.297965,
+      "wall": 1786011742.929816,
+      "event": "rpc_in",
+      "method": "initialize",
+      "has_id": true
+    },
+    {
+      "t": 1818901.29818,
+      "wall": 1786011742.93003,
+      "event": "rpc_out",
+      "method": "initialize"
+    },
+    {
+      "t": 1818901.298277,
+      "wall": 1786011742.930126,
+      "event": "rpc_in",
+      "method": "notifications/initialized",
+      "has_id": false
+    },
+    {
+      "t": 1818901.298363,
+      "wall": 1786011742.930212,
+      "event": "rpc_in",
+      "method": "tools/list",
+      "has_id": true
+    },
+    {
+      "t": 1818901.298429,
+      "wall": 1786011742.930277,
+      "event": "rpc_out",
+      "method": "tools/list"
+    },
+    {
+      "t": 1818901.449679,
+      "wall": 1786011743.081551,
+      "event": "beat",
+      "n": 1,
+      "ppid": 45826
+    },
+    {
+      "t": 1818901.708635,
+      "wall": 1786011743.340508,
+      "event": "beat",
+      "n": 2,
+      "ppid": 45826
+    },
+    {
+      "t": 1818901.969691,
+      "wall": 1786011743.601577,
+      "event": "beat",
+      "n": 3,
+      "ppid": 45826
+    },
+    {
+      "t": 1818902.231429,
+      "wall": 1786011743.863307,
+      "event": "beat",
+      "n": 4,
+      "ppid": 45826
+    },
+    {
+      "t": 1818902.307102,
+      "wall": 1786011743.938976,
+      "event": "stdin_eof",
+      "ppid": 45826
+    },
+    {
+      "t": 1818902.491688,
+      "wall": 1786011744.12357,
+      "event": "beat",
+      "n": 5,
+      "ppid": 45826
+    },
+    {
+      "t": 1818902.742968,
+      "wall": 1786011744.374858,
+      "event": "beat",
+      "n": 6,
+      "ppid": 45826
+    },
+    {
+      "t": 1818903.003208,
+      "wall": 1786011744.635111,
+      "event": "beat",
+      "n": 7,
+      "ppid": 45826
+    },
+    {
+      "t": 1818903.256409,
+      "wall": 1786011744.888307,
+      "event": "beat",
+      "n": 8,
+      "ppid": 45826
+    },
+    {
+      "t": 1818903.516936,
+      "wall": 1786011745.148848,
+      "event": "beat",
+      "n": 9,
+      "ppid": 45826
+    },
+    {
+      "t": 1818903.771999,
+      "wall": 1786011745.403925,
+      "event": "beat",
+      "n": 10,
+      "ppid": 45826
+    },
+    {
+      "t": 1818904.025902,
+      "wall": 1786011745.657832,
+      "event": "beat",
+      "n": 11,
+      "ppid": 45826
+    },
+    {
+      "t": 1818904.282677,
+      "wall": 1786011745.914602,
+      "event": "beat",
+      "n": 12,
+      "ppid": 45826
+    },
+    {
+      "t": 1818904.542723,
+      "wall": 1786011746.174684,
+      "event": "beat",
+      "n": 13,
+      "ppid": 45826
+    },
+    {
+      "t": 1818904.800355,
+      "wall": 1786011746.432291,
+      "event": "beat",
+      "n": 14,
+      "ppid": 45826
+    },
+    {
+      "t": 1818905.058835,
+      "wall": 1786011746.690785,
+      "event": "beat",
+      "n": 15,
+      "ppid": 45826
+    },
+    {
+      "t": 1818905.313272,
+      "wall": 1786011746.945233,
+      "event": "beat",
+      "n": 16,
+      "ppid": 45826
+    },
+    {
+      "t": 1818905.567769,
+      "wall": 1786011747.199746,
+      "event": "beat",
+      "n": 17,
+      "ppid": 45826
+    },
+    {
+      "t": 1818905.823017,
+      "wall": 1786011747.454968,
+      "event": "beat",
+      "n": 18,
+      "ppid": 45826
+    },
+    {
+      "t": 1818906.07434,
+      "wall": 1786011747.706311,
+      "event": "beat",
+      "n": 19,
+      "ppid": 45826
+    },
+    {
+      "t": 1818906.333912,
+      "wall": 1786011747.965881,
+      "event": "beat",
+      "n": 20,
+      "ppid": 45826
+    },
+    {
+      "t": 1818906.595468,
+      "wall": 1786011748.227444,
+      "event": "beat",
+      "n": 21,
+      "ppid": 45826
+    },
+    {
+      "t": 1818906.854908,
+      "wall": 1786011748.486889,
+      "event": "beat",
+      "n": 22,
+      "ppid": 45826
+    },
+    {
+      "t": 1818907.115316,
+      "wall": 1786011748.7473,
+      "event": "beat",
+      "n": 23,
+      "ppid": 45826
+    },
+    {
+      "t": 1818907.376339,
+      "wall": 1786011749.008338,
+      "event": "beat",
+      "n": 24,
+      "ppid": 45826
+    },
+    {
+      "t": 1818907.637051,
+      "wall": 1786011749.269057,
+      "event": "beat",
+      "n": 25,
+      "ppid": 45826
+    },
+    {
+      "t": 1818907.898264,
+      "wall": 1786011749.530279,
+      "event": "beat",
+      "n": 26,
+      "ppid": 45826
+    },
+    {
+      "t": 1818908.154402,
+      "wall": 1786011749.786418,
+      "event": "beat",
+      "n": 27,
+      "ppid": 45826
+    },
+    {
+      "t": 1818908.405366,
+      "wall": 1786011750.037382,
+      "event": "beat",
+      "n": 28,
+      "ppid": 45826
+    },
+    {
+      "t": 1818908.665974,
+      "wall": 1786011750.297997,
+      "event": "beat",
+      "n": 29,
+      "ppid": 45826
+    },
+    {
+      "t": 1818908.925247,
+      "wall": 1786011750.557285,
+      "event": "beat",
+      "n": 30,
+      "ppid": 45826
+    },
+    {
+      "t": 1818909.181662,
+      "wall": 1786011750.813696,
+      "event": "beat",
+      "n": 31,
+      "ppid": 45826
+    },
+    {
+      "t": 1818909.434622,
+      "wall": 1786011751.066659,
+      "event": "beat",
+      "n": 32,
+      "ppid": 45826
+    },
+    {
+      "t": 1818909.695391,
+      "wall": 1786011751.327431,
+      "event": "beat",
+      "n": 33,
+      "ppid": 45826
+    },
+    {
+      "t": 1818909.955682,
+      "wall": 1786011751.587726,
+      "event": "beat",
+      "n": 34,
+      "ppid": 45826
+    },
+    {
+      "t": 1818910.212387,
+      "wall": 1786011751.844451,
+      "event": "beat",
+      "n": 35,
+      "ppid": 45826
+    },
+    {
+      "t": 1818910.473139,
+      "wall": 1786011752.105205,
+      "event": "beat",
+      "n": 36,
+      "ppid": 45826
+    },
+    {
+      "t": 1818910.733956,
+      "wall": 1786011752.366062,
+      "event": "beat",
+      "n": 37,
+      "ppid": 45826
+    },
+    {
+      "t": 1818910.991891,
+      "wall": 1786011752.623969,
+      "event": "beat",
+      "n": 38,
+      "ppid": 45826
+    },
+    {
+      "t": 1818911.25017,
+      "wall": 1786011752.882249,
+      "event": "beat",
+      "n": 39,
+      "ppid": 45826
+    },
+    {
+      "t": 1818911.510917,
+      "wall": 1786011753.142999,
+      "event": "beat",
+      "n": 40,
+      "ppid": 45826
+    },
+    {
+      "t": 1818911.771548,
+      "wall": 1786011753.403639,
+      "event": "beat",
+      "n": 41,
+      "ppid": 45826
+    },
+    {
+      "t": 1818912.032489,
+      "wall": 1786011753.664597,
+      "event": "beat",
+      "n": 42,
+      "ppid": 45826
+    },
+    {
+      "t": 1818912.285699,
+      "wall": 1786011753.917808,
+      "event": "beat",
+      "n": 43,
+      "ppid": 45826
+    },
+    {
+      "t": 1818912.546467,
+      "wall": 1786011754.178581,
+      "event": "beat",
+      "n": 44,
+      "ppid": 45826
+    },
+    {
+      "t": 1818912.799173,
+      "wall": 1786011754.43128,
+      "event": "beat",
+      "n": 45,
+      "ppid": 45826
+    },
+    {
+      "t": 1818913.058326,
+      "wall": 1786011754.690445,
+      "event": "beat",
+      "n": 46,
+      "ppid": 45826
+    },
+    {
+      "t": 1818913.318677,
+      "wall": 1786011754.950806,
+      "event": "beat",
+      "n": 47,
+      "ppid": 45826
+    },
+    {
+      "t": 1818913.579813,
+      "wall": 1786011755.211951,
+      "event": "beat",
+      "n": 48,
+      "ppid": 45826
+    },
+    {
+      "t": 1818913.841583,
+      "wall": 1786011755.473725,
+      "event": "beat",
+      "n": 49,
+      "ppid": 45826
+    },
+    {
+      "t": 1818914.093463,
+      "wall": 1786011755.725613,
+      "event": "beat",
+      "n": 50,
+      "ppid": 45826
+    },
+    {
+      "t": 1818914.354304,
+      "wall": 1786011755.986449,
+      "event": "beat",
+      "n": 51,
+      "ppid": 45826
+    },
+    {
+      "t": 1818914.614283,
+      "wall": 1786011756.246429,
+      "event": "beat",
+      "n": 52,
+      "ppid": 45826
+    },
+    {
+      "t": 1818914.87084,
+      "wall": 1786011756.50301,
+      "event": "beat",
+      "n": 53,
+      "ppid": 45826
+    },
+    {
+      "t": 1818915.131939,
+      "wall": 1786011756.764102,
+      "event": "beat",
+      "n": 54,
+      "ppid": 45826
+    },
+    {
+      "t": 1818915.392628,
+      "wall": 1786011757.024805,
+      "event": "beat",
+      "n": 55,
+      "ppid": 45826
+    },
+    {
+      "t": 1818915.650202,
+      "wall": 1786011757.282374,
+      "event": "beat",
+      "n": 56,
+      "ppid": 45826
+    },
+    {
+      "t": 1818915.910503,
+      "wall": 1786011757.542682,
+      "event": "beat",
+      "n": 57,
+      "ppid": 45826
+    },
+    {
+      "t": 1818916.167464,
+      "wall": 1786011757.799648,
+      "event": "beat",
+      "n": 58,
+      "ppid": 45826
+    },
+    {
+      "t": 1818916.42809,
+      "wall": 1786011758.060291,
+      "event": "beat",
+      "n": 59,
+      "ppid": 45826
+    },
+    {
+      "t": 1818916.685598,
+      "wall": 1786011758.317805,
+      "event": "beat",
+      "n": 60,
+      "ppid": 45826
+    },
+    {
+      "t": 1818916.9397,
+      "wall": 1786011758.571908,
+      "event": "beat",
+      "n": 61,
+      "ppid": 45826
+    },
+    {
+      "t": 1818917.192466,
+      "wall": 1786011758.824675,
+      "event": "beat",
+      "n": 62,
+      "ppid": 45826
+    },
+    {
+      "t": 1818917.448568,
+      "wall": 1786011759.08079,
+      "event": "beat",
+      "n": 63,
+      "ppid": 45826
+    },
+    {
+      "t": 1818917.709073,
+      "wall": 1786011759.341289,
+      "event": "beat",
+      "n": 64,
+      "ppid": 45826
+    }
+  ],
+  "grandchild_log": [
+    {
+      "t": 1818901.203527,
+      "wall": 1786011742.835376,
+      "event": "start",
+      "pid": 45844,
+      "ppid": 45843,
+      "pgid": 45817,
+      "sid": 45817,
+      "life_secs": 90.0,
+      "handlers": [
+        "SIGHUP",
+        "SIGINT",
+        "SIGQUIT",
+        "SIGILL",
+        "SIGTRAP",
+        "SIGABRT",
+        "SIGEMT",
+        "SIGFPE",
+        "SIGBUS",
+        "SIGSEGV",
+        "SIGSYS",
+        "SIGPIPE",
+        "SIGALRM",
+        "SIGTERM",
+        "SIGURG",
+        "SIGTSTP",
+        "SIGCONT",
+        "SIGCHLD",
+        "SIGTTIN",
+        "SIGTTOU",
+        "SIGIO",
+        "SIGXCPU",
+        "SIGXFSZ",
+        "SIGVTALRM",
+        "SIGPROF",
+        "SIGWINCH",
+        "SIGINFO",
+        "SIGUSR1",
+        "SIGUSR2"
+      ],
+      "handlers_refused": []
+    },
+    {
+      "t": 1818901.463822,
+      "wall": 1786011743.095691,
+      "event": "beat",
+      "n": 1,
+      "ppid": 45843
+    },
+    {
+      "t": 1818901.724988,
+      "wall": 1786011743.356864,
+      "event": "beat",
+      "n": 2,
+      "ppid": 45843
+    },
+    {
+      "t": 1818901.983642,
+      "wall": 1786011743.615527,
+      "event": "beat",
+      "n": 3,
+      "ppid": 45843
+    },
+    {
+      "t": 1818902.241252,
+      "wall": 1786011743.873124,
+      "event": "beat",
+      "n": 4,
+      "ppid": 45843
+    },
+    {
+      "t": 1818902.497417,
+      "wall": 1786011744.129296,
+      "event": "beat",
+      "n": 5,
+      "ppid": 45843
+    },
+    {
+      "t": 1818902.757596,
+      "wall": 1786011744.389488,
+      "event": "beat",
+      "n": 6,
+      "ppid": 45843
+    },
+    {
+      "t": 1818903.01786,
+      "wall": 1786011744.649751,
+      "event": "beat",
+      "n": 7,
+      "ppid": 45843
+    },
+    {
+      "t": 1818903.278099,
+      "wall": 1786011744.909998,
+      "event": "beat",
+      "n": 8,
+      "ppid": 45843
+    },
+    {
+      "t": 1818903.533756,
+      "wall": 1786011745.16566,
+      "event": "beat",
+      "n": 9,
+      "ppid": 45843
+    },
+    {
+      "t": 1818903.794129,
+      "wall": 1786011745.426046,
+      "event": "beat",
+      "n": 10,
+      "ppid": 45843
+    },
+    {
+      "t": 1818904.054965,
+      "wall": 1786011745.686895,
+      "event": "beat",
+      "n": 11,
+      "ppid": 45843
+    },
+    {
+      "t": 1818904.315823,
+      "wall": 1786011745.947752,
+      "event": "beat",
+      "n": 12,
+      "ppid": 45843
+    },
+    {
+      "t": 1818904.575712,
+      "wall": 1786011746.20765,
+      "event": "beat",
+      "n": 13,
+      "ppid": 45843
+    },
+    {
+      "t": 1818904.833915,
+      "wall": 1786011746.465847,
+      "event": "beat",
+      "n": 14,
+      "ppid": 45843
+    },
+    {
+      "t": 1818905.091933,
+      "wall": 1786011746.723883,
+      "event": "beat",
+      "n": 15,
+      "ppid": 45843
+    },
+    {
+      "t": 1818905.352207,
+      "wall": 1786011746.984152,
+      "event": "beat",
+      "n": 16,
+      "ppid": 45843
+    },
+    {
+      "t": 1818905.609895,
+      "wall": 1786011747.241852,
+      "event": "beat",
+      "n": 17,
+      "ppid": 45843
+    },
+    {
+      "t": 1818905.867627,
+      "wall": 1786011747.499581,
+      "event": "beat",
+      "n": 18,
+      "ppid": 45843
+    },
+    {
+      "t": 1818906.121567,
+      "wall": 1786011747.75353,
+      "event": "beat",
+      "n": 19,
+      "ppid": 45843
+    },
+    {
+      "t": 1818906.381973,
+      "wall": 1786011748.013954,
+      "event": "beat",
+      "n": 20,
+      "ppid": 45843
+    },
+    {
+      "t": 1818906.634626,
+      "wall": 1786011748.266603,
+      "event": "beat",
+      "n": 21,
+      "ppid": 45843
+    },
+    {
+      "t": 1818906.895603,
+      "wall": 1786011748.527592,
+      "event": "beat",
+      "n": 22,
+      "ppid": 45843
+    },
+    {
+      "t": 1818907.147859,
+      "wall": 1786011748.779842,
+      "event": "beat",
+      "n": 23,
+      "ppid": 45843
+    },
+    {
+      "t": 1818907.403864,
+      "wall": 1786011749.035851,
+      "event": "beat",
+      "n": 24,
+      "ppid": 45843
+    },
+    {
+      "t": 1818907.656962,
+      "wall": 1786011749.288963,
+      "event": "beat",
+      "n": 25,
+      "ppid": 45843
+    },
+    {
+      "t": 1818907.916887,
+      "wall": 1786011749.548899,
+      "event": "beat",
+      "n": 26,
+      "ppid": 45843
+    },
+    {
+      "t": 1818908.173211,
+      "wall": 1786011749.805221,
+      "event": "beat",
+      "n": 27,
+      "ppid": 45843
+    },
+    {
+      "t": 1818908.427392,
+      "wall": 1786011750.059405,
+      "event": "beat",
+      "n": 28,
+      "ppid": 45843
+    },
+    {
+      "t": 1818908.68766,
+      "wall": 1786011750.319674,
+      "event": "beat",
+      "n": 29,
+      "ppid": 45843
+    },
+    {
+      "t": 1818908.939373,
+      "wall": 1786011750.571407,
+      "event": "beat",
+      "n": 30,
+      "ppid": 45843
+    },
+    {
+      "t": 1818909.200245,
+      "wall": 1786011750.832283,
+      "event": "beat",
+      "n": 31,
+      "ppid": 45843
+    },
+    {
+      "t": 1818909.459075,
+      "wall": 1786011751.091141,
+      "event": "beat",
+      "n": 32,
+      "ppid": 45843
+    },
+    {
+      "t": 1818909.715898,
+      "wall": 1786011751.347942,
+      "event": "beat",
+      "n": 33,
+      "ppid": 45843
+    },
+    {
+      "t": 1818909.968372,
+      "wall": 1786011751.600417,
+      "event": "beat",
+      "n": 34,
+      "ppid": 45843
+    },
+    {
+      "t": 1818910.228587,
+      "wall": 1786011751.86064,
+      "event": "beat",
+      "n": 35,
+      "ppid": 45843
+    },
+    {
+      "t": 1818910.488917,
+      "wall": 1786011752.120976,
+      "event": "beat",
+      "n": 36,
+      "ppid": 45843
+    },
+    {
+      "t": 1818910.747085,
+      "wall": 1786011752.379154,
+      "event": "beat",
+      "n": 37,
+      "ppid": 45843
+    },
+    {
+      "t": 1818911.005852,
+      "wall": 1786011752.637931,
+      "event": "beat",
+      "n": 38,
+      "ppid": 45843
+    },
+    {
+      "t": 1818911.267067,
+      "wall": 1786011752.899142,
+      "event": "beat",
+      "n": 39,
+      "ppid": 45843
+    },
+    {
+      "t": 1818911.527334,
+      "wall": 1786011753.159412,
+      "event": "beat",
+      "n": 40,
+      "ppid": 45843
+    },
+    {
+      "t": 1818911.784076,
+      "wall": 1786011753.416159,
+      "event": "beat",
+      "n": 41,
+      "ppid": 45843
+    },
+    {
+      "t": 1818912.04443,
+      "wall": 1786011753.676536,
+      "event": "beat",
+      "n": 42,
+      "ppid": 45843
+    },
+    {
+      "t": 1818912.295793,
+      "wall": 1786011753.92789,
+      "event": "beat",
+      "n": 43,
+      "ppid": 45843
+    },
+    {
+      "t": 1818912.5543,
+      "wall": 1786011754.186409,
+      "event": "beat",
+      "n": 44,
+      "ppid": 45843
+    },
+    {
+      "t": 1818912.808473,
+      "wall": 1786011754.44058,
+      "event": "beat",
+      "n": 45,
+      "ppid": 45843
+    },
+    {
+      "t": 1818913.068696,
+      "wall": 1786011754.700812,
+      "event": "beat",
+      "n": 46,
+      "ppid": 45843
+    },
+    {
+      "t": 1818913.328939,
+      "wall": 1786011754.961057,
+      "event": "beat",
+      "n": 47,
+      "ppid": 45843
+    },
+    {
+      "t": 1818913.589228,
+      "wall": 1786011755.22136,
+      "event": "beat",
+      "n": 48,
+      "ppid": 45843
+    },
+    {
+      "t": 1818913.84719,
+      "wall": 1786011755.47933,
+      "event": "beat",
+      "n": 49,
+      "ppid": 45843
+    },
+    {
+      "t": 1818914.105505,
+      "wall": 1786011755.737657,
+      "event": "beat",
+      "n": 50,
+      "ppid": 45843
+    },
+    {
+      "t": 1818914.366585,
+      "wall": 1786011755.998725,
+      "event": "beat",
+      "n": 51,
+      "ppid": 45843
+    },
+    {
+      "t": 1818914.626816,
+      "wall": 1786011756.258963,
+      "event": "beat",
+      "n": 52,
+      "ppid": 45843
+    },
+    {
+      "t": 1818914.879815,
+      "wall": 1786011756.511983,
+      "event": "beat",
+      "n": 53,
+      "ppid": 45843
+    },
+    {
+      "t": 1818915.138853,
+      "wall": 1786011756.771013,
+      "event": "beat",
+      "n": 54,
+      "ppid": 45843
+    },
+    {
+      "t": 1818915.399265,
+      "wall": 1786011757.03143,
+      "event": "beat",
+      "n": 55,
+      "ppid": 45843
+    },
+    {
+      "t": 1818915.654254,
+      "wall": 1786011757.286423,
+      "event": "beat",
+      "n": 56,
+      "ppid": 45843
+    },
+    {
+      "t": 1818915.914448,
+      "wall": 1786011757.546622,
+      "event": "beat",
+      "n": 57,
+      "ppid": 45843
+    },
+    {
+      "t": 1818916.16747,
+      "wall": 1786011757.799651,
+      "event": "beat",
+      "n": 58,
+      "ppid": 45843
+    },
+    {
+      "t": 1818916.428089,
+      "wall": 1786011758.060291,
+      "event": "beat",
+      "n": 59,
+      "ppid": 45843
+    },
+    {
+      "t": 1818916.688371,
+      "wall": 1786011758.32057,
+      "event": "beat",
+      "n": 60,
+      "ppid": 45843
+    },
+    {
+      "t": 1818916.939699,
+      "wall": 1786011758.571908,
+      "event": "beat",
+      "n": 61,
+      "ppid": 45843
+    },
+    {
+      "t": 1818917.200751,
+      "wall": 1786011758.832957,
+      "event": "beat",
+      "n": 62,
+      "ppid": 45843
+    },
+    {
+      "t": 1818917.459524,
+      "wall": 1786011759.091734,
+      "event": "beat",
+      "n": 63,
+      "ppid": 45843
+    },
+    {
+      "t": 1818917.719751,
+      "wall": 1786011759.351963,
+      "event": "beat",
+      "n": 64,
+      "ppid": 45843
+    }
+  ],
+  "answers": {
+    "mcp_connected": true,
+    "signals_to_server": [],
+    "signals_to_grandchild": [],
+    "stdin_eof_seen": true,
+    "stdin_eof_t": 1818902.307102,
+    "harness_exit_t": null,
+    "server_beats": 64,
+    "server_last_beat_t": 1818917.709073,
+    "server_beats_after_harness_exit": 0,
+    "server_ppids_after_harness_exit": [],
+    "grandchild_beats": 64,
+    "grandchild_last_beat_t": 1818917.719751,
+    "grandchild_beats_after_harness_exit": 0,
+    "grandchild_ppids_after_harness_exit": [],
+    "server_voluntary_exit": false,
+    "server_orderly_shutdown": false,
+    "server_crashed": false,
+    "server_signal_handlers_installed": 29,
+    "server_signal_handlers_refused": [],
+    "last_observed_state": {
+      "45843": "ALIVE",
+      "45844": "ALIVE"
+    },
+    "server_death_bracket": null,
+    "harness_death_bracket": null,
+    "verdict": {
+      "logging_works": true,
+      "eof_recorded": true,
+      "survives_own_eof": true,
+      "grandchild_alive_at_end": "ALIVE"
+    }
+  },
+  "cleanup": {
+    "killed": [
+      45843,
+      45844
+    ],
+    "after": {
+      "45843": "ZOMBIE",
+      "45844": "DEAD"
+    }
+  }
+}

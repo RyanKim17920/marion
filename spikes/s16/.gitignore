@@ -1,0 +1,6 @@
+run/
+s16-control.json
+s16-harness.json
+s16-harness.rep*.json
+s16-harness-own-pgroup.json
+__pycache__/
