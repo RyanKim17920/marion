@@ -24,6 +24,9 @@ pub mod journal;
 pub mod registry;
 pub mod root;
 pub mod run;
+/// §2's unix socket: where it lives, and §5.7's start race that decides who binds it. The path is
+/// the same one M2's detached supervisor will bind, which is what makes the split invisible (§10).
+pub mod socket;
 pub mod spawn;
 /// The journal's first production reader: what a person watching a run learns about its
 /// children while it is still running.
