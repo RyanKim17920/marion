@@ -85,9 +85,13 @@ pub enum Marking {
     /// record is therefore about the *spawn*, not about the process, and that gap is named rather
     /// than folded into either neighbour.
     ///
-    /// The plain case — `SpawnIntent` then `SpawnAborted` and nothing else, which is what a
-    /// `marion run` whose root failed to launch journals — is **not** this: it produces no entry at
-    /// all, because there is no process and there never was one.
+    /// **Two shapes are not this, and both produce no entry at all.** The plain case —
+    /// `SpawnIntent` then `SpawnAborted` and nothing else, which is what a `marion run` whose root
+    /// failed to launch journals — because there is no process and there never was one. And the
+    /// abort written *after* a terminal record, which is `run.rs`'s own commonest way to reach the
+    /// guard (`persist_then_cap` returning while it is still armed): the whole content of this
+    /// variant is *"marion cannot say whether a process was still running"*, and beside an observed
+    /// exit marion can, so [`classify`] asks that first.
     AbortedOverALiveSpawn,
 }
 
