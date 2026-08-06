@@ -76,20 +76,39 @@ const EOF_SAMPLE: Duration = Duration::from_secs(3);
 
 /// A `codex` that blocks until the test says otherwise.
 ///
-/// * `--version` answers immediately, because `run_spawn` asks for it and a shim that blocked
-///   there would hang before the child ever started.
+/// * `--version` answers immediately — unless the `slow_version` marker exists, which is how one
+///   test reproduces a harness that answers its run and then hangs on the version probe.
+/// * Anything else writes a *started* marker — which is what lets a test assert a real process
+///   existed, rather than inferring it — then polls for the gate file and exits 0.
 /// * Anything else writes a *started* marker — which is what lets a test assert a real process
 ///   existed, rather than inferring it — then polls for the gate file and exits 0.
 ///
 /// It writes nothing to stdout, so the child's contract lands `Unreported`. That is correct and
 /// irrelevant: this file asserts about *when* contracts arrive and *whether* spawns are refused,
 /// never about what a child said.
-fn shim(dir: &Path, gate: &Path, started_dir: &Path, done_dir: &Path) -> PathBuf {
+fn shim(
+    dir: &Path,
+    gate: &Path,
+    started_dir: &Path,
+    done_dir: &Path,
+    slow_version: &Path,
+) -> PathBuf {
     let bin = dir.join("codex");
     let script = format!(
         r#"#!/bin/sh
 case "$1" in
-  --version) echo "codex-cli 0.146.0-marion-shim"; exit 0 ;;
+  --version)
+    # **A harness that answers its run and then hangs on `--version`.** Opt-in, because every other
+    # test in this file needs the probe to be instant. `run_spawn` asks for the version *after* the
+    # child has been reaped, which is the point: the child's own `timeout_secs` has already been
+    # spent and bounds nothing here, so an unbounded probe is an unbounded `run_spawn` — and, on
+    # the background path, a `wait` that never returns.
+    #
+    # It sleeps rather than waiting for the gate: by the time this runs the gate is already open,
+    # and the hang has to outlast marion's own probe bound to be a hang at all. The sleep is the
+    # shim's own life cap, so no bad run strands it indefinitely.
+    if [ -e {slow_version} ]; then sleep {life_secs}; fi
+    echo "codex-cli 0.146.0-marion-shim"; exit 0 ;;
 esac
 mkdir -p {started} {done}
 # A distinct marker per invocation, so a test can count the children that really launched.
@@ -118,7 +137,9 @@ exit 0
         started = shell_quote(started_dir),
         done = shell_quote(done_dir),
         gate = shell_quote(gate),
+        slow_version = shell_quote(slow_version),
         life_ticks = SHIM_LIFE.as_millis() / 50,
+        life_secs = SHIM_LIFE.as_secs(),
     );
     std::fs::write(&bin, script).expect("the shim is written");
     #[cfg(unix)]
@@ -299,11 +320,17 @@ fn handle_task_id(reply: &Value) -> String {
 }
 
 fn spawn_args(background: bool) -> Value {
+    spawn_args_with_timeout(background, CHILD_TIMEOUT_SECS)
+}
+
+/// The same spawn with the wall clock spelled out, so a test can hand marion a number the caller
+/// controls and marion must survive.
+fn spawn_args_with_timeout(background: bool, timeout_secs: u64) -> Value {
     json!({
         "agent_type": "codex-impl",
         "prompt": "block until the gate opens",
         "acceptance_criteria": ["the shim exits 0"],
-        "timeout_secs": CHILD_TIMEOUT_SECS,
+        "timeout_secs": timeout_secs,
         "background": background,
     })
 }
@@ -316,6 +343,7 @@ struct Fixture {
     gate: PathBuf,
     started: PathBuf,
     done: PathBuf,
+    slow_version: PathBuf,
 }
 
 fn fixture(tag: &str) -> Fixture {
@@ -327,9 +355,10 @@ fn fixture(tag: &str) -> Fixture {
     let started = root.join("started");
     let done = root.join("done");
     let gate = root.join("gate");
+    let slow_version = root.join("slow-version");
     std::fs::create_dir_all(&shim_dir).expect("the shim dir");
     std::fs::create_dir_all(&state).expect("the state dir");
-    shim(&shim_dir, &gate, &started, &done);
+    shim(&shim_dir, &gate, &started, &done, &slow_version);
     Fixture {
         _scratch: s,
         repo,
@@ -338,12 +367,17 @@ fn fixture(tag: &str) -> Fixture {
         gate,
         started,
         done,
+        slow_version,
     }
 }
 
 impl Fixture {
     fn bridge(&self) -> Bridge {
         Bridge::start(&self.repo, &self.state, &self.shim_dir)
+    }
+    /// Make the shim hang when asked its version, from the next invocation on.
+    fn make_version_slow(&self) {
+        std::fs::write(&self.slow_version, b"hang").expect("the slow-version marker is written");
     }
     /// Release every blocked shim child.
     fn open_gate(&self) {
@@ -363,6 +397,30 @@ impl Fixture {
         std::fs::read_dir(&self.done)
             .map(|d| d.flatten().count())
             .unwrap_or(0)
+    }
+
+    /// Every `journal.jsonl` under this fixture's state dir, concatenated.
+    ///
+    /// The project hash that names the directory is derived inside the bridge, so the path is
+    /// discovered rather than reconstructed — a test that recomputed the hash would be asserting
+    /// against its own copy of the derivation instead of against the file marion wrote.
+    fn journal_text(&self) -> String {
+        fn walk(dir: &Path, out: &mut String) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.file_name().is_some_and(|n| n == "journal.jsonl") {
+                    out.push_str(&std::fs::read_to_string(&p).unwrap_or_default());
+                }
+            }
+        }
+        let mut out = String::new();
+        walk(&self.state, &mut out);
+        out
     }
 }
 
@@ -690,4 +748,221 @@ fn the_bridge_waits_for_an_outstanding_child_before_leaving_at_eof() {
         1,
         "the bridge outlived its child, so the child has recorded its own exit"
     );
+}
+
+/// **A `timeout_secs` the machine's clock cannot represent is answered, not detonated** — B1, the
+/// synchronous half.
+///
+/// `timeout_secs` is caller-controlled and typed `u64` all the way down: `main::handle_tool_call`
+/// reads `args["timeout_secs"].as_u64()`, `run_spawn` turns it into a `Duration`, and
+/// `run_bounded` computes `Instant::now() + timeout`. `Instant + Duration` **panics** on overflow,
+/// and it does so *after* `command.spawn()` has already started a real OS process.
+///
+/// On this path the panic is on the bridge's **own** thread — `handle_tool_call` is called inline
+/// from `run_bridge`'s read loop — so the unwind takes the whole MCP server down. Every other live
+/// child of this node dies with it, over one arithmetic overflow a child agent can ask for by name.
+///
+/// The assertion is therefore the crudest possible one and deliberately so: **the bridge is still
+/// there and it answered.** Before the fix `read_reply` sees the server's stdout close instead of a
+/// reply and fails naming that, which is the failure mode, not a proxy for it.
+///
+/// The gate is opened before the spawn because this path is synchronous: the reply cannot arrive
+/// until the child exits, and the child exits as soon as the gate is there.
+#[test]
+fn a_timeout_the_clock_cannot_represent_is_answered_rather_than_killing_the_bridge() {
+    let fx = fixture("background-overflow-sync");
+    fx.open_gate();
+    let mut bridge = fx.bridge();
+
+    let reply = bridge.tool("spawn", spawn_args_with_timeout(false, u64::MAX));
+    let text = text_of(&reply);
+    assert!(
+        !text.contains("panicked"),
+        "a caller-supplied wall clock is a number to bound, never a way to unwind marion: {text}"
+    );
+    assert!(
+        text.contains("\"completion\""),
+        "the child ran to a terminal state under a clock marion could hold: {text}"
+    );
+
+    // **The clamp is recorded, not silently substituted.** §6.7's rule everywhere else in
+    // `run_spawn` is that the contract names the compiled value rather than the asked-for one, and
+    // the wall clock obeys it: a reader of this contract can see exactly how long marion was
+    // willing to hold the node, and can see that it is not what was requested.
+    assert!(
+        text.contains(&marion_supervisor::run::MAX_TIMEOUT_SECS.to_string()),
+        "the contract records the bound marion actually enforced: {text}"
+    );
+    assert!(
+        !text.contains(&u64::MAX.to_string()),
+        "and never the unenforceable number that was asked for: {text}"
+    );
+
+    let journal = fx.journal_text();
+    assert!(
+        journal.contains("SpawnIntent"),
+        "the node was journaled at all: {journal}"
+    );
+    assert!(
+        !journal.contains("SpawnAborted"),
+        "marion did not abandon the spawn path, so nothing may record that it did: {journal}"
+    );
+    assert!(bridge.close().success());
+}
+
+/// **The same number on the background path leaves no abandoned intent and no orphan** — B1.
+///
+/// Here the panic lands on the child's own thread, so the bridge survives and the damage is
+/// quieter and worse. The sequence before the fix, in order:
+///
+/// 1. `run_spawn` journals `SpawnIntent`, makes the worktree and branch, writes the agent and
+///    config directories, and **starts a real process** (the shim's marker proves it);
+/// 2. `Instant::now() + Duration::from_secs(u64::MAX)` panics one line later;
+/// 3. `AbortOnDrop` writes `SpawnAborted` on the way out — the record that says *marion decided
+///    this node's fate*, which §7.2 reads as "no process ever existed";
+/// 4. dropping `std::process::Child` does **not** kill anything, so the process it started is
+///    still there, reparented and unenforced, with its worktree, branch and directories intact;
+/// 5. `wait` converts the unwind into `SpawnError::Panicked`.
+///
+/// So the journal ends `SpawnIntent + SpawnAborted` — a *decided* node — while a live process and
+/// its whole workspace remain. That mismatch is what this test refuses: the intent must be
+/// resolved by the child actually running, and `SpawnAborted` must not appear at all.
+#[test]
+fn a_backgrounded_timeout_the_clock_cannot_represent_resolves_its_intent_rather_than_aborting_it() {
+    let fx = fixture("background-overflow-bg");
+    let mut bridge = fx.bridge();
+
+    let reply = bridge.tool("spawn", spawn_args_with_timeout(true, u64::MAX));
+    assert!(
+        !is_error(&reply),
+        "a backgrounded spawn that started is not an error: {reply}"
+    );
+    let task_id = handle_task_id(&reply);
+
+    // A real process exists — measured from the child's own side, so it is not marion's bookkeeping
+    // agreeing with itself.
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    while fx.started_children() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the handle came back but no child process ever started"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    fx.open_gate();
+
+    let collected = bridge.tool("wait", json!({"task_id": task_id}));
+    let text = text_of(&collected);
+    assert!(
+        !text.contains("panicked"),
+        "the child's thread must not die on a number the caller chose: {text}"
+    );
+    assert!(
+        text.contains("\"completion\""),
+        "the child reached a terminal state and its contract came back: {text}"
+    );
+
+    let journal = fx.journal_text();
+    assert!(
+        !journal.contains("SpawnAborted"),
+        "a node whose process really ran must never be recorded as one marion walked away from — \
+         that record is what makes the leaked process invisible: {journal}"
+    );
+    assert!(bridge.close().success());
+}
+
+/// **`max_concurrent_children` bounds how many children run at once, not how many this bridge may
+/// ever start** — B4.
+///
+/// `Background::live_children` is the table's length and `wait` takes only the join handle, leaving
+/// the entry behind; nothing but process exit ever pops one. So a caller that starts the maximum,
+/// lets every one of them finish, and successfully collects every contract has **zero** running
+/// processes, **zero** unjoined threads, and is still refused — for the life of the bridge. §3.1's
+/// bound has silently become a lifetime quota.
+///
+/// The test is the direct statement of that: collect all of them, then ask for one more. It says
+/// nothing about the *uncollected* case, which is a slot genuinely still occupied and is pinned
+/// separately in `background.rs`'s own unit tests.
+#[test]
+fn a_collected_child_frees_the_concurrency_slot_it_was_holding() {
+    let fx = fixture("background-slot-release");
+    let mut bridge = fx.bridge();
+    let max = marion_core::agent_type::builtin("claude")
+        .expect("the caller's type resolves")
+        .max_concurrent_children;
+
+    let mut ids = Vec::new();
+    for i in 0..max {
+        let reply = bridge.tool("spawn", spawn_args(true));
+        assert!(!is_error(&reply), "child {i} is within the bound: {reply}");
+        ids.push(handle_task_id(&reply));
+    }
+    fx.open_gate();
+    for id in &ids {
+        let reply = bridge.tool("wait", json!({"task_id": id}));
+        assert!(
+            text_of(&reply).contains("\"completion\""),
+            "every child is collected, so every slot it held is genuinely free: {reply}"
+        );
+    }
+
+    let again = bridge.tool("spawn", spawn_args(true));
+    assert!(
+        !is_error(&again),
+        "with every child terminal and every contract delivered there is nothing to be concurrent \
+         with, so this spawn is within the bound: {again}"
+    );
+    assert!(
+        !text_of(&again).contains("max_concurrent_children"),
+        "and the refusal that must not happen is the concurrency one: {}",
+        text_of(&again)
+    );
+    assert!(bridge.close().success());
+}
+
+/// **A harness that hangs answering `--version` does not hang the bridge** — B3's root cause.
+///
+/// The child's `timeout_secs` bounds exactly one thing: the harness invocation, inside
+/// `run_bounded`. `run_spawn` then asks the harness what version it is — *after* the child has been
+/// reaped — and that probe used a plain `Command::output`, which blocks until the process closes
+/// its pipes and has no deadline at all. So a harness that ran fine and then hung on `--version`
+/// left `run_spawn` unable to return, and on the background path left `wait` blocked on a thread
+/// that would never finish.
+///
+/// **And a blocked `wait` is not one stuck caller.** `main::run_bridge` reads and dispatches frames
+/// on one thread, calling `handle_tool_call` inline, so nothing after it is even read: no sibling's
+/// `spawn`, no other `wait`, no `report`. The last two assertions are that half — the bridge is
+/// still serving afterwards, and still leaves cleanly.
+///
+/// The absent version is recorded as *absent*, never guessed: a node's whole contract must not be
+/// lost because a version string did not arrive, and a fabricated one would be worse than either.
+#[test]
+fn a_harness_that_hangs_answering_its_version_does_not_hang_the_bridge() {
+    let fx = fixture("background-slow-version");
+    fx.make_version_slow();
+    let mut bridge = fx.bridge();
+
+    let task_id = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
+    fx.open_gate();
+
+    let collected = bridge.tool("wait", json!({"task_id": &task_id}));
+    let text = text_of(&collected);
+    assert!(
+        text.contains("\"completion\""),
+        "the child ran and reached a terminal state, so its contract comes back whatever the \
+         version probe did: {text}"
+    );
+    assert!(
+        text.contains("\"version\": \"unknown\""),
+        "a probe that expired is recorded as an absence, never guessed: {text}"
+    );
+
+    // The bridge is still reading frames — which is the half of this that a `wait`-only assertion
+    // would miss, since an unbounded probe stalls the read loop rather than just this caller.
+    let after = bridge.tool("wait", json!({"task_id": "task-nobody-started"}));
+    assert!(
+        is_error(&after) && !text_of(&after).is_empty(),
+        "the bridge still answers frames after a child overran its version probe: {after}"
+    );
+    assert!(bridge.close().success());
 }
