@@ -409,7 +409,22 @@ impl RegistryHandle {
     /// dropped rather than waited on does not kill what it holds. See [`Self::abandoned`].
     fn resident_reason(nodes: &[marion_core::registry::ReplayedNode]) -> Option<ResidentReason> {
         let holding: Vec<_> = nodes.iter().filter(|n| !Self::abandoned(n)).collect();
-        if holding.iter().any(|n| n.reap_intent.is_some()) {
+        // **The intent holds only while the death is unobserved.** §7.2's crash window is *"the
+        // supervisor died before the kill landed"*, and what makes it a window is that a process
+        // may still be running. A terminal record for the node shuts it: §7.2 resolves an
+        // unconfirmed intent *by checking for the process*, and an observed exit or a confirmed
+        // kill **is** that check, already made. No `ReapConfirmed` follows — nothing here
+        // fabricates a record — so the intent stays outstanding on the tree forever, and reading
+        // it without asking about the exit beside it is a supervisor that can never leave.
+        //
+        // Reachable in one supervisor's life and without a crash: `reap_idle_detach_busy` journals
+        // the intent, signals, and returns rather than confirming when it cannot observe the death;
+        // a later confirmed `session/quit` KillTree then writes the `KillConfirmed` that does
+        // observe it.
+        if holding
+            .iter()
+            .any(|n| n.reap_intent.is_some() && !n.state.is_exited())
+        {
             Some(ResidentReason::UnconfirmedReapIntent)
         } else if holding
             .iter()
@@ -2150,6 +2165,45 @@ mod tests {
                 .iter()
                 .all(|tag| tag != "SupervisorExited")
         );
+    }
+
+    /// **A reap intent stops holding the supervisor once the death it was about is observed.**
+    ///
+    /// §7.2's crash window is *"the supervisor died before the kill landed"*, and §5.7 holds the
+    /// supervisor for it because a process may still be running. Once a terminal record for that
+    /// node is on the journal the window is shut: the process was observed dead, which is the very
+    /// check §7.2 says resolves the intent. Holding on the stale intent after that is a supervisor
+    /// that can never exit — reachable in one supervisor's life, as this fixture's order shows:
+    /// the reap's signal went out and could not be observed (so no `ReapConfirmed` was written),
+    /// and the operator then confirmed a `session/quit` KillTree, which did observe it.
+    #[test]
+    fn a_reap_intent_stops_holding_the_supervisor_once_the_node_is_observed_dead() {
+        let fx = fx_with(
+            "handler-quit-reap-intent-then-killed",
+            vec![
+                intent("idle", None, "claude", 0),
+                spawned("idle", 91),
+                state("idle", NodeState::Idle),
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("idle"),
+                    reason: "session/quit reaped an idle node before detaching busy work".into(),
+                }),
+                RecordKind::KillConfirmed(KillConfirmed {
+                    agent_id: id("idle"),
+                    exit: ProcessExit {
+                        code: None,
+                        signal: Some(9),
+                        description: "confirmed session/quit killed the node's process tree".into(),
+                    },
+                }),
+            ],
+        );
+        assert_eq!(
+            fx.handle.residency(),
+            None,
+            "every node's death is on the record; nothing is left for this supervisor to hold",
+        );
+        assert!(fx.handle.idle_exit_eligible());
     }
 
     /// **NC — EOF has no default disposition.** An idle node is the sharp control because the
