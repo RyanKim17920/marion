@@ -190,9 +190,46 @@ impl<'de> Deserialize<'de> for UnspecifiedPolicy {
     }
 }
 
-/// `agent/spawn` — the client creating a **root**.
+/// **Who is asking, when the caller is a node rather than a client** — §5.4's *"per-node capability
+/// token bound to its `AgentId`"*, as a parameter.
 ///
-/// Three parameters are absent and each would have been a wrong answer:
+/// Two fields, and the interesting part is the three that are **not** here.
+///
+/// * **No `agent_type`, no `depth`.** §6.1 step 2's gates read the caller's type and depth, and the
+///   supervisor already knows both: it wrote the caller's `SpawnIntent` and can read it back out of
+///   its own registry. A caller that *states* them is a caller that can lie about them, and a
+///   forged `depth: 0` defeats `max_depth` outright. So this states only identity, and the
+///   supervisor derives everything it gates on.
+/// * **No `live_children`.** Same argument, one step further: the count is a property of the tree,
+///   which only the supervisor can see.
+///
+/// [`Self::node_token`] is what makes [`Self::agent_id`] a claim marion can check rather than a
+/// string on the wire. Without it `agent/spawn` on the socket would let any process that can
+/// `connect(2)` assert any identity, and §6.1 step 2's gates would be advisory — a check the caller
+/// chooses whether to fail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnCaller {
+    /// The **caller's** own `AgentId` — the node whose `spawn` this is, which becomes the child's
+    /// `parent_id` (§7.5) and stamps `TaskContract.requester` (§9).
+    pub agent_id: AgentId,
+    /// The secret the supervisor minted for that node at spawn and wrote into its MCP declaration's
+    /// `env` block, beside `MARION_AGENT_ID`.
+    ///
+    /// **No `#[serde(default)]`.** An omitted token must be a deserialization failure rather than
+    /// the empty string, or the credential becomes one every process on the machine already has.
+    pub node_token: String,
+}
+
+/// `agent/spawn` — a client creating a **root**, or a node spawning a **child**.
+///
+/// The two are one method and one params type, distinguished by [`Self::caller`]: `None` is the
+/// client, `Some` is the node. There is deliberately no sixteenth method for the child case. §2
+/// enumerates fifteen, [`crate::Method::ALL`] is pinned at fifteen by test, and the distinction is
+/// an `Option` — a second method would have duplicated every field below to carry one extra one.
+///
+/// Everything from here down is the **root** argument, and it is unchanged because it stays true
+/// for `caller: None`. Three parameters are absent and each would have been a wrong answer:
 ///
 /// * **`background`** — §5.4 spells it `"background": false // M1: must be false (§9)`, and
 ///   `77557e3` refuses it by name because a caller asking for a handle instead waits out the
@@ -209,12 +246,43 @@ impl<'de> Deserialize<'de> for UnspecifiedPolicy {
 /// `name` is also absent, but for a different and weaker reason: it is *performable* — §2's
 /// `node/rename` sets exactly that field — so declaring it here would duplicate a method rather
 /// than fake one. A client that wants a named root calls `node/rename` with the returned id.
+///
+/// **The four fields below `caller` are the ones a child spawn cannot be expressed without**, and
+/// they were absent while this method could only make a root. `77557e3` removed parameters marion
+/// read nowhere; these are read everywhere — `acceptance_criteria` and `writable_scope` are §9's
+/// contract terms and §5.4's write ceiling, `timeout_secs` is §3.1's wall clock, and `model` is
+/// what `spawn` compiles into the child's invocation. Each is optional and each *absent* value is a
+/// resolution the supervisor performs rather than a default this struct invents: an empty
+/// `writable_scope` is `run_spawn`'s `**` (the agent type's ceiling still applies), an absent
+/// `timeout_secs` is the bound the supervisor resolves, and an absent `model` is §3.1's own `model`
+/// key. Writing any of those numbers here would make this struct a second source of truth for a
+/// value §3.1 already owns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpawnParams {
     /// §3.1's `name:` key — the agent type's identity, resolved through §3.1's precedence chain.
     pub agent_type: String,
     pub prompt: String,
+    /// `None` is a client creating a root; `Some` is a node spawning a child. See [`SpawnCaller`].
+    #[serde(default)]
+    pub caller: Option<SpawnCaller>,
+    /// §9's contract terms. Empty is *"none stated"*, which is what a root has.
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    /// §5.4's write ceiling for the child, as globs. Empty is not "write nothing": `run_spawn`
+    /// reads it as `**`, still clipped by the agent type's own `scope_ceiling`.
+    #[serde(default)]
+    pub writable_scope: Vec<String>,
+    /// §3.1's wall clock, in seconds. **`Option`, not a number with a default**: the supervisor
+    /// clamps and resolves the bound, and a literal here would be a second spelling of it that
+    /// could drift from the one the node actually ran under and its contract records.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// The model in marion's request vocabulary. `None` falls back to the agent type's own `model`
+    /// key (§3.1), which is what makes a spawn launchable without the caller having to know which
+    /// harness needs a model and in what spelling.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// `doctor/run`. §8's two modes, plus an optional single-harness filter — which *is* performed:
@@ -288,7 +356,24 @@ mod tests {
         });
         rt!(AgentSpawnParams {
             agent_type: "codex-impl".into(),
-            prompt: "implement §6.3".into()
+            prompt: "implement §6.3".into(),
+            caller: None,
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            timeout_secs: None,
+            model: None,
+        });
+        rt!(AgentSpawnParams {
+            agent_type: "codex-impl".into(),
+            prompt: "implement §6.3".into(),
+            caller: Some(SpawnCaller {
+                agent_id: agent(),
+                node_token: "tok-abc".into(),
+            }),
+            acceptance_criteria: vec!["the suite is green".into()],
+            writable_scope: vec!["src/**".into()],
+            timeout_secs: Some(120),
+            model: Some("sonnet".into()),
         });
         rt!(DoctorRunParams {
             mode: ProbeMode::Adapter,
@@ -337,6 +422,84 @@ mod tests {
             .unwrap(),
             r#"{"disposition":"DetachAll"}"#
         );
+        // **Every field is written, including the absent ones.** A `skip_serializing_if` here would
+        // make `caller` absent and `caller: null` mean the same thing on the wire, and those are the
+        // two halves of the only distinction this method has: a client creating a root, and a node
+        // spawning a child. Stating `null` costs five bytes and makes the shape one thing.
+        assert_eq!(
+            serde_json::to_string(&AgentSpawnParams {
+                agent_type: "codex-impl".into(),
+                prompt: "go".into(),
+                caller: None,
+                acceptance_criteria: vec![],
+                writable_scope: vec![],
+                timeout_secs: None,
+                model: None,
+            })
+            .unwrap(),
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentSpawnParams {
+                agent_type: "codex-impl".into(),
+                prompt: "go".into(),
+                caller: Some(SpawnCaller {
+                    agent_id: AgentId("a".into()),
+                    node_token: "t".into(),
+                }),
+                acceptance_criteria: vec!["c".into()],
+                writable_scope: vec!["src/**".into()],
+                timeout_secs: Some(60),
+                model: Some("sonnet".into()),
+            })
+            .unwrap(),
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet"}"#
+        );
+    }
+
+    /// A client creating a root states no caller, and the five fields it did not state are the
+    /// values §11 item 23's rule requires: empty, absent, and *not* a fabricated default that a
+    /// caller would have no way to discover marion had chosen for it.
+    #[test]
+    fn a_client_creating_a_root_states_only_what_a_root_needs() {
+        let p: AgentSpawnParams =
+            serde_json::from_str(r#"{"agent_type":"codex-impl","prompt":"go"}"#).unwrap();
+        assert_eq!(p.caller, None, "no caller means a client creating a root");
+        assert!(p.acceptance_criteria.is_empty());
+        assert!(p.writable_scope.is_empty());
+        assert_eq!(
+            p.timeout_secs, None,
+            "absent is absent: the supervisor resolves the bound from §3.1, and a number invented \
+             here would be a second source of truth for it"
+        );
+        assert_eq!(p.model, None);
+    }
+
+    /// **The F2 shape, at the deserializer.** A caller states who it is and proves it. It does not
+    /// state its agent type and it does not state its depth, because the supervisor already knows
+    /// both from the `SpawnIntent` it wrote — and a caller that *states* them is a caller that can
+    /// lie about them. Accepting either field would make §6.1 step 2's gates advisory.
+    #[test]
+    fn a_caller_cannot_state_its_own_depth_or_agent_type() {
+        for (json, field) in [
+            (r#"{"agent_id":"a","node_token":"t","depth":0}"#, "depth"),
+            (
+                r#"{"agent_id":"a","node_token":"t","agent_type":"codex-impl"}"#,
+                "agent_type",
+            ),
+        ] {
+            let e = serde_json::from_str::<SpawnCaller>(json).unwrap_err();
+            assert!(e.to_string().contains(field), "must name the field: {e}");
+        }
+    }
+
+    /// A caller that names itself and offers no proof is not a caller. The token has no `default`,
+    /// so an omitted one is a deserialization failure rather than the empty string — which would
+    /// otherwise be a credential every process on the machine already has.
+    #[test]
+    fn a_caller_without_a_token_is_not_a_caller() {
+        let e = serde_json::from_str::<SpawnCaller>(r#"{"agent_id":"a"}"#).unwrap_err();
+        assert!(e.to_string().contains("node_token"), "{e}");
     }
 
     #[test]

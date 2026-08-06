@@ -75,3 +75,7 @@ pub use model::{
     QuitDisposition, QuitOutcome, ReplayPoint, ReplyOutcome, ResidentReason, SupervisorDisposition,
 };
 pub use notify::Event;
+/// Re-exported beside the models because it is one: `agent/spawn` is the only method whose caller
+/// is not always a client, and every consumer of that distinction — the supervisor's handler, the
+/// bridge, a test client — reaches for this type rather than for the params struct around it.
+pub use params::SpawnCaller;
