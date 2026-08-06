@@ -12,6 +12,7 @@
 //! `ps`'s `sess=` column is not used: S15 records that it prints `0` on macOS, which is why the
 //! fixture's own identity table says *"every session number here comes from `getsid(2)`"*.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -344,6 +345,43 @@ fn the_published_identity_lives_and_dies_with_the_socket() {
     goes_on_its_own(&bed);
 }
 
+/// **NC — a supervisor whose project directory is removed under it stands down instead of becoming
+/// immortal.**
+///
+/// `socket.rs` says what cannot be prevented and why: the `flock` that makes one supervisor per
+/// project is an agreement about an **inode**, and removing `<state>/<hash>` removes the name both
+/// processes would have had to reach it through. The evicted supervisor keeps a lock nobody can
+/// contend, on a socket nobody can dial, over a journal it can no longer append its own exit to —
+/// so §5.7's *"the exit MUST be journaled"* has nowhere to go, and nothing short of a signal ends it.
+///
+/// This asserts the process-level consequence, which no unit test can reach: it goes, and what it
+/// left is a project a supervisor can be started in again. The wait is `until`, never a duration —
+/// waiting longer only strengthens the claim.
+#[test]
+fn a_supervisor_whose_state_directory_is_removed_stands_down_rather_than_serving_on() {
+    let bed = Bed::new("evicted");
+    let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
+    let id = published(&bed.paths);
+    assert_eq!(bed.supervisors(), vec![id.pid]);
+
+    // Exactly what defeats the lock: the pathnames survive the removal, the inodes do not.
+    std::fs::remove_dir_all(bed.paths.dir()).expect("remove the project's directory");
+    assert!(
+        until(|| !alive(id.pid)),
+        "an evicted supervisor holds a lock nobody can contend and a socket nobody can dial; it \
+         must not go on holding them for the rest of the machine's uptime"
+    );
+    drop(ensured);
+
+    // And what it left is startable, which is the only way to check the eviction from outside.
+    let next = ensure_supervisor(&bed.paths, &bed.launch()).expect("the project is startable");
+    assert!(next.started);
+    let after = published(&bed.paths);
+    assert_ne!(after.pid, id.pid, "a new supervisor, not the evicted one");
+    drop(next);
+    goes_on_its_own(&bed);
+}
+
 // ------------------------------------------------- §5.7's start, when a stage dies half way
 
 /// A stand-in for `marion-supervisor` that a test can make fail at a chosen point.
@@ -354,10 +392,10 @@ fn the_published_identity_lives_and_dies_with_the_socket() {
 /// stands in for **stage 1 only** — `main.rs` derives each stage's program from `current_exe`, so
 /// every process after the first is the real binary.
 fn wrapper(bed: &Bed, name: &str, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let real = env!("CARGO_BIN_EXE_marion-supervisor");
     let path = bed.state.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\nREAL='{real}'\n{body}\n")).expect("write the stand-in");
+    std::fs::write(&path, format!("#!/bin/sh\nREAL='{real}'\n{body}\n"))
+        .expect("write the stand-in");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     path
 }
@@ -393,6 +431,7 @@ fn a_supervisor_that_started_is_reported_as_started_even_if_its_launcher_stage_f
         "exactly one supervisor, and it is the one that published"
     );
     drop(ensured);
+    goes_on_its_own(&bed);
 }
 
 /// **NC — a supervisor that never arrived is started again, rather than waited out.**
@@ -431,6 +470,7 @@ fn a_client_whose_first_supervisor_never_arrived_starts_another_one() {
     let id = published(&bed.paths);
     assert_eq!(bed.supervisors(), vec![id.pid]);
     drop(ensured);
+    goes_on_its_own(&bed);
 }
 
 /// **NC — a stage-3 failure on a fresh project is recorded, not discarded.**
@@ -441,16 +481,34 @@ fn a_client_whose_first_supervisor_never_arrived_starts_another_one() {
 /// becomes the one process that cannot report them. Two phases, because the two halves fail
 /// separately: the log must be **created** on a fresh project, and it must **carry** what stage 3
 /// said.
+///
+/// **Stage 1 is invoked directly, exactly once**, rather than through [`ensure_supervisor`]. That is
+/// not a shortcut, it is the difference between testing the mechanism and testing the client's
+/// retry policy: a client that starts a second chain finds the directory the first chain's
+/// supervisor created, so its stage 2 opens the log whatever stage 2 does about directories, and
+/// the assertion passes for a reason that has nothing to do with the property. That is not a
+/// hypothesis — this test passed against a build with the fix removed until it was written this way.
 #[test]
 fn a_fresh_projects_stage_three_writes_its_failures_to_the_projects_log() {
     let bed = Bed::new("logged");
-    let log = marion_supervisor::detach::log_path(&bed.launch());
+    let launch = bed.launch();
+    let log = marion_supervisor::detach::log_path(&launch);
     assert!(
         !log.exists() && !bed.paths.dir().exists(),
         "the point of the test is a project nothing has served yet"
     );
 
-    let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
+    // One chain, and it is waited for: stage 1 exits when stage 2 does, and stage 2 exits once it
+    // has spawned the supervisor, so this returns with stage 3 already on its way.
+    let stage_one = |launch: &Launch| {
+        std::process::Command::new(&launch.program)
+            .args(launch.argv())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("stage 1 runs")
+    };
+    assert!(stage_one(&launch).success(), "stage 1 reported failure");
     let id = published(&bed.paths);
     assert!(
         log.exists(),
@@ -458,26 +516,31 @@ fn a_fresh_projects_stage_three_writes_its_failures_to_the_projects_log() {
          went to /dev/null: {}",
         log.display()
     );
-    drop(ensured);
 
-    // Phase two: a stage 3 that cannot bind. A directory at the socket's path defeats the unlink
-    // that precedes the bind, which is a failure with a sentence attached — and the sentence has to
-    // arrive somewhere an operator can read it.
+    // Phase two: a stage 3 that cannot bind. A read-only project directory is a bind failure with a
+    // sentence attached, and the sentence has to arrive somewhere an operator can read it — stage
+    // 3's stderr is the only place it can.
     unsafe { kill(id.pid, SIGKILL) };
     assert!(until(|| !alive(id.pid)));
     let _ = std::fs::remove_file(bed.paths.socket());
-    std::fs::create_dir(bed.paths.socket()).expect("an unbindable socket path");
     let _ = std::fs::remove_file(bed.paths.identity());
+    std::fs::set_permissions(bed.paths.dir(), std::fs::Permissions::from_mode(0o500))
+        .expect("a project directory nothing can create a socket in");
 
-    let e = ensure_supervisor_within(&bed.paths, &bed.launch(), Duration::from_secs(5))
-        .expect_err("nothing can bind that path");
-    let _ = e;
-    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(stage_one(&launch).success(), "the failure is stage 3's");
     assert!(
-        text.contains("marion-supervisor:"),
-        "stage 3 could not bind and said so; the log is where that sentence has to be: {text:?}"
+        until(|| std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("marion-supervisor:")),
+        "stage 3 could not bind and said so; the log is where that sentence has to be: {:?}",
+        std::fs::read_to_string(&log)
     );
-    let _ = std::fs::remove_dir(bed.paths.socket());
+    assert!(
+        bed.supervisors().is_empty(),
+        "a stage 3 that could not bind is not a supervisor and must not still be running: {:?}",
+        bed.supervisors()
+    );
+    std::fs::set_permissions(bed.paths.dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 // ------------------------------------------------------------ §5.7's start, across processes
@@ -1102,4 +1165,3 @@ fn a_supervisor_with_nothing_left_journals_its_exit_and_leaves_no_socket_identit
     drop(next);
     goes_on_its_own(&bed);
 }
-

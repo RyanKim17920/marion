@@ -132,6 +132,18 @@ pub struct Launch {
 }
 
 impl Launch {
+    /// This project's socket, lock, identity and log — from `(state, project root)` and §2's rule,
+    /// which is the *only* derivation any stage performs. See the module doc on why stage 3 is told
+    /// its project rather than deriving it from a cwd.
+    pub fn paths(&self) -> SocketPaths {
+        crate::socket::socket_paths(
+            &self.state_dir,
+            &self.project_root,
+            // SAFETY: reads the calling process's real uid and cannot fail.
+            unsafe { uid() },
+        )
+    }
+
     /// The argv stage 1 is started with. Stages 2 and 3 append their own marker to it, so the three
     /// can never disagree about the project they are serving.
     pub fn argv(&self) -> Vec<String> {
@@ -193,6 +205,9 @@ pub fn ensure_supervisor_within(
 ) -> Result<Ensured, DetachError> {
     let deadline = Instant::now() + within;
     let mut started = false;
+    let mut attempts = 0usize;
+    let mut last_attempt = Instant::now();
+    let mut last_spawn: Option<DetachError> = None;
     loop {
         match std::os::unix::net::UnixStream::connect(paths.socket()) {
             Ok(stream) => return Ok(Ensured { stream, started }),
@@ -204,22 +219,73 @@ pub fn ensure_supervisor_within(
                 }));
             }
         }
-        if !started {
-            // Exactly once. A caller that re-spawned on every failed dial would turn a supervisor
-            // that is two syscalls from binding into a fork bomb aimed at its own project.
-            spawn_stage_one(launch)?;
+        if attempts < MAX_START_ATTEMPTS
+            && (attempts == 0
+                || (last_attempt.elapsed() >= RETRY_QUIET
+                    && crate::socket::nobody_is_serving(paths)))
+        {
+            attempts += 1;
+            last_attempt = Instant::now();
             started = true;
+            // **A failed launcher stage is remembered, not returned.** Three of this start's kill
+            // windows leave a stage reporting failure *after* the supervisor is already on its way:
+            // kill stage 1 once it has spawned stage 2, or stage 2 once it has spawned stage 3, and
+            // the `wait` inside comes back non-zero over a socket that is about to answer.
+            // Returning that status would tell the operator nothing started while leaving a
+            // supervisor running to contradict them — and nothing outside can settle which report
+            // was true, because the *next* invocation simply finds the socket answering. The dial
+            // is the authority on whether a supervisor exists; an exit status is evidence about how
+            // one attempt went, and it is reported at the end only if no supervisor ever appeared.
+            if let Err(e) = spawn_stage_one(launch) {
+                last_spawn = Some(e);
+            }
             continue;
         }
         if Instant::now() >= deadline {
-            return Err(DetachError::NotReachable {
+            return Err(last_spawn.unwrap_or(DetachError::NotReachable {
                 path: paths.socket().to_path_buf(),
                 waited_ms: within.as_millis(),
-            });
+            }));
         }
         std::thread::sleep(DIAL_POLL);
     }
 }
+
+/// How many supervisors one call will try to bring into existence before it only waits.
+///
+/// **Not "once", and not "on every failed dial".** Once was wrong in the direction the review
+/// found: a stage 3 that dies before it binds — a failed `exec`, an OOM kill, a stage-2 refusal —
+/// leaves `started` true, nothing listening and the lock free, so the client sits out its whole
+/// bound to report [`DetachError::NotReachable`] about a project it could have started a supervisor
+/// in at any moment. Re-spawning on every failed dial is the failure the original comment named and
+/// is still refused: it aims a fork bomb at the project whose supervisor is two syscalls from
+/// binding.
+///
+/// So a retry needs *evidence*, and it uses the evidence this system already trusts for exactly
+/// this question — [`crate::socket::nobody_is_serving`], the same `flock` that decides who serves.
+/// A lock that can be taken is proof that no supervisor holds it, which is precisely what a
+/// stillborn stage 3 leaves behind. The cap covers the one case the lock cannot see: a stage 3 that
+/// has `exec`ed but not yet reached its `flock` is indistinguishable from one that never will, so a
+/// few extra stage 3s may be created — which §5.7's design already absorbs, *"N racing clients may
+/// transiently create N stage-3 processes and exactly one survives"*. Three is where a bound stops
+/// being a retry and starts being a loop.
+const MAX_START_ATTEMPTS: usize = 3;
+
+/// How long an attempt is left alone before a free lock is read as *"it is not coming"*.
+///
+/// A free lock is proof that nobody is serving **now**, and during an ordinary start it is true for
+/// the whole time the three stages are `exec`ing — so retrying on that evidence alone starts a
+/// second chain during every normal start. That is not a correctness failure, since `socket::acquire`
+/// makes the redundant stage 3 stand down, but it is work nobody asked for, and it was measured
+/// here: without this interval a mutation that broke stage 2's log redirect still passed, because
+/// the *second* chain found the directory the first one's supervisor had created.
+///
+/// So the lock's evidence is combined with the one thing that separates "starting" from "stillborn":
+/// how long it has been that way. 250 ms is four orders of magnitude above the syscalls it covers
+/// and far below anything an operator perceives, and it decides no verdict — a supervisor that binds
+/// is dialed on the next poll whatever this is, and one that never binds is unreachable at any
+/// value.
+const RETRY_QUIET: Duration = Duration::from_millis(250);
 
 /// The same three readings `socket::acquire` treats as "nobody answered", and for the same reason:
 /// none of them is conclusive on its own, which is why the lock and not the dial decides.
@@ -317,9 +383,17 @@ pub fn run_stage_two(launch: &Launch) -> Result<(), DetachError> {
 fn spawn_stage_three(launch: &Launch) -> Result<(), DetachError> {
     let mut argv = launch.argv();
     argv.push(DETACHED_FLAG.to_string());
-    let log = log_path(launch);
-    // Best-effort: a supervisor whose log could not be opened still serves, and stderr goes to
-    // `/dev/null` rather than to a terminal this process is about to stop having.
+    let paths = launch.paths();
+    // **The directory first.** Stage 3 creates it — inside `socket::acquire`, several syscalls after
+    // this — so on a project nothing has ever served, opening the log here found no directory,
+    // degraded to `/dev/null`, and left the one process nobody is watching unable to report
+    // anything. Every stage-3 failure on a *fresh* project was invisible for that reason, which is
+    // also why the failures around it were hard to see. Sharing `socket::prepare_dir` rather than
+    // creating the directory here keeps the `/tmp` audit in one place.
+    let _ = crate::socket::prepare_dir(&paths);
+    let log = paths.log().to_path_buf();
+    // Best-effort *after* that: a supervisor whose log could not be opened still serves, and stderr
+    // goes to `/dev/null` rather than to a terminal this process is about to stop having.
     let stderr = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -342,18 +416,15 @@ fn spawn_stage_three(launch: &Launch) -> Result<(), DetachError> {
         })
 }
 
-/// Where stage 3's stderr goes. Beside the socket, in the 0700 directory `socket::acquire` already
-/// audits, because it is the one place both the supervisor and a later operator can name from
-/// `(state, project root)` alone.
+/// Where stage 3's stderr goes: [`SocketPaths::log`](crate::socket::SocketPaths::log), derived from
+/// what this launch was told and nothing else.
+///
+/// It used to be `dir().join("supervisor.log")`, which is the project's own directory under
+/// `<state>` and the **shared** `/tmp/marion-<uid>` under §2's fallback — one log for every
+/// overflowing project on the machine, interleaved. The path now comes from the same pure function
+/// as the socket, so the two cannot disagree about which project they belong to.
 pub fn log_path(launch: &Launch) -> PathBuf {
-    crate::socket::socket_paths(
-        &launch.state_dir,
-        &launch.project_root,
-        // SAFETY: reads the calling process's real uid and cannot fail.
-        unsafe { uid() },
-    )
-    .dir()
-    .join("supervisor.log")
+    launch.paths().log().to_path_buf()
 }
 
 unsafe extern "C" {
@@ -454,13 +525,61 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
         )),
     })?;
     let live = std::sync::Arc::new(LiveRegistry::follow(registry, REGISTRY_POLL));
+    let sentry = serving.sentry();
     let server =
         Server::start_with_idle_grace(serving, RegistryHandle::new(live), launch.idle_grace);
+    watch_entitlement(sentry);
     // §5.7: the supervisor's lifetime is not its client's. The only way out of this call is the
     // accept loop's own idle exit, which has already journaled the record by the time it returns.
     server.wait();
     Ok(())
 }
+
+/// **Stand down if this process stops being the supervisor of the project it is serving.**
+///
+/// `socket::Serving::still_entitled` explains what can stop being true and why nothing can prevent
+/// it: remove `<state>/<hash>` under a running supervisor and the `flock` that makes one supervisor
+/// per project keeps excluding an inode nobody can name any more, while a new caller takes a fresh
+/// lock at the same pathname and serves. Exclusion lives in a name both processes can reach, and the
+/// name is what was removed.
+///
+/// What is left is a choice about the evicted process, and every alternative to leaving is worse.
+/// It cannot go on serving: its socket is unlinked, so no client will ever reach it again, and its
+/// project directory is gone, so §5.7's *"the exit MUST be journaled"* has nowhere to write — it
+/// would be immortal, holding whatever its nodes hold, invisible to every subsequent invocation.
+/// It cannot journal an exit it cannot write. So it says why, on the stderr the launcher pointed at
+/// this project's log, and goes.
+///
+/// `std::process::exit` and not a graceful stop, deliberately. A graceful stop would try to write
+/// the exit record §5.7 requires, into the journal that is no longer there; the honest thing is to
+/// leave *without* one, because "it died" is exactly what a later reader should conclude about a
+/// supervisor whose project was deleted underneath it. The non-zero status says the same to
+/// whoever is watching the process.
+fn watch_entitlement(sentry: Option<crate::socket::Sentry>) {
+    let Some(sentry) = sentry else {
+        // No sentry means the lock descriptor could not be duplicated. Watching nothing is the
+        // right failure: a supervisor that cannot check its entitlement has not lost it.
+        return;
+    };
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(ENTITLEMENT_POLL);
+            if sentry.still_entitled() {
+                continue;
+            }
+            eprintln!("marion-supervisor: standing down -- {}", sentry.why());
+            std::process::exit(70);
+        }
+    });
+}
+
+/// How often the supervisor re-checks that it is still the supervisor.
+///
+/// Two `stat`s a second, which is not a measurement of anything and does not need to be: the event
+/// it watches for is an operator removing a directory, and the cost of noticing a second later is a
+/// second of a split brain that has already happened. Polling is the only shape available —
+/// `<state>/<hash>` going away is not an event any descriptor here delivers.
+const ENTITLEMENT_POLL: Duration = Duration::from_millis(500);
 
 /// How often the detached supervisor folds new journal bytes.
 ///
