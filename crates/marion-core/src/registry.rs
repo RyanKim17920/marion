@@ -31,6 +31,7 @@ use std::collections::HashMap;
 
 use crate::contract::{AgentId, ExitStatus, ProcessExit, ResultStatus, TaskId};
 use crate::harness::Harness;
+use crate::ir::SrcSeq;
 use crate::journal::{
     ContractPersisted, JournalRecord, PermissionDenied, RecordKind, SpawnIntent, WriterId, decode,
 };
@@ -192,14 +193,37 @@ pub enum Truncation {
 }
 
 /// The tree, plus everything replay noticed about the reading itself.
+///
+/// **A reading, not a snapshot of a call.** [`replay`] is one [`Replay::extend`] over a whole file;
+/// a reader tailing a growing file is many `extend`s over the same file's successive tails, and the
+/// two must produce the same value. That is why the per-writer expectation map and the last
+/// ordering evidence live *here* rather than as locals of [`replay`]: state kept in the function
+/// would reset on every chunk, and the loss detection §4.2 asks for would work only when the whole
+/// file happened to arrive in one read. See
+/// [`Replay::extend`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replay {
     nodes: Vec<ReplayedNode>,
     index: HashMap<String, usize>,
     /// Records accepted. Not lines in the file — the two differ exactly by [`Replay::truncation`].
     pub records: usize,
+    /// Where **this** `extend` stopped, or `None` if it consumed everything offered. Recomputed per
+    /// call, because a torn tail is resolved by the next call: reporting a tear that has since been
+    /// finished would make a healthy tail look permanently damaged.
     pub truncation: Option<Truncation>,
     pub gaps: Vec<SeqGap>,
+    /// The last source-side ordering evidence any record carried — §7.3.3's replay-to-subscribe
+    /// seam, and the value `marion_proto::ReplayPoint::src_seq` is built from.
+    ///
+    /// `None` on every journal marion writes today, and that is §4.2's rule rather than a gap:
+    /// marion is the source of its own records and a source has no upstream ordinal to report. A
+    /// record carrying none therefore **does not retract** one that did — where marion cannot
+    /// detect loss it must not imply otherwise, and overwriting evidence with an absence would be
+    /// implying the opposite.
+    pub last_src_seq: Option<SrcSeq>,
+    /// Each writer's next expected ordinal. Private: it is bookkeeping for [`Replay::gaps`], and a
+    /// caller that could set it could suppress the loss signal it exists to raise.
+    expected: HashMap<WriterId, u64>,
 }
 
 impl Replay {
@@ -308,8 +332,8 @@ impl Replay {
         }
     }
 
-    fn check_seq(&mut self, expected: &mut HashMap<WriterId, u64>, r: &JournalRecord) {
-        let next = expected.entry(r.writer.clone()).or_insert(r.seq);
+    fn check_seq(&mut self, r: &JournalRecord) {
+        let next = self.expected.entry(r.writer.clone()).or_insert(r.seq);
         if r.seq != *next {
             self.gaps.push(SeqGap {
                 writer: r.writer.clone(),
@@ -318,6 +342,64 @@ impl Replay {
             });
         }
         *next = r.seq.saturating_add(1);
+    }
+
+    /// Fold more journal bytes onto this reading, and answer **how many were consumed**.
+    ///
+    /// The return value is the length of the intact prefix of `bytes`, which is exactly what a
+    /// cursor over a growing file may advance by. Everything after it is a record that is not
+    /// finished (the writer is still appending it) or a line replay refuses to guess at, and both
+    /// must be offered again rather than skipped — the first because it will complete, the second
+    /// because skipping it would narrate a tree from bytes marion does not understand. A caller
+    /// therefore never has to reproduce the [`Truncation`] match to know where to stop; there is
+    /// one rule and it lives here, so `JournalWatch` and the supervisor's registry cannot drift
+    /// apart on it.
+    ///
+    /// **Total and infallible for the same reasons [`replay`] is**, and adding it does not change
+    /// that: any byte string may be offered, an empty one included, and an already-torn reading may
+    /// be extended. `bytes` **must** begin at a record boundary — the offset a previous `extend`
+    /// consumed to — because there is no framing information for a reader that starts mid-line; a
+    /// caller that starts elsewhere gets an [`Truncation::Unparsable`] on its first line rather
+    /// than a wrong tree, which is the honest failure of the two available.
+    pub fn extend(&mut self, bytes: &[u8]) -> usize {
+        self.truncation = None;
+        let mut offset = 0usize;
+        for (line_no, line) in bytes.split_inclusive(|b| *b == b'\n').enumerate() {
+            if line.last() != Some(&b'\n') {
+                // No terminator: these bytes are a prefix of a record that was never finished. §7.4.
+                if !line.is_empty() {
+                    self.truncation = Some(Truncation::UnterminatedTail {
+                        byte_offset: offset,
+                        bytes: line.len(),
+                    });
+                }
+                break;
+            }
+            let body = &line[..line.len() - 1];
+            // A bare newline is not corruption: it is what the writer emits to close a torn line so
+            // a concurrent writer's next record can never be glued onto it.
+            if !body.is_empty() {
+                match decode(body) {
+                    Some(record) => {
+                        self.check_seq(&record);
+                        if record.src_seq.is_some() {
+                            self.last_src_seq = record.src_seq.clone();
+                        }
+                        self.apply(record);
+                        self.records += 1;
+                    }
+                    None => {
+                        self.truncation = Some(Truncation::Unparsable {
+                            byte_offset: offset,
+                            line: line_no,
+                        });
+                        break;
+                    }
+                }
+            }
+            offset += line.len();
+        }
+        offset
     }
 }
 
@@ -329,42 +411,13 @@ impl Replay {
 /// because there is no failure mode a caller could act on differently — §7.4 already fixes the
 /// policy ("a truncated final line is discarded") and a `Result` would only invite a caller to
 /// treat a crash-truncated journal, which is the *expected* state after a SIGKILL, as a fault.
+///
+/// One [`Replay::extend`] over the whole file. A reader tailing a growing one calls `extend`
+/// repeatedly instead, and gets the same value — which is the property that lets the supervisor's
+/// live registry and this function be the same reading rather than two.
 pub fn replay(bytes: &[u8]) -> Replay {
     let mut out = Replay::default();
-    let mut expected: HashMap<WriterId, u64> = HashMap::new();
-    let mut offset = 0usize;
-    for (line_no, line) in bytes.split_inclusive(|b| *b == b'\n').enumerate() {
-        if line.last() != Some(&b'\n') {
-            // No terminator: these bytes are a prefix of a record that was never finished. §7.4.
-            if !line.is_empty() {
-                out.truncation = Some(Truncation::UnterminatedTail {
-                    byte_offset: offset,
-                    bytes: line.len(),
-                });
-            }
-            break;
-        }
-        let body = &line[..line.len() - 1];
-        // A bare newline is not corruption: it is what the writer emits to close a torn line so a
-        // concurrent writer's next record can never be glued onto it.
-        if !body.is_empty() {
-            match decode(body) {
-                Some(record) => {
-                    out.check_seq(&mut expected, &record);
-                    out.apply(record);
-                    out.records += 1;
-                }
-                None => {
-                    out.truncation = Some(Truncation::Unparsable {
-                        byte_offset: offset,
-                        line: line_no,
-                    });
-                    break;
-                }
-            }
-        }
-        offset += line.len();
-    }
+    out.extend(bytes);
     out
 }
 
@@ -871,6 +924,102 @@ mod tests {
         );
         assert_eq!(r.records, 1, "the intact prefix is the intent alone");
         assert!(!r.get(&id("root")).unwrap().did_marion_look());
+    }
+
+    /// **A reading built in chunks is the same reading, and it detects a gap at a chunk seam.**
+    ///
+    /// This is the property a *tailing* reader needs and a one-shot one never exercises. Before
+    /// [`Replay::extend`], the per-writer expectation map was a local inside [`replay`], so a
+    /// caller polling a growing file called `replay` once per chunk and reset the map every time —
+    /// the first record of every chunk became its own baseline and a gap **at a chunk boundary was
+    /// undetectable**. `watch.rs` polls exactly that way. A gap that only shows up when the whole
+    /// file happens to arrive in one read is not a gap check.
+    #[test]
+    fn a_reading_folded_in_chunks_equals_the_whole_and_still_sees_a_gap_at_the_seam() {
+        let j = m1_journal();
+        let whole = bytes(&j);
+
+        // Same bytes, one record at a time.
+        let mut chunked = Replay::default();
+        let mut at = 0usize;
+        for r in &j {
+            let line = encode(r).unwrap();
+            let n = chunked.extend(&whole[at..at + line.len()]);
+            assert_eq!(n, line.len(), "a whole record is wholly consumed");
+            at += line.len();
+        }
+        assert_eq!(chunked, replay(&whole), "one fold, however it is fed");
+
+        // …and the gap check survives the seam it used to be blind to.
+        let mut r = Replay::default();
+        r.extend(&bytes(&[record(
+            0,
+            RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("a") }),
+        )]));
+        assert!(r.gaps.is_empty());
+        r.extend(&bytes(&[record(
+            2,
+            RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("a") }),
+        )]));
+        assert_eq!(
+            r.gaps,
+            vec![SeqGap {
+                writer: WriterId("w".into()),
+                expected: 1,
+                found: 2
+            }],
+            "the writer's ordinal is remembered across polls, or a tailing reader cannot see loss"
+        );
+    }
+
+    /// **Extend consumes the intact prefix and no more**, which is what makes a caller's cursor
+    /// safe: the torn bytes are re-offered on the next call and read once, when they are finished.
+    #[test]
+    fn extend_consumes_only_the_intact_prefix_so_a_torn_tail_is_read_once_when_it_completes() {
+        let whole = bytes(&m1_journal());
+        let cut = whole.len() - 20;
+        let mut r = Replay::default();
+        let n = r.extend(&whole[..cut]);
+        assert!(
+            matches!(r.truncation, Some(Truncation::UnterminatedTail { .. })),
+            "{:?}",
+            r.truncation
+        );
+        assert!(n < cut, "the torn tail is not consumed");
+        assert_eq!(r.records, 7, "seven whole records, the eighth unfinished");
+
+        // The caller re-offers from its cursor; the eighth record arrives exactly once.
+        let n2 = r.extend(&whole[n..]);
+        assert_eq!(n + n2, whole.len());
+        assert_eq!(r.truncation, None, "a resolved tear is no longer reported");
+        assert_eq!(r, replay(&whole), "and the reading is the whole reading");
+    }
+
+    /// The last ordering evidence any record carried, which is §7.3.3's seam value. `None` on
+    /// every journal marion writes today (§4.2: marion is the source and has no upstream ordinal),
+    /// so this is stated as *what it would be* rather than assumed — and a record with none must
+    /// never erase one that had it.
+    #[test]
+    fn the_last_source_ordering_evidence_is_remembered_and_never_erased_by_a_record_without_one() {
+        let r = replay(&bytes(&m1_journal()));
+        assert_eq!(r.last_src_seq, None, "no marion writer emits one");
+
+        let evidence = SrcSeq::Predecessor(crate::ir::EventId("u-9".into()));
+        let mut with = record(
+            0,
+            RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("a") }),
+        );
+        with.src_seq = Some(evidence.clone());
+        let without = record(
+            1,
+            RecordKind::ReapConfirmed(ReapConfirmed { agent_id: id("a") }),
+        );
+        let r = replay(&bytes(&[with, without]));
+        assert_eq!(
+            r.last_src_seq,
+            Some(evidence),
+            "§4.2: a record with no evidence reports no ordering — it does not retract one"
+        );
     }
 
     #[test]
