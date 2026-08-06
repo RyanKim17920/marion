@@ -439,14 +439,14 @@ impl RegistryHandle {
     /// truth is that marion stopped reading. [`ResidentReason::RegistryStopped`] says so, and the
     /// reason and offset — which the `Copy` enum cannot carry — go to the supervisor's log once.
     ///
-    /// **This does not clear the condition** and is not meant to; see §11 item 28.
+    /// **This does not clear the condition** and is not meant to; see §11 item 29.
     fn residency(&self) -> Option<ResidentReason> {
         if let Some(reason) = self.registry_stopped() {
             if !self.stopped_reported.swap(true, Ordering::SeqCst) {
                 eprintln!(
                     "marion-supervisor: this project's journal stopped being followable and this \
                      supervisor is answering §5.7 from the tree as it stood before that point: \
-                     {reason}. It will not exit while that reading holds (§7.4, §11 item 28)."
+                     {reason}. It will not exit while that reading holds (§7.4, §11 item 29)."
                 );
             }
             return Some(ResidentReason::RegistryStopped);

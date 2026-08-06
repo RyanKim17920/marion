@@ -277,7 +277,7 @@ pub enum ResidentReason {
     /// offset and the reason are on the supervisor's own log, since this enum is `Copy` and
     /// carrying them here would widen every response that has nothing to do with corruption.
     ///
-    /// **Clearing the condition is not implemented** — §11 item 28.
+    /// **Clearing the condition is not implemented** — §11 item 29.
     RegistryStopped,
 }
 

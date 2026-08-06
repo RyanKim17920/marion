@@ -437,7 +437,7 @@ how much code exists.
   quit-and-return) is unmeetable for the same reason** and says so itself: its load-bearing half
   requires a new client to receive events emitted *after* it attached, "proving re-subscription to a
   live channel rather than replay of a corpse", and there is no live channel on the supervisor's
-  side. §11 item 27 states the gap in full and names the four changes that would close it. Anyone
+  side. §11 item 28 states the gap in full and names the four changes that would close it. Anyone
   quoting the existence of a detached supervisor as progress toward M2's crash criterion is quoting
   the wrong half of it.
 - **M3 [open]** — tree UI + embedded terminal.

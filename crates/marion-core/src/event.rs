@@ -109,7 +109,7 @@
 //! And that answer needs a shape this workspace does not yet have: §7.4's truncation discipline —
 //! and [`Truncation`], and [`EventLog::extend`]'s cursor rule — is **entirely about the tail**. A
 //! head-truncated file, which is what retention produces, is a state neither can express, and a
-//! reader that met one would silently report a partial stream as a whole one. Filed as §11 item 26.
+//! reader that met one would silently report a partial stream as a whole one. Filed as §11 item 27.
 
 use std::collections::HashMap;
 

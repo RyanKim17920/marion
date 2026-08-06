@@ -925,7 +925,7 @@ const JOURNAL_POLL: StdDuration = StdDuration::from_millis(100);
 /// the right answer for that: nothing happens to any node, and the supervisor waits out §5.7's
 /// full grace rather than treating the close as a decision. That is a worse outcome than this
 /// guard's, not an unsafe one, and *"every exit path"* would be a false claim — the honest one is
-/// that marion installs no signal handler and §11 item 27 records what closing that would take.
+/// that marion installs no signal handler and §11 item 28 records what closing that would take.
 ///
 /// **What it must not do is turn a failing run into a failing process.** It runs during unwind, so
 /// every step is fallible-and-ignored and nothing here may panic: a `println!`/`eprintln!` panics
@@ -1224,7 +1224,7 @@ fn main() -> ExitCode {
     // until that blocking call returns. SIGKILL this process mid-root and the child is left unheld
     // while the supervisor sees an unresolved spawn forever — a process leak *and* a supervisor
     // leak, which is the inverse of *"a TUI crash cannot kill running agents"*. **Nothing in this
-    // file may be read as delivering §7.3.1's invariant.** §11 item 27 states the gap and names the
+    // file may be read as delivering §7.3.1's invariant.** §11 item 28 states the gap and names the
     // four changes that close it — `agent/spawn` as a real handler, the bridge as a socket client,
     // supervisor-side event sinks and journal writes, and §11 item 23's backgrounding — and
     // `MILESTONES.md` records that §9's M2 criteria 1 and 4 are unmeetable until they land.

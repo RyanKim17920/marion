@@ -624,7 +624,7 @@ fn concurrent_children_never_share_a_workspace_and_never_lose_one_to_a_git_lock(
 /// measured that a real Claude Code harness **never produces one**: it sends SIGINT, SIGTERM 100 ms
 /// later, then SIGKILL, all pid-targeted at the MCP server. So this hold does not run in
 /// production, the backgrounded child outlives the SIGKILL as an untracked process reparented to
-/// pid 1, and that is §11 item 27 — a recorded hole, not a solved problem. This test guards the
+/// pid 1, and that is §11 item 30 — a recorded hole, not a solved problem. This test guards the
 /// hold for the clients marion itself writes; it is not evidence that a child survives a harness
 /// exit, and must not be read as any.
 #[test]
@@ -684,7 +684,7 @@ fn the_bridge_waits_for_an_outstanding_child_before_leaving_at_eof() {
     // *after* its child, so the child's own exit marker must exist by now. Without this the
     // fixture could drop — deleting the gate file out from under a shim that had not yet noticed
     // it — and strand the child. Two were found stranded exactly that way on 2026-08-06, which is
-    // the product's own hazard (§11 item 27) reproduced by accident in a test.
+    // the product's own hazard (§11 item 30) reproduced by accident in a test.
     assert_eq!(
         fx.finished_children(),
         1,

@@ -56,7 +56,7 @@
 //! `SpawnIntent` journaled with no resolution, and its worktree left behind. That is §11 item 18's
 //! runaway shape and it is what §9's M2 criterion *"no untracked live process"* forbids.
 //!
-//! **This is a known, recorded hole and not a solved problem**: §11 item 27 states it, what closes
+//! **This is a known, recorded hole and not a solved problem**: §11 item 30 states it, what closes
 //! it ((B), or a pid-carrying kill path the bridge can run inside the measured ~450 ms grace), and
 //! what would change the measurement. The hold below is kept because it is correct for a client
 //! that *does* close stdin — `marion run`, the tests, a future TUI — and because a hold that is

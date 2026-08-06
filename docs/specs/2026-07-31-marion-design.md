@@ -453,7 +453,7 @@ event, a change to §5's component boundaries and not a field.
 Causality is recorded **explicitly** via `caused_by` and the harness-native
 `thread_id`/`turn_id`/`item_id`, not inferred from a counter. (`thread_id`, `turn_id` and `item_id`
 are likewise absent from what marion writes today, for the reason the normalized `Payload` variants
-are: extracting them is per-frame normalization no adapter performs. See §11 item 26's neighbours
+are: extracting them is per-frame normalization no adapter performs. See §11 item 27's neighbours
 and `marion_core::event::Normalization`, which refuses them in the type.)
 
 `ts` is wall clock and display-only: NTP steps and sleep/wake move it backwards, which can invert
@@ -1201,10 +1201,10 @@ a 53 MB Codex child.
                                       //   sharing a cwd with a live write-capable sibling.
                                       //   A per-spawn act, not a property of the agent type
   "background":   false               // M1: must be false (§9). **Implemented 2026-08-06**
-                                      //   (§11 items 23 and 27): `true` returns a handle in the
+                                      //   (§11 items 23 and 30): `true` returns a handle in the
                                       //   same frame and the child runs on a thread inside the
                                       //   bridge. `wait` resolves the handle. §7.6's descendant
-                                      //   gating is NOT built — item 27
+                                      //   gating is NOT built — item 30
 }
 // → returns a completed TaskContract
 ```
@@ -1623,7 +1623,7 @@ never be resolved:
 A fifth condition is **not** on that list and belongs on it once someone decides what it means:
 a registry that has stopped following its journal (§7.4) answers every clause above from a frozen
 prefix. marion fails closed there and says so by name rather than quoting a stale clause; the open
-half is §11 item 28.
+half is §11 item 29.
 
 **The grace period is a design choice, not a measurement.** A default of **300 s**, configurable,
 is proposed on the reasoning that it should outlast an operator closing one window to open another
@@ -1661,7 +1661,7 @@ below, and the exit record is written before the accept loop breaks
 app-server lifetime, which is evidence that a server *can* outlive its client — not evidence about
 marion's. **What remains specification ahead of code is the part §7.3.1 depends on**: the supervisor
 holds no node, so the lifetime rules above govern a process that is a journal reader rather than the
-holder of the fleet (§11 item 27).
+holder of the fleet (§11 item 28).
 
 ---
 
@@ -2514,10 +2514,10 @@ cases; only an explicit `session/quit` distinguishes them, and in its absence ma
 reading that preserves work.
 
 **Not delivered today, and the gap is in the process layout rather than in this rule.** §11 item
-27: the detached supervisor tails the journal and holds no node's `Child`, pid, pipe or channel —
+28: the detached supervisor tails the journal and holds no node's `Child`, pid, pipe or channel —
 `marion run` holds all of them and journals `Spawned` only when the root's blocking call returns.
 SIGKILL `marion run` mid-root and the child is unheld by anybody while the supervisor sees an
-unresolved spawn forever. Read this section as the specification it is; item 27 names the four
+unresolved spawn forever. Read this section as the specification it is; item 28 names the four
 changes that would make it a property of the code, and records that §9's M2 criteria 1 and 4 cannot
 be met until they land.
 
@@ -4637,7 +4637,7 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       `spawn.rs` still writes `live_descendants_at_report: vec![]` and no exit path consults a
       subtree. A parent can now stop while its children run, which is the hole §7.6 exists to
       close, so **L1 is no longer vacuously true** — it was, while a child was always terminal
-      before its parent regained control, and it is not now. Item 27 records that together with
+      before its parent regained control, and it is not now. Item 30 records that together with
       the runaway-process consequence s16 measured, and the two must be closed together.
     - **`isolation`** (declared `bridge.rs:127`, enum `worktree | shared-cwd | remote`). `run_spawn`
       calls `make_worktree` unconditionally (`run.rs:751`) and builds `Workspace::Worktree`;
@@ -4923,7 +4923,7 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     `root::availability_axis` refuses the *grant* when the *audit* is unavailable, which is a
     different act. Cross-referenced from **§9** and from **item 19**.
 
-26. **`events.jsonl` grows without bound, and the journal's compaction cannot be borrowed to fix it
+27. **`events.jsonl` grows without bound, and the journal's compaction cannot be borrowed to fix it
     — OPEN, newly articulated 2026-08-06, from building the writer and reader (plan item 3.4). No
     new measurement is claimed.** §4.3 gives `journal.jsonl` an *"opportunistic journal compaction"*
     in `snapshot.json` and gives `events.jsonl` nothing, which reads as an omission. It is not one:
@@ -4961,7 +4961,7 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     that must be made before a reader can be honest about a trimmed file, which is why this is filed
     rather than deferred silently. Cross-referenced from **§4.3** and **§7.3.3**.
 
-27. **§7.3.1's crash guarantee is specified and is NOT delivered by the detached supervisor as
+28. **§7.3.1's crash guarantee is specified and is NOT delivered by the detached supervisor as
     built — OPEN, newly articulated 2026-08-06, from a read of `bin/marion.rs`, `root.rs` and
     `handler.rs` at `2349bb6`. No new measurement is claimed; this is a statement of what the code
     does not do.** §7.3.1 is written as an invariant: *"a crashed, SIGKILLed, or otherwise vanished
@@ -5018,7 +5018,7 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     Building that fixture is the cheapest next step and would convert this item from argued to
     measured. Cross-referenced from **§2**, **§5.7**, **§7.3.1** and **§9** (M2).
 
-28. **§5.7's exit predicate has no clause for a registry that stopped following — OPEN, newly
+29. **§5.7's exit predicate has no clause for a registry that stopped following — OPEN, newly
     articulated 2026-08-06, filed with `registry.rs`'s `Status::Stopped` and `handler.rs`'s
     `ResidentReason::RegistryStopped`. No new measurement is claimed.** `registry.rs` stops
     following a journal for good at a complete line that is not a record, or at a file that got
@@ -5038,13 +5038,13 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     that can no longer read its own journal is *permitted* to do. The plausible answers are (a) exit
     after the grace on the grounds that a supervisor with no readable state supervises nothing —
     which is unsafe exactly when the frozen prefix names live nodes; (b) re-boot the registry from
-    the intact prefix plus a recorded head marker, which needs §11 item 26's head vocabulary; or (c)
+    the intact prefix plus a recorded head marker, which needs §11 item 27's head vocabulary; or (c)
     keep failing closed and give `doctor` an explicit repair path. None is cheap and none should be
     picked to make a test go green. Pinned by
     `tests/detached_supervisor.rs::a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by_name`
     and by the reap in `tests/run_stream.rs`, which exists only because of this. Cross-referenced
-    from **§5.7**, **§7.4** and **§11 item 26**.
-29. **A backgrounded child outlives its harness as an untracked process, and nothing gates a
+    from **§5.7**, **§7.4** and **§11 item 27**.
+30. **A backgrounded child outlives its harness as an untracked process, and nothing gates a
     parent's exit on it — OPEN, newly articulated 2026-08-06, from the change that implemented
     `background` plus spike S16.** Two holes with one cause: `spawn { background: true }` runs the
     child on a thread inside the **bridge** process (`marion-supervisor mcp`), which the *harness*

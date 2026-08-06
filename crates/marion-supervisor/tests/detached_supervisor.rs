@@ -463,7 +463,7 @@ fn seed(path: &Path, seq: u64, kind: marion_core::journal::RecordKind) {
 ///
 /// **The pid is a parameter and the residency test passes a real one.** These records are the whole
 /// of what a supervisor knows about a node today — it does not hold the `Child`, the pipes or the
-/// channel; `marion run` does, and §11 item 27 is that gap — so a test seeding pid 1 was measuring
+/// channel; `marion run` does, and §11 item 28 is that gap — so a test seeding pid 1 was measuring
 /// that stale bytes keep a process alive, which is true and is not §5.7's claim. Handing it the pid
 /// of a process the test really started does not close the gap, but it stops the fixture from
 /// asserting past it.
@@ -593,7 +593,7 @@ fn journal_tags(path: &Path) -> Vec<String> {
 ///
 /// Second, its "running node" was three records naming pid 1. The pid is a real one now: what a
 /// supervisor holds today **is** those records — it has neither the `Child` nor the channel, which
-/// is §11 item 27 — so this test cannot claim more than the journal says, and it should not seed a
+/// is §11 item 28 — so this test cannot claim more than the journal says, and it should not seed a
 /// pid that makes the claim look bigger than it is.
 #[test]
 fn a_supervisor_holding_a_non_terminal_node_refuses_to_exit_until_that_node_finishes() {
@@ -819,7 +819,7 @@ fn a_client_that_vanished_without_quitting_leaves_an_empty_supervisor_free_to_go
 /// the file. `Resident(RegistryStopped)` says that, and the supervisor's log carries the reason and
 /// the offset (§7.4).
 ///
-/// **Clearing the condition is still not implemented and is still not cheap** (§11 item 28):
+/// **Clearing the condition is still not implemented and is still not cheap** (§11 item 29):
 /// `tests/run_stream.rs` reaps a supervisor stranded exactly this way and cites this test for why
 /// it has to. Immortal is unchanged; *misleading* is what was fixed.
 #[test]

@@ -519,7 +519,7 @@ fn new_task_id() -> std::io::Result<marion_core::contract::TaskId> {
 /// then SIGKILL ~450 ms after that, all pid-targeted at the server rather than sent to its group.
 /// So the loop above does not end — the process is killed inside it. The hold is kept because it is
 /// correct for every client marion itself writes (`marion run`, the tests, a future TUI), and the
-/// gap it leaves is §11 item 27: a backgrounded child outlives the SIGKILL as an untracked process
+/// gap it leaves is §11 item 30: a backgrounded child outlives the SIGKILL as an untracked process
 /// reparented to pid 1, which is what §9's *"no untracked live process"* forbids.
 fn run_bridge() {
     let bg = marion_supervisor::background::Background::new();
