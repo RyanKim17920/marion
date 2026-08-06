@@ -179,6 +179,29 @@ pub trait Handle: Send + Sync + 'static {
     /// and the transport's, which is what can be reported.
     fn gone(&self, conn: ConnId, gone: &ClientGone, why: &Departure);
 
+    /// **The supervisor's heartbeat**, called once per pass of the accept loop and once more after
+    /// it ends. A handler with nothing to push does nothing here, which is the default.
+    ///
+    /// Notifications are the half of §2 that nothing else can drive. A [`Handle::call`] runs on its
+    /// own connection's thread and can only answer *that* client; everything a supervisor says
+    /// unprompted — §7.3.3's live leg, `tree/node-added`, `node/state` — is caused by a **file**
+    /// changing, and no thread in this module is watching one. Before this existed, the only flush
+    /// loop in the crate (`handler::Broadcast`) was started by tests and by nothing in production,
+    /// so a detached supervisor answered requests and never spoke first.
+    ///
+    /// **The accept loop rather than a new thread**, and that is a real choice. `Broadcast`'s doc
+    /// gives the rule this obeys — a pusher must be a *second* loop over the follower's result,
+    /// never folded into the poll that keeps the tree current, because that one holds the registry
+    /// lock and a client's socket must never get inside it. This is such a second loop. What it
+    /// adds is that the accept loop is already a clock: it is non-blocking, it wakes every
+    /// [`ACCEPT_POLL`], and it already asks the handle three questions per pass. A fourth thread
+    /// would buy a cadence this one already has and cost a fourth thing to stop correctly.
+    ///
+    /// The bound on what a handler may do here is the bound already stated for
+    /// [`Outbound::send`]: it never blocks, so a client that has stopped reading is a departure and
+    /// not a stalled accept loop. A handler that would block on something else must not do it here.
+    fn tick(&self) {}
+
     /// Whether an explicit, fully handled `session/quit` has journaled the supervisor's exit.
     /// False by default so a handler that knows nothing about lifecycle can never acquire an
     /// implicit disposition merely by implementing transport.
@@ -457,6 +480,7 @@ fn accept_loop(
     }
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     while !stop.load(Ordering::SeqCst) && !handle.exiting() {
+        handle.tick();
         let no_clients = lock(&conns).is_empty();
         if no_clients && handle.idle_exit_eligible() {
             let since = idle_since.get_or_insert_with(Instant::now);
@@ -491,6 +515,12 @@ fn accept_loop(
         }
         threads.retain(|t| !t.is_finished());
     }
+    // **One last tick after the flag, never before it** — `LiveRegistry::follow` and
+    // `handler::Broadcast` are both written to this rule and for the same reason: what a node said
+    // in the moments before a shutdown is exactly what a watching client wanted, and a loop that
+    // left on the flag without pushing would drop it and end the stream on a lie. The connections
+    // are still open here; the shutdown below is what closes them.
+    handle.tick();
     for (_, stream) in lock(&conns).iter() {
         let _ = stream.shutdown(std::net::Shutdown::Both);
     }

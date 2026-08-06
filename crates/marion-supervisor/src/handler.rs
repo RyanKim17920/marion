@@ -77,10 +77,13 @@ use marion_core::journal::{
 use marion_core::node::{NodeState, ReapState};
 use marion_core::registry::{Replay, ReplayedNode};
 use marion_proto::notify::Event;
-use marion_proto::result::{NodeGetResult, SessionQuitResult, TreeSubscribeResult};
+use marion_proto::result::{
+    NodeAttachResult, NodeGetResult, SessionQuitResult, TreeSubscribeResult,
+};
 use marion_proto::{
-    Call, ClientGone, DetachGuidance, FailureKind, KilledNode, MethodResult, NodeSummary,
-    QuitDisposition, QuitOutcome, ReplayPoint, ResidentReason, RpcError, SupervisorDisposition,
+    AttachMode, Call, ClientGone, DetachGuidance, FailureKind, KilledNode, MethodResult,
+    NodeSummary, QuitDisposition, QuitOutcome, ReplayPoint, ResidentReason, RpcError,
+    SupervisorDisposition,
 };
 
 use crate::registry::{LiveRegistry, Registry};
@@ -174,9 +177,26 @@ struct Told {
     reap_state: ReapState,
 }
 
+/// One client following one node's `events.jsonl`.
+///
+/// The [`EventReader`](crate::events::EventReader) is owned here rather than shared, because a
+/// cursor is per subscription: two clients attaching to one node at different moments have
+/// different read points, and a shared reader would make the second one's replay depend on when
+/// the first attached. The file is the shared thing; the position in it is not.
+///
+/// `conn` is kept alongside `out` so [`Handle::gone`] can drop this without asking the transport
+/// anything — the same bookkeeping `subs` gets, for the same reason.
+struct Attachment {
+    conn: ConnId,
+    agent_id: AgentId,
+    reader: crate::events::EventReader,
+    out: Outbound,
+}
+
 #[derive(Default)]
 struct Shared {
     subs: Vec<Outbound>,
+    attached: Vec<Attachment>,
     clients: HashSet<ConnId>,
     told: HashMap<AgentId, Told>,
     unprojectable: usize,
@@ -306,6 +326,134 @@ impl RegistryHandle {
                 .map(|node| NodeGetResult { node })
                 .map_err(|e| e.as_error(id)),
         })
+    }
+
+    /// §2's `node/attach` — §7.3.3's re-attach, **both legs and no seam between them**.
+    ///
+    /// `events.rs` argues the shape and this is where it is spent: replay and subscribe are one
+    /// [`EventReader`] cursor over one file, so *"replay to the journal's own read point, then
+    /// subscribe from there"* is not a procedure anybody has to implement correctly — the reader
+    /// returns the intact prefix and its own byte offset in a single read, this method sends that
+    /// prefix, and every later poll continues from that same offset. **A gap or a duplicate at the
+    /// join is unreachable because there is no join.**
+    ///
+    /// So this needs none of the locking [`Self::subscribe`] needs, and that difference is
+    /// structural rather than an omission. `tree/subscribe` derives *two* things — a snapshot and
+    /// the told-set that decides what the next notification will be — and must derive them from one
+    /// view or a notification can slip between them. An attach derives one: the reader's own read.
+    ///
+    /// **The replayed events go out as `node/event` notifications, before the response frame.**
+    /// [`marion_proto::result::NodeAttachResult`] has no field for them and deliberately so: a
+    /// replayed event and a live one are the same event from the same file, and giving the replay a
+    /// second shape on the wire would ask every client to write the splice this module exists to
+    /// make impossible. Because they precede the response, the [`ReplayPoint`] in the answer is a
+    /// statement in the past tense — *everything up to here has already been sent to you* — which
+    /// is stronger than a promise about what will arrive.
+    ///
+    /// **The cursor is kept even for a node that has already exited**, though the mode says the
+    /// node is finished. The two are not in tension: the mode describes the *node*, the cursor
+    /// describes this reader. A node marion has just journaled as `Exited` may still have its
+    /// `Lifecycle::Exited` bookend in flight to its own `events.jsonl` — different files, different
+    /// writers, no ordering between them — and dropping the cursor on the strength of the journal
+    /// would lose precisely the record that separates a node that finished from one cut mid-turn.
+    /// A cursor on a file nobody will append to costs one `stat` per tick and delivers nothing.
+    fn node_attach(&self, id: &AgentId, out: &Outbound) -> Result<NodeAttachResult, RpcError> {
+        let (summary, state, reap_state, project) = self.live.read(|r| {
+            let Some(node) = r.tree().get(id) else {
+                return Err(RpcError::not_found(
+                    &id.0,
+                    format!(
+                        "this project's journal records no node `{}`, so there is no stream to \
+                         attach to. The registry is current as of {} records read; a node spawned \
+                         by another process appears here once its `SpawnIntent` is on disk \
+                         (§6.1 step 7).",
+                        id.0,
+                        r.read_point().records
+                    ),
+                    "§3.2",
+                ));
+            };
+            let summary = summarize(node).map_err(|e| e.as_error(id))?;
+            Ok((summary, node.state, node.reap_state, r.project()))
+        })?;
+
+        let Some(project) = project else {
+            return Err(RpcError::internal(format!(
+                "the supervisor cannot work out which project directory node `{}`'s stream lives \
+                 under: its registry was booted over a journal path with no `<state>/<hash>/` \
+                 above it. This is a misconfigured supervisor, not a missing node.",
+                id.0
+            )));
+        };
+        let events_path = project.agent(id).events();
+        let (reader, replayed) = crate::events::EventReader::open_path(&events_path)
+            .map_err(|e| attach_io_failure(id, &events_path, &e))?;
+
+        // **"Nobody recorded this" is not "it said nothing", and a terminal node is where the two
+        // stop being distinguishable by waiting.** `EventReader::ever_written` is the split, and
+        // §4.1's whole vocabulary exists so marion does not report an unrecorded node as an empty
+        // transcript. For a node that is still running the answer is to attach anyway — the file
+        // appears on its first frame and the reader is already watching for it. For one that has
+        // exited, no frame is coming, and `ReplayOnly(records: 0)` would be marion asserting it
+        // observed silence it never observed.
+        if !reader.ever_written() && state.is_exited() {
+            return Err(RpcError::of(
+                FailureKind::NotFound,
+                Some(&id.0),
+                format!(
+                    "node `{}` has exited and marion has no `{}` for it, so there is nothing to \
+                     replay and nothing more will be written. This is **not** an empty transcript: \
+                     it is a node whose stream was never recorded — the recorder could not open the \
+                     file, or this node ran under a build that did not record one (§4.1). Reporting \
+                     it as a node that said nothing would be a claim marion cannot make.",
+                    id.0,
+                    events_path.display()
+                ),
+                "§7.3.3",
+            ));
+        }
+
+        let point = reader.read_point();
+        let mode = attach_mode(state, reap_state, point);
+        // Sent before the reader is parked, so nothing appended between the two can be delivered
+        // ahead of the replay it comes after.
+        let live = deliver_events(out, id, &replayed);
+        if live {
+            lock(&self.shared).attached.push(Attachment {
+                conn: out.conn(),
+                agent_id: id.clone(),
+                reader,
+                out: out.clone(),
+            });
+        }
+        Ok(NodeAttachResult {
+            node: summary,
+            mode,
+        })
+    }
+
+    /// How many node streams this supervisor is following on behalf of a client.
+    pub fn attachments(&self) -> usize {
+        lock(&self.shared).attached.len()
+    }
+
+    /// **The subscribe leg's engine**: advance every attached cursor and push what it found.
+    ///
+    /// Returns how many events were read — per event, not per delivery, for the reason
+    /// [`Self::flush`] gives.
+    ///
+    /// One `open` and one `stat` per attachment per call, which is [`EventReader::poll`]'s stated
+    /// cost when there is nothing new, and nothing new is the common case. §11 item 27 is the entry
+    /// that makes this cheaper; nothing here depends on it landing.
+    pub fn pump_attached(&self) -> usize {
+        let mut g = lock(&self.shared);
+        let mut read = 0usize;
+        g.attached.retain_mut(|a| {
+            let mut fresh = Vec::new();
+            read += a.reader.poll(&mut fresh);
+            deliver_events(&a.out, &a.agent_id, &fresh)
+        });
+        read
     }
 
     /// §7.3.2's voluntary path. The mutex is not throughput machinery; it makes the rendered-set
@@ -708,6 +856,70 @@ impl RegistryHandle {
     }
 }
 
+/// §7.3.3's three answers, chosen from the two fields that decide them and nothing else.
+///
+/// `ReapedIdle` is tested **before** the exit, because §7.3.2's disposition (c) reaps a node that
+/// is idle rather than one that is finished, and a reaped node whose journal also shows an exit is
+/// still the one the operator can bring back. Collapsing it into `ReplayOnly` would tell a client
+/// its only option is to read, when the node is resumable.
+fn attach_mode(state: NodeState, reap_state: ReapState, point: ReplayPoint) -> AttachMode {
+    if reap_state == ReapState::ReapedIdle {
+        AttachMode::ReplayResumable(point)
+    } else if state.is_exited() {
+        AttachMode::ReplayOnly(point)
+    } else {
+        AttachMode::ResubscribeFrom(point)
+    }
+}
+
+/// Send a run of a node's events to one client. `false` means the connection is finished.
+///
+/// Every field a client needs to place the event in the stream comes off the event itself; nothing
+/// is derived from the moment of delivery. In particular `ts` is the writer's, not this process's
+/// clock — a replayed event that claimed to have happened when it was replayed would make the
+/// detached window look like it never existed.
+fn deliver_events(
+    out: &Outbound,
+    agent_id: &AgentId,
+    events: &[marion_core::event::Event],
+) -> bool {
+    for e in events {
+        let payload = serde_json::to_value(&e.payload).unwrap_or_else(|err| {
+            // Unreachable for a payload this process just read out of an encoded line, and stated
+            // rather than defaulted to `null`: a client must be able to tell "the node said
+            // nothing" from "marion could not re-encode what the node said".
+            serde_json::json!({ "marion_unencodable": err.to_string() })
+        });
+        let ok = out.notify(Event::NodeEvent {
+            agent_id: agent_id.clone(),
+            agent_seq: e.agent_seq,
+            ts: e.ts,
+            provenance: e.provenance.clone(),
+            src_seq: e.src_seq.clone(),
+            payload,
+        });
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+/// A node's stream exists and could not be read — a fault in the supervisor's own storage, not
+/// something the caller did, so `Internal` and not a refusal.
+fn attach_io_failure(
+    id: &AgentId,
+    path: &std::path::Path,
+    error: &crate::events::EventError,
+) -> RpcError {
+    RpcError::internal(format!(
+        "node `{}`'s event stream at {} could not be read: {error}. A missing file is not this \
+         case — that is a node marion never recorded, and it is reported as such.",
+        id.0,
+        path.display()
+    ))
+}
+
 fn journal_failure_before_signal(error: crate::journal::JournalError) -> RpcError {
     RpcError::internal(format!(
         "session/quit could not durably journal its intent, so it refused before signalling the \
@@ -731,6 +943,9 @@ impl Handle for RegistryHandle {
         match call {
             Call::NodeGet(p) => self.node_get(&p.agent_id).map(MethodResult::NodeGet),
             Call::TreeSubscribe(_) => Ok(MethodResult::TreeSubscribe(self.subscribe(out))),
+            Call::NodeAttach(p) => self
+                .node_attach(&p.agent_id, out)
+                .map(MethodResult::NodeAttach),
             Call::SessionQuit(p) => self
                 .session_quit(&p.disposition)
                 .map(MethodResult::SessionQuit),
@@ -741,8 +956,8 @@ impl Handle for RegistryHandle {
                 other.method().as_str(),
                 format!(
                     "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
-                     `tree/subscribe`, and `session/quit`; the remaining twelve methods land with \
-                     the milestone that needs them.",
+                     `tree/subscribe`, `node/attach` and `session/quit`; the remaining eleven \
+                     methods land with the milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",
@@ -768,7 +983,24 @@ impl Handle for RegistryHandle {
         );
         let mut g = lock(&self.shared);
         g.subs.retain(|s| s.conn() != conn);
+        // A node stream this connection was following. Dropping the cursor is the whole of it:
+        // §7.3.1's invariant is about nodes, and a reader is not one. The node goes on running and
+        // goes on writing its `events.jsonl`, which is what makes the *next* client's attach a
+        // replay rather than a hole.
+        g.attached.retain(|a| a.conn != conn);
         g.clients.remove(&conn);
+    }
+
+    /// §2's notifications, driven by the accept loop's heartbeat — see [`Handle::tick`] for why
+    /// that loop and not a fourth thread.
+    ///
+    /// Both halves, in this order. `flush` pushes what the *journal* said (a node appeared, a node
+    /// changed state); `pump_attached` pushes what a *node* said. Journal first because a client
+    /// that learns of an event on a node it has not been told exists has to hold it, and §2 puts
+    /// `tree/node-added` before anything else about a node for exactly that reason.
+    fn tick(&self) {
+        self.flush();
+        self.pump_attached();
     }
 
     fn exiting(&self) -> bool {
@@ -3006,5 +3238,400 @@ mod tests {
         }
         // And exactly once: a second flush produces nothing, so nothing further arrives.
         assert_eq!(w.fx.handle.flush(), 0, "a told transition is not re-told");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // §2's `node/attach` — §7.3.3's re-attach. `events.rs` owns the cursor and proves it loses and
+    // repeats nothing across a torn seam; what these assert is the thing that module cannot: that
+    // the cursor is wired to a **client**, over a socket, on a connection the client already had.
+    // ---------------------------------------------------------------------------------------
+
+    use crate::events::{Draft, EventWriter};
+    use marion_core::event::{Payload, PayloadKind};
+    use marion_core::ir::Source;
+
+    /// Where a node's stream lives, derived the way the handler derives it — from the journal.
+    fn events_of(fx: &Fx, agent: &str) -> std::path::PathBuf {
+        fx.path
+            .parent()
+            .unwrap()
+            .join("agents")
+            .join(agent)
+            .join("events.jsonl")
+    }
+
+    /// Append `n` events a test can recognise by name, continuing whatever ordinal the file is at.
+    fn say(path: &Path, agent: &str, tags: &[&str]) {
+        let mut w = EventWriter::open_path(path, &id(agent)).expect("the stream opens");
+        for t in tags {
+            w.record(Draft::observed(Payload::Raw((*t).into()), Source::Protocol));
+        }
+        w.sync()
+            .expect("the bytes are on disk before the test looks for them");
+    }
+
+    /// The `node/event` notifications a client has been sent, as `(agent_seq, payload text)`.
+    fn heard(events: &[Event]) -> Vec<(u64, String)> {
+        events
+            .iter()
+            .map(|e| {
+                let Event::NodeEvent {
+                    agent_seq, payload, ..
+                } = e
+                else {
+                    panic!("expected node/event, got {}", e.method())
+                };
+                (
+                    *agent_seq,
+                    payload["Raw"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Send `node/attach` and read every frame up to and including its response.
+    ///
+    /// The notifications come **first** by construction — the handler sends the replay before it
+    /// returns — so a helper that read the response first would hang, which is itself the assertion
+    /// that the ordering is what `node_attach`'s doc says.
+    fn attach(
+        c: &mut std::os::unix::net::UnixStream,
+        r: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+        agent: &str,
+        rid: i64,
+    ) -> (Vec<Event>, marion_proto::Outcome) {
+        call(
+            c,
+            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+                agent_id: id(agent),
+            }),
+            rid,
+        );
+        let mut notes = Vec::new();
+        loop {
+            match next_frame(r) {
+                Frame::Notification(n) => notes.push(n.event),
+                Frame::Response(resp) => return (notes, resp.outcome),
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
+    }
+
+    fn attached_ok(outcome: marion_proto::Outcome) -> marion_proto::result::NodeAttachResult {
+        let marion_proto::Outcome::Result(body) = outcome else {
+            panic!("node/attach was refused: {outcome:?}")
+        };
+        let MethodResult::NodeAttach(r) = marion_proto::Method::NodeAttach
+            .decode_result(&body)
+            .expect("the result decodes")
+        else {
+            panic!("wrong result type")
+        };
+        r
+    }
+
+    fn refusal(outcome: marion_proto::Outcome) -> RpcError {
+        match outcome {
+            marion_proto::Outcome::Error(e) => e,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// **The whole of §7.3.3, on one connection**: everything written while nobody was listening
+    /// arrives as replay, the answer's read point is a statement about what has *already* been
+    /// sent, and what the node says next arrives unsolicited on the same socket.
+    ///
+    /// The contiguity assertion is the seam. `events.rs` argues it is unreachable to get wrong
+    /// because replay and subscribe are one cursor; this is that argument being spent — the
+    /// ordinals across the two legs are `0..5` with nothing missing and nothing twice.
+    #[test]
+    fn node_attach_replays_the_detached_window_and_then_follows_the_same_cursor_live() {
+        let w = Wired::new("handler-attach");
+        let stream = events_of(&w.fx, "root");
+        say(&stream, "root", &["before-1", "before-2", "before-3"]);
+
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (replay, outcome) = attach(&mut c, &mut r, "root", 1);
+        let got = attached_ok(outcome);
+
+        assert_eq!(got.node.agent_id, id("root"));
+        assert!(
+            got.mode.is_live(),
+            "a node that has not exited is a re-subscribe: {:?}",
+            got.mode
+        );
+        assert_eq!(
+            heard(&replay),
+            vec![
+                (0, "before-1".into()),
+                (1, "before-2".into()),
+                (2, "before-3".into())
+            ],
+            "the detached window is replayed in full, in order, exactly once"
+        );
+        assert_eq!(
+            got.mode.replay_point().records,
+            3,
+            "the read point counts what the client has already been sent, not what it may expect"
+        );
+
+        // Written by a *second* writer, after the attach — which is the production case: the
+        // supervisor is not the process driving this node.
+        say(&stream, "root", &["after-1", "after-2", "after-3"]);
+        let mut live = Vec::new();
+        while live.len() < 3 {
+            let Frame::Notification(n) = next_frame(&mut r) else {
+                panic!("live events arrive as notifications on the connection the client has")
+            };
+            live.push(n.event);
+        }
+        assert_eq!(
+            heard(&live),
+            vec![
+                (3, "after-1".into()),
+                (4, "after-2".into()),
+                (5, "after-3".into())
+            ],
+            "the subscribe leg continues the replay's own ordinals: no gap, no repeat, no join"
+        );
+    }
+
+    /// **Two clients, two cursors.** A shared reader would make the second client's replay depend
+    /// on when the first attached, which is the same collapse `events.rs` refuses between "nobody
+    /// read this" and "there was nothing to read".
+    #[test]
+    fn a_second_client_attaching_later_gets_its_own_replay_from_the_beginning() {
+        let w = Wired::new("handler-attach-two");
+        let stream = events_of(&w.fx, "root");
+        say(&stream, "root", &["one", "two"]);
+
+        let mut a = w.dial();
+        let mut ar = std::io::BufReader::new(a.try_clone().unwrap());
+        let (first, outcome) = attach(&mut a, &mut ar, "root", 1);
+        attached_ok(outcome);
+        assert_eq!(heard(&first).len(), 2);
+
+        say(&stream, "root", &["three"]);
+        // A's live leg, drained so the two clients cannot be confused for one.
+        let Frame::Notification(_) = next_frame(&mut ar) else {
+            panic!("A hears the third event")
+        };
+
+        let mut b = w.dial();
+        let mut br = std::io::BufReader::new(b.try_clone().unwrap());
+        let (second, outcome) = attach(&mut b, &mut br, "root", 1);
+        let got = attached_ok(outcome);
+        assert_eq!(
+            heard(&second),
+            vec![(0, "one".into()), (1, "two".into()), (2, "three".into())],
+            "B replays the whole file, not the tail A had not read"
+        );
+        assert_eq!(got.mode.replay_point().records, 3);
+        assert!(until(|| w.fx.handle.attachments() == 2));
+    }
+
+    /// **A node marion never recorded is not a node that said nothing** — and the two are only
+    /// distinguishable while something can still be written, which is why the answer turns on
+    /// whether the node has exited.
+    #[test]
+    fn an_exited_node_with_no_stream_is_refused_as_unrecorded_rather_than_replayed_as_silent() {
+        let w = Wired::new("handler-attach-unrecorded");
+        append(
+            &w.fx.path,
+            &line(
+                9,
+                9_000,
+                RecordKind::Exited(Exited {
+                    agent_id: id("root"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "finished while nobody was attached".into(),
+                    },
+                }),
+            ),
+        );
+        assert!(until(|| {
+            w.fx.handle.live.refresh();
+            w.fx.handle
+                .live
+                .read(|r| r.tree().get(&id("root")).unwrap().state.is_exited())
+        }));
+
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (notes, outcome) = attach(&mut c, &mut r, "root", 1);
+        assert!(notes.is_empty(), "nothing was replayed");
+        let e = refusal(outcome);
+        assert_eq!(e.kind(), Some(FailureKind::NotFound));
+        assert!(
+            e.message.contains("not** an empty transcript"),
+            "the refusal names which of the two facts it is: {e}"
+        );
+        assert_eq!(
+            w.fx.handle.attachments(),
+            0,
+            "a refused attach leaves no cursor behind"
+        );
+    }
+
+    /// The other side of the same split: a node that has **not** exited and has written nothing yet
+    /// is followed, because its file appears on its first frame and the reader is already watching
+    /// the name. Refusing here would make a client unable to attach to a node that is starting —
+    /// the one an operator is most likely watching (§2's own argument for `tree/node-added`).
+    #[test]
+    fn a_live_node_that_has_not_spoken_yet_is_followed_and_its_first_frame_arrives() {
+        let w = Wired::new("handler-attach-silent");
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (notes, outcome) = attach(&mut c, &mut r, "root", 1);
+        let got = attached_ok(outcome);
+        assert!(notes.is_empty());
+        assert!(got.mode.is_live());
+        assert_eq!(got.mode.replay_point().records, 0);
+
+        say(&events_of(&w.fx, "root"), "root", &["first-word"]);
+        let Frame::Notification(n) = next_frame(&mut r) else {
+            panic!("the first frame of a node that had not spoken still reaches its client")
+        };
+        assert_eq!(heard(&[n.event]), vec![(0, "first-word".into())]);
+    }
+
+    /// A node the journal has no record of. The refusal carries the read point for the same reason
+    /// `node/get`'s does: *"no such node"* and *"not yet"* are different answers.
+    #[test]
+    fn attaching_to_a_node_the_journal_never_recorded_is_a_refusal_that_says_how_much_was_read() {
+        let w = Wired::new("handler-attach-missing");
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (notes, outcome) = attach(&mut c, &mut r, "nobody", 1);
+        assert!(notes.is_empty());
+        let e = refusal(outcome);
+        assert_eq!(e.kind(), Some(FailureKind::NotFound));
+        assert!(e.is_refusal());
+        assert!(e.message.contains("records read"), "{e}");
+        assert_eq!(w.fx.handle.attachments(), 0);
+    }
+
+    /// §7.3.3's three answers, at the one place that chooses between them.
+    #[test]
+    fn the_attach_mode_is_derived_from_the_nodes_two_state_fields_and_nothing_else() {
+        let p = || ReplayPoint {
+            records: 4,
+            src_seq: None,
+        };
+        assert!(matches!(
+            attach_mode(NodeState::Running, ReapState::Live, p()),
+            AttachMode::ResubscribeFrom(_)
+        ));
+        assert!(matches!(
+            attach_mode(NodeState::Exited(ExitStatus::Ok), ReapState::Live, p()),
+            AttachMode::ReplayOnly(_)
+        ));
+        // Reaped wins over exited: §7.3.2's disposition (c) reaps an *idle* node, and the operator's
+        // option — bring it back — is what `ReplayResumable` exists to say.
+        assert!(matches!(
+            attach_mode(NodeState::Idle, ReapState::ReapedIdle, p()),
+            AttachMode::ReplayResumable(_)
+        ));
+        assert!(matches!(
+            attach_mode(
+                NodeState::Exited(ExitStatus::Ok),
+                ReapState::ReapedIdle,
+                p()
+            ),
+            AttachMode::ReplayResumable(_)
+        ));
+        assert_eq!(
+            attach_mode(NodeState::Running, ReapState::Live, p()).replay_point(),
+            &p(),
+            "the point is carried, never recomputed"
+        );
+    }
+
+    /// **§7.3.1, on the attach path.** A client that leaves takes its cursor with it and nothing
+    /// else: the node goes on writing, which is what makes the next client's attach a replay.
+    #[test]
+    fn a_departed_client_stops_being_followed_and_the_node_keeps_recording() {
+        let w = Wired::new("handler-attach-gone");
+        let stream = events_of(&w.fx, "root");
+        say(&stream, "root", &["one"]);
+        {
+            let mut c = w.dial();
+            let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+            let (replay, outcome) = attach(&mut c, &mut r, "root", 1);
+            attached_ok(outcome);
+            assert_eq!(heard(&replay).len(), 1);
+            assert!(until(|| w.fx.handle.attachments() == 1));
+        }
+        assert!(
+            until(|| w.fx.handle.attachments() == 0),
+            "the cursor is dropped when its connection ends"
+        );
+
+        say(&stream, "root", &["two", "three"]);
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (replay, outcome) = attach(&mut c, &mut r, "root", 1);
+        attached_ok(outcome);
+        assert_eq!(
+            heard(&replay),
+            vec![(0, "one".into()), (1, "two".into()), (2, "three".into())],
+            "everything written across the detached window is there, exactly once"
+        );
+    }
+
+    /// An event marion **read and deliberately did not keep** is still delivered as the fact it is.
+    /// The alternative — dropping it — would make a client's `agent_seq` run non-contiguous, which
+    /// is the one signal it has for loss.
+    #[test]
+    fn a_withheld_payload_is_delivered_as_a_withholding_not_omitted_from_the_stream() {
+        let w = Wired::new("handler-attach-withheld");
+        let stream = events_of(&w.fx, "root");
+        {
+            let mut writer = EventWriter::open_path(&stream, &id("root")).unwrap();
+            writer.record(Draft::observed(
+                Payload::Raw("one".into()),
+                Source::Protocol,
+            ));
+            writer.record(Draft::observed(
+                Payload::Withheld {
+                    key: "control_response".into(),
+                    bytes: 30_000,
+                    reason: "§5.2".into(),
+                },
+                Source::Protocol,
+            ));
+            writer.record(Draft::observed(
+                Payload::Oversized {
+                    was: PayloadKind::Vendor,
+                    bytes: 1,
+                },
+                Source::Protocol,
+            ));
+            writer.sync().unwrap();
+        }
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (replay, outcome) = attach(&mut c, &mut r, "root", 1);
+        attached_ok(outcome);
+        let seqs: Vec<u64> = replay
+            .iter()
+            .map(|e| match e {
+                Event::NodeEvent { agent_seq, .. } => *agent_seq,
+                other => panic!("{}", other.method()),
+            })
+            .collect();
+        assert_eq!(seqs, vec![0, 1, 2], "no ordinal is skipped");
+        let Event::NodeEvent { payload, .. } = &replay[1] else {
+            unreachable!()
+        };
+        assert!(payload.get("Withheld").is_some(), "{payload}");
+        let Event::NodeEvent { payload, .. } = &replay[2] else {
+            unreachable!()
+        };
+        assert!(payload.get("Oversized").is_some(), "{payload}");
     }
 }

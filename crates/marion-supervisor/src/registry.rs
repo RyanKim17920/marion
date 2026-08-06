@@ -227,6 +227,28 @@ impl Registry {
         &self.path
     }
 
+    /// **The project directory this registry is a reading of** — derived from the journal's own
+    /// path, never remembered separately.
+    ///
+    /// [`Self::boot_path`] exists so a registry can be built over a file rather than over a
+    /// [`ProjectDir`], which is what every test here does and what keeps this module free of the
+    /// path layout. That leaves a caller which needs a *sibling* of the journal — a node's
+    /// `events.jsonl`, one directory down — with nowhere to ask. Storing a second copy of the
+    /// project dir would make it possible for the two to disagree about which project this
+    /// registry is reading, so it is computed instead: the journal is `<state>/<hash>/journal.jsonl`
+    /// by [`ProjectDir::journal`], and [`ProjectDir::from_hash`] is documented for exactly this
+    /// direction — *"a journal replay names the directory it was read from; recomputing the hash
+    /// would need the project root to still exist"*.
+    ///
+    /// `None` where the path has no such shape, which is the fixture that named a journal in a
+    /// filesystem root. A caller gets a refusal it can print rather than a fabricated directory.
+    pub fn project(&self) -> Option<ProjectDir> {
+        let dir = self.path.parent()?;
+        let state = dir.parent()?;
+        let hash = dir.file_name()?.to_str()?;
+        Some(ProjectDir::from_hash(state, hash))
+    }
+
     /// **What this registry's own boot read** — §7.3.3's seam, as a value rather than an
     /// implication. *"Replay to the journal's own read point, then subscribe from there"* is only a
     /// procedure if the read point is something the registry can hand over; a supervisor that had
