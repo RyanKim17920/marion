@@ -69,10 +69,19 @@ def one(mech):
     out["acquired_controlling_terminal"] = bool(
         rows and rows[0]["tty"] not in ("??", "-", ""))
     out["status"] = "ok"
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
+    # `inherit` also leaves the launcher's sibling job behind; a probe that
+    # leaks a `sleep` is the very failure S7 exists to prevent.
+    leftovers = [pid]
+    launcher = os.path.join(d, "launcher.json")
+    if os.path.exists(launcher):
+        sib = json.load(open(launcher)).get("sibling_job_pid")
+        if sib:
+            leftovers.append(sib)
+    for p in leftovers:
+        try:
+            os.kill(p, signal.SIGKILL)
+        except OSError:
+            pass
     return out
 
 

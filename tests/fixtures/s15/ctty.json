@@ -5,10 +5,10 @@
       "mechanism": "setsid_leader",
       "supervisor": {
         "label": "supervisor",
-        "pid": 41960,
+        "pid": 24320,
         "ppid": 1,
-        "pgid": 41960,
-        "sid": 41960
+        "pgid": 24320,
+        "sid": 24320
       },
       "opened": "/dev/ttys029",
       "is_session_leader": true,
@@ -20,10 +20,10 @@
       "mechanism": "setsid_double",
       "supervisor": {
         "label": "supervisor",
-        "pid": 41968,
+        "pid": 24324,
         "ppid": 1,
-        "pgid": 41967,
-        "sid": 41967
+        "pgid": 24323,
+        "sid": 24323
       },
       "opened": "/dev/ttys029",
       "is_session_leader": false,
@@ -35,10 +35,10 @@
       "mechanism": "inherit",
       "supervisor": {
         "label": "supervisor",
-        "pid": 41979,
+        "pid": 24349,
         "ppid": 1,
-        "pgid": 41977,
-        "sid": 41955
+        "pgid": 24347,
+        "sid": 24253
       },
       "opened": "/dev/ttys029",
       "is_session_leader": false,
