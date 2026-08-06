@@ -19,7 +19,8 @@
 //!   replayed tree, and applying it here would make replay unable to answer the question the
 //!   policy needs answered — "what does the journal actually say?" A node recorded live with no
 //!   exit record replays as [`ReapState::Live`] with [`ReplayedNode::is_unresolved`] true, which
-//!   is where the marking will read from.
+//!   is where the marking reads from. The one door the verdict enters through is
+//!   [`Replay::mark_orphaned`], which a policy calls; no record kind reaches it.
 //! * **It never resolves an unconfirmed reap intent.** §7.2 resolves it by *checking for the
 //!   process*, which is I/O and a decision, not a reading.
 //! * **It never reads a contract file.** [`ContractPersisted`] says a contract exists and how it
@@ -301,6 +302,27 @@ impl Replay {
     /// **reports** them; marking them `Orphaned` is the policy that reads this.
     pub fn unresolved(&self) -> Vec<&ReplayedNode> {
         self.nodes.iter().filter(|n| n.is_unresolved()).collect()
+    }
+
+    /// **Write §7.2's restart verdict into a node**, answering whether the node was there.
+    ///
+    /// The one door through which `Orphaned` can enter a replayed tree, and it is deliberately a
+    /// *setter a policy calls* rather than an arm of [`Replay::apply`]. This module's contract is
+    /// that folding records never produces `Orphaned` (see the module doc); that contract is about
+    /// what the **journal** can say, and it is unchanged — no record kind reaches this. The caller
+    /// is `marion_supervisor::restart`, which owns the judgement and argues it there.
+    ///
+    /// `false` for an id this tree does not know, rather than inserting one: a marking is a verdict
+    /// *about a node replay found*, and creating a node to be orphaned would invent the very thing
+    /// the verdict is about.
+    pub fn mark_orphaned(&mut self, id: &AgentId) -> bool {
+        match self.index.get(&id.0) {
+            Some(i) => {
+                self.nodes[*i].reap_state = ReapState::Orphaned;
+                true
+            }
+            None => false,
+        }
     }
 
     fn node_mut(&mut self, id: &AgentId) -> &mut ReplayedNode {
@@ -668,6 +690,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["root"]
         );
+    }
+
+    /// The marking's **door**, and its refusal: a verdict is about a node replay found, so an id
+    /// this tree does not know is answered `false` rather than conjured into a node to be orphaned.
+    #[test]
+    fn mark_orphaned_moves_a_node_replay_found_and_refuses_to_invent_one() {
+        let mut r = replay(&bytes(&m1_journal()));
+        let before = r.nodes().len();
+
+        assert!(r.mark_orphaned(&id("root")));
+        assert_eq!(r.get(&id("root")).unwrap().reap_state, ReapState::Orphaned);
+
+        assert!(!r.mark_orphaned(&id("no-such-node")));
+        assert_eq!(
+            r.nodes().len(),
+            before,
+            "no node was invented to hold a verdict"
+        );
+        assert!(r.get(&id("no-such-node")).is_none());
     }
 
     #[test]
