@@ -1,0 +1,1498 @@
+{
+  "t0": 1785977554.255748,
+  "host": "Darwin 25.5.0",
+  "codex_version": "codex-cli 0.146.0",
+  "identity": [
+    {
+      "mechanism": "setsid_leader",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "setsid_leader",
+        "launcher": {
+          "label": "launcher",
+          "pid": 52439,
+          "ppid": 52437,
+          "pgid": 52435,
+          "sid": 52435
+        }
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 52440,
+        "ppid": 1,
+        "pgid": 52440,
+        "sid": 52440
+      },
+      "ps": [
+        {
+          "pid": 52437,
+          "ppid": 52435,
+          "pgid": 52435,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:34 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python run_probe.py"
+        },
+        {
+          "pid": 52440,
+          "ppid": 1,
+          "pgid": 52440,
+          "sess_ps": 0,
+          "sid": 52440,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:34 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ],
+      "relations": {
+        "supervisor_ppid": 1,
+        "supervisor_tty": "??",
+        "supervisor_is_session_leader": true,
+        "supervisor_is_group_leader": true,
+        "shares_session_with_observer": false,
+        "shares_pgroup_with_observer": false,
+        "shares_pgroup_with_launcher": false,
+        "shares_session_with_launcher": false,
+        "supervisor_group_members": [
+          52440
+        ]
+      },
+      "status": "ok"
+    },
+    {
+      "mechanism": "setsid_double",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "setsid_double",
+        "launcher": {
+          "label": "launcher",
+          "pid": 52443,
+          "ppid": 52437,
+          "pgid": 52435,
+          "sid": 52435
+        }
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 52445,
+        "ppid": 1,
+        "pgid": 52444,
+        "sid": 52444
+      },
+      "ps": [
+        {
+          "pid": 52437,
+          "ppid": 52435,
+          "pgid": 52435,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:34 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python run_probe.py"
+        },
+        {
+          "pid": 52445,
+          "ppid": 1,
+          "pgid": 52444,
+          "sess_ps": 0,
+          "sid": 52444,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:34 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ],
+      "relations": {
+        "supervisor_ppid": 1,
+        "supervisor_tty": "??",
+        "supervisor_is_session_leader": false,
+        "supervisor_is_group_leader": false,
+        "shares_session_with_observer": false,
+        "shares_pgroup_with_observer": false,
+        "shares_pgroup_with_launcher": false,
+        "shares_session_with_launcher": false,
+        "supervisor_group_members": [
+          52445
+        ]
+      },
+      "status": "ok"
+    },
+    {
+      "mechanism": "inherit",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "inherit",
+        "launcher": {
+          "label": "launcher",
+          "pid": 52473,
+          "ppid": 52472,
+          "pgid": 52473,
+          "sid": 52435
+        },
+        "sibling_job_pid": 52474,
+        "supervisor_pid": 52475
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 52475,
+        "ppid": 1,
+        "pgid": 52473,
+        "sid": 52435
+      },
+      "ps": [
+        {
+          "pid": 52437,
+          "ppid": 52435,
+          "pgid": 52435,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:34 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python run_probe.py"
+        },
+        {
+          "pid": 52474,
+          "ppid": 1,
+          "pgid": 52473,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:35 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 52475,
+          "ppid": 1,
+          "pgid": 52473,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:35 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ],
+      "relations": {
+        "supervisor_ppid": 1,
+        "supervisor_tty": "??",
+        "supervisor_is_session_leader": false,
+        "supervisor_is_group_leader": false,
+        "shares_session_with_observer": true,
+        "shares_pgroup_with_observer": false,
+        "shares_pgroup_with_launcher": true,
+        "shares_session_with_launcher": true,
+        "supervisor_group_members": [
+          52474,
+          52475
+        ]
+      },
+      "status": "ok"
+    }
+  ],
+  "signal": [
+    {
+      "mechanism": "setsid_leader",
+      "experiment": "tree_wide",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "setsid_leader",
+        "launcher": {
+          "label": "launcher",
+          "pid": 52557,
+          "ppid": 52437,
+          "pgid": 52435,
+          "sid": 52435
+        }
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 52558,
+        "ppid": 1,
+        "pgid": 52558,
+        "sid": 52558
+      },
+      "codex": {
+        "pid": 52560,
+        "exited_early": false,
+        "pgid": 52560,
+        "sid": 52558
+      },
+      "tree": {
+        "descendant_pids": [
+          52560,
+          52828,
+          52829,
+          52938,
+          52772,
+          52857,
+          52858
+        ],
+        "descendant_pgids": [
+          52560,
+          52772,
+          52857
+        ],
+        "supervisor_pgid": 52558,
+        "supervisor_pgid_in_tree": false,
+        "signal_targets": [
+          52560,
+          52772,
+          52857
+        ],
+        "dropped_by_own_pgid_filter": []
+      },
+      "ps_before": [
+        {
+          "pid": 52558,
+          "ppid": 1,
+          "pgid": 52558,
+          "sess_ps": 0,
+          "sid": 52558,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:37 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 52560,
+          "ppid": 52558,
+          "pgid": 52560,
+          "sess_ps": 0,
+          "sid": 52558,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:37 2026",
+          "command": "codex exec --json --skip-git-repo-check -C <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_leader-tree_wide/wt spawn a durable child"
+        },
+        {
+          "pid": 52772,
+          "ppid": 52560,
+          "pgid": 52772,
+          "sess_ps": 0,
+          "sid": 52558,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:38 2026",
+          "command": "<HOME>/.local/bin/codex-code-mode-host"
+        },
+        {
+          "pid": 52828,
+          "ppid": 52560,
+          "pgid": 52560,
+          "sess_ps": 0,
+          "sid": 52558,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:38 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/bin/git -C <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_leader-tree_wide/codex-home/.tmp/plugins-clone-BoG"
+        },
+        {
+          "pid": 52829,
+          "ppid": 52828,
+          "pgid": 52560,
+          "sess_ps": 0,
+          "sid": null,
+          "stat": "Z",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:38 2026",
+          "command": "<defunct>"
+        },
+        {
+          "pid": 52857,
+          "ppid": 52560,
+          "pgid": 52857,
+          "sess_ps": 0,
+          "sid": 52857,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:39 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 52858,
+          "ppid": 52857,
+          "pgid": 52857,
+          "sess_ps": 0,
+          "sid": 52857,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:39 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 52938,
+          "ppid": 52828,
+          "pgid": 52560,
+          "sess_ps": 0,
+          "sid": 52558,
+          "stat": "U",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:43 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/libexec/git-core/git --shallow-file <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_leader-tree_wide/codex-ho"
+        }
+      ],
+      "state_before": {
+        "supervisor": "ALIVE",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE"
+      },
+      "watch": {
+        "supervisor": 52558,
+        "codex": 52560,
+        "control_in_supervisor_group": 52559,
+        "negative_control_outside_all_groups": 52556,
+        "A.toolshell": 52802,
+        "A.child": 52803,
+        "A.midshell": 52804,
+        "A.grandchild": 52807,
+        "B.runshell": 52857,
+        "B.runchild": 52858
+      },
+      "lstart_before": {
+        "52556": "Wed Aug  5 19:52:37 2026",
+        "52558": "Wed Aug  5 19:52:37 2026",
+        "52559": "Wed Aug  5 19:52:37 2026",
+        "52560": "Wed Aug  5 19:52:37 2026",
+        "52857": "Wed Aug  5 19:52:39 2026",
+        "52858": "Wed Aug  5 19:52:39 2026"
+      },
+      "target_group": {
+        "pgid": 52558,
+        "members": [
+          52558,
+          52559
+        ]
+      },
+      "signal": "killpg(52558, SIGKILL) -- one signal, one group",
+      "state_after": {
+        "supervisor": "DEAD",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "DEAD",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE"
+      },
+      "controls": {
+        "positive_control_in_supervisor_group": "DEAD",
+        "negative_control_outside_all_groups": "ALIVE"
+      },
+      "supervisor_after": "DEAD",
+      "survivors": [
+        "B.runchild",
+        "B.runshell",
+        "codex"
+      ],
+      "zombies": [],
+      "unknown": [],
+      "status": "ok"
+    },
+    {
+      "mechanism": "setsid_leader",
+      "experiment": "two_step",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "setsid_leader",
+        "launcher": {
+          "label": "launcher",
+          "pid": 53124,
+          "ppid": 52437,
+          "pgid": 52435,
+          "sid": 52435
+        }
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 53125,
+        "ppid": 1,
+        "pgid": 53125,
+        "sid": 53125
+      },
+      "codex": {
+        "pid": 53127,
+        "exited_early": false,
+        "pgid": 53127,
+        "sid": 53125
+      },
+      "tree": {
+        "descendant_pids": [
+          53127,
+          54376,
+          53578,
+          53651,
+          53652
+        ],
+        "descendant_pgids": [
+          53127,
+          53578,
+          53651
+        ],
+        "supervisor_pgid": 53125,
+        "supervisor_pgid_in_tree": false,
+        "signal_targets": [
+          53127,
+          53578,
+          53651
+        ],
+        "dropped_by_own_pgid_filter": []
+      },
+      "ps_before": [
+        {
+          "pid": 53125,
+          "ppid": 1,
+          "pgid": 53125,
+          "sess_ps": 0,
+          "sid": 53125,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:48 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 53127,
+          "ppid": 53125,
+          "pgid": 53127,
+          "sess_ps": 0,
+          "sid": 53125,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:48 2026",
+          "command": "codex exec --json --skip-git-repo-check -C <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_leader-two_step/wt spawn a durable child"
+        },
+        {
+          "pid": 53578,
+          "ppid": 53127,
+          "pgid": 53578,
+          "sess_ps": 0,
+          "sid": 53125,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:56 2026",
+          "command": "<HOME>/.local/bin/codex-code-mode-host"
+        },
+        {
+          "pid": 53651,
+          "ppid": 53127,
+          "pgid": 53651,
+          "sess_ps": 0,
+          "sid": 53651,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:57 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 53652,
+          "ppid": 53651,
+          "pgid": 53651,
+          "sess_ps": 0,
+          "sid": 53651,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:52:57 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 54376,
+          "ppid": 53127,
+          "pgid": 53127,
+          "sess_ps": 0,
+          "sid": 53125,
+          "stat": "R",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:01 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/bin/git -C <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_leader-two_step/codex-home/.tmp/plugins-clone-vJvg"
+        }
+      ],
+      "state_before": {
+        "supervisor": "ALIVE",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE"
+      },
+      "watch": {
+        "supervisor": 53125,
+        "codex": 53127,
+        "control_in_supervisor_group": 53126,
+        "negative_control_outside_all_groups": 53123,
+        "A.toolshell": 53600,
+        "A.child": 53601,
+        "A.midshell": 53602,
+        "A.grandchild": 53603,
+        "B.runshell": 53651,
+        "B.runchild": 53652
+      },
+      "lstart_before": {
+        "53123": "Wed Aug  5 19:52:48 2026",
+        "53125": "Wed Aug  5 19:52:48 2026",
+        "53126": "Wed Aug  5 19:52:48 2026",
+        "53127": "Wed Aug  5 19:52:48 2026",
+        "53651": "Wed Aug  5 19:52:57 2026",
+        "53652": "Wed Aug  5 19:52:57 2026"
+      },
+      "acted": {
+        "did": "two_step",
+        "sent": [
+          {
+            "pgid": 53127,
+            "errno": null
+          },
+          {
+            "pgid": 53578,
+            "errno": null
+          },
+          {
+            "pgid": 53651,
+            "errno": null
+          }
+        ],
+        "supervisor_alive_after_own_kill": true,
+        "supervisor": {
+          "label": "supervisor-after-kill",
+          "pid": 53125,
+          "ppid": 1,
+          "pgid": 53125,
+          "sid": 53125
+        },
+        "t": 1785977581.614594
+      },
+      "signal": "supervisor ran run.rs's two-step kill: killpg each of [53127, 53578, 53651]",
+      "state_after": {
+        "supervisor": "ALIVE",
+        "codex": "ZOMBIE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "DEAD",
+        "B.runchild": "DEAD"
+      },
+      "controls": {
+        "positive_control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE"
+      },
+      "supervisor_after": "ALIVE",
+      "survivors": [
+        "control_in_supervisor_group",
+        "supervisor"
+      ],
+      "zombies": [
+        "codex"
+      ],
+      "unknown": [],
+      "status": "ok"
+    },
+    {
+      "mechanism": "setsid_double",
+      "experiment": "tree_wide",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "setsid_double",
+        "launcher": {
+          "label": "launcher",
+          "pid": 54566,
+          "ppid": 52437,
+          "pgid": 52435,
+          "sid": 52435
+        }
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 54570,
+        "ppid": 1,
+        "pgid": 54569,
+        "sid": 54569
+      },
+      "codex": {
+        "pid": 54574,
+        "exited_early": false,
+        "pgid": 54574,
+        "sid": 54569
+      },
+      "tree": {
+        "descendant_pids": [
+          54574,
+          55155,
+          55177,
+          55185,
+          55491,
+          54785,
+          55473,
+          55486
+        ],
+        "descendant_pgids": [
+          54574,
+          54785,
+          55473
+        ],
+        "supervisor_pgid": 54569,
+        "supervisor_pgid_in_tree": false,
+        "signal_targets": [
+          54574,
+          54785,
+          55473
+        ],
+        "dropped_by_own_pgid_filter": []
+      },
+      "ps_before": [
+        {
+          "pid": 54570,
+          "ppid": 1,
+          "pgid": 54569,
+          "sess_ps": 0,
+          "sid": 54569,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:06 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 54574,
+          "ppid": 54570,
+          "pgid": 54574,
+          "sess_ps": 0,
+          "sid": 54569,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:06 2026",
+          "command": "codex exec --json --skip-git-repo-check -C <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_double-tree_wide/wt spawn a durable child"
+        },
+        {
+          "pid": 54785,
+          "ppid": 54574,
+          "pgid": 54785,
+          "sess_ps": 0,
+          "sid": 54569,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:06 2026",
+          "command": "<HOME>/.local/bin/codex-code-mode-host"
+        },
+        {
+          "pid": 55155,
+          "ppid": 54574,
+          "pgid": 54574,
+          "sess_ps": 0,
+          "sid": 54569,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:06 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/bin/git -C <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_double-tree_wide/codex-home/.tmp/plugins-clone-GQl"
+        },
+        {
+          "pid": 55177,
+          "ppid": 55155,
+          "pgid": 54574,
+          "sess_ps": 0,
+          "sid": 54569,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:06 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/libexec/git-core/git remote-https https://github.com/openai/plugins.git https://github.com/openai/plugins.git"
+        },
+        {
+          "pid": 55185,
+          "ppid": 55177,
+          "pgid": 54574,
+          "sess_ps": 0,
+          "sid": 54569,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:06 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/libexec/git-core/git-remote-https https://github.com/openai/plugins.git https://github.com/openai/plugins.git"
+        },
+        {
+          "pid": 55473,
+          "ppid": 54574,
+          "pgid": 55473,
+          "sess_ps": 0,
+          "sid": 55473,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:07 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 55486,
+          "ppid": 55473,
+          "pgid": 55473,
+          "sess_ps": 0,
+          "sid": 55473,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:07 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 55491,
+          "ppid": 55155,
+          "pgid": 54574,
+          "sess_ps": 0,
+          "sid": 54569,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:07 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/libexec/git-core/git --shallow-file <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_double-tree_wide/codex-ho"
+        }
+      ],
+      "state_before": {
+        "supervisor": "ALIVE",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE"
+      },
+      "watch": {
+        "supervisor": 54570,
+        "codex": 54574,
+        "control_in_supervisor_group": 54573,
+        "negative_control_outside_all_groups": 54565,
+        "A.toolshell": 54787,
+        "A.child": 54789,
+        "A.midshell": 54790,
+        "A.grandchild": 54792,
+        "B.runshell": 55473,
+        "B.runchild": 55486
+      },
+      "lstart_before": {
+        "54565": "Wed Aug  5 19:53:06 2026",
+        "54570": "Wed Aug  5 19:53:06 2026",
+        "54573": "Wed Aug  5 19:53:06 2026",
+        "54574": "Wed Aug  5 19:53:06 2026",
+        "55473": "Wed Aug  5 19:53:07 2026",
+        "55486": "Wed Aug  5 19:53:07 2026"
+      },
+      "target_group": {
+        "pgid": 54569,
+        "members": [
+          54570,
+          54573
+        ]
+      },
+      "signal": "killpg(54569, SIGKILL) -- one signal, one group",
+      "state_after": {
+        "supervisor": "DEAD",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "DEAD",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE"
+      },
+      "controls": {
+        "positive_control_in_supervisor_group": "DEAD",
+        "negative_control_outside_all_groups": "ALIVE"
+      },
+      "supervisor_after": "DEAD",
+      "survivors": [
+        "B.runchild",
+        "B.runshell",
+        "codex"
+      ],
+      "zombies": [],
+      "unknown": [],
+      "status": "ok"
+    },
+    {
+      "mechanism": "setsid_double",
+      "experiment": "two_step",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "setsid_double",
+        "launcher": {
+          "label": "launcher",
+          "pid": 56006,
+          "ppid": 52437,
+          "pgid": 52435,
+          "sid": 52435
+        }
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 56008,
+        "ppid": 1,
+        "pgid": 56007,
+        "sid": 56007
+      },
+      "codex": {
+        "pid": 56011,
+        "exited_early": false,
+        "pgid": 56011,
+        "sid": 56007
+      },
+      "tree": {
+        "descendant_pids": [
+          56011,
+          56286,
+          56289,
+          56308,
+          56214,
+          56329,
+          56334
+        ],
+        "descendant_pgids": [
+          56011,
+          56214,
+          56329
+        ],
+        "supervisor_pgid": 56007,
+        "supervisor_pgid_in_tree": false,
+        "signal_targets": [
+          56011,
+          56214,
+          56329
+        ],
+        "dropped_by_own_pgid_filter": []
+      },
+      "ps_before": [
+        {
+          "pid": 56008,
+          "ppid": 1,
+          "pgid": 56007,
+          "sess_ps": 0,
+          "sid": 56007,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:15 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 56011,
+          "ppid": 56008,
+          "pgid": 56011,
+          "sess_ps": 0,
+          "sid": 56007,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:15 2026",
+          "command": "codex exec --json --skip-git-repo-check -C <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_double-two_step/wt spawn a durable child"
+        },
+        {
+          "pid": 56214,
+          "ppid": 56011,
+          "pgid": 56214,
+          "sess_ps": 0,
+          "sid": 56007,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:16 2026",
+          "command": "<HOME>/.local/bin/codex-code-mode-host"
+        },
+        {
+          "pid": 56286,
+          "ppid": 56011,
+          "pgid": 56011,
+          "sess_ps": 0,
+          "sid": 56007,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:16 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/bin/git -C <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_double-two_step/codex-home/.tmp/plugins-clone-jlGl"
+        },
+        {
+          "pid": 56289,
+          "ppid": 56286,
+          "pgid": 56011,
+          "sess_ps": 0,
+          "sid": null,
+          "stat": "Z",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:16 2026",
+          "command": "<defunct>"
+        },
+        {
+          "pid": 56308,
+          "ppid": 56286,
+          "pgid": 56011,
+          "sess_ps": 0,
+          "sid": null,
+          "stat": "U",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:17 2026",
+          "command": "/Library/Developer/CommandLineTools/usr/libexec/git-core/git --shallow-file <HOME>/Desktop/CODING/marion/spikes/s15/run/setsid_double-two_step/codex-hom"
+        },
+        {
+          "pid": 56329,
+          "ppid": 56011,
+          "pgid": 56329,
+          "sess_ps": 0,
+          "sid": 56329,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:17 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 56334,
+          "ppid": 56329,
+          "pgid": 56329,
+          "sess_ps": 0,
+          "sid": 56329,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:17 2026",
+          "command": "/bin/sleep 900"
+        }
+      ],
+      "state_before": {
+        "supervisor": "ALIVE",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE"
+      },
+      "watch": {
+        "supervisor": 56008,
+        "codex": 56011,
+        "control_in_supervisor_group": 56010,
+        "negative_control_outside_all_groups": 56005,
+        "A.toolshell": 56217,
+        "A.child": 56223,
+        "A.midshell": 56224,
+        "A.grandchild": 56226,
+        "B.runshell": 56329,
+        "B.runchild": 56334
+      },
+      "lstart_before": {
+        "56005": "Wed Aug  5 19:53:15 2026",
+        "56008": "Wed Aug  5 19:53:15 2026",
+        "56010": "Wed Aug  5 19:53:15 2026",
+        "56011": "Wed Aug  5 19:53:15 2026",
+        "56329": "Wed Aug  5 19:53:17 2026",
+        "56334": "Wed Aug  5 19:53:17 2026"
+      },
+      "acted": {
+        "did": "two_step",
+        "sent": [
+          {
+            "pgid": 56011,
+            "errno": null
+          },
+          {
+            "pgid": 56214,
+            "errno": null
+          },
+          {
+            "pgid": 56329,
+            "errno": null
+          }
+        ],
+        "supervisor_alive_after_own_kill": true,
+        "supervisor": {
+          "label": "supervisor-after-kill",
+          "pid": 56008,
+          "ppid": 1,
+          "pgid": 56007,
+          "sid": 56007
+        },
+        "t": 1785977601.23859
+      },
+      "signal": "supervisor ran run.rs's two-step kill: killpg each of [56011, 56214, 56329]",
+      "state_after": {
+        "supervisor": "ALIVE",
+        "codex": "ZOMBIE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "DEAD",
+        "B.runchild": "DEAD"
+      },
+      "controls": {
+        "positive_control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE"
+      },
+      "supervisor_after": "ALIVE",
+      "survivors": [
+        "control_in_supervisor_group",
+        "supervisor"
+      ],
+      "zombies": [
+        "codex"
+      ],
+      "unknown": [],
+      "status": "ok"
+    },
+    {
+      "mechanism": "inherit",
+      "experiment": "tree_wide",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "inherit",
+        "launcher": {
+          "label": "launcher",
+          "pid": 57279,
+          "ppid": 57278,
+          "pgid": 57279,
+          "sid": 52435
+        },
+        "sibling_job_pid": 57280,
+        "supervisor_pid": 57281
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 57281,
+        "ppid": 1,
+        "pgid": 57279,
+        "sid": 52435
+      },
+      "codex": {
+        "pid": 57283,
+        "exited_early": false,
+        "pgid": 57283,
+        "sid": 52435
+      },
+      "tree": {
+        "descendant_pids": [
+          57283,
+          57572,
+          57527,
+          57590,
+          57591
+        ],
+        "descendant_pgids": [
+          57283,
+          57527,
+          57590
+        ],
+        "supervisor_pgid": 57279,
+        "supervisor_pgid_in_tree": false,
+        "signal_targets": [
+          57283,
+          57527,
+          57590
+        ],
+        "dropped_by_own_pgid_filter": []
+      },
+      "ps_before": [
+        {
+          "pid": 57281,
+          "ppid": 1,
+          "pgid": 57279,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:30 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 57283,
+          "ppid": 57281,
+          "pgid": 57283,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:30 2026",
+          "command": "codex exec --json --skip-git-repo-check -C <HOME>/Desktop/CODING/marion/spikes/s15/run/inherit-tree_wide/wt spawn a durable child"
+        },
+        {
+          "pid": 57527,
+          "ppid": 57283,
+          "pgid": 57527,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:31 2026",
+          "command": "<HOME>/.local/bin/codex-code-mode-host"
+        },
+        {
+          "pid": 57572,
+          "ppid": 57283,
+          "pgid": 57283,
+          "sess_ps": 0,
+          "sid": null,
+          "stat": "Z",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:32 2026",
+          "command": "<defunct>"
+        },
+        {
+          "pid": 57590,
+          "ppid": 57283,
+          "pgid": 57590,
+          "sess_ps": 0,
+          "sid": 57590,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:32 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 57591,
+          "ppid": 57590,
+          "pgid": 57590,
+          "sess_ps": 0,
+          "sid": 57590,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:32 2026",
+          "command": "/bin/sleep 900"
+        }
+      ],
+      "state_before": {
+        "supervisor": "ALIVE",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE",
+        "launcher_sibling_job": "ALIVE"
+      },
+      "watch": {
+        "supervisor": 57281,
+        "codex": 57283,
+        "control_in_supervisor_group": 57282,
+        "negative_control_outside_all_groups": 57277,
+        "A.toolshell": 57539,
+        "A.child": 57549,
+        "A.midshell": 57550,
+        "A.grandchild": 57557,
+        "B.runshell": 57590,
+        "B.runchild": 57591,
+        "launcher_sibling_job": 57280
+      },
+      "lstart_before": {
+        "57277": "Wed Aug  5 19:53:30 2026",
+        "57280": "Wed Aug  5 19:53:30 2026",
+        "57281": "Wed Aug  5 19:53:30 2026",
+        "57282": "Wed Aug  5 19:53:30 2026",
+        "57283": "Wed Aug  5 19:53:30 2026",
+        "57590": "Wed Aug  5 19:53:32 2026",
+        "57591": "Wed Aug  5 19:53:32 2026"
+      },
+      "target_group": {
+        "pgid": 57279,
+        "members": [
+          57280,
+          57281,
+          57282
+        ]
+      },
+      "signal": "killpg(57279, SIGKILL) -- one signal, one group",
+      "state_after": {
+        "supervisor": "DEAD",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "DEAD",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE",
+        "launcher_sibling_job": "DEAD"
+      },
+      "controls": {
+        "positive_control_in_supervisor_group": "DEAD",
+        "negative_control_outside_all_groups": "ALIVE"
+      },
+      "supervisor_after": "DEAD",
+      "survivors": [
+        "B.runchild",
+        "B.runshell",
+        "codex"
+      ],
+      "zombies": [],
+      "unknown": [],
+      "status": "ok"
+    },
+    {
+      "mechanism": "inherit",
+      "experiment": "two_step",
+      "observer": {
+        "label": "observer",
+        "pid": 52437,
+        "ppid": 52435,
+        "pgid": 52435,
+        "sid": 52435
+      },
+      "launcher": {
+        "mechanism": "inherit",
+        "launcher": {
+          "label": "launcher",
+          "pid": 57843,
+          "ppid": 57842,
+          "pgid": 57843,
+          "sid": 52435
+        },
+        "sibling_job_pid": 57844,
+        "supervisor_pid": 57845
+      },
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 57845,
+        "ppid": 1,
+        "pgid": 57843,
+        "sid": 52435
+      },
+      "codex": {
+        "pid": 57847,
+        "exited_early": false,
+        "pgid": 57847,
+        "sid": 52435
+      },
+      "tree": {
+        "descendant_pids": [
+          57847,
+          58200,
+          58301,
+          58302
+        ],
+        "descendant_pgids": [
+          57847,
+          58200,
+          58301
+        ],
+        "supervisor_pgid": 57843,
+        "supervisor_pgid_in_tree": false,
+        "signal_targets": [
+          57847,
+          58200,
+          58301
+        ],
+        "dropped_by_own_pgid_filter": []
+      },
+      "ps_before": [
+        {
+          "pid": 57845,
+          "ppid": 1,
+          "pgid": 57843,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:41 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 57847,
+          "ppid": 57845,
+          "pgid": 57847,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:41 2026",
+          "command": "codex exec --json --skip-git-repo-check -C <HOME>/Desktop/CODING/marion/spikes/s15/run/inherit-two_step/wt spawn a durable child"
+        },
+        {
+          "pid": 58200,
+          "ppid": 57847,
+          "pgid": 58200,
+          "sess_ps": 0,
+          "sid": 52435,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:47 2026",
+          "command": "<HOME>/.local/bin/codex-code-mode-host"
+        },
+        {
+          "pid": 58301,
+          "ppid": 57847,
+          "pgid": 58301,
+          "sess_ps": 0,
+          "sid": 58301,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:49 2026",
+          "command": "/bin/sleep 900"
+        },
+        {
+          "pid": 58302,
+          "ppid": 58301,
+          "pgid": 58301,
+          "sess_ps": 0,
+          "sid": 58301,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:53:49 2026",
+          "command": "/bin/sleep 900"
+        }
+      ],
+      "state_before": {
+        "supervisor": "ALIVE",
+        "codex": "ALIVE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "ALIVE",
+        "B.runchild": "ALIVE",
+        "launcher_sibling_job": "ALIVE"
+      },
+      "watch": {
+        "supervisor": 57845,
+        "codex": 57847,
+        "control_in_supervisor_group": 57846,
+        "negative_control_outside_all_groups": 57841,
+        "A.toolshell": 58239,
+        "A.child": 58245,
+        "A.midshell": 58246,
+        "A.grandchild": 58251,
+        "B.runshell": 58301,
+        "B.runchild": 58302,
+        "launcher_sibling_job": 57844
+      },
+      "lstart_before": {
+        "57841": "Wed Aug  5 19:53:41 2026",
+        "57844": "Wed Aug  5 19:53:41 2026",
+        "57845": "Wed Aug  5 19:53:41 2026",
+        "57846": "Wed Aug  5 19:53:41 2026",
+        "57847": "Wed Aug  5 19:53:41 2026",
+        "58301": "Wed Aug  5 19:53:49 2026",
+        "58302": "Wed Aug  5 19:53:49 2026"
+      },
+      "acted": {
+        "did": "two_step",
+        "sent": [
+          {
+            "pgid": 57847,
+            "errno": null
+          },
+          {
+            "pgid": 58200,
+            "errno": null
+          },
+          {
+            "pgid": 58301,
+            "errno": null
+          }
+        ],
+        "supervisor_alive_after_own_kill": true,
+        "supervisor": {
+          "label": "supervisor-after-kill",
+          "pid": 57845,
+          "ppid": 1,
+          "pgid": 57843,
+          "sid": 52435
+        },
+        "t": 1785977633.223305
+      },
+      "signal": "supervisor ran run.rs's two-step kill: killpg each of [57847, 58200, 58301]",
+      "state_after": {
+        "supervisor": "ALIVE",
+        "codex": "ZOMBIE",
+        "control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE",
+        "A.toolshell": "DEAD",
+        "A.child": "DEAD",
+        "A.midshell": "DEAD",
+        "A.grandchild": "DEAD",
+        "B.runshell": "DEAD",
+        "B.runchild": "DEAD",
+        "launcher_sibling_job": "ALIVE"
+      },
+      "controls": {
+        "positive_control_in_supervisor_group": "ALIVE",
+        "negative_control_outside_all_groups": "ALIVE"
+      },
+      "supervisor_after": "ALIVE",
+      "survivors": [
+        "control_in_supervisor_group",
+        "launcher_sibling_job",
+        "supervisor"
+      ],
+      "zombies": [
+        "codex"
+      ],
+      "unknown": [],
+      "status": "ok"
+    }
+  ]
+}

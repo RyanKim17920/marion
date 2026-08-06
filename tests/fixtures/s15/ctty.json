@@ -1,0 +1,50 @@
+{
+  "host": "Darwin 25.5.0",
+  "runs": [
+    {
+      "mechanism": "setsid_leader",
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 41960,
+        "ppid": 1,
+        "pgid": 41960,
+        "sid": 41960
+      },
+      "opened": "/dev/ttys029",
+      "is_session_leader": true,
+      "tty_after_open": "ttys029",
+      "acquired_controlling_terminal": true,
+      "status": "ok"
+    },
+    {
+      "mechanism": "setsid_double",
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 41968,
+        "ppid": 1,
+        "pgid": 41967,
+        "sid": 41967
+      },
+      "opened": "/dev/ttys029",
+      "is_session_leader": false,
+      "tty_after_open": "??",
+      "acquired_controlling_terminal": false,
+      "status": "ok"
+    },
+    {
+      "mechanism": "inherit",
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 41979,
+        "ppid": 1,
+        "pgid": 41977,
+        "sid": 41955
+      },
+      "opened": "/dev/ttys029",
+      "is_session_leader": false,
+      "tty_after_open": "??",
+      "acquired_controlling_terminal": false,
+      "status": "ok"
+    }
+  ]
+}

@@ -1,0 +1,143 @@
+{
+  "host": "Darwin 25.5.0",
+  "runs": [
+    {
+      "mechanism": "setsid_leader",
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 98585,
+        "ppid": 1,
+        "pgid": 98585,
+        "sid": 98585
+      },
+      "ps_before_hangup": [
+        {
+          "pid": 98585,
+          "ppid": 1,
+          "pgid": 98585,
+          "sess_ps": 0,
+          "sid": 98585,
+          "stat": "Ss",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:44:52 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 98583,
+          "ppid": 98579,
+          "pgid": 98583,
+          "sess_ps": 0,
+          "sid": 98583,
+          "stat": "Ss+",
+          "tty": "ttys029",
+          "lstart": "Wed Aug  5 19:44:52 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python hangup_probe.py"
+        }
+      ],
+      "shim_sid": 98583,
+      "supervisor_controlling_tty": "??",
+      "supervisor_in_terminal_session": false,
+      "state_before_hangup": {
+        "session_leader_shim": "ALIVE",
+        "supervisor": "ALIVE"
+      },
+      "state_after_hangup": {
+        "session_leader_shim": "ZOMBIE",
+        "supervisor": "ALIVE"
+      },
+      "status": "ok"
+    },
+    {
+      "mechanism": "setsid_double",
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 99165,
+        "ppid": 1,
+        "pgid": 99164,
+        "sid": 99164
+      },
+      "ps_before_hangup": [
+        {
+          "pid": 99165,
+          "ppid": 1,
+          "pgid": 99164,
+          "sess_ps": 0,
+          "sid": 99164,
+          "stat": "S",
+          "tty": "??",
+          "lstart": "Wed Aug  5 19:44:55 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        },
+        {
+          "pid": 99162,
+          "ppid": 98579,
+          "pgid": 99162,
+          "sess_ps": 0,
+          "sid": 99162,
+          "stat": "Ss+",
+          "tty": "ttys029",
+          "lstart": "Wed Aug  5 19:44:55 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python hangup_probe.py"
+        }
+      ],
+      "shim_sid": 99162,
+      "supervisor_controlling_tty": "??",
+      "supervisor_in_terminal_session": false,
+      "state_before_hangup": {
+        "session_leader_shim": "ALIVE",
+        "supervisor": "ALIVE"
+      },
+      "state_after_hangup": {
+        "session_leader_shim": "ZOMBIE",
+        "supervisor": "ALIVE"
+      },
+      "status": "ok"
+    },
+    {
+      "mechanism": "inherit",
+      "supervisor": {
+        "label": "supervisor",
+        "pid": 470,
+        "ppid": 1,
+        "pgid": 458,
+        "sid": 403
+      },
+      "ps_before_hangup": [
+        {
+          "pid": 403,
+          "ppid": 98579,
+          "pgid": 403,
+          "sess_ps": 0,
+          "sid": 403,
+          "stat": "Ss+",
+          "tty": "ttys029",
+          "lstart": "Wed Aug  5 19:44:59 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python hangup_probe.py"
+        },
+        {
+          "pid": 470,
+          "ppid": 1,
+          "pgid": 458,
+          "sess_ps": 0,
+          "sid": 403,
+          "stat": "S",
+          "tty": "ttys029",
+          "lstart": "Wed Aug  5 19:44:59 2026",
+          "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <HOME>/Desktop/CODING/mario"
+        }
+      ],
+      "shim_sid": 403,
+      "supervisor_controlling_tty": "ttys029",
+      "supervisor_in_terminal_session": true,
+      "state_before_hangup": {
+        "session_leader_shim": "ALIVE",
+        "supervisor": "ALIVE"
+      },
+      "state_after_hangup": {
+        "session_leader_shim": "ZOMBIE",
+        "supervisor": "ALIVE"
+      },
+      "status": "ok"
+    }
+  ]
+}

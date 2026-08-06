@@ -1,0 +1,216 @@
+{
+  "host": "Darwin 25.5.0",
+  "label": "com.marion.s15.probe",
+  "identity": {
+    "config": "identity",
+    "steps": [
+      {
+        "argv": [
+          "launchctl",
+          "bootout",
+          "gui/<UID>/com.marion.s15.probe"
+        ],
+        "rc": 3,
+        "stdout": "",
+        "stderr": "Boot-out failed: 3: No such process"
+      },
+      {
+        "argv": [
+          "launchctl",
+          "bootstrap",
+          "gui/<UID>",
+          "<TMP>"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "argv": [
+          "launchctl",
+          "bootout",
+          "gui/<UID>/com.marion.s15.probe"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    ],
+    "supervisor": {
+      "pid": 30811,
+      "ppid": 1,
+      "pgid": 30811,
+      "sid": 1
+    },
+    "ps": [
+      {
+        "pid": 30811,
+        "ppid": 1,
+        "pgid": 30811,
+        "sess_ps": 0,
+        "sid": 1,
+        "stat": "S",
+        "tty": "??",
+        "lstart": "Wed Aug  5 19:47:48 2026",
+        "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python <TMP>"
+      }
+    ],
+    "is_session_leader": false,
+    "is_group_leader": true,
+    "group_members": [
+      30811
+    ],
+    "shares_session_with_observer": false,
+    "status": "ok"
+  },
+  "lifetime": [
+    {
+      "config": "keepalive_true",
+      "keepalive": true,
+      "steps": [
+        {
+          "argv": [
+            "launchctl",
+            "bootout",
+            "gui/<UID>/com.marion.s15.probe"
+          ],
+          "rc": 3,
+          "stdout": "",
+          "stderr": "Boot-out failed: 3: No such process"
+        },
+        {
+          "argv": [
+            "launchctl",
+            "bootstrap",
+            "gui/<UID>",
+            "<TMP>"
+          ],
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "argv": [
+            "launchctl",
+            "print",
+            "gui/<UID>/com.marion.s15.probe"
+          ],
+          "rc": 0,
+          "stdout": "gui/<UID>/com.marion.s15.probe = {\n\tactive count = 0\n\tpath = <TMP>\n\ttype = LaunchAgent\n\tstate = spawn scheduled\n\n\tprogram = /opt/homebrew/opt/python@3.14/bin/python3.14\n\targuments = {\n\t\t/opt/homebrew/opt/python@3.14/bin/python3.14\n\t\t<TMP>",
+          "stderr": ""
+        },
+        {
+          "argv": [
+            "launchctl",
+            "bootout",
+            "gui/<UID>/com.marion.s15.probe"
+          ],
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        }
+      ],
+      "starts": [
+        {
+          "pid": 30847,
+          "ppid": 1,
+          "pgid": 30847,
+          "sid": 1,
+          "t": 1785977268.583694
+        },
+        {
+          "pid": 31132,
+          "ppid": 1,
+          "pgid": 31132,
+          "sid": 1,
+          "t": 1785977278.9785862
+        }
+      ],
+      "start_count_in_12s": 2,
+      "restarted_after_clean_exit": true,
+      "first_start_identity": {
+        "pid": 30847,
+        "ppid": 1,
+        "pgid": 30847,
+        "sid": 1
+      },
+      "distinct_pids": [
+        30847,
+        31132
+      ],
+      "status": "ok",
+      "still_loaded_after_bootout": false
+    },
+    {
+      "config": "keepalive_successfulexit_false",
+      "keepalive": {
+        "SuccessfulExit": false
+      },
+      "steps": [
+        {
+          "argv": [
+            "launchctl",
+            "bootout",
+            "gui/<UID>/com.marion.s15.probe"
+          ],
+          "rc": 3,
+          "stdout": "",
+          "stderr": "Boot-out failed: 3: No such process"
+        },
+        {
+          "argv": [
+            "launchctl",
+            "bootstrap",
+            "gui/<UID>",
+            "<TMP>"
+          ],
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "argv": [
+            "launchctl",
+            "print",
+            "gui/<UID>/com.marion.s15.probe"
+          ],
+          "rc": 0,
+          "stdout": "gui/<UID>/com.marion.s15.probe = {\n\tactive count = 0\n\tpath = <TMP>\n\ttype = LaunchAgent\n\tstate = not running\n\n\tprogram = /opt/homebrew/opt/python@3.14/bin/python3.14\n\targuments = {\n\t\t/opt/homebrew/opt/python@3.14/bin/python3.14\n\t\t<TMP>",
+          "stderr": ""
+        },
+        {
+          "argv": [
+            "launchctl",
+            "bootout",
+            "gui/<UID>/com.marion.s15.probe"
+          ],
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        }
+      ],
+      "starts": [
+        {
+          "pid": 32091,
+          "ppid": 1,
+          "pgid": 32091,
+          "sid": 1,
+          "t": 1785977280.642299
+        }
+      ],
+      "start_count_in_12s": 1,
+      "restarted_after_clean_exit": false,
+      "first_start_identity": {
+        "pid": 32091,
+        "ppid": 1,
+        "pgid": 32091,
+        "sid": 1
+      },
+      "distinct_pids": [
+        32091
+      ],
+      "status": "ok",
+      "still_loaded_after_bootout": false
+    }
+  ]
+}
