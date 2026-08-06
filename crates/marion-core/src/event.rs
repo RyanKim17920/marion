@@ -88,7 +88,8 @@
 //! part that matters, because §7.3.3's seam is stated in ordinals.
 //!
 //! [`MAX_EVENT_BYTES`] is therefore not an atomicity bound at all. It bounds how large a single
-//! line a reader must buffer, and its value is a **judgement, not a measurement**.
+//! line a reader must buffer, and it is now **measured against this repository's captures** rather
+//! than guessed — see the constant.
 //!
 //! # Growth: nothing, and compaction is unavailable in principle rather than merely unbuilt
 //!
@@ -128,11 +129,27 @@ use crate::registry::Truncation;
 /// this bounds is how large a line a reader must buffer to make progress, and how much one frame
 /// may cost a stream a client is rendering incrementally.
 ///
-/// **The number is a judgement, not a measurement.** No capture in `tests/fixtures/` was surveyed
-/// for a maximum frame size, and nothing here should be read as a claim that 256 KiB is above the
-/// largest frame any harness emits. It is far above every frame in every fixture this workspace
-/// carries, and a payload over it is shortened rather than refused, so an under-estimate costs
-/// fidelity on one event and never a lost one.
+/// **Measured, 2026-08-06, over every `*.jsonl` capture in `tests/fixtures/`** (s1, s4, s5, s6, s7,
+/// s9–s15), unwrapping the `{t_rel,msg}` and `{dir,frame}` recording envelopes so what is compared
+/// is the frame a reader would actually see:
+///
+/// | | bytes | what |
+/// |---|---|---|
+/// | largest frame in any capture | **5,145** | a Claude Code transcript `attachment` (s4) |
+/// | largest frame on a *stdout stream* | **1,764** | a Claude Code `system` frame (s1, s4, s10) |
+/// | largest frame **measured but not fixtured** | **~30,000** | the `initialize` `control_response` (S9) — the fixture *reduces* it, so the captures understate reality here |
+///
+/// So 256 KiB is roughly **8× the largest frame ever measured** and ~50× the largest one on disk.
+///
+/// **What is still not measured, and why the shortening path is not decoration.** A `ToolResult`
+/// carrying a file's contents is bounded by the file, not by the harness, and no capture here
+/// contains a large one. That case is genuinely unbounded, which is exactly why over-size is
+/// [`bound`]'s honest shortening rather than a refusal: an under-estimate costs the body of one
+/// event and never the event.
+///
+/// Note the largest measured frame is also one marion **must not keep** — §5.2 forbids journaling
+/// the `initialize` reply verbatim, so it is recorded as [`Payload::Withheld`] and never approaches
+/// this bound at all.
 pub const MAX_EVENT_BYTES: usize = 256 * 1024;
 
 /// One line of `events.jsonl` — §4's `Event`, minus what marion cannot honestly fill in.
@@ -243,6 +260,28 @@ pub enum Payload {
     /// and its provenance carries `Completeness::Partial`, which is the word §4.1 supplies for
     /// exactly this and the journal's vocabulary lacks. See the module doc.
     Oversized { was: PayloadKind, bytes: usize },
+    /// A frame marion **read and deliberately did not keep**, because a normative rule forbids
+    /// keeping it. Distinct from [`Self::Oversized`], which is a size accident, and from an event
+    /// that was never written, which is an absence: this says *a frame occurred, marion saw it, and
+    /// recording its body is not allowed*.
+    ///
+    /// The rule that creates this today is **§5.2's MUST**: *"A launcher that sends `initialize`
+    /// MUST NOT journal or forward the reply verbatim, and SHOULD retain only the fields it
+    /// actually reads."* S9 measured that reply at **~30 kB** carrying the operator's entire
+    /// slash-command catalogue with descriptions, the subagent list, the model list **with prices**,
+    /// `output_style`, `account.tokenSource` and the CLI's `pid` — machine- and account-specific
+    /// data that marion reads exactly one field of. An events file is a journal in every sense the
+    /// MUST cares about, so carrying that frame verbatim here would violate it as squarely as
+    /// writing it to `journal.jsonl` would.
+    ///
+    /// `key` and `bytes` are what marion may keep: *that* the frame happened, what kind it was, and
+    /// how large it was. `reason` names the rule, so a reader meeting one is not left guessing
+    /// whether marion lost the body or withheld it.
+    Withheld {
+        key: String,
+        bytes: usize,
+        reason: String,
+    },
 }
 
 impl Payload {
@@ -253,6 +292,7 @@ impl Payload {
             Payload::Raw(_) => PayloadKind::Raw,
             Payload::Normalized(n) => match *n {},
             Payload::Oversized { .. } => PayloadKind::Oversized,
+            Payload::Withheld { .. } => PayloadKind::Withheld,
         }
     }
 }
@@ -269,16 +309,30 @@ pub enum Normalization {}
 /// The stream's bookends, and nothing else.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Lifecycle {
-    /// The stream begins here.
+    /// **marion began recording this node's stream here** — and that is a weaker claim than §4's
+    /// `Lifecycle::Opened`, deliberately, which is why it is not called that.
     ///
-    /// **Carries nothing**, and that is deliberate rather than unfinished: §4's `Lifecycle::Spawned`
-    /// payload is `{harness, harness_version, model, agent_type, isolation, caps, surfaces, depth}`,
-    /// and every one of those is already in the journal's `SpawnIntent`/`Spawned` or in
-    /// `meta.json`, which §4.3 makes the home of *"compiled spec, caps, harness ref, binary path +
-    /// version"*. A client attaching to this node has its `NodeSummary` from the registry before it
-    /// ever opens this file. Copying identity here would be a second answer to a question that has
-    /// one; the bookend's job is to bound the stream, not to describe the node.
-    Spawned,
+    /// §4's `Spawned` asserts *a process exists*, carrying
+    /// `{harness, harness_version, model, agent_type, isolation, caps, surfaces, depth}`. marion
+    /// cannot truthfully make that claim at the moment this is written: a node's process is started
+    /// **and reaped** inside one blocking call (`run_bounded`, `duplex::run_duplex`), so the first
+    /// instant marion has observed a process existing is the instant it has already finished — which
+    /// is precisely why `journal_the_roots_outcome` and `run_spawn` both write the journal's
+    /// `Spawned` record *after* the call returns. Writing that claim here, before the call, would be
+    /// the confirmation-of-something-that-has-not-happened §6.1's intent-then-confirm split exists
+    /// to prevent.
+    ///
+    /// This is the claim marion *can* make at that instant, and it is the one a replay needs: the
+    /// stream starts here. Its value is negative evidence — a file holding only this says **the node
+    /// said nothing**, which is a different fact from a node nobody recorded
+    /// ([`crate::event`]'s reader reports that as no file at all), and a file holding this and
+    /// frames but no terminal event says the stream stopped mid-turn.
+    ///
+    /// **Carries nothing**, for the same one-fact-one-home reason: every field §4 lists is already
+    /// in the journal's `SpawnIntent`/`Spawned` or in `meta.json` (§4.3: *"compiled spec, caps,
+    /// harness ref, binary path + version"*), and a client attaching has its `NodeSummary` from the
+    /// registry before it opens this file.
+    Opened,
     /// The stream ends here, with the terminal status marion observed.
     ///
     /// This one **does** carry its facts, for the reason `Spawned` does not: they are what
@@ -290,6 +344,16 @@ pub enum Lifecycle {
         status: ExitStatus,
         exit: ProcessExit,
     },
+    /// The stream ends because **marion abandoned the run**, not because the node finished.
+    ///
+    /// The third terminal reading, and it exists for the reason [`Self::Exited`] carries its status:
+    /// without it, a launch marion refused — a bridge that never came up, a worktree that could not
+    /// be made — leaves a file holding [`Self::Opened`] and nothing else, which is the *same* shape
+    /// as a node that started and was still mid-turn when everything stopped. Those are different
+    /// facts and the operator's next move differs for each. Mirrors the journal's
+    /// `RecordKind::SpawnAborted`, whose own doc gives the same argument: §7.2 is emphatic that a
+    /// node marion decided the fate of must never be mistaken for one marion *lost*.
+    Aborted { reason: String },
 }
 
 /// Which [`Payload`] a shortened event used to be. A tag rather than a string, so
@@ -301,6 +365,7 @@ pub enum PayloadKind {
     Raw,
     Normalized,
     Oversized,
+    Withheld,
 }
 
 /// Encoding refused an event.
@@ -534,7 +599,7 @@ mod tests {
     #[test]
     fn an_event_pins_its_wire_shape() {
         assert_eq!(
-            serde_json::to_value(ev(0, Payload::Lifecycle(Lifecycle::Spawned))).unwrap(),
+            serde_json::to_value(ev(0, Payload::Lifecycle(Lifecycle::Opened))).unwrap(),
             serde_json::json!({
                 "agent_id": "a-1",
                 "agent_seq": 0,
@@ -548,7 +613,7 @@ mod tests {
                     "completeness": "Complete",
                     "transformation": "Native",
                 },
-                "payload": {"Lifecycle": "Spawned"},
+                "payload": {"Lifecycle": "Opened"},
             })
         );
     }
@@ -556,7 +621,7 @@ mod tests {
     #[test]
     fn every_payload_round_trips_through_a_line() {
         let payloads = [
-            Payload::Lifecycle(Lifecycle::Spawned),
+            Payload::Lifecycle(Lifecycle::Opened),
             Payload::Lifecycle(Lifecycle::Exited {
                 status: ExitStatus::Ok,
                 exit: ProcessExit {
@@ -571,6 +636,11 @@ mod tests {
                 was: PayloadKind::Vendor,
                 bytes: 900_000,
             },
+            Payload::Withheld {
+                key: "control_response".into(),
+                bytes: 30_000,
+                reason: "§5.2".into(),
+            },
         ];
         for (i, p) in payloads.into_iter().enumerate() {
             let e = ev(i as u64, p);
@@ -578,6 +648,28 @@ mod tests {
             assert_eq!(line.last(), Some(&b'\n'));
             assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&e));
         }
+    }
+
+    /// §5.2's MUST, in the type: *"A launcher that sends `initialize` MUST NOT journal or forward
+    /// the reply verbatim, and SHOULD retain only the fields it actually reads."*
+    #[test]
+    fn a_withheld_payload_records_that_a_frame_existed_without_keeping_its_body() {
+        let e = ev(
+            3,
+            Payload::Withheld {
+                key: "control_response".into(),
+                bytes: 30_000,
+                reason: "§5.2: the initialize reply is the session catalogue".into(),
+            },
+        );
+        let line = encode(&e).unwrap();
+        assert!(
+            line.len() < 500,
+            "the point is that the body is not here: {} bytes",
+            line.len()
+        );
+        assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&e));
+        assert_eq!(e.payload.kind(), PayloadKind::Withheld);
     }
 
     /// The refusal §4's five normalized payloads are under, **enforced by the type**: there is no
@@ -748,7 +840,7 @@ mod tests {
 
     #[test]
     fn only_a_lifecycle_bookend_is_a_barrier() {
-        assert!(ev(0, Payload::Lifecycle(Lifecycle::Spawned)).is_barrier());
+        assert!(ev(0, Payload::Lifecycle(Lifecycle::Opened)).is_barrier());
         assert!(!ev(0, frame()).is_barrier());
         assert!(!ev(0, Payload::Raw("x".into())).is_barrier());
     }
