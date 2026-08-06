@@ -356,17 +356,36 @@ impl RegistryHandle {
             .collect()
     }
 
+    /// §5.7's exclusion list, and the one thing it is **not** about.
+    ///
+    /// Every clause below asks the same underlying question — *is there work here that exiting
+    /// would strand?* A node whose `SpawnAborted` is journaled has none: `RecordKind::SpawnAborted`
+    /// is *"the intent's other resolution"*, written when marion abandoned the spawn, and §7.2 is
+    /// emphatic that *"a node marion decided the fate of is never `Orphaned`"*. There is no process,
+    /// there never was one, and nothing about it can ever change again.
+    ///
+    /// It has to be filtered explicitly because it does not show up as one. `NodeState` has no
+    /// "never started" variant and `registry.rs` deliberately does not synthesise one — the abort is
+    /// a separate recorded fact, not a state transition — so an aborted node's state stays
+    /// `Spawning` forever and satisfies **two** clauses below on its own.
+    ///
+    /// **This was measured, not reasoned about.** Before the detached supervisor existed, nothing
+    /// acted on this function's answer for longer than one process's life; wiring §10's split made
+    /// a `marion run` whose root failed to launch leave a supervisor that would never exit, holding
+    /// a project directory that had already been deleted. That is the *inverse* of what §5.7's
+    /// exclusion list is for.
     fn resident_reason(nodes: &[marion_core::registry::ReplayedNode]) -> Option<ResidentReason> {
-        if nodes.iter().any(|n| n.reap_intent.is_some()) {
+        let holding: Vec<_> = nodes.iter().filter(|n| n.spawn_aborted.is_none()).collect();
+        if holding.iter().any(|n| n.reap_intent.is_some()) {
             Some(ResidentReason::UnconfirmedReapIntent)
-        } else if nodes
+        } else if holding
             .iter()
             .any(|n| matches!(n.state, NodeState::Blocked(_)))
         {
             Some(ResidentReason::BlockedNode)
-        } else if nodes.iter().any(|n| n.state == NodeState::Spawning) {
+        } else if holding.iter().any(|n| n.state == NodeState::Spawning) {
             Some(ResidentReason::SpawnOutstanding)
-        } else if nodes.iter().any(|n| !n.state.is_exited()) {
+        } else if holding.iter().any(|n| !n.state.is_exited()) {
             Some(ResidentReason::NonTerminalNode)
         } else {
             None
@@ -1687,6 +1706,71 @@ mod tests {
             assert_eq!(node.reap_state, ReapState::Live, "{agent}");
             assert!(node.reap_intent.is_none(), "{agent}");
         }
+    }
+
+    /// **NC — a spawn marion *abandoned* is not a spawn that is *outstanding*.**
+    ///
+    /// The node's state is `Spawning` and stays `Spawning` forever, because `registry.rs` records
+    /// the abort as a separate fact rather than as a transition — so on the unfiltered reading this
+    /// one node satisfies two of §5.7's clauses at once and the supervisor can never exit.
+    ///
+    /// That is not a hypothetical. A `marion run` whose root failed to launch journals exactly
+    /// these two records (`root.rs`'s `Err` arm), and with the detached supervisor wired up it left
+    /// a process resident over a project directory the run had already deleted. §7.2's rule is the
+    /// argument in one line: *"a node marion decided the fate of is never `Orphaned`"* — its fate
+    /// is decided, there is no process, and there is nothing for exiting to strand.
+    ///
+    /// The second half is what stops the fix from being a blanket "ignore `Spawning`": an intent
+    /// with **no** abort beside it still holds the supervisor, because that one really is
+    /// outstanding.
+    #[test]
+    fn an_aborted_spawn_does_not_keep_the_supervisor_resident_but_an_outstanding_one_does() {
+        let aborted = fx_with(
+            "handler-quit-spawn-aborted",
+            vec![
+                intent("root", None, "claude", 0),
+                RecordKind::SpawnAborted(marion_core::journal::SpawnAborted {
+                    agent_id: id("root"),
+                    reason: "the harness binary was not found".into(),
+                }),
+            ],
+        );
+        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&aborted, marion_proto::QuitDisposition::DetachAll)
+                .unwrap()
+                .outcome
+        else {
+            panic!("DetachAll answers Detached")
+        };
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Exiting,
+            "an abandoned spawn strands nothing, so §5.7's exclusion list does not name it"
+        );
+        assert!(
+            aborted.handle.idle_exit_eligible(),
+            "and the accept loop may act on that"
+        );
+
+        let outstanding = fx_with(
+            "handler-quit-spawn-outstanding",
+            vec![intent("root", None, "claude", 0)],
+        );
+        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&outstanding, marion_proto::QuitDisposition::DetachAll)
+                .unwrap()
+                .outcome
+        else {
+            panic!("DetachAll answers Detached")
+        };
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::SpawnOutstanding
+            ),
+            "an intent with no resolution beside it is exactly what §5.7 means by outstanding"
+        );
+        assert!(!outstanding.handle.idle_exit_eligible());
     }
 
     /// `ReapedIdle` is resumable and therefore not `Exited(_)`. §5.7's zero-non-terminal rule is
