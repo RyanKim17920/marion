@@ -549,12 +549,14 @@ fn the_fifth_concurrent_background_child_is_refused_in_the_same_frame() {
 /// a claim: with the maximum number of children alive **at once**, every workspace path is
 /// distinct and none of them is the repo.
 ///
-/// **It is also the git-serialization control.** `git worktree add` and `git worktree remove` take
-/// the repository's own locks and do not wait for them, so before `spawn::repo_write_guard` existed
-/// these concurrent spawns would intermittently fail with `index.lock: File exists` — a child
-/// refused because an unrelated sibling happened to be touching git. One test covers both because
-/// they are one observation: **every** concurrent child got its own worktree, and none was lost to
-/// a lock.
+/// **It is also the git-serialization control, and it is a weak one — see `spawn::repo_write_guard`.**
+/// Concurrent `git worktree add`/`remove` against one repository really does fail, but S17
+/// (`tests/fixtures/s17/README.md`) measured the failure in `.git/worktrees/` bookkeeping rather
+/// than in `index.lock`, and measured its rate: at four concurrent writers it needs a few hundred
+/// iterations to appear. This test performs four `worktree add`s **once**, so it is three orders of
+/// magnitude short of witnessing it, which is why deleting the guard leaves it green. Read it as
+/// what it reliably is — **every** concurrent child got its own workspace and none was lost — and
+/// not as evidence about the guard.
 #[test]
 fn concurrent_children_never_share_a_workspace_and_never_lose_one_to_a_git_lock() {
     let fx = fixture("background-worktrees");

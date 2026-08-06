@@ -192,31 +192,45 @@ fn now() -> SystemTime {
 /// While `spawn` was synchronous there was exactly one worktree operation in flight per process and
 /// no lock could be contended. A backgrounded `spawn` runs `run_spawn` on a thread, so two children
 /// of one parent reach `git worktree add` — and later `git worktree remove` — against **the same
-/// `.git`** at the same time. git guards its own refs and index with `index.lock` /
-/// `worktrees/<name>/locked` and does **not** wait for them: it fails the second caller with
-/// *"Unable to create '…/index.lock': File exists"*.
+/// `.git`** at the same time, and git does not serialize them.
 ///
-/// That failure is the worst available shape. It is intermittent, it depends on process scheduling
-/// rather than on anything the caller did, and it surfaces as `SpawnError::Git` — a spawn that
-/// simply did not happen, attributed to git. Widening a timeout or retrying would encode the race
-/// rather than remove it; a mutex removes it, because the operations are short and marion is the
-/// only writer it needs to coordinate.
+/// **MEASURED, and the measurement corrected the reason.** This comment used to name
+/// `index.lock` — *"Unable to create '…/index.lock': File exists"* — and to say that the guard had
+/// no failing witness, because removing it did not fail `tests/background_spawn.rs` over ten runs.
+/// Both halves were wrong, and `tests/fixtures/s17/README.md` is the run that says so
+/// (darwin 25.5.0, git 2.50.1, `spikes/s17/run.sh`, six repetitions at two, four and six
+/// concurrent writers).
 ///
-/// **UNVERIFIED, and stated as such.** `tests/background_spawn.rs` runs
-/// `max_concurrent_children` background spawns at once and asserts every one gets its own
-/// worktree, which is the observation this guard is supposed to protect — but removing the guard
-/// does **not** make that test fail (10 consecutive runs, 2026-08-06). The contention window is
-/// evidently narrower than four concurrent `worktree add`s on a two-commit fixture repo. So this
-/// is a guard against a documented git behaviour with **no failing witness in this repo**: keep it
-/// because it is cheap and the failure it prevents is a scheduling-dependent flake attributed to
-/// git, but do not read the passing test as evidence that it was needed.
+/// 1. **`index.lock` is never the failure.** It does not appear once in any recorded run. Every
+///    observed failure is `.git/worktrees/` bookkeeping: *"could not create directory of
+///    '.git/worktrees/<name>': Invalid argument"*, the same with *"No such file or directory"*, and
+///    *"failed to read .git/worktrees/<name>/commondir: Undefined error: 0"*.
+/// 2. **A caller is failed by a *sibling's* half-written entry.** In the third shape the name in
+///    the message belongs to a **different** worker's worktree, because `add` and `remove` both
+///    walk the whole of `.git/worktrees/` as they prune. Nothing locks that directory — it is not
+///    the index — so the hazard is wider than a contended lockfile and cannot be waited out.
+/// 3. **A lost race leaks rather than merely failing.** A failed `worktree remove` leaves the
+///    worktree registered, so the `branch -D` behind it is refused in turn (*"cannot delete branch
+///    … used by worktree at …"*): a directory, a `.git/worktrees/` entry and a branch survive an
+///    operation marion believes cleaned up.
+/// 4. **The guard is load-bearing.** Four concurrent writers — exactly `max_concurrent_children` —
+///    reproduce in every repetition within 300 iterations each. `background_spawn.rs` performs
+///    four `worktree add`s **once**, so its exposure is short of the threshold by three orders of
+///    magnitude; the surviving mutation measured that test's reach, not this guard's necessity.
 ///
-/// **What it does not claim.** It serializes marion's *own* concurrent writers inside one process.
-/// A second `marion` process, or the operator's own `git`, is outside it — that is git's problem
-/// and git's lock, and it was already so before backgrounding. `PoisonError` is unwrapped through
-/// rather than propagated: a panic inside a git call leaves the *repository* consistent (git is
-/// transactional over its own locks) and refusing every subsequent spawn for the rest of the
-/// process's life would be a larger failure than the one it guards.
+/// Widening a timeout or retrying would encode the race rather than remove it; a mutex removes it,
+/// because the operations are short and marion is the only writer it needs to coordinate.
+///
+/// **What it does not claim, and this is now a measured gap rather than an assumed one.** It
+/// serializes marion's *own* concurrent writers inside **one process**. A second `marion` process,
+/// or the operator's own `git`, is outside it — and S17 measured that two *processes* fail at
+/// roughly one operation in 1 800, so "that is git's problem and git's lock" was not true: git has
+/// no lock there. Closing it needs a file lock beside the repository, which is a decision §5.7 does
+/// not contain; it is recorded as design §11 item 31 rather than invented here.
+///
+/// `PoisonError` is unwrapped through rather than propagated: a panic inside a git call leaves the
+/// *repository* consistent (git is transactional over its own locks) and refusing every subsequent
+/// spawn for the rest of the process's life would be a larger failure than the one it guards.
 static REPO_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Hold [`REPO_WRITE`] for the duration of a repository-mutating git call.
