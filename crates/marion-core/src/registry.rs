@@ -200,14 +200,29 @@ impl ReplayedNode {
         self.root_grant.is_some() && self.root_change.is_none()
     }
 
+    /// **Whether the journal says anything at all about how this node's fate was decided** — an
+    /// exit observed, a kill confirmed, a reap intended or confirmed, a spawn abandoned.
+    ///
+    /// The negation of §7.2's *"marion has no record of deciding this node's fate"*, and it is
+    /// factored out of [`Self::is_unresolved`] because [`Replay::apply`] needs the same predicate
+    /// to know when a derived `Orphaned` has been overtaken. Two copies of this clause list is how
+    /// a running tree and a fresh replay of the same bytes would come to disagree.
+    ///
+    /// `reap_state` is deliberately **not** read here: `Orphaned` is a judgement written over the
+    /// tree rather than a record, so counting it as "on record" would make the marking justify
+    /// itself.
+    pub(crate) fn fate_on_record(&self) -> bool {
+        self.state.is_exited()
+            || self.reap_state == ReapState::ReapedIdle
+            || self.reap_intent.is_some()
+            || self.spawn_aborted.is_some()
+    }
+
     /// **The node §7.2's `Orphaned` marking will be about**: recorded live, no exit observed, no
     /// reap decided. Named as a question rather than answered as a state, because the answer is a
     /// policy decision taken on restart and this is a reading of the journal.
     pub fn is_unresolved(&self) -> bool {
-        !self.state.is_exited()
-            && self.reap_state == ReapState::Live
-            && self.reap_intent.is_none()
-            && self.spawn_aborted.is_none()
+        self.reap_state == ReapState::Live && !self.fate_on_record()
     }
 }
 
@@ -312,16 +327,29 @@ impl Replay {
     /// what the **journal** can say, and it is unchanged — no record kind reaches this. The caller
     /// is `marion_supervisor::restart`, which owns the judgement and argues it there.
     ///
-    /// `false` for an id this tree does not know, rather than inserting one: a marking is a verdict
-    /// *about a node replay found*, and creating a node to be orphaned would invent the very thing
-    /// the verdict is about.
+    /// `false` means **the tree does not now say `Orphaned` about this id**, and there are exactly
+    /// two ways to get it, both of which are the verdict not being about this node:
+    ///
+    /// * *No such node.* Answered rather than inserted: a marking is a verdict about a node replay
+    ///   found, and creating one to be orphaned would invent the very thing the verdict is about.
+    /// * *The journal already records the fate* ([`ReplayedNode::is_unresolved`] is false). §7.2's
+    ///   `Orphaned` means marion has **no record of deciding**, so over an exit, a reap or an abort
+    ///   the verdict is not merely unnecessary — it is false, and a tree reading `Exited` and
+    ///   `Orphaned` at once contradicts itself.
+    ///
+    /// **Structural rather than remembered, at both ends.** The precondition is checked here rather
+    /// than trusted of the caller, and [`Self::apply`] retracts the verdict the moment a later
+    /// record decides the fate. Between them, `Orphaned` stands in this tree if and only if
+    /// `is_unresolved` was true when it was written and has been true ever since — which is what
+    /// lets the marking be derived instead of journaled, and what makes a running tree agree with a
+    /// fresh replay of the same bytes.
     pub fn mark_orphaned(&mut self, id: &AgentId) -> bool {
         match self.index.get(&id.0) {
-            Some(i) => {
+            Some(i) if self.nodes[*i].is_unresolved() => {
                 self.nodes[*i].reap_state = ReapState::Orphaned;
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
@@ -423,6 +451,26 @@ impl Replay {
                 unreachable!("the process-wide record returned before selecting a node")
             }
         }
+        // **§7.2's derived marking, superseded by the record it was derived in the absence of.**
+        //
+        // `Orphaned` is a judgement a policy wrote over this tree, and its whole premise is that
+        // the journal shows marion never decided this node's fate. A record that decides it — an
+        // exit, a kill, a reap, an abort — retracts that premise, and the marking has to go with
+        // it. It is derived rather than journaled *precisely so that it can*: `restart.rs` argues
+        // that a node marion lost may still be driven by a live process (§11 items 28, 30) which
+        // writes a truthful terminal record afterwards, and that argument is about this fold, not
+        // about the next boot. Leaving the marking in place would make the running tree say
+        // `state: Exited` and `reap_state: Orphaned` at once — a contradiction no reboot could
+        // reproduce, which is what makes it a bug rather than a difference of opinion.
+        //
+        // Stated as *"an `Orphaned` node whose fate is now on record returns to `Live`"* rather
+        // than as an arm of each record kind, so a record kind added later cannot forget it. The
+        // rule is structural: `Orphaned` may only stand where [`ReplayedNode::fate_on_record`] is
+        // false, which is the same predicate [`ReplayedNode::is_unresolved`] is built from, so the
+        // running tree and a fresh replay of the same bytes cannot disagree.
+        if node.reap_state == ReapState::Orphaned && node.fate_on_record() {
+            node.reap_state = ReapState::Live;
+        }
         if (node.state, node.reap_state) != before {
             node.state_ts = Some(ts);
         }
@@ -523,8 +571,8 @@ mod tests {
     use crate::encoding::SystemTime;
     use crate::ir::Provenance;
     use crate::journal::{
-        Exited, KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, Spawned, StateChanged,
-        SupervisorExited, encode,
+        Exited, KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, SpawnAborted, Spawned,
+        StateChanged, SupervisorExited, encode,
     };
 
     fn record(seq: u64, kind: RecordKind) -> JournalRecord {
@@ -692,16 +740,43 @@ mod tests {
         );
     }
 
-    /// The marking's **door**, and its refusal: a verdict is about a node replay found, so an id
-    /// this tree does not know is answered `false` rather than conjured into a node to be orphaned.
+    /// The marking's **door**, and both of its refusals: a verdict is about a node replay found
+    /// whose fate the journal does not already record.
     #[test]
-    fn mark_orphaned_moves_a_node_replay_found_and_refuses_to_invent_one() {
-        let mut r = replay(&bytes(&m1_journal()));
+    fn mark_orphaned_marks_only_a_node_replay_found_with_no_recorded_fate() {
+        let mut j = m1_journal();
+        j.retain(|r| !matches!(&r.kind, RecordKind::Exited(e) if e.agent_id == id("root")));
+        let mut r = replay(&bytes(&j));
         let before = r.nodes().len();
 
         assert!(r.mark_orphaned(&id("root")));
         assert_eq!(r.get(&id("root")).unwrap().reap_state, ReapState::Orphaned);
 
+        // **And it fabricates no death.** §7.2's `Orphaned` covers a node *"still running with
+        // marion no longer attached"* just as much as a gone one, and marion takes no liveness
+        // probe before writing it — so the verdict may not leave behind the two fields that are
+        // written from an observation. A consumer reading either of them is reading something
+        // marion measured.
+        let root = r.get(&id("root")).unwrap();
+        assert!(
+            !root.state.is_exited(),
+            "Orphaned is not an exit; nothing observed one"
+        );
+        assert_eq!(root.exit, None, "no ProcessExit was invented to justify it");
+
+        // The first refusal: a node whose fate the journal records. The verdict is not merely
+        // unnecessary there, it is false — §7.2's Orphaned means *no record of deciding*.
+        assert!(
+            !r.mark_orphaned(&id("child")),
+            "the child exited on the record"
+        );
+        assert_eq!(
+            r.get(&id("child")).unwrap().reap_state,
+            ReapState::Live,
+            "and the refusal left it as replay read it",
+        );
+
+        // The second: an id this tree does not know.
         assert!(!r.mark_orphaned(&id("no-such-node")));
         assert_eq!(
             r.nodes().len(),
@@ -709,6 +784,103 @@ mod tests {
             "no node was invented to hold a verdict"
         );
         assert!(r.get(&id("no-such-node")).is_none());
+    }
+
+    /// **A marking lasts exactly as long as its premise**, and the premise is every clause of
+    /// [`ReplayedNode::fate_on_record`] rather than the exit alone.
+    ///
+    /// One case per resolver, because the marking is retracted by a *predicate* and a narrower one
+    /// would leave a tree that reads, say, `ReapedIdle` and `Orphaned` at once. Each is a record a
+    /// live writer can append **after** a supervisor booted over the node and marked it — which is
+    /// the whole reason §7.2's verdict is derived rather than journaled.
+    #[test]
+    fn every_record_that_decides_a_fate_retracts_a_derived_orphan_marking() {
+        let resolvers = [
+            (
+                "an observed exit",
+                RecordKind::Exited(Exited {
+                    agent_id: id("root"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "exited cleanly".into(),
+                    },
+                }),
+            ),
+            (
+                "a confirmed kill",
+                RecordKind::KillConfirmed(KillConfirmed {
+                    agent_id: id("root"),
+                    exit: ProcessExit {
+                        code: None,
+                        signal: Some(9),
+                        description: "killed".into(),
+                    },
+                }),
+            ),
+            (
+                "a reap marion decided on",
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("root"),
+                    reason: "idle memory reclaim".into(),
+                }),
+            ),
+            (
+                "an abandoned spawn",
+                RecordKind::SpawnAborted(SpawnAborted {
+                    agent_id: id("root"),
+                    reason: "the writer unwound out of the spawn path".into(),
+                }),
+            ),
+        ];
+        for (what, kind) in resolvers {
+            let mut j = m1_journal();
+            j.retain(|r| !matches!(&r.kind, RecordKind::Exited(e) if e.agent_id == id("root")));
+            let mut r = replay(&bytes(&j));
+            assert!(r.mark_orphaned(&id("root")));
+            assert_eq!(r.get(&id("root")).unwrap().reap_state, ReapState::Orphaned);
+
+            let n = j.len() as u64;
+            r.extend(&bytes(&[record(n, kind)]));
+
+            let root = r.get(&id("root")).unwrap();
+            assert_ne!(
+                root.reap_state,
+                ReapState::Orphaned,
+                "{what} decides the fate the marking said marion had no record of",
+            );
+            assert!(
+                !root.is_unresolved(),
+                "{what} is on the record, so a fresh replay would not mark it either",
+            );
+        }
+    }
+
+    /// The other half of the same rule: a record that decides **nothing** leaves the verdict
+    /// standing. Without this the clause above could be "retract on any record at all", which would
+    /// un-mark an orphan the moment any unrelated writer touched it.
+    #[test]
+    fn a_record_that_decides_no_fate_leaves_the_marking_standing() {
+        let mut j = m1_journal();
+        j.retain(|r| !matches!(&r.kind, RecordKind::Exited(e) if e.agent_id == id("root")));
+        let mut r = replay(&bytes(&j));
+        assert!(r.mark_orphaned(&id("root")));
+
+        let n = j.len() as u64;
+        r.extend(&bytes(&[record(
+            n,
+            RecordKind::StateChanged(StateChanged {
+                agent_id: id("root"),
+                state: NodeState::Running,
+            }),
+        )]));
+
+        assert_eq!(
+            r.get(&id("root")).unwrap().reap_state,
+            ReapState::Orphaned,
+            "a state change says what the node is doing, not what marion decided about it",
+        );
     }
 
     #[test]

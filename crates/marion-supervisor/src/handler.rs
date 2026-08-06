@@ -407,9 +407,45 @@ impl RegistryHandle {
     /// from before the process exists to after it is reaped — so an unwind anywhere in between
     /// writes `SpawnAborted` beside a `Spawned` that names a live pid, and a `std::process::Child`
     /// dropped rather than waited on does not kill what it holds. See [`Self::abandoned`].
+    ///
+    /// **§7.2's `Orphaned` is deliberately not a second exclusion**, and the temptation to make it
+    /// one is worth answering rather than leaving to be rediscovered.
+    ///
+    /// The case for excluding it looks strong: the node was recorded before this process existed,
+    /// marion holds no `Child` and no channel for it, §7.6 already counts it terminal for gating,
+    /// and holding is permanent — a supervisor booting over a journal a crashed one left is
+    /// `Resident` from its first instant. Every clause of that is true and the conclusion is still
+    /// wrong, because it reads `Orphaned` as *"nothing here to act on"* when §7.2 defines it as the
+    /// opposite: *"both are 'marion does not know', **both require the same user resolution**"*.
+    /// The resolution is the operator's, over this socket — and a supervisor that exited to avoid
+    /// holding has taken the resolution away rather than performed it. `Spawned` can carry a real
+    /// pid, in which case a confirmed `session/quit` KillTree signals the surviving process; that
+    /// is a live node this supervisor is the only handle on.
+    /// `detached_supervisor.rs`'s `a_supervisor_holding_a_non_terminal_node_refuses_to_exit_
+    /// until_that_node_finishes` boots over exactly that journal, with a process it really started.
+    ///
+    /// So `Orphaned` is the *reason* to stay, not a reason to leave — and the honest cost is that a
+    /// node whose `Spawned` recorded no pid can be neither killed nor resolved, so it holds forever
+    /// with no path out. That is §11 item 28's absent pid, not a residency rule to loosen; loosening
+    /// it here would trade a supervisor that cannot exit for a fleet that cannot be stopped.
     fn resident_reason(nodes: &[marion_core::registry::ReplayedNode]) -> Option<ResidentReason> {
         let holding: Vec<_> = nodes.iter().filter(|n| !Self::abandoned(n)).collect();
-        if holding.iter().any(|n| n.reap_intent.is_some()) {
+        // **The intent holds only while the death is unobserved.** §7.2's crash window is *"the
+        // supervisor died before the kill landed"*, and what makes it a window is that a process
+        // may still be running. A terminal record for the node shuts it: §7.2 resolves an
+        // unconfirmed intent *by checking for the process*, and an observed exit or a confirmed
+        // kill **is** that check, already made. No `ReapConfirmed` follows — nothing here
+        // fabricates a record — so the intent stays outstanding on the tree forever, and reading
+        // it without asking about the exit beside it is a supervisor that can never leave.
+        //
+        // Reachable in one supervisor's life and without a crash: `reap_idle_detach_busy` journals
+        // the intent, signals, and returns rather than confirming when it cannot observe the death;
+        // a later confirmed `session/quit` KillTree then writes the `KillConfirmed` that does
+        // observe it.
+        if holding
+            .iter()
+            .any(|n| n.reap_intent.is_some() && !n.state.is_exited())
+        {
             Some(ResidentReason::UnconfirmedReapIntent)
         } else if holding
             .iter()
@@ -2150,6 +2186,133 @@ mod tests {
                 .iter()
                 .all(|tag| tag != "SupervisorExited")
         );
+    }
+
+    /// **The §7.2 restart order**, which every other fixture here deliberately inverts: the journal
+    /// is written and *then* the supervisor boots over it, so its nodes are marked `Orphaned`.
+    fn restart_fx_with(tag: &str, records: Vec<RecordKind>) -> Fx {
+        let dir = scratch(tag);
+        let path = dir.join("journal.jsonl");
+        for (seq, kind) in records.into_iter().enumerate() {
+            append(&path, &line(seq as u64, 1_000 + seq as u64, kind));
+        }
+        let live = Arc::new(LiveRegistry::follow(
+            Registry::boot_path(&path).unwrap(),
+            std::time::Duration::from_millis(2),
+        ));
+        assert!(
+            !live.read(|r| r.restart_marks().is_empty()),
+            "the point of this fixture is a boot that marked something",
+        );
+        Fx {
+            _dir: dir,
+            path,
+            handle: RegistryHandle::with_runtime(live, Arc::new(SystemQuitRuntime)),
+        }
+    }
+
+    /// **An `Orphaned` node holds the supervisor resident**, which is the clause of
+    /// [`RegistryHandle::resident_reason`] most likely to be *removed* by someone reasoning
+    /// correctly from the wrong premise. The whole argument is on that function; this pins it.
+    ///
+    /// §7.2 is what makes it right: an orphan is a node that *"requires user resolution"*, and the
+    /// resolution is the operator's over this socket. The supervisor is the handle on it — with a
+    /// pid on record, a confirmed KillTree signals the surviving process. Exiting instead of
+    /// holding does not avoid the problem, it discards the only means of fixing it.
+    ///
+    /// `detached_supervisor.rs` covers the same claim end to end with a process it really started;
+    /// this covers it where the predicate lives, so the reasoning is refuted in the unit suite
+    /// rather than eight seconds into an integration run.
+    #[test]
+    fn an_orphaned_node_holds_the_supervisor_resident_because_it_is_the_operators_to_resolve() {
+        let fx = restart_fx_with(
+            "handler-resident-orphan",
+            vec![
+                intent("lost", None, "claude", 0),
+                spawned("lost", 55),
+                state("lost", NodeState::Running),
+            ],
+        );
+        assert_eq!(
+            fx.handle
+                .live
+                .read(|r| r.tree().get(&id("lost")).unwrap().reap_state),
+            ReapState::Orphaned,
+            "the fixture's premise: the boot marked it",
+        );
+        assert_eq!(
+            fx.handle.residency(),
+            Some(marion_proto::ResidentReason::NonTerminalNode),
+            "§7.2: marion does not know, and the operator is the one who resolves that",
+        );
+        assert!(!fx.handle.idle_exit_eligible());
+
+        // And it is released by the same thing that releases any node: a recorded fate. Which also
+        // retracts the marking (`marion_core::registry::Replay::apply`), so the two agree.
+        append(
+            &fx.path,
+            &line(
+                3,
+                1_003,
+                RecordKind::Exited(Exited {
+                    agent_id: id("lost"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "exited cleanly".into(),
+                    },
+                }),
+            ),
+        );
+        fx.handle.live.refresh();
+        assert_eq!(fx.handle.residency(), None);
+        assert_eq!(
+            fx.handle
+                .live
+                .read(|r| r.tree().get(&id("lost")).unwrap().reap_state),
+            ReapState::Live,
+            "the marking went with the premise it rested on",
+        );
+    }
+
+    /// **A reap intent stops holding the supervisor once the death it was about is observed.**
+    ///
+    /// §7.2's crash window is *"the supervisor died before the kill landed"*, and §5.7 holds the
+    /// supervisor for it because a process may still be running. Once a terminal record for that
+    /// node is on the journal the window is shut: the process was observed dead, which is the very
+    /// check §7.2 says resolves the intent. Holding on the stale intent after that is a supervisor
+    /// that can never exit — reachable in one supervisor's life, as this fixture's order shows:
+    /// the reap's signal went out and could not be observed (so no `ReapConfirmed` was written),
+    /// and the operator then confirmed a `session/quit` KillTree, which did observe it.
+    #[test]
+    fn a_reap_intent_stops_holding_the_supervisor_once_the_node_is_observed_dead() {
+        let fx = fx_with(
+            "handler-quit-reap-intent-then-killed",
+            vec![
+                intent("idle", None, "claude", 0),
+                spawned("idle", 91),
+                state("idle", NodeState::Idle),
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("idle"),
+                    reason: "session/quit reaped an idle node before detaching busy work".into(),
+                }),
+                RecordKind::KillConfirmed(KillConfirmed {
+                    agent_id: id("idle"),
+                    exit: ProcessExit {
+                        code: None,
+                        signal: Some(9),
+                        description: "confirmed session/quit killed the node's process tree".into(),
+                    },
+                }),
+            ],
+        );
+        assert_eq!(
+            fx.handle.residency(),
+            None,
+            "every node's death is on the record; nothing is left for this supervisor to hold",
+        );
+        assert!(fx.handle.idle_exit_eligible());
     }
 
     /// **NC — EOF has no default disposition.** An idle node is the sharp control because the

@@ -157,12 +157,32 @@ impl Registry {
         let bytes = bytes.unwrap_or_default();
         let mut tree = Replay::default();
         let consumed = tree.extend(&bytes);
-        // **§7.2's restart marking, here and nowhere else.** Boot is the one moment the distinction
-        // is available: everything in `tree` at this instant is what the journal recorded *before
-        // this supervisor existed*, so a node still `Live` is by definition one whose fate this
-        // supervisor has no record of deciding. Every node folded in by a later [`Self::poll`] is
-        // this supervisor's own contemporary and must never be marked — which is why the pass runs
-        // before the first poll rather than being a filter over the tree.
+        // **§7.2's restart marking, here and nowhere else.**
+        //
+        // Everything in `tree` at this instant is what the journal recorded *before this supervisor
+        // existed*, so a node still `Live` is one whose fate this supervisor has no record of
+        // deciding. What that does **not** establish — and an earlier reading of this comment
+        // implied it did — is that the node's writer is gone. A bridge or a `marion run` that
+        // predates the boot can still be driving it and can still write a truthful terminal record
+        // afterwards, which is why the verdict is derived and why `Replay::apply` retracts it when
+        // that record lands. §7.2 covers both worlds deliberately: *"the process may be gone or
+        // still running with marion no longer attached"*.
+        //
+        // So the boot restriction is not a claim about liveness. It is that boot is the only
+        // instant where the record-only verdict is **useful without being false in practice**:
+        // re-running it on every poll would mark every healthy child, because a child writes
+        // nothing that decides its fate between `Spawned` and `Exited` and is `is_unresolved` for
+        // its whole working life (`re_marking_on_every_poll_would_orphan_a_child_that_is_merely_
+        // still_working` is that proof). At boot the tree holds only work no caller is waiting on
+        // *this* supervisor for, so the same verdict costs nothing it should not cost.
+        //
+        // **The honest gap this leaves**, rather than a silence: a node that arrives after boot and
+        // whose writer then dies — a bridge killed on its harness's timer (s16) — is never marked,
+        // and this supervisor cannot tell. It never owned that bridge, its channel, or its child,
+        // and *"this supervisor watched the record arrive"* is not *"this supervisor still controls
+        // the writer"*. The sound trigger is the loss of an attachment marion held, which marion
+        // has to hold first: §11 item 28's step (c). No timer is invented here in its place, because
+        // a timer would be the false-positive case above with a delay on it.
         let restart_marks = crate::restart::apply(&mut tree);
         let status = match &tree.truncation {
             Some(Truncation::Unparsable { .. }) => Status::Stopped {
@@ -544,8 +564,10 @@ mod tests {
     ///
     /// A node the journal already held when the supervisor started is a node whose fate this
     /// supervisor has no record of deciding, so it is `Orphaned`. A node that *appears while this
-    /// supervisor is following* is its contemporary and must stay `Live` however long it runs;
-    /// marking it would assert marion lost a node it is watching arrive.
+    /// supervisor is following* is left alone — not because this supervisor knows the node's writer
+    /// is still alive (it does not; see [`Registry::boot_path`]), but because the verdict is only
+    /// *useful* where everything in the tree predates this process, and re-running it later marks
+    /// healthy work. The sibling test below is the proof of that second half.
     #[test]
     fn boot_marks_a_live_node_orphaned_and_a_node_that_arrives_afterwards_is_left_alone() {
         let dir = scratch("registry-restart-marking");
@@ -583,6 +605,112 @@ mod tests {
             r.tree().get(&id("before")).unwrap().reap_state,
             marion_core::node::ReapState::Orphaned,
             "and polling does not undo the marking",
+        );
+    }
+
+    /// **Why the pass may not simply be re-run on every poll**, stated as the thing that would go
+    /// wrong rather than as a preference.
+    ///
+    /// `is_unresolved()` is true for a healthy child for the *entire time it is working*: between
+    /// its `Spawned` and its `Exited` a child writes nothing that decides its fate, so it sits
+    /// `Running` with no reap intent and no abort — indistinguishable, on the record alone, from a
+    /// node marion lost. A pass re-run on every poll would therefore mark **every** running child
+    /// `Orphaned` on the poll after its `Spawned` lands, flip §7.6's descendant gating for it, and
+    /// drop it out of §5.7's residency. Not a corner case; the common one.
+    ///
+    /// This test drives exactly that: the pass is re-run over the tree mid-run and *does* return a
+    /// verdict, then the child's own exit arrives and proves the verdict was false. What makes the
+    /// boot instant different is not knowledge about writers — a bridge that predates the boot can
+    /// be just as alive, which is what the supersession test below is about — it is that at boot
+    /// the tree contains only work no live caller is waiting on this supervisor for.
+    #[test]
+    fn re_marking_on_every_poll_would_orphan_a_child_that_is_merely_still_working() {
+        let dir = scratch("registry-restart-not-per-poll");
+        let path = dir.join("journal.jsonl");
+        let mut r = Registry::boot_path(&path).expect("a missing journal boots empty");
+        assert!(r.restart_marks().is_empty());
+
+        append(&path, &line("w", 0, intent("working", None)));
+        append(&path, &line("w", 1, spawned("working")));
+        assert_eq!(r.poll(), 2);
+        assert_eq!(
+            r.tree().get(&id("working")).unwrap().reap_state,
+            marion_core::node::ReapState::Live,
+            "the poll does not mark, which is the behaviour this test defends",
+        );
+
+        // What a per-poll pass would have concluded about this perfectly healthy child.
+        let mut hypothetical = r.tree().clone();
+        assert_eq!(
+            crate::restart::mark(&hypothetical)
+                .iter()
+                .map(|m| m.agent_id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["working"],
+            "a child between Spawned and Exited is `is_unresolved` and would be marked",
+        );
+        crate::restart::apply(&mut hypothetical);
+
+        // And the child was working the whole time, which is what makes that verdict false.
+        append(&path, &line("w", 2, exited("working")));
+        assert_eq!(r.poll(), 1);
+        assert_eq!(
+            r.tree().get(&id("working")).unwrap().state,
+            marion_core::node::NodeState::Exited(ExitStatus::Ok),
+        );
+        assert_eq!(
+            r.restart_marks(),
+            [],
+            "and this supervisor never claimed to have lost it",
+        );
+    }
+
+    /// **A later truthful `Exited` supersedes the marking in the registry that made it** — the
+    /// production path, not a re-derivation.
+    ///
+    /// The marking is derived rather than journaled precisely because a node marion lost may still
+    /// be driven by a live process that writes a truthful terminal record afterwards (§11 items 28
+    /// and 30). That argument is about **this** registry: the supervisor that marked the node is
+    /// the one following the journal when the record lands, and it is the one whose subscribers
+    /// read the tree. A test that replays the whole journal afresh proves only that a *reboot*
+    /// re-derives correctly, which was never in doubt.
+    #[test]
+    fn an_exit_appended_after_the_marking_supersedes_it_in_the_registry_that_marked_it() {
+        let dir = scratch("registry-restart-superseded");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("lost", None)));
+        append(&path, &line("w", 1, spawned("lost")));
+
+        let mut r = Registry::boot_path(&path).expect("a readable journal boots");
+        assert_eq!(
+            r.tree().get(&id("lost")).unwrap().reap_state,
+            marion_core::node::ReapState::Orphaned,
+            "the boot marked it, which is the premise of the rest of this test",
+        );
+
+        // The bridge that was in fact still driving it finished and wrote its exit.
+        append(&path, &line("w", 2, exited("lost")));
+        assert_eq!(r.poll(), 1, "the exit was folded in");
+
+        let n = r.tree().get(&id("lost")).unwrap();
+        assert_eq!(
+            n.state,
+            marion_core::node::NodeState::Exited(ExitStatus::Ok),
+            "the journal now records the fate",
+        );
+        assert_eq!(
+            n.reap_state,
+            marion_core::node::ReapState::Live,
+            "§7.2: a derived marking is superseded by the record that decides the fate; a tree \
+             reading Exited and Orphaned at once contradicts itself",
+        );
+        assert_eq!(
+            n.reap_state,
+            marion_core::registry::replay(&std::fs::read(&path).unwrap())
+                .get(&id("lost"))
+                .unwrap()
+                .reap_state,
+            "and it agrees with what a fresh boot over the same bytes would read",
         );
     }
 

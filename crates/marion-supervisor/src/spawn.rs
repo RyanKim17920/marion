@@ -96,11 +96,17 @@ pub enum SpawnError {
     /// node's fault would become contagious to its siblings; and answering `Ok` with no contract
     /// would be the silent-success shape. A panic is a marion bug, so the sentence says so and
     /// does not invite the caller to retry.
+    // The sentence used to end *"its journal records end at its `SpawnIntent`"*, which was never
+    // true of any panic: `run.rs`'s `AbortOnDrop` is armed across the whole child run and `Drop`
+    // runs on an unwind, so a `SpawnAborted` is always there — and if the panic came after the
+    // child was reaped, so are `Spawned` and `Exited`. Pointing the reader at a record that is not
+    // the last one sends them looking for a truncated journal instead of the abort that explains
+    // it.
     #[error(
         "spawn failed: marion's own thread running the {0} child panicked, so there is no contract \
          and no way to say what the child did. This is a defect in marion, not in the request; the \
-         child's process may have been left running and its journal records end at its \
-         `SpawnIntent`."
+         child's process may have been left running, and the journal resolves the node with a \
+         `SpawnAborted` written by the unwind rather than with a record of what it did."
     )]
     Panicked(String),
     /// §5.4's `isolation`, for every value but the one marion performs.

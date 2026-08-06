@@ -85,9 +85,13 @@ pub enum Marking {
     /// record is therefore about the *spawn*, not about the process, and that gap is named rather
     /// than folded into either neighbour.
     ///
-    /// The plain case — `SpawnIntent` then `SpawnAborted` and nothing else, which is what a
-    /// `marion run` whose root failed to launch journals — is **not** this: it produces no entry at
-    /// all, because there is no process and there never was one.
+    /// **Two shapes are not this, and both produce no entry at all.** The plain case —
+    /// `SpawnIntent` then `SpawnAborted` and nothing else, which is what a `marion run` whose root
+    /// failed to launch journals — because there is no process and there never was one. And the
+    /// abort written *after* a terminal record, which is `run.rs`'s own commonest way to reach the
+    /// guard (`persist_then_cap` returning while it is still armed): the whole content of this
+    /// variant is *"marion cannot say whether a process was still running"*, and beside an observed
+    /// exit marion can, so [`classify`] asks that first.
     AbortedOverALiveSpawn,
 }
 
@@ -111,7 +115,30 @@ pub fn mark(tree: &Replay) -> Vec<Marked> {
 
 /// The partition, once. Every caller reads this rather than restating the clauses — a second copy
 /// is what lets a refusal class drift out of one of them.
+///
+/// **Terminality is asked before anything else, and the order is the correctness argument.** Both
+/// refusal classes below are claims about what marion *could not determine*, and each is read off
+/// a field that the journal never retracts: `reap_intent` outlives an unobserved kill, and
+/// `spawn_aborted` outlives the guard that wrote it. Asking either first therefore lets a stale
+/// field outvote an observation marion actually made, and the result is a refusal that is
+/// provably false rather than merely cautious:
+///
+/// * `run.rs` writes `Spawned` only *after* the child has been run and reaped, and writes `Exited`
+///   from the completion beside it — then `persist_then_cap`'s `?` can return while `AbortOnDrop`
+///   is still armed, appending `SpawnAborted` over both. Reporting `AbortedOverALiveSpawn` there
+///   claims the abort may have been written over a running process, when the journal in front of
+///   it records the process being observed dead.
+/// * §7.2 resolves an unconfirmed reap intent *by checking for the process*. A terminal record is
+///   that check, already made and already journaled. Reporting `ReapIntentUnresolved` over it
+///   claims marion cannot tell whether a process it watched die is alive — and, through
+///   `handler.rs`'s residency, keeps an already-dead fleet's supervisor alive forever.
+///
+/// A node whose fate is on the record needs no verdict from restart at all, which is what the
+/// early return says.
 fn classify(node: &ReplayedNode) -> Option<Marked> {
+    if node.state.is_exited() || node.reap_state == ReapState::ReapedIdle {
+        return None;
+    }
     let marking = if node.reap_intent.is_some() {
         Marking::ReapIntentUnresolved
     } else if node.is_unresolved() {
@@ -541,6 +568,116 @@ mod tests {
             next_boot.get(&id("lost")).unwrap().reap_state,
             ReapState::Live,
             "a journaled Orphaned would have contradicted this exit forever"
+        );
+    }
+
+    /// **Terminality is asked first, or the auxiliary fields lie.** `run.rs`'s production shape:
+    /// the child ran, `Spawned` and `Exited` are on the record, and then `persist_then_cap` failed
+    /// — so the still-armed `AbortOnDrop` appended `SpawnAborted` on the way out.
+    ///
+    /// `AbortedOverALiveSpawn` is a claim that the abort may have been written over a process that
+    /// was still running. Here it provably was not: production `Spawned` is written *after* the
+    /// child was run and reaped, and the journal carries the observed exit beside it.
+    #[test]
+    fn an_abort_written_after_an_observed_exit_is_not_an_abort_over_a_live_spawn() {
+        let mut log = Log::default();
+        log.started("finished", None);
+        log.push(RecordKind::Exited(Exited {
+            agent_id: id("finished"),
+            status: ExitStatus::Ok,
+            exit: ProcessExit {
+                code: Some(0),
+                signal: None,
+                description: "exited cleanly".into(),
+            },
+        }));
+        // `run.rs`: `persist_then_cap(&agent_dir, &contract)?` returns before
+        // `resolution.armed = false`, so the guard fires with both records already written.
+        log.push(RecordKind::SpawnAborted(SpawnAborted {
+            agent_id: id("finished"),
+            reason: "marion left the spawn path before the child reached a terminal record".into(),
+        }));
+        let mut tree = log.tree();
+        let marks = apply(&mut tree);
+        assert_eq!(
+            marking_of(&marks, "finished"),
+            None,
+            "the exit is observed on the record; there is no live spawn for the abort to be over",
+        );
+        assert_eq!(
+            tree.get(&id("finished")).unwrap().reap_state,
+            ReapState::Live,
+            "and it is certainly not orphaned",
+        );
+    }
+
+    /// The same ordering fault on the other arm: a reap intent whose process was **observed** dead
+    /// is not one marion failed to resolve.
+    ///
+    /// §7.2 resolves an unconfirmed intent by checking for the process and *"gone means marion
+    /// writes the confirmation"*. A journaled `Exited` — or, as here, the `KillConfirmed` a
+    /// `session/quit` KillTree writes over the node — **is** that observation, already on the
+    /// record. Reporting `ReapIntentUnresolved` for it claims marion cannot tell whether a process
+    /// it watched die is alive.
+    #[test]
+    fn a_reap_intent_over_a_node_whose_death_was_observed_is_not_unresolved() {
+        let mut log = Log::default();
+        log.started("reaping", Some(4243));
+        log.push(RecordKind::ReapIntent(ReapIntent {
+            agent_id: id("reaping"),
+            reason: "session/quit reaped an idle node before detaching busy work".into(),
+        }));
+        // The signal went out and marion could not observe the death, so no `ReapConfirmed` was
+        // written (`handler.rs` returns rather than fabricating one). The operator then confirmed
+        // a `session/quit` KillTree, which did observe it.
+        log.push(RecordKind::KillConfirmed(KillConfirmed {
+            agent_id: id("reaping"),
+            exit: ProcessExit {
+                code: None,
+                signal: Some(9),
+                description: "confirmed session/quit killed the node's process tree".into(),
+            },
+        }));
+        let mut tree = log.tree();
+        let marks = apply(&mut tree);
+        assert_eq!(
+            marking_of(&marks, "reaping"),
+            None,
+            "the death is on the record, so there is nothing left for restart to resolve",
+        );
+    }
+
+    /// The `ReapedIdle` half of the terminality guard, pinned on its own.
+    ///
+    /// Defensive rather than measured: `handler.rs`'s reap path only ever selects nodes that are
+    /// `Idle`, `Live` and intent-free, so marion writing this exact journal would take a sequence
+    /// nothing today produces. It is asserted anyway because `classify` is a **total function over
+    /// the journal**, not over the journals marion happens to write — a reader of any journal must
+    /// not be told marion abandoned a spawn over a process it confirmed dead itself.
+    #[test]
+    fn a_reaped_node_is_not_reclassified_by_a_later_abort_record() {
+        let mut log = Log::default();
+        log.started("reaped", Some(4242));
+        log.push(RecordKind::ReapIntent(ReapIntent {
+            agent_id: id("reaped"),
+            reason: "idle memory reclaim".into(),
+        }));
+        log.push(RecordKind::ReapConfirmed(ReapConfirmed {
+            agent_id: id("reaped"),
+        }));
+        log.push(RecordKind::SpawnAborted(SpawnAborted {
+            agent_id: id("reaped"),
+            reason: "an unwind aborted the run".into(),
+        }));
+        let mut tree = log.tree();
+        assert_eq!(
+            tree.get(&id("reaped")).unwrap().reap_state,
+            ReapState::ReapedIdle
+        );
+        assert_eq!(
+            marking_of(&apply(&mut tree), "reaped"),
+            None,
+            "marion observed this process dead itself; the abort decides nothing further",
         );
     }
 
