@@ -2566,9 +2566,31 @@ not by session:
 `ReapedIdle` nodes from disposition (c) re-attach as replay plus their resumable status; they have
 no channel to re-subscribe to until resumed (§7.2).
 
-**Untested.** No fixture covers a re-attach of any kind, live-node re-subscription least of all,
-and the replay-to-subscribe seam has never been exercised against a node producing events during
-the handover.
+**`events.jsonl` exists now, and is written by both call sites (plan item 3.4, 2026-08-06).** The
+replay leg has a substrate: a root's stream is recorded by `root::launch_watched` in `marion run`'s
+process, and a **child's** by `run::run_spawn` inside the *bridge's* process — the only process that
+ever holds a child's frames. `tests/child_events.rs` asserts end to end, through the real binary
+with a real `claude` root and a real `codex` child, that every node that ran leaves a stream bounded
+by an opening and a terminal bookend with contiguous ordinals. The bookends are what make this
+section's hardest case answerable at all: a node spawned, run and terminated inside the detached
+window is reconstructible only if its file says both *that it started* and *how it ended*, since a
+stream without a terminal event is indistinguishable from one cut mid-turn.
+
+**§5.2's MUST reaches this file.** *"A launcher that sends `initialize` MUST NOT journal or forward
+the reply verbatim"* — an events file is a journal in every sense that rule cares about, and S9
+measured that reply at ~30 kB of the operator's command catalogue, model prices,
+`account.tokenSource` and the CLI's pid. It is recorded as a withheld marker naming the frame and
+its size, never its body. Narrowly, on the request id: an interrupt's `control_response` is 100
+bytes and is exactly what a re-attaching client wants.
+
+**Still untested, and the list is shorter but not empty.** No fixture covers a re-attach *itself* —
+there is no `node/attach` handler and no detach — so **live-node re-subscription is entirely
+unexercised**, and it is the leg no amount of file-writing can stand in for. The replay-to-subscribe
+seam has a control at the unit level (a replay landing mid-record, completed across the handover,
+delivering that event exactly once) but **has never been exercised against a real node producing
+events during a real handover**, which needs the detach mechanism to exist first. Note also that
+today a child cannot be *observed* live across processes at all: `spawn` is synchronous, so
+`run_spawn` returns only once the child is reaped.
 
 ### 7.4 Journal corruption
 
