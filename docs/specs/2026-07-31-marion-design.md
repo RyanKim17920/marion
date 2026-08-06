@@ -377,7 +377,7 @@ watch-me work; `opaque` as the universal floor.
 struct Event {
     agent_id: AgentId,
     parent_id: Option<AgentId>,
-    global_seq: u64,              // supervisor-assigned total order
+    global_seq: u64,              // NOT WRITTEN — no process sequences every event; see §4.2
     agent_seq: u64,               // per-agent receive order
     src_seq: Option<SrcSeq>,      // source-side ordering evidence; see §4.2
                                   // enum SrcSeq { Ordinal(u64), Predecessor(EventId) }
@@ -422,10 +422,39 @@ on one. `completeness` is what the UI keys on before claiming anything about los
 
 ### 4.2 Ordering
 
-`global_seq`, assigned by the supervisor on receipt, is the total order. The supervisor is the
+~~`global_seq`, assigned by the supervisor on receipt, is the total order. The supervisor is the
 only process receiving and writing normalized events — it *is* the sequencer — so no distributed
-clock is warranted. Causality is recorded **explicitly** via `caused_by` and the harness-native
-`thread_id`/`turn_id`/`item_id`, not inferred from a counter.
+clock is warranted.~~ **CORRECTED 2026-08-06, on building the `events.jsonl` writer (plan item
+3.4). The premise is false, and it was false when it was written.**
+
+**No process receives all of marion's events.** A child's stream is read and written by the
+**bridge's** process — `run::run_spawn` runs there, which is the same fact §4.3 already leans on for
+the journal's concurrent writers and which `registry.rs` states as its reason for tailing the
+journal rather than being updated in place — and a root's is read by `marion run`'s. These are
+separate processes sharing no counter. So a `global_seq` written by either would be a claim to a
+total order **across processes that nothing assigns**, and the field's stated justification is the
+thing that is wrong, not merely its value.
+
+The correction is the one this document already applies one section down, and it needs no new
+mechanism: **§4.3 makes the journal's total order the file's byte order**, assigned by the kernel,
+with a per-writer ordinal for loss detection. `events.jsonl` takes the same answer in its easier
+form — one file per node, **one writer per file** (an agent dir belongs to one node, and one process
+drives it), so `agent_seq` is a genuine total order over that file rather than an observation
+counter that happens to be dense. Loss detection stays `src_seq`'s job, unchanged.
+
+**So `Event` carries `agent_seq` and no `global_seq`**, and a cross-node total order is *not
+available* today. Nothing in §7.3.3 needs one: re-attach is per node, its seam is per node, and
+`AttachMode` carries a `ReplayPoint` per node. A UI ordering two nodes' events against each other
+has `ts` (display only, §4.2) and `mono_ns` (per writer, not comparable across them) and must not
+present the result as an observed order. Should a real cross-node ordering requirement appear, it
+needs a sequencer that exists — which today would mean the supervisor being in the path of every
+event, a change to §5's component boundaries and not a field.
+
+Causality is recorded **explicitly** via `caused_by` and the harness-native
+`thread_id`/`turn_id`/`item_id`, not inferred from a counter. (`thread_id`, `turn_id` and `item_id`
+are likewise absent from what marion writes today, for the reason the normalized `Payload` variants
+are: extracting them is per-frame normalization no adapter performs. See §11 item 26's neighbours
+and `marion_core::event::Normalization`, which refuses them in the type.)
 
 `ts` is wall clock and display-only: NTP steps and sleep/wake move it backwards, which can invert
 a parent's spawn against its child's `Spawned`. `mono_ns` exists to align `events.jsonl` with
@@ -4825,11 +4854,49 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     `root::availability_axis` refuses the *grant* when the *audit* is unavailable, which is a
     different act. Cross-referenced from **§9** and from **item 19**.
 
+26. **`events.jsonl` grows without bound, and the journal's compaction cannot be borrowed to fix it
+    — OPEN, newly articulated 2026-08-06, from building the writer and reader (plan item 3.4). No
+    new measurement is claimed.** §4.3 gives `journal.jsonl` an *"opportunistic journal compaction"*
+    in `snapshot.json` and gives `events.jsonl` nothing, which reads as an omission. It is not one:
+    the journal's answer **does not transfer**, and the reason is structural rather than a matter of
+    effort.
+
+    **A fold can be compacted; a stream cannot.** The journal is replayed into a tree — a small,
+    fixed state — so its prefix is genuinely redundant and a snapshot preserves everything a replay
+    would produce. An event stream's whole value is that it is **not** folded: the events themselves
+    are the product, there is no smaller equivalent state, and §7.3.3's replay leg hands a client
+    the events rather than a summary of them. So the eventual answer is size- or age-bounded
+    **retention**, not compaction — deleting the head of a stream and admitting it, which is a
+    different operation with a different failure mode.
+
+    **And the shape retention needs does not exist yet.** §7.4's truncation discipline — *"a
+    truncated final line is discarded on replay"* — is **entirely about the tail**, and so is every
+    implementation of it: `Truncation` has `UnterminatedTail` and `Unparsable`, both describing where
+    a reading *stopped*, and `Replay::extend`/`EventLog::extend` advance a cursor that only ever
+    moves forward from byte 0. **A head-truncated file is a state none of them can express**, so a
+    reader meeting one today would report a partial stream as a whole one, with a contiguous
+    `agent_seq` starting at whatever survived — the exact silent-completeness claim this document
+    keeps recording as its failure class. Note that `agent_seq` contiguity would *not* betray it:
+    the ordinals that remain are contiguous among themselves.
+
+    **Why it is not urgent, stated so the deferral is auditable.** Every node marion runs today is a
+    bounded run — `run_bounded`, `DuplexSpec::wall_clock`, a contract's `timeout_secs` — so every
+    file is bounded by its node's own lifetime. The unbounded case arrives with the **interactive**
+    surface (§3.4), where a node lives across many turns, and it should be closed before that lands
+    rather than after.
+
+    **What would close it.** A retention policy with an explicit head marker — a first line that
+    says *"N events were discarded before this point"* — which requires extending `Truncation` (or a
+    sibling of it) to describe a head, and requires `read_point` to distinguish *"I have read 40
+    events"* from *"I have read events 900–940"*. Neither is hard; both are vocabulary decisions
+    that must be made before a reader can be honest about a trimmed file, which is why this is filed
+    rather than deferred silently. Cross-referenced from **§4.3** and **§7.3.3**.
+
 ---
 
 ## 12. History: what was retracted or corrected
 
-Recorded so it is not rediscovered. The 63 rows below come from thirteen spikes — S1–S5 on
+Recorded so it is not rediscovered. The 64 rows below come from thirteen spikes — S1–S5 on
 2026-07-31, S6 and S7 on 2026-08-01, S8 on 2026-08-02, S9, S10, S11, S12 and S13 on 2026-08-03 —
 from audit rounds 5–19, and from **M1's own build**; every spike passed, and eleven of the thirteen
 corrected a design decision. **S9, S10 and S11 are the three that principally *confirmed*:** S9 found the
@@ -4897,6 +4964,7 @@ different provenance from either. No row is renumbered and no spike is invented 
 | `num_turns` 1→2 is the observable that a `decision: block` re-prompt landed | **CORRECTED (S10, 2026-08-03).** True of a **root** `Stop` and unchanged there. False for a subagent: `num_turns` is a **root counter** and read **`2` in every run**, including the negative control that registered **no hook at all**, so a `SubagentStop` re-prompt is invisible in it and a design keying on it would read "block landed" from a run where nothing fired. The discriminator is **`parent_tool_use_id` on the `user` frame** — the `Agent` call's `tool_use_id` for a subagent, `null` for a root — which is strictly better because it names *which* node was re-prompted rather than counting turns somewhere. §7.6 step 2 now states both cases separately. Also measured: the block on a subagent **replaces** the result — the root's `tool_result` carried the child's *second* answer, and the provider log shows the feedback reaching the model as a real user turn with a `cache_control` breakpoint, not merely the CLI. Fixtured in `tests/fixtures/s10/`. |
 | `SubagentStop` is verified statically only, adding `agent_id`/`agent_type`/`agent_transcript_path` to the `Stop` set | **CONFIRMED AND NARROWED (S10, 2026-08-03).** It fires, and the static reading was **complete**: exactly **14 keys** — S4's 11-key `Stop` set plus those three and nothing else — while the paired `Stop` in the same run carries the 11 and none of the three. What static reading could not give, now normative in §5.2: **`session_id` and `transcript_path` are the PARENT's**, so a hook reading `transcript_path` on a `SubagentStop` reads the wrong file; the child's transcript is `agent_transcript_path` at `<parent dir>/<session_id>/subagents/agent-<agent_id>.jsonl`. **`agent_id` is 17 lowercase hex chars with no dashes** — not a UUID, so a UUID-validating parser rejects a valid payload — and is **one id under four names** (`task_started.task_id`, `task_notification.task_id`, `agentId` in the `tool_result`). `stop_hook_active` correlates to the **node**, not the fire (`false` then `true`, same `agent_id`). Claude Code 2.1.220, canned provider, no credential, `total_cost_usd: 0`. |
 | A hook that produces no fire and no error was registered correctly and its event simply did not occur | **RETRACTED (S10, 2026-08-03).** There is **no signal that distinguishes the two.** A byte-identical run registering the hook **single-nested** plus misspelled event names produced **zero fires, zero `hook_started` frames, no warning, `is_error: false`, exit 0** and the same `num_turns: 2` as the working run. This document already said the nesting is double and typos are silently ignored; what was not stated is that the failure is **invisible**, so adapter conformance MUST prove wiring positively — a `hook_started`/`hook_response` pair or an actual fire — never by absence of an error. Both recordings committed (`settings-badshape.json`, `stream-badshape.jsonl`). Related and equally silent: Claude Code advertises the subagent tool to the model as **`Agent`** while `--tools` and `system/init` call it **`Task`**; a canned provider matching on `"Task"` never matches and the run looks exactly like one where the subagent tool was unavailable (§5.5). |
+| `global_seq` is the total order, because the supervisor is the only process receiving and writing normalized events — it *is* the sequencer | **CORRECTED (plan item 3.4, 2026-08-06), on building the `events.jsonl` writer. No new measurement; a read of the code against the claim.** The premise is false and was false when written: a **child's whole stream is read and written by the bridge's process** (`run::run_spawn` runs there — the same fact §4.3 already relies on for the journal's concurrent writers, and `registry.rs`'s stated reason for tailing rather than updating in place), while a root's is read by `marion run`'s. Two processes, no shared counter, so a `global_seq` from either is a claim to a total order **nothing assigns**. Corrected the way §4.3 already solved it for the journal — the total order is the **file's** byte order — in its easier per-node form: one file per node, **one writer per file**, so `agent_seq` is a genuine total order over that file. `Event` therefore carries **no `global_seq`**, and marion has **no cross-node total order**; §7.3.3 needs none, since re-attach, its seam and `AttachMode`'s `ReplayPoint` are all per node. Same refusal retires `thread_id`/`turn_id`/`item_id` and §4's five normalized `Payload` variants, which need per-frame normalization no adapter performs — enforced in the type by `marion_core::event::Normalization`, an uninhabited enum, so the gap is hit rather than read past. |
 | A node's completion is its own business | **SUPERSEDED.** Completion is descendant-gated: a node with non-terminal descendants may not exit without choosing to wait or to report early, and a non-terminal child never enters the parent's context. Added after observing the real harm — a subagent waiting on its children pings its parent with a non-answer. |
 | S1's interrupt protocol was proven over pipes; under a pty, isatty-conditional line buffering may change the framing | **CONFIRMED AND NARROWED (S11, 2026-08-03).** The **protocol** is unchanged and the worry was aimed at the wrong layer. S1's argv and stdin script, replayed verbatim over a real pty against Claude Code 2.1.220 and a canned provider (cost **$0.00**), produce an **identical 38-kind collapsed frame sequence** (`first_divergence: null`), a **byte-identical** interrupt `control_response`, and — after normalising only per-run UUIDs, wall-clock timestamps/durations and how far the canned stream got — **36 of 36 non-delta frames byte-identical** across pipes, pty and pty-with-`OPOST`-off. The interrupt semantics reproduce exactly: `{"still_queued":[]}`, then `is_error: true` / `error_during_execution` / `aborted_streaming`, then a successful follow-up turn and exit 0. What *did* change is **framing and fds**, in the two rows below. Fixtured in `tests/fixtures/s11/`; §11 item 1 closed, items 11 and 20 narrowed. |
 | A `read()` on a harness's stdout can be treated as a frame, and the `\r` a pty adds is the thing to fix | **CORRECTED (S11, 2026-08-03).** Same run, same binary: **139 reads over a pipe (largest 46,515 B, *zero* returning no complete frame) vs 230 over a pty (largest 1,024 B — the macOS pty output-queue ceiling — with 92 of them, 40%, containing no line terminator at all)**. The ~48 kB `initialize` reply is **one** read on a pipe and ~47 on a pty. So a reader that assumes a read is a frame **works on pipes and breaks on a pty**, with nothing to distinguish the two until the transport changes — §5.2 now requires buffering and splitting on frame boundaries as a MUST. And the `\r` is **not** the mechanism: a fourth capture with `OPOST` cleared has **0 CRLF and 141 LF-only lines but exactly the same 230 reads and 1,024 B maximum**, attributing the `\r` to the line discipline's `ONLCR` and the chunking to a **separate, independent** mechanism. Recorded because conflating them yields a plausible and wrong fix — clearing `OPOST` removes every `\r` and restores nothing about the framing. |
