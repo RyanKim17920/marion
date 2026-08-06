@@ -1611,6 +1611,11 @@ never be resolved:
 - any reap intent is journaled but unconfirmed (§7.2) — exiting here reproduces exactly the crash
   window that intent-then-confirm exists to close.
 
+A fifth condition is **not** on that list and belongs on it once someone decides what it means:
+a registry that has stopped following its journal (§7.4) answers every clause above from a frozen
+prefix. marion fails closed there and says so by name rather than quoting a stale clause; the open
+half is §11 item 28.
+
 **The grace period is a design choice, not a measurement.** A default of **300 s**, configurable,
 is proposed on the reasoning that it should outlast an operator closing one window to open another
 and should not outlast a coffee break; **no experiment in this repo bears on the number** and it
@@ -1639,10 +1644,15 @@ which names the three mechanisms, states what closing it would take, and records
 `launchd`/systemd option carries a second question this section's lifetime rules would have to
 settle.
 
-**What this does not claim.** None of this is implemented. The start race, the detach mechanism,
-the grace period and the exit record are all specification ahead of code, and the only measured
-fact reused here is §5.2's Codex app-server lifetime, which is evidence that a server *can* outlive
-its client — not evidence about marion's.
+**What this does not claim.** When written, none of this was implemented. **As of 2026-08-06 most
+of it is**: the start race is decided by an `flock` and measured across sixteen racing processes,
+the detach mechanism is S15's `setsid_double`, the grace is configurable and defaults to the 300 s
+below, and the exit record is written before the accept loop breaks
+(`tests/detached_supervisor.rs`). The only measured fact *reused* here is still §5.2's Codex
+app-server lifetime, which is evidence that a server *can* outlive its client — not evidence about
+marion's. **What remains specification ahead of code is the part §7.3.1 depends on**: the supervisor
+holds no node, so the lifetime rules above govern a process that is a journal reader rather than the
+holder of the fleet (§11 item 27).
 
 ---
 
@@ -2493,6 +2503,14 @@ reading it is not a guarantee.
 A dropped socket is therefore **not** a quit (§2). The supervisor sees the same thing in both
 cases; only an explicit `session/quit` distinguishes them, and in its absence marion takes the
 reading that preserves work.
+
+**Not delivered today, and the gap is in the process layout rather than in this rule.** §11 item
+27: the detached supervisor tails the journal and holds no node's `Child`, pid, pipe or channel —
+`marion run` holds all of them and journals `Spawned` only when the root's blocking call returns.
+SIGKILL `marion run` mid-root and the child is unheld by anybody while the supervisor sees an
+unresolved spawn forever. Read this section as the specification it is; item 27 names the four
+changes that would make it a property of the code, and records that §9's M2 criteria 1 and 4 cannot
+be met until they land.
 
 Nodes do not change state. Nothing is journaled about the client's death, because from the
 registry's point of view nothing happened: no node was reaped (§7.2 — a reap is a decision marion
@@ -4913,6 +4931,90 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     events"* from *"I have read events 900–940"*. Neither is hard; both are vocabulary decisions
     that must be made before a reader can be honest about a trimmed file, which is why this is filed
     rather than deferred silently. Cross-referenced from **§4.3** and **§7.3.3**.
+
+27. **§7.3.1's crash guarantee is specified and is NOT delivered by the detached supervisor as
+    built — OPEN, newly articulated 2026-08-06, from a read of `bin/marion.rs`, `root.rs` and
+    `handler.rs` at `2349bb6`. No new measurement is claimed; this is a statement of what the code
+    does not do.** §7.3.1 is written as an invariant: *"a crashed, SIGKILLed, or otherwise vanished
+    client MUST leave every node exactly as it was"*, and §2 says the split *"exists so a TUI crash
+    cannot kill running agents"*. Both are true of the **design**. Neither is true of the process
+    layout that exists today, and the difference must not be inferred from the fact that a
+    supervisor process now exists.
+
+    **What the detached supervisor actually holds.** A journal reader. `detach.rs` starts it,
+    `registry.rs` tails `journal.jsonl`, and `handler.rs` answers `node/get`, `tree/subscribe` and
+    `session/quit` from that replay. It holds **no** `Child`, **no** pid it spawned, **no** pipe and
+    **no** control channel to any node. Every one of those is held by `marion run`, in
+    `root::launch_watched`, for the whole of the root's turn — and `Spawned` is not journaled until
+    that blocking call returns.
+
+    **So SIGKILL `marion run` mid-root and §7.3.1 does not hold.** The child either survives with
+    nobody holding it or dies of its closed pipes; which one is not marion's decision and is not
+    recorded either way. The supervisor sees an unresolved `SpawnIntent`/`Spawning` node, forever,
+    because §5.7 correctly refuses to exit over one — so the outcome is a process leak *and* a
+    supervisor leak, not a preserved fleet. This is strictly worse than M1's single process, where
+    at least the leak was visible as one dead command.
+
+    **The same gap is why `marion run`'s quit is a `Drop` guard rather than a handler.** `Drop`
+    covers an ordinary return and an unwind and covers nothing else: `std::process::exit`, a
+    `panic = "abort"` build, SIGINT, SIGTERM and SIGKILL all bypass it. marion installs no signal
+    handler anywhere. On those paths the supervisor takes §7.3.1's reading — nothing happens to any
+    node, wait out §5.7's grace — which is the *correct* answer to what it can see and still leaves
+    whatever `marion run` was holding unheld.
+
+    **What would close it, in the order it has to happen.** (a) `agent/spawn` becomes a real handler
+    so the supervisor is the process that calls `Command::spawn` and keeps the `Child`; (b) the
+    per-child MCP bridge becomes a socket client of that handler rather than a driver in its own
+    process (§2 already says the bridge *"derives this path by the same rule"*, which is the
+    substrate); (c) event sinks and journal writes move behind the supervisor, so `Spawned` is
+    durable at the instant the process exists rather than when the call returns; (d) `marion run`
+    becomes a pure client, which needs §11 item 23's backgrounding to exist. Until (a)–(c),
+    **`marion run` is a driver wearing a client's clothes** and no amount of supervisor-side testing
+    can assert §7.3.1.
+
+    **What this blocks.** §9's fourth M2 criterion — *"a clean quit-and-return, which the three
+    criteria above cannot distinguish from a replay"* — is **unmeetable today**, and for its own
+    stated reason: its load-bearing half (ii) requires a new client to receive *"events emitted
+    after it attached … proving re-subscription to a live channel rather than replay of a corpse"*,
+    and there is no live channel on the supervisor's side to re-subscribe to. Criterion 1
+    (`marion-tui` SIGKILLed, agents keep running) is likewise unmeetable, since the process that
+    would have to survive the kill is the one holding the agents. `MILESTONES.md` records this
+    against M2.
+
+    **What is deliberately *not* claimed here.** That the supervisor is useless — it is the single
+    reader of the journal, it enforces §5.7's lifetime, and `session/quit`'s three dispositions are
+    real. That the split is wrong: it is the right split, partly wired. And no claim that the
+    failure has been *observed* — the reasoning above is read off the call graph, and a fixture that
+    SIGKILLs a `marion run` mid-root and inspects both the child and the supervisor does not exist.
+    Building that fixture is the cheapest next step and would convert this item from argued to
+    measured. Cross-referenced from **§2**, **§5.7**, **§7.3.1** and **§9** (M2).
+
+28. **§5.7's exit predicate has no clause for a registry that stopped following — OPEN, newly
+    articulated 2026-08-06, filed with `registry.rs`'s `Status::Stopped` and `handler.rs`'s
+    `ResidentReason::RegistryStopped`. No new measurement is claimed.** `registry.rs` stops
+    following a journal for good at a complete line that is not a record, or at a file that got
+    shorter (§7.4), and it is right to: *"an authority may not keep serving a tree from a file it no
+    longer recognises."* One level up, §5.7's exclusion list is then evaluated against the prefix as
+    it stood **before** that point, so a node that has since exited holds the supervisor forever and
+    nothing short of a signal ends it.
+
+    **Half of this is now closed and the half that is closed is the reporting, not the condition.**
+    The supervisor answers `Resident(RegistryStopped)` and logs the reason once, rather than quoting
+    whichever stale clause the frozen prefix happens to satisfy — an operator told *"a node is
+    non-terminal"* goes looking for a node that finished, while *"marion stopped reading this file"*
+    is actionable. Failing closed is kept deliberately: a frozen tree may name live work, and a
+    supervisor that exited on a reading it knows is stale would be guessing about processes.
+
+    **What would close the rest.** A decision §5.7 does not currently contain: what a supervisor
+    that can no longer read its own journal is *permitted* to do. The plausible answers are (a) exit
+    after the grace on the grounds that a supervisor with no readable state supervises nothing —
+    which is unsafe exactly when the frozen prefix names live nodes; (b) re-boot the registry from
+    the intact prefix plus a recorded head marker, which needs §11 item 26's head vocabulary; or (c)
+    keep failing closed and give `doctor` an explicit repair path. None is cheap and none should be
+    picked to make a test go green. Pinned by
+    `tests/detached_supervisor.rs::a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by_name`
+    and by the reap in `tests/run_stream.rs`, which exists only because of this. Cross-referenced
+    from **§5.7**, **§7.4** and **§11 item 26**.
 
 ---
 

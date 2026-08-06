@@ -426,6 +426,20 @@ how much code exists.
   purpose. That purpose is the **live watch view**, not reattach, and none of §9's four M2 criteria
   is a view. What keeps M2 [open] is that **reattach restores nothing**: there is no socket, no
   registry at runtime, no `events.jsonl`, and no client to attach — see "What is not built" below.
+
+  **Updated 2026-08-06, and the update makes M2 further from done rather than nearer.** A detached
+  `marion-supervisor` now exists (`0d1224e`, `2349bb6`): it is started on demand, it holds §2's
+  socket, it tails the journal, and it answers `node/get`, `tree/subscribe` and `session/quit`.
+  **That is a reader and not an owner.** It holds no node's `Child`, pid, pipe or channel —
+  `marion run` holds every one of them for the whole of a root's turn — so **§9's M2 criterion 1
+  ("`marion-tui` SIGKILLed mid-run; agents keep running") is unmeetable today**, because the process
+  that would have to survive the kill is the one holding the agents. **Criterion 4 (the clean
+  quit-and-return) is unmeetable for the same reason** and says so itself: its load-bearing half
+  requires a new client to receive events emitted *after* it attached, "proving re-subscription to a
+  live channel rather than replay of a corpse", and there is no live channel on the supervisor's
+  side. §11 item 27 states the gap in full and names the four changes that would close it. Anyone
+  quoting the existence of a detached supervisor as progress toward M2's crash criterion is quoting
+  the wrong half of it.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
