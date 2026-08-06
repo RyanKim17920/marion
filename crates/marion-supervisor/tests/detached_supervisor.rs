@@ -126,6 +126,21 @@ fn published(paths: &SocketPaths) -> SupervisorIdentity {
     read_identity(paths).expect("just observed")
 }
 
+/// Every test that ends by letting go of its last connection asserts this rather than leaving the
+/// process for [`Bed::drop`]'s `SIGKILL`. A fixture that sweeps up is a safety net; a fixture that
+/// is the *only* thing ending a supervisor is a leak the assertions cannot see, and this file spent
+/// a revision in exactly that state because §5.7's exit was gated on an explicit quit having
+/// arrived. It is not any more, so an empty supervisor with no clients goes on its own — and a test
+/// that says so is what keeps it that way.
+fn goes_on_its_own(bed: &Bed) {
+    assert!(
+        until(|| bed.supervisors().is_empty()),
+        "§5.7: zero clients, zero non-terminal nodes — this supervisor must leave without being \
+         killed by the fixture, and {:?} did not",
+        bed.supervisors()
+    );
+}
+
 /// **NC — a supervisor that detached is in neither its launcher's process group nor its session, and
 /// leads neither of its own.**
 ///
@@ -230,6 +245,7 @@ fn a_detached_supervisor_shares_neither_session_nor_group_with_its_launcher_and_
     );
 
     drop(ensured);
+    goes_on_its_own(&bed);
 }
 
 /// **NC — a second client starts no second supervisor.**
@@ -269,6 +285,7 @@ fn a_second_client_dials_the_running_supervisor_and_starts_no_second_one() {
 
     drop(first);
     drop(second);
+    goes_on_its_own(&bed);
 }
 
 /// A supervisor's socket, lock and identity are one story, so a client that finds one finds all
@@ -301,6 +318,7 @@ fn the_published_identity_lives_and_dies_with_the_socket() {
         "the identity is republished by whoever took the lock, not inherited from the corpse"
     );
     drop(next);
+    goes_on_its_own(&bed);
 }
 
 // ------------------------------------------------------------ §5.7's start, across processes
@@ -312,11 +330,17 @@ fn the_published_identity_lives_and_dies_with_the_socket() {
 /// resolve to the same path"* — two invocations, which is two processes, with no shared memory, no
 /// shared allocator and an `flock` that has to be the whole of the agreement between them.
 ///
-/// **The assertion is not "it converges to one".** A test that only waited for the count to settle
-/// would pass on an implementation where two supervisors served in turn, each unlinking the other's
-/// socket. So the identity file is sampled throughout the whole race and the assertion is that the
-/// number of **distinct** supervisors ever seen serving is one. A takeover would show up as a second
-/// pid in that set even if the count were 1 at every instant.
+/// **The assertion is not "it converges to one", and it is not sampling either.** A test that only
+/// waited for the count to settle would pass on an implementation where two supervisors served in
+/// turn, each unlinking the other's socket. The earlier revision reached for that by counting
+/// distinct pids in the identity file — but it sampled only while it happened to be waiting on a
+/// launcher, at 2 ms, so a supervisor that published and vanished between two samples was invisible
+/// and the claim *"ever seen serving"* was really *"seen whenever this thread looked"*.
+///
+/// The sampling is kept and its claim is written down as what it is. The load-bearing assertion is
+/// the one below it, which does not sample at all: **the pid serving at the end is the first pid
+/// ever published.** Both are single observations, so no rate can hide anything between them — a
+/// takeover in either direction makes them differ, whatever the sampler saw.
 #[test]
 fn sixteen_racing_processes_produce_one_supervisor_and_never_a_second() {
     const N: usize = 16;
@@ -337,7 +361,15 @@ fn sixteen_racing_processes_produce_one_supervisor_and_never_a_second() {
         })
         .collect();
 
-    let mut seen: Vec<i32> = Vec::new();
+    // The first publisher, observed before anything is waited on. Half of the takeover control,
+    // and the only half that does not depend on a sampling rate.
+    assert!(
+        until(|| read_identity(&bed.paths).is_some()),
+        "one of sixteen racers must publish an identity"
+    );
+    let first_published = read_identity(&bed.paths).expect("just observed").pid;
+
+    let mut seen: Vec<i32> = vec![first_published];
     let mut note = |bed: &Bed| {
         if let Some(id) = read_identity(&bed.paths)
             && !seen.contains(&id.pid)
@@ -380,8 +412,15 @@ fn sixteen_racing_processes_produce_one_supervisor_and_never_a_second() {
         seen,
         "the one still serving is the one that was serving all along"
     );
+    assert_eq!(
+        read_identity(&bed.paths).map(|i| i.pid),
+        Some(first_published),
+        "the process serving at the end is the first one that ever published: two observations, \
+         no sampling between them, so a takeover cannot fall through the gap"
+    );
     // And it is a supervisor, not merely a process: it answers.
     std::os::unix::net::UnixStream::connect(bed.paths.socket()).expect("the winner is serving");
+    goes_on_its_own(&bed);
 }
 
 // ---------------------------------------------------------- §5.7's stop, over a real supervisor
@@ -421,7 +460,14 @@ fn seed(path: &Path, seq: u64, kind: marion_core::journal::RecordKind) {
 /// terminal. Three records and not one, because `resident_reason` distinguishes `SpawnOutstanding`
 /// from `NonTerminalNode` and a test that seeded only the intent would be asserting about the
 /// wrong clause of §5.7's exclusion list.
-fn a_running_node(path: &Path, agent: &str) {
+///
+/// **The pid is a parameter and the residency test passes a real one.** These records are the whole
+/// of what a supervisor knows about a node today — it does not hold the `Child`, the pipes or the
+/// channel; `marion run` does, and §11 item 27 is that gap — so a test seeding pid 1 was measuring
+/// that stale bytes keep a process alive, which is true and is not §5.7's claim. Handing it the pid
+/// of a process the test really started does not close the gap, but it stops the fixture from
+/// asserting past it.
+fn a_running_node(path: &Path, agent: &str, pid: i32) {
     use marion_core::journal::{RecordKind, SpawnIntent, Spawned, StateChanged};
     let id = marion_core::contract::AgentId(agent.into());
     seed(
@@ -443,7 +489,7 @@ fn a_running_node(path: &Path, agent: &str) {
             agent_id: id.clone(),
             harness_version: "0.146.0".into(),
             model: None,
-            pid: Some(1),
+            pid: Some(pid),
         }),
     );
     seed(
@@ -460,7 +506,7 @@ fn a_running_node(path: &Path, agent: &str) {
 fn a_finished_node(path: &Path, agent: &str) {
     use marion_core::contract::{ExitStatus, ProcessExit};
     use marion_core::journal::{Exited, RecordKind};
-    a_running_node(path, agent);
+    a_running_node(path, agent, 1);
     seed(
         path,
         3,
@@ -537,11 +583,28 @@ fn journal_tags(path: &Path) -> Vec<String> {
 ///
 /// The wait is not a timeout that could be widened to fix a flake: it is the opposite direction.
 /// Waiting *longer* only strengthens the claim, and the assertion is `alive`, never `alive within N`.
+///
+/// **Two things this test used to be able to pass without.** First, the survival half passed
+/// vacuously while `idle_exit_eligible` was gated on an explicit quit having found nothing:
+/// `DetachAll` answered `Resident`, no exit was ever armed, and a supervisor that could not exit
+/// under *any* circumstance satisfied *"refuses to exit"* perfectly. The second half below is the
+/// control for that — the same process, the same journal, the node finishing — and it can only pass
+/// if the timer was live and the node was the only thing holding it.
+///
+/// Second, its "running node" was three records naming pid 1. The pid is a real one now: what a
+/// supervisor holds today **is** those records — it has neither the `Child` nor the channel, which
+/// is §11 item 27 — so this test cannot claim more than the journal says, and it should not seed a
+/// pid that makes the claim look bigger than it is.
 #[test]
-fn a_supervisor_holding_a_non_terminal_node_refuses_to_exit_when_its_last_client_leaves() {
+fn a_supervisor_holding_a_non_terminal_node_refuses_to_exit_until_that_node_finishes() {
     let bed = Bed::new("resident");
     let journal = marion_core::paths::ProjectDir::new(&bed.state, &bed.root).journal();
-    a_running_node(&journal, "root");
+    // A process this test really started, so the journal names something that is actually running.
+    let mut held = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .expect("a real process to be non-terminal about");
+    a_running_node(&journal, "root", held.id() as i32);
 
     let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
     let id = published(&bed.paths);
@@ -576,6 +639,164 @@ fn a_supervisor_holding_a_non_terminal_node_refuses_to_exit_when_its_last_client
         Some(id.pid),
         "still the same process, still serving"
     );
+
+    // **The control.** The node ends, nobody connects, nobody quits, and the supervisor that had
+    // been refusing for five graces goes on its own. Without this, "refuses to exit" is satisfied
+    // by a supervisor that can never exit at all.
+    let _ = held.kill();
+    let _ = held.wait();
+    seed(
+        &journal,
+        3,
+        marion_core::journal::RecordKind::Exited(marion_core::journal::Exited {
+            agent_id: marion_core::contract::AgentId("root".into()),
+            status: marion_core::contract::ExitStatus::Ok,
+            exit: marion_core::contract::ProcessExit {
+                code: Some(0),
+                signal: None,
+                description: "the node finished while nobody was attached".into(),
+            },
+        }),
+    );
+    assert!(
+        until(|| !alive(id.pid)),
+        "the only clause holding it cleared, so §5.7 permits the exit it had been declining"
+    );
+    assert!(
+        journal_tags(&journal).contains(&"SupervisorExited".to_string()),
+        "and it journaled the departure it did make: {:?}",
+        journal_tags(&journal)
+    );
+    assert!(
+        bed.supervisors().is_empty(),
+        "nothing left for the fixture to kill"
+    );
+}
+
+/// **NC — a linked worktree and its main repository are one project, for the socket and for the
+/// journal alike.**
+///
+/// §2 states the rule once and it governs both: *"Both the supervisor and its state are keyed on
+/// the **project root** (git common-dir, falling back to cwd) — not cwd, since worktree children
+/// (§6.6) have different cwds and would otherwise hash to different supervisors."* Until this test
+/// existed the two halves of that sentence were implemented differently — `socket::resolve` hashed
+/// the common dir and `root::prepare` hashed the repo it was handed — so `marion run --repo <linked
+/// worktree>` bound a supervisor at one key, journalled at a second, and any bridge or TUI calling
+/// `resolve` in the same directory dialled a third. Three keys for one project, and the one that
+/// answers is a supervisor tailing a journal nobody is writing.
+///
+/// Asserted through `root::prepare` rather than against `project_root` alone, because the identity
+/// of the *function* was never the bug: both spellings were correct and they were called with
+/// different arguments. Only the site that decides where a run's records land can show that.
+/// §6.6's own case is the negative control below it — the worktree really is a different directory,
+/// so an implementation that simply canonicalised would pass the first assertion and fail this one.
+#[test]
+fn a_linked_worktree_resolves_to_its_main_repositorys_supervisor_and_journal() {
+    let bed = Bed::new("worktree-key");
+    let main = bed.state.join("repo");
+    std::fs::create_dir_all(&main).expect("repo dir");
+    let git = |dir: &Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&main, &["init", "-q", "-b", "main"]);
+    git(&main, &["config", "user.email", "t@example.com"]);
+    git(&main, &["config", "user.name", "t"]);
+    std::fs::write(main.join("a.txt"), b"a\n").expect("a file");
+    git(&main, &["add", "."]);
+    git(&main, &["commit", "-qm", "one"]);
+    let wt = bed.state.join("linked");
+    git(
+        &main,
+        &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "side"],
+    );
+
+    let key_main = marion_supervisor::socket::project_root(&main);
+    let key_wt = marion_supervisor::socket::project_root(&wt);
+    assert_eq!(
+        key_wt, key_main,
+        "§2's key is the git common dir, so a linked worktree resolves to its main repository's"
+    );
+    assert_ne!(
+        wt.canonicalize().expect("the worktree exists"),
+        key_wt,
+        "and it is not merely the worktree canonicalised — §6.6's whole point is that the cwds \
+         differ"
+    );
+    assert_eq!(
+        socket_paths(&bed.state, &key_wt, unsafe { getuid() }).socket(),
+        socket_paths(&bed.state, &key_main, unsafe { getuid() }).socket(),
+        "one project, one socket"
+    );
+
+    // And the site that decides where a run's records land agrees with it.
+    let spec = |repo: &Path| marion_supervisor::root::RootSpec {
+        agent_type: "claude".into(),
+        prompt: "unused: nothing is launched here".into(),
+        repo: repo.to_path_buf(),
+        state: bed.state.clone(),
+        base_url: None,
+        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
+        model: None,
+        no_change_record: true,
+        auth: marion_harness::Auth::Canned,
+    };
+    let from_wt = marion_supervisor::root::prepare(&spec(&wt)).expect("a root prepares");
+    let from_main = marion_supervisor::root::prepare(&spec(&main)).expect("a root prepares");
+    assert_eq!(
+        from_wt.project.journal(),
+        from_main.project.journal(),
+        "a run in a linked worktree writes the main repository's journal, which is the file the \
+         one supervisor is tailing"
+    );
+    assert_eq!(
+        from_wt.project.path(),
+        marion_core::paths::ProjectDir::new(&bed.state, &key_main).path(),
+        "and it is §2's key that decides, not the repo the run was pointed at"
+    );
+}
+
+/// **NC — a supervisor whose last client vanished without quitting still leaves, if nothing is
+/// left to supervise.**
+///
+/// §7.3.1 makes a dropped socket the crash case: *"nothing happens to agents"*. It says nothing
+/// about the supervisor's own lifetime, and §5.7's answer for that is unconditional — *"with zero
+/// clients and zero non-terminal nodes, the supervisor MAY exit after an idle grace period"*.
+/// Nothing there requires a client to have said goodbye first, and requiring it means every
+/// SIGKILLed TUI leaves a supervisor holding a project it has no work in — the leak the separate
+/// process was meant to make visible rather than create.
+///
+/// The client here is dropped, never quit — the same thing a crashed one does — so this exercises
+/// the crash path end to end, not a quit with the call omitted.
+#[test]
+fn a_client_that_vanished_without_quitting_leaves_an_empty_supervisor_free_to_go() {
+    let bed = Bed::new("vanished");
+    let journal = marion_core::paths::ProjectDir::new(&bed.state, &bed.root).journal();
+    a_finished_node(&journal, "root");
+
+    let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
+    let id = published(&bed.paths);
+    // No `session/quit`: the connection simply goes, exactly as a killed client's would.
+    drop(ensured);
+
+    assert!(
+        until(|| !alive(id.pid)),
+        "§5.7: zero clients and zero non-terminal nodes permits the exit, and a dropped socket is \
+         not what withholds it"
+    );
+    assert!(
+        journal_tags(&journal).contains(&"SupervisorExited".to_string()),
+        "it left on §5.7's terms, so it says so: {:?}",
+        journal_tags(&journal)
+    );
+    assert!(
+        bed.supervisors().is_empty(),
+        "and nothing of it is left for the fixture to kill"
+    );
 }
 
 /// **A known gap, pinned rather than described: a journal line the registry cannot parse makes the
@@ -589,16 +810,23 @@ fn a_supervisor_holding_a_non_terminal_node_refuses_to_exit_when_its_last_client
 /// it. §5.7's exclusion list has four clauses and *"the registry stopped following"* is not among
 /// them.
 ///
-/// This test asserts the **current** behaviour, deliberately, because the alternative was leaving it
-/// as a sentence in a report. If a later change gives §5.7 a clause for a stopped registry, this
-/// test fails and whoever changed it has to decide what the new answer is — which is the point.
-/// Nothing here endorses the behaviour: `tests/run_stream.rs` reaps a supervisor stranded exactly
-/// this way, and cites this test for why it has to.
+/// **That question has now been answered in one direction and not the other**, which is what this
+/// test's earlier revision asked whoever changed it to do. Failing closed is kept: a frozen tree may
+/// name live work, and a supervisor that exited on a reading it knows is stale would be guessing.
+/// What is no longer pinned is the *answer given to the operator*. Reporting
+/// `Resident(NonTerminalNode)` sent them looking for a node — the tree is frozen, so that clause is
+/// as stale as everything else in it — when the fact worth reporting is that marion stopped reading
+/// the file. `Resident(RegistryStopped)` says that, and the supervisor's log carries the reason and
+/// the offset (§7.4).
+///
+/// **Clearing the condition is still not implemented and is still not cheap** (§11 item 28):
+/// `tests/run_stream.rs` reaps a supervisor stranded exactly this way and cites this test for why
+/// it has to. Immortal is unchanged; *misleading* is what was fixed.
 #[test]
-fn a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_nothing_clears_it() {
+fn a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by_name() {
     let bed = Bed::new("frozen");
     let journal = marion_core::paths::ProjectDir::new(&bed.state, &bed.root).journal();
-    a_running_node(&journal, "root");
+    a_running_node(&journal, "root", 1);
 
     let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
     let id = published(&bed.paths);
@@ -627,10 +855,10 @@ fn a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_nothing_cl
     assert_eq!(
         supervisor,
         marion_proto::SupervisorDisposition::Resident(
-            marion_proto::ResidentReason::NonTerminalNode
+            marion_proto::ResidentReason::RegistryStopped
         ),
-        "the exit record is on disk and the supervisor cannot see it: this is the gap, not a bug \
-         in this test"
+        "the exit record is on disk and the supervisor cannot see it — and the operator is told \
+         that, rather than being sent after whichever clause the frozen prefix still satisfies"
     );
     drop(ensured);
     std::thread::sleep(GRACE * 3);
@@ -638,6 +866,9 @@ fn a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_nothing_cl
         alive(id.pid),
         "and no amount of waiting clears it, which is why the reap in run_stream.rs exists"
     );
+    // The whole of what this test's own fixture is owed: the process it stranded is one nothing
+    // else will end.
+    assert_eq!(bed.supervisors(), [id.pid]);
 }
 
 /// **NC — a supervisor with nothing left journals its exit *and then* goes, leaving neither a socket
@@ -701,4 +932,5 @@ fn a_supervisor_with_nothing_left_journals_its_exit_and_leaves_no_socket_identit
         || read_identity(&bed.paths).map(|i| i.pid) != Some(id.pid)
     ));
     drop(next);
+    goes_on_its_own(&bed);
 }

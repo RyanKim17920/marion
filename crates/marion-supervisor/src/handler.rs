@@ -205,7 +205,19 @@ pub struct RegistryHandle {
     shared: Mutex<Shared>,
     runtime: Arc<dyn QuitRuntime>,
     quit: Mutex<()>,
-    exit_pending: AtomicBool,
+    /// An explicit `session/quit` arrived and left nothing in §5.7's exclusion list holding.
+    ///
+    /// **Not** what makes exit permissible — [`RegistryHandle::idle_exit_eligible`] answers that
+    /// from §5.7's own two clauses and nothing else, because a supervisor whose client was
+    /// SIGKILLed is in exactly the state §5.7 permits an exit from and has no way to say so
+    /// (§7.3.1). What this flag decides is only the *grace*: §5.7 justifies the wait as one that
+    /// *"should outlast an operator closing one window to open another"*, and a client that called
+    /// `session/quit` has said the opposite in as many words. So a departure marion cannot read
+    /// waits the full grace, and a decision marion was told about does not.
+    quit_waived_grace: AtomicBool,
+    /// Whether the log already carries the reason [`crate::registry::Status::Stopped`] was reached.
+    /// The predicate is asked on every pass of the accept loop; the fault is reported once.
+    stopped_reported: AtomicBool,
     exiting: AtomicBool,
 }
 
@@ -216,7 +228,8 @@ impl RegistryHandle {
             shared: Mutex::new(Shared::default()),
             runtime: Arc::new(SystemQuitRuntime),
             quit: Mutex::new(()),
-            exit_pending: AtomicBool::new(false),
+            quit_waived_grace: AtomicBool::new(false),
+            stopped_reported: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
         })
     }
@@ -228,7 +241,8 @@ impl RegistryHandle {
             shared: Mutex::new(Shared::default()),
             runtime,
             quit: Mutex::new(()),
-            exit_pending: AtomicBool::new(false),
+            quit_waived_grace: AtomicBool::new(false),
+            stopped_reported: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
         })
     }
@@ -300,13 +314,25 @@ impl RegistryHandle {
     fn session_quit(&self, disposition: &QuitDisposition) -> Result<SessionQuitResult, RpcError> {
         let _decision = lock(&self.quit);
         self.live.refresh();
-        match disposition {
+        let answered = match disposition {
             QuitDisposition::KillTree { confirmed } => self.kill_tree(confirmed),
             QuitDisposition::DetachAll => Ok(SessionQuitResult {
                 outcome: self.detach_all(),
             }),
             QuitDisposition::ReapIdleDetachBusy => self.reap_idle_detach_busy(),
+        };
+        // **Recorded on the disposition, never on its answer.** A quit that was told `Resident` is
+        // not a quit that failed — the client still left, and the clause holding the supervisor can
+        // clear a millisecond later. Reading the waiver off the answer would make an operator who
+        // quit while one node was mid-turn wait §5.7's full grace after it finished, while an
+        // operator who quit a second later did not; the two said the same thing.
+        //
+        // A **refused** quit sets nothing: `kill_tree` rejects a stale render before it signals
+        // anything, and that client has not left, it has been told to render again.
+        if answered.is_ok() {
+            self.quit_waived_grace.store(true, Ordering::SeqCst);
         }
+        answered
     }
 
     fn nodes(&self) -> Vec<marion_core::registry::ReplayedNode> {
@@ -374,8 +400,15 @@ impl RegistryHandle {
     /// a `marion run` whose root failed to launch leave a supervisor that would never exit, holding
     /// a project directory that had already been deleted. That is the *inverse* of what §5.7's
     /// exclusion list is for.
+    ///
+    /// **The exclusion is exactly as wide as that argument and no wider.** *"There is no process
+    /// and there never was one"* is a claim about the journal's **other** records, not about the
+    /// abort on its own. `run.rs`'s `AbortOnDrop` is armed across the whole synchronous child run —
+    /// from before the process exists to after it is reaped — so an unwind anywhere in between
+    /// writes `SpawnAborted` beside a `Spawned` that names a live pid, and a `std::process::Child`
+    /// dropped rather than waited on does not kill what it holds. See [`Self::abandoned`].
     fn resident_reason(nodes: &[marion_core::registry::ReplayedNode]) -> Option<ResidentReason> {
-        let holding: Vec<_> = nodes.iter().filter(|n| n.spawn_aborted.is_none()).collect();
+        let holding: Vec<_> = nodes.iter().filter(|n| !Self::abandoned(n)).collect();
         if holding.iter().any(|n| n.reap_intent.is_some()) {
             Some(ResidentReason::UnconfirmedReapIntent)
         } else if holding
@@ -392,15 +425,67 @@ impl RegistryHandle {
         }
     }
 
+    /// §5.7's exit predicate as this supervisor can actually answer it — the exclusion list, and
+    /// **whether the list is being read off a tree that is still the journal's**.
+    ///
+    /// `registry.rs` stops following at a line it cannot parse and is right to (§7.4): *"an
+    /// authority may not keep serving a tree from a file it no longer recognises."* What that costs
+    /// one level up is not in §5.7 at all — the exclusion list is then evaluated against the prefix
+    /// as it stood *before* the corruption, so a node that has since exited is reported
+    /// non-terminal forever and nothing short of a signal ends the process.
+    ///
+    /// Failing closed is the right half of that and is kept. What is fixed here is the **answer**:
+    /// the operator was told `Resident(NonTerminalNode)` and sent looking for a node, when the
+    /// truth is that marion stopped reading. [`ResidentReason::RegistryStopped`] says so, and the
+    /// reason and offset — which the `Copy` enum cannot carry — go to the supervisor's log once.
+    ///
+    /// **This does not clear the condition** and is not meant to; see §11 item 28.
+    fn residency(&self) -> Option<ResidentReason> {
+        if let Some(reason) = self.registry_stopped() {
+            if !self.stopped_reported.swap(true, Ordering::SeqCst) {
+                eprintln!(
+                    "marion-supervisor: this project's journal stopped being followable and this \
+                     supervisor is answering §5.7 from the tree as it stood before that point: \
+                     {reason}. It will not exit while that reading holds (§7.4, §11 item 28)."
+                );
+            }
+            return Some(ResidentReason::RegistryStopped);
+        }
+        Self::resident_reason(&self.nodes())
+    }
+
+    /// The reason the registry gave up following, if it has.
+    fn registry_stopped(&self) -> Option<String> {
+        self.live.read(|r| match r.status() {
+            crate::registry::Status::Stopped { reason } => Some(reason.clone()),
+            _ => None,
+        })
+    }
+
+    /// A node marion abandoned **before there was anything to abandon**, which is the only shape
+    /// §7.2's *"a node marion decided the fate of is never `Orphaned`"* licenses excluding.
+    ///
+    /// Four facts and not one, because the abort record alone does not carry the claim. `Spawned`
+    /// is written when the process exists and carries its pid; either of those present means the
+    /// abort was written *over* a live child — `run.rs`'s guard covers the whole run and unwinds
+    /// through the reap, and dropping a `Child` does not signal it. A reap intent present is §7.2's
+    /// own crash window and holds regardless of how the spawn ended.
+    ///
+    /// The b600d82 case — `SpawnIntent` then `SpawnAborted`, nothing else, which is exactly what a
+    /// `marion run` whose root failed to launch journals — still satisfies all four.
+    fn abandoned(n: &marion_core::registry::ReplayedNode) -> bool {
+        n.spawn_aborted.is_some()
+            && !n.spawn_confirmed
+            && n.pid.is_none()
+            && n.reap_intent.is_none()
+    }
+
     fn detach_all(&self) -> QuitOutcome {
         let nodes = self.nodes();
         let detached = Self::active(&nodes);
-        let supervisor = match Self::resident_reason(&nodes) {
+        let supervisor = match self.residency() {
             Some(reason) => SupervisorDisposition::Resident(reason),
-            None => {
-                self.exit_pending.store(true, Ordering::SeqCst);
-                SupervisorDisposition::Exiting
-            }
+            None => SupervisorDisposition::Exiting,
         };
         QuitOutcome::Detached {
             gate_exposed: detached.clone(),
@@ -484,7 +569,6 @@ impl RegistryHandle {
             });
         }
         self.live.refresh();
-        self.exit_pending.store(true, Ordering::SeqCst);
         Ok(SessionQuitResult {
             outcome: QuitOutcome::Killed {
                 nodes: killed,
@@ -550,13 +634,10 @@ impl RegistryHandle {
                 .map_err(journal_failure_after_signal)?;
         }
         self.live.refresh();
-        let after = self.nodes();
-        let supervisor = Self::resident_reason(&after)
+        let supervisor = self
+            .residency()
             .map(SupervisorDisposition::Resident)
-            .unwrap_or_else(|| {
-                self.exit_pending.store(true, Ordering::SeqCst);
-                SupervisorDisposition::Exiting
-            });
+            .unwrap_or(SupervisorDisposition::Exiting);
         let mut guidance = self.guidance();
         // §7.3.2(c) requires the reaped list and the fact that it is resumable. The ids already
         // have a typed field; the latter does not, so omitting it here would make a structurally
@@ -644,12 +725,31 @@ impl Handle for RegistryHandle {
         self.exiting.load(Ordering::SeqCst)
     }
 
+    /// §5.7's exit predicate, in full and with nothing added to it.
+    ///
+    /// *"With **zero clients and zero non-terminal nodes**, the supervisor MAY exit after an idle
+    /// grace period"* — two clauses, and neither of them is *"and some client asked nicely first"*.
+    /// This used to be gated on an explicit `session/quit` having arrived, which meant the one
+    /// departure §7.3.1 is actually about — a client that was killed and could say nothing — left
+    /// a supervisor that could never exit at all, over a journal with nothing left in it. That is
+    /// not §7.3.1's invariant. §7.3.1 is about **nodes**, and this touches none: an empty registry
+    /// has nothing to touch, and a non-empty one is what [`Self::resident_reason`] answers with.
+    ///
+    /// The waiting is the accept loop's, and it is what covers the window before the starting
+    /// client has connected: a supervisor is published and dialled within milliseconds, and §5.7's
+    /// grace is five minutes. See [`crate::serve::DEFAULT_IDLE_GRACE`] — a supervisor launched with
+    /// a grace of zero really could leave before its launcher arrived, which is one of the reasons
+    /// `marion run` no longer asks for one.
     fn idle_exit_eligible(&self) -> bool {
-        if !self.exit_pending.load(Ordering::SeqCst) || !lock(&self.shared).clients.is_empty() {
+        if !lock(&self.shared).clients.is_empty() {
             return false;
         }
         self.live.refresh();
-        Self::resident_reason(&self.nodes()).is_none()
+        self.residency().is_none()
+    }
+
+    fn idle_exit_grace_waived(&self) -> bool {
+        self.quit_waived_grace.load(Ordering::SeqCst)
     }
 
     fn begin_idle_exit(&self) -> bool {
@@ -1773,6 +1873,215 @@ mod tests {
         assert!(!outstanding.handle.idle_exit_eligible());
     }
 
+    /// **NC — an abort written *after* the process existed is not evidence that it does not.**
+    ///
+    /// The narrow reading above — *no `Spawned`, no pid, so nothing to strand* — is the whole of
+    /// what an abandoned spawn licenses. `run.rs`'s `AbortOnDrop` stays armed across the entire
+    /// synchronous child run, and a `Child` that is dropped rather than reaped does **not** kill
+    /// the process it holds, so a panic anywhere between `command.spawn()` and the disarm writes
+    /// `SpawnAborted` beside a `Spawned` that names a live pid. Discarding that node would let the
+    /// supervisor exit over a process it can name.
+    #[test]
+    fn an_abort_written_after_the_child_was_spawned_still_holds_the_supervisor() {
+        let fx = fx_with(
+            "handler-quit-abort-after-spawn",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", 4242),
+                RecordKind::SpawnAborted(marion_core::journal::SpawnAborted {
+                    agent_id: id("root"),
+                    reason: "marion left the spawn path before the child reached a terminal record"
+                        .into(),
+                }),
+            ],
+        );
+        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+                .unwrap()
+                .outcome
+        else {
+            panic!("DetachAll answers Detached")
+        };
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::SpawnOutstanding
+            ),
+            "the journal names pid 4242 and never says it died; exiting here strands it"
+        );
+        assert!(
+            !fx.handle.idle_exit_eligible(),
+            "and the accept loop must not act on the discarded reading either"
+        );
+    }
+
+    /// **NC — a registry that stopped following says *that*, not whichever stale clause the frozen
+    /// prefix happens to satisfy.**
+    ///
+    /// Every node here is terminal, so the honest answer to §5.7 is `Exiting` and the *only* thing
+    /// keeping this supervisor is that it can no longer read the file it would answer from
+    /// (§7.4). Failing closed is right and is unchanged. What is asserted is the sentence: an
+    /// operator told `NonTerminalNode` goes looking for a node that finished, while the fact is
+    /// that marion stopped reading at a byte — and only one of those two is actionable.
+    #[test]
+    fn a_registry_that_stopped_following_is_reported_as_that_and_not_as_a_stale_node() {
+        let fx = fx_with(
+            "handler-quit-registry-stopped",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", 12),
+                RecordKind::Exited(Exited {
+                    agent_id: id("root"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "finished".into(),
+                    },
+                }),
+            ],
+        );
+        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+                .unwrap()
+                .outcome
+        else {
+            panic!("DetachAll answers Detached")
+        };
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Exiting,
+            "the control: with the journal readable, nothing here holds it"
+        );
+
+        append(&fx.path, b"this is a complete line and not a record\n");
+        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+                .unwrap()
+                .outcome
+        else {
+            panic!("DetachAll answers Detached")
+        };
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::RegistryStopped
+            ),
+            "§7.4: the tree is frozen, so no clause read off it may be quoted as the reason"
+        );
+        assert!(
+            !fx.handle.idle_exit_eligible(),
+            "and the accept loop fails closed on the same reading"
+        );
+    }
+
+    /// **NC — a detach that found work still arms the exit that the work later releases.**
+    ///
+    /// §5.7's predicate is evaluated by the accept loop, continuously, not once at the instant a
+    /// client asked. A quit whose answer is `Resident` is not a quit that failed: the client still
+    /// left, and the clause that held the supervisor can clear a millisecond later. If the answer
+    /// at that one instant decided whether the timer may ever start, a fleet that finishes just
+    /// after the last window closes keeps a supervisor forever.
+    #[test]
+    fn a_detach_that_found_work_still_arms_the_exit_that_work_later_releases() {
+        let fx = fx_with(
+            "handler-quit-resident-then-released",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", 77),
+                state("root", NodeState::Running),
+            ],
+        );
+        fx.handle.connected(ConnId(9));
+        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+                .unwrap()
+                .outcome
+        else {
+            panic!("DetachAll answers Detached")
+        };
+        assert_eq!(
+            supervisor,
+            marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::NonTerminalNode
+            )
+        );
+        fx.handle.gone(
+            ConnId(9),
+            &ClientGone::Quit(marion_proto::QuitDisposition::DetachAll),
+            &Departure::QuitCompleted,
+        );
+        assert!(
+            !fx.handle.idle_exit_eligible(),
+            "while the node runs, the node is the answer"
+        );
+
+        append(
+            &fx.path,
+            &line(
+                3,
+                1_003,
+                RecordKind::Exited(Exited {
+                    agent_id: id("root"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "the node finished a moment after the window closed".into(),
+                    },
+                }),
+            ),
+        );
+        assert!(
+            fx.handle.idle_exit_eligible(),
+            "nothing in §5.7's exclusion list holds any more, and no second client is coming to \
+             ask again"
+        );
+    }
+
+    /// **NC — §5.7's exit predicate is zero clients and zero non-terminal nodes, and nothing else.**
+    ///
+    /// A dropped socket is not a quit (§2, §7.3.1) and this changes nothing about that: no node is
+    /// touched, nothing is journaled about the departure, and every clause of the exclusion list
+    /// still decides the answer. What it must not do is make the *supervisor's own* lifetime
+    /// conditional on a client having been polite — a TUI that was SIGKILLed leaves a supervisor
+    /// with nothing to supervise, and §5.7 says that supervisor MAY go.
+    #[test]
+    fn a_client_that_vanished_without_quitting_still_leaves_an_empty_supervisor_free_to_exit() {
+        let fx = fx_with(
+            "handler-exit-after-socket-closed",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", 55),
+                RecordKind::Exited(Exited {
+                    agent_id: id("root"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "the run finished".into(),
+                    },
+                }),
+            ],
+        );
+        fx.handle.connected(ConnId(9));
+        assert!(
+            !fx.handle.idle_exit_eligible(),
+            "a client is attached, which is §5.7's absolute clause"
+        );
+        fx.handle
+            .gone(ConnId(9), &ClientGone::SocketClosed, &Departure::Eof);
+        assert!(
+            fx.handle.idle_exit_eligible(),
+            "zero clients and zero non-terminal nodes is the whole predicate (§5.7)"
+        );
+        assert_eq!(
+            journal_tags(&fx.path),
+            ["SpawnIntent", "Spawned", "Exited"],
+            "§7.3.1: nothing is journaled about a client's death"
+        );
+    }
+
     /// `ReapedIdle` is resumable and therefore not `Exited(_)`. §5.7's zero-non-terminal rule is
     /// literal: reaping the last process does not permit the supervisor to journal an exit while
     /// that resumable node remains in the registry.
@@ -2207,14 +2516,25 @@ mod tests {
         assert_eq!(gate_exposed, [id("live")]);
     }
 
-    /// **NC — a departure alone never moves the supervisor toward its exit record.**
+    /// **NC — a departure decides nothing, and *"nothing"* is about nodes and about time, not
+    /// about the supervisor's right to leave an empty project.**
     ///
-    /// Every node here is terminal, so the *only* thing between this supervisor and an exit is the
-    /// absence of an explicit quit. §7.3.1 says a close chose nothing; a close that quietly made
-    /// the exit eligible would turn "the client's terminal died" into "the fleet was dismissed",
-    /// and no test of node state would notice.
+    /// §7.3.1 is a rule about **agents**: *"a crashed, SIGKILLed, or otherwise vanished client MUST
+    /// leave every node exactly as it was"*, and *"nothing is journaled about the client's death"*.
+    /// Both are asserted here, byte for byte.
+    ///
+    /// What §7.3.1 does **not** say is that the supervisor must outlive its own emptiness. §5.7's
+    /// permission is two clauses — *"zero clients and zero non-terminal nodes"* — and neither
+    /// mentions a quit. Reading one in is what left a supervisor immortal after every client that
+    /// died rather than resigned, which is not a stricter reading of the crash invariant but a leak
+    /// wearing its name; `handler-exit-after-socket-closed` above is the same fact stated
+    /// positively.
+    ///
+    /// The distinction that *does* survive is timing, and it is asserted here: a departure marion
+    /// could not read does not waive §5.7's grace, because for all marion knows the replacement
+    /// window is already opening. Only an explicit `session/quit` does.
     #[test]
-    fn a_departure_alone_never_makes_the_supervisor_eligible_to_exit() {
+    fn a_departure_decides_nothing_and_does_not_shorten_the_wait() {
         let fx = fx_with(
             "handler-quit-eof-eligibility",
             vec![
@@ -2236,13 +2556,23 @@ mod tests {
         fx.handle.connected(ConnId(3));
         fx.handle
             .gone(ConnId(3), &ClientGone::SocketClosed, &Departure::Eof);
-        assert!(
-            !fx.handle.idle_exit_eligible(),
-            "§7.3.1: a client that closed chose nothing, including leaving"
+        assert_eq!(
+            std::fs::read(&fx.path).unwrap(),
+            before,
+            "§7.3.1: nothing is journaled about a client's death, and no node moved"
         );
-        assert!(!fx.handle.begin_idle_exit());
-        assert!(!fx.handle.exiting());
-        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+        assert!(
+            !fx.handle.exiting(),
+            "`gone` itself never commits to an exit; §5.7 splits the decision from the record"
+        );
+        assert!(
+            !fx.handle.idle_exit_grace_waived(),
+            "§7.3.1: a close said nothing, so it cannot have said 'and do not wait'"
+        );
+        assert!(
+            fx.handle.idle_exit_eligible(),
+            "§5.7's two clauses are both satisfied; the accept loop still owes the whole grace"
+        );
     }
 
     /// **NC — `exiting` follows the exit record; it does not precede it.**

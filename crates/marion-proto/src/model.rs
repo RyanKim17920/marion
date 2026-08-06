@@ -262,6 +262,23 @@ pub enum ResidentReason {
     /// A reap intent journaled without its confirmation (§7.2). Exiting here reproduces exactly
     /// the crash window intent-then-confirm exists to close.
     UnconfirmedReapIntent,
+    /// **Not a node: the supervisor no longer knows what the nodes are.**
+    ///
+    /// `registry.rs` stops following a journal for good at a line that is not a record, or at a
+    /// file that got shorter (§7.4), and it is right to — *"an authority may not keep serving a
+    /// tree from a file it no longer recognises"*. One level up, that freezes §5.7's exit predicate
+    /// on the tree as it stood **before** the corruption, and §5.7's exclusion list has four
+    /// clauses of which *"the registry stopped following"* is not one.
+    ///
+    /// So the supervisor stays, which is the safe half — a frozen tree may name live work — but it
+    /// says *this* rather than reporting whichever stale clause the frozen prefix happens to
+    /// satisfy. An operator told `NonTerminalNode` goes looking for a node; an operator told
+    /// `RegistryStopped` goes looking at the journal, which is where the problem is. The byte
+    /// offset and the reason are on the supervisor's own log, since this enum is `Copy` and
+    /// carrying them here would widen every response that has nothing to do with corruption.
+    ///
+    /// **Clearing the condition is not implemented** — §11 item 28.
+    RegistryStopped,
 }
 
 /// What the supervisor will do after answering the quit.
