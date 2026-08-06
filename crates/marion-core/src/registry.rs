@@ -85,6 +85,26 @@ pub struct ReplayedNode {
     /// How many records mentioned this node — the audit handle for "the journal says nothing
     /// more about it than that it started".
     pub records: usize,
+    /// **When the journal first mentioned this node**, and when its state last moved.
+    ///
+    /// Two `Option`s and not one, because they answer the two questions a supervisor→client
+    /// notification has to answer and they are different records: `tree/node-added` is about a node
+    /// *appearing*, `node/state` is about a node *moving*. Reporting one for the other is off by
+    /// however long the node has existed.
+    ///
+    /// They are here rather than stamped by whoever reads the tree because that reader's clock says
+    /// when it *noticed*, not when it *happened* — and `marion_proto::Event`'s `ts` is an event
+    /// time throughout (`supervisor/exiting` is documented as *"sent as it is journaled"*). A
+    /// follower that polls every 250 ms and stamps `now()` reports every transition up to 250 ms
+    /// late, on a field a client renders as when the thing occurred.
+    ///
+    /// `None` is honest and reachable: a node whose records were all folded before this field
+    /// existed replays without one, and a tree built by hand in a test has none either.
+    pub first_ts: Option<crate::encoding::SystemTime>,
+    /// The `ts` of the record that last moved [`Self::state`] or [`Self::reap_state`]. `None` for a
+    /// node that has only ever been mentioned — it is still `Spawning`, which is where every node
+    /// starts, and no record moved it there.
+    pub state_ts: Option<crate::encoding::SystemTime>,
 }
 
 impl ReplayedNode {
@@ -108,6 +128,8 @@ impl ReplayedNode {
             root_change: None,
             root_grant: None,
             records: 0,
+            first_ts: None,
+            state_ts: None,
         }
     }
 
@@ -290,8 +312,18 @@ impl Replay {
     }
 
     fn apply(&mut self, r: JournalRecord) {
+        let ts = r.ts;
         let node = self.node_mut(r.agent_id());
         node.records += 1;
+        if node.first_ts.is_none() {
+            node.first_ts = Some(ts);
+        }
+        // Observed rather than predicted from the record kind, which is the difference between
+        // stamping *this record's* time and stamping the time the state actually moved: a
+        // `StateChanged` naming an exit on an already-exited node is accepted and changes nothing
+        // (see the arm below), and a clock that moved for it would report a transition that did not
+        // happen.
+        let before = (node.state, node.reap_state);
         match r.kind {
             RecordKind::SpawnIntent(i) => {
                 // First writer wins: §7.5 makes `parent_id` immutable, and a duplicate intent for
@@ -353,6 +385,9 @@ impl Replay {
             // keeping the first has the same justification as the arm above: a second record for
             // one agent id cannot happen in a run, so the later one is the one that was true last.
             RecordKind::RootGrantDecided(g) => node.root_grant = Some(g),
+        }
+        if (node.state, node.reap_state) != before {
+            node.state_ts = Some(ts);
         }
     }
 
@@ -676,6 +711,108 @@ mod tests {
         ];
         let r = replay(&bytes(&j));
         assert!(!r.get(&id("a")).unwrap().is_unresolved());
+    }
+
+    /// **When a node appeared and when it last moved are two different records**, and a reader that
+    /// wanted an event time for either would otherwise have to stamp its own clock — reporting when
+    /// it *noticed* on a field that says when it *happened*.
+    ///
+    /// The sharpest half is the last assertion. A `StateChanged` naming an exit on a node that has
+    /// already exited is accepted (it is what the journal says) and moves nothing, so it must not
+    /// move the clock either: a supervisor that pushed a `node/state` for it would be announcing a
+    /// transition that did not occur.
+    #[test]
+    fn a_node_carries_when_it_appeared_and_when_its_state_last_moved() {
+        let at = |ms: u64, seq: u64, kind: RecordKind| {
+            let mut r = record(seq, kind);
+            r.ts = SystemTime::from_unix_millis(ms);
+            r
+        };
+        let j = vec![
+            at(
+                1_000,
+                0,
+                RecordKind::SpawnIntent(SpawnIntent {
+                    agent_id: id("a"),
+                    parent_id: None,
+                    agent_type: "codex-impl".into(),
+                    harness: Harness::Codex,
+                    depth: 0,
+                    task_id: None,
+                }),
+            ),
+            at(
+                2_000,
+                1,
+                RecordKind::Spawned(Spawned {
+                    agent_id: id("a"),
+                    harness_version: "0.9.0".into(),
+                    model: None,
+                    pid: Some(1),
+                }),
+            ),
+            at(
+                3_000,
+                2,
+                RecordKind::StateChanged(StateChanged {
+                    agent_id: id("a"),
+                    state: NodeState::Running,
+                }),
+            ),
+        ];
+        let r = replay(&bytes(&j));
+        let n = r.get(&id("a")).unwrap();
+        assert_eq!(n.first_ts, Some(SystemTime::from_unix_millis(1_000)));
+        assert_eq!(
+            n.state_ts,
+            Some(SystemTime::from_unix_millis(3_000)),
+            "`Spawned` at 2 000 confirmed a spawn; it did not move the state"
+        );
+
+        // A node the journal has only mentioned is `Spawning`, which is where every node starts —
+        // so nothing moved it there and there is no transition to time.
+        let mentioned = replay(&bytes(&[at(
+            9_000,
+            0,
+            RecordKind::PermissionDenied(PermissionDenied {
+                agent_id: id("b"),
+                tool: "Write".into(),
+                reason: "no route to a human (§9)".into(),
+            }),
+        )]));
+        let b = mentioned.get(&id("b")).unwrap();
+        assert_eq!(b.first_ts, Some(SystemTime::from_unix_millis(9_000)));
+        assert_eq!(b.state_ts, None, "nothing moved it, so nothing timed it");
+
+        // And a record that changes nothing does not move the clock.
+        let mut with_echo = j.clone();
+        with_echo.push(at(
+            4_000,
+            3,
+            RecordKind::Exited(Exited {
+                agent_id: id("a"),
+                status: ExitStatus::Ok,
+                exit: ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "clean exit".into(),
+                },
+            }),
+        ));
+        with_echo.push(at(
+            5_000,
+            4,
+            RecordKind::StateChanged(StateChanged {
+                agent_id: id("a"),
+                state: NodeState::Exited(ExitStatus::Ok),
+            }),
+        ));
+        let r = replay(&bytes(&with_echo));
+        assert_eq!(
+            r.get(&id("a")).unwrap().state_ts,
+            Some(SystemTime::from_unix_millis(4_000)),
+            "the exit happened at 4 000; the record at 5 000 restated it and moved nothing"
+        );
     }
 
     #[test]

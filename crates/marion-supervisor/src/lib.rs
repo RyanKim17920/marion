@@ -16,6 +16,9 @@ pub mod bridge;
 /// §6.1 step 8's readiness gate and the `stream-json` conversation behind it — **shared by the
 /// root and by a child**, for the same reason the two binaries above share `run_spawn`.
 pub mod duplex;
+/// The seam between the registry and the socket: §2's `node/get` and `tree/subscribe`, and the
+/// projection of a replayed node into something a client can be told.
+pub mod handler;
 /// §4.3's append-only registry journal, writer side. The records and the replay are
 /// `marion-core`'s — this crate is where I/O is allowed.
 pub mod journal;
