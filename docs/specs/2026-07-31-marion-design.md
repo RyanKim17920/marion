@@ -5098,6 +5098,88 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     S16's probe deliberately refuses to, so whether the harness *waits* for a well-behaved one is
     unmeasured.
 
+31. **Concurrency is safe *between* projects and unsafe *within* one — OPEN, split measured/argued,
+    2026-08-06, from the question "can many `marion` processes run at once?" being answered from
+    design reasoning and then checked.** Three findings, of which the first is the reassuring one
+    and must not be lost in the other two.
+
+    **(a) Across projects it works, and this is now MEASURED rather than argued.** §2 keys the
+    socket and the state directory on the same canonical git common dir
+    (`socket.rs:251-266`, `paths.rs:39-49,77-84`), so nothing is shared but the `<state>` prefix.
+    `tests/concurrent_projects.rs::concurrent_runs_in_distinct_projects_never_share_a_supervisor_a_journal_or_a_record`
+    drives **four real `marion run` processes in four checkouts under one `--state-dir`**, parks
+    every root on a barrier so the supervisor census is read off `ps` while all four are live, and
+    asserts four supervisors carrying four distinct `--project-root`s, four project directories,
+    one `RootChanged` per journal, each sidecar naming only its own file, and no survivor. Pointing
+    every run at one repository turns it red three independent ways (1 supervisor vs 4; 1 project
+    dir vs 4; 4 records in one journal vs 1), each watched separately. Three mechanisms that could
+    have broken it were checked and do not: `journal::writer_id()` is `{pid}-{unique}`
+    (`core/journal.rs:317-325`) so two processes cannot collide a `WriterId` and §4.2's gapless-per
+    -writer loss detector stays sound; `Handle::idle_exit_eligible` (`handler.rs:744-750`) requires
+    **zero clients**, so one run's `session/quit` cannot strand a still-connected sibling; and
+    `TreeSnapshot`'s scratch index lives under the *agent* directory (`spawn.rs:418-427`), so two
+    concurrent snapshots neither collide nor touch the operator's `.git`.
+
+    **(b) Two roots in one repository each record the other's work — MEASURED, and pinned green as
+    a limitation.** A root runs in `RootSpec::repo`, the operator's live checkout, and its record
+    is a delta between `pre_tree` at prepare and `post_tree` at exit (`core/root_change.rs:1-56`).
+    A tree delta is a statement about a *directory over an interval*; it carries no attribution and
+    no field can be added that would give it one. So overlapping roots each measure a post-tree
+    containing the other's writes.
+    `tests/concurrent_projects.rs::two_concurrent_roots_in_one_repository_each_record_the_others_work_as_their_own`
+    asserts the current behaviour exactly — **both** sidecars name `["a.txt", "b.txt"]` where each
+    root wrote one — via a two-phase rendezvous whose first phase is the load-bearing one: a stub
+    runs only after its own `prepare`, so waiting for both announcements before either writes is
+    what makes both `pre_tree`s predate both files. A one-phase version would pass on a slow machine
+    and fail on a fast one. Its negative control is the sequential case, which yields `["a.txt"]`.
+    `tasks/design-root-change-record.md:302-310` states this under *"what this does NOT solve"* and
+    proposes no locking. **What would close it**, three ways, none cheap: (i) **refuse the second
+    root** — `marion run` replays the journal and declines while a root for this project is
+    `is_unresolved()`; the design document calls this *"a stated refusal … and a separate
+    decision"*, because it changes what marion will **do**, not only what it records; (ii) **lock
+    the repository for a root's lifetime**, which turns concurrent roots into queued ones and costs
+    the operator two agents on one checkout, which may be the feature; (iii) **accept and label**,
+    having the record say its interval overlapped another root's — which needs (i)'s registry read
+    anyway and still leaves `changed_paths` unattributable. §11 item 26's two classes of invisible
+    write are unaffected by all three: this is about attribution, not about the instrument.
+
+    **(c) Concurrent `git worktree add`/`remove` against one repository does fail, and `spawn.rs`
+    named the wrong failure — MEASURED, S17, `tests/fixtures/s17/README.md`,
+    `spikes/s17/run.sh`, darwin 25.5.0 / git 2.50.1 (Apple Git-155).** `spawn::repo_write_guard`
+    (`spawn.rs:189-250`) serializes marion's own worktree calls **within one process** and used to
+    justify itself with *"Unable to create '…/index.lock': File exists"* while admitting it had no
+    failing witness in either direction. Both halves were wrong. `index.lock` **never appears**;
+    every observed failure is `.git/worktrees/` bookkeeping — *"could not create directory of
+    '.git/worktrees/<name>': Invalid argument"*, the same with *"No such file or directory"*, and
+    *"failed to read .git/worktrees/<name>/commondir: Undefined error: 0"*. In that last and
+    commonest shape **the name belongs to a different worker's worktree**: `add` and `remove` both
+    walk the whole of `.git/worktrees/` as they prune, and nothing locks that directory, so a
+    caller is failed by a sibling's half-written entry. `Undefined error: 0` is macOS's
+    `strerror(0)` — git read a torn state with no errno to report it by, which is a directory
+    observed mid-write rather than a refusal. **It leaks rather than merely failing:** a failed
+    `worktree remove` leaves the worktree registered, so the `branch -D` behind it is refused
+    (*"cannot delete branch … used by worktree at …"*), and a directory, a `worktrees/` entry and a
+    branch all survive an operation marion believes cleaned up. Rate: **two** processes fail at
+    roughly one operation in 1 800 (1 of 3 repetitions × 600 iterations each); **four** — exactly
+    `max_concurrent_children` — fail in **every** repetition within 300 iterations each; six the
+    same. So the guard **is** load-bearing for the in-process case, and the surviving mutation
+    recorded against it measured `tests/background_spawn.rs`'s exposure (four `worktree add`s,
+    **once**) rather than the guard's necessity; both doc comments now say so. **What would close
+    the cross-process half:** a file lock beside the repository, held across `make_worktree` and
+    `cleanup`, which §5.7 does not contain and which would also have to admit the operator's own
+    `git` is outside it regardless.
+
+    **What is argued and not measured, stated so it is not read as evidence.** That marion in
+    practice reaches (c)'s exposure — two roots each spawning children could, and the threshold is
+    low, but nothing drove `marion` itself into the race; S17 is a black-box probe of git, because
+    the question was about git. That the behaviour is a git *bug* — no upstream issue was searched
+    for. That Linux or ext4 behaves the same — `Undefined error: 0` is a macOS spelling and the
+    timing of a directory create is filesystem-specific; darwin only. **And nothing asserts (c) as
+    a test**, deliberately: a test whose verdict is *"a race occurred"* is a flake by construction,
+    and this repo does not widen a timeout to stabilise one. The finding lives in the fixture and
+    in `spawn.rs`'s doc comment, where whoever next considers deleting the guard will meet it.
+    Cross-referenced from **§5.7**, **§6.6**, **§6.7**, **§9** and **§11 items 19 and 26**.
+
 ---
 
 ## 12. History: what was retracted or corrected
