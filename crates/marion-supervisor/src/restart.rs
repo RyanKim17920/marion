@@ -666,7 +666,10 @@ mod tests {
             reason: "an unwind aborted the run".into(),
         }));
         let mut tree = log.tree();
-        assert_eq!(tree.get(&id("reaped")).unwrap().reap_state, ReapState::ReapedIdle);
+        assert_eq!(
+            tree.get(&id("reaped")).unwrap().reap_state,
+            ReapState::ReapedIdle
+        );
         assert_eq!(
             marking_of(&apply(&mut tree), "reaped"),
             None,
