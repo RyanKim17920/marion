@@ -13,6 +13,7 @@ pub mod journal;
 pub mod node;
 pub mod paths;
 pub mod registry;
+pub mod root_change;
 pub mod scope;
 
 pub use agent_type::{
@@ -30,3 +31,4 @@ pub use journal::{JournalRecord, RecordKind, WriterId};
 pub use node::{BlockReason, NodeState, ReapState};
 pub use paths::{AgentDir, ProjectDir, project_hash, state_dir};
 pub use registry::{Replay, ReplayedNode, Truncation, replay};
+pub use root_change::{Reason, RootChange, RootChanged, RootDelta, RootObservation, RootScope};

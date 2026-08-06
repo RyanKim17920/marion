@@ -143,6 +143,19 @@ impl AgentDir {
         self.contracts_dir().join(format!("{}.json", task.0))
     }
 
+    /// `root-change.json` — what a **root** did to the operator's repository (§9).
+    ///
+    /// A constant leaf, not a recorded path, and that is the point: `RecordKind::RootChanged`
+    /// carries no path to this file, so nothing has to keep the journal and the layout in step.
+    /// `AgentDir` already knows the directory, and the `AgentId` already selects it. Same
+    /// relationship [`Self::contract`] has to `ContractPersisted`.
+    ///
+    /// A root only, by construction: a child's equivalent is its `TaskContract`, and §9 gives a
+    /// root none.
+    pub fn root_change(&self) -> PathBuf {
+        self.0.join("root-change.json")
+    }
+
     /// IR, append-only.
     pub fn events(&self) -> PathBuf {
         self.0.join("events.jsonl")
