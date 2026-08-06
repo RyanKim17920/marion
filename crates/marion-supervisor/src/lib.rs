@@ -13,6 +13,9 @@
 //! the socket is not yet there to force agreement.
 
 pub mod bridge;
+/// §5.7's start and S15's detach: how a `marion-supervisor` comes to exist detached, and how a
+/// client that finds nothing listening asks for one without becoming a second start race.
+pub mod detach;
 /// §6.1 step 8's readiness gate and the `stream-json` conversation behind it — **shared by the
 /// root and by a child**, for the same reason the two binaries above share `run_spawn`.
 pub mod duplex;

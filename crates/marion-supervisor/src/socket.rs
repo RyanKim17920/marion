@@ -70,10 +70,39 @@
 //! and nothing in the tests asserts on elapsed time: the loop is what makes the window invisible,
 //! and the properties asserted are counts and outcomes.
 //!
+//! # Why the identity lives beside the socket and not in the journal
+//!
+//! S15's chosen detach — double-`fork` + `setsid` — states its price plainly
+//! (`tests/fixtures/s15/README.md`): *"the supervisor's pgid and sid name a process that no longer
+//! exists. `killpg(supervisor_pid)` is **not** how you signal it; marion must **carry** the pgid
+//! rather than derive it from the pid it already journals."* So the pgid has to be written down, and
+//! where is a real choice.
+//!
+//! It is **not** the journal, even though §5.7 requires the *exit* to be journaled. An exit is a
+//! **decision**, and a decision is history: that record's whole value is letting a later reader tell
+//! *"it finished its work and left"* from *"it died"*. A pid and a pgid are not history, they are
+//! **liveness facts** — true exactly while one process runs — and a journal outlives every process
+//! that wrote to it. A journaled pgid from a previous boot is a number that names nothing, or worse
+//! names whatever the kernel has since reused; acting on it is a one-step-removed version of the
+//! hazard S15 warns about. Facts whose truth *is* a process's liveness belong to something whose
+//! lifetime is that liveness.
+//!
+//! [`Serving`] is that something. It exists only while the lock is held — this module's standing
+//! proof that this process and no other is the supervisor — so [`SupervisorIdentity`] is written
+//! immediately after the bind and removed by [`Serving::drop`] beside the socket. Finding one is the
+//! same evidence as finding a socket, and neither outlives a clean exit.
+//!
+//! A **child's MCP bridge learns it without being told.** Inheritance is unavailable by construction
+//! — a bridge is a grandchild of a process that may already be dead, and the supervisor is not any
+//! of its ancestors at all — so there is no environment variable and nothing passed down. The bridge
+//! derives the socket *directory* with [`socket_paths`], the same pure function this module already
+//! insists must not be written twice, and reads the identity beside the socket it was going to dial
+//! anyway.
+//!
 //! # What this module does not do
 //!
-//! It does not detach. S15 chose double-`fork` + `setsid` and measured what one tree-wide signal
-//! reaches; wiring that is a separate change. Nothing here forecloses it: [`acquire`] is the same
+//! It does not detach; [`crate::detach`] does, and cites `tests/fixtures/s15/` for every claim about
+//! what detaching makes the supervisor. Nothing here depends on the choice: [`acquire`] is the same
 //! call for an in-process M1 supervisor and a detached M2 one, and neither the path nor the lock
 //! depends on process group or session membership.
 
@@ -89,6 +118,9 @@ use marion_core::paths::{ProjectDir, project_hash, state_dir};
 unsafe extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
     fn getuid() -> u32;
+    fn getpid() -> i32;
+    fn getpgrp() -> i32;
+    fn getsid(pid: i32) -> i32;
 }
 
 const LOCK_EX: i32 = 2;
@@ -117,6 +149,7 @@ pub struct SocketPaths {
     dir: PathBuf,
     socket: PathBuf,
     lock: PathBuf,
+    identity: PathBuf,
     /// `Some(reason)` iff the `<state>` path did not fit [`MAX_SOCKET_PATH_BYTES`]. A sentence and
     /// not a `bool`: §2 calls a long `$HOME` under `$XDG_STATE_HOME` *"a normal case, not an exotic
     /// one"*, so an operator who finds their socket somewhere unexpected deserves to be told which
@@ -133,6 +166,12 @@ impl SocketPaths {
     /// a filesystem lifetime, or a lock could survive a state directory that was removed.
     pub fn lock(&self) -> &Path {
         &self.lock
+    }
+
+    /// Where a serving supervisor publishes [`SupervisorIdentity`]. Beside the socket and with the
+    /// same lifetime, for the reason the module doc gives at length: a pgid is a liveness fact.
+    pub fn identity(&self) -> &Path {
+        &self.identity
     }
 
     pub fn dir(&self) -> &Path {
@@ -162,6 +201,7 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
         return SocketPaths {
             dir: project.path().to_path_buf(),
             lock: project.path().join("supervisor.lock"),
+            identity: project.path().join("supervisor.identity"),
             socket: primary,
             overflow: None,
         };
@@ -171,6 +211,7 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
     SocketPaths {
         socket: dir.join(format!("{hash}.sock")),
         lock: dir.join(format!("{hash}.lock")),
+        identity: dir.join(format!("{hash}.identity")),
         dir,
         overflow: Some(format!(
             "{} is {len} bytes and a unix socket path may be at most {MAX_SOCKET_PATH_BYTES} \
@@ -245,6 +286,74 @@ pub enum Acquired {
     Dialed(UnixStream),
 }
 
+/// **Who the serving supervisor is, in the three numbers a signal needs** — and the reason it is a
+/// file rather than a derivation.
+///
+/// After S15's double `fork` + `setsid`, `sid` and `pgid` name the middle process, which has already
+/// exited (`tests/fixtures/s15/README.md`, the identity table's `setsid_double` row: *"sid — middle
+/// pid (dead)"*). Every one of the following is therefore **wrong** on a marion supervisor:
+///
+/// * `killpg(pid)` — the supervisor's pid is not its pgid, so this signals a group that does not
+///   contain it, and on a machine whose pid counter has wrapped it may signal a group that contains
+///   something else entirely;
+/// * `getpgid(pid)` computed by a reader that then *assumes* it equals `pid`;
+/// * reading `sid` as evidence that the supervisor leads a session. It deliberately does not — that
+///   is the whole tiebreak S15 measured, because a session leader acquires a controlling terminal
+///   the moment it opens a tty slave without `O_NOCTTY`, and a controlling terminal is a channel a
+///   hangup reaches a detached process through.
+///
+/// The right way to signal this process is `kill(pid)`. The right way to signal its group is
+/// `killpg(pgid)` **with the `pgid` from this file** — which S15 also measured reaches the supervisor
+/// and nothing else in the tree, so it is not the fleet-wide stop it looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SupervisorIdentity {
+    /// The serving process. `kill(pid, …)` is the only signal that reaches exactly it.
+    pub pid: i32,
+    /// Its process group — **not** its pid. Carried because it cannot be derived.
+    pub pgid: i32,
+    /// Its session — also not its pid, and it does not lead this session.
+    pub sid: i32,
+}
+
+impl SupervisorIdentity {
+    /// This process's own three numbers, read from the kernel at the moment of the call.
+    pub fn own() -> SupervisorIdentity {
+        // SAFETY: all three read the calling process's own identity and cannot fail. `getsid(0)`
+        // means "my session", which is defined for every process.
+        unsafe {
+            SupervisorIdentity {
+                pid: getpid(),
+                pgid: getpgrp(),
+                sid: getsid(0),
+            }
+        }
+    }
+
+    /// Whether this identity is the one a *session leader* would publish — the property S15's
+    /// tiebreak rejects, named here so a test can assert against the measurement rather than
+    /// against a description of it.
+    pub fn leads_its_session(&self) -> bool {
+        self.sid == self.pid
+    }
+
+    /// Whether this identity leads its process group. Also false under the chosen mechanism, and
+    /// also the reason `killpg(pid)` is wrong.
+    pub fn leads_its_group(&self) -> bool {
+        self.pgid == self.pid
+    }
+}
+
+/// Read the identity a serving supervisor published, if one is serving.
+///
+/// `None` means no file, which — because the file's lifetime is [`Serving`]'s — means no supervisor
+/// held the lock at the moment of the read. A file that exists but does not parse is also `None`: a
+/// half-written identity is not a supervisor, and inventing numbers from a truncated one is exactly
+/// the derivation this file exists to prevent.
+pub fn read_identity(paths: &SocketPaths) -> Option<SupervisorIdentity> {
+    let raw = std::fs::read_to_string(paths.identity()).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 /// A bound listener and the lock that entitles it, which is why they are one value.
 ///
 /// Splitting them would let a caller drop the lock and keep serving, and the moment that is
@@ -254,6 +363,10 @@ pub enum Acquired {
 pub struct Serving {
     listener: UnixListener,
     path: PathBuf,
+    /// Where this process published [`SupervisorIdentity`]. Removed with the socket, because the
+    /// two say the same thing — *a supervisor is here* — and a reader that found one without the
+    /// other would have to guess which was telling the truth.
+    identity: PathBuf,
     /// Held for the whole serving life. Never read; the file descriptor's existence *is* the lock.
     _lock: std::fs::File,
 }
@@ -266,14 +379,21 @@ impl Serving {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// The identity this process published when it took the socket.
+    pub fn identity(&self) -> SupervisorIdentity {
+        SupervisorIdentity::own()
+    }
 }
 
 impl Drop for Serving {
-    /// Unlink on the way out, so a supervisor that ends cleanly does not leave a path that dials to
-    /// `ECONNREFUSED`. Safe without further checks for the reason the module doc gives: this value
-    /// exists only while the lock is held, and the lock is what proves no other server is there.
+    /// Unlink the socket **and the identity** on the way out, so a supervisor that ends cleanly does
+    /// not leave a path that dials to `ECONNREFUSED` or a pgid that names nothing. Safe without
+    /// further checks for the reason the module doc gives: this value exists only while the lock is
+    /// held, and the lock is what proves no other server is there.
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.identity);
     }
 }
 
@@ -388,9 +508,16 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
                     paths.socket(),
                     std::fs::Permissions::from_mode(0o600),
                 );
+                // Published **after** the bind and before this returns, so the window in which a
+                // socket exists without an identity beside it is the two syscalls between them and
+                // never a scheduling decision. Best-effort on the write itself: a supervisor that
+                // could not publish its pgid is still a supervisor, and refusing to serve over it
+                // would trade a fleet for a diagnostic.
+                write_identity(paths.identity(), &SupervisorIdentity::own());
                 return Ok(Acquired::Serving(Serving {
                     listener,
                     path: paths.socket().to_path_buf(),
+                    identity: paths.identity().to_path_buf(),
                     _lock: lock,
                 }));
             }
@@ -405,6 +532,31 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
             }
         }
     }
+}
+
+/// Publish an identity **by `rename`**, so no reader ever sees half of one.
+///
+/// `rename(2)`'s atomicity was rejected as an *exclusion* mechanism at the top of this file, and
+/// that rejection does not apply here: the argument against it was that overwriting is not
+/// excluding, which is fatal for deciding who serves and irrelevant for a file whose writer has
+/// already been decided by the lock. The property wanted here is exactly the one `rename` has —
+/// a reader sees the old file or the new one and never a prefix.
+fn write_identity(path: &Path, id: &SupervisorIdentity) {
+    let Ok(body) = serde_json::to_vec(id) else {
+        return;
+    };
+    let staged = path.with_extension("identity.staged");
+    let wrote = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&staged)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &body));
+    if wrote.is_ok() && std::fs::rename(&staged, path).is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_file(&staged);
 }
 
 /// A dial that reached nobody. Both readings arrive here and neither is conclusive on its own —
@@ -715,6 +867,7 @@ mod tests {
             dir: dir.to_path_buf(),
             socket: dir.join("supervisor.sock"),
             lock: dir.join("supervisor.lock"),
+            identity: dir.join("supervisor.identity"),
             overflow: None,
         }
     }
@@ -918,6 +1071,7 @@ mod tests {
         let p = SocketPaths {
             socket: target.join("a.sock"),
             lock: target.join("a.lock"),
+            identity: target.join("a.identity"),
             dir: target.clone(),
             overflow: Some("pretend the state path overflowed".into()),
         };

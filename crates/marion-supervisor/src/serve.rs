@@ -392,6 +392,19 @@ impl Server {
         self.halt();
     }
 
+    /// Block until the accept loop ends **on its own terms**, rather than ending it.
+    ///
+    /// This is the detached supervisor's main thread (§5.7): the only way out is the loop's own
+    /// [`Handle::begin_idle_exit`], which journals the exit record *before* it breaks. A process
+    /// that returns from here has therefore already written the record that lets a later reader tell
+    /// *"it finished its work and left"* from *"it died"*, which is why the supervisor binary can
+    /// simply exit 0 afterwards without any epitaph of its own.
+    pub fn wait(mut self) {
+        if let Some(t) = self.accept.take() {
+            let _ = t.join();
+        }
+    }
+
     fn halt(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         // Shut every connection's read half down so its thread's blocking `read` returns rather than
