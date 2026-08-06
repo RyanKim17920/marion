@@ -264,9 +264,33 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     },
     PinnedHarness {
         program: "codex",
-        // The version that accepts a bogus `-c` key with a clean exit, and that leaks the background
-        // `git fetch` MILESTONES records.
-        accepted: &["0.146.0"],
+        // 0.146.0 is the pin: the version that accepts a bogus `-c` key with a clean exit, that
+        // leaks the background `git fetch` MILESTONES records, and that `tests/fixtures/s6`, `s7`
+        // and `s14`'s codex halves were captured from.
+        //
+        // 0.146.1: observed green on darwin 25.5.0, 2026-08-06, after the local install
+        // auto-updated mid-session — §7.7's hazard, arriving exactly as described. The whole
+        // workspace passed against it (888 tests, no `#[ignore]`s), which covers every test that
+        // drives a real `codex`: `m1_hop`, `timeout_kill`, `harness_matrix`, `depth_gate`,
+        // `worktree_reap` (7), `cross_product` (7 codex cells), `journal_wiring` (7), and the
+        // ungated-but-real `child_stream`, `child_events` and `node_attach`.
+        //
+        // **A green suite alone would have been the weaker half of the evidence**, because the s6
+        // and s7 shapes live in this workspace as transcriptions rather than as fixture reads, and
+        // `s14`'s `codex-*.declaration.json` are read by no test at all — so the captures were
+        // re-probed rather than assumed. `tests/fixtures/s14/probe-codex.sh` was re-run against
+        // 0.146.1 and its three load-bearing fields still match the committed 0.146.0 capture
+        // byte for byte: `body.tools` absent, `code_mode_tool_names` the same eight names
+        // (`apply_patch, create_goal, exec_command, get_goal, update_goal, update_plan,
+        // view_image, write_stdin`, every `namespace` null), and `additional_tools` still
+        // `exec, wait, request_user_input, collaboration` — identical under `--sandbox read-only`
+        // and `--sandbox workspace-write`, so the sandbox still constrains at call time and not at
+        // declaration, and `--tools` is still `exit 2`. `--help`, `exec --help`, `features list`
+        // and `mcp --help` are byte-identical to 0.146.0 modulo the version string, so the `-m,
+        // --model` flag s6 and the adapter depend on has not moved. s7's `setsid` finding is
+        // re-asserted live by `timeout_kill`, which passed. **Nothing was re-recorded**; the
+        // captures were compared, not refreshed.
+        accepted: &["0.146.0", "0.146.1"],
     },
     PinnedHarness {
         program: "gemini",

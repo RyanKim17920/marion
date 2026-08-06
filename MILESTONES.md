@@ -87,8 +87,11 @@ installed `claude` on this machine is **2.1.222**, not the 2.1.220 stamped above
 file. `5792140` replaced the exact pin with a **set** — `marion_testsupport::PINNED_HARNESSES`, the
 one table every version check in the workspace reads — whose **entry zero never moves**, because
 entry zero is what the prose claims, and whose tail carries versions since observed green with the
-evidence beside each. claude's set is `["2.1.220", "2.1.222"]`; codex, gemini and opencode each pin
-exactly one. So read "2.1.220" as *"the version the turn-one `\"tools\":[]` shape and the
+evidence beside each. claude's set is `["2.1.220", "2.1.222"]` and codex's is
+`["0.146.0", "0.146.1"]` — codex auto-updated mid-session on 2026-08-06, §7.7's hazard arriving
+live, and 0.146.1 was admitted only after the `s14` codex probe was re-run and its declaration
+matched the committed 0.146.0 capture field for field; gemini and opencode each pin exactly one. So
+read "2.1.220" as *"the version the turn-one `\"tools\":[]` shape and the
 `tests/fixtures/s9` `can_use_tool` frame were captured from"*, and read a green suite as *"and
 2.1.222 was checked against them too."*
 
