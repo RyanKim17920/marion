@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 use marion_core::contract::{AgentId, ExitStatus, ProcessExit};
 use marion_core::harness::Harness;
-use marion_core::registry::{Truncation, replay};
+use marion_core::registry::{Replay, Truncation};
 
 /// One thing that happened to a **child**, worth a line on a watcher's terminal.
 ///
@@ -141,15 +141,16 @@ impl JournalWatch {
         if fresh.is_empty() {
             return Vec::new();
         }
-        let seen = replay(&fresh);
-        // How far the cursor may advance. A torn tail is re-read next poll — the writer is still
-        // writing it — so only the intact prefix is consumed.
-        let consumed = match &seen.truncation {
-            Some(Truncation::UnterminatedTail { byte_offset, .. }) => *byte_offset,
-            Some(Truncation::Unparsable { byte_offset, .. }) => *byte_offset,
-            None => fresh.len(),
-        };
-        self.offset += consumed as u64;
+        // How far the cursor may advance: the intact prefix, and no further. A torn tail is re-read
+        // next poll — the writer is still writing it. **`Replay::extend` answers that**, rather
+        // than this module matching on `Truncation` itself, because the supervisor's registry
+        // tails the same file under the same rule and two copies of it could drift.
+        //
+        // A fresh `Replay` per poll, deliberately: this is a *view of one run*, and the per-node
+        // memory it needs is `Announced`, not the forest. The registry is the reader that keeps one
+        // `Replay` across polls, and it is a different object for that reason (see `registry.rs`).
+        let mut seen = Replay::default();
+        self.offset += seen.extend(&fresh) as u64;
 
         let mut out = Vec::new();
         for node in seen.nodes() {
