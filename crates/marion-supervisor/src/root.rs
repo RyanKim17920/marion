@@ -811,11 +811,51 @@ pub fn launch_watched(
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
 ) -> Result<RootOutcome, RootError> {
+    // **§7.3.3's replay leg for a root**, alongside the journal's record of the same run and for the
+    // complementary reason: the journal says a root existed and how it ended, this says what it
+    // said. `None` on an open failure — a viewer may never fail a run (`events::EventSink::open`).
+    let mut events = crate::events::EventSink::open(
+        &node.agent_dir,
+        &node.agent_id,
+        node.harness,
+        crate::run::init_request_id(&node.agent_id),
+    );
+    if let Some(es) = &events {
+        es.lifecycle(marion_core::event::Lifecycle::Opened);
+    }
     let result = match node.path {
-        RootPath::Duplex => launch_duplex(node, bound, mcp_ready_timeout, watcher),
-        RootPath::LaunchOnly => launch_only(node, bound),
+        // The root's frames go to **two** places now, and they are different kinds of destination:
+        // `watcher` renders them for a human as they arrive and keeps nothing, `events` keeps them
+        // and renders nothing. Teeing rather than choosing, because a run watched by a person must
+        // still be re-attachable afterwards — and a run nobody watched must be re-attachable too.
+        RootPath::Duplex => {
+            let tee;
+            let sink = match &events {
+                Some(es) => {
+                    tee = move |ev: duplex::StreamEvent<'_>| {
+                        es.record(ev);
+                        if let Some(w) = watcher {
+                            w(ev);
+                        }
+                    };
+                    Some(&tee as duplex::StreamSink<'_>)
+                }
+                None => watcher,
+            };
+            launch_duplex(node, bound, mcp_ready_timeout, sink)
+        }
+        // No live seam at all on this path — `run_bounded` drains the pipe whole — so the stream is
+        // recovered from the capture inside `launch_only`, where the raw stdout still exists.
+        // Recovering it from `RootOutcome::transcript` out here would silently drop every non-JSON
+        // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
+        // prevent.
+        RootPath::LaunchOnly => launch_only(node, bound, events.as_mut()),
     };
     journal_the_roots_outcome(node, &result);
+    // The closing bookend, from the same reading the journal's `Exited` record is written from.
+    if let Some(es) = &events {
+        es.lifecycle(roots_terminal_lifecycle(&result));
+    }
     result
 }
 
@@ -842,6 +882,82 @@ pub fn launch_watched(
 /// grant and the pre-tree oid on disk so a crashed run is evidence rather than silence. The old
 /// sentence said "survives every exit path" flatly, and a reader who took it at face value would
 /// have concluded the crash case was covered when it was the one case it was not.
+/// **A root's terminal transition, derived once.**
+///
+/// Extracted so the journal's `Exited` record and `events.jsonl`'s closing bookend read the *same*
+/// derivation rather than each computing it. `run_spawn` gets this for free by reading both off the
+/// contract's `completion`, and states the reason there: two derivations of one status are two
+/// chances to disagree about the same run. A root has no contract, so the shared source has to be a
+/// function.
+///
+/// §6.7's derivation, applied to a node that has no contract to record it in. `Unreported` is
+/// deliberately absent: it means *no `report` arrived*, and §9 says a root **cannot `report`** at
+/// all, so spending that status here would make every root look like a child that stayed silent. A
+/// timeout outranks everything for the same reason it does in `build_contract` — it is marion's own
+/// attributed kill.
+fn roots_exit(outcome: &RootOutcome) -> (ExitStatus, ProcessExit) {
+    let status = if outcome.timed_out {
+        ExitStatus::TimedOut
+    } else if outcome.failure.is_some() || outcome.exit_code.unwrap_or(0) != 0 {
+        ExitStatus::Failed
+    } else {
+        ExitStatus::Ok
+    };
+    let description = if outcome.timed_out {
+        "the root exceeded marion's bound and its process group was killed".to_string()
+    } else {
+        match outcome.exit_code {
+            Some(code) => format!("root exited with code {code}"),
+            None => "root exit status was unavailable".to_string(),
+        }
+    };
+    let description = match &outcome.failure {
+        Some(f) => format!("{description}; the root's stream reported: {f}"),
+        None => description,
+    };
+    (
+        status,
+        ProcessExit {
+            code: outcome.exit_code,
+            // `run_bounded` reports one, but a root's outcome does not carry it: `RootOutcome` is
+            // the shared shape of both paths and the duplex driver has none. Left absent rather
+            // than guessed at — §6.7's description carries what marion actually observed.
+            signal: None,
+            description,
+        },
+    )
+}
+
+/// The closing bookend for `events.jsonl`, mirroring [`journal_the_roots_outcome`]'s three arms so
+/// the two records of one run never disagree about which of them happened.
+fn roots_terminal_lifecycle(
+    result: &Result<RootOutcome, RootError>,
+) -> marion_core::event::Lifecycle {
+    use marion_core::event::Lifecycle;
+    match result {
+        Ok(o) => {
+            let (status, exit) = roots_exit(o);
+            Lifecycle::Exited { status, exit }
+        }
+        // The run happened and marion refused the *result*, so this is an exit — the same reading
+        // the journal takes of this one variant, and the reason it is the only error arm that is
+        // not an abort.
+        Err(RootError::BridgeNeverReached { exit, .. }) => Lifecycle::Exited {
+            status: ExitStatus::Failed,
+            exit: ProcessExit {
+                code: *exit,
+                signal: None,
+                description: "the root never reached marion's bridge, so its turn went out \
+                              without marion's tools (§6.1 step 8)"
+                    .into(),
+            },
+        },
+        Err(e) => Lifecycle::Aborted {
+            reason: e.to_string(),
+        },
+    }
+}
+
 fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootError>) {
     // **First, and before the match on `result`** — §9's change record is written on every path
     // that reaches this function, which is every path `launch_watched` returns on. (A crash inside
@@ -897,38 +1013,13 @@ fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootE
     // **cannot `report`** at all — spending that status on a root would make every root look like
     // a child that stayed silent. A timeout outranks everything for the same reason it does in
     // `build_contract`: it is marion's own attributed kill.
-    let status = if outcome.timed_out {
-        ExitStatus::TimedOut
-    } else if outcome.failure.is_some() || outcome.exit_code.unwrap_or(0) != 0 {
-        ExitStatus::Failed
-    } else {
-        ExitStatus::Ok
-    };
-    let description = if outcome.timed_out {
-        "the root exceeded marion's bound and its process group was killed".to_string()
-    } else {
-        match outcome.exit_code {
-            Some(code) => format!("root exited with code {code}"),
-            None => "root exit status was unavailable".to_string(),
-        }
-    };
-    let description = match &outcome.failure {
-        Some(f) => format!("{description}; the root's stream reported: {f}"),
-        None => description,
-    };
+    let (status, exit) = roots_exit(outcome);
     crate::journal::record(
         &node.project,
         RecordKind::Exited(Exited {
             agent_id: node.agent_id.clone(),
             status,
-            exit: ProcessExit {
-                code: outcome.exit_code,
-                // `run_bounded` reports one, but a root's outcome does not carry it: `RootOutcome`
-                // is the shared shape of both paths and the duplex driver has none. Left absent
-                // rather than guessed at — §6.7's description carries what marion actually observed.
-                signal: None,
-                description,
-            },
+            exit,
         }),
     );
     // Every permission marion refused, in the journal rather than in a contract — §9 says so in as
@@ -1164,7 +1255,11 @@ fn spawned_record(node: &RootNode) -> RecordKind {
 ///
 /// stdin is `null` rather than a pty for two independent reasons: §5.2 says marion **MUST NOT**
 /// give a headless node a pty on stdin, and on this surface there is nothing to write to it.
-fn launch_only(node: &RootNode, bound: StdDuration) -> Result<RootOutcome, RootError> {
+fn launch_only(
+    node: &RootNode,
+    bound: StdDuration,
+    mut events: Option<&mut crate::events::EventSink>,
+) -> Result<RootOutcome, RootError> {
     let inv = &node.invocation;
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -1183,6 +1278,15 @@ fn launch_only(node: &RootNode, bound: StdDuration) -> Result<RootOutcome, RootE
     let out = run_bounded(&mut cmd, bound)?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // Recorded **here**, because this is the last place the raw stdout exists: `RootOutcome`'s
+    // `transcript` is `json_frames(&stdout)`, which keeps only the parseable lines. S12 measured
+    // gemini interleaving `[STARTUP] Phase 1` and `Warning: Basic terminal detected` on stdout, and
+    // a recording built from `transcript` would drop exactly those — rendering a root that printed
+    // a stack trace as an unexplained silence, which is the failure `duplex::StreamEvent` has two
+    // variants to prevent.
+    if let Some(es) = events.as_mut() {
+        es.record_capture(&stdout);
+    }
     let adapter = adapter_for(node.harness)?;
     let exit = ChildExit {
         code: out.code,

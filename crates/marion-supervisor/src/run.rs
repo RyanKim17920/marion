@@ -542,6 +542,16 @@ fn resolve_model(
     req.model.clone().or_else(|| agent_type.model.clone())
 }
 
+/// The `request_id` a node's `initialize` goes out with — **one derivation, three readers**.
+///
+/// The driver waits on it (`DuplexSpec::init_id`), and `events::EventSink` needs the *same* string
+/// to recognise the one `control_response` §5.2 forbids journaling verbatim. Two spellings of this
+/// would mean the sink withholding a frame the driver never sent, or — worse, and silently — not
+/// withholding the one it did.
+pub(crate) fn init_request_id(agent_id: &AgentId) -> String {
+    format!("marion-init-{}", agent_id.0)
+}
+
 fn harness_version(program: &str) -> String {
     SysCommand::new(program)
         .arg("--version")
@@ -629,15 +639,35 @@ fn launch_only_child(
 /// one could arrive (§9). Zero therefore reaches §9's outcome — denied, node proceeds — at the
 /// only cost that is honest to pay, and the denial is no longer silent: it leaves a
 /// `PermissionDenied` record.
+/// What a child's duplex launch needs beyond its compiled [`Invocation`] — the node, rather than the
+/// program.
+///
+/// A struct because these six travel together and always have: they are one node's identity, its
+/// turn and its bounds, and every one of them is read straight into a [`DuplexSpec`] field. Passing
+/// them positionally was already at the edge of readable and went over it when recording landed.
+struct ChildDuplex<'a> {
+    agent_id: &'a AgentId,
+    ready_file: &'a Path,
+    prompt: &'a str,
+    bound: StdDuration,
+    depth: u32,
+    /// Where this node's stream is recorded, or `None` if nothing is recording it (§7.3.3).
+    events: Option<&'a crate::events::EventSink>,
+}
+
 fn duplex_child(
     inv: &Invocation,
     auth: Auth,
-    agent_id: &AgentId,
-    ready_file: &Path,
-    prompt: &str,
-    bound: StdDuration,
-    depth: u32,
+    child: ChildDuplex<'_>,
 ) -> Result<ChildRun, SpawnError> {
+    let ChildDuplex {
+        agent_id,
+        ready_file,
+        prompt,
+        bound,
+        depth,
+        events,
+    } = child;
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
         .envs(inv.env.iter().cloned())
@@ -645,22 +675,37 @@ fn duplex_child(
     if auth == Auth::Canned {
         cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
     }
+    // **A sink that writes to a file, never to stdout** — which is what makes this path's long-held
+    // `sink: None` safe to lift. This runs inside `marion-supervisor`, whose stdout *is* the stdio
+    // MCP stream the root harness parses, so the rule was never "no sink"; it was "nothing that
+    // writes to marion's stdout". `EventSink` writes to `<agent-dir>/events.jsonl` and nowhere else,
+    // and `a_child_run_writes_not_one_byte_of_the_nodes_stream_to_marions_own_stdout` is asserted
+    // against a run that *has* one, so the invariant is proved rather than preserved by absence.
+    //
+    // Live rather than recovered from `out.stdout` afterwards, because this path genuinely has a
+    // live seam and §4.1's `observed_live` should be true only when it is. It also means a run
+    // killed on its wall clock has already recorded everything it said before the kill.
+    let record;
+    let sink = match events {
+        Some(es) => {
+            record = |ev: duplex::StreamEvent<'_>| es.record(ev);
+            Some(&record as duplex::StreamSink<'_>)
+        }
+        None => None,
+    };
     let out = duplex::run_duplex(
         &mut cmd,
         &DuplexSpec {
             ready_file,
             prompt,
-            init_id: format!("marion-init-{}", agent_id.0),
+            init_id: init_request_id(agent_id),
             mcp_ready_timeout: CHILD_MCP_READY_TIMEOUT.min(bound),
             blocked_bound: StdDuration::ZERO,
             // The child's own depth, not the caller's — the same value its bridge is told, so the
             // driver and the bridge answer the same question about the same node.
             depth,
             wall_clock: Some(bound),
-            // **Never `Some` on this path.** This runs inside `marion-supervisor`, whose stdout is
-            // the stdio MCP stream the root harness parses; a sink that wrote there would corrupt
-            // the protocol marion is speaking to its own root. See [`duplex::DuplexSpec::sink`].
-            sink: None,
+            sink,
         },
     )?;
     Ok(ChildRun {
@@ -927,20 +972,56 @@ pub fn run_spawn(
     }
     let inv = adapter.compile(&launch, &ctx)?;
     let bound = StdDuration::from_secs(req.timeout_secs);
+    // **§7.3.3's replay leg, for the node it needs most.** A child spawned, run and terminated
+    // entirely inside a detached window is the case re-attach cannot answer from anything else: it
+    // has no live channel to re-subscribe to, and the journal records that it existed and how it
+    // ended but not one word of what it *said*. This is where those words get written, and the
+    // bridge's process is the only process that ever has them (`registry.rs` makes the same point
+    // about a child's lifecycle records).
+    //
+    // `Option`, because a viewer may never fail a run: a node that cannot open its event file still
+    // runs, and `EventReader::ever_written` is what later tells "nobody recorded this" from "it said
+    // nothing" rather than presenting the first as the second.
+    let mut events = crate::events::EventSink::open(
+        &agent_dir,
+        &agent_id,
+        adapter.harness(),
+        init_request_id(&agent_id),
+    );
+    // The opening bookend, before the process exists — the stream begins where marion started
+    // watching, not where the node first spoke, so a node that says nothing at all is still
+    // distinguishable from one that was never recorded.
+    if let Some(es) = &events {
+        es.lifecycle(marion_core::event::Lifecycle::Opened);
+    }
     let run = match path {
         LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound)?,
         LaunchPath::Duplex => duplex_child(
             &inv,
             env.auth,
-            &agent_id,
-            ready_file
-                .as_deref()
-                .expect("the duplex path always mints a marker"),
-            &req.prompt,
-            bound,
-            ctx.depth,
+            ChildDuplex {
+                agent_id: &agent_id,
+                ready_file: ready_file
+                    .as_deref()
+                    .expect("the duplex path always mints a marker"),
+                prompt: &req.prompt,
+                bound,
+                depth: ctx.depth,
+                events: events.as_ref(),
+            },
         )?,
     };
+    // **The `LaunchOnly` half of the same wiring, and the asymmetry is the harness's, not marion's.**
+    // codex, gemini and opencode have no live seam at all — the prompt rides argv and `run_bounded`
+    // drains the pipe whole — so their stream can only be recovered from the capture, after the
+    // fact, and every event it produces is honestly `observed_live: false`. Never both: the duplex
+    // path already recorded these frames live, and recording them again here would be the duplicate
+    // §7.3.3's seam is stated in ordinals to prevent.
+    if matches!(path, LaunchPath::LaunchOnly)
+        && let Some(es) = events.as_mut()
+    {
+        es.record_capture(&run.stdout);
+    }
     // §6.1 step 7's confirmation, written the moment marion can truthfully make it. The process is
     // started and reaped inside the call above — `spawn` is synchronous — so this is the first
     // instant marion has *observed* that a process existed at all. Written before it, this would be
@@ -1062,6 +1143,17 @@ pub fn run_spawn(
                 exit: completion.exit.clone(),
             }),
         );
+        // The closing bookend, off the **same** `completion` the journal record is read from, for
+        // that comment's reason applied once more: two derivations of one status are two chances to
+        // disagree about the same run. Without it a replayed stream cannot tell a node that
+        // finished from one whose stream stopped mid-turn, which is the single question §7.3.3's
+        // replay leg exists to answer about a node the client never saw.
+        if let Some(es) = &events {
+            es.lifecycle(marion_core::event::Lifecycle::Exited {
+                status: completion.status,
+                exit: completion.exit.clone(),
+            });
+        }
     }
     let returned = persist_then_cap(&agent_dir, &contract)?;
     // §4.3: the journal records **that a contract exists and how it ended**, never its contents —
