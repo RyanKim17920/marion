@@ -33,6 +33,9 @@ pub mod journal;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.
 pub mod registry;
+/// §7.2's supervisor-restart marking: the `Live` → `Orphaned` judgement applied to a replayed
+/// tree, and what it refuses to decide without a process to look at.
+pub mod restart;
 pub mod root;
 pub mod run;
 /// The serve loop over §2's socket: NDJSON framing, dispatch, and §7.3.1's rule that a dropped

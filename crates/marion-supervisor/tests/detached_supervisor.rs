@@ -826,16 +826,25 @@ fn a_client_that_vanished_without_quitting_leaves_an_empty_supervisor_free_to_go
 fn a_journal_the_registry_cannot_parse_freezes_the_exit_predicate_and_says_so_by_name() {
     let bed = Bed::new("frozen");
     let journal = marion_core::paths::ProjectDir::new(&bed.state, &bed.root).journal();
-    a_running_node(&journal, "root", 1);
 
     let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
     let id = published(&bed.paths);
+    // **The node is journaled after the supervisor is up, which is the production order** — and
+    // here it is load-bearing rather than incidental. A node already `Live` when a supervisor boots
+    // is §7.2's restart case: `restart.rs` marks it `Orphaned`, and an orphan is not somebody's
+    // agent, so `detached` would be empty and this test would be about a tree of lost nodes rather
+    // than the frozen tail it is named for.
+    a_running_node(&journal, "root", 1);
     // The supervisor has already folded the running node, so what follows is about the *tail* and
     // not about a supervisor that never read anything.
-    let marion_proto::QuitOutcome::Detached { detached, .. } = session_quit(&bed.paths) else {
-        panic!("DetachAll answers Detached")
-    };
-    assert_eq!(detached, [marion_core::contract::AgentId("root".into())]);
+    assert!(
+        until(|| matches!(
+            session_quit(&bed.paths),
+            marion_proto::QuitOutcome::Detached { ref detached, .. }
+                if detached.as_slice() == [marion_core::contract::AgentId("root".into())]
+        )),
+        "the running node is folded and detachable before anything is corrupted"
+    );
 
     {
         use std::io::Write;

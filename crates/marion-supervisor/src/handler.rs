@@ -1095,34 +1095,37 @@ mod tests {
     }
 
     fn fx(tag: &str) -> Fx {
-        let dir = scratch(tag);
-        let path = dir.join("journal.jsonl");
-        append(&path, &line(0, 1_000, intent("root", None, "claude", 0)));
-        let live = Arc::new(LiveRegistry::follow(
-            Registry::boot_path(&path).unwrap(),
-            std::time::Duration::from_millis(2),
-        ));
-        Fx {
-            _dir: dir,
-            path,
-            handle: RegistryHandle::new(live),
-        }
+        fx_with(tag, vec![intent("root", None, "claude", 0)])
     }
 
     fn fx_with(tag: &str, records: Vec<RecordKind>) -> Fx {
         fx_with_runtime(tag, records, Arc::new(SystemQuitRuntime))
     }
 
+    /// **The registry boots before the records are written, which is the production order.**
+    ///
+    /// `marion run` starts the supervisor and *then* journals its root, so every node these tests
+    /// are about is a node the supervisor watched arrive. Writing the journal first and booting
+    /// over it is a different situation entirely — §7.2's restart, where a node already `Live` at
+    /// boot is one this supervisor has no record of deciding and is marked `Orphaned`
+    /// (`restart.rs`). A fixture in that shape would have every test below asserting over a tree of
+    /// orphans while claiming to describe a live fleet. `registry.rs` covers the restart order
+    /// directly.
     fn fx_with_runtime(tag: &str, records: Vec<RecordKind>, runtime: Arc<dyn QuitRuntime>) -> Fx {
         let dir = scratch(tag);
         let path = dir.join("journal.jsonl");
-        for (seq, kind) in records.into_iter().enumerate() {
-            append(&path, &line(seq as u64, 1_000 + seq as u64, kind));
-        }
         let live = Arc::new(LiveRegistry::follow(
             Registry::boot_path(&path).unwrap(),
             std::time::Duration::from_millis(2),
         ));
+        for (seq, kind) in records.into_iter().enumerate() {
+            append(&path, &line(seq as u64, 1_000 + seq as u64, kind));
+        }
+        assert!(
+            live.read(|r| r.restart_marks().is_empty()),
+            "the supervisor booted over an empty journal; it lost nothing"
+        );
+        live.refresh();
         Fx {
             _dir: dir,
             path,

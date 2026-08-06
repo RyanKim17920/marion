@@ -63,10 +63,12 @@
 //!   holds the channel* (§6.2, §7.3.3) — live supervisor state, which no journal can report.
 //!   Deriving it from replay would hand a re-attaching client a live-node verdict for a node whose
 //!   channel nobody holds, which is the one answer §7.3.3 cannot survive being wrong about.
-//! * **§7.2's `Live` → `Orphaned` marking on restart.** That is the policy applied *to* a replayed
-//!   tree, and `marion-core`'s replay is explicit that it is not replay's job; this module is the
-//!   substrate it will be applied on, not the application. [`marion_core::registry::Replay::unresolved`]
-//!   is where it will read from.
+//! # §7.2's restart marking, and where it happens
+//!
+//! `marion-core`'s replay is explicit that `Live` → `Orphaned` is not replay's job. It is
+//! [`crate::restart`]'s, and [`Registry::boot_path`] runs it **once, on the boot tree, before the
+//! first poll** — see the comment there for why that instant and no other. What this module owns is
+//! the timing; the judgement, and everything it refuses to decide, is argued in `restart.rs`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -124,6 +126,8 @@ pub struct Registry {
     /// a journal that does not exist, which is an empty tree — from *"the journal I was reading is
     /// gone"*, which is [`Status::Unreadable`].
     seen_file: bool,
+    /// §7.2's restart verdicts for the boot tree. See [`Self::restart_marks`].
+    restart_marks: Vec<crate::restart::Marked>,
 }
 
 impl Registry {
@@ -153,6 +157,13 @@ impl Registry {
         let bytes = bytes.unwrap_or_default();
         let mut tree = Replay::default();
         let consumed = tree.extend(&bytes);
+        // **§7.2's restart marking, here and nowhere else.** Boot is the one moment the distinction
+        // is available: everything in `tree` at this instant is what the journal recorded *before
+        // this supervisor existed*, so a node still `Live` is by definition one whose fate this
+        // supervisor has no record of deciding. Every node folded in by a later [`Self::poll`] is
+        // this supervisor's own contemporary and must never be marked — which is why the pass runs
+        // before the first poll rather than being a filter over the tree.
+        let restart_marks = crate::restart::apply(&mut tree);
         let status = match &tree.truncation {
             Some(Truncation::Unparsable { .. }) => Status::Stopped {
                 reason: unparsable_reason(path, consumed as u64),
@@ -171,7 +182,20 @@ impl Registry {
             status,
             polls: 0,
             seen_file,
+            restart_marks,
         })
+    }
+
+    /// **What §7.2's restart pass concluded about this boot's tree**, including the classes it
+    /// refused to decide.
+    ///
+    /// Carried rather than re-derivable, and for the same reason as [`Self::boot_gaps`]: once the
+    /// tree has been marked, an `Orphaned` node is no longer `is_unresolved`, so asking the tree
+    /// again would answer "nothing was marked". More importantly the *refusals* —
+    /// [`crate::restart::Marking::ReapIntentUnresolved`] above all — leave the tree byte-identical
+    /// to what replay produced, so they exist in this list or nowhere.
+    pub fn restart_marks(&self) -> &[crate::restart::Marked] {
+        &self.restart_marks
     }
 
     /// The tree, as the journal records it.
@@ -513,6 +537,74 @@ mod tests {
                 continue;
             }
             append(path, &line("w", seq, kind));
+        }
+    }
+
+    /// **§7.2's marking is the boot's, not the poll's** — the one wiring claim this module makes.
+    ///
+    /// A node the journal already held when the supervisor started is a node whose fate this
+    /// supervisor has no record of deciding, so it is `Orphaned`. A node that *appears while this
+    /// supervisor is following* is its contemporary and must stay `Live` however long it runs;
+    /// marking it would assert marion lost a node it is watching arrive.
+    #[test]
+    fn boot_marks_a_live_node_orphaned_and_a_node_that_arrives_afterwards_is_left_alone() {
+        let dir = scratch("registry-restart-marking");
+        let path = dir.join("journal.jsonl");
+        append(&path, &line("w", 0, intent("before", None)));
+        append(&path, &line("w", 1, spawned("before")));
+
+        let mut r = Registry::boot_path(&path).expect("a readable journal boots");
+        assert_eq!(
+            r.restart_marks(),
+            [crate::restart::Marked {
+                agent_id: id("before"),
+                marking: crate::restart::Marking::Orphaned,
+            }],
+        );
+        assert_eq!(
+            r.tree().get(&id("before")).unwrap().reap_state,
+            marion_core::node::ReapState::Orphaned,
+        );
+
+        append(&path, &line("w", 2, intent("after", None)));
+        append(&path, &line("w", 3, spawned("after")));
+        assert_eq!(r.poll(), 2, "the two new records were folded in");
+        assert_eq!(
+            r.tree().get(&id("after")).unwrap().reap_state,
+            marion_core::node::ReapState::Live,
+            "a node this supervisor watched arrive is not one it lost",
+        );
+        assert_eq!(
+            r.restart_marks().len(),
+            1,
+            "the boot's verdict list does not grow as the journal does",
+        );
+        assert_eq!(
+            r.tree().get(&id("before")).unwrap().reap_state,
+            marion_core::node::ReapState::Orphaned,
+            "and polling does not undo the marking",
+        );
+    }
+
+    /// A journal whose nodes all reached a recorded fate leaves the restart pass with nothing to
+    /// say — the negative control for the test above, so "everything is orphaned" cannot pass it.
+    #[test]
+    fn booting_over_a_fully_resolved_journal_marks_nothing() {
+        let dir = scratch("registry-restart-clean");
+        let path = dir.join("journal.jsonl");
+        journal(&path, None);
+        let r = Registry::boot_path(&path).expect("a readable journal boots");
+        assert!(
+            r.restart_marks().is_empty(),
+            "both nodes exited on the record"
+        );
+        for n in r.tree().nodes() {
+            assert_eq!(
+                n.reap_state,
+                marion_core::node::ReapState::Live,
+                "{} exited; it was never lost",
+                n.agent_id.0
+            );
         }
     }
 
