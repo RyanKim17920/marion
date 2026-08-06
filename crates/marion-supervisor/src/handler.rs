@@ -1027,16 +1027,19 @@ impl RegistryHandle {
             tx,
             identified: Mutex::new(None),
         };
-        let (env2, req2, task2, caller2) = (env, req, task_id, caller);
+        // **Everything the thread needs is owned**, for `Background::start`'s reason: this work
+        // outlives the JSON-RPC frame that asked for it, so it cannot borrow from this stack frame.
         let owner = me.clone();
         let join = std::thread::spawn(move || {
-            let observer = observer;
-            let outcome = crate::run::run_spawn_watched(&env2, &req2, &task2, &caller2, &observer);
-            // The agent id is known only if `identified` fired; a spawn refused above it never
-            // produced a node, and there is nothing to file the outcome under.
+            let outcome = crate::run::run_spawn_watched(&env, &req, &task_id, &caller, &observer);
+            // The agent id is known only if `identified` fired. A spawn refused above it — an
+            // unknown agent type, a scope outside the ceiling — never minted a node, so there is
+            // nothing to file the outcome under and nothing holding the supervisor open.
             if let Some(agent_id) = observer.identified_id() {
                 owner.mark_finished(&agent_id, outcome);
             }
+            // Sent last and unconditionally, so a launch that failed before either earlier moment
+            // cannot leave the call waiting out `LAUNCH_BOUND` for something that will not come.
             let _ = observer.tx.send(Progress::Finished);
         });
 
@@ -1059,6 +1062,14 @@ impl RegistryHandle {
         // count. Everything from here on is this one node's own launch, which no other caller's
         // gate depends on.
         drop(decision);
+        // The join handle is filed now rather than at `spawn`, because the table's key is the id
+        // this call has only just learned. Nothing races: `Progress::Identified` is sent from
+        // inside `claim`, so the entry exists before this line can run.
+        //
+        // **A call that gave up before this point leaves the thread detached**, and that is
+        // deliberate rather than overlooked: the node is still claimed, so §5.7 still refuses to
+        // exit while it runs, and the alternative — holding the handle somewhere keyed by nothing
+        // — would be a second table to keep consistent with this one.
         if let Some(node) = lock(&self.nodes).get_mut(&agent_id) {
             node.join = Some(join);
         }
