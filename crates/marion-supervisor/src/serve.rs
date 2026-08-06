@@ -687,6 +687,107 @@ mod tests {
         assert_eq!(DEFAULT_IDLE_GRACE, Duration::from_secs(300));
     }
 
+    /// A handler that is willing to exit and counts how often the loop asks. Nothing about node
+    /// state is involved: the question here is entirely the accept loop's, which is the half of
+    /// §5.7 the handler's own tests cannot reach.
+    #[derive(Default)]
+    struct Leaver {
+        eligible: AtomicBool,
+        asked: AtomicU64,
+        exiting: AtomicBool,
+    }
+
+    impl Handle for Leaver {
+        fn call(&self, _c: ConnId, call: &Call, _o: &Outbound) -> Result<MethodResult, RpcError> {
+            Err(RpcError::unimplemented(
+                call.method().as_str(),
+                "this fixture is about the accept loop, not about answering",
+                "§5.7",
+            ))
+        }
+
+        fn gone(&self, _c: ConnId, _g: &ClientGone, _w: &Departure) {}
+
+        fn exiting(&self) -> bool {
+            self.exiting.load(Ordering::SeqCst)
+        }
+
+        fn idle_exit_eligible(&self) -> bool {
+            self.eligible.load(Ordering::SeqCst)
+        }
+
+        fn begin_idle_exit(&self) -> bool {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            self.exiting.store(true, Ordering::SeqCst);
+            true
+        }
+    }
+
+    /// **NC — §5.7's exit is zero clients, then the whole grace, then exactly one record.**
+    ///
+    /// Three accept-loop failures, none of which any handler test can see. *Too early*: exiting
+    /// while the grace is still running, which is the "and my agents were gone" outcome for an
+    /// operator who was reconnecting. *Resumed rather than restarted*: a client that came and went
+    /// leaving the old clock running, so the next departure exits instantly. *Again*: continuing to
+    /// serve after the exit record, which makes §5.7's one record several and the supervisor's
+    /// departure a thing it announced but did not do.
+    #[test]
+    fn the_accept_loop_waits_out_the_grace_restarts_it_per_client_and_leaves_once() {
+        const GRACE: Duration = Duration::from_millis(400);
+        const SETTLE: Duration = Duration::from_millis(120);
+
+        let dir = std::path::PathBuf::from(format!("/tmp/ms-idle-exit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = crate::socket::socket_paths(&dir, std::path::Path::new("/p"), 1);
+        let Acquired::Serving(serving) = acquire(&paths).unwrap() else {
+            panic!("nothing was listening")
+        };
+        let leaver = Arc::new(Leaver::default());
+        let server =
+            Server::start_with_idle_grace(serving, Arc::clone(&leaver) as Arc<dyn Handle>, GRACE);
+
+        leaver.eligible.store(true, Ordering::SeqCst);
+        std::thread::sleep(SETTLE);
+        assert_eq!(
+            leaver.asked.load(Ordering::SeqCst),
+            0,
+            "the grace had not elapsed"
+        );
+
+        let client = UnixStream::connect(paths.socket()).expect("dial the supervisor");
+        std::thread::sleep(GRACE + SETTLE);
+        assert_eq!(
+            leaver.asked.load(Ordering::SeqCst),
+            0,
+            "one connected client is not zero clients, however long it says nothing"
+        );
+
+        drop(client);
+        std::thread::sleep(SETTLE);
+        assert_eq!(
+            leaver.asked.load(Ordering::SeqCst),
+            0,
+            "the departure starts a fresh grace rather than resuming the one before the client"
+        );
+        std::thread::sleep(GRACE);
+        assert_eq!(
+            leaver.asked.load(Ordering::SeqCst),
+            1,
+            "zero clients for the whole grace is the predicate"
+        );
+
+        std::thread::sleep(GRACE + SETTLE);
+        assert_eq!(
+            leaver.asked.load(Ordering::SeqCst),
+            1,
+            "the loop stopped once the exit was recorded, rather than asking again"
+        );
+
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **NC — a torn frame is read once, when it completes: not twice, and not never.**
     ///
     /// The three failures this rules out are the three a naive reader actually commits. *Never*: the

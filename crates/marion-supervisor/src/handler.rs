@@ -1782,6 +1782,430 @@ mod tests {
         );
     }
 
+    /// Observes the journal at the instant of each signal, which no ordinary assertion can: the
+    /// finished file records *intent, confirm* for both a correct implementation and one that
+    /// appends the confirmation before sending anything. §4.3's order is what separates them, and
+    /// a confirmation that precedes its act is a durable claim marion never earned.
+    #[derive(Default)]
+    struct OrderingRuntime {
+        path: Mutex<Option<PathBuf>>,
+        at_signal: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl QuitRuntime for OrderingRuntime {
+        fn kill_process_tree_and_wait(&self, _pid: i32) -> bool {
+            let path = lock(&self.path).clone().expect("the fixture set its path");
+            lock(&self.at_signal).push(journal_tags(&path));
+            true
+        }
+    }
+
+    /// A runtime that signals and cannot observe death, which is the failure `run.rs`'s bounded
+    /// wait returns rather than asserting away.
+    struct UnobservableRuntime;
+
+    impl QuitRuntime for UnobservableRuntime {
+        fn kill_process_tree_and_wait(&self, _pid: i32) -> bool {
+            false
+        }
+    }
+
+    /// **NC — (a)'s PID preflight refuses rather than signals into the dark.**
+    ///
+    /// A confirmed node whose spawn has not resolved has no recorded PID. Proceeding would append
+    /// a durable kill intent for a process marion cannot address, which is the half-happened kill
+    /// the confirmed list exists to prevent — and the refusal is a `Conflict`, because the
+    /// operator's next move is to re-render, not to file a bug.
+    #[test]
+    fn kill_tree_refuses_a_confirmed_node_whose_pid_is_not_recorded_yet() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-kill-no-pid",
+            vec![intent("root", None, "claude", 0)],
+        );
+        let before = std::fs::read(&fx.path).unwrap();
+
+        let error = quit(
+            &fx,
+            marion_proto::QuitDisposition::KillTree {
+                confirmed: vec![id("root")],
+            },
+        )
+        .expect_err("a node with no PID cannot be proven to have been reached");
+        assert_eq!(error.kind(), Some(FailureKind::Conflict));
+        assert!(error.message.contains("no recorded PID"), "{error}");
+        assert!(runtime.killed().is_empty(), "nothing was signalled");
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// **NC — each node's confirmation is appended after its signal, not before it.**
+    ///
+    /// The finished journal is identical either way, so the assertion has to be made *during* the
+    /// signal. §7.2's recovery reads an intent without a confirmation as "marion may have killed
+    /// this"; a confirmation written first would make the opposite claim durable in the one window
+    /// where it is false.
+    #[test]
+    fn every_kill_is_signalled_before_its_confirmation_becomes_durable() {
+        let runtime = Arc::new(OrderingRuntime::default());
+        let fx = fx_with_runtime(
+            "handler-quit-kill-order",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", 301),
+                state("root", NodeState::Running),
+                intent("child", Some("root"), "codex-impl", 1),
+                spawned("child", 302),
+                state("child", NodeState::Running),
+            ],
+            runtime.clone(),
+        );
+        *lock(&runtime.path) = Some(fx.path.clone());
+
+        quit(
+            &fx,
+            marion_proto::QuitDisposition::KillTree {
+                confirmed: vec![id("root"), id("child")],
+            },
+        )
+        .expect("the exact set was confirmed");
+
+        let snapshots = lock(&runtime.at_signal).clone();
+        assert_eq!(snapshots.len(), 2, "one signal per node");
+        for (i, tags) in snapshots.iter().enumerate() {
+            assert_eq!(
+                tags.last().map(String::as_str),
+                Some("KillIntent"),
+                "node {i}'s intent is durable at the moment it is signalled"
+            );
+            assert_eq!(
+                tags.iter().filter(|t| *t == "KillConfirmed").count(),
+                i,
+                "node {i} was not confirmed before it was signalled"
+            );
+        }
+    }
+
+    /// **NC — a node §7.2 already reaped is retired without a second signal.**
+    ///
+    /// `ReapedIdle` is not `Exited`, so (a) must still account for it, but its process is already
+    /// gone. Signalling its recorded PID again would address whatever now owns that number, and
+    /// recording `signal: 9` would claim marion did something it did not do.
+    #[test]
+    fn kill_tree_retires_an_already_reaped_node_without_signalling_it_again() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-kill-reaped",
+            vec![
+                intent("reaped", None, "claude", 0),
+                spawned("reaped", 501),
+                state("reaped", NodeState::Idle),
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("reaped"),
+                    reason: "an earlier session/quit reaped it".into(),
+                }),
+                RecordKind::ReapConfirmed(ReapConfirmed {
+                    agent_id: id("reaped"),
+                }),
+                intent("live", None, "claude", 0),
+                spawned("live", 502),
+                state("live", NodeState::Running),
+            ],
+        );
+
+        quit(
+            &fx,
+            marion_proto::QuitDisposition::KillTree {
+                confirmed: vec![id("live"), id("reaped")],
+            },
+        )
+        .expect("both non-terminal nodes were confirmed");
+        assert_eq!(
+            runtime.killed(),
+            [502],
+            "a ReapedIdle node has no process left to signal"
+        );
+        let replay = crate::journal::read_path(&fx.path).unwrap();
+        assert_eq!(
+            replay
+                .get(&id("reaped"))
+                .unwrap()
+                .exit
+                .as_ref()
+                .unwrap()
+                .signal,
+            None,
+            "the record does not claim a signal marion never sent"
+        );
+        assert_eq!(
+            replay
+                .get(&id("live"))
+                .unwrap()
+                .exit
+                .as_ref()
+                .unwrap()
+                .signal,
+            Some(9)
+        );
+    }
+
+    /// **NC — a kill marion cannot observe dead is a refusal, not a confirmation.**
+    ///
+    /// This is the one path `run.rs`'s bounded wait exists to produce, and it is the path that
+    /// must not end in an exit: an unconfirmed intent is exactly what §7.2's recovery needs to
+    /// find, and a supervisor that left anyway would take that recovery with it.
+    #[test]
+    fn a_kill_that_cannot_be_observed_dead_leaves_the_intent_unconfirmed_and_no_exit() {
+        let fx = fx_with_runtime(
+            "handler-quit-kill-unobserved",
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root", 909),
+                state("root", NodeState::Running),
+            ],
+            Arc::new(UnobservableRuntime),
+        );
+
+        let error = quit(
+            &fx,
+            marion_proto::QuitDisposition::KillTree {
+                confirmed: vec![id("root")],
+            },
+        )
+        .expect_err("marion did not observe the process dead");
+        assert_eq!(error.kind(), Some(FailureKind::Internal));
+        let tags = journal_tags(&fx.path);
+        assert_eq!(tags.last().map(String::as_str), Some("KillIntent"));
+        assert!(
+            !tags.iter().any(|t| t == "KillConfirmed"),
+            "nothing confirmed a death nobody saw: {tags:?}"
+        );
+        assert!(!fx.handle.idle_exit_eligible());
+        assert!(!fx.handle.begin_idle_exit());
+        assert!(!fx.handle.exiting());
+    }
+
+    /// **NC — (c) refuses each busy class on that node's own state.**
+    ///
+    /// Every refusal class here is a *root*, so §7.2's "a node a spawn is blocked on" guard cannot
+    /// stand in for the state predicate. Without this, `reaping` could test nothing but parentage
+    /// and still detach every busy node in a tree-shaped fixture.
+    #[test]
+    fn reap_idle_detach_busy_refuses_each_busy_root_on_its_own_state() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-reap-roots",
+            vec![
+                intent("idle", None, "claude", 0),
+                spawned("idle", 1),
+                state("idle", NodeState::Idle),
+                intent("running", None, "claude", 0),
+                spawned("running", 2),
+                state("running", NodeState::Running),
+                intent("permission", None, "claude", 0),
+                spawned("permission", 3),
+                state("permission", NodeState::Blocked(BlockReason::Permission)),
+                intent("elicitation", None, "claude", 0),
+                spawned("elicitation", 4),
+                state("elicitation", NodeState::Blocked(BlockReason::Elicitation)),
+                intent("descendants", None, "claude", 0),
+                spawned("descendants", 5),
+                state("descendants", NodeState::Blocked(BlockReason::Descendants)),
+                intent("spawning", None, "claude", 0),
+            ],
+        );
+
+        let marion_proto::QuitOutcome::ReapedAndDetached {
+            reaped, detached, ..
+        } = quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+            .expect("no busy root blocks the reap of an idle one")
+            .outcome
+        else {
+            panic!("reap returned another disposition's outcome")
+        };
+        assert_eq!(reaped, [id("idle")]);
+        assert_eq!(
+            detached,
+            [
+                id("running"),
+                id("permission"),
+                id("elicitation"),
+                id("descendants"),
+                id("spawning"),
+            ]
+        );
+        assert_eq!(runtime.killed(), [1], "only the idle root was signalled");
+    }
+
+    /// **NC — an idle root already under, or past, a reap is not reaped a second time.**
+    ///
+    /// An unconfirmed intent means some other actor may already be mid-reap, and a `ReapedIdle`
+    /// node has no process left; either way a second intent/confirm pair would journal an act that
+    /// did not happen to a process that is not there.
+    #[test]
+    fn reap_idle_detach_busy_skips_an_idle_root_already_under_or_past_a_reap() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-quit-reap-twice",
+            vec![
+                intent("fresh", None, "claude", 0),
+                spawned("fresh", 10),
+                state("fresh", NodeState::Idle),
+                intent("intended", None, "claude", 0),
+                spawned("intended", 20),
+                state("intended", NodeState::Idle),
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("intended"),
+                    reason: "someone else decided to reap it".into(),
+                }),
+                intent("already", None, "claude", 0),
+                spawned("already", 30),
+                state("already", NodeState::Idle),
+                RecordKind::ReapIntent(ReapIntent {
+                    agent_id: id("already"),
+                    reason: "an earlier session/quit reaped it".into(),
+                }),
+                RecordKind::ReapConfirmed(ReapConfirmed {
+                    agent_id: id("already"),
+                }),
+            ],
+        );
+
+        let marion_proto::QuitOutcome::ReapedAndDetached {
+            reaped, detached, ..
+        } = quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+            .expect("one idle root was reapable")
+            .outcome
+        else {
+            panic!("reap returned another disposition's outcome")
+        };
+        assert_eq!(reaped, [id("fresh")]);
+        assert_eq!(runtime.killed(), [10]);
+        assert_eq!(
+            detached,
+            [id("intended")],
+            "a ReapedIdle node is no longer something a client can be detached from"
+        );
+    }
+
+    /// **NC — (b) names the nodes an operator is walking away from, and not the ones that finished.**
+    ///
+    /// A `detached` list padded with terminal nodes tells the operator that work is still out there
+    /// when it is not, which is the same lie as omitting a live one, in the other direction.
+    #[test]
+    fn detach_names_only_the_nodes_that_are_still_someones_agent() {
+        let fx = fx_with(
+            "handler-quit-detach-list",
+            vec![
+                intent("live", None, "claude", 0),
+                spawned("live", 61),
+                state("live", NodeState::Idle),
+                intent("done", None, "claude", 0),
+                spawned("done", 62),
+                RecordKind::Exited(Exited {
+                    agent_id: id("done"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "already done".into(),
+                    },
+                }),
+            ],
+        );
+
+        let marion_proto::QuitOutcome::Detached {
+            detached,
+            gate_exposed,
+            ..
+        } = quit(&fx, marion_proto::QuitDisposition::DetachAll)
+            .expect("detach is implemented")
+            .outcome
+        else {
+            panic!("detach returned another disposition's outcome")
+        };
+        assert_eq!(detached, [id("live")]);
+        assert_eq!(gate_exposed, [id("live")]);
+    }
+
+    /// **NC — a departure alone never moves the supervisor toward its exit record.**
+    ///
+    /// Every node here is terminal, so the *only* thing between this supervisor and an exit is the
+    /// absence of an explicit quit. §7.3.1 says a close chose nothing; a close that quietly made
+    /// the exit eligible would turn "the client's terminal died" into "the fleet was dismissed",
+    /// and no test of node state would notice.
+    #[test]
+    fn a_departure_alone_never_makes_the_supervisor_eligible_to_exit() {
+        let fx = fx_with(
+            "handler-quit-eof-eligibility",
+            vec![
+                intent("done", None, "claude", 0),
+                spawned("done", 7),
+                RecordKind::Exited(Exited {
+                    agent_id: id("done"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "already done".into(),
+                    },
+                }),
+            ],
+        );
+        let before = std::fs::read(&fx.path).unwrap();
+
+        fx.handle.connected(ConnId(3));
+        fx.handle
+            .gone(ConnId(3), &ClientGone::SocketClosed, &Departure::Eof);
+        assert!(
+            !fx.handle.idle_exit_eligible(),
+            "§7.3.1: a client that closed chose nothing, including leaving"
+        );
+        assert!(!fx.handle.begin_idle_exit());
+        assert!(!fx.handle.exiting());
+        assert_eq!(std::fs::read(&fx.path).unwrap(), before);
+    }
+
+    /// **NC — `exiting` follows the exit record; it does not precede it.**
+    ///
+    /// §5.7's record is what distinguishes *finished and left* from *died*. A supervisor that
+    /// committed to exiting and only then failed to journal would produce exactly the ambiguity
+    /// the record exists to remove, and would do it on the one path — a journal marion cannot write
+    /// — where the evidence is least recoverable.
+    #[test]
+    fn the_supervisor_does_not_commit_to_exiting_before_its_record_is_durable() {
+        let fx = fx_with(
+            "handler-quit-exit-undurable",
+            vec![
+                intent("done", None, "claude", 0),
+                spawned("done", 8),
+                RecordKind::Exited(Exited {
+                    agent_id: id("done"),
+                    status: ExitStatus::Ok,
+                    exit: ProcessExit {
+                        code: Some(0),
+                        signal: None,
+                        description: "already done".into(),
+                    },
+                }),
+            ],
+        );
+        let marion_proto::QuitOutcome::Detached { supervisor, .. } =
+            quit(&fx, marion_proto::QuitDisposition::DetachAll)
+                .expect("detach is implemented")
+                .outcome
+        else {
+            panic!("detach returned another disposition's outcome")
+        };
+        assert_eq!(supervisor, marion_proto::SupervisorDisposition::Exiting);
+        assert!(fx.handle.idle_exit_eligible());
+
+        // A path the journal cannot be appended to. Nothing else about the decision changes, so
+        // the only reason to stay is the one under test.
+        std::fs::remove_file(&fx.path).unwrap();
+        std::fs::create_dir(&fx.path).unwrap();
+        assert!(!fx.handle.begin_idle_exit());
+        assert!(
+            !fx.handle.exiting(),
+            "an exit that could not be recorded did not happen"
+        );
+    }
+
     /// A method that is specified and not built says so — `Unimplemented`, not `Unsupported`, and
     /// not silence.
     #[test]
