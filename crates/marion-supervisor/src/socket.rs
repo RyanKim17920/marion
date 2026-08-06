@@ -723,7 +723,15 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
     let deadline = Instant::now() + within;
     loop {
         match UnixStream::connect(paths.socket()) {
-            Ok(s) => return Ok(Acquired::Dialed(s)),
+            // A dial that reached **somebody**: a connection over a lock somebody holds. Both halves
+            // are needed. The module doc's measurement runs in this direction too — for a window
+            // after a listener's process is gone, `connect` to its path still succeeds — so a
+            // successful dial on its own would make a caller report `Dialed` about a supervisor that
+            // no longer exists, and the corpse would never be taken over by anybody. A bound socket
+            // implies a held lock by construction, so the lock is what tells the two apart, and it
+            // is the same authority the rest of this function already trusts.
+            Ok(s) if someone_is_serving(paths.lock()) => return Ok(Acquired::Dialed(s)),
+            Ok(_corpse) => {}
             Err(e) if nobody_answered(&e) => {}
             Err(e) => {
                 return Err(SocketError::Dial {
@@ -1319,6 +1327,37 @@ mod tests {
         let Acquired::Serving(_next) = acquire(&p).unwrap() else {
             panic!("the previous supervisor is gone; this one must be able to serve")
         };
+    }
+
+    /// **NC — a socket that answers over a lock nobody holds is a corpse, not a supervisor.**
+    ///
+    /// The module doc's measurement has a second direction that cost a flaky test to notice: for a
+    /// window after a listener's process is gone, `connect` to its path still **succeeds**. A caller
+    /// that read a successful dial as *"a supervisor is serving"* would hand its operator a stream
+    /// to nobody — and, because it never reached the lock, would leave the corpse in place for the
+    /// next caller to be fooled by in turn.
+    ///
+    /// The window is a race, so it is not what this test poses. It builds the same *state*
+    /// deterministically: a listener at the socket path with the lock free, which is exactly what
+    /// that window looks like from the outside, and is a state no marion supervisor can ever be in
+    /// — a supervisor binds only while holding the lock.
+    #[test]
+    fn a_socket_that_answers_without_a_lock_behind_it_is_taken_over_rather_than_dialed() {
+        let dir = ShortDir::new("answering");
+        let p = paths_in(&dir);
+        let impostor = UnixListener::bind(p.socket()).expect("a socket that answers");
+        assert!(
+            UnixStream::connect(p.socket()).is_ok(),
+            "the fixture only means something if the dial really does succeed"
+        );
+
+        let Acquired::Serving(_taken) = acquire(&p).unwrap() else {
+            panic!(
+                "a dial that succeeds over a free lock reached a corpse; believing it leaves the \
+                 project with no supervisor and no way to get one"
+            )
+        };
+        drop(impostor);
     }
 
     /// **NC — a supervisor evicted by a removed state directory does not take its successor's
