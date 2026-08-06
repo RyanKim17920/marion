@@ -372,18 +372,30 @@ pub fn classify_root(body: &Value) -> RootStep {
 /// `an_unrelated_tool_result_does_not_advance_the_anthropic_edit_script` fails — while **every
 /// end-to-end cell in `cross_product.rs` still passes**, claude children included.
 ///
-/// The cells do not discriminate it because §3.1's `tools` vocabulary is currently **one word**:
-/// `claude-impl` grants `write` and nothing else, so a claude child makes exactly one tool call
-/// before its `report` and the two predicates agree on every transcript that actually occurs. The
-/// discriminating case — some *other* tool returning before the report — is reachable only in the
-/// unit test, which constructs it deliberately.
+/// The cells do not discriminate it because **no cell's script makes two built-in calls**: each
+/// scripted claude child writes once and then reports, so the two predicates agree on every
+/// transcript that actually occurs. The discriminating case — some *other* tool returning before the
+/// report — is constructed deliberately in the unit test and nowhere else.
 ///
-/// **The day that vocabulary grows past one word, this stops being true and nothing will say so.**
-/// A second granted tool makes an unrelated `tool_result` before the report an ordinary event, and
-/// [`classify_root`] would then end the child's run on it: `report` never called, the contract
-/// `Unreported`, and `changed_paths` populated by the write that did happen — a shape no cell would
-/// catch, because the cells would still be green. Whoever adds the second word owes this predicate
-/// an end-to-end case, not just a passing matrix.
+/// # The vocabulary has grown, and the debt this warning names is now live rather than hypothetical
+///
+/// This paragraph used to read *"the day that vocabulary grows past one word…"*. That day has come:
+/// `claude-impl` declares `[read, write]` since `read` was measured on all four harnesses
+/// (`tests/fixtures/s14/`), so a claude child is now offered `Read` **and** `Write`, and an
+/// unrelated `tool_result` arriving before the report is an ordinary event for any real model.
+///
+/// Two things follow, and they are different.
+///
+/// - **The predicate is already the correct one**, and this function is what makes the two-call
+///   shape work. Nothing is broken today, and no cell is wrong.
+/// - **The end-to-end guard is still owed and is still not here.** [`Script::anthropic_edit`] holds
+///   **one** `EditTurn`, so no cell in `cross_product.rs` can script a read *and* a write before its
+///   report, and a swap back to [`classify_root`] would still leave all sixteen cells green while
+///   ending a child's run on its own read: `report` never called, the contract `Unreported`,
+///   `changed_paths` populated by the write that did happen. Paying it means a second scripted edit
+///   on this wire and a cell that uses it — a change to the canned provider's script shape, which
+///   is why it was not taken as a side effect of adding the verb. **Whoever touches this wire's
+///   script next owes it.**
 pub fn anthropic_called(body: &Value, tool: &str) -> bool {
     body.get("messages")
         .and_then(Value::as_array)

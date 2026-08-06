@@ -1721,11 +1721,12 @@ mod tests {
             let i = args.iter().position(|a| a == flag).expect("flag present");
             args[i + 1].clone()
         };
-        assert_eq!(after("--tools"), "Write", "availability");
+        assert_eq!(after("--tools"), "Read,Write", "availability");
         assert_eq!(
             after("--allowedTools"),
-            "mcp__marion__report,Write",
-            "permission carries marion's verb AND the declaration; either alone is a dead end"
+            "mcp__marion__report,Read,Write",
+            "permission carries marion's verb AND the whole declaration; either alone is a dead \
+             end, and a verb that reached availability and not permission is item 22's"
         );
         // The orchestrator type through the same path: unchanged, which is what keeps this
         // additive.

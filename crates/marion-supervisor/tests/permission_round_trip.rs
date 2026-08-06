@@ -76,10 +76,42 @@ enum Target {
     /// `ROOT_ALLOWED_TOOLS`. **No argv surgery** — this is marion's production invocation.
     MarionReport,
     /// A built-in `Bash` call touching a path outside the root's cwd. Needs one argv edit
-    /// (`--tools ""` → `--tools Bash`), since marion's own root is compiled with no built-ins at
+    /// (`--tools ""` → `--tools Bash`), since a `claude` root is compiled with no built-ins at
     /// all. Recorded only to show that the ask's field set is **not** fixed across tool kinds.
     BuiltinBash,
+    /// A built-in `Read` of a known file — **no argv surgery at all**. The root's agent type is
+    /// `claude-impl`, which declares `[read, write]`, and §9's grant gate hands that list to a root
+    /// running over a repository marion is recording. This is the one target whose tool marion
+    /// itself put on both axes.
+    BuiltinRead,
 }
+
+/// What a probe's root is, beyond the tool it reaches for.
+struct Setup {
+    agent_type: &'static str,
+    /// A real one-commit repository rather than a bare directory. Required for any type that
+    /// declares a tool: no change record, no grant (`root::availability_axis`).
+    git: bool,
+    /// `marion run --no-change-record` — the negative control's only difference from the positive.
+    no_change_record: bool,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        // What every probe in this file used before the grant gate existed: the orchestrator type,
+        // a bare directory. It declares no tool, so it meets no gate.
+        Self {
+            agent_type: "claude",
+            git: false,
+            no_change_record: false,
+        }
+    }
+}
+
+/// The file [`Target::BuiltinRead`] reads, and content distinctive enough that finding it anywhere
+/// in the run's stdout is proof the read happened rather than a coincidence.
+const READ_PROBE_FILE: &str = "s14-read-probe.txt";
+const READ_PROBE_CONTENT: &str = "marion-s14-read-probe-8f3a1c: the root really opened this file";
 
 /// Everything one probe needs: a canned provider aimed at the non-allowlisted verb, and a prepared
 /// root node built by marion's own [`root::prepare`].
@@ -90,11 +122,21 @@ struct Fixture {
 }
 
 fn prepare(name: &str, target: Target) -> Fixture {
+    prepare_with(name, target, Setup::default())
+}
+
+fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
     let root_dir = scratch(&format!("s9-{name}"));
-    let repo = root_dir.join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
+    let repo = if setup.git {
+        marion_testsupport::fixture_repo(&root_dir)
+    } else {
+        let r = root_dir.join("repo");
+        std::fs::create_dir_all(&r).unwrap();
+        r
+    };
     let state = root_dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(repo.join(READ_PROBE_FILE), READ_PROBE_CONTENT).unwrap();
 
     // Outside the root's cwd, so the CLI must ask. Denied in the test, so it never runs.
     let outside = root_dir.join("outside/marion-s9.txt");
@@ -102,6 +144,15 @@ fn prepare(name: &str, target: Target) -> Fixture {
         Target::MarionReport => Script {
             root_tool: ASKED_TOOL.to_string(),
             root_tool_input: json!({"narrative": "s9 probe: a verb the root may not use"}),
+            ..Script::default()
+        },
+        Target::BuiltinRead => Script {
+            root_tool: "Read".to_string(),
+            // Absolute: the tool's own description asks for one, and an absolute path also makes
+            // the assertion about *this* file rather than about whatever the cwd resolved to.
+            root_tool_input: json!({
+                "file_path": repo.canonicalize().unwrap().join(READ_PROBE_FILE),
+            }),
             ..Script::default()
         },
         Target::BuiltinBash => Script {
@@ -126,7 +177,7 @@ fn prepare(name: &str, target: Target) -> Fixture {
     .expect("the canned provider binds");
 
     let mut node = root::prepare(&RootSpec {
-        agent_type: "claude".into(),
+        agent_type: setup.agent_type.into(),
         // The turn every probe in this file drives. It is compiled into the node rather than
         // handed to `launch`, so the prompt that was prepared and the prompt that is written are
         // one string.
@@ -137,6 +188,12 @@ fn prepare(name: &str, target: Target) -> Fixture {
         auth: marion_harness::Auth::Canned,
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         model: None,
+        // `claude` declares no built-in tool, so this bare directory meets no grant gate and the
+        // probe keeps the shape it has always had — which is the point of the gate being
+        // co-extensive with the grant (`root::availability_axis`). The `BuiltinBash` target below
+        // then sets the axis by hand, deliberately and visibly; `BuiltinRead` does not, because
+        // marion compiles that one itself.
+        no_change_record: setup.no_change_record,
     })
     .expect("the root node prepares");
 
@@ -659,6 +716,106 @@ fn require_claude() {
 // ---------------------------------------------------------------------------------------------
 // The measurements.
 // ---------------------------------------------------------------------------------------------
+
+/// **The paired control for §9's grant, both directions, one test.**
+///
+/// A root's availability axis is now its agent type's `tools:` list, gated on marion having a
+/// change record of the repository it runs in (`root::availability_axis`). Two claims follow, and
+/// neither is worth anything without the other:
+///
+/// **(A) A root granted `read` can actually read.** `claude-impl` declares `[read, write]`; the
+/// adapter maps `read` → `Read` and puts it on **both** of §3.1's axes; the CLI runs the call
+/// without asking, and the file's bytes come back. `tests/fixtures/s14/README.md` is the
+/// measurement behind the spelling — `--tools read`, marion's own word passed through, yields
+/// `body.tools []` with exit 0 and an empty stderr, which is why "the flag mentions read" would
+/// prove nothing.
+///
+/// **(B) The same run with `--no-change-record` gets no tool at all.** One flag different, same
+/// harness, same script, same file on disk: the root is compiled `--tools ""` and the probe's
+/// content never appears anywhere in its stdout. Every silent-stop failure mode passes (B) alone —
+/// a run that does nothing satisfies it perfectly — which is exactly why (B) alone is not the test,
+/// and why the two are one `#[test]` that cannot be half-`#[ignore]`d.
+///
+/// The **no-ask** assertion in (A) is the second half of §11 item 24 and is not decoration: a tool
+/// that reached availability without permission is offered, asked about, and — marion having no
+/// answerer in M1 — denied after the root's whole `Blocked` budget. That is a stall wearing a
+/// grant's clothes, and it is what this asserts did not happen.
+#[test]
+fn a_root_granted_read_reads_and_the_same_root_without_a_change_record_gets_no_tool() {
+    require_claude();
+
+    let granted = prepare_with(
+        "read-granted",
+        Target::BuiltinRead,
+        Setup {
+            agent_type: "claude-impl",
+            git: true,
+            no_change_record: false,
+        },
+    );
+    assert_eq!(
+        tools_flag(&granted),
+        "Read,Write",
+        "this test is vacuous unless marion really compiled the grant"
+    );
+    let cap = drive(&granted, Answer::Deny);
+    assert!(
+        cap.frames()
+            .iter()
+            .all(|f| can_use_tool_request(f).is_none()),
+        "a granted tool must not be asked about: an ask marion cannot answer is held for the \
+         root's whole Blocked bound and then denied, which is item 22's dead end and not a read.\n\
+         stderr:\n{}",
+        cap.stderr
+    );
+    assert!(
+        cap.stdout.join("\n").contains(READ_PROBE_CONTENT),
+        "the root was granted Read and the file's own bytes never came back — the grant reached \
+         the flag and not the model.\nstderr:\n{}\nframes:\n{}",
+        cap.stderr,
+        cap.stdout.join("\n")
+    );
+    assert_eq!(
+        cap.result()["permission_denials"].as_array().map(Vec::len),
+        Some(0),
+        "nothing was denied on a run whose only tool was one marion itself allowlisted"
+    );
+
+    let declined = prepare_with(
+        "read-declined",
+        Target::BuiltinRead,
+        Setup {
+            agent_type: "claude-impl",
+            git: true,
+            no_change_record: true,
+        },
+    );
+    assert_eq!(
+        tools_flag(&declined),
+        "",
+        "no record, no grant — and the flag itself must survive, since `--tools \"\"` is the CLI's \
+         documented way to say `disable all tools` and a dropped flag would enable them all"
+    );
+    let without = drive(&declined, Answer::Deny);
+    assert!(
+        !without.stdout.join("\n").contains(READ_PROBE_CONTENT),
+        "a root whose change record was not taken read the file anyway.\nframes:\n{}",
+        without.stdout.join("\n")
+    );
+
+    drop(granted.server);
+    drop(declined.server);
+}
+
+/// The compiled availability axis of a prepared root, read back off its own argv.
+fn tools_flag(fx: &Fixture) -> String {
+    let args = &fx.node.invocation.args;
+    let i = args
+        .iter()
+        .position(|a| a == "--tools")
+        .expect("compile_headless always emits the availability axis");
+    args[i + 1].clone()
+}
 
 #[test]
 fn a_non_allowlisted_verb_makes_the_cli_ask_over_the_control_channel_and_a_denial_lets_it_finish() {

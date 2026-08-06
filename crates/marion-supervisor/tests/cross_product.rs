@@ -64,7 +64,7 @@
 //! was **untouched** — which is precisely what an escaped write also produces, so the half of the
 //! matrix that could not write also could not tell the two apart.
 //!
-//! §3.1's availability axis closed it. `claude-impl` and `gemini-impl` declare `tools: [write]`,
+//! §3.1's availability axis closed it. `claude-impl` and `gemini-impl` declare `tools: [read, write]`,
 //! which the adapters compile to `Write` and `write_file`, so every child now takes a real edit
 //! through its own wire's tool-call shape — codex's `tools.apply_patch`, opencode's `write`, and
 //! those two. All sixteen cells exercise placement, and criterion 9 is asserted unconditionally.
@@ -73,16 +73,19 @@
 //! wire's child script is ordered by `marion_provider::script::anthropic_called`, a name-based
 //! predicate, because `classify_root` ends a run on *any* `tool_result` and would send a child that
 //! writes before it reports straight past `report` — its own write's result being the trigger.
-//! Swapping the predicate back fails a unit test and **leaves every cell here green**: the grant is
-//! one word, so a claude child makes exactly one call before reporting and the two predicates agree
-//! on every transcript that occurs. When §3.1's vocabulary grows past `write`, the discriminating
-//! case becomes reachable in a real run and must be re-established here; until then the guard lives
-//! in `marion-provider`'s unit tests and not in this file.
+//! Swapping the predicate back fails a unit test and **leaves every cell here green**: these
+//! scripts make exactly one built-in call before reporting, so the two predicates agree on every
+//! transcript that occurs. **The vocabulary has since grown to `[read, write]` and that is still
+//! true** — the condition is not how many words the vocabulary has but how many calls a cell's
+//! script makes, and none of them makes two. The discriminating case becomes reachable the day a
+//! script here reads *and* writes before reporting, and must be re-established then; until it does,
+//! the guard lives in `marion-provider`'s unit tests and not in this file.
 //!
-//! **The grant is the child's and never the root's.** It rides on [`Node::child_agent_type`], not
-//! on the harness: `claude` and `gemini` declare nothing, because `root::prepare` compiles a root
-//! with `cwd` set to the operator's own repository, and a write tool there points at the user's
-//! tree — the same directory the opencode defect wrote into.
+//! **The grant is the child's and not these roots'.** It rides on [`Node::child_agent_type`], not
+//! on the harness: the root types in this matrix (`claude`, `gemini`, …) declare nothing, so their
+//! availability axis is empty. That is now a property of what these cells *ask for* rather than an
+//! invariant of `root::prepare` — §9's grant gate gives a root its own type's list over a
+//! repository marion is recording (`root::availability_axis`).
 //!
 //! # The same-wire cells, and why they are not ambiguous
 //!
@@ -196,15 +199,16 @@ struct Node {
     ///
     /// Two fields and not one, for the same reason [`Node::model`] and [`Node::child_model`] are
     /// two: the roles genuinely differ. §3.1's availability axis is declared per *type*, and the
-    /// grant belongs only to the child's — `claude-impl` and `gemini-impl` declare `write` while
-    /// `claude` and `gemini` declare nothing, because a root is compiled with `cwd` set to the
-    /// operator's own repository (`root::prepare`) and a write tool there points at the user's
-    /// tree. `codex-impl` and `opencode` are the same string in both roles, which is what makes the
-    /// asymmetry visible rather than uniform: it is a property of two harnesses, not of the matrix.
+    /// grant belongs only to the child's — `claude-impl` and `gemini-impl` declare `[read, write]`
+    /// while `claude` and `gemini` declare nothing. `codex-impl` and `opencode` are the same string
+    /// in both roles, which is what makes the asymmetry visible rather than uniform: it is a
+    /// property of two harnesses, not of the matrix.
     ///
-    /// **This field decides only what is *asked for*.** That a root receives no availability axis
-    /// whatever type it resolves is an invariant of `root::prepare`, not of the name chosen here —
-    /// see [`assert_cell`]'s worktree criterion for what is asserted about the result.
+    /// **This field decides only what is *asked for*.** The roots in this matrix are orchestrator
+    /// types, so they declare nothing and are compiled with an empty availability axis — not
+    /// because a root cannot have one (§9's grant gate now gives a root its type's list over a
+    /// repository marion is recording, `root::availability_axis`), but because these cells ask for
+    /// nothing. See [`assert_cell`]'s worktree criterion for what is asserted about the result.
     child_agent_type: &'static str,
     harness: Harness,
     /// `--model` for a root, and `spawn`'s `model` for a child. **Every node asks for one**, which
@@ -350,7 +354,7 @@ fn script(root: &Node, child: &Node) -> Script {
             s.root_tool_input = json!({ "narrative": NARRATIVE });
             s.root_final_text = "Reported back through marion. Done.".into();
             // The claude child writes before it reports, through the built-in `Write` that
-            // `claude-impl`'s `tools: [write]` makes the adapter declare. `{file_path, content}` is
+            // `claude-impl`'s `tools: [read, write]` makes the adapter declare. `{file_path, content}` is
             // read off the live `input_schema`, and the path is **relative** deliberately: claude's
             // own tool description demands an absolute one, and an absolute path would prove
             // nothing about where marion placed the node.
@@ -1004,7 +1008,8 @@ fn assert_cell(root: &Node, child: &Node, ev: &Evidence) {
     // gemini children had no write route: those cells asserted the worktree was *untouched*, which
     // is the one thing an escaped write also produces, so half the matrix could not tell a child
     // that never wrote from one that wrote somewhere marion never looked. §3.1's availability axis
-    // closed that — `claude-impl` and `gemini-impl` declare `write` — and the branch went with it.
+    // closed that — `claude-impl` and `gemini-impl` declare `write` (and, since s14, `read`) — and
+    // the branch went with it.
     // A guard that is always true reads as coverage while asserting nothing, and invites someone to
     // "restore" the false case later.
     //

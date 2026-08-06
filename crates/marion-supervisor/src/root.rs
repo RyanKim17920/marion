@@ -115,52 +115,76 @@ pub const ROOT_ALLOWED_TOOLS: [&str; 4] = [
     "mcp__marion__list",
 ];
 
-/// The **availability** axis for an M1 root (§3.1): empty, on every harness, for every agent type.
+/// §3.1's **availability** axis for a root — *"the agent type's `tools:` list"*, exactly as
+/// `run::run_spawn` gives a child, **and the gate the grant is conditional on.**
 ///
-/// Deliberately a constant beside [`ROOT_ALLOWED_TOOLS`] rather than a read of
-/// `AgentType::tools` — which is exactly what `run::run_spawn` gives a *child*. **If you came here
-/// to wire the agent type up, this is the reason not to.**
+/// # What replaced the invariant that used to live here
 ///
-/// **A root's cwd is `RootSpec::repo`, the operator's own repository.** A child runs in a git
-/// worktree marion created and later removes, and §6.7 derives `changed_paths` and
-/// `scope_violations` from a diff of it; a root has no such directory, so it has no audit and no
-/// containment behind it. A built-in write tool there is `8a69f22`'s opencode containment failure —
-/// a write outside anything marion diffs — taken on purpose rather than by accident.
+/// This was `ROOT_TOOLS: [&str; 0]` — a compiled empty constant, deliberately *not* a read of
+/// `AgentType::tools`, on two arguments. Only one of them was ever about the operator's tree, and
+/// the other is now answered by a mechanism rather than by an absence. Both are restated here
+/// because a deleted invariant that leaves a blank behind is how the next reader re-derives the
+/// wrong half of it:
 ///
-/// **And the agent type cannot be trusted to decline it, because the operator chooses it.**
-/// `prepare` resolves whatever name `marion run` was handed, `claude-impl` included, and that type
-/// really does declare `write`. So keeping the grant on separate implementer types is a
-/// *convention*: it says which types are meant for the job. This constant is the *invariant*: it
-/// holds for every agent type that exists now and every one added later, including one whose name
-/// carries no warning at all. **The convention alone is not a guarantee; the two together are.**
+/// - **Containment (overruled, by the operator, deliberately).** A root's cwd is `RootSpec::repo`,
+///   the operator's own repository, where a child gets a worktree marion made and later removes.
+///   The old constant generalised the child's case one step too far: a child is unwatched, and a
+///   root is the operator's own node, launched by their own hand and watched live as it runs
+///   (`marion run`'s frame view). Nothing here *contains* a root, and nothing claims to — see the
+///   "what this does not solve" list on `marion_core::root_change`.
+/// - **Audit (survives, and is what this function now enforces).** A root that writes with no diff
+///   behind it produces `changed_paths: []` and no record — byte-identical to a child whose write
+///   escaped its worktree (§11 item 24), which is the ambiguity `8a69f22` exists to destroy.
+///   **Rule: no audit, no grant.** Not "grant it anyway and note the absence".
 ///
-/// # The audit half is now built, and it is what a grant here must be gated on
+/// # Why this is a gate and not a refusal to run
 ///
-/// The paragraph above makes two arguments and only one of them is about containment. The other is
-/// **audit**: a root that writes with no diff behind it produces the same nothing as a child whose
-/// write escaped its worktree (§11 item 24), which is the ambiguity `8a69f22` exists to destroy.
-/// That half no longer has to be answered by keeping the list empty — [`RootChangeBase`] records
-/// what the root's directory did between launch and exit, and [`availability_axis`] is the seam
-/// where the two are joined: **a non-empty axis is reachable only through the arm that has a
-/// pre-tree**. So this list stays empty for containment's sake and for no other reason, and the
-/// commit that fills it must also decide what `prepare` does when the snapshot is unavailable.
-/// `agent_type.rs:98-104` states the same two-protections argument and must move with it.
-pub const ROOT_TOOLS: [&str; 0] = [];
-
-/// §3.1's availability axis for a root — **and the seam a future grant is gated at.**
+/// The rule is *no audit, no grant* — not *no audit, no run*. So the refusal is **co-extensive with
+/// the grant**: a root whose type declares nothing meets no gate at all and runs in an unversioned
+/// directory exactly as it always has, recording `RootObservation::Failed` with git's own words. A
+/// gate that fired where nothing was at stake would teach an operator to pass
+/// `--no-change-record` by reflex, and then it is off for the one run that matters. That is the
+/// judgement call in this change, and it is stated rather than hidden: the design document's own
+/// gate paragraph refuses *any* unsnapshotable root, which is stronger than the rule it is derived
+/// from and costs a capability — `marion run claude` in a directory nobody `git init`ed — for a
+/// safety gain of zero, since a `tools: []` root has no built-in tool to write with.
 ///
-/// The value is [`ROOT_TOOLS`] either way today, because that list is empty. What matters is the
-/// shape: the only route to a non-empty axis is the [`RootChangeBase::Taken`] arm, so a later edit
-/// that fills `ROOT_TOOLS` grants tools **only** to a root whose change is being recorded, and
-/// cannot grant them to one whose snapshot failed without deleting an arm of this match. A
-/// `debug_assert` or a runtime check would be a reminder; this is a compile-time one.
+/// # The shape, which is the part that must not be undone
 ///
-/// It is deliberately not a read of `AgentType::tools` — see [`ROOT_TOOLS`] for the whole argument.
-fn availability_axis(base: &RootChangeBase) -> Vec<String> {
+/// A non-empty axis is reachable through **one** arm, the one holding a `pre_tree`. Every other
+/// path either returns an empty list or returns [`RootError::NoChangeRecord`]. So a later edit
+/// cannot hand a root a tool without a change record behind it by forgetting to check something —
+/// it would have to delete an arm of this match. A `debug_assert` would be a reminder; this is a
+/// compile-time one, and `a_non_empty_availability_axis_is_reachable_only_from_a_recorded_base`
+/// asserts the implication over roots `prepare` really built.
+///
+/// **The permission axis follows from the same list and is not this function's to add.** §11 item
+/// 24 measured what happens when only availability opens: the call goes to
+/// `--permission-prompt-tool stdio`, marion has no answerer, and the node gets item 22's dead-end
+/// string instead of the file. `ClaudeCodeAdapter::permission_axis` unions this list into
+/// `--allowedTools` from the same declaration, so the two cannot be declared apart — which is why
+/// [`ROOT_ALLOWED_TOOLS`] carries marion's own verbs *only*, and nothing here appends to it.
+/// marion never compiles `--disallowedTools`, on this path or any other (§3.1).
+fn availability_axis(
+    declared: &[String],
+    base: &RootChangeBase,
+    repo: &std::path::Path,
+) -> Result<Vec<String>, RootError> {
     match base {
-        RootChangeBase::Taken { .. } => ROOT_TOOLS.iter().map(|s| s.to_string()).collect(),
-        // **No audit, no grant.** Not "grant it anyway and note the absence".
-        RootChangeBase::Unavailable { .. } => Vec::new(),
+        // Nothing was declared, so there is nothing to gate and nothing to refuse. Checked first so
+        // the two arms below are only ever reached by a root that actually asked for a tool.
+        _ if declared.is_empty() => Ok(Vec::new()),
+        RootChangeBase::Taken { .. } => Ok(declared.to_vec()),
+        // The operator said so, in as many words, on the command line. A grant-free run is what
+        // they asked for, so this is not a refusal — it is the flag doing what it says.
+        RootChangeBase::NotAttempted { .. } => Ok(Vec::new()),
+        // marion looked and could not see. **No audit, no grant** — and loudly, because the
+        // alternative is a root that quietly gets no tools, does no work, and exits 0.
+        RootChangeBase::Unavailable { reason } => Err(RootError::NoChangeRecord {
+            repo: repo.to_path_buf(),
+            declared: declared.join(", "),
+            reason: reason.clone(),
+        }),
     }
 }
 
@@ -199,6 +223,15 @@ pub struct RootSpec {
     pub model: Option<String>,
     /// Whether the root presents a credential marion minted or the operator's own login (`--live`).
     pub auth: Auth,
+    /// `marion run --no-change-record`: do not snapshot the operator's working tree.
+    ///
+    /// **Named for the flag, so there is no translation layer between what an operator typed and
+    /// what marion branched on.** What it buys is a run in a directory marion cannot snapshot —
+    /// or one the operator would rather marion did not walk — and what it costs is the grant: a
+    /// root launched this way gets `tools: []` whatever its agent type declares, and journals
+    /// `RootObservation::NotAttempted` naming the flag. It is the escape hatch on
+    /// [`availability_axis`]'s gate and never a way past it.
+    pub no_change_record: bool,
 }
 
 /// The base point of the root's change record, or why there is none (§9).
@@ -224,6 +257,17 @@ pub enum RootChangeBase {
     /// `PATH`, the object directory could not be created. Journalled as
     /// `RootObservation::Failed` with this sentence, never as a clean reading.
     Unavailable { reason: String },
+    /// marion did not look, because the operator said not to (`marion run --no-change-record`).
+    ///
+    /// **A third arm and not an `Unavailable` with a different sentence**, because the two are
+    /// different journal readings and the whole deliverable is that a reader can tell them apart:
+    /// `RootObservation::NotAttempted` is *marion did not look, here is why*, and `Failed` is
+    /// *marion looked and could not see*. Collapsing them would put a false event in the audit
+    /// record — a git failure that never happened — for the one run where the absence was a
+    /// decision. It also decides the gate differently: [`availability_axis`] refuses a declared
+    /// grant on `Unavailable` and simply withholds it here, since a run with no tools is precisely
+    /// what the operator asked for.
+    NotAttempted { reason: String },
 }
 
 /// A prepared, not-yet-started root node.
@@ -310,6 +354,35 @@ pub enum RootError {
     Harness(#[from] marion_harness::HarnessError),
     #[error("unknown agent type {0}")]
     UnknownAgentType(String),
+    /// §9's grant gate: the type declared a built-in tool and marion cannot record what the root
+    /// does with it.
+    ///
+    /// **The refusal is of the *grant*, never of a write** — nothing here contains a root. What it
+    /// refuses is issuing a tool whose use would leave `changed_paths: []` and no record, which
+    /// §11 item 24 measured as byte-identical to a child whose write escaped its worktree. The
+    /// error names the directory, the declaration and git's own words, because all three are
+    /// separately actionable: the wrong directory, the wrong agent type, or a git that is not
+    /// installed are three different fixes.
+    ///
+    /// It fires **only** when a grant would otherwise be issued. A root whose type declares no tool
+    /// never reaches it — see [`availability_axis`] for why the gate is co-extensive with the grant
+    /// rather than with the snapshot.
+    #[error(
+        "the agent type declares built-in tool(s) [{declared}] and marion cannot record what a \
+         root does with them in {repo}: {reason}. A grant with no diff behind it produces \
+         `changed_paths: []` and no record — indistinguishable from a write that escaped (§11 \
+         item 24) — so the grant is refused rather than issued blind. Either `git init` that \
+         directory, or run an agent type that declares no tools, or pass `--no-change-record` to \
+         launch with no built-in tool at all."
+    )]
+    NoChangeRecord {
+        repo: PathBuf,
+        /// What the type asked for, in marion's vocabulary. Quoted rather than counted: "read,
+        /// write" tells an operator which agent type they picked, and "2 tools" does not.
+        declared: String,
+        /// Why the snapshot could not be taken, in git's words or marion's — never marion's guess.
+        reason: String,
+    },
     #[error(
         "{0} drives its node through a terminal, and marion MUST NOT give a headless node a pty \
          on stdin (§5.2). There is no root launch path for that surface, so the run is refused \
@@ -424,30 +497,45 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
     // the snapshot after compiling the launch would put the two in the other order and make the
     // gate a comment rather than a control flow.
     //
-    // A failure here is **not** fatal today, because `ROOT_TOOLS` is empty and there is no grant to
-    // refuse: a root in a directory that is not a git worktree still runs, and its record says
-    // `Failed` with git's own words. The day the axis is non-empty that changes — see `ROOT_TOOLS`.
-    let change_base = match crate::spawn::TreeSnapshot::open(&spec.repo, agent_dir.path()) {
-        Ok(snapshot) => {
-            let base_commit = snapshot.head(&spec.repo);
-            match snapshot.take(&spec.repo) {
-                Ok(pre_tree) => RootChangeBase::Taken {
-                    snapshot: std::sync::Arc::new(snapshot),
-                    base_commit,
-                    pre_tree,
-                },
-                Err(e) => RootChangeBase::Unavailable {
-                    reason: format!("snapshotting the working tree at launch: {e}"),
-                },
+    // A failure here is fatal **only for a type that declares a tool** — `availability_axis` turns
+    // it into `RootError::NoChangeRecord` there and into an empty axis everywhere else. So a root
+    // in a directory that is not a git worktree still runs when it asked for nothing, and its
+    // record still says `Failed` with git's own words.
+    let change_base = match spec.no_change_record {
+        // Not even attempted: `TreeSnapshot::open` is not called, so `--no-change-record` really
+        // does mean marion does not walk the operator's tree — not "walks it and discards the
+        // result", which would cost exactly as much and be a different claim from the one the flag
+        // makes.
+        true => RootChangeBase::NotAttempted {
+            reason: "the operator passed --no-change-record".into(),
+        },
+        false => match crate::spawn::TreeSnapshot::open(&spec.repo, agent_dir.path()) {
+            Ok(snapshot) => {
+                let base_commit = snapshot.head(&spec.repo);
+                match snapshot.take(&spec.repo) {
+                    Ok(pre_tree) => RootChangeBase::Taken {
+                        snapshot: std::sync::Arc::new(snapshot),
+                        base_commit,
+                        pre_tree,
+                    },
+                    Err(e) => RootChangeBase::Unavailable {
+                        reason: format!("snapshotting the working tree at launch: {e}"),
+                    },
+                }
             }
-        }
-        Err(e) => RootChangeBase::Unavailable {
-            reason: format!(
-                "preparing an isolated git environment for {}: {e}",
-                spec.repo.display()
-            ),
+            Err(e) => RootChangeBase::Unavailable {
+                reason: format!(
+                    "preparing an isolated git environment for {}: {e}",
+                    spec.repo.display()
+                ),
+            },
         },
     };
+
+    // §9's grant gate, evaluated **here** rather than inside the `LaunchSpec` literal below, so the
+    // refusal precedes every side effect the launch has — no configuration written, no journal
+    // record, no process. A gate whose failure left files behind would be a gate that ran too late.
+    let tools = availability_axis(&agent_type.tools, &change_base, &spec.repo)?;
 
     let token = per_run_token()?;
     // The adapter decides argv, env, and which configuration files exist. marion writes what it is
@@ -461,12 +549,12 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
             RootPath::Duplex => String::new(),
             RootPath::LaunchOnly => spec.prompt.clone(),
         },
-        // §3.1's availability axis, and a root compiles **none of it** — deliberately not
-        // `agent_type.tools`, which is what `run::run_spawn` gives a child. The whole argument is
-        // at [`ROOT_TOOLS`], beside `ROOT_ALLOWED_TOOLS`, which is a constant for the same reason.
-        // It goes through `availability_axis` so the list and the audit that would justify it are
-        // decided in one place rather than two.
-        tools: availability_axis(&change_base),
+        // §3.1's availability axis: the agent type's own `tools:` list, exactly as
+        // `run::run_spawn` gives a child — but only ever through `availability_axis`, which is
+        // where the list and the audit that justifies it are decided together rather than in two
+        // places. `ROOT_ALLOWED_TOOLS` below stays a constant, and for a different reason: it
+        // carries marion's own verbs, which no agent type may widen.
+        tools,
         allowed_tools: ROOT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
         mcp: McpDeclaration::Marion,
         base_url: spec.base_url.clone(),
@@ -857,7 +945,7 @@ fn observe_the_roots_change(node: &RootNode) -> RootChange {
             pre_tree,
         } => (snapshot, base_commit.clone(), pre_tree.clone()),
         // marion never got a base point. `Failed` and not `NotAttempted`: it tried and could not
-        // see. `NotAttempted` is for a decision not to look, which nothing in M1 can express yet.
+        // see. The two are kept apart deliberately — see the arm below and `RootChangeBase`.
         RootChangeBase::Unavailable { reason } => {
             return RootChange {
                 agent_id: node.agent_id.clone(),
@@ -865,6 +953,21 @@ fn observe_the_roots_change(node: &RootNode) -> RootChange {
                 head_at_exit: None,
                 scope: node.scope.clone(),
                 working_tree_delta: RootDelta::Failed {
+                    reason: Reason::new(reason),
+                },
+            };
+        }
+        // marion did not look, and the record says which decision that was. This is the variant
+        // `RootDelta::NotAttempted` was written for: *the journal is silent* / *marion did not
+        // look, here is why* / *marion looked and nothing changed* are three distinct readings, and
+        // that triple is the whole deliverable of the change record (§9).
+        RootChangeBase::NotAttempted { reason } => {
+            return RootChange {
+                agent_id: node.agent_id.clone(),
+                base_commit: None,
+                head_at_exit: None,
+                scope: node.scope.clone(),
+                working_tree_delta: RootDelta::NotAttempted {
                     reason: Reason::new(reason),
                 },
             };
@@ -1313,75 +1416,181 @@ mod tests {
             bridge: "/bin/marion-supervisor".into(),
             model: builtin(agent_type).unwrap().model.clone(),
             auth: Auth::Canned,
+            no_change_record: false,
         }
     }
 
-    /// **A root receives no built-in tool, whatever agent type it is given.**
+    /// A scratch dir whose `repo/` is a **real one-commit repository**, so a root prepared in it
+    /// has a change record and can therefore be granted what its agent type declares.
     ///
-    /// The invariant behind §3.1's availability axis, and the one that guards the operator's own
-    /// tree: `prepare` compiles a root with `cwd: spec.repo` — the user's repository, not a
-    /// worktree — so unlike a child there is no isolated directory to diff, no `changed_paths`,
-    /// and no `scope_violations` to derive. Handing it a write tool would be `8a69f22`'s opencode
-    /// containment failure taken deliberately.
+    /// The fixture decision, stated: the tests that drive an `-impl` root `git init`, and the ones
+    /// that drive an orchestrator root keep the bare directory [`temp`] gives them. Passing
+    /// `--no-change-record` everywhere instead would have been one line, and would have left the
+    /// whole root suite exercising the **ungranted** path while claiming to test the grant — this
+    /// repository's documented failure mode, a check that passes by failing to look. Keeping the
+    /// bare directories where no tool is declared is not laziness either: it is now the evidence
+    /// that the gate is co-extensive with the grant and does not fire where nothing is at stake.
+    fn temp_repo(name: &str) -> (marion_testsupport::Scratch, PathBuf) {
+        let dir = marion_testsupport::scratch(&format!("root-{name}"));
+        let repo = marion_testsupport::fixture_repo(&dir);
+        (dir, repo)
+    }
+
+    /// **A root gets the grant its agent type declares — and only over a recorded repository.**
     ///
-    /// **Driven at `claude-impl` on purpose.** That type *does* declare `write`, and it is
-    /// reachable here — `prepare` resolves whatever name `marion run` was handed. So this is what
-    /// makes the guarantee structural rather than a naming convention: the axis is a constant in
-    /// `prepare`, not a read of the resolved type, and no agent type added later can change that.
+    /// This replaces the invariant that a root's availability axis is empty by construction. The
+    /// operator overruled its containment half; [`availability_axis`] carries the whole argument
+    /// and what took its place. What is asserted here is the *positive* half of that trade, which
+    /// nothing asserted before: `marion run claude-impl` in a real repository compiles
+    /// `--tools Read,Write` **and** `--allowedTools …,Read,Write`, in claude's own spelling.
     ///
-    /// `--tools ""` with the flag still present is the assertion, not merely "Write is absent":
-    /// the CLI documents the empty string as *"disable all tools"*, so a dropped **flag** would be
-    /// a silently different grant that a substring search for `Write` would pass.
+    /// **Both flags, or the grant is item 22's dead end rather than a tool.** §11 item 24 measured
+    /// that: availability alone routes the call to `--permission-prompt-tool stdio`, where marion
+    /// has no answerer, and the node receives a denial string instead of the file. `Read` and
+    /// `Write` are the harness's spellings and not marion's — `tests/fixtures/s14/README.md`
+    /// measured `--tools read`, marion's own word, producing `body.tools []` with exit 0 and an
+    /// empty stderr.
+    ///
+    /// The orchestrator type is driven through the same path and must still compile `--tools ""`
+    /// with the flag present: the empty string is documented as *"disable all tools"*, so a dropped
+    /// flag would be a silently different grant that a substring search for `Write` would pass.
     #[test]
-    fn a_root_compiles_no_availability_axis_even_for_a_type_that_declares_one() {
-        let dir = temp("root-tools");
+    fn a_root_over_a_recorded_repository_compiles_the_grant_its_agent_type_declares() {
         assert_eq!(
             builtin("claude-impl").unwrap().tools,
-            vec!["write".to_string()],
+            vec!["read".to_string(), "write".to_string()],
             "this test is vacuous unless the type really does declare a grant"
         );
-        for agent_type in ["claude", "claude-impl"] {
-            let node = prepare(&root_spec(&dir, agent_type)).expect("the root compiles");
-            let args = &node.invocation.args;
-            let i = args
-                .iter()
-                .position(|a| a == "--tools")
-                .expect("the availability flag is always compiled, empty or not");
-            assert_eq!(
-                args[i + 1],
-                "",
-                "{agent_type}: a root's availability axis is empty by construction"
-            );
-        }
-    }
-
-    /// **NC-5's companion — the grant gate, as a structure rather than a promise.**
-    ///
-    /// The design's gate is *"whenever `LaunchSpec.tools` is non-empty on a root, `RootNode` carries
-    /// a pre-tree"*, and it has to be structural, so that the commit which fills [`ROOT_TOOLS`]
-    /// cannot compile past it silently. It is: the only source of a root's availability axis is
-    /// [`availability_axis`], and only one of its two arms can ever return a non-empty list — the
-    /// arm holding a [`RootChangeBase::Taken`]. Filling `ROOT_TOOLS` therefore grants tools to a
-    /// recorded root and to no other, without anybody having to remember.
-    ///
-    /// This test asserts the implication on both shapes, over roots `prepare` really built: one in
-    /// a directory that is not a repository, one in a git fixture. Vacuously true today for the
-    /// same reason `ROOT_TOOLS` is empty today, and stated now because the day it stops being
-    /// vacuous is the day nobody will be looking at this file.
-    #[test]
-    fn a_non_empty_availability_axis_is_reachable_only_from_a_recorded_base() {
-        // The unrecorded arm, direct: no audit, no grant — even if the constant were full.
-        assert!(
-            availability_axis(&RootChangeBase::Unavailable {
-                reason: "not a git worktree".into()
+        let (dir, repo) = temp_repo("root-tools");
+        let axis = |agent_type: &str| -> (String, String) {
+            let node = prepare(&RootSpec {
+                repo: repo.clone(),
+                state: dir.join("state"),
+                ..root_spec(&dir, agent_type)
             })
-            .is_empty(),
-            "a root whose change marion cannot record must never be handed a built-in tool, \
-             whatever ROOT_TOOLS says"
+            .expect("the root compiles");
+            let args = node.invocation.args.clone();
+            let after = |flag: &str| {
+                let i = args
+                    .iter()
+                    .position(|a| a == flag)
+                    .unwrap_or_else(|| panic!("{agent_type}: {flag} is always compiled"));
+                args[i + 1].clone()
+            };
+            (after("--tools"), after("--allowedTools"))
+        };
+
+        let (tools, allowed) = axis("claude-impl");
+        assert_eq!(
+            tools, "Read,Write",
+            "availability, in claude's own spelling"
+        );
+        assert_eq!(
+            allowed,
+            "mcp__marion__spawn,mcp__marion__status,mcp__marion__wait,mcp__marion__list,Read,Write",
+            "permission must carry the same grant beside marion's own verbs, or the tool exists \
+             and every call to it is refused (§11 items 22 and 24)"
+        );
+        assert!(
+            !node_args_mention_a_denylist(&repo, &dir),
+            "marion must never compile --disallowedTools (§3.1)"
         );
 
+        let (tools, allowed) = axis("claude");
+        assert_eq!(
+            tools, "",
+            "an orchestrator type declares nothing and must still get the flag, empty"
+        );
+        assert!(
+            allowed.starts_with("mcp__marion__spawn") && !allowed.contains("Write"),
+            "marion's own verbs are the root's permission axis and no agent type widens them: \
+             {allowed}"
+        );
+    }
+
+    /// `--disallowedTools` must never appear on a root's command line, whatever it was granted.
+    ///
+    /// §3.1 is absolute about it: enumerating the complement of the built-in set silently escalates
+    /// privilege the first time the harness adds a tool. Asserted over a **granted** root, since
+    /// that is the only configuration in which anyone would be tempted to write one.
+    fn node_args_mention_a_denylist(repo: &Path, dir: &Path) -> bool {
+        let node = prepare(&RootSpec {
+            repo: repo.to_path_buf(),
+            state: dir.join("state"),
+            ..root_spec(dir, "claude-impl")
+        })
+        .expect("the root compiles");
+        node.invocation
+            .args
+            .iter()
+            .any(|a| a.contains("disallowed") || a.contains("Disallowed"))
+    }
+
+    /// **NC-5 — the grant gate, in both directions, over roots `prepare` really built.**
+    ///
+    /// The rule is *no audit, no grant*, and it is asserted as an implication rather than as a spot
+    /// check: whenever a root's `--tools` is non-empty, its `RootNode` carries a base point. The
+    /// only source of that axis is [`availability_axis`], and exactly one of its arms can return a
+    /// non-empty list, so this cannot be defeated by an edit that forgets a check — only by one
+    /// that deletes an arm.
+    ///
+    /// Four roots, because the interesting cases are the corners:
+    ///
+    /// 1. `claude-impl` in a bare directory — **refused by name**, and the message names the
+    ///    directory and the declaration. This is the case the whole gate exists for.
+    /// 2. `claude` in the same bare directory — **runs**, with an empty axis. The gate is
+    ///    co-extensive with the grant, so a root that asked for nothing meets no gate; the
+    ///    behaviour every root fixture in this repository has always had is unchanged.
+    /// 3. `claude-impl` in a git fixture — `Taken`, and granted.
+    /// 4. `claude-impl` with `--no-change-record` in the same git fixture — `NotAttempted`, and
+    ///    **not** granted, which is what makes the flag an escape hatch rather than a way past the
+    ///    gate.
+    #[test]
+    fn a_non_empty_availability_axis_is_reachable_only_from_a_recorded_base() {
+        // The unrecorded arm, direct — a declaration marion cannot record is a refusal.
+        let err = availability_axis(
+            &["write".to_string()],
+            &RootChangeBase::Unavailable {
+                reason: "not a git worktree".into(),
+            },
+            Path::new("/nowhere"),
+        )
+        .expect_err("no audit, no grant");
+        assert!(matches!(err, RootError::NoChangeRecord { .. }), "{err}");
+        // ...and the same arm with nothing declared is not a refusal at all.
+        assert!(
+            availability_axis(
+                &[],
+                &RootChangeBase::Unavailable {
+                    reason: "not a git worktree".into()
+                },
+                Path::new("/nowhere"),
+            )
+            .expect("a root that asked for nothing meets no gate")
+            .is_empty()
+        );
+
+        // 1. Declared, unrecordable: refused, naming both halves.
         let outside = temp("gate-outside");
-        let a = prepare(&root_spec(&outside, "claude-impl")).expect("the root still runs");
+        let e = prepare(&root_spec(&outside, "claude-impl"))
+            .expect_err("a grant with no record behind it must not be issued");
+        let msg = e.to_string();
+        assert!(matches!(e, RootError::NoChangeRecord { .. }), "{msg}");
+        for needle in [
+            &*outside.join("repo").display().to_string(),
+            "read, write",
+            "--no-change-record",
+        ] {
+            assert!(
+                msg.contains(needle),
+                "the refusal must name the directory, the declaration and the remedy; missing \
+                 `{needle}` in: {msg}"
+            );
+        }
+
+        // 2. Nothing declared, same directory: unchanged, and that is the co-extensive half.
+        let a = prepare(&root_spec(&outside, "claude"))
+            .expect("a root that declares no tool still runs outside a repository");
         match &a.change_base {
             RootChangeBase::Unavailable { reason } => assert!(
                 reason.contains("git"),
@@ -1390,10 +1599,10 @@ mod tests {
             other => panic!("a bare directory is not a worktree: {other:?}"),
         }
 
-        let inside = marion_testsupport::scratch("root-gate-inside");
-        let repo = marion_testsupport::fixture_repo(&inside);
+        // 3. Declared and recorded: granted.
+        let (inside, repo) = temp_repo("gate-inside");
         let b = prepare(&RootSpec {
-            repo,
+            repo: repo.clone(),
             state: inside.join("state"),
             ..root_spec(&inside, "claude-impl")
         })
@@ -1403,18 +1612,31 @@ mod tests {
             "a real repository must yield a base point, or every record below is vacuous"
         );
 
-        // The implication itself, on both.
-        for node in [&a, &b] {
+        // 4. Declared, recordable, and declined: not granted, and not refused either.
+        let c = prepare(&RootSpec {
+            repo,
+            state: inside.join("state"),
+            no_change_record: true,
+            ..root_spec(&inside, "claude-impl")
+        })
+        .expect("declining the record is not an error, it is a decision");
+        assert!(
+            matches!(c.change_base, RootChangeBase::NotAttempted { .. }),
+            "the flag must record a decision not to look, never a git failure that never happened"
+        );
+
+        // The implication itself, over every root this test built.
+        for (label, node) in [("orchestrator", &a), ("granted", &b), ("declined", &c)] {
             let args = &node.invocation.args;
             let i = args.iter().position(|x| x == "--tools").expect("compiled");
-            if !args[i + 1].is_empty() {
-                assert!(
-                    matches!(node.change_base, RootChangeBase::Taken { .. }),
-                    "a root was granted `{}` with no change record behind it — that is \
-                     `8a69f22`'s ambiguity taken on purpose (see ROOT_TOOLS)",
-                    args[i + 1]
-                );
-            }
+            let granted = !args[i + 1].is_empty();
+            assert_eq!(
+                granted,
+                matches!(node.change_base, RootChangeBase::Taken { .. }),
+                "{label}: a root was granted `{}` with no change record behind it — that is \
+                 `8a69f22`'s ambiguity taken on purpose (see `availability_axis`)",
+                args[i + 1]
+            );
         }
     }
 

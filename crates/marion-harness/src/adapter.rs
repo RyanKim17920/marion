@@ -597,11 +597,24 @@ impl HarnessAdapter for ClaudeCodeAdapter {
     /// deliberately, and the file landed in the node's worktree — this harness resolves against the
     /// process cwd, so `Invocation.cwd` places it and nothing further is owed here.
     ///
+    /// `read` → **`Read`**, measured on 2.1.222 (`tests/fixtures/s14/README.md`): `--tools Read`
+    /// puts `Read` in the request body's tool list, and the run marion compiles today — `--tools ""`
+    /// — has no `Read` at all. **This is the one harness of four where the grant buys something**;
+    /// on gemini and opencode a read tool is already declared by default.
+    ///
+    /// The negative half of that measurement is why the mapping exists rather than a pass-through:
+    /// `--tools read`, marion's own word unmapped, yields `body.tools []`, **exit 0, empty stderr**,
+    /// and a `system/init` frame that agrees — indistinguishable from a healthy run and from the
+    /// bogus `--tools NotATool`. That is §12's accept-and-ignore shape with marion on the producing
+    /// end.
+    ///
     /// `Edit` is *not* mapped, and its absence is deliberate rather than pending: item 24 records
     /// that `Edit` and `Bash` were never tried, and this codebase does not name a grant it has not
-    /// watched arrive.
+    /// watched arrive. s14 declared `Bash` once, only to settle the comma separator for the
+    /// multi-name case, and makes no other claim about it.
     fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
         match tool {
+            agent_type::TOOL_READ => Ok("Read".into()),
             agent_type::TOOL_WRITE => Ok("Write".into()),
             _ => Err(HarnessError::UnsupportedTool {
                 harness: Harness::ClaudeCode,
@@ -787,6 +800,21 @@ impl HarnessAdapter for CodexAdapter {
     /// the declaration, which reads tidier and would silently demote every codex node marion spawns
     /// today to `read-only` — a behaviour change on the harness that was never broken, taken to
     /// close a gap on two others. The opt-in rule cuts the other way here.
+    ///
+    /// **`read` has no arm, and its absence is the decision rather than an omission.**
+    /// `tests/fixtures/s14/README.md` measured this harness's whole declaration — `apply_patch,
+    /// create_goal, exec_command, get_goal, update_goal, update_plan, view_image, write_stdin`,
+    /// **identical under `--sandbox read-only` and `--sandbox workspace-write`** — and there is no
+    /// read tool in it. Reading a file on codex is `exec_command`, i.e. the shell.
+    ///
+    /// The tempting move is to answer `read` the way `write` is answered above, *satisfied rather
+    /// than newly granted*. It does not transfer, for a reason the two cases do not share: `write`
+    /// names a **measured correspondence** — `apply_patch`, gated by a sandbox mode marion actually
+    /// compiles — whereas `read` would name the shell, which also writes, execs and reaches the
+    /// network. A reader of `tools: [read]` would take a codex node for read-only when it is
+    /// nothing of the kind. So the declaration is refused by name, the launch aborts, and the
+    /// operator is told which verb and which harness. See `marion_core::agent_type::TOOL_READ` for
+    /// why refusal beats recording the absence in the compiled spec.
     fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
         match tool {
             agent_type::TOOL_WRITE => Ok(format!("sandbox:{}", codex::SANDBOX_MODE)),
@@ -978,8 +1006,20 @@ impl HarnessAdapter for GeminiAdapter {
     /// `replace` is gemini's *other* edit tool and the same mode restores it, but marion's
     /// vocabulary has no verb that means it today, so nothing maps there. It is still named by
     /// [`gemini::is_edit_tool`], which answers about gemini's names rather than marion's.
+    ///
+    /// `read` → **`read_file`**, measured on 0.53.0 (`tests/fixtures/s14/README.md`): it is one of
+    /// the eight `functionDeclarations` present under the **default** approval mode, so the grant is
+    /// a **no-op** and `compile` emits nothing for it — `is_edit_tool("read_file")` is false, which
+    /// is what keeps a reading node out of `auto_edit` and its write tools. Answered anyway, for
+    /// [`HarnessAdapter::tool_name`]'s stated reason: answering is not the same as compiling, and
+    /// making the grant conditional here would narrow what this harness has always been able to do.
+    ///
+    /// s14 also measured that `--allowed-tools` neither gates nor validates on 0.53.0 —
+    /// `--allowed-tools read_file` and `--allowed-tools NotATool` produce byte-identical
+    /// declarations — so there is no flag here for marion to compile even if it wanted one.
     fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
         match tool {
+            agent_type::TOOL_READ => Ok("read_file".into()),
             agent_type::TOOL_WRITE => Ok("write_file".into()),
             _ => Err(HarnessError::UnsupportedTool {
                 harness: Harness::Gemini,
@@ -1176,8 +1216,16 @@ impl HarnessAdapter for OpenCodeAdapter {
     /// A spelling collision, not a shared vocabulary: marion's `write` and opencode's `write` are
     /// the same six letters by coincidence, and the mapping is written out rather than defaulted
     /// so that a future marion verb cannot pass through unmapped.
+    ///
+    /// `read` → **`read`**, the same collision and the same no-op: s14 measured opencode 1.17.3's
+    /// default tool list as `bash, edit, glob, grep, read, skill, task, todowrite, webfetch, write`,
+    /// so the tool is there before marion says anything. `OPENCODE_PERMISSION` *does* gate — s14
+    /// measured `{"read":"deny"}` taking the schema from 10 tools to 9 — which is precisely why
+    /// marion compiles nothing into it: driving that block off the declaration would silently
+    /// narrow every opencode node marion spawns today.
     fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
         match tool {
+            agent_type::TOOL_READ => Ok("read".into()),
             agent_type::TOOL_WRITE => Ok("write".into()),
             _ => Err(HarnessError::UnsupportedTool {
                 harness: Harness::OpenCode,
@@ -1532,6 +1580,151 @@ mod tests {
         }
     }
 
+    /// A `LaunchSpec` declaring marion's read verb.
+    fn reading(spec: LaunchSpec) -> LaunchSpec {
+        LaunchSpec {
+            tools: vec![agent_type::TOOL_READ.into()],
+            ..spec
+        }
+    }
+
+    /// **Claude Code: `read` is a real grant, and it reaches both axes exactly as `write` does.**
+    ///
+    /// Measured, `tests/fixtures/s14/README.md`: `--tools Read` puts `Read` in the request body's
+    /// tool list on 2.1.222, and marion's own `--tools ""` leaves it absent — so this is the one
+    /// harness of four where the declaration buys something. The `--allowedTools` half is asserted
+    /// beside it for §11 item 24's reason: availability alone sends the call to
+    /// `--permission-prompt-tool stdio`, where marion has no answerer, and the node receives item
+    /// 22's dead-end string instead of the file.
+    ///
+    /// The lowercase negative is the whole reason s14 exists: `--tools read` — marion's own word,
+    /// passed through unmapped — yields `body.tools []`, exit 0, empty stderr. So the assertion is
+    /// on the harness's spelling and not merely on "the flag mentions read".
+    #[test]
+    fn a_declared_read_reaches_claude_codes_two_axes_together() {
+        assert_eq!(
+            ClaudeCodeAdapter.tool_name(agent_type::TOOL_READ).unwrap(),
+            "Read",
+            "marion's word is `read` and the harness's is `Read`; passing marion's through \
+             declares nothing at all and says so nowhere (s14)"
+        );
+        let inv = ClaudeCodeAdapter
+            .compile(&reading(claude_spec()), &ctx())
+            .unwrap();
+        let after = |flag: &str| -> String {
+            let i = inv.args.iter().position(|a| a == flag).expect("flag");
+            inv.args[i + 1].clone()
+        };
+        assert_eq!(after("--tools"), "Read");
+        assert_eq!(
+            after("--allowedTools"),
+            "mcp__marion__spawn,mcp__marion__status,Read",
+            "permission follows availability from one declaration, or the read is item 22's dead \
+             end"
+        );
+        // Both verbs together, which is what `claude-impl` and a granted root actually declare —
+        // and the comma separator s14 paid the debt on (`--tools "Read,Bash"` declares both).
+        let both = ClaudeCodeAdapter
+            .compile(
+                &LaunchSpec {
+                    tools: agent_type::builtin("claude-impl").unwrap().tools,
+                    ..claude_spec()
+                },
+                &ctx(),
+            )
+            .unwrap();
+        let i = both.args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(both.args[i + 1], "Read,Write");
+    }
+
+    /// **gemini and opencode already declare a read tool, so marion compiles nothing for it.**
+    ///
+    /// s14 measured both: gemini 0.53.0 carries `read_file` in `functionDeclarations` under the
+    /// *default* approval mode, and opencode 1.17.3 carries `read` in its default tool list. The
+    /// grant is therefore a no-op on both, and the argv equality is the assertion — in particular
+    /// that `read` alone must **not** move gemini into `auto_edit`, which would silently hand every
+    /// reading node the write tools as well.
+    #[test]
+    fn a_declared_read_on_the_two_harnesses_that_already_have_one_changes_nothing() {
+        assert_eq!(
+            GeminiAdapter.tool_name(agent_type::TOOL_READ).unwrap(),
+            "read_file"
+        );
+        assert!(
+            !gemini::is_edit_tool("read_file"),
+            "read is not an edit tool, or declaring it would compile auto_edit and grant writes"
+        );
+        assert_eq!(
+            OpenCodeAdapter.tool_name(agent_type::TOOL_READ).unwrap(),
+            "read",
+            "a spelling collision with marion's own word, written out rather than defaulted"
+        );
+        for (name, adapter, spec) in adapters_and_specs() {
+            if name != "gemini" && name != "opencode" {
+                continue;
+            }
+            assert_eq!(
+                everything_the_node_is_told(adapter.as_ref(), &reading(spec.clone())),
+                everything_the_node_is_told(adapter.as_ref(), &spec),
+                "{name}: already declares a read tool, so the grant must not narrow or widen it"
+            );
+        }
+    }
+
+    /// **codex has no read tool, so `read` is refused by name rather than answered with the shell.**
+    ///
+    /// s14, measured: codex 0.146.0's declaration is `apply_patch, create_goal, exec_command,
+    /// get_goal, update_goal, update_plan, view_image, write_stdin` — identical under
+    /// `--sandbox read-only` and `--sandbox workspace-write`. Reading a file there is
+    /// `exec_command`, i.e. the shell.
+    ///
+    /// The arm this test forbids is the one [`TOOL_WRITE`] uses on this same harness — *satisfied
+    /// rather than newly granted*. It does not transfer: `write` names a measured correspondence
+    /// (`apply_patch`, under a sandbox mode marion compiles), while answering `read` with the shell
+    /// would grant strictly more than was declared and make `tools: [read]` read as "read-only" on
+    /// the one harness where it would not be.
+    #[test]
+    fn codex_has_no_read_tool_so_the_verb_is_refused_by_name() {
+        let err = CodexAdapter
+            .compile(&reading(codex_spec()), &ctx())
+            .expect_err("codex must not launch a node promised a tool it has none of");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("read") && msg.contains("codex"),
+            "the refusal names the verb and the harness: {msg}"
+        );
+        assert!(
+            matches!(err, HarnessError::UnsupportedTool { .. }),
+            "the typed refusal, not a generic one: {err}"
+        );
+        // And the record cannot be produced either — a caller that reached `compiled_permissions`
+        // past a failed `compile` would otherwise get a contract for a launch that never happened.
+        assert!(
+            CodexAdapter
+                .compiled_permissions(&reading(codex_spec()))
+                .is_err()
+        );
+    }
+
+    /// **Every built-in's declaration is satisfiable by its own harness's adapter.**
+    ///
+    /// This is `marion doctor`'s job, and `marion doctor` does not exist — so it is a test. Without
+    /// it, `codex-impl { tools: [read] }` would compile, ship, and fail only at the moment an
+    /// operator ran it. The refusal is the right runtime behaviour and a wrong committed state;
+    /// this is what keeps the second from happening.
+    #[test]
+    fn every_builtin_declares_only_tools_its_own_harness_can_provide() {
+        for name in agent_type::builtin_names() {
+            let t = agent_type::builtin(name).unwrap();
+            let adapter = adapter_for(t.harness).unwrap();
+            for tool in &t.tools {
+                adapter.tool_name(tool).unwrap_or_else(|e| {
+                    panic!("built-in `{name}` declares a tool its harness cannot provide: {e}")
+                });
+            }
+        }
+    }
+
     /// **Claude Code: both of §3.1's axes, from one declaration.**
     ///
     /// The harness where the whole gap was measured. `--tools` is availability and `--allowedTools`
@@ -1646,10 +1839,16 @@ mod tests {
     /// `edit` and `bash` are in the sample deliberately: they are §3.1's own example vocabulary,
     /// and item 24 says in as many words that they *"were never tried"*. Refusing a §3.1 word is
     /// the honest state, and the message has to be good enough to say so.
+    ///
+    /// `read` **left the sample** when it gained a measured mapping on three of the four harnesses
+    /// (`tests/fixtures/s14/`), which is exactly the transition §3.1's rule describes — a verb is
+    /// refused until it is measured, and not one day longer. It is still refused on codex, where
+    /// there is no read tool to measure, and
+    /// [`codex_has_no_read_tool_so_the_verb_is_refused_by_name`] asserts that on its own.
     #[test]
     fn a_tool_a_harness_cannot_provide_is_refused_by_name_not_dropped() {
         for (name, adapter, spec) in adapters_and_specs() {
-            for unmapped in ["edit", "bash", "read", "Write", "write_file", ""] {
+            for unmapped in ["edit", "bash", "Write", "write_file", ""] {
                 let spec = LaunchSpec {
                     tools: vec![unmapped.into()],
                     ..spec.clone()

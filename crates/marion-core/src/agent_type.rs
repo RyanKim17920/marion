@@ -37,19 +37,54 @@ pub const GEMINI_DEFAULT_MODEL: &str = "gemini-2.5-flash";
 /// pointing a node at a real endpoint overrides both through `spawn`'s `model`.
 pub const OPENCODE_DEFAULT_MODEL: &str = "marion/default";
 
-/// The one entry in §3.1's `tools:` vocabulary marion implements today: *may create or overwrite a
-/// file*.
+/// The first entry in §3.1's `tools:` vocabulary: *may create or overwrite a file*.
 ///
-/// **A vocabulary of one word, on purpose.** §3.1's example line reads `tools: [read, edit, bash]`,
-/// and those three are the vocabulary's *shape*, not a catalogue marion has earned. `write` is the
-/// only verb whose harness-native mapping has been **measured** on the two harnesses that were
-/// blocked (§11 item 24: `claude` 2.1.222 declares `Write` under `--tools "Write"`; `gemini` 0.53.0
-/// declares `write_file` under `--approval-mode auto_edit`) — item 24 says in as many words that
-/// `Edit` and `Bash` *"were never tried"*. Every other name is therefore refused by the adapter,
-/// naming the tool and the harness, rather than mapped to a guess: a guessed name that the CLI
-/// silently ignores is the §12 accept-and-ignore shape with marion on the producing end, and this
-/// axis exists precisely to end one instance of it.
+/// **A vocabulary of two words, and the second arrived the way the first did.** §3.1's example line
+/// reads `tools: [read, edit, bash]`, and those three are the vocabulary's *shape*, not a catalogue
+/// marion has earned. `write` was the first verb whose harness-native mapping was **measured** on
+/// the two harnesses that were blocked (§11 item 24: `claude` 2.1.222 declares `Write` under
+/// `--tools "Write"`; `gemini` 0.53.0 declares `write_file` under `--approval-mode auto_edit`);
+/// [`TOOL_READ`] is the second, measured on all four in `tests/fixtures/s14/`. `edit` and `bash`
+/// are still refused, because item 24 says in as many words that `Edit` and `Bash` *"were never
+/// tried"* and s14 declared `Bash` once only to settle a separator. Every unmapped name is refused
+/// by the adapter, naming the tool and the harness, rather than mapped to a guess: a guessed name
+/// that the CLI silently ignores is the §12 accept-and-ignore shape with marion on the producing
+/// end, and this axis exists precisely to end one instance of it.
 pub const TOOL_WRITE: &str = "write";
+
+/// The second entry in §3.1's `tools:` vocabulary: *may read the contents of a file*.
+///
+/// **Measured before it was named**, on all four installed harnesses, against the workspace's own
+/// canned provider at a total spend of $0.00 — `tests/fixtures/s14/README.md` carries the argv, the
+/// verbatim declarations off the wire, and the probes. The mapping each adapter compiles:
+///
+/// | harness | `read` maps to | what marion compiles | measured |
+/// |---|---|---|---|
+/// | claude 2.1.222 | `Read` | `--tools Read` **and** `--allowedTools Read` | a real grant: under marion's `--tools ""` there is no `Read` at all |
+/// | gemini 0.53.0 | `read_file` | nothing | a no-op: `read_file` is in `functionDeclarations` by default |
+/// | opencode 1.17.3 | `read` | nothing | a no-op: `read` is in the default tool list |
+/// | codex 0.146.0 | **nothing — there is no read tool** | — | refused by name; reading is `exec_command`, i.e. the shell |
+///
+/// **codex is refused rather than mapped, and that is the design decision this constant carries.**
+/// The tempting arm is the one [`TOOL_WRITE`] uses on that harness — *satisfied rather than newly
+/// granted*, `sandbox:workspace-write`. It does not transfer. `write` maps to a **measured
+/// correspondence**, `apply_patch` gated by a sandbox mode marion actually compiles; reading maps
+/// to the **shell**, which also writes, execs and reaches the network. Answering `read` with it
+/// would let a reader of `tools: [read]` believe a codex node was read-only when it is not — the
+/// field-name-lies class this codebase refuses elsewhere (`working_tree_delta`, `scope_enforced`).
+/// So `CodexAdapter::tool_name` grows no arm and the declaration aborts the launch by name.
+///
+/// **Why refusal and not a recorded `Unavailable { harness, verb }` in the compiled spec.** That
+/// third option is accept-and-ignore wearing a better name *in this codebase*, because nothing
+/// would read it: `marion doctor` does not exist, and §3.1's `tools:` is an allowlist whose whole
+/// semantic is *"the node may do this"* — recording "may not, actually" inside it inverts the
+/// field. A record no reader opens is a silent drop with extra steps. Refusal is also the
+/// reversible direction (§11 item 23, `77557e3`): it can be downgraded to a visible record the day
+/// a reader exists, whereas a caller taught that an empty tools axis is normal cannot be untaught.
+/// s14 is what makes that concrete rather than stylistic — **three of the four harnesses silently
+/// ignore an unknown tool name** (`--tools NotATool` → `[]`, exit 0, empty stderr), so a guessed or
+/// unsatisfiable mapping produces a run that looks completely healthy and simply has no tool.
+pub const TOOL_READ: &str = "read";
 
 /// §5.4/§6.7: an omitted `writable_scope` is **stored** as `["**"]`, never absent, so the
 /// conjunction in `scope::Scope` has two lists to work with in every case.
@@ -95,23 +130,26 @@ pub struct AgentType {
     /// type may do, so it is stated only by the `-impl` types, which is the difference between
     /// closing item 24 and hardcoding a tool name to make a matrix green.
     ///
-    /// **Two separate protections, and only the second guards the operator's repository.** The
-    /// empty default is about not widening a type that already exists. Keeping the grant on
-    /// separate implementer types is about *where the node runs*: `run_spawn` gives a child a git
-    /// worktree, while `root::prepare` compiles a root with `cwd` set to the operator's own repo.
-    /// Neither is sufficient alone — an operator can type `marion run claude-impl` — so
-    /// `root::prepare` compiles **no** availability axis at all, whatever type it resolves. That is
-    /// the invariant; this field's naming convention is only the signpost.
+    /// **This list now reaches a root too, and what guards the operator's repository is a record
+    /// rather than a refusal.** `run_spawn` gives a child a git worktree marion made and later
+    /// removes; `root::prepare` compiles a root with `cwd` set to the operator's own checkout. That
+    /// asymmetry used to be answered by `root::prepare` compiling **no** availability axis at all,
+    /// whatever type it resolved — an invariant, with the `-impl` naming convention as its signpost.
     ///
-    /// **The second protection made two arguments, and one of them is now answered elsewhere.**
-    /// A root's cwd was dangerous for two reasons: nothing contains it, and — the one this comment
-    /// leant on hardest — nothing *records* it, so a root that wrote produced the same empty
-    /// `changed_paths` as a child whose write escaped its worktree (§11 item 24, and `8a69f22`).
-    /// The audit half exists now: `root::RootChangeBase` takes the operator's working tree as a git
-    /// tree object at launch and at exit, and `root::availability_axis` is the seam that joins the
-    /// two — a non-empty axis is reachable only through the arm that has a base point. So the
-    /// remaining argument for `root::ROOT_TOOLS` being empty is **containment alone**, and that
-    /// constant, this comment, and the grant gate move together or they disagree.
+    /// That invariant made two arguments and only one of them survived scrutiny. **Containment**
+    /// was overruled deliberately: a root is the operator's own node, started by their own hand and
+    /// watched live, and nothing about it was ever contained. **Audit** was the real one — a root
+    /// that wrote produced the same empty `changed_paths` as a child whose write escaped its
+    /// worktree (§11 item 24, and `8a69f22`) — and it is now answered by a mechanism instead of by
+    /// an absence: `root::RootChangeBase` takes the operator's working tree as a git tree object at
+    /// launch and at exit, and `root::availability_axis` is the seam that joins the two. **A root's
+    /// axis is this list, and a non-empty one is reachable only through the arm holding a base
+    /// point** — otherwise the launch is refused as `root::RootError::NoChangeRecord`, or the
+    /// operator declined the record in as many words with `marion run --no-change-record` and gets
+    /// no tools. *No audit, no grant.* The convention is still only a signpost; the gate is the
+    /// guarantee, and it holds for an agent type added later whose name carries no warning at all.
+    ///
+    /// This comment, `root::availability_axis` and that gate move together or they disagree.
     pub tools: Vec<String>,
     /// Ceiling only. `spawn` may narrow it and never widen it (§5.4).
     pub scope_ceiling: Vec<Glob>,
@@ -190,10 +228,15 @@ pub fn builtin(name: &str) -> Option<AgentType> {
         // separate name beside the orchestrator, and this is what that name was always for.
         //
         // The second reason is *not* discharged by naming, since `marion run claude-impl` resolves
-        // right here — `marion_supervisor::root::prepare` compiles no availability axis at all, and
-        // that is what makes it an invariant. See the `tools` field's doc comment.
+        // right here. What discharges it is `marion_supervisor::root::availability_axis`: a root
+        // gets this list only over a repository whose working tree marion is recording, and is
+        // refused by name otherwise. See the `tools` field's doc comment.
+        //
+        // Both declare `read` beside `write` because a node that may create a file and may not
+        // open one is §11 item 24 half-closed — measured in `tests/fixtures/s14/`, where claude's
+        // `Read` is absent under marion's `--tools ""` and present under `--tools Read`.
         "claude-impl" => Some(AgentType {
-            tools: vec![TOOL_WRITE.into()],
+            tools: vec![TOOL_READ.into(), TOOL_WRITE.into()],
             ..AgentType::defaults(
                 "claude-impl",
                 "Implements a well-specified change on Claude Code.",
@@ -202,7 +245,7 @@ pub fn builtin(name: &str) -> Option<AgentType> {
         }),
         "gemini-impl" => Some(AgentType {
             model: Some(GEMINI_DEFAULT_MODEL.into()),
-            tools: vec![TOOL_WRITE.into()],
+            tools: vec![TOOL_READ.into(), TOOL_WRITE.into()],
             ..AgentType::defaults(
                 "gemini-impl",
                 "Implements a well-specified change on the Gemini CLI.",
@@ -398,7 +441,7 @@ mod tests {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude-impl" | "gemini-impl" => vec![TOOL_WRITE.into()],
+                "claude-impl" | "gemini-impl" => vec![TOOL_READ.into(), TOOL_WRITE.into()],
                 _ => vec![],
             };
             assert_eq!(
@@ -448,6 +491,39 @@ mod tests {
                 "{implementer}: the grant is the difference"
             );
             assert!(is_valid_name(&i.name), "{implementer}");
+        }
+    }
+
+    /// **`read` is declared beside `write`, not instead of it, and the pairing is the point.**
+    ///
+    /// A claude child under `--tools "Write"` and nothing else could create a file and could not
+    /// open one — §11 item 24 half-closed. `tests/fixtures/s14/README.md` measures the missing
+    /// half: `Read` is absent under marion's `--tools ""` and present under `--tools Read`, on the
+    /// 2.1.222 the machine actually has. The order is stated too, because it is what
+    /// `--tools Read,Write` compiles to and s14 is also what paid off the comma-separator debt
+    /// (`--tools "Read,Bash"` declares both).
+    ///
+    /// **codex-impl and opencode declare neither, and that is not an oversight.** codex has no read
+    /// tool at all (s14: reading is `exec_command`), so a declaration there would be refused by its
+    /// adapter and `marion run codex-impl` would stop launching. See [`TOOL_READ`].
+    #[test]
+    fn the_impl_types_can_read_what_they_write() {
+        for name in ["claude-impl", "gemini-impl"] {
+            let t = builtin(name).unwrap();
+            assert_eq!(
+                t.tools,
+                vec![TOOL_READ.to_string(), TOOL_WRITE.to_string()],
+                "{name}: a node that may write and may not read is item 24 half-closed"
+            );
+        }
+        for name in ["codex-impl", "opencode"] {
+            assert!(
+                !builtin(name)
+                    .unwrap()
+                    .tools
+                    .contains(&TOOL_READ.to_string()),
+                "{name}: codex has no read tool, so declaring one would refuse the launch"
+            );
         }
     }
 

@@ -238,9 +238,20 @@ fn a_directory_that_is_not_a_worktree_is_refused_by_name() {
 /// so a `> a.txt` in the body is a write by the node marion is recording, arriving through exactly
 /// the route a real harness's write would.
 fn stub_codex(dir: &Path, body: &str) -> PathBuf {
+    stub(dir, "codex", body)
+}
+
+/// The same stub under the name the gemini adapter launches, for the grant-gate test — `gemini-impl`
+/// is the built-in that declares a tool *and* runs on a `LaunchOnly` surface, so a shell script is
+/// a whole harness for it.
+fn stub_gemini(dir: &Path, body: &str) -> PathBuf {
+    stub(dir, "gemini", body)
+}
+
+fn stub(dir: &Path, program_name: &str, body: &str) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let program = bin.join("codex");
+    let program = bin.join(program_name);
     std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
     #[cfg(unix)]
     {
@@ -254,6 +265,16 @@ fn stub_codex(dir: &Path, body: &str) -> PathBuf {
 /// `BridgeNeverReached` — which is a case this file tests deliberately and must not stumble into.
 const REACHED_THE_BRIDGE: &str = r#"echo '{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"spawn","arguments":{},"status":"completed"}}'"#;
 
+/// The same claim in **gemini's** stream shape: a `tool_use` naming the verb in gemini's own
+/// `mcp_marion_*` spelling, plus the separate `tool_result` frame that says it was answered. Two
+/// frames rather than one because gemini pairs them by `tool_id` — a call with no result reads as
+/// `CallOutcome::Unknown`, which §6.1 step 8 refuses just as firmly as no call at all.
+const REACHED_THE_BRIDGE_GEMINI: &str = concat!(
+    r#"echo '{"type":"tool_use","tool_name":"mcp_marion_spawn","tool_id":"g1","parameters":{}}'"#,
+    "\n",
+    r#"echo '{"type":"tool_result","tool_id":"g1","status":"success","output":"ok"}'"#,
+);
+
 struct Run {
     code: Option<i32>,
     stderr: String,
@@ -263,6 +284,24 @@ struct Run {
 
 /// `marion run codex` with `bin` ahead of any real binary on `PATH`.
 fn run_marion(dir: &Path, repo: &Path, state: &Path, bin: &Path, timeout_secs: &str) -> Run {
+    run_marion_as(dir, repo, state, bin, timeout_secs, "codex", &[])
+}
+
+/// [`run_marion`], with the agent type and any extra flags spelled out.
+///
+/// The two tests below that drive §9's **grant gate** need a type that declares a tool, since the
+/// gate is co-extensive with the grant and `codex` declares none. `gemini-impl` is the one used,
+/// and it needs no stub on `PATH`: the gate is evaluated inside `root::prepare`, before any harness
+/// process exists.
+fn run_marion_as(
+    dir: &Path,
+    repo: &Path,
+    state: &Path,
+    bin: &Path,
+    timeout_secs: &str,
+    agent_type: &str,
+    extra: &[&str],
+) -> Run {
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -271,7 +310,7 @@ fn run_marion(dir: &Path, repo: &Path, state: &Path, bin: &Path, timeout_secs: &
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion"));
     cmd.args([
         "run",
-        "codex",
+        agent_type,
         "--prompt",
         "Delegate the task to a child.",
         "--repo",
@@ -286,6 +325,7 @@ fn run_marion(dir: &Path, repo: &Path, state: &Path, bin: &Path, timeout_secs: &
         "--timeout",
         timeout_secs,
     ]);
+    cmd.args(extra);
     cmd.env("PATH", path).current_dir(dir);
     let out = run_bounded(&mut cmd, RUN_BOUND).expect("marion run starts");
     assert!(
@@ -518,13 +558,96 @@ fn the_record_is_written_on_every_exit_path_and_not_only_a_clean_one() {
     }
 }
 
+/// **§9's grant gate, through the real binary, in both directions — and `--no-change-record` is
+/// the way through it.**
+///
+/// `gemini-impl` declares `[read, write]`. In a directory marion cannot snapshot there is no record
+/// to put behind that grant, so the run is **refused** rather than launched with a silently empty
+/// tool axis — which would be a node that does no work, exits 0, and says nothing anywhere (§12).
+/// The refusal has to be actionable, so all three of the directory, the declaration and the remedy
+/// are asserted by name.
+///
+/// The second half is the escape hatch doing exactly what it says and no more: the same command
+/// with `--no-change-record` reaches the harness, and the journal records `NotAttempted` **naming
+/// the flag**. That is the third of the change record's three readings — *the journal is silent* /
+/// *marion did not look, here is why* / *marion looked and nothing changed* — and it is the only
+/// one no other test in this file produces.
+#[test]
+fn a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_way_through() {
+    let dir = scratch("root-change-gate");
+    let repo = dir.join("plain");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    // A stub for the second half only. The first half never starts a process: the gate is decided
+    // in `prepare`, before anything is spawned or written.
+    let bin = stub_gemini(&dir, &format!("{REACHED_THE_BRIDGE_GEMINI}\nexit 0"));
+
+    let refused = run_marion_as(&dir, &repo, &state, &bin, "30", "gemini-impl", &[]);
+    assert_ne!(
+        refused.code,
+        Some(0),
+        "a grant with no record behind it must not be issued:\n{}",
+        refused.stderr
+    );
+    for needle in [
+        &*repo.display().to_string(),
+        "read, write",
+        "--no-change-record",
+    ] {
+        assert!(
+            refused.stderr.contains(needle),
+            "the refusal must name the directory, the declaration and the remedy; `{needle}` is \
+             missing from:\n{}",
+            refused.stderr
+        );
+    }
+    assert!(
+        !refused.stderr.contains("disallowed"),
+        "marion must never reach for a denylist to solve this (§3.1):\n{}",
+        refused.stderr
+    );
+
+    let through = run_marion_as(
+        &dir,
+        &repo,
+        &state,
+        &bin,
+        "30",
+        "gemini-impl",
+        &["--no-change-record"],
+    );
+    assert_eq!(
+        through.code,
+        Some(0),
+        "the flag is the operator saying it in as many words, and then the run proceeds:\n{}",
+        through.stderr
+    );
+    let (record, sidecar) = change_record(&through);
+    match (&record.observation, &sidecar.working_tree_delta) {
+        (RootObservation::NotAttempted { reason }, RootDelta::NotAttempted { .. }) => assert!(
+            reason.as_str().contains("--no-change-record"),
+            "an absence must name its cause, and this one's cause is a decision rather than a git \
+             failure: {}",
+            reason.as_str()
+        ),
+        other => panic!(
+            "the flag must journal a decision not to look, never `Failed`, which would put a git \
+             failure that never happened into the audit record: {other:?}"
+        ),
+    }
+}
+
 /// A root in a directory that is **not** a git worktree still runs, and records that nothing was
 /// measured.
 ///
 /// `Failed` and not silence: this is the third of the three readings, and the one an operator
-/// reaches by pointing `marion run` at a directory they never `git init`ed. Every existing root
-/// fixture in this repository is such a directory, which is why the run must not be refused — see
-/// `ROOT_TOOLS` for what changes the day the availability axis is non-empty.
+/// reaches by pointing `marion run` at a directory they never `git init`ed.
+///
+/// **It still runs, and that is the grant gate being co-extensive with the grant.** `codex` — the
+/// type this file drives — declares no built-in tool, so there is nothing for
+/// `root::availability_axis` to refuse. The same directory with `claude-impl` *is* refused; see
+/// `a_declared_grant_in_an_unrecordable_directory_is_refused_and_the_flag_is_the_way_through`.
 #[test]
 fn a_root_outside_a_repository_runs_and_records_that_nothing_was_measured() {
     let dir = scratch("root-change-nonrepo");
@@ -537,8 +660,8 @@ fn a_root_outside_a_repository_runs_and_records_that_nothing_was_measured() {
     assert_eq!(
         run.code,
         Some(0),
-        "a directory with no repository is not a reason to refuse the run — there is no grant to \
-         gate while ROOT_TOOLS is empty:\n{}",
+        "a directory with no repository is not a reason to refuse a root that declared no tool — \
+         there is no grant to gate:\n{}",
         run.stderr
     );
     let (record, sidecar) = change_record(&run);

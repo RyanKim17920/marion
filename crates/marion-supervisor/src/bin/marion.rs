@@ -33,7 +33,8 @@ fn usage_text() -> String {
     format!(
         "usage: marion                                (interactive: pick harness, model, prompt)\n\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
-         \x20                 [--model <name>] [--timeout <secs>] [--canned [--base-url <url>]]\n\
+         \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
+         \x20                 [--canned [--base-url <url>]]\n\
          \n\
          agent types: {}\n\
          \n\
@@ -71,6 +72,14 @@ fn usage_text() -> String {
          deliberately not repo-local and not a temp directory: §4.3's tree is what survives a run,\n\
          and a run whose journal vanished with /tmp would have nothing to resume from.\n\
          \n\
+         --no-change-record tells marion not to snapshot the repository the root runs in. A root\n\
+         runs in the operator's own checkout, not a worktree, so marion takes that working tree as\n\
+         a git tree object at launch and at exit and records the delta -- which is the only record\n\
+         of what the run did. An agent type that declares built-in tools is therefore refused in a\n\
+         directory marion cannot snapshot: a grant with no diff behind it is indistinguishable\n\
+         from a write that escaped. This flag is the way to say that is understood and wanted; the\n\
+         run then launches with no built-in tool at all and journals that marion did not look.\n\
+         \n\
          --timeout is the root's node-level bound, and what it bounds follows the harness's\n\
          surfaces: on a typed control plane (claude) it is §9's per-episode `Blocked`-only budget\n\
          and not a wall-clock ceiling, since marion offers a root none; on a LaunchOnly surface\n\
@@ -93,6 +102,9 @@ struct Args {
     base_url: Option<String>,
     model: Option<String>,
     timeout_secs: Option<u64>,
+    /// `--no-change-record`: launch without snapshotting the repository, and therefore without
+    /// any built-in tool. See `root::RootSpec::no_change_record`.
+    no_change_record: bool,
     /// Opt **in** to marion's canned provider. The inverse of the flag this replaced: real auth
     /// is what a person at a terminal means, and the canned server is a test fixture.
     canned: bool,
@@ -119,6 +131,7 @@ fn parse_args(argv: &[String]) -> Option<Args> {
         base_url: None,
         model: None,
         timeout_secs: None,
+        no_change_record: false,
         canned: false,
     };
     let mut rest = argv[2..].iter();
@@ -134,6 +147,9 @@ fn parse_args(argv: &[String]) -> Option<Args> {
             // The one flag with no value. Deliberately not `--canned=true`: which provider a run
             // talks to should read as a decision at the call site, not as a setting.
             "--canned" => args.canned = true,
+            // Also valueless, and for the same reason: declining the audit that a grant is
+            // conditional on is a decision, and it should read as one at the call site.
+            "--no-change-record" => args.no_change_record = true,
             // Accepted and inert. It used to select real auth, which is now the default; every
             // script and note already carrying it keeps working, and refusing it would break
             // them to say nothing the run does not already do.
@@ -902,6 +918,7 @@ fn main() -> ExitCode {
                 base_url: None,
                 model: chosen.model,
                 timeout_secs: None,
+                no_change_record: false,
                 canned: false,
             },
             // EOF: the operator changed their mind, which is not an error.
@@ -978,6 +995,7 @@ fn main() -> ExitCode {
         // `gemini` and `opencode` state one, which is what makes them launchable as roots at all —
         // both adapters refuse to compile without an explicit model (§6.4).
         model: args.model.or_else(|| agent_type.model.clone()),
+        no_change_record: args.no_change_record,
         auth: if args.canned {
             marion_harness::Auth::Canned
         } else {
@@ -2133,6 +2151,50 @@ mod tests {
             assert!(u.contains(name), "{name} must be listed");
         }
         assert!(u.contains("terminal"), "the non-TTY guard is documented");
+        // The escape hatch on §9's grant gate. A flag whose whole purpose is to be reachable when
+        // the run has just been refused is useless if the only place it is written down is a doc
+        // comment — the refusal names it, and so must `--help`.
+        assert!(
+            u.contains("--no-change-record"),
+            "the way past a refused grant must be documented where an operator will look: {u}"
+        );
+        assert!(
+            u.contains("no built-in tool at all"),
+            "and what it costs, since it is a trade and not a bypass: {u}"
+        );
+    }
+
+    /// **The gate's escape hatch parses, and it is valueless.**
+    ///
+    /// Valueless for `--canned`'s reason: declining the audit a grant is conditional on is a
+    /// decision, and it should read as one at the call site rather than as a setting. The default
+    /// is asserted beside it, because a flag that defaulted the other way would turn the gate off
+    /// for every run without anyone typing anything.
+    #[test]
+    fn the_change_record_is_taken_unless_the_operator_says_otherwise() {
+        let a = parse_args(&argv(&["run", "claude-impl", "--prompt", "p"])).unwrap();
+        assert!(!a.no_change_record, "the record is taken by default");
+        let b = parse_args(&argv(&[
+            "run",
+            "claude-impl",
+            "--prompt",
+            "p",
+            "--no-change-record",
+        ]))
+        .unwrap();
+        assert!(b.no_change_record);
+        // And it is still an unknown-flag refusal away from being a typo that silently disarmed
+        // the gate.
+        assert!(
+            parse_args(&argv(&[
+                "run",
+                "claude",
+                "--prompt",
+                "p",
+                "--no-change-recrd"
+            ]))
+            .is_none()
+        );
     }
 
     #[test]

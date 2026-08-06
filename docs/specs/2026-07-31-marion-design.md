@@ -4769,9 +4769,13 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     checkout, or anywhere else on the machine. The tree delta is a diff of one directory and sees
     none of it. Same class as item 19 and one level up: item 19 is about paths *inside* the
     repository that git does not track, this is about everything outside it. **Nothing bounds a
-    root's reach today**, because `ROOT_TOOLS` is empty and its `Bash` would have to come from a
-    grant nobody has made; the item exists so that the grant is not made on the strength of a record
-    that cannot see where the writes went.
+    root's reach today**, and that is now true for a narrower reason than when this item was
+    written: a root's availability axis *is* its agent type's `tools:` list
+    (`root::availability_axis`), so a grant is possible — but `bash` is not in marion's vocabulary
+    on any harness, so a root's `Bash` still has to come from a grant nobody has made. The two verbs
+    that exist, `read` and `write`, are file-scoped and land where the delta looks. The item stands
+    as the standing condition on widening that vocabulary: `bash` must not be added on the strength
+    of a record that cannot see where the writes went.
 
     **Writes to gitignored paths.** `git add -A` respects ignore rules, so a root writing `.env`, or
     into `target/`, produces no delta. Inherited unchanged from item 19's stated boundary — it is
