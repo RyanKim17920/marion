@@ -1455,6 +1455,13 @@ fn launch_duplex(
             // A root's frames are the only ones with a human on the other end; a child's stream is
             // never streamed anywhere, see `duplex::DuplexSpec::sink`.
             sink: watcher,
+            // **`None`, and that is the root's remaining half of §11 item 28.** A child's
+            // `Spawned` now goes out at the instant its process exists and carries its pid
+            // (`run_spawn`); a root's is still written after the run returns, with `pid: None`,
+            // because `marion run` owns the whole turn in one blocking call and nothing outside
+            // this process could act on the pid if it had it. See `spawned_record` for the record
+            // itself and item 28's step 6 for what changes it.
+            on_started: None,
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;

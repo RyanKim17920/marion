@@ -1354,6 +1354,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     depth: crate::root::ROOT_DEPTH + 1,
                     wall_clock: Some(Duration::from_secs(30)),
                     sink: Some(&record),
+                    on_started: None,
                 },
             )
             .expect("the run returns");

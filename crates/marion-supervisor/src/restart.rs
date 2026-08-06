@@ -21,21 +21,39 @@
 //! check cannot be made today and this module refuses to fake it — see
 //! [`Marking::ReapIntentUnresolved`].
 //!
-//! # Why there is no pid to check, and why capturing one here would be worse than `None`
+//! # There is a pid now, and it still does not license the probe
 //!
-//! Every production writer of `Spawned` sets `pid: None` (`run.rs`, `root.rs`, each with a doc
-//! comment calling it an absence recorded as one), and the reason is structural rather than an
-//! oversight. `spawn` is **synchronous**: `run.rs` journals `Spawned` *after* the child has already
-//! been run to completion and reaped, and `root.rs` drives the root through a helper that owns the
-//! `Child`. A pid recorded at either site names a process marion has **already observed dead**, so
-//! probing it on a later restart could only ever produce a false positive through pid reuse.
-//! Recording it would be strictly worse than recording nothing.
+//! **The premise this section used to rest on is gone.** It said every production writer of
+//! `Spawned` recorded `pid: None`, and that this was structural: `run.rs` journalled the record
+//! *after* the child had been run to completion and reaped, so any pid captured there would have
+//! named a process marion had already observed dead. §11 item 28's step 1 moved that record to the
+//! instant the process exists (`run.rs`'s `announce_started`, called between `command.spawn()` and
+//! the first byte written to the child's stdin), and it carries a real pid. A child's `Spawned`
+//! now names a process that was running when the record was written. Only a child's: a **root**'s
+//! record is still written after `launch` returns with `pid: None` (`root.rs`'s `spawned_record`),
+//! because `marion run` owns the whole turn in one blocking call — item 28's step 6.
 //!
-//! Making the pid useful means journaling `Spawned` at the instant the process exists, which is
-//! §11 item 28's step (c) inside its four-change sequence — the supervisor has to own the `Child`
-//! first. And even then a bare pid would not license §7.2's *"still alive"* branch: marion records
-//! no pid-plus-start-time or command line, so nothing distinguishes a surviving process from a
-//! recycled pid.
+//! **And [`Marking::ReapIntentUnresolved`] still refuses §7.2's probe branch, unchanged.** The
+//! reason survives the premise it used to be attached to, because it was never really about
+//! whether a number was on disk:
+//!
+//! > **The pid closes the signal-target problem, not the identity problem.**
+//!
+//! `kill_tree` needs to know *where to send a signal now*, and a pid recorded moments ago by a
+//! supervisor that is still running answers that. §7.2's probe needs to know *whether the process
+//! this journal is about is the one wearing that pid today*, and a bare pid cannot answer it:
+//! marion records no pid-plus-start-time and no command line, so on a restart — the exact moment
+//! this module runs, and by construction after a crash of unknown duration — nothing distinguishes
+//! a surviving node from an unrelated process that was handed a recycled pid. Probing would turn
+//! that ambiguity into a `ReapConfirmed` (*"the process was observed dead"*) or into marion killing
+//! a stranger. Both are fabrications; the refusal is not.
+//!
+//! What the pid *does* change here is what a `SpawnIntent` with nothing after it means. It used to
+//! cover both "no process was ever started" and "a process is running and marion cannot name it".
+//! It now means the first, full stop — §11 item 30's shapes 1 and 2 stop being indistinguishable —
+//! and the [`Marking::Orphaned`] arm below is correspondingly narrower and more truthful. The
+//! substrate for closing the identity half is `spikes/s15/procid.py`'s start-time comparison; it is
+//! deliberately not reached for here.
 //!
 //! # Derived, not journaled
 //!
@@ -123,11 +141,14 @@ pub fn mark(tree: &Replay) -> Vec<Marked> {
 /// field outvote an observation marion actually made, and the result is a refusal that is
 /// provably false rather than merely cautious:
 ///
-/// * `run.rs` writes `Spawned` only *after* the child has been run and reaped, and writes `Exited`
-///   from the completion beside it — then `persist_then_cap`'s `?` can return while `AbortOnDrop`
-///   is still armed, appending `SpawnAborted` over both. Reporting `AbortedOverALiveSpawn` there
-///   claims the abort may have been written over a running process, when the journal in front of
-///   it records the process being observed dead.
+/// * `run.rs` writes `Spawned` at the instant the process exists and `Exited` from the completion
+///   afterwards — then `persist_then_cap`'s `?` can return while `AbortOnDrop` is still armed,
+///   appending `SpawnAborted` over both. Reporting `AbortedOverALiveSpawn` there claims the abort
+///   may have been written over a running process, when the journal in front of it records the
+///   process being observed dead. **This clause got sharper when the pid landed, not weaker:**
+///   `Spawned` now genuinely does name a process that was alive, so `spawn_confirmed` is no longer
+///   a near-tautology and the `Exited` in front of it is the only thing keeping the abort arm off
+///   a node whose death is on the record.
 /// * §7.2 resolves an unconfirmed reap intent *by checking for the process*. A terminal record is
 ///   that check, already made and already journaled. Reporting `ReapIntentUnresolved` over it
 ///   claims marion cannot tell whether a process it watched die is alive — and, through
