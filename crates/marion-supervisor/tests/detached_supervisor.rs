@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use marion_supervisor::detach::{Launch, ensure_supervisor};
+use marion_supervisor::detach::{Launch, ensure_supervisor, ensure_supervisor_within};
 use marion_supervisor::socket::{SocketPaths, SupervisorIdentity, read_identity, socket_paths};
 
 unsafe extern "C" {
@@ -66,8 +66,29 @@ impl Bed {
         }
     }
 
-    /// Every process whose argv names this bed's state directory: the supervisors this test made,
-    /// and nothing else on the machine.
+    /// Every process whose argv names this bed's state directory, **whichever stage it is**.
+    ///
+    /// Stage 1 and stage 2 are ordinarily too short-lived to see, and that is exactly why they have
+    /// to be looked for: a stage 1 blocked in `wait` on a stage 2 that never exits is invisible to a
+    /// filter on `--detached`, so it is neither asserted about nor cleaned up, and it holds a
+    /// descriptor on the launcher's stderr for as long as it lives. The needle is the state
+    /// directory, which every stage carries in its argv by construction ([`Launch::argv`]).
+    fn processes(&self) -> Vec<i32> {
+        let out = std::process::Command::new("ps")
+            .args(["-A", "-o", "pid=,command="])
+            .output()
+            .expect("ps runs");
+        let needle = self.state.display().to_string();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(&needle))
+            .filter(|l| l.contains("serve"))
+            .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+            .collect()
+    }
+
+    /// Only the **supervisors** — stage 3. Used where the claim is about how many processes hold
+    /// this project's socket, which stages 1 and 2 never do.
     fn supervisors(&self) -> Vec<i32> {
         let out = std::process::Command::new("ps")
             .args(["-A", "-o", "pid=,command="])
@@ -86,8 +107,10 @@ impl Drop for Bed {
     /// Leave no supervisor behind, whatever the test did or failed to do. A test that leaked one
     /// would leak it for five minutes of idle grace, or forever if a node in its journal is
     /// non-terminal — which is §5.7 working as specified and not a reason to skip the cleanup.
+    ///
+    /// **Every stage, not only stage 3**: see [`Bed::processes`].
     fn drop(&mut self) {
-        for pid in self.supervisors() {
+        for pid in self.processes() {
             // SAFETY: `kill` with a pid this process just read from `ps`.
             unsafe { kill(pid, SIGKILL) };
         }
@@ -319,6 +342,142 @@ fn the_published_identity_lives_and_dies_with_the_socket() {
     );
     drop(next);
     goes_on_its_own(&bed);
+}
+
+// ------------------------------------------------- §5.7's start, when a stage dies half way
+
+/// A stand-in for `marion-supervisor` that a test can make fail at a chosen point.
+///
+/// Killing a stage at the instant that matters is a race a test cannot win, so the *outcome* of the
+/// kill is produced deterministically instead: a shell script in the launcher's place, which does
+/// exactly what the real stage would have done and then reports whatever the test asked for. It
+/// stands in for **stage 1 only** — `main.rs` derives each stage's program from `current_exe`, so
+/// every process after the first is the real binary.
+fn wrapper(bed: &Bed, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let real = env!("CARGO_BIN_EXE_marion-supervisor");
+    let path = bed.state.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\nREAL='{real}'\n{body}\n")).expect("write the stand-in");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path
+}
+
+/// **NC — a stage that dies after the supervisor is on its way is not reported as a failure to
+/// start.**
+///
+/// Two of the three kill windows produce exactly this: kill stage 1 once it has spawned stage 2,
+/// or kill stage 2 once it has spawned stage 3, and the launcher's `wait` returns a non-zero status
+/// while a perfectly good supervisor is binding the socket. A client that turns that status into an
+/// error has told its operator that nothing started, and left a supervisor running to contradict it
+/// — which is worse than either outcome alone, because the *next* invocation will find the socket
+/// answering and the two reports cannot both be true.
+///
+/// The status is what is observable to the launcher, so the status is what the stand-in produces.
+#[test]
+fn a_supervisor_that_started_is_reported_as_started_even_if_its_launcher_stage_failed() {
+    let bed = Bed::new("stagedied");
+    // Do the real work, then report the failure a killed stage 1 or stage 2 would have reported.
+    let program = wrapper(&bed, "dying-stage-one", "\"$REAL\" \"$@\"\nexit 1");
+    let launch = Launch {
+        program,
+        ..bed.launch()
+    };
+
+    let ensured = ensure_supervisor(&bed.paths, &launch)
+        .expect("a supervisor is serving, whatever its launcher stage said on the way out");
+    assert!(ensured.started, "this call is what brought it into being");
+    let id = published(&bed.paths);
+    assert_eq!(
+        bed.supervisors(),
+        vec![id.pid],
+        "exactly one supervisor, and it is the one that published"
+    );
+    drop(ensured);
+}
+
+/// **NC — a supervisor that never arrived is started again, rather than waited out.**
+///
+/// The mirror image of the case above, and it is the one the "exactly once" comment on
+/// [`ensure_supervisor`]'s spawn made unreachable: if stage 3 dies before it binds — an `exec`
+/// failure, an OOM kill, a stage-2 refusal — then `started` is true, nothing is listening, the lock
+/// is free, and the client sits out its whole bound to report `NotReachable` about a project it
+/// could have started a supervisor in at any point.
+///
+/// Determinism without a race: the stand-in exits **0 having started nothing** the first time it is
+/// asked, which is precisely what the launcher observes when stage 3 dies immediately, and does the
+/// real thing every time after. The bound below never decides the verdict — with a retry the dial
+/// succeeds in milliseconds, and without one no bound whatsoever produces a supervisor.
+#[test]
+fn a_client_whose_first_supervisor_never_arrived_starts_another_one() {
+    let bed = Bed::new("stillborn");
+    let marker = bed.state.join("first-attempt");
+    let program = wrapper(
+        &bed,
+        "stillborn-stage-one",
+        &format!(
+            "if [ ! -f '{m}' ]; then : > '{m}'; exit 0; fi\nexec \"$REAL\" \"$@\"",
+            m = marker.display()
+        ),
+    );
+    let launch = Launch {
+        program,
+        ..bed.launch()
+    };
+
+    let ensured = ensure_supervisor_within(&bed.paths, &launch, Duration::from_secs(20))
+        .expect("nothing was serving and the lock was free, so another supervisor was startable");
+    assert!(ensured.started);
+    assert!(marker.exists(), "the first attempt really did happen");
+    let id = published(&bed.paths);
+    assert_eq!(bed.supervisors(), vec![id.pid]);
+    drop(ensured);
+}
+
+/// **NC — a stage-3 failure on a fresh project is recorded, not discarded.**
+///
+/// `spawn_stage_three` redirects the supervisor's stderr into `supervisor.log` beside the socket,
+/// and on a project nothing has served yet that directory does not exist — so the `open` fails, the
+/// redirect silently degrades to `/dev/null`, and the one process whose failures nobody is watching
+/// becomes the one process that cannot report them. Two phases, because the two halves fail
+/// separately: the log must be **created** on a fresh project, and it must **carry** what stage 3
+/// said.
+#[test]
+fn a_fresh_projects_stage_three_writes_its_failures_to_the_projects_log() {
+    let bed = Bed::new("logged");
+    let log = marion_supervisor::detach::log_path(&bed.launch());
+    assert!(
+        !log.exists() && !bed.paths.dir().exists(),
+        "the point of the test is a project nothing has served yet"
+    );
+
+    let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
+    let id = published(&bed.paths);
+    assert!(
+        log.exists(),
+        "stage 2 opened the log before anything created its directory, so the supervisor's stderr \
+         went to /dev/null: {}",
+        log.display()
+    );
+    drop(ensured);
+
+    // Phase two: a stage 3 that cannot bind. A directory at the socket's path defeats the unlink
+    // that precedes the bind, which is a failure with a sentence attached — and the sentence has to
+    // arrive somewhere an operator can read it.
+    unsafe { kill(id.pid, SIGKILL) };
+    assert!(until(|| !alive(id.pid)));
+    let _ = std::fs::remove_file(bed.paths.socket());
+    std::fs::create_dir(bed.paths.socket()).expect("an unbindable socket path");
+    let _ = std::fs::remove_file(bed.paths.identity());
+
+    let e = ensure_supervisor_within(&bed.paths, &bed.launch(), Duration::from_secs(5))
+        .expect_err("nothing can bind that path");
+    let _ = e;
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        text.contains("marion-supervisor:"),
+        "stage 3 could not bind and said so; the log is where that sentence has to be: {text:?}"
+    );
+    let _ = std::fs::remove_dir(bed.paths.socket());
 }
 
 // ------------------------------------------------------------ §5.7's start, across processes
@@ -943,3 +1102,4 @@ fn a_supervisor_with_nothing_left_journals_its_exit_and_leaves_no_socket_identit
     drop(next);
     goes_on_its_own(&bed);
 }
+

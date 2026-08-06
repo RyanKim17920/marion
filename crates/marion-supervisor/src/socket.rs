@@ -1055,6 +1055,42 @@ mod tests {
         };
     }
 
+    /// **NC — a supervisor evicted by a removed state directory does not take its successor's
+    /// socket with it.**
+    ///
+    /// Removing `<state>/<hash>` under a serving supervisor unlinks the very inode the `flock`
+    /// argument rests on, so the next caller opens a *different* inode at the same pathname, takes
+    /// it unopposed, and serves. Two supervisors over one project is bad enough; the failure this
+    /// asserts is the one that follows a moment later, when the first one's `Drop` unlinks a path
+    /// that now names the **second** one's socket — leaving a live supervisor nobody can dial and a
+    /// project the lock says is occupied.
+    #[test]
+    fn a_supervisor_whose_directory_was_removed_does_not_unlink_its_successors_socket() {
+        let dir = ShortDir::new("evicted");
+        let p = paths_in(&dir);
+        let Acquired::Serving(evicted) = acquire(&p).unwrap() else {
+            panic!("nothing was listening")
+        };
+        // What defeats the lock: the pathname survives, the inode behind it does not.
+        std::fs::remove_dir_all(&*dir).expect("remove the state directory");
+
+        let Acquired::Serving(successor) = acquire(&p).unwrap() else {
+            panic!("the directory is gone, so this caller finds nothing and binds")
+        };
+        assert!(UnixStream::connect(p.socket()).is_ok(), "the successor serves");
+
+        drop(evicted);
+        assert!(
+            p.socket().exists(),
+            "the evicted supervisor unlinked a socket it did not bind"
+        );
+        assert!(
+            UnixStream::connect(p.socket()).is_ok(),
+            "the successor is still dialable after its predecessor dropped"
+        );
+        drop(successor);
+    }
+
     /// The `/tmp` branch is audited, because `/tmp` is writable by everyone and the socket is the
     /// fleet's control plane. A directory somebody else owns is refused with a sentence rather
     /// than served through.
