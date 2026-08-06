@@ -4,6 +4,7 @@
 //! reads its JSONL until the process ends, then derives the contract from **git** and from the
 //! child's `report` call. `spawn` blocks for the whole run and returns the completed contract.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command as SysCommand;
 
@@ -206,6 +207,30 @@ impl ScratchIndex {
     }
 }
 
+/// `git` in `wt` with an explicit environment overlay, and **nothing inherited that decides where
+/// git writes**.
+///
+/// The overlay is a slice rather than a fixed `GIT_INDEX_FILE` because two callers need different
+/// ones and they must not become two implementations: [`git_indexed`] redirects the index, and
+/// [`TreeSnapshot`] redirects the index *and* the object store. One function, so a caller cannot
+/// half-redirect — which for the snapshot path would mean writing blobs into the operator's own
+/// `.git/objects`.
+fn git_env(wt: &Path, env: &[(&str, &OsStr)], args: &[&str]) -> Result<String, SpawnError> {
+    let mut cmd = SysCommand::new("git");
+    cmd.current_dir(wt).args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output()?;
+    if !out.status.success() {
+        return Err(SpawnError::Git(
+            "command",
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 /// `git` in `wt` with `GIT_INDEX_FILE` pointed at the scratch index.
 ///
 /// Every index-mutating call in `diff_text` goes through here. The workspace's own index is never
@@ -214,18 +239,7 @@ impl ScratchIndex {
 /// files marion was only ever reading — and since `isolation` defaults to `shared-cwd`, that
 /// workspace is by default the user's own checkout.
 fn git_indexed(wt: &Path, index: &ScratchIndex, args: &[&str]) -> Result<String, SpawnError> {
-    let out = SysCommand::new("git")
-        .current_dir(wt)
-        .env("GIT_INDEX_FILE", &index.0)
-        .args(args)
-        .output()?;
-    if !out.status.success() {
-        return Err(SpawnError::Git(
-            "command",
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    git_env(wt, &[("GIT_INDEX_FILE", index.0.as_os_str())], args)
 }
 
 /// The patch for everything the child did, as one `git diff <base_commit>` (§6.7).
@@ -264,6 +278,188 @@ pub fn diff_text(wt: &Path, base: &Oid) -> Result<String, SpawnError> {
     // `--no-renames`, matching `changed_paths`: a rename rendered as a rename carries no content,
     // and these two must describe the same run.
     git_indexed(wt, &index, &["diff", "--no-renames", &base.0])
+}
+
+/// **The working tree of the operator's own repository, as a git tree object** — the base point of
+/// a root's change record (§9, `marion_core::root_change`).
+///
+/// A child gets `changed_paths` and `diff` from a worktree marion created and later removes. A root
+/// runs in `RootSpec::repo`, which marion neither created nor may disturb, so the same measurement
+/// needs a different instrument. This is it: the tree is snapshotted as a git tree object at
+/// `prepare` and again at exit, and the root's change is the diff of the two.
+///
+/// # Why two trees, and not `HEAD`, and not a path list
+///
+/// **Not `HEAD`.** A dirty repo makes `HEAD` attribute the operator's own uncommitted work to the
+/// root — a lie in an audit record, and the exact failure class `8a69f22` ended: a clean bill of
+/// health nobody measured.
+///
+/// **Not a recorded pre-run status** (a path list plus hashes) either. That yields a *set*, never a
+/// patch, and a file the operator half-edited and the root then edited further gives the wrong hunk
+/// — the one case a change record most needs to get right. Against two trees the subtraction is
+/// exact, and `changed_paths` and `diff` come out of the same `git diff`, so they cannot describe
+/// different runs. The child path needed the `add -N` scratch-index dance in [`diff_text`]
+/// precisely because it had no pre-tree to diff against.
+///
+/// # Why nothing is written to the operator's `.git`
+///
+/// `GIT_OBJECT_DIRECTORY` sends every blob and tree `git add -A` and `git write-tree` create into
+/// `<agent-dir>/objects`; `GIT_ALTERNATE_OBJECT_DIRECTORIES` keeps the repository's real objects
+/// *readable*. `GIT_INDEX_FILE` is a **copy** of the repo's index, never the index itself. This
+/// extends the non-mutation discipline `git_indexed` already states one step further than the child
+/// path needed, because a child's worktree is marion's and the operator's repository is not — and
+/// `.git/objects` growing by a run marion made is a mutation even though it breaks nothing.
+///
+/// The copy is not only about not sharing. It carries the index's **stat cache**, without which
+/// `git add -A` re-hashes every file in the worktree. Measured on a 10,000-file / 39 MB tree with
+/// git 2.50.1: `add -A` takes **41 ms warm and 382 ms cold**, and the gap grows with the tree, since
+/// the cold path reads every byte. On this repository (222 tracked files) it is 27 ms against 43 ms.
+/// Both snapshots together cost ~70 ms warm, which is why the copy is worth the disk it uses.
+#[derive(Debug)]
+pub struct TreeSnapshot {
+    /// The copied index. Lives under the agent dir rather than the repo, so it can never itself
+    /// show up as an untracked file in the tree it is being used to measure — [`ScratchIndex`]'s
+    /// reason, and the same trap.
+    index: PathBuf,
+    objects: PathBuf,
+    /// The repo's real object store plus whatever alternates it already had, `:`-joined for
+    /// `GIT_ALTERNATE_OBJECT_DIRECTORIES`.
+    alternates: OsString,
+}
+
+impl TreeSnapshot {
+    /// Prepare the isolated git environment, or say why it is impossible.
+    ///
+    /// **Every failure here is a refusal to measure, never a silent skip.** The caller turns it into
+    /// `RootObservation::NotAttempted` or `Failed` with this error's own words, because a root that
+    /// produced no delta because nobody looked must never read as a root that changed nothing.
+    pub fn open(repo: &Path, agent_dir: &Path) -> Result<Self, SpawnError> {
+        // Asked of git rather than by probing for a `.git` entry: a linked worktree's `.git` is a
+        // *file*, a bare repo has no worktree at all, and `$GIT_DIR` can point anywhere. One
+        // question, answered by the tool that owns it.
+        if git(repo, &["rev-parse", "--is-inside-work-tree"])?.trim() != "true" {
+            return Err(SpawnError::Git(
+                "rev-parse --is-inside-work-tree",
+                format!("{} is not inside a git working tree", repo.display()),
+            ));
+        }
+        let real_objects = git_path(repo, "objects")?;
+        let objects = agent_dir.join("objects");
+        std::fs::create_dir_all(&objects)?;
+
+        // **The repo's own alternates are carried forward.** `GIT_OBJECT_DIRECTORY` replaces the
+        // main object store, and git reads `info/alternates` from *that* directory — so a repository
+        // created by `git clone --shared`, or one whose objects live in a borrowed store, would lose
+        // sight of most of its own history and `add -A` would start re-writing objects it already
+        // has. Cheap to carry, and the failure without it is a wrong tree rather than an error.
+        let mut alternates = OsString::from(real_objects.as_os_str());
+        if let Ok(existing) = std::fs::read_to_string(real_objects.join("info/alternates")) {
+            for line in existing.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                alternates.push(":");
+                alternates.push(line);
+            }
+        }
+
+        let index = agent_dir.join("snapshot-index");
+        // A missing source index is not a failure: a repository with nothing ever added has none,
+        // and git will create one. What must not happen is *reusing* a stale copy from an earlier
+        // run, which would be read as this run's starting point.
+        let _ = std::fs::remove_file(&index);
+        let repo_index = git_path(repo, "index")?;
+        if repo_index.exists() {
+            std::fs::copy(&repo_index, &index)?;
+        }
+        Ok(Self {
+            index,
+            objects,
+            alternates,
+        })
+    }
+
+    fn env(&self) -> [(&'static str, &OsStr); 3] {
+        [
+            ("GIT_INDEX_FILE", self.index.as_os_str()),
+            ("GIT_OBJECT_DIRECTORY", self.objects.as_os_str()),
+            (
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                self.alternates.as_os_str(),
+            ),
+        ]
+    }
+
+    /// The working tree, right now, as a tree object.
+    ///
+    /// `add -A` and not `add -u`: additions, deletions and modifications all have to be in it, and
+    /// a root's most alarming write is a *new* file. It respects `.gitignore`, which is a stated
+    /// boundary rather than an oversight — see §11 items 19 and 26.
+    pub fn take(&self, repo: &Path) -> Result<Oid, SpawnError> {
+        // `.` rather than a bare `-A`: identical at the repo root, and explicit about the subject
+        // if this is ever called from anywhere else.
+        git_env(repo, &self.env(), &["add", "-A", "."])?;
+        Ok(Oid(git_env(repo, &self.env(), &["write-tree"])?
+            .trim()
+            .into()))
+    }
+
+    /// `HEAD`, as **context** and never as a diff base. `None` where there is no commit yet.
+    pub fn head(&self, repo: &Path) -> Option<Oid> {
+        git(repo, &["rev-parse", "HEAD"])
+            .ok()
+            .map(|s| Oid(s.trim().to_string()))
+    }
+
+    /// Paths differing between two revisions. `--no-renames` matches [`diff_text`]: a rename
+    /// rendered as a rename carries no content, and the path list and the patch must describe the
+    /// same run.
+    pub fn changed_paths(&self, repo: &Path, a: &Oid, b: &Oid) -> Result<Vec<PathBuf>, SpawnError> {
+        Ok(git_env(
+            repo,
+            &self.env(),
+            &["diff", "--name-only", "--no-renames", &a.0, &b.0],
+        )?
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect())
+    }
+
+    /// The patch between two trees — the same two revisions [`Self::changed_paths`] is asked about,
+    /// so the two share one dialect by construction rather than by agreement.
+    pub fn diff(&self, repo: &Path, a: &Oid, b: &Oid) -> Result<String, SpawnError> {
+        git_env(repo, &self.env(), &["diff", "--no-renames", &a.0, &b.0])
+    }
+
+    pub fn objects_dir(&self) -> &Path {
+        &self.objects
+    }
+
+    /// Drop the copied index once both snapshots are taken.
+    ///
+    /// Explicit rather than a `Drop` impl: this outlives a `prepare` and is used again at exit, so
+    /// the scope that would run `Drop` is not the scope that finishes with it. Best-effort for
+    /// [`ScratchIndex`]'s reason — a leftover index costs disk in marion's own state dir and must
+    /// not turn a finished run into a failed one.
+    pub fn release(&self) {
+        let _ = std::fs::remove_file(&self.index);
+    }
+}
+
+/// One of git's own paths, made absolute.
+///
+/// `--git-path` and not `<repo>/.git/<leaf>`: a linked worktree's index is under
+/// `.git/worktrees/<name>/`, a `$GIT_DIR` override puts it somewhere else entirely, and guessing
+/// wrong here means copying a file that is not the index and measuring against a base point that
+/// was never the tree. `--path-format=absolute` is deliberately not used — it needs git 2.31 — so
+/// the relative answer is joined onto the repo instead.
+fn git_path(repo: &Path, leaf: &str) -> Result<PathBuf, SpawnError> {
+    let p = git(repo, &["rev-parse", "--git-path", leaf])?;
+    let p = Path::new(p.trim());
+    Ok(if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        repo.join(p)
+    })
 }
 
 /// What marion knows about a finished child: what its stream said, plus what marion observed of
