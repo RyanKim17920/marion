@@ -272,8 +272,109 @@ fn handle_tool_call(
                 }
             }
         }
+        // **§5.4's `status`: a read of one child, answered from the supervisor every time.**
+        //
+        // Two lookups and neither may be skipped. The table answers *which node* — the pairing only
+        // `agent/spawn`'s answer carried — and `node/get` answers *what that node is doing*, out of
+        // the registry the supervisor wrote itself. Answering the second from the first is the
+        // failure this verb is most exposed to: `background::Handed` records a child at the instant
+        // it was handed out, so a `status` served from it would say `Spawning` about a node that
+        // finished an hour ago, and would say it with `isError: false`.
+        //
+        // Resolved through `node_of` rather than `resolve`, because a handle an earlier `wait`
+        // collected still names a node and §5.4 permits `status` against a target in any state.
+        "status" => {
+            let Some(task_id) = args["task_id"].as_str() else {
+                return bridge::tool_result(
+                    id,
+                    "marion: `status` needs the `task_id` from the handle a `background: true` \
+                     spawn returned. Refusing rather than guessing which of your children you \
+                     meant — a state reported about the wrong child is worse than no answer, \
+                     because nothing in it would look wrong. Call `list` to see every child of \
+                     yours and its state.",
+                    true,
+                );
+            };
+            let Some((agent_id, _)) = bg.node_of(task_id) else {
+                return bridge::status_unknown(id, task_id);
+            };
+            let (sock, _) = match supervisor_paths() {
+                Ok(v) => v,
+                Err(e) => return bridge::tool_result(id, &e, true),
+            };
+            match courier::node_get(sock.socket(), &agent_id) {
+                Ok(r) => bridge::status_result(id, task_id, &r.node),
+                // The supervisor's own sentence where there is one (`SupervisorRefused` carries a
+                // `not_found` that already names the id and how current the registry is), and
+                // marion's where the supervisor could not be reached at all. Neither is reworded.
+                Err(e) => bridge::tool_result(id, &format!("marion: {e}"), true),
+            }
+        }
+        // **§5.4's `list`: discovery, filtered to what §5.4 authorizes this caller to see.**
+        //
+        // `tree/subscribe` is the only method of §2's fifteen that enumerates nodes and it answers
+        // with the whole project — every root, every unrelated subtree. The filter below is
+        // therefore not a convenience: an unfiltered answer would hand a child node the entire
+        // fleet, which is wider than §5.4's *"descendants or parent"* by everything else running.
+        //
+        // The caller's identity is required for that reason and refused when absent, exactly as
+        // `spawn` refuses it: a `list` that could not say who is asking could not filter, and a
+        // `list` that could not filter must not answer.
+        "list" => {
+            let caller = match node_identity() {
+                Ok(c) => c,
+                Err(e) => return bridge::tool_result(id, &e, true),
+            };
+            let (sock, _) = match supervisor_paths() {
+                Ok(v) => v,
+                Err(e) => return bridge::tool_result(id, &e, true),
+            };
+            match courier::tree(sock.socket()) {
+                Ok(r) => bridge::list_result(id, &descendants_of(&caller.agent_id, &r.nodes)),
+                Err(e) => bridge::tool_result(id, &format!("marion: {e}"), true),
+            }
+        }
         other => bridge::tool_result(id, &format!("marion: no tool {other}"), true),
     }
+}
+
+/// **§5.4's `list` target set, computed over the one tree edge the wire carries.**
+///
+/// `NodeSummary::parent_id` is the only relation in [`marion_proto::model::NodeSummary`], so the
+/// subtree is walked here rather than asked for — no method of §2's fifteen takes a root and
+/// answers a subtree, and adding one to save this loop would be a sixteenth method for an
+/// arithmetic that fits in a dozen lines.
+///
+/// **The caller itself is excluded and its descendants are not.** §5.4's row reads *"descendants or
+/// parent"*; a caller asking what it delegated is not asking about itself, and including the node
+/// doing the asking is how a model comes to `wait` on its own handle. The parent is likewise
+/// omitted: §5.4 permits reading it, but `list` answers *"who did I delegate to"*, and a parent in
+/// that list is an invitation to address upward that §5.4's `wait` row explicitly refuses.
+///
+/// Pure and separate from the dispatch arm so the filter is testable as a filter — the same split
+/// [`unimplemented_parameter`] keeps, and for the same reason: this is the whole of the
+/// authorization boundary for this verb, and a boundary nothing pins is a boundary that drifts.
+fn descendants_of(
+    caller: &AgentId,
+    nodes: &[marion_proto::model::NodeSummary],
+) -> Vec<marion_proto::model::NodeSummary> {
+    // Breadth-first over `parent_id`, so a grandchild is included and no node is visited twice.
+    // A cycle cannot arise from a journal marion wrote — a node's parent is fixed at its
+    // `SpawnIntent` — but the `visited` set is what makes that a property of this loop rather than
+    // a belief about the input.
+    let mut frontier = vec![caller.clone()];
+    let mut visited = vec![caller.clone()];
+    let mut found = Vec::new();
+    while let Some(parent) = frontier.pop() {
+        for n in nodes {
+            if n.parent_id.as_ref() == Some(&parent) && !visited.contains(&n.agent_id) {
+                visited.push(n.agent_id.clone());
+                frontier.push(n.agent_id.clone());
+                found.push(n.clone());
+            }
+        }
+    }
+    found
 }
 
 /// **§5.4's `report` row, evaluated where all four harnesses pass through.**
@@ -1035,6 +1136,216 @@ mod main_tests {
             Duration::from_secs(run::MAX_TIMEOUT_SECS) + WAIT_GRACE,
             "a number no clock can hold is clamped to the bound marion actually enforces, not \
              passed on to be added to an `Instant`"
+        );
+    }
+
+    /// **The peer invariant, pinned: an MCP entry point owns nothing and has no launch path of its
+    /// own.**
+    ///
+    /// §11 item 28 step 5's whole content is that the bridge stopped running children — the
+    /// supervisor owns every process and every MCP surface is a socket client. Step 6 made
+    /// `marion run` the same shape. So the two top-level surfaces marion exposes, the TUI client
+    /// and the MCP server, are **peers**: both are socket clients, neither is privileged, and
+    /// neither may start a node itself.
+    ///
+    /// **This is a rule, not a habit, and this test is where it is a rule.** The defect it forbids
+    /// is not hypothetical — it is the exact arrangement item 28 was written to remove, and it is
+    /// easy to re-introduce by accident, because `run::run_spawn` and `root::launch` are `pub`, are
+    /// in this crate, and do precisely what a careless "just start it here" edit would reach for.
+    /// A bridge that called one would work in a test, produce a real child, and journal it under a
+    /// supervisor that had never heard of it.
+    ///
+    /// It reads this file's own source because that is the only way to assert an **absence** of a
+    /// call. A type-level version would need a capability parameter threaded through every arm to
+    /// exclude functions that are merely `pub` in the same crate, which is a large change to
+    /// forbid a small thing.
+    ///
+    /// **Two things are cut before the scan, and both are the difference between naming the launch
+    /// path and calling it.** Comment lines go, because the module docs discuss `root::prepare` at
+    /// length and should keep being able to. Everything from `#[cfg(test)]` goes, because this test
+    /// must name the very symbols it forbids — a scan that read its own source could never pass,
+    /// and one that worked around that by spelling the symbols obliquely would stop failing when
+    /// the real thing was added.
+    #[test]
+    fn the_mcp_entry_point_has_no_spawn_path_of_its_own() {
+        let src = include_str!("main.rs");
+        let production = src
+            .split_once("#[cfg(test)]")
+            .expect("this file has a test module")
+            .0;
+        let code: String = production
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Every `pub` way to start a node from inside this crate, plus the standard-library call
+        // any hand-rolled path would have to bottom out in.
+        for forbidden in [
+            "run_spawn",
+            "root::launch",
+            "root::prepare",
+            "prepare_watched",
+            "launch_owned",
+            "Command::new",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "`{forbidden}` is reachable from the MCP entry point. The supervisor owns every \
+                 process (§11 item 28 step 5): this binary's `mcp` surface is a socket client and \
+                 must ask for a child over `agent/spawn` rather than start one. If this is a \
+                 deliberate change, it re-introduces the defect item 28 removed."
+            );
+        }
+        // The positive half, so the test cannot pass by this file having become empty or by the
+        // dispatch having been moved somewhere the scan does not read.
+        assert!(
+            code.contains("courier::spawn(") && code.contains("AgentSpawnParams"),
+            "the spawn arm must still reach the supervisor over the socket — this half is what \
+             stops the scan above from passing because the dispatch was deleted or moved"
+        );
+    }
+
+    /// **Every tool marion declares is dispatched — none is declared and then answered as if it
+    /// did not exist.**
+    ///
+    /// This repo's standing rule is that a surface marion advertises and does not implement must
+    /// **refuse by name** (`isolation`, `verification`, `allow_concurrent_writes`), never fall
+    /// through to something that reads like a different failure. `handle_tool_call`'s last arm
+    /// answers `marion: no tool {name}` — the correct answer for a name marion never declared, and
+    /// the wrong one for a name in its own `tools/list`, because a caller reading it would
+    /// conclude the tool does not exist when marion had just said it does.
+    ///
+    /// The arms are exercised with no environment, so most return a launch refusal — that is the
+    /// point: what is asserted is that the name **was routed**, not that the call succeeded. A tool
+    /// added to `bridge::tools` without an arm in `handle_tool_call` fails here.
+    #[test]
+    fn every_declared_tool_is_dispatched_rather_than_answered_as_unknown() {
+        let bg = background::Background::new();
+        let declared = bridge::tools();
+        let names: Vec<&str> = declared
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.is_empty(), "marion declares at least one tool");
+        for name in &names {
+            let answer = handle_tool_call(&bg, &serde_json::json!(1), name, &serde_json::json!({}));
+            let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(
+                !text.contains("no tool"),
+                "`{name}` is declared in `tools/list` and answered as though it were not: {text:?}"
+            );
+        }
+        // The converse, so the assertion above cannot be satisfied by deleting the fallthrough:
+        // a name marion never declared is still refused by name.
+        let unknown = handle_tool_call(
+            &bg,
+            &serde_json::json!(1),
+            "teleport",
+            &serde_json::json!({}),
+        );
+        assert!(
+            unknown["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("no tool teleport"),
+            "an undeclared tool is refused by name"
+        );
+        assert_eq!(unknown["result"]["isError"], true);
+    }
+
+    /// **`list` answers about the caller's own subtree and nothing else.**
+    ///
+    /// The filter is the whole authorization boundary for this verb: `tree/subscribe` answers with
+    /// every node in the project — other roots, unrelated subtrees, the whole fleet — and §5.4
+    /// permits `list` only *"descendants or parent, plus `allow_peers` siblings"*. An unfiltered
+    /// `list` would therefore not be a wider answer to the same question; it would be a different
+    /// question, answered without authorization.
+    ///
+    /// Four properties, each failing against a plausible wrong filter: a grandchild **is** included
+    /// (descendants, not children — a `children_of` that stopped at one level would pass a weaker
+    /// test); an unrelated root and its child are **not**; a sibling is **not**, because
+    /// `allow_peers` is not built and a filter that admitted one would be granting what nothing
+    /// checks; and the caller itself is **not**, so a model cannot come to address its own handle.
+    #[test]
+    fn list_answers_the_callers_own_subtree_and_not_the_fleet() {
+        use marion_core::harness::Harness;
+        use marion_core::node::{NodeState, ReapState};
+        use marion_proto::model::NodeSummary;
+
+        fn node(id: &str, parent: Option<&str>) -> NodeSummary {
+            NodeSummary {
+                agent_id: AgentId(id.into()),
+                parent_id: parent.map(|p| AgentId(p.into())),
+                name: None,
+                agent_type: "codex-impl".into(),
+                harness: Harness::Codex,
+                depth: 1,
+                state: NodeState::Running,
+                reap_state: ReapState::Live,
+                timeout: marion_core::encoding::Duration::from_secs(60),
+            }
+        }
+        let fleet = vec![
+            node("me", Some("my-parent")),
+            node("my-parent", None),
+            node("my-sibling", Some("my-parent")),
+            node("my-child", Some("me")),
+            node("my-grandchild", Some("my-child")),
+            node("other-root", None),
+            node("other-child", Some("other-root")),
+        ];
+        let mut got: Vec<String> = descendants_of(&AgentId("me".into()), &fleet)
+            .iter()
+            .map(|n| n.agent_id.0.clone())
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["my-child".to_string(), "my-grandchild".to_string()],
+            "§5.4 scopes `list` to the caller's descendants: a grandchild is one, and a sibling, a \
+             parent, an unrelated root and the caller itself are not"
+        );
+        // A caller that delegated nothing gets an empty set rather than the fleet — the case an
+        // absent or inverted filter would most obviously get wrong.
+        assert!(
+            descendants_of(&AgentId("other-child".into()), &fleet).is_empty(),
+            "a node with no children sees no nodes"
+        );
+    }
+
+    /// **A subtree walk terminates even on a journal that names a cycle.**
+    ///
+    /// A cycle cannot arise from a journal marion wrote — a node's `parent_id` is fixed at its
+    /// `SpawnIntent` and never edited — so this asserts a property of the *loop* rather than a
+    /// belief about the input. It is worth pinning because the failure mode is not a wrong answer
+    /// but a hang: `list` is called on a model's turn, and a bridge spinning here stops reading
+    /// every later frame from every caller, which is the same single-threaded-dispatch argument
+    /// `courier::Conn::bound` is written for.
+    #[test]
+    fn a_subtree_walk_terminates_on_a_cycle_rather_than_spinning() {
+        use marion_core::harness::Harness;
+        use marion_core::node::{NodeState, ReapState};
+        use marion_proto::model::NodeSummary;
+
+        let cyclic = |id: &str, parent: &str| NodeSummary {
+            agent_id: AgentId(id.into()),
+            parent_id: Some(AgentId(parent.into())),
+            name: None,
+            agent_type: "codex-impl".into(),
+            harness: Harness::Codex,
+            depth: 1,
+            state: NodeState::Running,
+            reap_state: ReapState::Live,
+            timeout: marion_core::encoding::Duration::from_secs(60),
+        };
+        // a -> b -> a, with the caller pointing into it.
+        let nodes = vec![cyclic("a", "b"), cyclic("b", "a"), cyclic("a", "me")];
+        let found = descendants_of(&AgentId("me".into()), &nodes);
+        assert!(
+            found.len() <= nodes.len(),
+            "no node is reported twice, so the walk visited each at most once"
         );
     }
 

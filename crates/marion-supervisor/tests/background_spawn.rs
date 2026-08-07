@@ -1494,3 +1494,196 @@ fn a_harness_that_hangs_answering_its_version_does_not_hang_the_bridge() {
     );
     assert!(bridge.close().success());
 }
+
+// ---------------------------------------------------------------------------------------------
+// §5.4's read verbs — `status` and `list` — against a real supervisor
+// ---------------------------------------------------------------------------------------------
+
+/// **A real MCP handshake lists exactly the tools marion declares — no more, no fewer.**
+///
+/// §9 records the tool count deliberately (*"the root's turns carry `ntools=2`… recorded so a later
+/// reader does not diagnose it as a tool-compilation failure"*), and an `ntools` mismatch is a
+/// failure mode this repository has actually been bitten by: an allowlist naming four verbs while
+/// the bridge declared two, for months, with nothing on either side saying so.
+///
+/// The assertion is on the **set and the count**, over a genuine `initialize` + `tools/list`
+/// exchange with a bridge process started from the declaration marion itself wrote. Three things it
+/// pins that a unit test on `bridge::tools()` cannot: the list survives serialization to the wire,
+/// it arrives in answer to the frame a real client sends, and the count is what an operator reading
+/// `ntools` will see.
+///
+/// **`ROOT_ALLOWED_TOOLS` is checked against it in the same test, in both directions.** An
+/// allowlist entry for an undeclared tool is inert — §9 says so and blessed it — and a *declared*
+/// tool missing from the allowlist is the converse defect, which is not inert at all: it is offered
+/// to the root and then denied on use, and the denial spends the root's bound. Neither can now
+/// happen silently.
+#[test]
+fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
+    let fx = fixture("bg-tool-surface");
+    let mut bridge = fx.bridge();
+
+    let listed = bridge.call("tools/list", json!({}));
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list answers with a list: {listed}"));
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+
+    assert_eq!(
+        names,
+        vec!["spawn", "wait", "status", "list", "report"],
+        "the declared surface, over a real handshake"
+    );
+    // Stated as a number as well as a list, because `ntools` is what the harness logs and what a
+    // reader diagnoses from — and because a count is the one thing a careless merge of two
+    // declarations gets wrong while keeping every name.
+    assert_eq!(
+        names.len(),
+        5,
+        "§9's ntools, as a real client would count it"
+    );
+
+    // Every tool declares a schema a client can compile. A name with no `inputSchema` is offered
+    // and then unusable, which reads to a model exactly like a tool that does not work.
+    for t in tools {
+        assert_eq!(
+            t["inputSchema"]["type"], "object",
+            "every declared tool carries an object schema: {t}"
+        );
+        assert!(
+            t["description"].as_str().is_some_and(|d| !d.is_empty()),
+            "every declared tool says what it is for: {t}"
+        );
+    }
+
+    // The allowlist and the declared surface, in both directions.
+    let allowed: Vec<String> = marion_supervisor::root::ROOT_ALLOWED_TOOLS
+        .iter()
+        .map(|t| t.trim_start_matches("mcp__marion__").to_string())
+        .collect();
+    for verb in &allowed {
+        assert!(
+            names.contains(&verb.as_str()),
+            "`{verb}` is permitted to a root but not declared, so the allowlist entry is inert"
+        );
+    }
+    for name in &names {
+        assert!(
+            allowed.contains(&name.to_string()) || *name == "report",
+            "`{name}` is declared but not permitted to a root, so a root's call is offered and \
+             then denied — spending its bound. `report` is the one deliberate exception (§5.4 \
+             rejects it on a root, and `REPORT_ON_A_ROOT` is the sentence that says so)."
+        );
+    }
+    assert!(bridge.close().success());
+}
+
+/// **`status` answers from the supervisor, not from the row this bridge stored at spawn.**
+///
+/// This is the staleness control, and it is built so that a cached answer cannot pass it. The child
+/// is backgrounded — so the handle is handed out while the node is still starting — then the gate
+/// is opened and the child is driven to a terminal state. A `status` served from
+/// `background::Handed` would report whatever was true at hand-out time and would report it
+/// forever, with `isError: false`; only a `status` that asks `node/get` can name the terminal
+/// state, because the terminal state is a fact that came into existence after the handle did.
+///
+/// **The two observations are the same handle at two times**, which is what makes the assertion
+/// about freshness rather than about correctness at one instant. A first `status` before the gate
+/// must not already say "finished", and a later one must — so an implementation that hardcoded
+/// either answer fails one of them.
+#[test]
+fn status_reports_the_supervisors_current_state_and_not_a_cached_one() {
+    let fx = fixture("bg-status-fresh");
+    let mut bridge = fx.bridge();
+    let task_id = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
+
+    // Before the gate: the child is alive, blocked in the shim. Whatever this says, it must not be
+    // that the child has finished — it has not.
+    let early = bridge.tool("status", json!({"task_id": &task_id}));
+    let early_text = text_of(&early);
+    assert!(
+        !is_error(&early),
+        "a status on a live child of this bridge resolves: {early_text}"
+    );
+    assert!(
+        early_text.contains(&task_id),
+        "the answer names the handle the caller addressed it by: {early_text}"
+    );
+    assert!(
+        !early_text.contains("finished"),
+        "the child is blocked on the gate and has not finished: {early_text}"
+    );
+
+    // Drive it to a terminal state through the ordinary path, then collect, so the node really is
+    // `Exited` in the supervisor's registry.
+    fx.open_gate();
+    let collected = bridge.tool("wait", json!({"task_id": &task_id}));
+    assert!(
+        text_of(&collected).contains("\"completion\""),
+        "the child reached a terminal state: {collected}"
+    );
+
+    // The same handle, after. This is the assertion a cache cannot satisfy.
+    let late = bridge.tool("status", json!({"task_id": &task_id}));
+    let late_text = text_of(&late);
+    assert!(
+        !is_error(&late),
+        "§5.4 permits `status` against a terminal target, and against one an earlier `wait` has \
+         already collected — a handle stops being collectable, not readable: {late_text}"
+    );
+    assert!(
+        late_text.contains("finished"),
+        "the node is terminal in the supervisor's registry and `status` must say so — an answer \
+         cached at hand-out time could not: {late_text}"
+    );
+    assert_ne!(
+        early_text, late_text,
+        "the same handle read twice across the child's terminal transition must not give the same \
+         answer; if it does, nothing was asked of the supervisor"
+    );
+    assert!(bridge.close().success());
+}
+
+/// **`list` answers from the supervisor and shows this caller's children — and only those.**
+///
+/// Two spawns, so the count is not satisfiable by an implementation that returns the first thing it
+/// finds, and the fixture's own **root** is asserted absent: the root is this bridge's node, it is
+/// in the supervisor's `tree/subscribe` answer, and §5.4 scopes `list` to *descendants*. A `list`
+/// that forwarded the wire's node list unfiltered would include it — along with every other root in
+/// the project — and that is the authorization defect this assertion exists to catch, not a
+/// cosmetic one.
+#[test]
+fn list_shows_this_callers_children_and_not_the_node_doing_the_asking() {
+    let fx = fixture("bg-list");
+    let mut bridge = fx.bridge();
+
+    let empty = bridge.tool("list", json!({}));
+    assert!(
+        !is_error(&empty),
+        "a caller that has delegated nothing gets an answer, not an error: {empty}"
+    );
+    assert!(
+        text_of(&empty).contains("no child agents"),
+        "and is told the tree is empty in words rather than handed an empty array: {}",
+        text_of(&empty)
+    );
+
+    let first = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
+    let second = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
+    assert_ne!(first, second, "two spawns, two handles");
+
+    let listed = bridge.tool("list", json!({}));
+    let text = text_of(&listed);
+    assert!(!is_error(&listed), "list resolves: {text}");
+    assert!(
+        text.contains("2 child agents"),
+        "both children appear, counted: {text}"
+    );
+    assert!(
+        !text.contains(&fx.root_id.0),
+        "the caller is this bridge's own node and §5.4 scopes `list` to descendants; a `list` that \
+         names the asker is forwarding the wire's whole node list unfiltered: {text}"
+    );
+
+    fx.open_gate();
+    assert!(bridge.close().success());
+}

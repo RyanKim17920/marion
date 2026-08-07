@@ -171,6 +171,23 @@ impl Background {
         }
     }
 
+    /// **Which node a handle is about, whatever an earlier `wait` did with it** — what `status`
+    /// resolves against.
+    ///
+    /// Deliberately *not* [`Self::resolve`], and the difference is §5.4's own. `wait` is a delivery
+    /// and an outcome is delivered once, so a collected handle is an error to wait on again.
+    /// `status` is a **read**, permitted against a target in *"any"* state, *"terminal included"* —
+    /// so a handle whose contract was already collected still names a node the supervisor can be
+    /// asked about, and refusing there would make `status` useless at exactly the moment a caller
+    /// wants it. This returns the pairing and says nothing about collection, because collection is
+    /// a fact about the *handle* and `status` is a question about the *node*.
+    pub fn node_of(&self, task_id: &str) -> Option<(AgentId, String)> {
+        self.lock()
+            .iter()
+            .find(|h| h.task_id.0 == task_id)
+            .map(|h| (h.agent_id.clone(), h.agent_type.clone()))
+    }
+
     /// Remember *what* a `wait` collected, not merely that something was. See [`Collected`].
     ///
     /// **Only a `wait` that reached the node's terminal state collects.** One that expired against

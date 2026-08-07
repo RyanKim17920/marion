@@ -183,6 +183,72 @@ pub fn tools() -> Value {
             }
         },
         {
+            // **§5.4's `status`, and the entry in `root::ROOT_ALLOWED_TOOLS` stops being inert
+            // here** — the same move `wait` made, for the same reason and with the same honesty
+            // about how narrow it is.
+            //
+            // **Addressed by `task_id`, not by node id, because a `task_id` is what a caller
+            // holds.** A `spawn { background: true }` hands out a handle and nothing else; the
+            // `AgentId` behind it is told to this process exactly once, in `agent/spawn`'s answer,
+            // and is never shown to the model. A tool taking an `AgentId` would therefore be
+            // addressable only by a caller that had guessed one.
+            //
+            // **Narrower than §5.4, in the same way `wait` is.** §5.4 permits `status` against
+            // descendants *or the parent*, plus `allow_peers` siblings. This resolves through the
+            // same per-process table `wait` uses, which holds this node's direct children — so a
+            // grandchild, a parent and a peer are all outside it. That is marion's limit and
+            // [`status_unknown`] says so rather than implying the lookup was exhaustive; closing it
+            // needs a `task_id`-to-node lookup on the wire, which none of §2's fifteen methods has
+            // and which is a proto decision, not this file's.
+            //
+            // **It reads the supervisor every time.** `node/get` is a projection out of the
+            // registry the supervisor wrote itself, and nothing here caches it. A `status` that
+            // answered from the row this bridge stored at spawn would report `Spawning` forever —
+            // an answer that is wrong precisely when it is asked for.
+            "name": "status",
+            "description": "Check what a backgrounded child is doing right now, without blocking. \
+                            Takes the task_id from the handle `spawn` returned, and answers with \
+                            the child's current state as marion's supervisor holds it. Works after \
+                            the child has finished, and after `wait` has already collected it. \
+                            This is a poll, not a wait — if what you actually want is the child's \
+                            result, call `wait`, which blocks and returns the contract.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"}
+                },
+                "required": ["task_id"]
+            }
+        },
+        {
+            // **§5.4's `list` — "discovery"** — and the last of the allowlist's four verbs to stop
+            // being inert.
+            //
+            // **It takes no parameters and it is filtered, which is the load-bearing half.** The
+            // only one of §2's fifteen methods that enumerates nodes is `tree/subscribe`, and it
+            // answers with *every node in the project* — other roots, unrelated subtrees, the whole
+            // fleet. Handing that to a child node would be wider than §5.4 authorizes by a long
+            // way, so `main::handle_tool_call` keeps only this caller's own subtree. §5.4's set
+            // also includes the parent and `allow_peers` siblings; the parent is included, and
+            // `allow_peers` is not built at all, so no sibling appears and the answer does not
+            // pretend one might.
+            //
+            // **A caller with no children gets an empty list and is told so in words**, rather than
+            // an empty array it has to interpret. §7.6's rule about handles applies to lists too: a
+            // result a model must reason about the absence of is a result that gets misread.
+            "name": "list",
+            "description": "List the child agents you have spawned and what each is doing now. \
+                            Takes no arguments. Answers from marion's supervisor, so it reflects \
+                            the current state of every child of yours that is still known — \
+                            running or finished. Use it when you have lost track of what you \
+                            delegated; use `wait` to collect a specific child's result.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
             "name": "report",
             "description": "Return your result to marion. Call this exactly once when the task \
                             is done. Your final assistant message is NOT the return value.",
@@ -509,6 +575,102 @@ pub fn wait_still_running(id: &Value, task_id: &str, agent_type: &str, waited_se
     )
 }
 
+/// **How a node's state is said to a model**, in one place, so `status` and `list` cannot describe
+/// the same node in two ways.
+///
+/// [`marion_proto::model::NodeSummary`] is the whole of what §2 carries about a node, and its
+/// `state` is a Rust enum whose `Debug` (`Exited(TimedOut)`, `Blocked(Descendants)`) is not a
+/// sentence. What a caller needs from either verb is the same three facts — what it is, where it
+/// got to, and whether it is worth waiting for — so they are rendered here rather than at two call
+/// sites that would drift.
+pub fn node_line(node: &marion_proto::model::NodeSummary) -> String {
+    use marion_core::node::NodeState;
+    let doing = match &node.state {
+        NodeState::Spawning => "starting up".to_string(),
+        NodeState::Ready => "started, not yet working".to_string(),
+        NodeState::Running => "running".to_string(),
+        NodeState::Idle => "idle — it stopped without reporting".to_string(),
+        NodeState::Blocked(why) => format!("blocked on {why:?}, waiting for marion"),
+        // The one branch a caller acts on differently, so it says the outcome rather than the
+        // state's name: a node that is `Exited` has a contract to collect and will not change
+        // again, and `Ok` and `TimedOut` are not the same news.
+        NodeState::Exited(how) => format!("finished ({how:?})"),
+    };
+    format!("{} ({}) — {doing}", node.agent_id.0, node.agent_type)
+}
+
+/// **`status` for one child**, as a sentence with the handle in it.
+///
+/// The `task_id` is echoed because the caller addressed the child by that and holds nothing else;
+/// an answer naming only an `AgentId` would be about a node the model has never seen a name for.
+pub fn status_result(id: &Value, task_id: &str, node: &marion_proto::model::NodeSummary) -> Value {
+    tool_result(
+        id,
+        &bounded(&format!(
+            "marion: task_id {task_id:?} is {}. This is the state marion's supervisor holds right \
+             now, not a cached one. Call `wait` with this task_id to block until it finishes and \
+             receive its task contract.",
+            node_line(node)
+        )),
+        false,
+    )
+}
+
+/// **`status` against a handle this bridge process has no row for.**
+///
+/// Kept separate from [`wait_unknown`] rather than shared with it, because the two verbs fail
+/// differently in one respect that matters: a `wait` that cannot resolve a handle has *not
+/// delivered an outcome*, while a `status` that cannot has merely failed to read one, and the
+/// advice at the end therefore differs. Everything before that is the same limit, stated the same
+/// way, for the reason [`wait_unknown`] gives at length.
+pub fn status_unknown(id: &Value, task_id: &str) -> Value {
+    tool_result(
+        id,
+        &bounded(&format!(
+            "marion: this supervisor has no record of task_id {task_id:?}. It looked only at the \
+             children it started itself, in this process — that is the whole of the lookup, and it \
+             is narrower than what §5.4 permits: a grandchild's handle, or one issued before this \
+             supervisor was restarted, is not resolvable here even though reading its state would \
+             be legitimate. So this may be your mistake or it may be marion's, and marion cannot \
+             tell which. Nothing was read and nothing was changed; `list` shows every child of \
+             yours this supervisor can still see."
+        )),
+        true,
+    )
+}
+
+/// **`list`'s answer** — the caller's own subtree, already filtered by the caller.
+///
+/// The empty case is a sentence and not an empty array, deliberately. A model handed `[]` has to
+/// infer what the absence means, and the two readings — *"you delegated nothing"* and *"marion lost
+/// your children"* — call for opposite next actions. So the empty answer says which one it is.
+pub fn list_result(id: &Value, nodes: &[marion_proto::model::NodeSummary]) -> Value {
+    if nodes.is_empty() {
+        return tool_result(
+            id,
+            "marion: you have no child agents. Nothing you spawned is still known to this \
+             project's supervisor, and nothing failed to appear — this is an empty tree, not a \
+             lookup that went wrong. Use `spawn` to delegate a task.",
+            false,
+        );
+    }
+    let lines: Vec<String> = nodes
+        .iter()
+        .map(|n| format!("  {}", node_line(n)))
+        .collect();
+    tool_result(
+        id,
+        &bounded(&format!(
+            "marion: {} child agent{} of yours, as this project's supervisor holds them right \
+             now:\n{}\nCall `wait` with a child's task_id to collect its task contract.",
+            nodes.len(),
+            if nodes.len() == 1 { "" } else { "s" },
+            lines.join("\n")
+        )),
+        false,
+    )
+}
+
 pub fn method_not_found(id: &Value, method: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id,
            "error": {"code": -32601, "message": format!("no method {method}")}})
@@ -649,9 +811,14 @@ mod tests {
             .map(|x| x["name"].as_str().unwrap())
             .collect();
         // `wait` joined the list when `spawn` started handing out handles: §5.4 makes the
-        // handle's holder's ability to resolve it a requirement, not an ergonomic. The order is
-        // pinned too — `spawn` then `wait` then `report` is the order a caller meets them in.
-        assert_eq!(names, vec!["spawn", "wait", "report"]);
+        // handle's holder's ability to resolve it a requirement, not an ergonomic. `status` and
+        // `list` joined it when they were implemented, which is what made the last two entries of
+        // `root::ROOT_ALLOWED_TOOLS` stop being inert.
+        //
+        // **The order is pinned, and it is the order a caller meets them in** — delegate, then
+        // block on one child, then poll one child, then survey them all, then return your own
+        // result. It is not the allowlist's order and does not have to be; the allowlist is a set.
+        assert_eq!(names, vec!["spawn", "wait", "status", "list", "report"]);
         let s = t.to_string();
         assert!(
             !s.contains("mcp__marion"),

@@ -51,9 +51,9 @@ use marion_core::cap::cap_for_return;
 use marion_core::contract::{AgentId, TaskContract, TaskId};
 use marion_core::event::{Lifecycle, Payload};
 use marion_core::paths::ProjectDir;
-use marion_proto::params::AgentSpawnParams;
-use marion_proto::result::AgentSpawnResult;
-use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
+use marion_proto::params::{AgentSpawnParams, NodeGetParams, TreeSubscribeParams};
+use marion_proto::result::{AgentSpawnResult, NodeGetResult, TreeSubscribeResult};
+use marion_proto::{Call, Frame, MethodResult, Outcome, Request, RequestId};
 
 use crate::spawn::SpawnError;
 
@@ -147,6 +147,68 @@ impl Conn {
             Err(e) => Err(unreachable(&self.socket, &e.to_string())),
         }
     }
+
+    /// **One call, its own answer, and nothing else** — the correlation loop every request-shaped
+    /// errand in this module runs.
+    ///
+    /// Written once because all three of its callers had it letter for letter, and the three
+    /// clauses that make it correct are each easy to drop when copying: the answer is matched on
+    /// **this** request's id, a notification is *skipped* rather than mistaken for the answer, and
+    /// an expiry is a refusal rather than a silent `None`. A fourth verb added by copy-paste is how
+    /// one of those goes missing.
+    ///
+    /// `on_expiry` is the caller's, because what an unanswered call leaves behind differs by verb —
+    /// an `agent/spawn` may or may not have started a process, while a `node/get` has changed
+    /// nothing — and a generic sentence would have to be silent about exactly that.
+    fn ask(
+        &mut self,
+        call: Call,
+        bound: Duration,
+        on_expiry: &str,
+    ) -> Result<MethodResult, SpawnError> {
+        let method = call.method();
+        self.bound(bound)?;
+        let id = self.send(call)?;
+        loop {
+            match self.next()? {
+                Next::Frame(f) => match *f {
+                    Frame::Response(r) if r.id == RequestId::Number(id) => {
+                        return match r.outcome {
+                            Outcome::Result(body) => method.decode_result(&body).map_err(|_| {
+                                unreachable(
+                                    &self.socket,
+                                    &format!(
+                                        "it answered `{}` with a result marion cannot read",
+                                        method.as_str()
+                                    ),
+                                )
+                            }),
+                            // **The supervisor's own sentence, carried verbatim.** It already names
+                            // the rule and the value — `max_depth`, an unknown agent type, a node
+                            // this project's journal has no record of — and re-wording it here
+                            // would put the bridge's guess in front of the answer.
+                            Outcome::Error(e) => Err(SpawnError::SupervisorRefused(e.message)),
+                        };
+                    }
+                    // Nothing this module dials is subscribed for its own sake, so a notification
+                    // is the supervisor being chatty rather than news for this caller. Skipped,
+                    // never treated as an answer — `tree/subscribe` in particular registers the
+                    // connection as a subscriber, so its answer can arrive behind a burst of them.
+                    Frame::Notification(_) => continue,
+                    other => {
+                        return Err(unreachable(
+                            &self.socket,
+                            &format!(
+                                "it sent an unexpected frame in answer to `{}`: {other:?}",
+                                method.as_str()
+                            ),
+                        ));
+                    }
+                },
+                Next::Expired => return Err(unreachable(&self.socket, on_expiry)),
+            }
+        }
+    }
 }
 
 /// `WouldBlock` on macOS, `TimedOut` on Linux — the same event under two names.
@@ -170,55 +232,88 @@ fn unreachable(socket: &Path, why: &str) -> SpawnError {
 /// the `task_id` that names the contract file this run will be filed under. Nothing here waits for
 /// the run.
 pub fn spawn(socket: &Path, params: AgentSpawnParams) -> Result<AgentSpawnResult, SpawnError> {
-    let mut c = Conn::dial(socket)?;
     // A spawn is answered when the child's process exists (`LAUNCH_BOUND` on the far side), so this
     // is generous by design and is not a bound on the child's run — that is [`await_contract`]'s.
-    c.bound(SPAWN_ANSWER_BOUND)?;
-    let id = c.send(Call::AgentSpawn(params))?;
-    loop {
-        match c.next()? {
-            // Nothing is subscribed on this connection, so a notification here is the supervisor
-            // being chatty rather than news for this caller. Skipped, never treated as an answer.
-            Next::Frame(f) => match *f {
-                Frame::Response(r) if r.id == RequestId::Number(id) => {
-                    return match r.outcome {
-                        Outcome::Result(body) => match Method::AgentSpawn.decode_result(&body) {
-                            Ok(MethodResult::AgentSpawn(r)) => Ok(r),
-                            _ => Err(unreachable(
-                                socket,
-                                "it answered `agent/spawn` with a result marion cannot read",
-                            )),
-                        },
-                        // **The supervisor's own sentence, carried verbatim.** It already names the
-                        // rule and the value — `max_depth`, `max_concurrent_children`, an unknown
-                        // agent type, a token this supervisor did not mint — and re-wording it here
-                        // would put the bridge's guess in front of the answer.
-                        Outcome::Error(e) => Err(SpawnError::SupervisorRefused(e.message)),
-                    };
-                }
-                Frame::Notification(_) => continue,
-                other => {
-                    return Err(unreachable(
-                        socket,
-                        &format!(
-                            "it sent an unexpected frame in answer to `agent/spawn`: {other:?}"
-                        ),
-                    ));
-                }
-            },
-            Next::Expired => {
-                return Err(unreachable(
-                    socket,
-                    &format!(
-                        "it did not answer `agent/spawn` within {} s; nothing here can say whether \
-                         a node was started, so the journal is the record to read",
-                        SPAWN_ANSWER_BOUND.as_secs()
-                    ),
-                ));
-            }
-        }
+    match Conn::dial(socket)?.ask(
+        Call::AgentSpawn(params),
+        SPAWN_ANSWER_BOUND,
+        &format!(
+            "it did not answer `agent/spawn` within {} s; nothing here can say whether a node was \
+             started, so the journal is the record to read",
+            SPAWN_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::AgentSpawn(r) => Ok(r),
+        _ => Err(unreachable(
+            socket,
+            "it answered `agent/spawn` with a result marion cannot read",
+        )),
     }
 }
+
+/// **What the supervisor currently knows about one node** — §5.4's `status`, on the wire.
+///
+/// `node/get` is the whole of it: the supervisor projects the node out of the registry it wrote
+/// itself and answers one [`NodeSummary`]. Nothing is cached here and nothing is remembered between
+/// calls, which is the property `status` exists to have — a caller asks *because* the answer may
+/// have changed, and a stale one is worse than no answer.
+///
+/// A node this project's journal has no record of comes back as the supervisor's own `not_found`
+/// sentence through [`SpawnError::SupervisorRefused`], which already names the id and says how
+/// current the registry is.
+pub fn node_get(socket: &Path, agent_id: &AgentId) -> Result<NodeGetResult, SpawnError> {
+    match Conn::dial(socket)?.ask(
+        Call::NodeGet(NodeGetParams {
+            agent_id: agent_id.clone(),
+        }),
+        READ_ANSWER_BOUND,
+        &format!(
+            "it did not answer `node/get` within {} s, so marion cannot say what state that node \
+             is in. Nothing was changed by asking.",
+            READ_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::NodeGet(r) => Ok(r),
+        _ => Err(unreachable(
+            socket,
+            "it answered `node/get` with a result marion cannot read",
+        )),
+    }
+}
+
+/// **Every node this project's supervisor is holding** — §5.4's `list`, on the wire.
+///
+/// `tree/subscribe` is the only one of §2's fifteen methods that *enumerates* nodes, so it is what
+/// discovery composes over; a sixteenth method for the snapshot alone would be a second way to ask
+/// one question. Its answer carries the snapshot (`nodes`) and the journal position it was read at,
+/// and the subscription it also opens dies with the connection this courier hangs up — see
+/// [`Conn`]'s own note on why one errand is one connection.
+pub fn tree(socket: &Path) -> Result<TreeSubscribeResult, SpawnError> {
+    match Conn::dial(socket)?.ask(
+        Call::TreeSubscribe(TreeSubscribeParams {}),
+        READ_ANSWER_BOUND,
+        &format!(
+            "it did not answer `tree/subscribe` within {} s, so marion cannot say which nodes it \
+             is holding. Nothing was changed by asking.",
+            READ_ANSWER_BOUND.as_secs()
+        ),
+    )? {
+        MethodResult::TreeSubscribe(r) => Ok(r),
+        _ => Err(unreachable(
+            socket,
+            "it answered `tree/subscribe` with a result marion cannot read",
+        )),
+    }
+}
+
+/// How long a courier waits for a **read** — `node/get`, `tree/subscribe` — to come back.
+///
+/// Far shorter than [`SPAWN_ANSWER_BOUND`], and the difference is the point: a spawn's answer is
+/// gated on a real process starting, while both reads are a registry projection under one lock with
+/// no I/O of their own. Seconds here means a supervisor that is wedged is reported as wedged
+/// instead of holding a model's turn for five minutes over a question that cannot legitimately take
+/// that long.
+const READ_ANSWER_BOUND: Duration = Duration::from_secs(30);
 
 /// How long the bridge will wait for `agent/spawn` itself to answer.
 ///
