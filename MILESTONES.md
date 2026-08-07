@@ -527,6 +527,38 @@ how much code exists.
     `Live` → `Orphaned` halves were already covered in `restart.rs`.
     **Linux is not shipped**: `/proc/<pid>/stat` field 22 is designed and unmeasured, so non-macOS
     returns an explicit refusal that resolves to cannot-tell, and the consequence is tested.
+    **This bullet was true of the audit and false of the system until 2026-08-07 (`cf1cd01`), and
+    the correction is recorded rather than folded in.** `procid::audit`'s scope is
+    `node.pid.is_some()`, so the criterion is only as good as the guarantee that a live node has a
+    pid on the record — and that guarantee did not exist. `Spawned` went through
+    `journal::record`, which prints the failure to stderr and returns `()`. A barrier that did not
+    land (full disk, revoked state directory, short write, a record the 16 KiB cap refuses) left the
+    child path calling `observer.started`, the root path setting `spawned = true`, and `agent/spawn`
+    answering **successfully** — a live process replay carried no pid for, and therefore one the
+    audit could not see at all rather than one it reported. That is §11 item 30's untracked live
+    process reached through the very record that is supposed to exclude it, and the criterion's test
+    could not fail on it, because a node absent from the walk is absent from the verdict. The
+    barrier is now fallible at both spawn paths: on failure the process group is killed, the driver
+    reaps it, the owner is never told, and the call returns `UnaccountableNode`. `SpawnIntent` alone
+    now means what §6.1 step 7 always claimed it meant. Measured by
+    `crates/marion-supervisor/tests/spawned_barrier.rs::a_root_whose_spawned_barrier_fails_is_unwound_rather_than_answered_as_started`,
+    with a control beside it, no test seam (an over-cap `--model` is a real encode-time refusal on
+    the production path) and a stub that forks a descendant outliving it, so the leak is a process
+    the sweep names rather than an inference. Mutation — put the append back on `journal::record` —
+    kills it by assertion in 1.2 s, and the leak assertion alone kills it in 3.2 s.
+    **A second hole of the same shape was closed with it** (`fda7ca8`), latent rather than live:
+    `spawn_pty` announced the pid before wrapping the `Child`, so a panicking `on_started` — or a
+    caller that panicked or gave up before `PtyHost::adopt` — dropped the only handle to a live
+    process, and `std::process::Child`'s `Drop` neither kills nor reaps. It is unreachable from
+    §9's fleet today because both spawn paths refuse `LaunchPath::Terminal` before any process
+    exists, so it is not a caveat on this criterion; it is named here because it is the same defect
+    class and the next increment makes it reachable.
+    **What remains, stated so the criterion is not read wider than it is.** The window between
+    `command.spawn()` returning and the barrier landing — one `write(2)` plus one fsync — is
+    irreducible, because the pid does not exist before the spawn; a supervisor SIGKILLed inside it
+    still leaves a process no record names. And a node's own tool-call descendants are never in the
+    journal, so *"untracked"* here continues to mean §11 item 30's sense — a **node** nothing will
+    attend to — and not any live process on the machine.
   - **Criterion 4** — `crates/marion-supervisor/tests/client_run.rs::a_client_that_quits_cleanly_leaves_the_supervisor_running_and_a_new_client_resubscribes`,
     added 2026-08-07, and it is what moved M2 from [partial] to [done]. The bullet above credits the
     criterion-1 test with criterion 4's *mechanism*, and that is all it can be credited with: it
