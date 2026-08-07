@@ -437,10 +437,11 @@ how much code exists.
   **[done] here means exactly what the convention says and nothing more: every criterion M1 names
   is met and verified.** It does **not** mean marion is usable for real work — read the two
   sections below, in order, before quoting this line.
-- **M2 [partial]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
-  **Criteria 1, 2 and 3 are met and verified as of 2026-08-07; criterion 4 is not measured as
-  specified — see the bottom of this entry.** The paragraphs below are kept in date order because
-  each records what was true when written, and two of them are now history.
+- **M2 [done]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
+  **All four of §9's criteria are met and verified as of 2026-08-07**, criterion 4 last, and the two
+  caveats it carries are named at the bottom of this entry rather than left to be rediscovered. The
+  paragraphs below are kept in date order because each records what was true when written, and three
+  of them are now history.
   **Still [open] as of 2026-08-05 and not upgraded**, though its substrate moved twice: the journal
   is written and provably replayable (all sixteen pairings, `fdf2e7a`), and as of `8a16427` it is
   also **read at runtime** — `crates/marion-supervisor/src/watch.rs`, polled from a thread in
@@ -463,7 +464,9 @@ how much code exists.
   quoting the existence of a detached supervisor as progress toward M2's crash criterion is quoting
   the wrong half of it.
 
-  **Updated 2026-08-07 — the paragraph above is now history, and criteria 1 and 4 are measured.**
+  **Updated 2026-08-07 — the paragraph above is now history: criterion 1 is measured, and with it
+  the *mechanism* criterion 4's clause (ii) depends on. Criterion 4's own scenario came later the
+  same day and has its own bullet below.**
   §11 item 28 **step 6** landed: `marion run` is a socket client. It sends `agent/spawn` with
   `caller: None`, the supervisor owns the root's thread, `Child`, pipe and pid, and the client
   attaches and renders over `node/attach`. The three sentences that made both criteria unmeetable
@@ -472,8 +475,10 @@ how much code exists.
   `node/attach`'s subscribe leg pushes from `events.jsonl` on the same cursor as its replay.
   - **Criterion 1** — `crates/marion-supervisor/tests/client_run.rs::a_killed_client_leaves_its_agents_running_and_a_new_client_sees_the_whole_tree`.
     SIGKILL the client mid-run; the root's pid stays `Liveness::Alive` (S15's three-valued
-    `procid`, never `kill(pid,0)`), the supervisor is the same process by pid **and** `ps`
-    start time, a second client's `tree/subscribe` renders both nodes, and the root's
+    `procid`, never `kill(pid,0)`), the supervisor is the same process by pid **and** the kernel's
+    start identity for whatever wears it — `procid::resolve`'s comparison, not a restatement of it,
+    so the reissued-pid property has a named test of its own — a second client's `tree/subscribe`
+    renders both nodes, and the root's
     `events.jsonl` is **longer after the kill than at it** — which is what stops a zombie
     satisfying the criterion.
   - **Criterion 4's load-bearing half** — the same test. The new client's replay is contiguous
@@ -512,20 +517,49 @@ how much code exists.
     `Live` → `Orphaned` halves were already covered in `restart.rs`.
     **Linux is not shipped**: `/proc/<pid>/stat` field 22 is designed and unmeasured, so non-macOS
     returns an explicit refusal that resolves to cannot-tell, and the consequence is tested.
-  - **What is still open in M2, and why it is [partial] rather than [done]**: **criterion 4 is not
-    measured as specified.** §9 states it as *a clean quit-and-return* — *"a client calls
-    `session/quit` with disposition (b) … the client exits"* — and says in as many words that the
-    three kill-based criteria *"cannot distinguish"* it. The test credited above for criterion 4's
-    load-bearing half **SIGKILLs** its client, and §7.3.1 is precisely the distinction between a
-    client that said it was leaving and one that vanished. What that test does prove is the
-    *mechanism* (ii) depends on: a new client receives events emitted after it attached, so this is
-    not replay of a corpse. What is unproven is the scenario — in particular (i), *"the supervisor
-    was still the same process"*, after a **voluntary** departure, which is the case §5.7's idle
-    grace actually governs and the one where a supervisor could legitimately exit. No test in the
-    tree calls `session/quit` and then reattaches; `Client::quit` appears only as teardown, and
-    `detached_supervisor.rs`'s quit tests assert supervisor lifecycle with no `node/attach` and no
-    events. M2 is therefore **[partial]**: criteria 1, 2 and 3 met and verified, criterion 4's
-    mechanism proven but its scenario unmeasured.
+  - **Criterion 4** — `crates/marion-supervisor/tests/client_run.rs::a_client_that_quits_cleanly_leaves_the_supervisor_running_and_a_new_client_resubscribes`,
+    added 2026-08-07, and it is what moved M2 from [partial] to [done]. The bullet above credits the
+    criterion-1 test with criterion 4's *mechanism*, and that is all it can be credited with: it
+    **SIGKILLs** its client, and §7.3.1 exists precisely to separate a client that said it was
+    leaving from one that vanished, so the *scenario* — §9's *clean* quit-and-return — was unmeasured
+    until this test. Its client is one the test owns: it creates the root with
+    `agent/spawn { caller: None }`, leaves through the real `session/quit` with disposition **(b)**
+    (checked against the supervisor's own `Detached` answer, since (a) answers `Killed` and (c)
+    answers `ReapedAndDetached`), and is **never signalled**.
+    One run covers the whole criterion, including §9's *"run it also with a node that terminated
+    during the detached window"*. The gate holds the root's closing turn, so at the quit the child is
+    running and the root is inside the `spawn` waiting for it — §9's *at least one node mid-turn* —
+    and across the window the child runs to completion and exits, the root's `spawn` returns, and the
+    root parks at the held turn. (i) is asserted as a **standing invariant of the window** rather than
+    a snapshot after it, so a supervisor that left is named in about a second instead of surfacing
+    31 s later as the expiry of a wait for work it was supposed to be driving. (ii) is an event
+    caused by releasing an answer the provider was still holding at the instant of the attach — the
+    provider's own request log says the closing turn was asked once, before the attach, and not again
+    after. (iii) is replay contiguous from ordinal 0, a read point equal to what was delivered, and a
+    live leg contiguous from that point. The terminated child's replay is asserted to carry **both**
+    bookends, because a non-empty contiguous replay missing its terminal record is §7.3.3's
+    *"indistinguishable from one cut mid-turn"* and satisfies every other clause.
+    Mutation-checked, each killing this test by assertion in under 8 s: disposition (b) served as (a)
+    or as (c); a supervisor that reads a clean quit as its own cue to go (clause (i), 0.95 s); an
+    attach that serves replay and then goes quiet (clause (ii), 7.3 s); a seam that drops or repeats
+    a record (clause (iii), 1.8 s); and the terminated node's journal tail withheld (1.8 s).
+  - **Two caveats criterion 4 carries, stated because neither is visible from the test's green.**
+    **First, §5.7's zero-clients clause is structurally unreachable and is therefore not what clause
+    (i) measures.** Each node's MCP bridge is itself a socket client of the supervisor (§11 item 28
+    step 5), so while any node is running the connection count never falls to zero; §5.7's exit is
+    gated on zero clients, and §7.3.2 waives the grace outright for a client that announced itself.
+    "No client exists" in §9's sense means *no operator's client*, which is the sense criterion 1
+    also uses, and that is what is measured. What makes clause (i) falsifiable is the remaining
+    proposition — *a supervisor must not read a clean quit as its own cue to go* — and the mutation
+    above is exactly that. A test of §5.7's zero-clients-with-a-live-node rule would need a marion in
+    which a live node holds no connection, which is not this one.
+    **Second, a reissued pid cannot be arranged by a test**, since pid reuse is the kernel's to
+    schedule. It gets a control instead —
+    `a_supervisor_wearing_a_reissued_pid_is_not_the_supervisor_that_was_there_before` — which
+    presents the identical evidence against a genuinely serving supervisor: its recorded pid paired
+    with a start identity that is real and belongs to another live process. A build whose fingerprint
+    degenerated to a pid, or in which `procid::resolve` stopped treating a mismatch as evidence,
+    fails there in 0.4 s.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
