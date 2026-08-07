@@ -88,9 +88,10 @@ file. `5792140` replaced the exact pin with a **set** — `marion_testsupport::P
 one table every version check in the workspace reads — whose **entry zero never moves**, because
 entry zero is what the prose claims, and whose tail carries versions since observed green with the
 evidence beside each. claude's set is `["2.1.220", "2.1.222", "2.1.223"]` and codex's is
-`["0.146.0", "0.146.1"]` — both auto-updated mid-session on 2026-08-06, §7.7's hazard arriving
-live, and each new version was admitted only after its probes were re-run and compared against the
-committed captures field for field; gemini and opencode each pin exactly one. So
+`["0.146.0", "0.146.1", "0.147.0"]` — both auto-updated mid-session on 2026-08-06 and codex again
+on 2026-08-07, §7.7's hazard arriving live, and each new version was admitted only after its probes
+were re-run and compared against the committed captures field for field; gemini and opencode each
+pin exactly one. So
 read "2.1.220" as *"the version the turn-one `\"tools\":[]` shape and the
 `tests/fixtures/s9` `can_use_tool` frame were captured from"*, and read a green suite as *"and
 2.1.222 and 2.1.223 were checked against them too."*

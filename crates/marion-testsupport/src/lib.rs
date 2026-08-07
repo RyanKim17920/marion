@@ -342,7 +342,61 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // --model` flag s6 and the adapter depend on has not moved. s7's `setsid` finding is
         // re-asserted live by `timeout_kill`, which passed. **Nothing was re-recorded**; the
         // captures were compared, not refreshed.
-        accepted: &["0.146.0", "0.146.1"],
+        //
+        // 0.147.0: observed green on darwin 25.5.0, 2026-08-07, after the third harness
+        // auto-update in two days — codex has now moved twice and claude twice. The whole
+        // workspace passed against it, which covers the same real-`codex` set as above.
+        //
+        // 0.146.1 is still on disk under `~/.codex/packages/standalone/releases/`, so **every
+        // reading below was taken on both versions on this machine within the same minute**, one
+        // axis at a time. Both probes drive canned local providers on `127.0.0.1`; total spend
+        // **$0.00**.
+        //
+        // * **s14** — `probe-codex.sh` re-run. `body.tools` is still **absent** and
+        //   `code_mode_tool_names` is still the same eight names (`apply_patch, create_goal,
+        //   exec_command, get_goal, update_goal, update_plan, view_image, write_stdin`, every
+        //   `namespace` null), identical under `--sandbox read-only` and `--sandbox
+        //   workspace-write`, and `codex exec --tools Read` is still `exit 2`.
+        // * **s6** — all three questions re-answered live, not transcribed. (1) `exec` still hosts
+        //   a stdio MCP server: `initialize` (protocol `2025-06-18`, client
+        //   `codex-mcp-client/0.147.0`), `tools/list`, `tools/call`, and the server's text comes
+        //   back inside a `mcp_tool_call` item at `status: completed` — via marion's own
+        //   `marion-supervisor mcp` in one arrangement and the s6 stub server in the other. The
+        //   `tools/call` still carries `_meta.x-codex-turn-metadata` with `sandbox: "seatbelt"`
+        //   and the per-workspace `latest_git_commit_hash` + `has_changes`. (2) `file_change`
+        //   items still carry absolute `path` + `kind`, at both `item.started` and
+        //   `item.completed`. (3) `--output-schema` is still forwarded as `text.format =
+        //   {type: json_schema, strict: true, name: "codex_output_schema"}` and
+        //   `--output-last-message` writes a file byte-identical to
+        //   `tests/fixtures/s6/output-last-message.txt`.
+        //
+        // **One shape moved, and marion does not read it.** In 0.146.1 the `additional_tools`
+        // developer message holds four top-level entries — `exec`, `wait`, `request_user_input`
+        // flat, plus a `collaboration` group of six — which is what
+        // `s14`'s `codex-*.declaration.json` records as `input.additional_tools[].name`. In
+        // 0.147.0 the first three are **nested inside a `functions` group**, so the top level is
+        // `functions, collaboration`. No tool appeared or disappeared; only the grouping did. The
+        // fixture is therefore a 0.146.x reading and is left as one — nothing re-recorded. It is
+        // safe because `marion-provider`'s `classify_child` deliberately refuses to read the
+        // catalogue at all (only *call* and *call-output* items count as evidence), and the direct
+        // `{"type":"function_call","name":"report","namespace":"mcp__marion"}` dispatch s6 rests on
+        // still executes end to end under 0.147.0.
+        //
+        // **A second reading moved and it is not 0.147.0's.** `tests/fixtures/s6/README.md` records
+        // that codex "spawns the server more than once per run" (two full `initialize` +
+        // `tools/list` for one `codex exec`). Both 0.146.1 and 0.147.0 spawn it **once** — one
+        // `initialize`, one `notifications/initialized`, one `tools/list`, one `tools/call`. So
+        // that changed at 0.146.1 and `fd2fc1d` did not catch it, because `fd2fc1d` re-ran the s14
+        // probe and not the s6 one. A bridge that tolerates a second spawn is still correct; one
+        // that *requires* it never was.
+        //
+        // `--help`, `exec --help` and `mcp --help` are unchanged modulo two additions
+        // (`--approve-for-me` on both help surfaces, and `--disable` moved in the `exec` listing),
+        // so `-m, --model` has not moved. `features list` gains four rows
+        // (`executed_tool_call_metadata`, `image_resize_notice`, `recommended_plugins`,
+        // `view_image`) and removes none; `code_mode_host` is still `stable true`. s7's `setsid`
+        // finding is re-asserted live by `timeout_kill`, which passed. **Nothing was re-recorded.**
+        accepted: &["0.146.0", "0.146.1", "0.147.0"],
     },
     PinnedHarness {
         program: "gemini",
