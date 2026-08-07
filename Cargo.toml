@@ -8,6 +8,7 @@ members = [
     "crates/marion-harness",
     "crates/marion-term",
     "crates/marion-testsupport",
+    "crates/marion-tui",
 ]
 
 [workspace.package]
