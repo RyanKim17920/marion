@@ -479,10 +479,17 @@ how much code exists.
     the attach: the node's closing turn is held at the canned provider until the attach has
     happened, and the ordering is read out of the provider's own request log rather than out of a
     sleep (§6.1 step 8 binds a test as hard as it binds a launcher).
+  - **Step 5 has landed too, so a child's owner is the supervisor as well.** The per-child MCP
+    bridge dials §2's socket and sends `agent/spawn` with the capability token marion wrote into
+    its node's declaration; it starts nothing, and there is deliberately no in-process fallback.
+    What that buys is measured rather than argued:
+    `crates/marion-supervisor/tests/background_spawn.rs::a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing`
+    SIGKILLs a bridge mid-child and requires the node's own `events.jsonl` to **grow afterwards** —
+    liveness, not presence in the process table. §11 item 30's *bridge*-death runaway is closed;
+    the supervisor-death half is not.
   - **What is still open in M2**: criterion 3's *"no untracked live process"* on the
-    supervisor-death side (§11 item 30, one half only), criterion 2's structural replay identity,
-    and step 5 — the per-child MCP bridge still spawns children in-process rather than over the
-    socket, so a *child's* owner is still the bridge. M2 stays **[open]**.
+    supervisor-death side (§11 item 30, one half only) and criterion 2's structural replay
+    identity. M2 stays **[open]**.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
