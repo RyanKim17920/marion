@@ -156,6 +156,72 @@ pub enum Departure {
     ServerStopping,
 }
 
+/// **Who is on the other end of a connection, as the kernel reports it** — `getpeereid(2)`, read
+/// once at accept and never from anything the peer said.
+///
+/// This is the *only* identity the transport can establish, and naming what it is not is the whole
+/// point of the type. It answers **which user**. It does not answer **which node** — §5.4's
+/// per-node capability token is what answers that, and [`marion_proto::SpawnCaller`] is where a
+/// caller presents one. The two are not interchangeable and the design records a shipped instance
+/// of confusing them (§11 item 28, open question 3): an unauthenticated local socket whose
+/// authorization keyed on a client-asserted origin field, reachable by any process of the same
+/// user. Peer credentials would not have saved that system, because the attacker was the same user.
+///
+/// So this is used for exactly one decision — whether a caller may create a **root**, which is a
+/// spawn with no node behind it to prove anything about (see
+/// `handler::root_spawn_authorized`) — and nothing else consults it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Peer {
+    /// `getpeereid` answered, and this is the peer's effective uid.
+    Uid(u32),
+    /// `getpeereid` failed, or this channel has no socket behind it. **Never treated as
+    /// permission**: an unknown peer is refused wherever a known one would have been checked.
+    Unknown,
+}
+
+/// This process's own real uid — what a peer's uid is compared against.
+pub fn own_uid() -> u32 {
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    // SAFETY: reads the calling process's real uid and cannot fail.
+    unsafe { getuid() }
+}
+
+/// [`Peer`] for one accepted connection.
+///
+/// Read from the socket rather than from the frame, and read **once**: a peer cannot change its uid
+/// mid-connection, and re-asking per call would be a second answer that could differ from the one a
+/// subscription was set up under.
+fn peer_of(stream: &std::os::unix::net::UnixStream) -> Peer {
+    use std::os::fd::AsRawFd;
+    peer_of_fd(stream.as_raw_fd())
+}
+
+/// [`peer_of`] over a bare descriptor.
+///
+/// Split out **so the failure branch is reachable from a test**. Same uid on both ends of every
+/// socket a `cargo test` can make, so the only half of this function a test can distinguish is the
+/// one where `getpeereid` says no — and a descriptor that is not a socket is exactly that answer,
+/// from the kernel, for a real reason (`ENOTSOCK`). Without this seam, a build that ignored `rc`
+/// and returned `Peer::Uid(own_uid())` unconditionally would pass every test in this workspace
+/// while granting root creation to a peer nobody had identified.
+fn peer_of_fd(fd: i32) -> Peer {
+    unsafe extern "C" {
+        fn getpeereid(fd: i32, uid: *mut u32, gid: *mut u32) -> i32;
+    }
+    let (mut uid, mut gid) = (0u32, 0u32);
+    // SAFETY: `fd` is open for the duration of this call — the only callers are `peer_of`, whose
+    // stream owns it, and a test holding the file it opened — and both out-pointers are to live
+    // locals. `getpeereid` writes them only on success.
+    let rc = unsafe { getpeereid(fd, &mut uid, &mut gid) };
+    if rc == 0 {
+        Peer::Uid(uid)
+    } else {
+        Peer::Unknown
+    }
+}
+
 /// What a supervisor does with a call.
 ///
 /// One method per shape, and both take a [`ConnId`], because a subscription is per connection: the
@@ -244,6 +310,9 @@ pub trait Handle: Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub struct Outbound {
     conn: ConnId,
+    /// Who the kernel says is on the other end. Carried here rather than passed beside every call
+    /// because it is a property of the connection and is read once, at accept — see [`Peer`].
+    peer: Peer,
     tx: SyncSender<Vec<u8>>,
     departed: Arc<Mutex<Option<Departure>>>,
 }
@@ -251,6 +320,12 @@ pub struct Outbound {
 impl Outbound {
     pub fn conn(&self) -> ConnId {
         self.conn
+    }
+
+    /// The peer credentials this connection was accepted with. See [`Peer`] for what they answer
+    /// and, more importantly, what they do not.
+    pub fn peer(&self) -> Peer {
+        self.peer
     }
 
     /// Queue one frame. **Never blocks, and never fails silently.**
@@ -298,11 +373,18 @@ impl Outbound {
     }
 }
 
+/// An [`Outbound`] with no socket behind it, for in-process callers.
+///
+/// The peer is **this process**, which is the literal truth rather than a convenience: there is no
+/// second process on the other end of a channel whose receiver was dropped in this one. A
+/// [`Peer::Unknown`] here would make every in-process caller fail the root-spawn check for a reason
+/// that is not about authorization.
 #[cfg(test)]
 pub(crate) fn sink(conn: ConnId) -> Outbound {
     let (tx, _rx) = sync_channel(OUTBOUND_CAPACITY);
     Outbound {
         conn,
+        peer: Peer::Uid(own_uid()),
         tx,
         departed: Arc::new(Mutex::new(None)),
     }
@@ -548,6 +630,8 @@ fn serve_conn(
     let (tx, rx) = sync_channel::<Vec<u8>>(OUTBOUND_CAPACITY);
     let out = Outbound {
         conn: id,
+        // **Once, here, from the kernel.** Not per call and not from any frame — see [`Peer`].
+        peer: peer_of(&stream),
         tx,
         departed: Arc::clone(&departed),
     };
@@ -731,6 +815,38 @@ mod tests {
 
     fn chunks(cs: &[&[u8]]) -> Lines<Chunks> {
         Lines::new(Chunks(cs.iter().map(|c| c.to_vec()).collect()))
+    }
+
+    /// **Peer credentials are read from the kernel, and a reading that failed is `Unknown`.**
+    ///
+    /// Two rows, and the second is the one that cannot be faked. A connected socket answers with a
+    /// uid — this process's, because a `cargo test` cannot make a peer of any other user, which is
+    /// the stated limit of what is measurable here and is why `handler::root_spawn_authorized` is
+    /// pinned separately over the whole three-way predicate. A descriptor that is **not a socket**
+    /// makes `getpeereid` fail for a real kernel reason (`ENOTSOCK`), and that is the row a build
+    /// which ignored the return code could not survive: `Peer::Uid(own_uid())` returned
+    /// unconditionally would look right on every socket in this workspace while handing root
+    /// creation to a peer nobody identified.
+    #[test]
+    fn a_peer_is_the_kernels_answer_and_an_unreadable_one_is_never_taken_as_permission() {
+        use std::os::fd::AsRawFd;
+        let (a, _b) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+        assert_eq!(
+            peer_of(&a),
+            Peer::Uid(own_uid()),
+            "a connected socket has a peer, and it is this test's own user"
+        );
+
+        let path = std::env::temp_dir().join(format!("marion-peer-notsock-{}", std::process::id()));
+        let f = std::fs::File::create(&path).expect("a regular file");
+        assert_eq!(
+            peer_of_fd(f.as_raw_fd()),
+            Peer::Unknown,
+            "`getpeereid` on a non-socket fails, and a check that could not be made must not \
+             report the answer it would have liked"
+        );
+        drop(f);
+        let _ = std::fs::remove_file(&path);
     }
 
     fn all(mut l: Lines<impl Read>) -> Vec<String> {
