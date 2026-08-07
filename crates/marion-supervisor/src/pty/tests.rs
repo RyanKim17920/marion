@@ -650,7 +650,11 @@ fn the_cast_header_and_record_shape_match_the_committed_captures() {
 #[test]
 fn the_cast_records_i_and_r_not_only_o() {
     let mut lb = Loopback::new("pty-ir", WinSize::new(120, 40));
-    lb.host.write_input(b"/help\r").unwrap();
+    let lease = lb
+        .host
+        .lease_writer(crate::serve::ConnId(1))
+        .expect("a fresh host has no writer");
+    lb.host.write_input(&lease, b"/help\r").unwrap();
     lb.host.resize(WinSize::new(100, 24)).unwrap();
     lb.child_writes(b"repainted");
     lb.hang_up();
@@ -1058,4 +1062,119 @@ fn dropping_a_host_leaves_no_child_behind() {
     assert!(until(|| alive(pid)));
     drop(host);
     assert!(until(|| !alive(pid)), "pid {pid} outlived its host");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The write half is leased to exactly one client
+// ---------------------------------------------------------------------------------------------
+
+/// **Mutation: let `lease_writer` hand every caller a lease.**
+///
+/// Reading a node fans out — any number of clients may listen, because a byte delivered twice
+/// costs nothing. Writing does not. Two clients typing into one pty interleave at whatever
+/// granularity their reads happen to have, and the failure is **silent in both directions**: the
+/// pty echoes the mangled result back to both operators identically, so neither can tell it from
+/// the harness misbehaving.
+///
+/// This is the test that makes the second attacher's refusal observable. Note what it asserts: not
+/// merely that the second call fails, but that it names the holder — a client told only "busy"
+/// cannot distinguish a colleague in the same node from a lease that leaked.
+#[test]
+fn a_second_attacher_is_refused_the_write_half_by_name() {
+    let lb = Loopback::new("pty-one-writer", WinSize::new(80, 24));
+    assert_eq!(lb.host.writer(), None, "a fresh host has no writer");
+
+    let first = lb
+        .host
+        .lease_writer(crate::serve::ConnId(7))
+        .expect("the first attacher gets the write half");
+    assert_eq!(lb.host.writer(), Some(crate::serve::ConnId(7)));
+
+    match lb.host.lease_writer(crate::serve::ConnId(9)) {
+        Err(crate::pty::WriterBusy::HeldBy(owner)) => assert_eq!(
+            owner,
+            crate::serve::ConnId(7),
+            "the refusal named the wrong connection"
+        ),
+        Ok(_) => panic!(
+            "a second attacher silently got the write half — two operators are now typing \
+             into one pty and neither will see an error"
+        ),
+    }
+
+    // Re-claiming from the holder is also refused: two live leases for one connection would each
+    // clear the slot on drop, and the first drop would open the node to a third client while the
+    // second lease was still in use.
+    assert!(
+        lb.host.lease_writer(crate::serve::ConnId(7)).is_err(),
+        "the holder was issued a second lease, so dropping either one opens the node"
+    );
+    drop(first);
+}
+
+/// **Mutation: remove `impl Drop for WriteLease`.**
+///
+/// §7.3.1 is about what a *crashed* client leaves behind. A node whose one writer died without
+/// releasing the lease would be permanently read-only — recoverable only by restarting the
+/// supervisor, which is the one thing a client crash must never require.
+#[test]
+fn a_departed_writer_releases_the_half_without_anybody_cleaning_up() {
+    let lb = Loopback::new("pty-writer-drop", WinSize::new(80, 24));
+    {
+        let _lease = lb
+            .host
+            .lease_writer(crate::serve::ConnId(1))
+            .expect("first");
+        assert!(lb.host.lease_writer(crate::serve::ConnId(2)).is_err());
+    } // the client goes away — no explicit release anywhere
+    assert_eq!(
+        lb.host.writer(),
+        None,
+        "the write half was never handed back, so this node can no longer be typed into"
+    );
+    let second = lb.host.lease_writer(crate::serve::ConnId(2));
+    assert!(
+        second.is_ok(),
+        "the next attacher could not take the write half"
+    );
+}
+
+/// A lease is proof about **this** node, not about pty-ness in general. Without the identity
+/// check, a client holding one terminal node's write half could type into every other one.
+#[test]
+fn a_lease_from_another_node_cannot_be_used_to_type_into_this_one() {
+    let a = Loopback::new("pty-lease-a", WinSize::new(80, 24));
+    let b = Loopback::new("pty-lease-b", WinSize::new(80, 24));
+
+    let lease_for_a = a.host.lease_writer(crate::serve::ConnId(1)).expect("a");
+    let err = b
+        .host
+        .write_input(&lease_for_a, b"rm -rf /\r")
+        .expect_err("b accepted a's lease");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+    // And the control: the lease does work on the node it was issued for.
+    a.host
+        .write_input(&lease_for_a, b"ok\r")
+        .expect("a's own lease");
+}
+
+/// Listening stays fan-out. The lease constrains **input** and must not have quietly made the
+/// read side exclusive too, which would break every second viewer of a node.
+#[test]
+fn leasing_the_write_half_does_not_make_reading_exclusive() {
+    let lb = Loopback::new("pty-read-fanout", WinSize::new(80, 24));
+    let _lease = lb
+        .host
+        .lease_writer(crate::serve::ConnId(1))
+        .expect("writer");
+    let (a, _a_rx) = crate::serve::capture(crate::serve::ConnId(1));
+    let (b, _b_rx) = crate::serve::capture(crate::serve::ConnId(2));
+    lb.host.listen(a);
+    lb.host.listen(b);
+    assert_eq!(
+        lb.host.listeners(),
+        2,
+        "a read-only second attacher must still receive the stream"
+    );
 }

@@ -98,7 +98,7 @@ use marion_core::contract::AgentId;
 use marion_harness::{ControlTransport, PtyWitness};
 use marion_proto::Event;
 
-use crate::serve::Outbound;
+use crate::serve::{ConnId, Outbound};
 
 // ---------------------------------------------------------------------------------------------
 // libc, hand-declared
@@ -837,12 +837,94 @@ const READ_CHUNK: usize = 65536;
 /// interactive and a viewer feels 50 ms of added latency on every keystroke echo.
 const POLL: std::time::Duration = std::time::Duration::from_millis(5);
 
+// ---------------------------------------------------------------------------------------------
+// One writer, and the type that says so
+// ---------------------------------------------------------------------------------------------
+
+/// Who currently holds a node's write half, if anyone.
+///
+/// `Mutex<Option<ConnId>>` rather than an `AtomicBool` because the interesting answer is not
+/// *whether* the half is taken but **by whom**: a second client must be refused with a sentence
+/// naming the connection that has it, not with a bare failure.
+type WriterSlot = Mutex<Option<ConnId>>;
+
+/// **Proof that its holder is this node's one writer.** Required by [`PtyHost::write_input`].
+///
+/// # Why a token and not a check
+///
+/// Reading a node is fan-out: any number of clients may hold a [`Outbound`] listener, because a
+/// byte delivered twice costs nothing. **Writing is not.** Two clients typing into one pty
+/// interleave at whatever granularity their reads happen to have, so `ls -la` and `git status`
+/// become `lgits -lta`tus — and neither operator sees anything wrong, because the pty echoes the
+/// mess back to both of them identically. There is no error, no log line and no way to tell it
+/// from a harness misbehaving.
+///
+/// So the write half is **leased**, and the lease is an unforgeable value rather than a flag
+/// somebody must remember to check. This is the same device `PtyWitness` uses one layer down: a
+/// `bool` proves nothing at a call site, because a caller who forgot to test it holds the same
+/// `true` as one who did. A caller who has a `WriteLease` has necessarily been given one.
+///
+/// The lease is released on [`Drop`], so a client that disconnects, panics or is torn down hands
+/// the write half back without anybody writing cleanup for it — which matters because §7.3.1's
+/// invariant is precisely about what a *crashed* client leaves behind. A node whose one writer
+/// died and never released the lease would be permanently read-only.
+#[derive(Debug)]
+pub struct WriteLease {
+    conn: ConnId,
+    /// The slot to clear on drop. Shared with the host, and used by [`PtyHost::write_input`] to
+    /// tell a lease for *this* node from a lease for some other one.
+    slot: Arc<WriterSlot>,
+}
+
+impl WriteLease {
+    /// The connection this lease belongs to.
+    pub fn conn(&self) -> ConnId {
+        self.conn
+    }
+}
+
+impl Drop for WriteLease {
+    fn drop(&mut self) {
+        let mut held = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        // Only clear the slot if it is still *ours*. It cannot be anyone else's while this lease
+        // exists, but taking the defensive branch costs one comparison and makes the invariant
+        // local rather than a thing a reader has to prove from the other methods.
+        if *held == Some(self.conn) {
+            *held = None;
+        }
+    }
+}
+
+/// Why a client did not get the write half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterBusy {
+    /// Another connection holds it. **Named**, so the refusal can be a sentence: a client told only
+    /// "busy" cannot tell a stale lease from a colleague in the same node.
+    HeldBy(ConnId),
+}
+
+impl std::fmt::Display for WriterBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HeldBy(c) => write!(
+                f,
+                "this node's input is held by connection {}; attach is read-only until it detaches",
+                c.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WriterBusy {}
+
 /// Shared between the host and its reader thread.
 struct Shared {
     agent_id: AgentId,
     cast: Mutex<CastWriter>,
     /// Clients receiving [`Event::NodePty`]. **Listeners, not owners** — see the module doc.
     listeners: Mutex<Vec<Outbound>>,
+    /// The one connection allowed to type. See [`WriteLease`].
+    writer: Arc<WriterSlot>,
     seq: AtomicU64,
     probes: AtomicU64,
     bytes: Arc<AtomicU64>,
@@ -900,6 +982,7 @@ impl PtyHost {
             agent_id,
             cast: Mutex::new(cast),
             listeners: Mutex::new(Vec::new()),
+            writer: Arc::new(Mutex::new(None)),
             seq: AtomicU64::new(0),
             probes: AtomicU64::new(0),
             bytes: Arc::new(AtomicU64::new(0)),
@@ -995,10 +1078,52 @@ impl PtyHost {
             .len()
     }
 
+    /// Claim the write half for `conn`.
+    ///
+    /// The **second** caller is refused, by name, and gets a read-only attach. A supervisor that
+    /// handed both clients the write half would produce interleaved keystrokes that look to each
+    /// operator like the harness misbehaving — see [`WriteLease`].
+    ///
+    /// Re-claiming from the connection that already holds it is still a refusal rather than a
+    /// second lease. Two live leases for one connection would each clear the slot on drop, so the
+    /// first drop would silently open the node to a third client while the second lease was still
+    /// being used.
+    pub fn lease_writer(&self, conn: ConnId) -> Result<WriteLease, WriterBusy> {
+        let mut held = self.shared.writer.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(owner) = *held {
+            return Err(WriterBusy::HeldBy(owner));
+        }
+        *held = Some(conn);
+        Ok(WriteLease {
+            conn,
+            slot: Arc::clone(&self.shared.writer),
+        })
+    }
+
+    /// Which connection holds the write half, if any.
+    pub fn writer(&self) -> Option<ConnId> {
+        *self.shared.writer.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Keystrokes in. Recorded as `i` **before** they are written, for the same asymmetry the
     /// resize order is chosen on: an `i` for a keystroke that did not land replays as a keystroke
     /// the harness ignored, while a keystroke with no record is a session whose input is missing.
-    pub fn write_input(&self, bytes: &[u8]) -> io::Result<()> {
+    ///
+    /// **`lease` is the whole signature**, exactly as `witness` is [`spawn_pty`]'s: it is
+    /// deliberately unused in the body, because a capability's job is to have been required. A node
+    /// cannot be typed into by a client that was not given the write half, and that is enforced by
+    /// the type rather than by a check at each call site.
+    ///
+    /// A lease issued by a *different* [`PtyHost`] is refused. Without that check the token would
+    /// prove only "somebody, somewhere, holds a write half", which in a fleet with several
+    /// terminal nodes is not the claim being made.
+    pub fn write_input(&self, lease: &WriteLease, bytes: &[u8]) -> io::Result<()> {
+        if !Arc::ptr_eq(&lease.slot, &self.shared.writer) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "write lease belongs to a different node",
+            ));
+        }
         let text = String::from_utf8_lossy(bytes);
         self.shared
             .cast
