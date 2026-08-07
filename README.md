@@ -123,7 +123,29 @@ hook callbacks and `request_user_dialog` remain unmeasured.
 
 Rust. `pty-process` 0.5.3 (`features = ["async"]`) · `alacritty_terminal` 0.26.0 ·
 `ratatui` 0.30.2 + `insta` 1.48.0 · `agent-client-protocol` 2.0.0 · `wiremock` 0.6.5.
+`vt100` 0.16.2 is a **dev-dependency of `marion-term` alone** — evidence for §11 item 10, never a
+component; marion ships one VT and it is alacritty's.
 Rationale and rejected alternatives in `MILESTONES.md`.
+
+## Install the commit gate — one step, do it on clone
+
+```sh
+git config core.hooksPath .githooks
+```
+
+That is the whole install. `.githooks/pre-commit` runs **L4.5** (design §8) — the self-hosted TUI
+driver: `TestBackend` + `insta` + `assert_scrollback_lines` over the committed
+`tests/fixtures/s2` captures, keyed on DECSET 2026 brackets. No processes, no network, no model,
+about a third of a second.
+
+It runs L4.5 **by name** and nothing else. §8 is explicit that **L7 must never gate a commit**, and
+a blanket `cargo test` in a hook is how that happens by accident the day an L7 target exists. The
+hook also reads back its own pass count and refuses to succeed if the target went missing or
+shrank, because a gate that no-ops when its subject is absent is worse than no gate.
+
+A snapshot diff means the rendered screen changed. Review it with `cargo insta review` and decide;
+never accept blind. `*.snap.new` is gitignored so a failed run cannot leave a rival snapshot in the
+tree.
 
 ## Before writing any test fixture
 

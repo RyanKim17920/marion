@@ -11,8 +11,25 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::Widget;
 
 use crate::Term;
+
+/// The same viewport, drawn into a caller's area — what a `Terminal<B>` needs.
+///
+/// [`render`] returns a fresh buffer sized to the terminal; this clips into whatever `area` the
+/// layout gave, so L4.5's `TestBackend` driver and M3's real TUI use one code path. Cells outside
+/// the grid are left as the caller drew them, not blanked.
+impl Widget for &Term {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let src = render(self);
+        for y in 0..area.height.min(src.area.height) {
+            for x in 0..area.width.min(src.area.width) {
+                buf[(area.x + x, area.y + y)] = src[(x, y)].clone();
+            }
+        }
+    }
+}
 
 /// Render the viewport into a fresh buffer sized to the terminal.
 pub fn render(term: &Term) -> Buffer {

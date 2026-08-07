@@ -1,0 +1,105 @@
+---
+source: crates/marion-term/tests/l45_driver.rs
+expression: report
+---
+frames: 50
+
+--- ledger, one line per DECSET 2026 bracket ---
+120x40 history=  0 nonblank= 6 changed= 4800 |   Press enter to continue
+120x40 history=  0 nonblank= 6 changed=    0 |   Press enter to continue
+120x40 history=  0 nonblank= 8 changed=  726 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  0 nonblank= 8 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  0 nonblank= 8 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  0 nonblank= 8 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  0 nonblank= 2 changed=  567 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  0 nonblank= 2 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank= 9 changed=  654 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=  325 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    2 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    3 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    4 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    5 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    6 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    7 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    8 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    9 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=   13 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=   10 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=    1 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=   13 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=   11 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=   11 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=   13 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank= 9 changed=  325 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  2 nonblank= 8 changed=  483 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  2 nonblank= 8 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank= 9 changed=  462 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank= 9 changed=   34 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank=10 changed=  267 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  0 nonblank= 9 changed=  606 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  0 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank=10 changed=  585 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank=10 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank=10 changed=   29 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank=10 changed=   29 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank=10 changed=   34 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 16 nonblank= 9 changed=  153 | › Shutting down...
+
+--- final frame ---
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                              │
+│                                                         │
+│ model:     gpt-5.6-sol   /model to change               │
+│ directory: /private/tmp/claude-501/…/scratchpad/s2/work │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+• Unrecognized command '/help'. Type "/" for a list of supported commands.
+
+
+› Shutting down...
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--- styles, most cells first ---
+  4467  Style::new().fg(Color::Reset).bg(Color::Reset)
+   300  Style::new().fg(Color::Reset).bg(Color::Reset).dim()
+    27  Style::new().fg(Color::Reset).bg(Color::Reset).bold()
+     6  Style::new().fg(Color::Indexed(6)).bg(Color::Reset)

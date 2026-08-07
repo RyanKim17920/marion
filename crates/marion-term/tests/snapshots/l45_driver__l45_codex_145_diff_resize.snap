@@ -1,0 +1,110 @@
+---
+source: crates/marion-term/tests/l45_driver.rs
+expression: report
+---
+frames: 52
+
+--- ledger, one line per DECSET 2026 bracket ---
+120x40 history=  0 nonblank= 6 changed= 4800 |   Press enter to continue
+120x40 history=  0 nonblank= 6 changed=  118 |   Press enter to continue
+120x40 history=  1 nonblank=15 changed= 1242 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=15 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=15 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=15 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank= 9 changed=  566 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=10 changed=  325 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=  672 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    3 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    6 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    8 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    9 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    1 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=   13 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=   10 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=   11 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=   13 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=   11 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=   14 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=16 changed=  325 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=16 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  1 nonblank=17 changed=  209 |   /statusline  configure which items appear in the status line
+120x40 history=  1 nonblank=16 changed=  209 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  6 nonblank=33 changed= 3532 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  6 nonblank=33 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  6 nonblank=17 changed= 1927 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history=  6 nonblank=17 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 53 nonblank=21 changed= 1711 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 53 nonblank=21 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 53 nonblank=21 changed=   33 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 55 nonblank=20 changed= 1088 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+120x40 history= 56 nonblank=19 changed= 1348 | 3/scratchpad/s2/wor…
+120x40 history= 56 nonblank=19 changed=   19 | 3
+120x40 history=119 nonblank=39 changed= 2643 | 3/scratchpad/s2/wor…
+120x40 history=119 nonblank=39 changed=   19 | 3
+120x40 history=119 nonblank=39 changed=   48 | 3 /diff  show git diff (including untracked files)
+120x40 history=120 nonblank=39 changed= 4437 | 3/scratchpad/s2/wor…
+120x40 history=  0 nonblank=40 changed= 3557 |  q to quitroll   pgup/pgdn to page   home/end to jump
+120x40 history=121 nonblank=39 changed= 3751 | 3/scratchpad/s2/wor…
+120x40 history=121 nonblank=39 changed=   20 | › Shutting down...
+
+--- final frame ---
+  │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date
+  │
+│ information on rate limits and credits
+  │
+│
+  │
+│  Remote:                             unix:///Users/example/.codex/app-server-control/app-server-control.sock (v0.145.0
+) │
+│
+  │
+│  Model:                              gpt-5.6-sol (reasoning low, summaries auto)
+  │
+│  Directory:                          /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/…/scratchpad/s2/work
+  │
+│  Permissions:                        Workspace (Ask for approval)
+  │
+│  Agents.md:                          <none>
+  │
+│  Account:                            redacted@examp.invalid (Plan ABC)
+  │
+│  Collaboration mode:                 Default
+  │
+│  Session:                            00000000-0000-4000-8000-000000000006
+  │
+│
+  │
+│  Weekly limit:                       [░░░░░░░░░░░░░░░░░░░░] 00% left (resets 00:00 on 1 Jan)
+  │
+│  Credits:                            0000 credits
+  │
+│  GPT-5.3-Codex-Spark Weekly limit:   [████████████████████] 100% left (resets 00:00 on 1 Jan)
+  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+──╯
+
+› gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-4000-8000-00000000000
+3 gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-4000-8000-00000000000
+  gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-4000-8000-00000000000
+› Shutting down...
+
+--- styles, most cells first ---
+  2681  Style::new().fg(Color::Reset).bg(Color::Reset)
+  1673  Style::new().fg(Color::Reset).bg(Color::Reset).dim()
+   289  Style::new().fg(Color::Rgb(171, 223, 167)).bg(Color::Reset)
+    59  Style::new().fg(Color::Indexed(6)).bg(Color::Reset)
+    57  Style::new().fg(Color::Rgb(246, 226, 183)).bg(Color::Reset)
+    40  Style::new().fg(Color::Indexed(6)).bg(Color::Reset).underlined()
+     1  Style::new().fg(Color::Reset).bg(Color::Reset).bold()

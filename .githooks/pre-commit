@@ -1,0 +1,49 @@
+#!/bin/sh
+# marion's commit gate: L4.5, and only L4.5.
+#
+# Install once per clone:  git config core.hooksPath .githooks
+#
+# WHY A HOOK AND NOT CI. Design §8 says L4.5 "gates commits" — commits, not pushes and not pull
+# requests. There is no CI in this repo to extend, and standing one up would move the gate to a
+# place where a broken commit already exists in history by the time it fires. L4.5 is the one
+# layer cheap enough for that literal reading: no processes, no network, no model, ~0.3s. When CI
+# arrives it should run this same target, plus the layers a hook cannot afford; it does not
+# replace this.
+#
+# WHY NOT L7. Design §8: L7 "must never gate a commit" — it is a VM with a real terminal and real
+# fonts, nightly and opt-in. This hook therefore names its target explicitly rather than running
+# `cargo test`, so no future test file can be swept into the gate by existing.
+#
+# WHY THE PASS COUNT IS CHECKED. `cargo test --test X -- <filter>` exits 0 when the filter matches
+# nothing, and would exit 0 if the target were renamed out from under this script. A gate that
+# no-ops when its subject is missing is worse than no gate, so this reads the count back and
+# fails if it is zero. `the_gate_names_this_target_and_only_this_target`, inside the target, guards the other direction.
+
+set -eu
+
+TARGET=l45_driver
+MIN_TESTS=10
+
+cd "$(git rev-parse --show-toplevel)"
+
+printf 'L4.5 gate: cargo test -p marion-term --test %s\n' "$TARGET" >&2
+
+if ! output=$(cargo test -p marion-term --test "$TARGET" 2>&1); then
+	printf '%s\n' "$output" >&2
+	printf '\nL4.5 FAILED — commit blocked.\n' >&2
+	printf 'A snapshot diff is reviewed with `cargo insta review`, never accepted blind.\n' >&2
+	exit 1
+fi
+
+passed=$(printf '%s\n' "$output" | sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' | head -1)
+
+if [ -z "${passed:-}" ] || [ "$passed" -lt "$MIN_TESTS" ]; then
+	printf '%s\n' "$output" >&2
+	printf '\nL4.5 DID NOT RUN — commit blocked.\n' >&2
+	printf 'Expected at least %s passing tests in --test %s, saw "%s".\n' \
+		"$MIN_TESTS" "$TARGET" "${passed:-none}" >&2
+	printf 'If tests were deliberately removed, lower MIN_TESTS in this hook in the same commit.\n' >&2
+	exit 1
+fi
+
+printf 'L4.5 ok (%s tests).\n' "$passed" >&2

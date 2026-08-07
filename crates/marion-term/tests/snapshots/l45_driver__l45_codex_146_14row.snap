@@ -1,0 +1,72 @@
+---
+source: crates/marion-term/tests/l45_driver.rs
+expression: report
+---
+frames: 45
+
+--- ledger, one line per DECSET 2026 bracket ---
+100x14 history=  0 nonblank= 8 changed= 1400 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  0 nonblank= 8 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  0 nonblank= 8 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  0 nonblank= 8 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  0 nonblank= 2 changed=  517 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=  603 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    4 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    7 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    9 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    1 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=   10 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=   13 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=   10 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=   10 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=   14 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=   11 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 8 changed=  277 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 8 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history=  2 nonblank= 9 changed=  181 |   /statusline  configure which items appear in the status line
+100x14 history= 24 nonblank=11 changed= 1037 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 24 nonblank=11 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 24 nonblank=11 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 24 nonblank=11 changed=  123 |   /mcp  list configured MCP tools; use /mcp verbose for details
+100x14 history= 26 nonblank=10 changed=  677 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 46 nonblank=10 changed=  771 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 47 nonblank=10 changed=  752 |   /statusline  configure which items appear in the status line
+100x14 history= 70 nonblank=11 changed= 1092 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 70 nonblank=11 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 70 nonblank=11 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 71 nonblank=11 changed=  790 |   /statusline  configure which items appear in the status line
+100x14 history= 94 nonblank=11 changed=  790 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 94 nonblank=11 changed=    0 |   gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-D
+100x14 history= 94 nonblank=10 changed=  123 | › Shutting down...
+
+--- final frame ---
+│  Agents.md:                          <none>                                                      │
+│  Account:                            redacted@examp.invalid (Plan ABC)                           │
+│  Collaboration mode:                 Default                                                     │
+│  Session:                            00000000-0000-4000-8000-000000000007                        │
+│                                                                                                  │
+│  Weekly limit:                       [░░░░░░░░░░░░░░░░░░░░] 00% left (resets 00:00 on 1 Jan)     │
+│  Credits:                            0000 credits                                                │
+│  GPT-5.3-Codex-Spark Weekly limit:   [████████████████████] 100% left (resets 00:00 on 1 Jan)    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+› Shutting down...
+
+
+
+--- styles, most cells first ---
+   760  Style::new().fg(Color::Reset).bg(Color::Reset).dim()
+   640  Style::new().fg(Color::Reset).bg(Color::Reset)

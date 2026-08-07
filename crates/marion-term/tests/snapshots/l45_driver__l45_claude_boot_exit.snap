@@ -1,0 +1,76 @@
+---
+source: crates/marion-term/tests/l45_driver.rs
+expression: report
+---
+frames: 8
+
+--- ledger, one line per DECSET 2026 bracket ---
+120x40 history=  0 nonblank=16 changed= 4800 |   ⏸ manual mode on · ← for agents
+120x40 history=  0 nonblank=17 changed=   45 |   ⏸ manual mode on · ← for agents
+120x40 history=  0 nonblank=17 changed=   28 |   ⏸ manual mode on · ← for agents
+120x40 history=  0 nonblank=19 changed=  527 |   ⏸ manual mode on · ← for agents
+120x40 history=  0 nonblank=19 changed=   20 |   ⏸ manual mode on
+120x40 history=  0 nonblank=18 changed=   18 |   ⏸ manual mode on
+120x40 history=  0 nonblank=22 changed=  337 |   ⏸ manual mode on
+120x40 history=  0 nonblank=22 changed=    0 |   ⏸ manual mode on
+
+--- final frame ---
+
+╭─── Claude Code v2.1.220 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│                 Welcome back User!                 │ Run /init to create a CLAUDE.md file with instructions for Cla… │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Bug fixes and reliability improvements                          │
+│                        ▘▘ ▝▝                       │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus mo… │
+│   Opus 5 (1M context) with medi… · Plan  ABC  ·    │ Added `sandbox.network.strictAllowlist` setting to deny non-al… │
+│   redacted@e.invalid's Organization                │ /release-notes for more                                         │
+│               /…/scratchpad/s2/work                │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /exit                                           Exit the CLI
+  /vercel:next-forge                              (vercel) next-forge expert guidance — production-grade Turborepo
+                                                  monorepo SaaS starter by Vercel. Use when working in a next-forge p…
+  /context                                        Visualize current context usage as a colored grid
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /exit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [13:52] work | main | Opus 5 (1M context)
+  ctx: [----------] ?% of 1000k
+  ⏸ manual mode on
+
+--- styles, most cells first ---
+  3559  Style::new().fg(Color::Reset).bg(Color::Reset)
+   420  Style::new().fg(Color::Rgb(153, 153, 153)).bg(Color::Reset)
+   326  Style::new().fg(Color::Rgb(215, 119, 87)).bg(Color::Reset)
+   240  Style::new().fg(Color::Rgb(136, 136, 136)).bg(Color::Reset)
+    65  Style::new().fg(Color::Rgb(177, 185, 249)).bg(Color::Reset)
+    34  Style::new().fg(Color::Rgb(215, 119, 87)).bg(Color::Reset).bold()
+    34  Style::new().fg(Color::Rgb(255, 193, 7)).bg(Color::Reset)
+    23  Style::new().fg(Color::Rgb(153, 153, 153)).bg(Color::Reset).italic()
+    19  Style::new().magenta().bg(Color::Reset).bold()
+    18  Style::new().fg(Color::Reset).bg(Color::Reset).bold()
+    16  Style::new().gray().bg(Color::Reset).bold()
+    14  Style::new().gray().bg(Color::Reset)
+    10  Style::new().fg(Color::Rgb(215, 119, 87)).bg(Color::Rgb(0, 0, 0))
+     9  Style::new().fg(Color::Rgb(215, 119, 87)).bg(Color::Reset).dim()
+     7  Style::new().cyan().bg(Color::Reset).bold()
+     4  Style::new().green().bg(Color::Reset).bold()
+     2  Style::new().yellow().bg(Color::Reset).bold()
