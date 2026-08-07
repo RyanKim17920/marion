@@ -479,6 +479,24 @@ pub enum RootError {
         /// Pre-formatted, so the empty case adds no dangling label.
         stderr: String,
     },
+    /// **The root started and the journal would not take it, so the root was unwound.**
+    ///
+    /// The mirror of [`crate::spawn::SpawnError::UnaccountableNode`], and deliberately the same
+    /// decision spelled the same way: a policy that differed between a root and a child would make
+    /// the journal's meaning depend on which node it is about, which is the argument
+    /// `journal::record` already makes about itself.
+    ///
+    /// `Spawned` is the only record that carries a pid, so losing it does not leave a stale reading
+    /// of the root — it leaves a live process `procid::audit`, scoped to `node.pid.is_some()`,
+    /// cannot see. By the time a caller sees this variant there is no such process: the tree was
+    /// killed at the failed barrier and reaped by the driver, and the node replays as a bare
+    /// `SpawnIntent`, which means no process exists.
+    #[error(
+        "the root started, but marion could not record it and so did not keep it: writing the \
+         `Spawned` barrier failed ({why}). The process and its descendants were killed and reaped \
+         rather than left running with nothing on the record able to name them."
+    )]
+    UnaccountableNode { why: String },
 }
 
 /// How long the root may take to have marion's tool list before the run is refused (§6.1 step 8).
@@ -564,7 +582,9 @@ pub fn prepare_watched(
             let _ = std::fs::remove_file(&f);
             Some(f)
         }
-        RootPath::LaunchOnly => None,
+        // A pane has no readiness gate: its prompt is seeded into argv and the operator sends it,
+        // so there is no frame being withheld for a marker to release (§6.1 step 8).
+        RootPath::LaunchOnly | RootPath::Terminal => None,
     };
 
     // **§9's change record, first half — taken before anything decides what the root may do.**
@@ -624,7 +644,10 @@ pub fn prepare_watched(
         prompt: match path {
             // Written after launch, not compiled into argv (§6.1 step 8).
             RootPath::Duplex => String::new(),
-            RootPath::LaunchOnly => spec.prompt.clone(),
+            // Seeded into the composer, and the operator presses return. See
+            // `marion_harness::claude_code::compile_pane` for why an argv prompt is safe on a TUI
+            // and measured unsafe on `--print`.
+            RootPath::LaunchOnly | RootPath::Terminal => spec.prompt.clone(),
         },
         // §3.1's availability axis: the agent type's own `tools:` list, exactly as
         // `run::run_spawn` gives a child — but only ever through `availability_axis`, which is
@@ -646,7 +669,10 @@ pub fn prepare_watched(
         // second credential competing with the real one.
         api_key: match (spec.auth, path) {
             (Auth::Inherited, _) | (Auth::Canned, RootPath::Duplex) => None,
-            (Auth::Canned, RootPath::LaunchOnly) => Some(token.clone()),
+            // The pane shape compiles the credential itself, exactly as the `LaunchOnly` adapters
+            // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
+            // — so there is nothing for the post-`compile` push below to do.
+            (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.clone()),
         },
         auth: spec.auth,
         config_dir: agent_dir.config_dir(),
@@ -921,14 +947,37 @@ fn launch_inner(
     // The window this opens is the one §6.1 step 7 is written to have: one `write(2)` plus one
     // fsync between the process existing and the journal saying so. Today's equivalent window was
     // the root's entire turn.
+    //
+    // **The append is fallible and its failure is not survivable**, which is why this one record
+    // does not go through `journal::record`'s never-fail-the-run policy. `Spawned` is the only
+    // record carrying a pid, so losing it does not leave a stale reading of the root — it leaves a
+    // live process `procid::audit`, whose scope is `node.pid.is_some()`, cannot see at all. That is
+    // §11 item 30's untracked live process, and §9 criterion 3 is decided by that audit. The only
+    // two states marion may leave behind are *recorded and live* or *not live*, and `spawn` cannot
+    // be taken back — so the tree is killed here, the driver below reaps it, and the run fails as
+    // [`RootError::UnaccountableNode`] rather than succeeding over a node nothing can name.
     let spawned = std::cell::Cell::new(false);
+    let unaccountable: std::cell::Cell<Option<crate::journal::JournalError>> =
+        std::cell::Cell::new(None);
     let started = |pid: i32| {
-        crate::journal::record(&node.project, spawned_record(node, Some(pid)));
-        spawned.set(true);
-        // The owner is told **after** the record is durable-ordered, so a supervisor that answers
-        // its caller on this hook is making a claim the journal already backs.
-        if let Some(hook) = on_started {
-            hook(pid);
+        match crate::journal::append(&node.project, spawned_record(node, Some(pid))) {
+            Ok(_) => {
+                spawned.set(true);
+                // The owner is told **after** the record is durable-ordered, so a supervisor that
+                // answers its caller on this hook is making a claim the journal already backs. On
+                // the failure arm it is deliberately not told at all: the claim would not be
+                // backed, and there is about to be no process to make it about.
+                if let Some(hook) = on_started {
+                    hook(pid);
+                }
+            }
+            Err(e) => {
+                // The whole tree, not the pid alone: a root is a group leader and may already have
+                // descendants, and they are as unnameable as it is. Not `_and_wait` — the driver
+                // below is already waiting on this exact child.
+                crate::run::kill_process_tree(pid);
+                unaccountable.set(Some(e));
+            }
         }
     };
     // **§7.3.3's replay leg for a root**, alongside the journal's record of the same run and for the
@@ -970,6 +1019,30 @@ fn launch_inner(
         // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
         // prevent.
         RootPath::LaunchOnly => launch_only(node, bound, events.as_mut(), &started),
+        // **Derived, and deliberately not launched from here yet.** `launch_path` answers
+        // `Terminal` for a `TerminalInput` surface, which is what
+        // `HarnessAdapter::pane_surfaces` returns — but nothing in `prepare_watched` selects
+        // those surfaces yet, so `node.path` cannot hold this value and the refusal is a typed
+        // one rather than an `unreachable!()`. What must land here is `PtyMaster::open` ->
+        // `PtyHost::start` -> `spawn_pty(witness, …, StdinPlan::TerminalSlave)` ->
+        // `RegistryHandle::register_pane`, and `pty.rs` needs `PtyHost::shutdown` to take `&self`
+        // first: the host has to be an `Arc` for `register_pane` and `&mut` for the reap, and it
+        // cannot be both.
+        RootPath::Terminal => Err(RootError::UnsupportedRootSurface(node.harness)),
+    };
+    // **Substituted for whatever the kill made the driver return.** The kill above produces a
+    // signalled exit on one path and a torn stream on the other, and reporting either as itself
+    // would name the symptom and bury the cause. `journal_the_roots_outcome` then journals this as
+    // a `SpawnAborted` — the record for a node marion decided the fate of before it produced
+    // anything — and, because `spawned` is still false, does not claim a confirmation either.
+    let result = match unaccountable.take() {
+        // The error's shape, never a copy of the record that would not fit: this string is
+        // journaled, and pasting an over-cap record into the explanation of why it was over the cap
+        // would fail the same cap twice.
+        Some(why) => Err(RootError::UnaccountableNode {
+            why: why.to_string(),
+        }),
+        None => result,
     };
     journal_the_roots_outcome(node, &result, spawned.get());
     // The closing bookend, from the same reading the journal's `Exited` record is written from.
@@ -2205,6 +2278,14 @@ mod tests {
                     );
                     assert!(node.ready_file.is_some(), "{name}: the §6.1 step 8 marker");
                 }
+                // Unreachable from a built-in agent type: `prepare_watched` derives the path from
+                // `adapter.surfaces()`, and no adapter's *default* shape is `TerminalInput` — the
+                // pane shape is `HarnessAdapter::pane_surfaces`, asked for per run. Named rather
+                // than wildcarded so a fifth harness that declares a pane by default fails here.
+                RootPath::Terminal => panic!(
+                    "{name}: a built-in agent type reached the pane path without a run asking \
+                     for one"
+                ),
             }
             assert_eq!(node.prompt, "delegate it", "{name}");
         }

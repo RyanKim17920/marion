@@ -180,12 +180,11 @@ impl Journal {
         Ok(record)
     }
 
-    /// Best-effort append for a call site that must not change its behaviour on a journal fault.
+    /// Best-effort append for a call site whose record costs a **stale replay** if it is lost.
     ///
-    /// The journal is being introduced under working code paths, and a run that succeeds today
-    /// must still succeed. The failure is **reported on stderr rather than swallowed** — a silent
-    /// journal is the failure mode §12 keeps recording — and promoting it to fatal is the right
-    /// change on the day the registry actually reads this file to make decisions, not before.
+    /// The failure is reported on stderr rather than swallowed — a silent journal is the failure
+    /// mode §12 keeps recording — and the run continues. See the free function [`record`] for which
+    /// records that is right for and, more importantly, for the one it is **not**.
     pub fn record(&mut self, kind: RecordKind) {
         if let Err(e) = self.append(kind) {
             eprintln!("marion: journal write failed: {e}");
@@ -293,23 +292,48 @@ pub fn append_at(path: &Path, kind: RecordKind) -> Result<JournalRecord, Journal
     entry(&mut open, path)?.append(kind)
 }
 
-/// **Record one lifecycle transition, and never fail the run over it.**
+/// [`record`]'s destination with [`append_at`]'s failure policy: **one project's journal, and the
+/// caller is told when the record did not land.**
+///
+/// The door for a record a caller has to *act* on the loss of, which today is `Spawned` and only
+/// `Spawned` — see [`record`] for why that record is not like the others. It exists as its own name
+/// rather than as `append_at(&project.journal(), …)` at each call site so that the set of records
+/// marion refuses to lose is greppable, and so that the two spawn paths cannot drift into spelling
+/// the same decision differently.
+pub fn append(project: &ProjectDir, kind: RecordKind) -> Result<JournalRecord, JournalError> {
+    append_at(&project.journal(), kind)
+}
+
+/// **Record one lifecycle transition whose loss costs a stale replay, and never fail the run over
+/// it.**
 ///
 /// This is the failure policy, stated once and applied identically to a root (`root::prepare`,
 /// `root::launch`) and to a child (`run::run_spawn`), because a policy that differed between them
 /// would make the journal's meaning depend on which node it is about.
 ///
-/// The argument, from the spec. §9's M2 criteria exist to prevent an **untracked live process** —
-/// a node marion started and has no record of. That is what makes a lost record serious, and it is
-/// why §4.3 buys an fsync for the barrier records and not for the rest. But *today* nothing reads
-/// this file to make a decision: there is no registry, no descendant gate and no reap recovery on
-/// top of it yet, so a journal fault costs a stale replay and nothing else. Against that, promoting
-/// it to fatal would kill a working run — a real child in a real worktree, mid-edit — over a full
-/// disk, and would introduce a brand-new way for `marion run` to fail that no existing behaviour
-/// has. So: **the run continues, and the fault is loud on stderr rather than swallowed**, which is
-/// the failure mode §12 keeps recording. The day the registry actually reads this file to decide
-/// whether a process may be spawned, this becomes fatal — and that is a change to this one
-/// function, not to any call site.
+/// **The scope of "never fail the run" narrowed once, and the doc that used to sit here is the
+/// reason it had to.** It argued that *"today nothing reads this file to make a decision"*, so a
+/// lost record costs a stale replay and killing a live child over a full disk would be the worse
+/// trade. That premise stopped being true: `marion_core::registry::replay` backs `tree/subscribe`,
+/// `restart` recovers from it, `procid::audit` decides §9's *"no untracked live process"* from it,
+/// residency and `session/quit` read it, and `session/quit`'s own intent already goes through the
+/// fallible [`append_at`] for exactly that reason. A comment arguing for behaviour the code no
+/// longer has is worse than none, so it is gone rather than softened.
+///
+/// What survives the narrowing is the trade itself, applied per record instead of wholesale. A
+/// `StateChanged`, an `Exited`, a `PermissionDenied`, a `SpawnAborted` — losing any of these leaves
+/// a node marion can still *name*: replay knows it exists and knows its pid, so `procid::audit` can
+/// still resolve it and `restart` can still offer it. Stale, not invisible. Killing a real child
+/// mid-edit over a full disk buys nothing against that, so those keep this policy and stay loud on
+/// stderr.
+///
+/// **`Spawned` is the one record that is not like the others, and it does not come through here.**
+/// It is the only record that carries a pid, so losing it does not make the tree stale — it makes
+/// the process *unnameable*. `procid::audit`'s scope is `node.pid.is_some()`, so a live child whose
+/// `Spawned` never landed is invisible to the audit, which is §11 item 30's untracked live process
+/// exactly — the shape §9's criterion 3 exists to exclude. Its call sites therefore use [`append`],
+/// take the error, and turn the unaccountable process back into no process; see
+/// `run::run_spawn_watched`'s `announce_started` and `root::launch_inner`'s `started`.
 pub fn record(project: &ProjectDir, kind: RecordKind) {
     let path = project.journal();
     let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());

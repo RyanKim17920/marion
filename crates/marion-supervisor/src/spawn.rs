@@ -229,6 +229,27 @@ pub enum SpawnError {
          will still be written; nothing was cancelled."
     )]
     OutlivedTheWait(u64),
+    /// **The process started and the journal would not take it, so the process was unwound.**
+    ///
+    /// §6.1 step 7's `Spawned` is the only record carrying a pid, which makes it the only record
+    /// whose loss costs marion the *name* of a live process rather than a stale reading of it:
+    /// `procid::audit`'s scope is `node.pid.is_some()`, so a child whose barrier never landed is
+    /// invisible to the very audit §9 criterion 3 is decided by. Answering this spawn successfully
+    /// would be marion reporting a node its own authoritative record says does not exist.
+    ///
+    /// So the node is killed and reaped before this is returned, and it is returned *instead of*
+    /// whatever the driver made of the kill. By the time a caller sees this there is no process:
+    /// the node replays as a bare `SpawnIntent`, which now means exactly that.
+    #[error(
+        "the child started, but marion could not record it and so did not keep it: writing the \
+         `Spawned` barrier for {} failed ({why}). The process and its descendants were \
+         killed and reaped rather than left running with nothing on the record able to name them.",
+        agent_id.0
+    )]
+    UnaccountableNode {
+        agent_id: marion_core::contract::AgentId,
+        why: String,
+    },
 }
 
 impl SpawnError {
@@ -244,6 +265,14 @@ impl SpawnError {
         match self {
             Self::NoContract { .. } | Self::NodeAborted(_) | Self::OutlivedTheWait(_) => {
                 "ran, and marion cannot hand you its contract"
+            }
+            // A third fact, for the same reason the second one exists: this child's process really
+            // did start, so *"could not be launched"* is the false half — and it was killed before
+            // it did any work, so *"ran"* is the other false half. Both would be the kind of wrong
+            // report this method was written to stop.
+            Self::UnaccountableNode { .. } => {
+                "was started and then unwound, because marion could \
+                                               not record it"
             }
             _ => "could not be launched",
         }

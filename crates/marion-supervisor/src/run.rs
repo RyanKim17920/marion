@@ -1187,7 +1187,10 @@ pub fn run_spawn_watched(
             let _ = std::fs::remove_file(&f);
             Some(f)
         }
-        LaunchPath::LaunchOnly => None,
+        // §9 gives a child a `TaskContract`, and a pane node takes no turn until a human presses
+        // return — so there is no readiness gate to hold, and see the launch arm below for why a
+        // contracted child does not get one at all.
+        LaunchPath::LaunchOnly | LaunchPath::Terminal => None,
     };
     let launch = LaunchSpec {
         cwd: wt.clone(),
@@ -1200,7 +1203,7 @@ pub fn run_spawn_watched(
         // string — the neutral vocabulary's own signal for "written after launch".
         prompt: match path {
             LaunchPath::Duplex => String::new(),
-            LaunchPath::LaunchOnly => req.prompt.clone(),
+            LaunchPath::LaunchOnly | LaunchPath::Terminal => req.prompt.clone(),
         },
         // The **availability** axis (§3.1), straight off the resolved agent type and still in
         // marion's vocabulary — the adapter about to run maps it, and refuses by name what its
@@ -1364,8 +1367,26 @@ pub fn run_spawn_watched(
     // what it left behind was a `SpawnIntent` that could mean either "no process was ever started"
     // or "a process is running and marion cannot name it". After this, `SpawnIntent` alone means
     // **no process exists**, full stop — a worktree leak, never a process leak.
+    //
+    // **And that sentence is a claim about the append, not about the spawn**, which is why this one
+    // record goes through the fallible `journal::append` rather than `journal::record`. If the
+    // barrier does not land — a full disk, a revoked state directory, a short write, a record the
+    // 16 KiB cap refuses — then a process exists that replay cannot name, and `procid::audit`, whose
+    // scope is `node.pid.is_some()`, cannot see it at all. Answering `agent/spawn` successfully
+    // there would be marion reporting a node its own authoritative record says does not exist, and
+    // it would recreate §11 item 30's untracked live process under §9 criterion 3's nose.
+    //
+    // **So the process is unwound instead of the record being wished into existence.** The only two
+    // states marion can honestly leave behind are *recorded and live* or *not live*; `command.spawn`
+    // cannot be taken back, so the second is reached by killing the tree here and letting the driver
+    // below reap it. The owner is **not** told — `observer.started` is the claim that must stay
+    // backed — and `run_spawn_watched` returns [`SpawnError::UnaccountableNode`] instead of a
+    // contract. The node then replays as `SpawnIntent` with no pid, which is exactly what it now
+    // means: no process exists.
+    let unaccountable: std::cell::Cell<Option<crate::journal::JournalError>> =
+        std::cell::Cell::new(None);
     let announce_started = |pid: i32| {
-        crate::journal::record(
+        let appended = crate::journal::append(
             &env.project_dir,
             RecordKind::Spawned(Spawned {
                 agent_id: agent_id.clone(),
@@ -1400,13 +1421,33 @@ pub fn run_spawn_watched(
                 },
             }),
         );
-        // **After the append, never before.** The owner's whole reason for wanting this instant is
-        // that the response it sends is a claim the journal already backs; telling it first would
-        // let it answer "the node exists" a `write(2)` before the only record that says so.
-        observer.started(&agent_id, pid);
+        match appended {
+            // **After the append, never before.** The owner's whole reason for wanting this instant
+            // is that the response it sends is a claim the journal already backs; telling it first
+            // would let it answer "the node exists" a `write(2)` before the only record that says
+            // so.
+            Ok(_) => observer.started(&agent_id, pid),
+            Err(e) => {
+                // `kill_process_tree` rather than a bare `kill(pid)`: the child is a group leader
+                // and may already have started tool-call descendants of its own, and those are as
+                // unaccountable as it is. Not `_and_wait` — the driver below is already about to
+                // wait on this exact child, and a second five-second poll here would only delay it.
+                kill_process_tree(pid);
+                unaccountable.set(Some(e));
+            }
+        }
     };
     let run = match path {
-        LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound, &announce_started)?,
+        // **A contracted child does not get a pane, and the refusal is the design rather than a
+        // gap.** A child is defined by §9's `TaskContract`: it is spawned to do a task and to
+        // `report`, under the wall clock its contract records. A pane node is a TUI, which takes
+        // no turn at all until a human presses return — so a contracted child in a pane is a task
+        // that can only ever time out, and the contract would record that as the child's failure.
+        // A pane belongs to a **root**: a node an operator started and is watching.
+        LaunchPath::Terminal => {
+            return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
+        }
+        LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound, &announce_started),
         LaunchPath::Duplex => duplex_child(
             &inv,
             env.auth,
@@ -1421,8 +1462,23 @@ pub fn run_spawn_watched(
                 events: events.as_ref(),
                 on_started: &announce_started,
             },
-        )?,
+        ),
     };
+    // **Checked before the launch's own `?`, and that ordering is the whole point.** The kill above
+    // makes the driver return *something* — a signalled exit on one path, a `DuplexError` on the
+    // other — and either of those, reported as itself, would name the symptom and bury the cause.
+    // Reading the cell first means the caller is told the one thing that is true about this node:
+    // marion could not record it, so marion does not have it.
+    if let Some(why) = unaccountable.take() {
+        return Err(SpawnError::UnaccountableNode {
+            agent_id: agent_id.clone(),
+            // The error's *shape*, never a copy of the record that would not fit. This string is
+            // journaled inside a `SpawnAborted`, and pasting a 16 KiB record into the explanation
+            // of why a 16 KiB record was refused would fail the same cap twice.
+            why: why.to_string(),
+        });
+    }
+    let run = run?;
     // **The `LaunchOnly` half of the same wiring, and the asymmetry is the harness's, not marion's.**
     // codex, gemini and opencode have no live seam at all — the prompt rides argv and `run_bounded`
     // drains the pipe whole — so their stream can only be recovered from the capture, after the
