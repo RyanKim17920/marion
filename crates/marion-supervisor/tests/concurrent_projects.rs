@@ -262,19 +262,39 @@ fn barrier_body(i: usize, barrier: &Path) -> String {
 /// anything; the loops' bounds only turn a wedged pair into a loud failure. The announcements live
 /// in the barrier directory and not the repository, because a marker written *inside* the measured
 /// tree would show up in the very deltas under assertion.
-fn rendezvous_body(mine: &str, theirs: &str, barrier: &Path) -> String {
+/// # One script, two roles, and why it cannot be two scripts
+///
+/// Each run used to get its **own** stub, on its own `PATH`, exported to its own `marion run`. That
+/// stopped working at §11 item 28 step 6 and the reason is worth stating where the bed is, because
+/// it is a property of marion and not of this file: **the root's process environment is now the
+/// supervisor's, not the client's.** One repository is one project is one supervisor (§2), the
+/// supervisor is started by whichever `marion run` arrived first and inherits *that* process's
+/// environment, and every root it launches afterwards is spawned from it — so the second run's
+/// `PATH` reaches nothing, both roots exec the first run's `codex`, and both wait for a file
+/// neither will write. See `tasks/todo.md`'s finding (d).
+///
+/// So the role has to travel on a channel the client still owns, and the **prompt** is one: a
+/// `LaunchOnly` root's prompt rides its argv (§6.1 step 8), which is where the stub reads it. That
+/// is not a workaround for the test's benefit — it is the same narrowing an operator has, and a
+/// test that kept pretending otherwise would be measuring a bed marion no longer builds.
+fn rendezvous_stub(barrier: &Path) -> String {
     let b = barrier.display();
     format!(
-        ": > '{b}/{mine}.ready'\n\
+        "case \"$*\" in\n\
+         *{ROLE_A}*) mine=a.txt; theirs=b.txt ;;\n\
+         *{ROLE_B}*) mine=b.txt; theirs=a.txt ;;\n\
+         *) echo 'this root was launched with neither role in its prompt' >&2; exit 3 ;;\n\
+         esac\n\
+         : > \"{b}/$mine.ready\"\n\
          n=0\n\
-         while [ ! -f '{b}/{theirs}.ready' ]; do\n\
+         while [ ! -f \"{b}/$theirs.ready\" ]; do\n\
          n=$((n+1))\n\
          if [ \"$n\" -gt 4000 ]; then break; fi\n\
          sleep 0.05\n\
          done\n\
-         printf 'written by the root that owns {mine}\\n' > {mine}\n\
+         printf 'written by the root that owns %s\\n' \"$mine\" > \"$mine\"\n\
          n=0\n\
-         while [ ! -f {theirs} ]; do\n\
+         while [ ! -f \"$theirs\" ]; do\n\
          n=$((n+1))\n\
          if [ \"$n\" -gt 4000 ]; then break; fi\n\
          sleep 0.05\n\
@@ -284,13 +304,32 @@ fn rendezvous_body(mine: &str, theirs: &str, barrier: &Path) -> String {
     )
 }
 
+/// The two roles, as strings that can appear in nothing else a root is handed.
+const ROLE_A: &str = "MARION-CONC-ROLE-A-4e17";
+const ROLE_B: &str = "MARION-CONC-ROLE-B-4e17";
+
 /// One `marion run` against `repo`, started but **not** waited on.
 ///
 /// `home` is only the process's cwd and where its stub lives; `repo` is what marion is pointed at.
-/// Keeping them separate is what lets two runs share a repository while still having distinct stubs.
+/// Keeping them separate is what lets two runs share a repository while still having distinct
+/// stubs — which works only where the two runs are also distinct *projects*, because the stub
+/// travels on `PATH` and a root's `PATH` is its supervisor's. See [`rendezvous_stub`].
 fn spawn_run(fleet: &Fleet, home: &Path, repo: &Path, body: &str) -> std::process::Child {
     std::fs::create_dir_all(home).expect("run home");
     let bin = stub(home, body);
+    spawn_run_with(fleet, home, repo, &bin, "Delegate the task to a child.")
+}
+
+/// [`spawn_run`], for a bed that installed the stub itself and needs the prompt to say which run
+/// this is. See [`rendezvous_stub`] for why the prompt is the channel.
+fn spawn_run_with(
+    fleet: &Fleet,
+    home: &Path,
+    repo: &Path,
+    bin: &Path,
+    prompt: &str,
+) -> std::process::Child {
+    std::fs::create_dir_all(home).expect("run home");
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -301,7 +340,7 @@ fn spawn_run(fleet: &Fleet, home: &Path, repo: &Path, body: &str) -> std::proces
             "run",
             "codex",
             "--prompt",
-            "Delegate the task to a child.",
+            prompt,
             "--repo",
             &repo.to_string_lossy(),
             "--state-dir",
@@ -558,17 +597,26 @@ fn two_concurrent_roots_in_one_repository_each_record_the_others_work_as_their_o
     let fleet = Fleet::new("conc-same-repo", 1);
     let repo = fleet.repos[0].clone();
 
-    let a = spawn_run(
+    // **One stub for both roots**, because one repository is one supervisor and a root's `PATH` is
+    // its supervisor's — see [`rendezvous_stub`]. The role travels in the prompt, which is the one
+    // channel each client still owns.
+    let bin = stub(
+        &fleet.scratch.join("shared-bin"),
+        &rendezvous_stub(&fleet.barrier),
+    );
+    let a = spawn_run_with(
         &fleet,
         &fleet.scratch.join("run-a"),
         &repo,
-        &rendezvous_body("a.txt", "b.txt", &fleet.barrier),
+        &bin,
+        &format!("{ROLE_A}: delegate the task to a child."),
     );
-    let b = spawn_run(
+    let b = spawn_run_with(
         &fleet,
         &fleet.scratch.join("run-b"),
         &repo,
-        &rendezvous_body("b.txt", "a.txt", &fleet.barrier),
+        &bin,
+        &format!("{ROLE_B}: delegate the task to a child."),
     );
 
     for (name, child) in [("a", a), ("b", b)] {

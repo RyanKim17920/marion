@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
 
-use marion_core::agent_type::{DEFAULT_TIMEOUT_SECS, builtin, builtin_names};
+use marion_core::agent_type::{builtin, builtin_names};
 use marion_core::contract::ExitStatus;
 use marion_core::paths::state_dir;
 use marion_supervisor::detach;
@@ -25,11 +25,6 @@ use marion_supervisor::root;
 use marion_supervisor::socket;
 use marion_supervisor::watch::{ChildEvent, JournalWatch};
 use serde_json::Value;
-
-/// How long the root may take to have marion's tool list before the run is refused. Generous —
-/// the measured connect is ~70 ms — because the alternative to waiting is a run that ends in
-/// plain text with no error anywhere.
-const MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
 fn usage_text() -> String {
     format!(
@@ -167,16 +162,13 @@ fn parse_args(argv: &[String]) -> Option<Args> {
 
 /// §9: "`marion run --timeout`, else its agent type's `timeout_secs`, else the same 900 s".
 ///
-/// A zero from either source would make every `Blocked` episode expire instantly, so the floor is
-/// 1 s. There is no *ceiling* and nothing to refuse: a short root bound is legitimate (a root
-/// whose only wait is a 60 s permission answer), and it is not comparable to a child's total-task
-/// bound because the two measure different things.
+/// **The resolution moved to `root::blocked_bound_secs` and this is the same call.** Since §11 item
+/// 28 step 6 the supervisor launches the root, so the bound the node runs under is resolved there;
+/// what `marion run` still needs it for is the *sentence* it prints when a root is killed on that
+/// bound, which has to name the number the node actually ran under. Re-deriving it here with a
+/// second copy of the rule is exactly how those two numbers would come to disagree.
 fn blocked_bound_secs(explicit: Option<u64>, agent_type_secs: u64) -> u64 {
-    explicit
-        .or(Some(agent_type_secs))
-        .filter(|s| *s > 0)
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
-        .max(1)
+    root::blocked_bound_secs(explicit, agent_type_secs)
 }
 
 /// marion's own canned provider, where a run points under `--canned`.
@@ -934,7 +926,111 @@ const JOURNAL_POLL: StdDuration = StdDuration::from_millis(100);
 /// result dropped for that reason, and both waits are bounded by named constants.
 struct SupervisorSession {
     stream: std::os::unix::net::UnixStream,
+    /// **The one reader on this connection**, held here rather than made per call.
+    ///
+    /// It has to be one, and that is not tidiness: a `BufReader` reads ahead, so a second one
+    /// constructed for the quit would start behind bytes the first had already buffered. It became
+    /// load-bearing with step 6 — until then this connection carried one request and one response
+    /// and nothing else, and now it carries the root's whole event stream.
+    lines: io::BufReader<std::os::unix::net::UnixStream>,
     socket: PathBuf,
+    next_id: i64,
+}
+
+/// What one leg of the run wants off the connection.
+enum Awaited {
+    /// The answer to request `id`, with every notification that arrived first handed to `on_note`.
+    Response(i64),
+}
+
+impl SupervisorSession {
+    fn send(&mut self, call: marion_proto::Call) -> Result<i64, String> {
+        use std::io::Write as _;
+        let id = self.next_id;
+        self.next_id += 1;
+        let frame = marion_proto::Frame::Request(marion_proto::Request::new(
+            marion_proto::RequestId::Number(id),
+            call,
+        ));
+        self.stream
+            .write_all(frame.to_line().as_bytes())
+            .and_then(|()| self.stream.flush())
+            .map_err(|e| supervisor_unreachable(&self.socket, &e.to_string()))?;
+        Ok(id)
+    }
+
+    /// Read one frame, or say why there will not be another.
+    ///
+    /// **EOF is an error here and not an end.** A supervisor that closed mid-run took the root's
+    /// only live channel with it, and a client that returned success on a closed socket would be
+    /// reporting a run it stopped watching.
+    fn next_frame(&mut self) -> Result<marion_proto::Frame, String> {
+        use std::io::BufRead as _;
+        let mut line = String::new();
+        match self.lines.read_line(&mut line) {
+            Ok(0) => Err(supervisor_unreachable(
+                &self.socket,
+                "it closed the connection while the run was still in flight",
+            )),
+            Ok(_) => marion_proto::Frame::from_line(&line).map_err(|e| {
+                supervisor_unreachable(
+                    &self.socket,
+                    &format!("it sent a frame marion cannot read: {e}"),
+                )
+            }),
+            Err(e) => Err(supervisor_unreachable(&self.socket, &e.to_string())),
+        }
+    }
+
+    /// Pump frames, handing every notification to `on_note`, until the awaited thing arrives.
+    fn pump(
+        &mut self,
+        want: Awaited,
+        on_note: &mut dyn FnMut(marion_proto::notify::Event),
+    ) -> Result<marion_proto::Outcome, String> {
+        loop {
+            match self.next_frame()? {
+                marion_proto::Frame::Notification(n) => on_note(n.event),
+                marion_proto::Frame::Response(r) => {
+                    let Awaited::Response(id) = want;
+                    if r.id == marion_proto::RequestId::Number(id) {
+                        return Ok(r.outcome);
+                    }
+                    // A response marion is not waiting for cannot happen — one request is in
+                    // flight at a time on this connection — and going quiet about it would hide a
+                    // correlation bug behind a hang.
+                    return Err(format!(
+                        "marion: this project's supervisor answered a request marion did not send \
+                         ({:?}); the connection is no longer trustworthy",
+                        r.id
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "marion: this project's supervisor sent an unexpected frame: {other:?}"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// **The refusal a run dies with when its supervisor is not there.**
+///
+/// One sentence, in marion's own voice, naming what failed — and no fallback. Until step 6 a
+/// missing supervisor cost this run the socket and not the work, because the root was driven in
+/// this process; it is not any more, so there is nothing to fall back *to*, and inventing one would
+/// be the silent-degradation shape this codebase keeps deleting: a run that looked identical while
+/// leaving a live root nothing could reach, kill or re-attach to.
+fn supervisor_unreachable(socket: &Path, why: &str) -> String {
+    format!(
+        "marion: this project's supervisor is what runs the root, and marion could not use it: \
+         {why} ({}). Nothing was started and nothing was journaled. `marion run` sends \
+         `agent/spawn` over this socket and watches through it (§11 item 28 step 6); there is no \
+         in-process fallback, because a run that quietly drove the root itself would leave a live \
+         node no supervisor owned, could kill, or could hand to a re-attaching client.",
+        socket.display()
+    )
 }
 
 /// How long [`SupervisorSession::drop`] will wait for a supervisor that answered `Exiting`.
@@ -958,6 +1054,14 @@ const RUN_IDLE_GRACE: StdDuration = marion_supervisor::serve::DEFAULT_IDLE_GRACE
 /// socket — during an unwind, with the run's real error still unprinted. A timeout that cannot be
 /// set is therefore a reason to stop, not a reason to read without one.
 const SUPERVISOR_REPLY_WAIT: StdDuration = StdDuration::from_secs(10);
+
+/// How many frames [`SupervisorSession::drop`] will step over looking for its own answer.
+///
+/// A count and not a time, because what it is stepping over is a queue that was already written:
+/// the run is finished by the time the guard sends its quit, so anything still arriving is the tail
+/// of the root's stream and is finite. Generous enough that a chatty tail cannot swallow the
+/// report, small enough that it is not a loop.
+const QUIT_REPLY_FRAMES: usize = 4096;
 
 /// §7.3.2's disclosure, rendered from the supervisor's own answer and nothing else.
 ///
@@ -1079,11 +1183,29 @@ impl Drop for SupervisorSession {
             // worse than not reading at all.
             return;
         }
-        let Some(Ok(line)) = std::io::BufReader::new(&self.stream).lines().next() else {
-            return;
-        };
-        let Ok(marion_proto::Frame::Response(response)) = marion_proto::Frame::from_line(&line)
-        else {
+        // **Skipping notifications rather than reading one line.** This connection is subscribed to
+        // the root's stream, so the next line is quite as likely to be a `node/event` as the
+        // answer — and a guard that read exactly one line would report nothing on every run whose
+        // node said one more thing on the way out. Bounded twice over: by the read timeout set
+        // above, which applies per read, and by the count, so a supervisor that streams for ever
+        // cannot hold an unwinding process.
+        let mut response = None;
+        for _ in 0..QUIT_REPLY_FRAMES {
+            let mut line = String::new();
+            match self.lines.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+            match marion_proto::Frame::from_line(&line) {
+                Ok(marion_proto::Frame::Response(r)) => {
+                    response = Some(r);
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => return,
+            }
+        }
+        let Some(response) = response else {
             return;
         };
         let marion_proto::Outcome::Result(body) = response.outcome else {
@@ -1209,37 +1331,51 @@ fn main() -> ExitCode {
         _ => PathBuf::from("marion-supervisor"),
     };
 
-    // **§10's ownership move, and the whole of it.** The table moves the socket exactly once —
-    // M1 *"the `marion` process itself"*, M2+ *"a detached `marion-supervisor`, which `marion`
-    // starts on demand"* — and until this line marion owned it in neither milestone, because it
-    // never bound anything at all. `marion run` is §5.7's *"first client that dials the §2 socket
-    // path and finds nothing listening"*, and holding the returned connection for the rest of this
-    // function is what makes that literally true: while a run is in progress the supervisor has one
-    // client, and §5.7's absolute zero-client exit predicate is satisfied only after the run ends.
+    // **§10's ownership move, completed.** The table moves the socket exactly once — M1 *"the
+    // `marion` process itself"*, M2+ *"a detached `marion-supervisor`, which `marion` starts on
+    // demand"* — and `marion run` is §5.7's *"first client that dials the §2 socket path and finds
+    // nothing listening"*. Holding the returned connection for the rest of this function is what
+    // makes that literally true: while a run is in progress the supervisor has one client, and
+    // §5.7's absolute zero-client exit predicate is satisfied only after the run ends.
     //
-    // **What this deliberately does not move is who drives the root, and that is not a detail —
-    // it is why §7.3.1 does not hold yet.** The supervisor started below tails the journal. It
-    // holds no node's `Child`, no pid it spawned, no pipe and no channel; `root::launch_watched`
-    // below holds all of them for the whole of the root's turn, and `Spawned` is not journaled
-    // until that blocking call returns. SIGKILL this process mid-root and the child is left unheld
-    // while the supervisor sees an unresolved spawn forever — a process leak *and* a supervisor
-    // leak, which is the inverse of *"a TUI crash cannot kill running agents"*. **Nothing in this
-    // file may be read as delivering §7.3.1's invariant.** §11 item 28 states the gap and names the
-    // four changes that close it — `agent/spawn` as a real handler, the bridge as a socket client,
-    // supervisor-side event sinks and journal writes, and §11 item 23's backgrounding — and
-    // `MILESTONES.md` records that §9's M2 criteria 1 and 4 are unmeetable until they land.
+    // **And since §11 item 28 step 6, who drives the root has moved with it.** The paragraph that
+    // stood here said the opposite in as many words — *"the supervisor started below tails the
+    // journal. It holds no node's `Child`, no pid it spawned, no pipe and no channel"* — and
+    // concluded that *"nothing in this file may be read as delivering §7.3.1's invariant"*. Every
+    // clause of that is now false. The supervisor holds the root's thread, its `Child`, its pipe
+    // and its pid; `Spawned` carries that pid and is journaled at the instant the process exists
+    // rather than after the turn returns; and SIGKILLing **this** process now kills a client. The
+    // node keeps running, keeps writing `events.jsonl`, and a second client attaching to the same
+    // supervisor is handed the whole tree — which is §9's M2 criterion 1, and
+    // `tests/client_run.rs` is where it is measured.
     //
-    // Making `marion run` a pure client today would not be a purer split, it would be a `marion
-    // run` that cannot run, which is why the wiring landed in this order. Two processes writing one
-    // journal is not a compromise introduced here either: `journal.rs` already states that
+    // **And one thing moved with it that step 6's design did not name: the root's process
+    // environment.** The root is `fork`/`exec`ed by the supervisor, so it inherits the
+    // supervisor's environment — and the supervisor is started by whichever `marion run` arrived
+    // first for this project and then outlives it (§5.7's idle grace). So a `PATH`, a proxy
+    // variable or a shim an operator exports for *this* invocation reaches the root only if this
+    // invocation is also the one that started the supervisor. `marion run` still passes `--auth`,
+    // `--base-url` and `--repo` explicitly for exactly this reason, and everything else that used
+    // to arrive by inheritance no longer does. This is a real narrowing, not a detail:
+    // `tests/concurrent_projects.rs`'s same-repo bed had to stop shipping a per-run stub on
+    // `PATH` because of it, and `tasks/todo.md`'s finding (d) is where it is filed for a decision.
+    //
+    // What this file does from here is: ensure the supervisor, send `agent/spawn` with
+    // `caller: None`, attach to the root it names, and render. Two processes writing one journal is
+    // unchanged and was never a compromise introduced here: `journal.rs` already states that
     // *"`marion run` and each `marion-supervisor mcp` bridge are separate processes that both cause
     // lifecycle events, so the file has concurrent writers by construction"*, serialised by
-    // `O_APPEND` at record granularity.
+    // `O_APPEND` at record granularity — and after step 6 this process writes none of them.
     //
-    // **A supervisor that will not start is reported, not fatal — today.** Nothing in this run
-    // depends on it: the root is still driven in-process, so a missing supervisor costs the socket
-    // and not the work. The day `spawn` goes over the socket, this must become a refusal, and the
-    // test that pins the current behaviour is named so that whoever changes it has to say so.
+    // **A supervisor that will not start is now a refusal, and that is step 6's other half.** The
+    // comment here used to say *"reported, not fatal — today"*, on the ground that *"the root is
+    // still driven in-process, so a missing supervisor costs the socket and not the work"*, and it
+    // named the test that pinned it so that whoever changed the behaviour had to say so. This is
+    // that change, said out loud: the work **is** the socket now, there is deliberately no
+    // in-process fallback (see [`supervisor_unreachable`]), and the test that pinned the old
+    // behaviour is `run_stream.rs`'s — rewritten, not deleted, into
+    // `a_run_whose_supervisor_cannot_start_is_refused_and_journals_nothing`.
+    //
     // **§2's key, for the socket and the journal both, and it is the git common dir.** *"Both the
     // supervisor and its state are keyed on the project root (git common-dir, falling back to
     // cwd) — not cwd, since worktree children (§6.6) have different cwds and would otherwise hash
@@ -1254,7 +1390,9 @@ fn main() -> ExitCode {
     //
     // `project_root` is applied here, in `root::prepare` and in the bridge's `spawn_env`, so all
     // three agree; `repo` itself stays the root's cwd and the base of §6.6's worktrees, which is a
-    // different question the key was never answering.
+    // different question the key was never answering. It is also what this client now **sends**:
+    // `caller: None` requires it, because one supervisor serves every linked worktree of one
+    // repository and only the client knows which of them the operator meant.
     let project_key = socket::project_root(&repo);
     let sock = socket::socket_paths(&state, &project_key, uid());
     // **Resolved once and spent twice**, on the supervisor this run may start and on the root it
@@ -1266,7 +1404,7 @@ fn main() -> ExitCode {
     } else {
         marion_harness::Auth::Inherited
     };
-    let _supervisor = match detach::ensure_supervisor(
+    let mut supervisor = match detach::ensure_supervisor(
         &sock,
         &detach::Launch {
             program: bridge.clone(),
@@ -1294,49 +1432,45 @@ fn main() -> ExitCode {
             base_url: base_url.clone(),
         },
     ) {
-        Ok(ensured) => Some(SupervisorSession {
-            stream: ensured.stream,
-            socket: sock.socket().to_path_buf(),
-        }),
+        Ok(ensured) => {
+            let lines = match ensured.stream.try_clone() {
+                Ok(half) => io::BufReader::new(half),
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        supervisor_unreachable(
+                            sock.socket(),
+                            &format!("its connection could not be split for reading: {e}")
+                        )
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
+            SupervisorSession {
+                stream: ensured.stream,
+                lines,
+                socket: sock.socket().to_path_buf(),
+                next_id: 1,
+            }
+        }
+        // **A refusal, and the whole reason step 6 had to change this line.** See
+        // [`supervisor_unreachable`]: the root is not driven in this process any more, so there is
+        // nothing left for a missing supervisor to cost *except* the work.
         Err(e) => {
-            eprintln!("marion: {e}");
-            None
+            eprintln!("{}", supervisor_unreachable(sock.socket(), &e.to_string()));
+            return ExitCode::FAILURE;
         }
     };
 
+    // The bound the node will run under, resolved with the **same** function the supervisor
+    // resolves it with. Not sent as a number and not binding here: the wire carries `--timeout`
+    // verbatim as an `Option`, and this is only so the sentence below can name the seconds the node
+    // was actually killed on.
     let blocked_bound = StdDuration::from_secs(blocked_bound_secs(
         args.timeout_secs,
         agent_type.timeout.0.as_secs(),
     ));
-
-    let spec = root::RootSpec {
-        agent_type: args.agent_type.clone(),
-        prompt: args.prompt.clone(),
-        repo,
-        state,
-        base_url,
-        bridge,
-        // The same precedence a child's `spawn` gets (§3.1): the flag, else the agent type's own
-        // `model` key. `claude` and `codex` state none and resolve to `None`, exactly as before;
-        // `gemini` and `opencode` state one, which is what makes them launchable as roots at all —
-        // both adapters refuse to compile without an explicit model (§6.4).
-        model: args.model.or_else(|| agent_type.model.clone()),
-        no_change_record: args.no_change_record,
-        auth,
-    };
-    let node = match root::prepare(&spec) {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("marion: cannot prepare the root node: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    eprintln!(
-        "marion: root {} ({}) in {}",
-        node.agent_id.0,
-        args.agent_type,
-        node.agent_dir.path().display()
-    );
+    let project = marion_core::paths::ProjectDir::new(&state, &project_key);
 
     // **The live view, on stderr.** Deliberately not stdout, and checked rather than assumed:
     // marion's stdout is a machine surface with a live consumer — `tests/launch_only_root.rs` reads
@@ -1344,23 +1478,36 @@ fn main() -> ExitCode {
     // frame it emitted must survive onto marion's own stdout, still readable as the marion call it
     // was"). A root has no `TaskContract` to return (§9), so that frame stream *is* its result, and
     // prose interleaved into it would be prose in somebody's parse. stderr already carries every
-    // other line marion says to a person — the banner above, the denials below, the node's own
-    // stderr — so the stream joins them, and `2>/dev/null` still leaves clean frames on stdout.
+    // other line marion says to a person — the banner, the denials, the refusals — so the stream
+    // joins them, and `2>/dev/null` still leaves clean frames on stdout.
     //
     // Errors are dropped rather than escalated: a closed stderr must not be what ends a run that is
     // otherwise working, and there is nowhere left to report it to anyway.
     // **Two writers, one terminal.** See [`Terminal`].
     let terminal = std::sync::Arc::new(Terminal::new(io::stderr()));
 
-    // The journal's first production reader (§4.2, §10). Started **before** the run, from the
+    // The journal's first production reader (§4.2, §10). Started **before** the spawn, from the
     // journal's current end, so this run's own children are the only news it can report.
+    //
+    // **Still a file tail, and deliberately not `tree/subscribe`.** The children are not this
+    // process's to own either way — the root's own bridge spawns them until step 5 lands — and the
+    // journal is what both a watching client and a restarting supervisor read. What changed at step
+    // 6 is only who writes the *root's* records; the reader is unmoved.
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let poller = {
-        let journal = node.project.journal();
-        let root_id = node.agent_id.clone();
+        let journal = project.journal();
         let terminal = std::sync::Arc::clone(&terminal);
         let stop = std::sync::Arc::clone(&stop);
-        std::thread::spawn(move || {
+        // The root is excluded by id, and its id does not exist yet — so the watch is handed a
+        // channel to learn it on rather than the value. Until it arrives nothing this run caused is
+        // in the file at all, because the first record of the run *is* the root's own intent.
+        let (id_tx, id_rx) = std::sync::mpsc::channel::<marion_core::contract::AgentId>();
+        let handle = std::thread::spawn(move || {
+            let root_id = match id_rx.recv() {
+                Ok(id) => id,
+                // The spawn never got an id, so there is nothing to watch and nothing to report.
+                Err(_) => return,
+            };
             let mut watch = JournalWatch::at_end(&journal, root_id);
             follow_journal(
                 &mut watch,
@@ -1372,41 +1519,116 @@ fn main() -> ExitCode {
                     })
                 },
             );
-        })
-    };
-
-    let watch = |event: StreamEvent<'_>| {
-        terminal.show(&|w| {
-            let _ = render_event(event, w);
         });
+        (handle, id_tx)
     };
+    let (poller, poller_id) = poller;
 
-    let launched = root::launch_watched(&node, blocked_bound, MCP_READY_TIMEOUT, Some(&watch));
-    // One more poll after the run, then join. `Relaxed` is enough: the thread's own loop reads the
-    // flag before its final poll, so the ordering that matters is "poll after the flag was seen",
-    // which the loop enforces structurally rather than through this store.
+    // **§11 item 28 step 6: the root is created over the socket, not in this process.**
+    //
+    // `caller: None` is what makes this a root — see `marion_proto::AgentSpawnParams`. The `repo`
+    // is required with it and is computed here because only this client knows which of the trees
+    // one supervisor serves the operator meant (§2 keys the supervisor on the git common dir, so
+    // `<state>/<project-hash>` names the repository and every linked worktree of it at once).
+    let spawned = (|| -> Result<marion_proto::result::AgentSpawnResult, String> {
+        let id = supervisor.send(marion_proto::Call::AgentSpawn(
+            marion_proto::params::AgentSpawnParams {
+                agent_type: args.agent_type.clone(),
+                prompt: args.prompt.clone(),
+                caller: None,
+                repo: Some(repo.clone()),
+                // A root states none: §9's contract terms belong to a child's `spawn`, and a root
+                // has no contract to carry them.
+                acceptance_criteria: vec![],
+                writable_scope: vec![],
+                // Stated as the operator stated it. The supervisor resolves it, so a number
+                // invented here would be a second source of truth for §3.1's own key.
+                timeout_secs: args.timeout_secs,
+                model: args.model.clone(),
+                // Root-only, and stated rather than defaulted so the supervisor can tell an
+                // operator who declined the snapshot from one who said nothing.
+                no_change_record: Some(args.no_change_record),
+            },
+        ))?;
+        // Nothing can be notified before the first attach, so the sink here is unreachable — and it
+        // is a real sink rather than a panic, because a supervisor speaking early is not a reason
+        // to lose a run.
+        let outcome = supervisor.pump(Awaited::Response(id), &mut |_| {})?;
+        match outcome {
+            marion_proto::Outcome::Result(body) => {
+                match marion_proto::Method::AgentSpawn.decode_result(&body) {
+                    Ok(marion_proto::MethodResult::AgentSpawn(r)) => Ok(r),
+                    _ => Err(
+                        "marion: this project's supervisor answered `agent/spawn` with a \
+                              result marion cannot read"
+                            .to_string(),
+                    ),
+                }
+            }
+            // The supervisor's own sentence, verbatim. It already names the rule and the field;
+            // re-wording it here would put marion's guess in front of marion's answer.
+            marion_proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
+        }
+    })();
+    let spawned = match spawned {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            stop.store(true, Ordering::Relaxed);
+            drop(poller_id);
+            let _ = poller.join();
+            return ExitCode::FAILURE;
+        }
+    };
+    let root_id = spawned.agent_id.clone();
+    let _ = poller_id.send(root_id.clone());
+    eprintln!(
+        "marion: root {} ({}) in {}",
+        root_id.0,
+        args.agent_type,
+        project.agent(&root_id).path().display()
+    );
+
+    // **§7.3.3's attach, and it is the whole of how this client sees the run.** One cursor over the
+    // node's `events.jsonl`: the replay leg arrives as notifications *before* the answer, and the
+    // live leg continues on the same connection with the same ordinals, so there is no seam to get
+    // wrong (`events.rs`). Nothing below re-reads the file — an event this run renders is an event
+    // the supervisor sent.
+    let watched = watch_the_root(&mut supervisor, &root_id, &terminal);
     stop.store(true, Ordering::Relaxed);
     let _ = poller.join();
 
-    match launched {
-        Ok(outcome) => {
-            for frame in &outcome.transcript {
-                println!("{frame}");
-            }
-            if !outcome.stderr.trim().is_empty() {
-                eprintln!("{}", outcome.stderr.trim());
-            }
-            for tool in &outcome.denied_permissions {
-                // Not "the bound expired": since `duplex::decided_permission` a root's `report` is
-                // denied on arrival by §5.4 and no bound is spent, and this line has only the tool
-                // name to go on. The reason the *node* was given is in the transcript printed
-                // above, which is where a reader who needs the specific rule should look.
-                eprintln!(
-                    "marion: denied {tool}: M1 has no permission answerer, and marion does not \
-                     grant what it cannot ask about"
-                );
-            }
-            if outcome.timed_out {
+    let watched = match watched {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for frame in &watched.transcript {
+        println!("{frame}");
+    }
+    // Every permission marion refused this root, read back from the journal it was recorded in
+    // (§9: a root has no contract, so the journal is the only place these live). Best effort by
+    // construction: it is a summary of a fact the node was already told, printed in its transcript
+    // above, and a journal this reader could not parse must not turn a finished run into a failure.
+    for (tool, _reason) in root_denials(&project.journal(), &root_id) {
+        // Not "the bound expired": since `duplex::decided_permission` a root's `report` is denied
+        // on arrival by §5.4 and no bound is spent, and this line has only the tool name to go on.
+        // The reason the *node* was given is in the transcript printed above, which is where a
+        // reader who needs the specific rule should look.
+        eprintln!(
+            "marion: denied {tool}: M1 has no permission answerer, and marion does not grant what \
+             it cannot ask about"
+        );
+    }
+    match watched.terminal {
+        Terminal_::Aborted(reason) => {
+            eprintln!("marion: {reason}");
+            ExitCode::FAILURE
+        }
+        Terminal_::Exited { status, exit } => {
+            if status == ExitStatus::TimedOut {
                 eprintln!(
                     "marion: the root exceeded its {} s wall-clock bound and its process group \
                      was killed",
@@ -1414,16 +1636,220 @@ fn main() -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
-            match outcome.exit_code {
+            // **The status decides, and the exit code only refines it.** A root that marion
+            // refused on §6.1 step 8 exited **zero** — that is the whole failure shape
+            // `RootError::BridgeNeverReached` exists to catch: a harness that took its turn
+            // without marion's tools, ended as plain text, and claimed success. Reading `code`
+            // first would hand exactly that run back to the operator as `ExitCode::SUCCESS`,
+            // which is the silence §6.1 step 8 refuses, restored by the client.
+            if status != ExitStatus::Ok {
+                // marion's own sentence for this ending, carried on the node's closing bookend
+                // and printed because it is the only place a client can now read it — see
+                // `root::bridge_never_reached_exit`.
+                eprintln!("marion: {}", exit.description);
+                return ExitCode::FAILURE;
+            }
+            match exit.code {
                 Some(0) => ExitCode::SUCCESS,
                 _ => ExitCode::FAILURE,
             }
         }
-        Err(e) => {
-            eprintln!("marion: {e}");
-            ExitCode::FAILURE
+    }
+}
+
+/// How the root's stream ended, as the client read it off the wire.
+///
+/// The two arms are `events.jsonl`'s own bookends (`marion_core::event::Lifecycle`), not a second
+/// vocabulary: `Exited` is a node whose process ran and stopped, `Aborted` is marion's own sentence
+/// for a launch that never got there. Reading the verdict off the node's stream rather than off the
+/// journal is what keeps this client working when the journal is the thing that went bad — which
+/// `run_stream.rs` measures, and which a viewer may never turn into a failed run.
+enum Terminal_ {
+    Exited {
+        status: ExitStatus,
+        /// The whole `ProcessExit`, **description included**. Keeping only the code was a real
+        /// loss: marion's sentence for *why* an ending was refused rides on that field, and the
+        /// socket is now the only channel it travels.
+        exit: marion_core::contract::ProcessExit,
+    },
+    Aborted(String),
+}
+
+/// What one attached run produced.
+struct Watched {
+    /// Every frame the root emitted, parsed — the machine surface `marion run` prints to stdout.
+    transcript: Vec<Value>,
+    terminal: Terminal_,
+}
+
+/// Attach to the root and render its stream until it ends.
+fn watch_the_root(
+    supervisor: &mut SupervisorSession,
+    root_id: &marion_core::contract::AgentId,
+    terminal: &Terminal<io::Stderr>,
+) -> Result<Watched, String> {
+    /// The render loop's own state, as a value rather than as a closure's captures.
+    ///
+    /// A closure holding both would keep `ended` mutably borrowed for the whole live loop, which
+    /// cannot then ask whether the run is over. One `&mut self` method reads and writes the same
+    /// state and the loop reads it between calls.
+    struct Rendering<'a> {
+        root_id: &'a marion_core::contract::AgentId,
+        terminal: &'a Terminal<io::Stderr>,
+        transcript: Vec<Value>,
+        ended: Option<Terminal_>,
+    }
+
+    impl Rendering<'_> {
+        fn note(&mut self, event: marion_proto::notify::Event) {
+            use marion_core::event::{Lifecycle, Payload};
+            let marion_proto::notify::Event::NodeEvent {
+                agent_id, payload, ..
+            } = &event
+            else {
+                // `tree/node-added` and `node/state` legitimately interleave; this client renders
+                // children from the journal, so they are not its news.
+                return;
+            };
+            if agent_id != self.root_id {
+                return;
+            }
+            let Ok(payload) = serde_json::from_value::<Payload>(payload.clone()) else {
+                return;
+            };
+            let terminal = self.terminal;
+            match payload {
+                Payload::Vendor { json, .. } => {
+                    terminal.show(&|w| {
+                        let _ = render_event(StreamEvent::Frame(&json), w);
+                    });
+                    self.transcript.push(json);
+                }
+                Payload::Raw(line) => terminal.show(&|w| {
+                    let _ = render_event(StreamEvent::Unparsed(&line), w);
+                }),
+                // **Said, not skipped.** These are frames marion read and did not keep whole — a
+                // §5.2 withholding, or a payload past `MAX_EVENT_BYTES`. Rendering them as silence
+                // would make a shortened stream indistinguishable from a quiet one, which is the
+                // failure `marion_core::event::Payload` has separate variants to prevent.
+                // The *reason* is deliberately not printed with it. It is a paragraph — S9's
+                // measurement of what a Claude Code session catalogue contains — and this view
+                // holds every rendered line inside one terminal width (`run_stream.rs` asserts the
+                // bound). It is not lost: `events.jsonl` carries it on the record, which is where a
+                // reader who wants to know *which* rule looks.
+                Payload::Withheld { key, bytes, .. } => terminal.show(&|w| {
+                    let _ = render_event(
+                        StreamEvent::Unparsed(&format!(
+                            "[withheld: a `{key}` frame of {bytes} bytes, body not kept (§5.2)]"
+                        )),
+                        w,
+                    );
+                }),
+                Payload::Oversized { was, bytes } => terminal.show(&|w| {
+                    let _ = render_event(
+                        StreamEvent::Unparsed(&format!(
+                            "[marion shortened a {was:?} frame of {bytes} bytes]"
+                        )),
+                        w,
+                    );
+                }),
+                // Uninhabited (`marion_core::event::Normalization`), so this arm cannot be reached
+                // and is here so that adding the first normalized payload is a compile error in
+                // every renderer rather than a frame that silently disappears from one.
+                Payload::Normalized(_) => {}
+                // The opening bookend says marion began recording; the banner already said the run
+                // started, so it adds nothing a person reads.
+                Payload::Lifecycle(Lifecycle::Opened) => {}
+                Payload::Lifecycle(Lifecycle::Exited { status, exit }) => {
+                    self.ended = Some(Terminal_::Exited { status, exit });
+                }
+                Payload::Lifecycle(Lifecycle::Aborted { reason }) => {
+                    self.ended = Some(Terminal_::Aborted(reason));
+                }
+            }
         }
     }
+
+    let mut r = Rendering {
+        root_id,
+        terminal,
+        transcript: Vec::new(),
+        ended: None,
+    };
+
+    let id = supervisor.send(marion_proto::Call::NodeAttach(
+        marion_proto::params::NodeAttachParams {
+            agent_id: root_id.clone(),
+        },
+    ))?;
+    let outcome = supervisor.pump(Awaited::Response(id), &mut |e| r.note(e))?;
+    match outcome {
+        marion_proto::Outcome::Result(body) => {
+            match marion_proto::Method::NodeAttach.decode_result(&body) {
+                Ok(marion_proto::MethodResult::NodeAttach(attached)) => {
+                    // A node that already reached a terminal reading is `ReplayOnly`, and the
+                    // bookend for it is already in the replay above. Anything else is live and
+                    // the loop below is what reads it.
+                    let _ = attached;
+                }
+                _ => {
+                    return Err(
+                        "marion: this project's supervisor answered `node/attach` with a \
+                                result marion cannot read"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        marion_proto::Outcome::Error(e) => return Err(format!("marion: {}", e.message)),
+    }
+
+    // The live leg. **No bound of its own**: the node's bound is the supervisor's to keep, and a
+    // second deadline here would kill the view of a run that was still inside the first one. What
+    // ends this loop is the node's terminal bookend, or the connection going away — which
+    // `next_frame` reports as the refusal it is rather than as an end.
+    while r.ended.is_none() {
+        match supervisor.next_frame()? {
+            marion_proto::Frame::Notification(n) => r.note(n.event),
+            other => {
+                return Err(format!(
+                    "marion: this project's supervisor sent an unexpected frame while the root was \
+                     running: {other:?}"
+                ));
+            }
+        }
+    }
+    Ok(Watched {
+        transcript: r.transcript,
+        terminal: r
+            .ended
+            .expect("the loop exits only once a terminal bookend arrived"),
+    })
+}
+
+/// Every permission marion denied this root, `(tool, reason)`, read out of the journal.
+///
+/// **A summary and never a verdict.** Empty is returned for a journal that is missing, unreadable
+/// or corrupt, because that is a viewer's problem and `run_stream.rs` pins the rule this obeys: a
+/// view that cannot read the file must not end the run. The denials themselves are not lost either
+/// way — each one was delivered to the node and appears in the transcript.
+fn root_denials(journal: &Path, root_id: &marion_core::contract::AgentId) -> Vec<(String, String)> {
+    let Ok(bytes) = std::fs::read(journal) else {
+        return Vec::new();
+    };
+    let mut replay = marion_core::registry::Replay::default();
+    replay.extend(&bytes);
+    replay
+        .nodes()
+        .iter()
+        .find(|n| &n.agent_id == root_id)
+        .map(|n| {
+            n.denied_permissions
+                .iter()
+                .map(|d| (d.tool.clone(), d.reason.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -2525,10 +2951,13 @@ mod tests {
         assert_eq!(blocked_bound_secs(None, 900), 900);
         assert_eq!(
             blocked_bound_secs(None, 0),
-            DEFAULT_TIMEOUT_SECS,
+            marion_core::agent_type::DEFAULT_TIMEOUT_SECS,
             "a zero would expire every Blocked episode instantly"
         );
-        assert_eq!(blocked_bound_secs(Some(0), 900), DEFAULT_TIMEOUT_SECS);
+        assert_eq!(
+            blocked_bound_secs(Some(0), 900),
+            marion_core::agent_type::DEFAULT_TIMEOUT_SECS
+        );
     }
 
     fn ids(names: &[&str]) -> Vec<marion_core::contract::AgentId> {

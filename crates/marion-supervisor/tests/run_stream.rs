@@ -264,7 +264,6 @@ fn a_root_is_rendered_to_stderr_while_it_runs_and_stdout_stays_a_frame_stream() 
     assert_eq!(
         kinds,
         vec![
-            "control_response",
             "system",
             "assistant",
             "assistant",
@@ -274,6 +273,27 @@ fn a_root_is_rendered_to_stderr_while_it_runs_and_stdout_stays_a_frame_stream() 
         ],
         "streaming is additive: the transcript on stdout must be the same frames in the same \
          order, including the kind marion does not understand\nstdout:\n{stdout}"
+    );
+    // **`control_response` is absent, and that is §5.2 rather than a lost frame.**
+    //
+    // This list used to begin with it. Since §11 item 28 step 6 the transcript `marion run` prints
+    // is the node's recorded stream read back over the socket, not a copy the driver accumulated in
+    // this process — and `events::EventSink::draft` applies §5.2's MUST at exactly one place: the
+    // `control_response` to *this node's own* `initialize` is recorded as `Payload::Withheld`,
+    // carrying the fact, its size and the rule, and never its body.
+    //
+    // So the frame marion refuses to keep is now also a frame marion refuses to *print*, and the
+    // two are one decision instead of a rule the recorder obeyed while stdout did not. It is not
+    // silent: the run's stderr says a frame was withheld and why, which is asserted below.
+    assert!(
+        !stdout.contains("control_response"),
+        "§5.2: marion must not reproduce its own initialize reply, and stdout is a surface an \
+         operator redirects into a file\nstdout:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("body not kept (§5.2)"),
+        "a withheld frame must be *said*, or a shortened stream is indistinguishable from a quiet \
+         one\nstderr:\n{stderr}"
     );
 
     // ---- and the view itself, on stderr: readable, and never a JSON dump. -----------------------
