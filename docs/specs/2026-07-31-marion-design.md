@@ -356,7 +356,27 @@ branch code on `ExecutionSurfaces`.
 | `DisplayPlane` | `display == NativePty` | owns the pty and VT grid |
 | `ControlPlane` (typed) | `control == Typed(_)` | full trait: `prompt`/`steer`/`interrupt`/`view`/`continue_` |
 | `ControlPlane` (degenerate) | `control != Typed(_)` **and** `observations` contains a source other than `TerminalBytes` | read-only `events()` from that source. `prompt`/`steer` route to `write_keys` if `control == TerminalInput`, else are `Unsupported`. `interrupt` is a signal. `view`/`continue_` are `Unsupported`. |
-| no `ControlPlane` | otherwise | events are `Payload::Raw(Bytes)`, read by the supervisor straight from the pty |
+| no `ControlPlane` | otherwise | terminal bytes, read by the supervisor straight from the pty and written to **`pty.cast`** — see the correction below |
+
+> **CORRECTION, M3 I3 (2026-08-07) — pty bytes go to `pty.cast` only, never to `events.jsonl`.**
+> The row above and §5.2's summary both used to say a pty node's events are `Payload::Raw` in
+> `events.jsonl`. They are not, and the implementation deliberately contradicts it. Three reasons,
+> each sufficient on its own:
+>
+> 1. **`Payload::Raw`'s own doc defines it as *a line of the node's stdout that was not JSON*.** A
+>    pty read is not a line — S11 measured a pty capping reads at 1,024 B with 40% carrying no frame
+>    boundary at all — and it is frequently not even a whole *character* (see the U+FFFD note in
+>    §5.3). Recording an escape-sequence fragment as "a line of stdout" is a category error the type
+>    already forbids in prose.
+> 2. **`EventReader::open_path` reads the whole file on every attach.** §7.3.3's replay leg is a
+>    full read of `events.jsonl`; folding a terminal stream in would make every attach to every
+>    node — including nodes nobody is watching a terminal for — pay for megabytes of paint.
+> 3. **`event.rs:40` says `mono_ns` exists to *align* the two files.** Alignment is a relation
+>    between two things. Merging them would delete the field's stated purpose.
+>
+> The wire consequence is [`marion_proto::Event::NodePty`], a **separate** notification from
+> `node/event`, carrying `agent_id`, its own dense `seq`, `mono_ns` and the bytes as a JSON string.
+> Pinned by `marion_supervisor::pty::tests::no_pty_byte_reaches_events_jsonl`.
 
 - `shared` → typed `ControlPlane` + `DisplayPlane`.
 - `headless` → typed `ControlPlane`, **no** `DisplayPlane` (it runs over pipes, §6.4).
@@ -638,8 +658,9 @@ distinction the degenerate `ControlPlane` for M1's own child is unimplementable,
 takes `&Session`.
 
 Which planes a surface implements is derived mechanically from `ExecutionSurfaces` — see the
-derivation table in §3.4. In short: `opaque` gets `DisplayPlane` only (its events are
-`Payload::Raw(Bytes)` read by the supervisor straight from the pty); `interactive` adds a
+derivation table in §3.4. In short: `opaque` gets `DisplayPlane` only (its bytes are read by the
+supervisor straight from the pty and land in `pty.cast`, **not** in `events.jsonl` as
+`Payload::Raw` — see §3.4's correction); `interactive` adds a
 degenerate `ControlPlane` sourced from a transcript tail; `headless` gets a typed `ControlPlane`
 and **no** `DisplayPlane`; `shared` gets both.
 
@@ -1036,10 +1057,68 @@ bidirectional approvals, and long-lived server lifecycle. Flags: `--output-schem
 
 ### 5.3 Display plane: pty + VT
 
-`pty-process` 0.5.3 with `features = ["async"]` (default is `[]`) — native tokio
-`AsyncRead`/`AsyncWrite`, `setsid` + `ioctl_tiocsctty`, real `resize`. **Unix-only.**
+~~`pty-process` 0.5.3 with `features = ["async"]` (default is `[]`) — native tokio
+`AsyncRead`/`AsyncWrite`, `setsid` + `ioctl_tiocsctty`, real `resize`. **Unix-only.**~~
 `portable-pty` 0.9.0 is blocking-only, so Windows means a thread bridge and a second I/O model;
 deferred.
+
+> **SUPERSEDED, M3 I3 (2026-08-07) — hand-rolled, zero new dependencies:
+> `crates/marion-supervisor/src/pty.rs`.** The `pty-process` choice was made *for* its async
+> feature, and **that reason is stale**: this workspace has no tokio and no `async fn` anywhere.
+> Every I/O path in `marion-supervisor` is a blocking read on a dedicated thread, so the feature
+> that decided the crate buys nothing. What is left is `posix_openpt`/`grantpt`/`unlockpt`/
+> `ptsname`, three `ioctl`s and a `setsid` — the same hand-declared `unsafe extern "C"` device
+> `serve.rs`'s `getuid`/`getpeereid` and `procid.rs`'s macOS `sysctl` already use. `rustix` with
+> `features = ["pty"]` was the fallback if macOS's missing `ptsname_r` made the hand-roll worse; it
+> does not. `ptsname` is serialized under one process-wide `Mutex` held for the microseconds
+> between the call and the copy, which is smaller than a macOS `TIOCPTYGNAME` arm beside a Linux
+> `ptsname_r` arm — two platform paths where there is now one.
+>
+> **Three things this section and the increment brief said that the real syscalls contradict**,
+> all measured on Darwin 25.5.0 and all now recorded in `pty.rs`'s module doc:
+>
+> 1. **`TIOCSWINSZ` before the child does not mean immediately after `unlockpt`.** On macOS the
+>    ioctl answers `ENOTTY` on a master no slave has ever been opened on — before `grantpt` and
+>    equally after `unlockpt` — and starts working from the first slave open onward, including
+>    after that slave is closed again. The size is therefore *held* by `PtyMaster` and applied at
+>    every `open_slave`, which is still strictly before `exec`. Opening and closing a throwaway
+>    slave inside `PtyMaster::open` was rejected: it leaves a window with no slave at all, and a
+>    read in that window is EOF, which would end the reader thread before the child existed.
+> 2. **`ioctl(0, TIOCSCTTY, 0)` is the wrong descriptor for two of the three stdin plans.** A
+>    `shared` node has a *pipe* on stdin and the pty on stdout/stderr, so fd 0 answers `ENOTTY`,
+>    `pre_exec` returns an error, and the spawn fails outright — for the one preset that has both a
+>    typed control plane and a display plane. The ioctl is issued on whichever fd is actually the
+>    slave: 0 under `TerminalInput`, 1 otherwise.
+> 3. **On macOS, `setsid()` alone claims the controlling terminal when the slave is on fd 0.** A
+>    three-way probe: no `setsid` → `tcgetsid(master)` is `ENOTTY`; `setsid` only → `tcgetsid ==
+>    pid`; `setsid` + `TIOCSCTTY` → the same. So the ioctl is redundant in that topology on this
+>    platform (it is not on Linux) and is *observable* only in the piped-stdin one, which is where
+>    the test that pins it lives.
+>
+> **`EIO` on the master is EOF, not an error** — Linux reports the last slave closing that way,
+> macOS returns 0 — and a reader that treats it as a fault logs a read failure for every normal
+> exit. **The master is `O_CLOEXEC`**, read back from the kernel by test because POSIX names only
+> `O_RDWR` and `O_NOCTTY` for `posix_openpt`: a master inherited past `exec` by a grandchild means
+> the supervisor's `read` never returns EOF and the reader thread hangs forever.
+>
+> **Resize is record-then-ioctl-then-`killpg(SIGWINCH)`**, inverting `s2/ptyhost.py` deliberately.
+> The fixture host cannot crash between the two steps; the supervisor can, and the failure modes
+> are asymmetric — an `r` for a resize that did not happen replays as a harmless reflow, while
+> output painted at a size nothing recorded is unreplayable. The explicit `SIGWINCH` is redundant
+> with the kernel's own delivery and is kept because **all five committed captures were made with
+> it**.
+>
+> **Probes are counted, never answered** (§9 de-scopes answering, and this section's own fixtures
+> refute the necessity). The counter exists so §11 item 9's stall, if it ever bites, presents as
+> "3 unanswered probes" rather than as an unexplained hang.
+>
+> **The master lives in the supervisor, not in a client.** A pty master *is* the terminal: close it
+> and the kernel SIGHUPs the child's foreground process group, so a client that held one would kill
+> every agent in a pane by crashing — §7.3.1's invariant, regressed exactly at the surface M3 adds.
+> A client is a listener on `node/pty` and can be dropped without the fd noticing. Supervisor
+> shutdown therefore **kills and reaps before closing any master**, which is a truthfulness
+> requirement: the other order writes "the terminal hung up" into the record of every live pty node
+> when the truth is that marion decided to stop.
 
 `alacritty_terminal` 0.26.0 for the VT: published (unlike `wezterm-term`), actively released,
 handles OSC 8 and DECSET 2026, and models real scrollback history with `display_offset`.
@@ -5304,6 +5383,27 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     rather than the clean `exit 0` that was measured; or a server that exits promptly on SIGTERM —
     S16's probe deliberately refuses to, so whether the harness *waits* for a well-behaved one is
     unmeasured.
+
+    **A seventh shape, added by the pty host (M3 I3, 2026-08-07), and it is a window the pipe path
+    does not have.** Between `fork` and the completion of `pre_exec`'s `TIOCSCTTY` there is an
+    interval in which a child process exists, holds slave descriptors, and has **no controlling
+    terminal**. A supervisor killed inside it leaves a child that closing the master **cannot** hang
+    up — the hangup is delivered to the controlling terminal's foreground process group, and this
+    child belongs to none. The pipe path has no analogue: there is no window there in which the
+    parent's normal teardown silently stops reaching the child. Worse, `on_started` may already have
+    fired: it is called between `spawn()` and the first byte, which is *after* `fork` and can be
+    after the closure has begun, so the journal may say `Spawned` about a process marion's own
+    shutdown can no longer terminate. The window is short and unavoidable — the closure runs in the
+    child, and nothing in the parent can observe its completion — but it is not zero, and it is a
+    seventh resting state on top of the six above.
+
+    **The pty does not fix item 30, and should not be read as progress on it.** SIGHUP on master
+    close reaches **only the foreground process group** of the terminal's session. S7 measured
+    `codex exec` calling `setsid` for every tool-call command, which puts each of those commands in
+    a *different* session — no controlling terminal, no hangup, no signal of any kind. The
+    backgrounded child of §11 item 30 is the same escape class reached by a different route. The
+    pty gives marion a *cleaner* kill for the node it owns; it gives it nothing at all for a
+    descendant that has left the session.
 
 31. **Concurrency is safe *between* projects and unsafe *within* one — OPEN, split measured/argued,
     2026-08-06, from the question "can many `marion` processes run at once?" being answered from
