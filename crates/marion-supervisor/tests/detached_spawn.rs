@@ -8,21 +8,20 @@
 //! values `owning` needs and cannot derive — the auth mode and the endpoint — survive the double
 //! fork.
 //!
-//! # Why nothing here spawns a node, and what stands in for it
+//! # Why nothing here launches a node, and what stands in for it
 //!
-//! A served spawn needs a `SpawnCaller` whose token **this** supervisor minted, and today nothing
-//! can put a first node in a detached supervisor's table: `claim` is reached only from the
-//! supervisor's own `agent/spawn`, and the only spawn that needs no caller is a root, which is §11
-//! item 28 step 6 and is refused. So the bootstrap is circular until step 6 lands, and no test in
-//! this file can break the circle without a back door that would assert against a binding
-//! production does not make.
+//! Step 6 broke the bootstrap this file was written under: a root needs no caller, so a detached
+//! supervisor can now be given its first node over this socket and no back door is needed. What
+//! this file still does not do is *launch* one, because launching a root means a real harness
+//! binary, a real working tree and a provider — which is `tests/client_run.rs`'s bed, driven
+//! through `marion run` the way an operator drives it.
 //!
-//! What is observable across the process boundary is **which refusal comes back**, and that is
-//! enough to pin the change: a stage 3 built by `new` answers a well-formed root spawn by naming
-//! the constructor, and a stage 3 built by `owning` answers the same frame by naming step 6. The
-//! two sentences are disjoint, so the assertion below fails the moment `owning` is reverted to
-//! `new` — which is exactly the mutation this file is here to kill. When step 6 lands, this file is
-//! where the served spawn belongs.
+//! What is observable here without any of that is **which refusal comes back**, and it is still
+//! enough to pin the constructor: a stage 3 built by `RegistryHandle::new` refuses every
+//! `agent/spawn` by naming the constructor, before it looks at anything in the frame; a stage 3
+//! built by `owning` gets as far as resolving the agent type and refuses an unknown one by naming
+//! *that*. The two sentences are disjoint, so the assertion below fails the moment `owning` is
+//! reverted to `new`.
 
 use std::io::{BufRead, Write};
 use std::os::unix::net::UnixStream;
@@ -162,23 +161,38 @@ fn root_spawn(repo: Option<&Path>) -> AgentSpawnParams {
     }
 }
 
-/// **The detached supervisor owns nodes: it is built by `owning`, not by `new`.**
+/// **The detached supervisor owns nodes: it is built by `owning`, not by `new` — and root creation
+/// is served rather than refused.**
 ///
-/// Read the module doc for why the assertion is on which refusal comes back rather than on a node
-/// that started. The two sentences are disjoint by construction — one names
-/// `RegistryHandle::new`, the other names step 6 — so this fails against a stage 3 that builds a
-/// describing handle, and it goes on failing however that regression is spelled.
+/// Renamed and re-aimed at §11 item 28 step 6. It used to be
+/// `a_detached_supervisor_answers_agent_spawn_from_a_spawn_environment_it_was_given`, and it
+/// asserted that a well-formed root spawn came back refused *by name*, with `step 6` in the
+/// sentence — which was the honest pin while a client could not create a root. That is now false by
+/// design, so the test asserts the two things that replaced it: the refusal is not the describing
+/// handle's, and it is not step 6's either.
 ///
-/// The frame is the **well-formed** root shape. A root spawn missing its `repo` is refused one step
-/// earlier, by a check that does not consult the environment at all, and would pass this test
-/// against either constructor.
+/// **The agent type is deliberately unknown**, and that is what keeps this file from needing a
+/// harness. A root spawn that names a real type would launch a real process here; one that names no
+/// type at all reaches `spawn_root`, is refused by the same lookup `root::prepare` performs, and
+/// journals nothing — so the frame travels the whole served path without a node ever existing.
+///
+/// Read the module doc for why the assertion is on which refusal comes back. The three sentences
+/// are disjoint by construction — one names `RegistryHandle::new`, one names the agent type, one
+/// named step 6 — so this fails against a stage 3 that builds a describing handle *and* against one
+/// that goes back to refusing roots.
 #[test]
-fn a_detached_supervisor_answers_agent_spawn_from_a_spawn_environment_it_was_given() {
+fn a_detached_supervisor_serves_root_creation_rather_than_naming_a_step_that_would() {
     let bed = Bed::new("has-env");
     let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
 
-    let e = agent_spawn(&bed.paths, root_spawn(Some(&bed.root)))
-        .expect_err("root creation is step 6 and is not served yet");
+    let e = agent_spawn(
+        &bed.paths,
+        AgentSpawnParams {
+            agent_type: "no-such-agent-type".into(),
+            ..root_spawn(Some(&bed.root))
+        },
+    )
+    .expect_err("no build has that agent type");
 
     assert!(
         !e.message.contains("RegistryHandle::new"),
@@ -186,10 +200,17 @@ fn a_detached_supervisor_answers_agent_spawn_from_a_spawn_environment_it_was_giv
          `RegistryHandle::new` and no socket `agent/spawn` can ever be served: {}",
         e.message
     );
-    assert_eq!(e.kind(), Some(FailureKind::Unimplemented), "{e:?}");
     assert!(
-        e.message.contains("step 6"),
-        "the only thing left owing is root creation, and the refusal must say so: {}",
+        !e.message.contains("step 6"),
+        "root creation is served now; a build that still names the step that would serve it has \
+         reverted: {}",
+        e.message
+    );
+    assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
+    assert!(
+        e.message
+            .contains("the agent type is not one this build has"),
+        "the frame reached the root launcher and was refused on its own merits: {}",
         e.message
     );
     drop(ensured);

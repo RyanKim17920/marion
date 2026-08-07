@@ -87,7 +87,7 @@ use marion_proto::{
 };
 
 use crate::registry::{LiveRegistry, Registry};
-use crate::serve::{ConnId, Departure, Handle, Outbound};
+use crate::serve::{ConnId, Departure, Handle, Outbound, Peer};
 
 /// Why a node the journal knows about cannot be described to a client.
 ///
@@ -217,7 +217,12 @@ struct Shared {
 pub struct NodeHandle {
     /// §9's contract this node runs under. Kept because it is how a caller names the run in every
     /// other vocabulary — the contract file on disk, the branch, a `wait`.
-    task_id: TaskId,
+    ///
+    /// **`None` for a root, and that is §9 rather than an omission**: *"a root has no
+    /// `TaskContract`"*. Minting an id here for a root would name a contract file nothing will ever
+    /// write, and every vocabulary this field exists to serve — the file, the `marion/<task>` ref,
+    /// a `wait` — would then resolve to nothing.
+    task_id: Option<TaskId>,
     /// §5.4's per-node capability, minted here and written into exactly one other place: the MCP
     /// declaration this node's own bridge reads. See [`RegistryHandle::claim`].
     token: String,
@@ -251,9 +256,26 @@ pub struct NodeHandle {
     /// The node's thread. Kept for §5.7's exit, which needs the *thread* joined and not merely its
     /// answer read — `background.rs` argues the same distinction for the same reason.
     join: Option<std::thread::JoinHandle<()>>,
-    /// What `run_spawn` returned. `None` means **still running**, and that is the reading §5.7's
-    /// exit predicate takes as a second guard beside the journal's.
-    outcome: Option<Result<TaskContract, crate::spawn::SpawnError>>,
+    /// What the node's own thread produced. `None` means **still running**, and that is the reading
+    /// §5.7's exit predicate takes as a second guard beside the journal's.
+    outcome: Option<NodeOutcome>,
+}
+
+/// What a node's thread produced, in the vocabulary of the kind of node it was.
+///
+/// Two arms rather than one, because §9 gives a root and a child different results and collapsing
+/// them would mean either fabricating a `TaskContract` for a node that has none, or filing a root's
+/// success under `Err`. Only [`NodeHandle::running`] reads this today; it is kept whole so that the
+/// distinction survives to whatever reads it next.
+#[derive(Debug)]
+enum NodeOutcome {
+    /// §9's contract, or why `run_spawn` could not produce one.
+    Child(Box<Result<TaskContract, crate::spawn::SpawnError>>),
+    /// A root ran to a terminal reading, or marion's own sentence for why it did not. The reading
+    /// itself is not carried: a root's result **is** its stream and its exit (§9), both of which
+    /// are on disk in `events.jsonl` and the journal, and a second copy in memory would be a copy
+    /// that disappears when the supervisor does.
+    Root(Result<(), String>),
 }
 
 impl NodeHandle {
@@ -359,7 +381,8 @@ enum Progress {
 /// The supervisor, watching one of its own nodes launch. See [`crate::run::SpawnObserver`].
 struct NodeOwner {
     handle: Arc<RegistryHandle>,
-    task_id: TaskId,
+    /// `None` for a root — see [`NodeHandle::task_id`].
+    task_id: Option<TaskId>,
     /// The tree this node is being launched in, carried so [`RegistryHandle::claim`] can record it
     /// on the entry the node's *own* children will inherit from. See [`NodeHandle::repo`].
     repo: PathBuf,
@@ -391,6 +414,67 @@ impl crate::run::SpawnObserver for NodeOwner {
     fn started(&self, agent_id: &AgentId, pid: i32) {
         self.handle.mark_started(agent_id, pid);
         let _ = self.tx.send(Progress::Started);
+    }
+}
+
+/// **What authorizes `agent/spawn` with no caller — open question 3, decided.**
+///
+/// The answer is: **filesystem permission on the socket, checked against peer credentials, and
+/// deliberately not a token.** The argument, in the order the pieces matter.
+///
+/// *A token cannot be the answer here.* §5.4's capability is *"a per-node capability token bound to
+/// its `AgentId`"*. A spawn with `caller: None` is a client creating a **root**: there is no node
+/// yet, so there is nothing to bind a token to and nothing node-wise to prove. Any durable secret
+/// invented for this path would be a file under `<state>`, readable by exactly the set of processes
+/// that can already `connect(2)` to a socket in the same tree — so it would authenticate the same
+/// set it excludes, at the cost of a secret at rest. It would look like security and be a mode.
+///
+/// *Peer credentials are necessary and not sufficient, and both halves are load-bearing.*
+/// `getpeereid` answers **which user**; §5.4's question is **which node**. §11 item 28's open
+/// question 3 records a code-verified audit of a third-party harness with this exact topology whose
+/// authorization keyed on a client-asserted origin field, reachable by any process of the same
+/// user — and notes that peer credentials *would not have saved them*, because the attacker's
+/// credentials matched. That is why this check is confined to the one call where there is no node
+/// to ask about: every spawn that names a caller goes through [`RegistryHandle::resolve_caller`]
+/// and proves it with the token, and this check is not a substitute for that anywhere.
+///
+/// *What it does buy.* `socket.rs` creates the socket and its directory `0700` and the socket
+/// `0600` (`a_created_socket_directory_is_private_and_so_is_the_socket`), so the kernel already
+/// excludes other users at `connect`. This makes that exclusion a **checked** property of the
+/// supervisor rather than an inherited property of a mode bit somebody could change, and it turns
+/// the one case the mode bits cannot cover — a socket whose permissions were widened, deliberately
+/// or by an umask accident — from a silent grant into a named refusal.
+///
+/// *An unreadable peer is a refusal.* [`Peer::Unknown`] means `getpeereid` failed, and a check that
+/// cannot be made is not a check that passed.
+fn root_spawn_authorized(peer: Peer) -> Result<(), RpcError> {
+    let own = crate::serve::own_uid();
+    match peer {
+        Peer::Uid(uid) if uid == own => Ok(()),
+        Peer::Uid(uid) => Err(RpcError::refused(
+            "caller",
+            format!(
+                "this connection's peer runs as uid {uid} and this supervisor runs as uid {own}. A \
+                 spawn with no `caller` creates a **root**, which is the one call on this socket \
+                 that starts work rather than describing it, and marion authorizes it by \
+                 filesystem permission on the socket: §2's path is under `<state>` (or \
+                 `/tmp/marion-<uid>`), created 0700 with the socket 0600, so another user reaching \
+                 it means the permissions are not what marion set. There is deliberately no token \
+                 for this path — §5.4's capability binds to an `AgentId` and a root has none yet, \
+                 and any secret at rest here would be readable by exactly the processes it would \
+                 be excluding (§11 item 28, open question 3)."
+            ),
+            "§2, §5.4",
+        )),
+        Peer::Unknown => Err(RpcError::refused(
+            "caller",
+            "marion could not read this connection's peer credentials, so it cannot establish that \
+             the caller is this supervisor's own user — and a check that could not be made is not \
+             a check that passed. A spawn with no `caller` creates a root, which is authorized by \
+             filesystem permission on the socket and by nothing else (§11 item 28, open question \
+             3), so there is no weaker evidence to fall back to.",
+            "§2, §5.4",
+        )),
     }
 }
 
@@ -428,6 +512,35 @@ fn spawn_failed_before_the_process_existed(agent_id: &AgentId) -> RpcError {
              `SpawnIntent` is resolved by a `SpawnAborted` beside it, which after §11 item 28 step \
              1 is evidence that **no process exists**, not merely consistent with it (§7.2). A \
              worktree may be left behind; a process is not.",
+            agent_id.0
+        ),
+        "§7.2",
+    )
+}
+
+/// [`spawn_failed_before_the_process_existed`], for a **root**, carrying marion's own sentence.
+///
+/// Separate from the child's because the two have different evidence to offer. A child's launch
+/// failure is `run_spawn`'s, and the journal's `SpawnAborted` beside the intent is where its reason
+/// lives; the caller of a child's spawn is another *agent*, and the paragraph above is written for
+/// it. A root's caller is a **person at `marion run`**, and the failures they hit are marion's own
+/// refusals — an unrecordable working tree, a `<state>` inside the repository, a harness with no
+/// root surface — each of which already names the directory and the remedy. Dropping that on the
+/// floor and answering "the launch failed" is a refusal an operator cannot act on.
+///
+/// `None` is the honest fallback for a thread that filed no reason, and it says so rather than
+/// inventing one.
+fn root_launch_failed(agent_id: &AgentId, why: Option<&str>) -> RpcError {
+    let why = match why {
+        Some(w) => w.to_string(),
+        None => "marion's own thread for it filed no reason, which is itself the fault to report"
+            .to_string(),
+    };
+    RpcError::of(
+        FailureKind::Internal,
+        Some(&agent_id.0),
+        format!(
+            "root `{}` was journaled and its launch failed before any process existed: {why}",
             agent_id.0
         ),
         "§7.2",
@@ -788,7 +901,12 @@ impl RegistryHandle {
     /// `pub(crate)` rather than private because it is also the whole of what a test needs to put a
     /// node in this table — and a test that reached in through a back door would be asserting
     /// against a binding production does not make.
-    pub(crate) fn claim(&self, agent_id: &AgentId, task_id: TaskId, repo: PathBuf) -> String {
+    pub(crate) fn claim(
+        &self,
+        agent_id: &AgentId,
+        task_id: Option<TaskId>,
+        repo: PathBuf,
+    ) -> String {
         let token = mint_token();
         lock(&self.nodes).insert(
             agent_id.clone(),
@@ -823,13 +941,23 @@ impl RegistryHandle {
     /// `run_spawn` returned. **The entry is kept, not removed**: it is what tells a later caller
     /// "that node finished" from "no such node", and §5.7's exit predicate reads liveness off it
     /// rather than membership.
-    fn mark_finished(
-        &self,
-        agent_id: &AgentId,
-        outcome: Result<TaskContract, crate::spawn::SpawnError>,
-    ) {
+    fn mark_finished(&self, agent_id: &AgentId, outcome: NodeOutcome) {
         if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.outcome = Some(outcome);
+        }
+    }
+
+    /// **Why a node this supervisor owns did not finish cleanly**, in one sentence.
+    ///
+    /// `None` for a node still running, a node that finished cleanly, and a node this supervisor
+    /// does not own — three states this deliberately does not distinguish, because the question it
+    /// answers is *"is there a fault to report about this node"* and the other three surfaces
+    /// ([`Self::owned_running`], [`Self::owned_nodes`]) answer the rest. The sentence is marion's
+    /// own for a root and the spawn path's for a child; neither is derived from an exit code.
+    pub fn owned_failure(&self, agent_id: &AgentId) -> Option<String> {
+        match lock(&self.nodes).get(agent_id)?.outcome.as_ref()? {
+            NodeOutcome::Child(r) => r.as_ref().as_ref().err().map(|e| e.to_string()),
+            NodeOutcome::Root(r) => r.as_ref().err().cloned(),
         }
     }
 
@@ -859,8 +987,13 @@ impl RegistryHandle {
     }
 
     /// §9's contract this node runs under.
+    /// **`None` for a node this supervisor does not own *and* for a root**, which has no contract
+    /// at all (§9). The two are told apart by [`Self::owned_running`], which answers `None` only
+    /// for the first.
     pub fn owned_task_id(&self, agent_id: &AgentId) -> Option<TaskId> {
-        lock(&self.nodes).get(agent_id).map(|n| n.task_id.clone())
+        lock(&self.nodes)
+            .get(agent_id)
+            .and_then(|n| n.task_id.clone())
     }
 
     /// When the node's process came into existence.
@@ -990,9 +1123,14 @@ impl RegistryHandle {
     }
 
     /// §2's `agent/spawn` — see [`agent_spawn`](Self::agent_spawn)'s doc for the whole shape.
+    ///
+    /// `peer` is the connection's credentials and is consulted on exactly one path — a spawn with
+    /// no caller. See [`root_spawn_authorized`] for what that decides and, more importantly, for
+    /// what it deliberately does not.
     fn agent_spawn(
         &self,
         p: &marion_proto::params::AgentSpawnParams,
+        peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
         let me = self.me.upgrade().ok_or_else(|| {
             RpcError::internal(
@@ -1036,6 +1174,23 @@ impl RegistryHandle {
             }
             (Some(_), None) | (None, Some(_)) => {}
         }
+        // **The other half of the same pairing**, and refused for §11 item 23's reason rather than
+        // ignored: §9's change record exists only for a root, because only a root runs in the
+        // operator's own checkout. A child's writes are judged against the worktree marion made it,
+        // so a caller that asked marion not to snapshot and was told nothing would have been given
+        // a wrong answer that looks like a right one.
+        if p.caller.is_some() && p.no_change_record.is_some() {
+            return Err(RpcError::refused(
+                "no_change_record",
+                "a spawn with a `caller` must not state `no_change_record`: §9's change record is \
+                 a root's, because only a root runs in the operator's own checkout. A child runs \
+                 in a worktree marion made for it (§6.6) and its writes are judged against that \
+                 worktree's own scope, so there is no snapshot of anybody's tree here to decline. \
+                 Refused rather than dropped, because a parameter that is accepted and not acted \
+                 on tells the caller their choice was honoured (§11 item 23).",
+                "§9, §11 item 23",
+            ));
+        }
         let Some(env) = self.spawn_env.clone() else {
             return Err(RpcError::unimplemented(
                 "agent/spawn",
@@ -1048,17 +1203,12 @@ impl RegistryHandle {
             ));
         };
         let Some(caller_id) = p.caller.as_ref() else {
-            return Err(RpcError::unimplemented(
-                "agent/spawn",
-                "a client creating a **root** is §11 item 28 step 6, and this build does not \
-                 serve it. `root::prepare` owns a root's launch — its own agent-dir layout, its \
-                 `ROOT_DEPTH`, its change record and the `parent_id: None` that makes it a root — \
-                 and `run_spawn` would give it a parent it does not have. A spawn with a `caller` \
-                 is served; one without is refused rather than served as a child of nobody. The \
-                 `repo` this frame carries is the one thing step 6 will need and is already \
-                 validated above, so a client that gets this far has got the shape right.",
-                "§2",
-            ));
+            // **A client creating a root** — §11 item 28 step 6. Answered on its own path rather
+            // than folded into the child one: `run_spawn` writes `parent_id: Some(caller)`
+            // unconditionally, so serving a root through it would put a node in the tree whose
+            // parent is a fabrication. `root::prepare` owns everything that makes a root a root —
+            // its agent-dir layout, `ROOT_DEPTH`, §9's change record, `parent_id: None`.
+            return self.spawn_root(me, env, p, peer);
         };
 
         // **Held from here to the child's durable intent, and no further.** See
@@ -1117,7 +1267,7 @@ impl RegistryHandle {
         let (tx, progress) = std::sync::mpsc::channel();
         let observer = NodeOwner {
             handle: me.clone(),
-            task_id: task_id.clone(),
+            task_id: Some(task_id.clone()),
             // The child inherits its caller's tree and hands the same one to *its* children.
             repo,
             tx,
@@ -1132,7 +1282,7 @@ impl RegistryHandle {
             // unknown agent type, a scope outside the ceiling — never minted a node, so there is
             // nothing to file the outcome under and nothing holding the supervisor open.
             if let Some(agent_id) = observer.identified_id() {
-                owner.mark_finished(&agent_id, outcome);
+                owner.mark_finished(&agent_id, NodeOutcome::Child(Box::new(outcome)));
             }
             // Sent last and unconditionally, so a launch that failed before either earlier moment
             // cannot leave the call waiting out `LAUNCH_BOUND` for something that will not come.
@@ -1181,6 +1331,163 @@ impl RegistryHandle {
             // **Read back off the registry, not asserted.** The state this returns is the state the
             // journal says, which is the point of answering at `Spawned` rather than before it: a
             // client that renders `Spawning` here is rendering a record it could have read itself.
+            state: self
+                .live
+                .read(|r| r.tree().get(&agent_id).map(|n| n.state))
+                .unwrap_or(NodeState::Spawning),
+            agent_id,
+        })
+    }
+
+    /// **§11 item 28 step 6: a client creating a root, served.**
+    ///
+    /// The same shape step 4 established for a child and for the same reasons — a thread per node,
+    /// the node claimed the instant it has an identity, the caller answered when a **process
+    /// exists** rather than when the run finishes — over `root::prepare`/`root::launch_owned`
+    /// instead of `run_spawn`, because those are what make a root a root (§9: no parent, no
+    /// contract, `ROOT_DEPTH`, the change record over the operator's own checkout).
+    ///
+    /// **What is different from the child path, stated rather than left to be noticed:**
+    ///
+    /// * **No §6.1 step 2 gate.** Those gates read the *caller's* type and depth, and there is no
+    ///   caller. A root is depth 0 by definition and has no parent whose `max_concurrent_children`
+    ///   it could exceed. The authorization that does apply is [`root_spawn_authorized`], which is
+    ///   about the connection rather than about the tree.
+    /// * **No [`Self::spawn_decision`].** That lock exists to make a gate evaluation and the write
+    ///   derived from it indivisible; with no gate there is nothing to serialize, and holding it
+    ///   across a root's `prepare` — which snapshots a working tree — would block every child spawn
+    ///   in the fleet on one `git` walk.
+    /// * **No task id.** §9: a root has no `TaskContract`. See [`NodeHandle::task_id`].
+    /// * **The outcome is filed on every exit path**, including a `prepare` that failed before the
+    ///   `SpawnIntent` was journaled. A root is claimed *before* its intent (see
+    ///   `root::prepare_watched`), so a thread that returned without filing one would leave a
+    ///   claimed, never-running node holding this supervisor open against §5.7 for ever.
+    fn spawn_root(
+        &self,
+        me: Arc<RegistryHandle>,
+        env: crate::run::Env,
+        p: &marion_proto::params::AgentSpawnParams,
+        peer: Peer,
+    ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
+        root_spawn_authorized(peer)?;
+        let repo = p.repo.clone().ok_or_else(|| {
+            // Unreachable: the frame-shape match above refuses `(None, None)` by name before any
+            // state is consulted. A refusal rather than an `expect`, because a supervisor owning a
+            // fleet must not be taken down by a shape it has already answered.
+            RpcError::internal(
+                "a root spawn reached the launcher with no repository, which the frame-shape check \
+                 refuses by name",
+            )
+        })?;
+        // Resolved here so an unknown type is refused **in the frame that asked for it** rather
+        // than arriving as a node that was never going to start. `root::prepare` refuses it again
+        // one layer down; two call sites of one lookup, never two rules.
+        let agent_type =
+            agent_type::builtin(&p.agent_type).ok_or_else(spawn_refused_before_the_node_existed)?;
+        let spec = crate::root::RootSpec {
+            agent_type: p.agent_type.clone(),
+            prompt: p.prompt.clone(),
+            repo: repo.clone(),
+            state: env.state.clone(),
+            base_url: env.base_url.clone(),
+            bridge: env.bridge.clone(),
+            // §3.1's precedence, the same one a child's spawn gets: the stated model, else the
+            // agent type's own `model` key.
+            model: p.model.clone().or_else(|| agent_type.model.clone()),
+            // Absent is `false` — marion looks. See `AgentSpawnParams::no_change_record`.
+            no_change_record: p.no_change_record.unwrap_or(false),
+            auth: env.auth,
+        };
+        // §9's node-level bound, resolved from what the client stated and the agent type — by the
+        // same function `marion run` used to call in-process, so the number an operator typed and
+        // the number the node runs under are one resolution.
+        let bound = std::time::Duration::from_secs(crate::root::blocked_bound_secs(
+            p.timeout_secs,
+            agent_type.timeout.0.as_secs(),
+        ));
+
+        let (tx, progress) = std::sync::mpsc::channel();
+        let owner = me.clone();
+        let join = std::thread::spawn(move || {
+            let observer = NodeOwner {
+                handle: me,
+                // §9: a root has no contract.
+                task_id: None,
+                // The tree the client named, remembered so this root's own children branch from it
+                // — which is the whole of what step 5 needs from step 6.
+                repo,
+                tx,
+                identified: Mutex::new(None),
+            };
+            let outcome = (|| -> Result<(), String> {
+                let node = crate::root::prepare_watched(&spec, &observer)
+                    .map_err(|e| format!("marion could not prepare the root node: {e}"))?;
+                // The trait's second hook, called by the launcher at `command.spawn()`. In
+                // scope explicitly rather than through a blanket import, so the two halves of
+                // `SpawnObserver` are visibly the same trait here as on the child path.
+                use crate::run::SpawnObserver as _;
+                let started = |pid: i32| observer.started(&node.agent_id, pid);
+                crate::root::launch_owned(
+                    &node,
+                    bound,
+                    crate::root::MCP_READY_TIMEOUT,
+                    // No live sink here: this runs inside `marion-supervisor`, and the client
+                    // watches through `node/attach` over the socket rather than through a pipe
+                    // this process would have to own. `events.jsonl` is what both legs read.
+                    None,
+                    Some(&started),
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+            })();
+            // **Filed whenever there is a node to file it under**, which after `identified` there
+            // always is. See this function's doc for why a missing outcome would be a supervisor
+            // that can never exit.
+            if let Some(agent_id) = observer.identified_id() {
+                owner.mark_finished(&agent_id, NodeOutcome::Root(outcome));
+            }
+            // Last and unconditional, so a launch that failed before either earlier moment cannot
+            // leave the call waiting out `LAUNCH_BOUND` for something that will not come.
+            let _ = observer.tx.send(Progress::Finished);
+        });
+
+        let deadline = std::time::Instant::now() + LAUNCH_BOUND;
+        let recv = |deadline: std::time::Instant| {
+            progress.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        };
+        let agent_id = match recv(deadline) {
+            Ok(Progress::Identified(id)) => id,
+            // `prepare_watched` calls `identified` before its first side effect, so nothing but
+            // minting the id itself can fail ahead of it — an unreadable entropy source.
+            Ok(_) => return Err(spawn_refused_before_the_node_existed()),
+            Err(_) => return Err(launch_bound_expired(None)),
+        };
+        if let Some(node) = lock(&self.nodes).get_mut(&agent_id) {
+            node.join = Some(join);
+        }
+        match recv(deadline) {
+            Ok(Progress::Started) => {}
+            // The launch failed between the identity and the process: a working tree marion could
+            // not snapshot, a `<state>` inside the repository, a configuration document that would
+            // not compile, an unsupported root surface.
+            //
+            // **Answered with the reason, not merely with the fact.** Every one of those is a
+            // `RootError` marion wrote as a sentence for an operator — it names the directory, the
+            // declaration and the way through — and until step 6 `marion run` printed it from the
+            // error in its own hand. The supervisor holds it now, so a client that got the generic
+            // sentence back would be told a run failed and never told what to change.
+            // [`Self::owned_failure`] is where the thread filed it, and it is filed before
+            // `Progress::Finished` is sent, so it is there by the time this reads.
+            Ok(_) => {
+                return Err(root_launch_failed(
+                    &agent_id,
+                    self.owned_failure(&agent_id).as_deref(),
+                ));
+            }
+            Err(_) => return Err(launch_bound_expired(Some(&agent_id))),
+        }
+        self.live.refresh();
+        Ok(marion_proto::result::AgentSpawnResult {
             state: self
                 .live
                 .read(|r| r.tree().get(&agent_id).map(|n| n.state))
@@ -1684,7 +1991,9 @@ impl Handle for RegistryHandle {
             // of the client that asked for it, so nothing here records which connection called.
             // That is what makes `gone` able to touch nothing — there is no per-connection node
             // list for it to reap, structurally, rather than by a rule someone must remember.
-            Call::AgentSpawn(p) => self.agent_spawn(p).map(MethodResult::AgentSpawn),
+            Call::AgentSpawn(p) => self
+                .agent_spawn(p, out.peer())
+                .map(MethodResult::AgentSpawn),
             Call::SessionQuit(p) => self
                 .session_quit(&p.disposition)
                 .map(MethodResult::SessionQuit),
@@ -4532,7 +4841,7 @@ mod tests {
             let fx = owning("owns-forged", vec![intent("root", None, "claude", 0)]);
             let real = fx.handle.claim(
                 &id("root"),
-                marion_core::contract::TaskId("t".into()),
+                Some(marion_core::contract::TaskId("t".into())),
                 fx.repo.clone(),
             );
             let before = journal_len(&fx);
@@ -4649,7 +4958,7 @@ mod tests {
             );
             let token = deep.handle.claim(
                 &id("deep"),
-                marion_core::contract::TaskId("t".into()),
+                Some(marion_core::contract::TaskId("t".into())),
                 deep.repo.clone(),
             );
             let before = journal_len(&deep);
@@ -4699,7 +5008,7 @@ mod tests {
             let fx = owning("owns-concurrency", records);
             let token = fx.handle.claim(
                 &id("root"),
-                marion_core::contract::TaskId("t".into()),
+                Some(marion_core::contract::TaskId("t".into())),
                 fx.repo.clone(),
             );
             assert_eq!(
@@ -4760,26 +5069,156 @@ mod tests {
             }
         }
 
-        /// A client creating a **root** is step 6, and this build says so rather than serving it as a
-        /// child of nobody. `run_spawn` writes `parent_id: Some(caller)` unconditionally, so serving
-        /// this would put a node in the tree whose parent is a fabrication.
+        /// **§11 item 28 step 6, at the handler: a client creating a root is served.**
         ///
-        /// The frame is the *well-formed* root shape — a stated `repo` — deliberately. A root spawn
-        /// that omits it is refused one step earlier and for a different reason, and a test that
-        /// sent the malformed shape here would go on passing after step 6 landed while asserting
-        /// nothing about it.
+        /// This test replaces `a_client_creating_a_root_over_the_socket_is_refused_naming_the_step_
+        /// that_serves_it`, which asserted the opposite and was the honest pin while root creation
+        /// was owed. Renamed rather than deleted, because the *name* is what a reader greps for and
+        /// a stale one asserting a served path is refused would be a lie with a green tick next to
+        /// it.
+        ///
+        /// What it can assert without launching a harness is that the frame **gets past every
+        /// refusal that used to stop it** and is then judged on its own merits: the agent type is
+        /// one no build has, which is the same lookup `root::prepare` performs, and nothing is
+        /// journaled because nothing was minted. `client_run.rs` is where a root that really starts
+        /// is measured, through `marion run` and a real provider.
         #[test]
-        fn a_client_creating_a_root_over_the_socket_is_refused_naming_the_step_that_serves_it() {
+        fn a_client_creating_a_root_reaches_the_launcher_rather_than_a_step_that_would_serve_it() {
             let fx = owning("owns-root", vec![]);
-            let e =
-                spawn(&fx, root_params(&fx.repo, 1)).expect_err("a root spawn is not served yet");
-            assert_eq!(e.kind(), Some(FailureKind::Unimplemented));
+            let e = spawn(
+                &fx,
+                AgentSpawnParams {
+                    agent_type: "no-such-agent-type".into(),
+                    ..root_params(&fx.repo, 1)
+                },
+            )
+            .expect_err("no build has that agent type");
             assert!(
-                e.message.contains("step 6"),
-                "the refusal must name what would serve it: {}",
+                !e.message.contains("step 6"),
+                "root creation is served; a refusal naming the step that would serve it is a \
+                 revert: {}",
+                e.message
+            );
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
+            assert!(
+                e.message
+                    .contains("the agent type is not one this build has"),
+                "the frame reached the root launcher: {}",
                 e.message
             );
             assert_eq!(journal_len(&fx), 0, "and nothing was created");
+            assert_eq!(fx.handle.owned_nodes(), 0, "…and no node was claimed");
+        }
+
+        /// **The `no_change_record` half of the root-only pairing.**
+        ///
+        /// §9's change record exists because a root runs in the operator's own checkout. A child
+        /// runs in a worktree marion made, so the field would be an accept-and-ignore there — and
+        /// §11 item 23's whole rule is that a caller told nothing has been told their choice was
+        /// honoured.
+        #[test]
+        fn a_caller_that_states_no_change_record_is_refused_by_name() {
+            let fx = owning("owns-ncr", vec![intent("root", None, "claude", 0)]);
+            let token = fx.handle.claim(
+                &id("root"),
+                Some(marion_core::contract::TaskId("t".into())),
+                fx.repo.clone(),
+            );
+            let before = journal_len(&fx);
+            let e = spawn(
+                &fx,
+                AgentSpawnParams {
+                    // `false` and not `true`: the refusal is for *stating* it, so a test that sent
+                    // the interesting value would pass against a build that only refused `true`.
+                    no_change_record: Some(false),
+                    ..params(
+                        Some(SpawnCaller {
+                            agent_id: id("root"),
+                            node_token: token,
+                        }),
+                        1,
+                    )
+                },
+            )
+            .expect_err("a child has no change record to decline");
+            assert_eq!(e.kind(), Some(FailureKind::Refused));
+            assert!(
+                e.message.contains("must not state `no_change_record`"),
+                "the refusal must name the field: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), before, "and nothing was created");
+        }
+
+        /// **Open question 3, decided and pinned: root creation is authorized by filesystem
+        /// permission on the socket, checked against peer credentials.**
+        ///
+        /// Asserted against the predicate rather than through a connection, and that is a stated
+        /// limitation rather than a shortcut: making a real peer of another uid needs a second
+        /// account or a setuid helper, neither of which a `cargo test` may assume. What the
+        /// predicate *is* reached through in production is one line in `Handle::call`
+        /// (`out.peer()`), and `Peer` is read there and nowhere else.
+        ///
+        /// The `Unknown` row is the load-bearing one: `getpeereid` can fail, and a check that could
+        /// not be made must refuse rather than pass. A build that spelled this
+        /// `matches!(peer, Peer::Uid(u) if u != own)` would accept every unreadable peer.
+        #[test]
+        fn root_creation_is_refused_to_a_peer_that_is_not_this_supervisors_own_user() {
+            let own = crate::serve::own_uid();
+            assert!(
+                root_spawn_authorized(Peer::Uid(own)).is_ok(),
+                "the supervisor's own user is who marion serves"
+            );
+
+            let e = root_spawn_authorized(Peer::Uid(own.wrapping_add(1)))
+                .expect_err("another user's process may not start work here");
+            assert_eq!(e.kind(), Some(FailureKind::Refused));
+            assert!(
+                e.message.contains("filesystem permission on the socket"),
+                "the refusal must say what does authorize it: {}",
+                e.message
+            );
+
+            let e = root_spawn_authorized(Peer::Unknown)
+                .expect_err("a check that could not be made is not a check that passed");
+            assert_eq!(e.kind(), Some(FailureKind::Refused));
+            assert!(
+                e.message
+                    .contains("could not read this connection's peer credentials"),
+                "{}",
+                e.message
+            );
+        }
+
+        /// **And it is not a token, deliberately** — the other half of open question 3.
+        ///
+        /// A caller that *does* name a node still has to prove it, and this asserts the two paths
+        /// do not blur: the peer check never stands in for `resolve_caller`. Both calls below come
+        /// from the same connection and the same uid; one is served, the other is refused for a
+        /// reason that has nothing to do with the user.
+        #[test]
+        fn the_peer_check_does_not_stand_in_for_a_node_token() {
+            let fx = owning(
+                "owns-peer-not-token",
+                vec![intent("root", None, "claude", 0)],
+            );
+            let e = spawn(
+                &fx,
+                params(
+                    Some(SpawnCaller {
+                        agent_id: id("root"),
+                        node_token: "not-the-token".into(),
+                    }),
+                    1,
+                ),
+            )
+            .expect_err("§5.4 binds a capability to an AgentId, and this connection has none");
+            assert!(
+                e.message.contains("did not mint that node token"),
+                "peer credentials answer which *user*; the token answers which *node*, and this \
+                 refusal must be the second: {}",
+                e.message
+            );
         }
 
         /// **A caller does not get to say which tree its child branches from.**
@@ -4797,7 +5236,7 @@ mod tests {
             let fx = owning("owns-stated-repo", vec![intent("root", None, "claude", 0)]);
             let token = fx.handle.claim(
                 &id("root"),
-                marion_core::contract::TaskId("t".into()),
+                Some(marion_core::contract::TaskId("t".into())),
                 fx.repo.clone(),
             );
             let before = journal_len(&fx);
@@ -4938,7 +5377,7 @@ mod tests {
             let child_of = |root: &str, tree: &Path| -> AgentId {
                 let token = fx.handle.claim(
                     &id(root),
-                    marion_core::contract::TaskId(format!("t-{root}")),
+                    Some(marion_core::contract::TaskId(format!("t-{root}"))),
                     tree.to_path_buf(),
                 );
                 let child = spawn(
@@ -5070,12 +5509,12 @@ mod tests {
             let fx = owning("owns-tokens", vec![]);
             let a = fx.handle.claim(
                 &id("a"),
-                marion_core::contract::TaskId("t".into()),
+                Some(marion_core::contract::TaskId("t".into())),
                 fx.repo.clone(),
             );
             let b = fx.handle.claim(
                 &id("b"),
-                marion_core::contract::TaskId("t".into()),
+                Some(marion_core::contract::TaskId("t".into())),
                 fx.repo.clone(),
             );
             assert_ne!(
@@ -5138,7 +5577,7 @@ mod tests {
         fn spawn_a_real_child(fx: &Owning, secs: u64) -> AgentId {
             let token = fx.handle.claim(
                 &id("root"),
-                marion_core::contract::TaskId("t".into()),
+                Some(marion_core::contract::TaskId("t".into())),
                 fx.repo.clone(),
             );
             spawn(
@@ -5297,7 +5736,7 @@ mod tests {
             );
             fx.handle.claim(
                 &id("ghost"),
-                marion_core::contract::TaskId("t".into()),
+                Some(marion_core::contract::TaskId("t".into())),
                 fx.repo.clone(),
             );
             assert!(
@@ -5307,7 +5746,9 @@ mod tests {
             );
             fx.handle.mark_finished(
                 &id("ghost"),
-                Err(crate::spawn::SpawnError::UnknownAgentType("x".into())),
+                NodeOutcome::Child(Box::new(Err(crate::spawn::SpawnError::UnknownAgentType(
+                    "x".into(),
+                )))),
             );
             assert!(
                 fx.handle.idle_exit_eligible(),
