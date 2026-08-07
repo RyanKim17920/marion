@@ -15,7 +15,11 @@
 //!   reader gets wrong: a bare tail of a Claude Code session renders alt-screen content on the
 //!   main screen, because `?1049h` is said once and never repeated.
 //! * [`replay`] — `preamble ++ tail`, and the measured argument for where to cut.
-//! * [`mouse`] — SGR-1006 encoding, gated on the modes the child actually enabled.
+//! * [`keys`] — keystrokes back to the node. A **filter**, not an encoder: marion's terminal is
+//!   already in raw mode, so the bytes it produces are the ones the node expects. The one thing
+//!   worth doing is reserving a way out.
+//! * [`mouse`] — SGR-1006 encoding, gated on the modes the child actually enabled. The only place
+//!   in this crate that encodes anything, because a click is the one input with no source bytes.
 //! * [`redraw`] — when to paint: the DECSET 2026 bracket **edge**, and none of the three things
 //!   that look like it and are not.
 //! * [`guard`] — marion's **own** terminal: raw mode, the alternate screen, and getting out of
@@ -32,6 +36,7 @@
 
 pub mod cast;
 pub mod guard;
+pub mod keys;
 pub mod mouse;
 pub mod redraw;
 pub mod replay;
@@ -40,6 +45,7 @@ pub mod view;
 
 pub use cast::{Cast, CastError, Payload, Record};
 pub use guard::Screen;
+pub use keys::{Action, Keys};
 pub use mouse::{Button, Kind as MouseKind, Mods, MouseEvent};
 pub use redraw::Redraw;
 pub use replay::{Plan, Policy, Step};
