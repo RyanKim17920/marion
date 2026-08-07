@@ -382,6 +382,17 @@ impl EventWriter {
         self.seq
     }
 
+    /// **§4.2's `mono_ns` origin, lent out.**
+    ///
+    /// `pty.cast` records its intervals against this instant rather than one of its own. §4.2 gives
+    /// `mono_ns` the job of *aligning* a node's two streams, and alignment against two different
+    /// zeroes is not alignment: a cast that called `Instant::now()` in its own constructor would be
+    /// offset from `events.jsonl` by however long the node's setup took, with nothing on either
+    /// file recording the offset. `mono_ns_and_the_cast_share_one_epoch` is the guard.
+    pub fn origin(&self) -> Instant {
+        self.start
+    }
+
     /// Append one event, applying §4.3's commit policy.
     ///
     /// The payload is passed through [`bound`] first, so an over-large frame is recorded shortened

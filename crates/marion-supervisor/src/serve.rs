@@ -390,6 +390,27 @@ pub(crate) fn sink(conn: ConnId) -> Outbound {
     }
 }
 
+/// A **live** in-process [`Outbound`] and the queue it fills.
+///
+/// [`sink`] drops its receiver, so every `send` on it fails at once — which is what its callers
+/// want (a channel with nobody on it) and the opposite of what a test asserting *delivery* wants.
+/// Holding the receiver is the whole difference: drop it and the `Outbound` behaves exactly like a
+/// client whose process just died, which is how `pty.rs`'s M2 regression guard kills a client
+/// without a second process.
+#[cfg(test)]
+pub(crate) fn capture(conn: ConnId) -> (Outbound, std::sync::mpsc::Receiver<Vec<u8>>) {
+    let (tx, rx) = sync_channel(OUTBOUND_CAPACITY);
+    (
+        Outbound {
+            conn,
+            peer: Peer::Uid(own_uid()),
+            tx,
+            departed: Arc::new(Mutex::new(None)),
+        },
+        rx,
+    )
+}
+
 /// Split a byte stream into `\n`-terminated frames.
 ///
 /// **The buffer is the point.** See the module doc: a `read()` may return a fraction of a frame,
