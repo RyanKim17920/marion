@@ -37,6 +37,7 @@ use marion_supervisor::socket::{SocketPaths, socket_paths};
 
 unsafe extern "C" {
     fn getuid() -> u32;
+    fn kill(pid: i32, sig: i32) -> i32;
 }
 
 /// §5.7's grace, shrunk: nothing here waits it out, and a supervisor left behind by a failing
@@ -74,12 +75,53 @@ impl Bed {
             base_url: Some("http://127.0.0.1:8099/v1".into()),
         }
     }
+
+    /// Every process whose argv names this bed's state directory, **whichever stage it is**. The
+    /// path appears verbatim in all three stages' argv, so this names exactly the processes this
+    /// test started and no others.
+    fn supervisors(&self) -> Vec<i32> {
+        let out = Command::new("ps").args(["-Ao", "pid=,args="]).output();
+        let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        text.unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(&self.state.display().to_string()))
+            .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+            .collect()
+    }
+
+    /// §5.7: zero clients and zero non-terminal nodes, so it must leave on its own.
+    ///
+    /// Waited on **before** the directory is removed, and that ordering is the whole point: a
+    /// supervisor still running when its project directory goes away recreates enough of it to
+    /// journal into, so removing first leaves a directory behind and hides the fact that the
+    /// process outlived the test.
+    fn goes_on_its_own(&self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline && !self.supervisors().is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            self.supervisors().is_empty(),
+            "§5.7: this supervisor must leave without being killed by the fixture, and {:?} did not",
+            self.supervisors()
+        );
+    }
 }
 
 impl Drop for Bed {
+    /// Leave neither a supervisor nor a directory behind, whatever the test did or failed to do.
+    /// The sweep is a safety net for a *failing* test; every passing test above asserts
+    /// [`Bed::goes_on_its_own`] first, because a fixture that is the only thing ending a supervisor
+    /// is a leak the assertions cannot see.
     fn drop(&mut self) {
-        // The supervisor's own idle exit is what removes it; the directory goes either way, so a
-        // failing test leaves no `/tmp` behind for the next one to trip over.
+        for pid in self.supervisors() {
+            // SAFETY: `kill` with a pid this process just read from `ps`.
+            unsafe { kill(pid, 9) };
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && !self.supervisors().is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let _ = std::fs::remove_dir_all(&self.state);
     }
 }
@@ -150,6 +192,7 @@ fn a_detached_supervisor_answers_agent_spawn_from_a_spawn_environment_it_was_giv
         e.message
     );
     drop(ensured);
+    bed.goes_on_its_own();
 }
 
 /// **The `caller`/`repo` pairing is answered from the frame alone, across the socket.**
@@ -197,6 +240,7 @@ fn the_caller_and_repo_pairing_is_refused_by_name_over_the_socket() {
     );
 
     drop(ensured);
+    bed.goes_on_its_own();
 }
 
 /// **An absent auth mode is a hard error, never a silent `Canned`.**
@@ -213,6 +257,12 @@ fn the_caller_and_repo_pairing_is_refused_by_name_over_the_socket() {
 ///
 /// The pair is checked in both directions for the same reason: a `--base-url` under `inherited`
 /// is a value stage 3 would have to ignore, which is a flag that says one thing and does another.
+///
+/// **The tiny idle grace is what keeps the failure a failure rather than a hang.** An argv these
+/// assertions reject is one that binds nothing and exits at once; an argv a regression *accepts*
+/// becomes a supervisor, and a supervisor with §5.7's real five-minute grace would leave this call
+/// blocked on a process that is behaving perfectly. Fifty milliseconds makes that case exit 0
+/// instead, which is what the first assertion reads.
 #[test]
 fn a_supervisor_argv_that_does_not_state_its_auth_mode_will_not_start() {
     let bed = Bed::new("no-auth");
@@ -223,6 +273,8 @@ fn a_supervisor_argv_that_does_not_state_its_auth_mode_will_not_start() {
         bed.state.display().to_string(),
         "--project-root".to_string(),
         bed.root.display().to_string(),
+        "--idle-grace-ms".to_string(),
+        "50".to_string(),
         "--detached".to_string(),
     ];
     for (extra, why) in [
