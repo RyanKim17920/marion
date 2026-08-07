@@ -152,12 +152,19 @@ pub fn tools() -> Value {
             // its table holds that node's **direct children**, so a grandchild — legitimately
             // waitable under §5.4 — is answered `Unknown` here. That gap is marion's, not the
             // caller's, and `wait_unknown` says so rather than implying the lookup was exhaustive.
-            // Closing it needs the cross-process registry (`Method::AgentSpawn` over the socket).
+            //
+            // **Step 5 did not close it, and it is worth saying why not.** The children are the
+            // supervisor's now, so the *tree* is in one place for the first time — but a handle is
+            // a `task_id`, and none of §2's fifteen methods resolves one to a node.
+            // `marion_proto::Method::ALL` is pinned at fifteen and step 5 deliberately adds none,
+            // so the pairing is remembered where the supervisor said it: in this process, in the
+            // one answer that carried both (`background::Handed`). Closing the grandchild gap needs
+            // that lookup on the wire, which is a proto decision and not this file's.
             //
             // There is deliberately no timeout parameter, and that is not the same as there being
             // no timeout. A caller-supplied one could disagree with the contract about whether the
             // run had ended, so the bound is derived instead: the child's own `timeout_secs` plus
-            // `background::WAIT_GRACE` for the work `run_spawn` does around the run. Expiry is not
+            // the grace marion adds for the work around a run. Expiry is not
             // a verdict on the child (`wait_still_running`) — it exists because a `wait` that never
             // returns stops this bridge reading *any* later frame, from anyone.
             "name": "wait",
@@ -351,10 +358,17 @@ pub fn spawn_result(
                 Some(line) => tool_result(id, &format!("{line}\n\n{json}"), true),
             }
         }
+        // **The verb comes from the error, not from this line.** Every refusal that predates §11
+        // item 28 step 5 is a launch that did not happen, and "could not be launched" is exactly
+        // right for it. The ones the socket path added are not all of that shape — a child that
+        // ran, and whose contract marion could then not deliver, did real work — and telling a
+        // parent its child never started would be the same class of false report as the rest of
+        // this module deletes. See [`SpawnError::verb`].
         Err(e) => tool_result(
             id,
             &bounded(&format!(
-                "marion: the {agent_type} child could not be launched — {e}"
+                "marion: the {agent_type} child {} — {e}",
+                e.verb()
             )),
             true,
         ),
@@ -396,9 +410,10 @@ pub fn background_result(id: &Value, started: &crate::background::Started) -> Va
 /// holds only the caller's **direct children, in this bridge process**. Two things therefore land
 /// here that are not caller mistakes at all:
 ///
-/// * a **grandchild or permitted peer** — inside §5.4, outside the table, because that node was
-///   started through a different bridge instance. Nothing marion can do about it here; it needs the
-///   cross-process registry (`Method::AgentSpawn` over the socket to the detached `serve`).
+/// * a **grandchild or permitted peer** — inside §5.4, outside the table, because that handle was
+///   issued by a different bridge instance. The supervisor holds the whole tree since §11 item 28
+///   step 5, so the node is reachable; the *handle* is not, because no method on §2's fifteen
+///   resolves a `task_id` to a node and step 5 added none.
 /// * a handle this bridge really did issue and really has **lost**, because the bridge process was
 ///   restarted since. The table holds no journal and survives nothing.
 ///

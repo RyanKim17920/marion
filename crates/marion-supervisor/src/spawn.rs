@@ -172,6 +172,82 @@ pub enum SpawnError {
          rather than pushed down one that does not fit it."
     )]
     UnsupportedChildSurface(marion_core::harness::Harness),
+    /// **The bridge could not reach this project's supervisor** — §11 item 28 step 5, and the
+    /// refusal that exists instead of a fallback.
+    ///
+    /// Since step 5 the bridge starts nothing: it dials §2's socket and sends `agent/spawn`. So a
+    /// supervisor that is not there costs the *work*, and saying so is the whole point. The
+    /// alternative was to spawn in-process when the dial fails, and it is the failure class this
+    /// repository keeps re-finding: an identical-looking tool result, a real child, and a live node
+    /// that no supervisor owns, can kill, or can hand to a re-attaching client. A node that is
+    /// running at all was started by a supervisor, so nothing listening here means one died.
+    ///
+    /// It names the socket because that is the whole diagnosis — the path is derived, so an
+    /// operator reading it can tell "no supervisor" from "the wrong project's supervisor".
+    #[error(
+        "marion could not use this project's supervisor, which is what runs a child since §11 item \
+         28 step 5: {why} ({}). Nothing was started and nothing was journaled. There is \
+         deliberately no in-process fallback — a bridge that quietly ran the child itself would \
+         leave a live node no supervisor owned, could kill, or could hand to a re-attaching client.",
+        socket.display()
+    )]
+    SupervisorUnreachable { socket: PathBuf, why: String },
+    /// **The supervisor's own refusal, carried verbatim.**
+    ///
+    /// §6.1 step 2's gates, an unknown agent type, a `node_token` this supervisor did not mint —
+    /// every one of them is answered by a sentence that already names the rule and the value that
+    /// broke it, written for the model that will read it. Re-wording it in the bridge would put
+    /// marion's guess in front of marion's answer, and paraphrasing a security refusal is how it
+    /// stops naming what was actually wrong.
+    #[error("{0}")]
+    SupervisorRefused(String),
+    /// The node reached a terminal state and marion cannot read the contract it should have left.
+    ///
+    /// Reachable only through a marion defect or a filesystem failure: `run_spawn` writes the file
+    /// **before** the closing bookend this path waits for, precisely so that a reader acting on the
+    /// bookend is not racing the write. Kept as its own variant, naming the path, because "the
+    /// child produced nothing" and "marion cannot find what the child produced" are different news.
+    #[error(
+        "the child reached a terminal state and marion could not read the task contract it should \
+         have written at {}: {why}. The node's own `events.jsonl` is the record of what it did.",
+        path.display()
+    )]
+    NoContract { path: PathBuf, why: String },
+    /// The node's stream ended with an **abort** rather than an exit: marion decided this node's
+    /// fate before it produced a contract (§7.2), and the reason is the one marion journaled.
+    #[error("the child did not run to a contract: {0}")]
+    NodeAborted(String),
+    /// **The caller's turn is not held past this, and the node is still running.**
+    ///
+    /// Not a verdict on the node: it keeps its own wall clock, keeps its slot, and its contract
+    /// will be written where it always would have been. What expired is how long the bridge will
+    /// block one caller — and, because the bridge dispatches frames on one thread, every caller
+    /// behind it. A `spawn { background: true }` plus `wait` is the way to ask again.
+    #[error(
+        "the child outlived the {0} s marion will hold a synchronous `spawn` for — its own wall \
+         clock plus a grace for everything around the run. It is still running and its contract \
+         will still be written; nothing was cancelled."
+    )]
+    OutlivedTheWait(u64),
+}
+
+impl SpawnError {
+    /// **What happened to the child, in three words**, so [`crate::bridge::spawn_result`] can open
+    /// every refusal with one sentence shape without asserting the wrong half of it.
+    ///
+    /// Every variant above the socket ones is a launch that did not happen, and *"could not be
+    /// launched"* is exactly right for them. The ones step 5 added are not: a child that ran, and
+    /// whose contract marion then could not deliver, is a different fact — and telling a parent its
+    /// child never started when a real process did real work is the kind of false report the rest
+    /// of this file exists to delete.
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Self::NoContract { .. } | Self::NodeAborted(_) | Self::OutlivedTheWait(_) => {
+                "ran, and marion cannot hand you its contract"
+            }
+            _ => "could not be launched",
+        }
+    }
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, SpawnError> {

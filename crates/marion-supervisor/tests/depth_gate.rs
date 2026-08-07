@@ -45,11 +45,27 @@
 //! harness silently changing sides — a claude-code child that started ignoring `allowed_tools`, say
 //! — fails here instead of passing quietly on the other assertion.
 //!
-//! # The shape of the run
+//! # The shape of the run, and why it grew a supervisor
 //!
-//! `run_spawn` is called with a caller at depth `max_depth - 1`, so the child it launches sits at
-//! **exactly `max_depth`** — the deepest legal node. That child is scripted to call `spawn`. marion
-//! must refuse it, and must do so before any of the four things a spawn creates exists.
+//! The node under test sits at **exactly `max_depth`** — the deepest legal node — and is scripted
+//! to call `spawn`. marion must refuse it, and must do so before any of the four things a spawn
+//! creates exists.
+//!
+//! Getting a node to that depth used to be a struct literal: this file called `run_spawn` directly
+//! with a `Caller { depth: max_depth - 1 }` it had made up. **§11 item 28 step 5 made that bed
+//! meaningless, and the reason is the point of the change.** The gate no longer believes anything a
+//! caller says about itself: the supervisor reads the caller's depth out of the `SpawnIntent` it
+//! wrote, because a caller that can state its own depth can state `0` — and once `spawn` travels
+//! over a socket any process of this user can reach, "can state" means "can forge". A fabricated
+//! `Caller` is exactly that forgery, so a test built on one would have been asserting about a path
+//! production no longer has.
+//!
+//! So the depth is real now. A detached supervisor is started, and the chain to `max_depth` is
+//! built one honest `agent/spawn` at a time, the test presenting each node's own capability token
+//! the way that node's bridge would (see [`spawn_over_socket`]). The ancestors are shims that block
+//! on a gate — no model calls, no cost — and the node under test is the real binary, routed to by
+//! the shim on [`DELEGATOR_MARKER`]. What the file measures is unchanged; what it measures it
+//! *through* is now the production path.
 //!
 //! The grandchild's half of the script is a complete, working child script for that same harness. If
 //! the gate ever fails to fire, the grandchild **really runs** — patch, report, finish — so this
@@ -68,19 +84,23 @@
 //! machine that cannot run it is worth less than no criterion.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use marion_core::agent_type::{DEFAULT_MAX_DEPTH, builtin};
-use marion_core::contract::TaskId;
+use marion_core::agent_type::DEFAULT_MAX_DEPTH;
 use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
 use marion_harness::adapter_for;
+use marion_proto::params::AgentSpawnParams;
+use marion_proto::{Call, Method, MethodResult, SpawnCaller};
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
-use marion_supervisor::run::{Caller, Env, SpawnRequest, run_spawn};
+use marion_supervisor::socket::project_root;
 use marion_testsupport::{
     fixture_repo, git, kill_hard, on_path, persisted_contracts, scratch, survivors,
 };
 use serde_json::{Value, json};
+
+mod common;
 
 /// The child's own bound. Short: a wedged cell must fail fast rather than wedge CI.
 const CHILD_TIMEOUT_SECS: u64 = 60;
@@ -318,12 +338,172 @@ impl Evidence {
     }
 }
 
+/// **The caller chain, and why the test has to build one.**
+///
+/// §6.1 step 2's gates read the caller's depth, and since §11 item 28 step 5 the supervisor reads
+/// it out of the `SpawnIntent` **it wrote itself** — never out of the frame, because a caller that
+/// can state its own depth can state `0`. That is the whole point of the change, and it is what
+/// this file's old bed can no longer do: it called `run_spawn` directly with a `Caller` struct it
+/// had made up, which is exactly the forgery the gate now refuses to accept from anybody.
+///
+/// So the depth has to be *real*. The chain is three nodes the supervisor genuinely started — a
+/// root at 0 and two children — each one asked for by the test presenting the previous node's own
+/// capability token, which is precisely what that node's bridge would present. The node under test
+/// is then spawned by the node at `max_depth - 1`, lands at `max_depth`, and asks for one more.
+///
+/// Every chain node is a **shim**: a `codex` on the supervisor's `PATH` that blocks on a gate file,
+/// so the chain stays live and costs no model call. The one invocation that must be real — the node
+/// under test — is told apart by [`DELEGATOR_MARKER`] in its argv, and the shim `exec`s the real
+/// binary for it. That keeps the production invocation byte-for-byte the adapter's own while
+/// letting its ancestors be free.
+const CHAIN_TYPE: &str = "codex-impl";
+
+/// The chain's harness binary, which the shim stands in for.
+const CHAIN_PROGRAM: &str = "codex";
+
+/// The wall clock every chain node runs under. Never reached: the gate ends them.
+const CHAIN_TIMEOUT_SECS: u64 = 600;
+
+/// §5.7's idle grace for the fixture's supervisor. Never waited out — a live chain keeps it
+/// resident and the fixture ends it explicitly — and generous so that a test which released its
+/// chain early cannot race a supervisor that had decided to leave.
+const IDLE_GRACE: Duration = Duration::from_secs(600);
+
+/// A bound that exists only to fail. Nothing here waits on work the test has not already caused.
+const BOUND: Duration = Duration::from_secs(180);
+
+/// The shim: a `codex` that blocks until the gate exists, and `exec`s the real binary for the one
+/// invocation that must be real.
+fn chain_shim(dir: &Path, gate: &Path, real: &Path) -> PathBuf {
+    let bin = dir.join(CHAIN_PROGRAM);
+    let script = format!(
+        r#"#!/bin/sh
+case "$1" in
+  --version) echo "codex-cli 0.146.0-marion-depth-shim"; exit 0 ;;
+esac
+case "$*" in
+  # The node under test. Its argv is the adapter's own, so this hands the real harness exactly what
+  # marion compiled — the shim is a router, never a translator.
+  *{marker}*) exec {real} "$@" ;;
+esac
+# A chain node: hold this depth open until the fixture releases it. Mortal by construction, because
+# a shim that could only ever wait for a gate would outlive a panicking test.
+waited=0
+while [ ! -e {gate} ]; do
+  sleep 0.05
+  waited=$((waited + 1))
+  if [ "$waited" -gt 4000 ]; then exit 0; fi
+done
+exit 0
+"#,
+        marker = DELEGATOR_MARKER,
+        real = shell_quote(real),
+        gate = shell_quote(gate),
+    );
+    std::fs::write(&bin, script).expect("the shim is written");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+        .expect("the shim is executable");
+    bin
+}
+
+fn shell_quote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// Where `program` really lives, so the shim can hand its one real invocation on.
+fn which(program: &str) -> PathBuf {
+    let out = std::process::Command::new("which")
+        .arg(program)
+        .output()
+        .expect("`which` runs");
+    assert!(
+        out.status.success(),
+        "this test drives a REAL {program}; put it on PATH"
+    );
+    PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// A node the supervisor owns, and the capability its own bridge would present.
+struct Owned {
+    agent_id: marion_core::contract::AgentId,
+    token: String,
+}
+
+/// One `agent/spawn`, answered — as a root when `caller` is `None`, as that node's child otherwise.
+///
+/// The test is standing exactly where a bridge stands: it holds the caller's `agent_id` and the
+/// token marion wrote into that node's declaration, and it states nothing else. It cannot state a
+/// depth, an agent type or a child count, because [`marion_proto::SpawnCaller`] has nowhere to put
+/// them — which is the property this whole file now rests on.
+fn spawn_over_socket(
+    sup: &common::Supervisor,
+    state: &Path,
+    caller: Option<&Owned>,
+    p: AgentSpawnParams,
+) -> Result<Owned, String> {
+    let p = AgentSpawnParams {
+        caller: caller.map(|c| SpawnCaller {
+            agent_id: c.agent_id.clone(),
+            node_token: c.token.clone(),
+        }),
+        ..p
+    };
+    let answered = sup.call(Call::AgentSpawn(p))?;
+    let MethodResult::AgentSpawn(r) = Method::AgentSpawn
+        .decode_result(&answered)
+        .map_err(|e| e.to_string())?
+    else {
+        panic!("agent/spawn answers with an agent/spawn result");
+    };
+    let token = common::declaration_of(state, &r.agent_id)
+        .remove("MARION_NODE_TOKEN")
+        .expect("declaration_of asserts the token is there");
+    Ok(Owned {
+        agent_id: r.agent_id,
+        token,
+    })
+}
+
+/// The spawn a chain node is asked for: a shim of the chain's own type, holding its depth open.
+fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
+    AgentSpawnParams {
+        agent_type: CHAIN_TYPE.into(),
+        prompt: format!("depth-gate chain node at depth {depth}: hold until released"),
+        caller: None,
+        repo: repo.map(Path::to_path_buf),
+        acceptance_criteria: vec![],
+        writable_scope: vec![],
+        timeout_secs: Some(CHAIN_TIMEOUT_SECS),
+        model: None,
+        // Root-only, and declined: nothing here asserts on §9's change record and taking it would
+        // walk the fixture repo on every node.
+        no_change_record: repo.map(|_| true),
+    }
+}
+
+/// Has this node reached a terminal state, according to the journal every process here writes?
+fn is_terminal(journal: &Path, id: &marion_core::contract::AgentId) -> bool {
+    read_path(journal)
+        .map(|replay| {
+            replay
+                .nodes()
+                .iter()
+                .any(|n| &n.agent_id == id && n.state.is_exited())
+        })
+        .unwrap_or(false)
+}
+
 /// Drive one real child of `node`'s harness at `max_depth`, whose script calls `spawn`.
 fn drive(node: &Node) -> Evidence {
     let dir = scratch(&format!("depth-{}", node.agent_type));
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
+    let shim_dir = dir.join("bin");
+    let gate = dir.join("chain-gate");
     std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    chain_shim(&shim_dir, &gate, &which(CHAIN_PROGRAM));
 
     let server = CannedServer::start(Config {
         addr: ([127, 0, 0, 1], 0).into(),
@@ -332,48 +512,76 @@ fn drive(node: &Node) -> Evidence {
     })
     .expect("the canned provider binds");
 
-    let env = Env {
-        project_dir: ProjectDir::new(&state, &repo),
-        state: state.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some(server.base_url()),
-        auth: marion_harness::Auth::Canned,
-    };
-    let req = SpawnRequest {
-        agent_type: node.agent_type.into(),
-        prompt: format!("{DELEGATOR_MARKER}: delegate this task to a child of your own."),
-        repo: repo.clone(),
-        acceptance_criteria: vec!["the task is delegated".into()],
-        writable_scope: vec!["src/**".into()],
-        timeout_secs: CHILD_TIMEOUT_SECS,
-        model: node.model.map(str::to_string),
-    };
-    // **The caller sits one level above `max_depth`,** so the child this launches is the deepest
-    // legal node — and the grandchild it asks for is the first illegal one. Deriving it from the
-    // constant rather than writing `2` keeps the test honest if the default ever moves.
-    //
-    // The caller's type is the node's **own** type, not a fixed one: §6.1 step 2 reads the caller's
-    // `max_depth`, so a harness whose built-in ever states a different bound is gated by that bound
-    // here rather than by another type's.
-    let caller = Caller {
-        agent_id: "delegator-parent".into(),
-        agent_type: builtin(node.agent_type).expect("the child's own type resolves"),
-        depth: DEFAULT_MAX_DEPTH - 1,
-        // This test is about the **depth** half of §6.1 step 2, so the concurrency half is held
-        // at a value that cannot fire. A non-zero here would make a depth assertion pass or fail
-        // for the other gate's reason.
-        live_children: 0,
-    };
+    // **The supervisor's `PATH`, because the supervisor is what `exec`s a harness now.** The shim is
+    // ahead of the real binaries; `execvp` skips a match that fails to exec and keeps searching, so
+    // the shim is a working program that routes rather than a broken one that gets passed over.
+    let path_env = format!(
+        "{}:{}",
+        shim_dir.to_string_lossy(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let key = project_root(&repo);
+    let project = ProjectDir::new(&state, &key);
+    let mut sup =
+        common::Supervisor::start(&state, &key, &path_env, &server.base_url(), IDLE_GRACE);
 
-    let task_id = TaskId(format!("depth-gate-{}", node.agent_type));
-    let spawn_result = run_spawn(&env, &req, &task_id, &caller)
-        .map(|_| ())
-        .map_err(|e| e.to_string());
+    // ---- the chain: a real root and real children, each asking as the last one ------------------
+    let mut caller = spawn_over_socket(&sup, &state, None, chain_params(Some(&repo), 0))
+        .expect("the chain's root is created over the socket");
+    for depth in 1..DEFAULT_MAX_DEPTH {
+        caller = spawn_over_socket(&sup, &state, Some(&caller), chain_params(None, depth))
+            .unwrap_or_else(|e| panic!("the chain node at depth {depth} must be served: {e}"));
+    }
+
+    // ---- the node under test: the deepest legal node, asked for by the node above it ------------
+    let spawn_result = spawn_over_socket(
+        &sup,
+        &state,
+        Some(&caller),
+        AgentSpawnParams {
+            agent_type: node.agent_type.into(),
+            prompt: format!("{DELEGATOR_MARKER}: delegate this task to a child of your own."),
+            acceptance_criteria: vec!["the task is delegated".into()],
+            writable_scope: vec!["src/**".into()],
+            timeout_secs: Some(CHILD_TIMEOUT_SECS),
+            model: node.model.map(str::to_string),
+            ..chain_params(None, DEFAULT_MAX_DEPTH)
+        },
+    );
+    // Answered at `Spawned`, so the run is still going: wait for the node's own terminal record and
+    // for the contract that record is about. The journal and the contract file are the seams every
+    // process here shares, and both conditions are *facts about them* — never an elapsed time,
+    // which is what §6.1 step 8 forbids substituting for an observation.
+    //
+    // **Both, because they are two moments and the second is the one this file reads.** `run_spawn`
+    // journals `Exited` before it writes the contract, so a walk taken on the terminal record alone
+    // races one `write(2)` — measured, on gemini, as a run with zero contracts where one was about
+    // to exist.
+    if let Ok(under_test) = &spawn_result {
+        let deadline = std::time::Instant::now() + BOUND;
+        loop {
+            let terminal = is_terminal(&project.journal(), &under_test.agent_id);
+            let written = persisted_contracts(&state)
+                .map(|c| !c.is_empty())
+                .unwrap_or(false);
+            if terminal && written {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}: the node at max_depth never both reached a terminal record and left a \
+                 contract (terminal: {terminal}, contract: {written})",
+                node.harness
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let spawn_result = spawn_result.map(|_| ()).map_err(|e| e.to_string());
 
     // Read off the **journal**, which is where §7.1 puts a denial and the only place it is
     // recorded: the contract carries the run's outcome, not marion's answers to the CLI's
     // permission asks. `journal_wiring` reads it the same way.
-    let denied_permissions: Vec<String> = read_path(&env.project_dir.journal())
+    let denied_permissions: Vec<String> = read_path(&project.journal())
         .map(|replay| {
             replay
                 .nodes()
@@ -387,6 +595,9 @@ fn drive(node: &Node) -> Evidence {
     // Walked now, judged after the cleanup below: the walk is fallible, and a state tree that will
     // not enumerate must not be reported as a tree with no contracts in it — that is precisely how
     // "no grandchild contract was written" would pass for the wrong reason.
+    //
+    // Gathered **before** the chain is released, so the only contract that can be here is the one
+    // the node under test wrote: a chain node writes its own the moment the gate opens.
     let walked = persisted_contracts(&state)
         .map_err(|e| format!("{} cannot be walked for contracts: {e}", state.display()));
     let dirs = agent_dirs(&state);
@@ -396,6 +607,16 @@ fn drive(node: &Node) -> Evidence {
         .filter(|l| !l.is_empty())
         .collect();
 
+    // ---- teardown, in the one order that leaves nothing behind ----------------------------------
+    //
+    // Release the chain first: the supervisor does not signal a node's process group when it dies,
+    // so killing it first would strand every blocked shim on its own life cap.
+    std::fs::write(&gate, b"go").expect("the chain is released");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline && !survivors(&dir.to_string_lossy()).is_empty() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    sup.stop();
     drop(server);
     let leaked = survivors(&dir.to_string_lossy());
     for (pid, _) in &leaked {
@@ -428,7 +649,7 @@ fn assert_refused(node: &Node, ev: &Evidence) {
     // ---- never called `spawn`, and "no grandchild" would be true for the wrong reason.
     ev.spawn_result.as_ref().unwrap_or_else(|e| {
         panic!(
-            "{h}: the child at max_depth must itself run — it is the caller under test: {e}\n\
+            "{h}: the node at max_depth must itself be served — it is the caller under test: {e}\n\
              Request log:\n{}",
             ev.log_summary()
         )
@@ -517,24 +738,32 @@ fn assert_refused(node: &Node, ev: &Evidence) {
     // ---- and nothing of a grandchild exists. ----------------------------------------------------
     //
     // The property §3.1 is actually about, and identical under either defence. §6.1 step 2 puts the
-    // gate before the worktree, before `compile()` and before any process, so "refused" has to mean
-    // each of these is exactly one — the child's — and never two.
+    // gate before the worktree, before `compile()` and before any process, so "refused" means each
+    // count below is **exactly the chain plus the node under test**, and never one more.
+    //
+    // The expected numbers are derived from `DEFAULT_MAX_DEPTH` rather than written down, because
+    // the chain's length is: a root at 0, children at 1..max_depth-1, and the node under test at
+    // max_depth. Only the children get a worktree — a root runs in the operator's own checkout
+    // (§9) — so there is one fewer branch than agent directory.
+    let chain = DEFAULT_MAX_DEPTH as usize;
     assert_eq!(
         ev.agent_dirs.len(),
-        1,
-        "{h}: exactly one node ran, so exactly one agent-dir exists; a second is a grandchild \
-         marion created: {:?}",
+        chain + 1,
+        "{h}: the chain is {chain} nodes and the node under test is one more; anything beyond that \
+         is a grandchild marion created: {:?}",
         ev.agent_dirs
     );
     assert_eq!(
         ev.contracts, 1,
-        "{h}: a refused spawn writes no contract, so only the child's is persisted"
+        "{h}: a refused spawn writes no contract, and the chain is still running, so the only \
+         contract on disk is the node under test's"
     );
     assert_eq!(
         ev.branches.len(),
-        1,
-        "{h}: one node, one `marion/<task>` worktree branch; a second means the gate ran after \
-         `make_worktree` rather than before it: {:?}",
+        chain,
+        "{h}: one `marion/<task>` worktree branch per node marion made a worktree for — every node \
+         but the root — and a further one would mean the gate ran after `make_worktree` rather \
+         than before it: {:?}",
         ev.branches
     );
 

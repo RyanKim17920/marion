@@ -1,5 +1,5 @@
 //! **§2's `agent/spawn`, against a supervisor that is a real detached process** (§11 item 28
-//! step 5).
+//! steps 4-6).
 //!
 //! `handler.rs`'s own test module drives `RegistryHandle::call` directly and can therefore claim a
 //! node and hold its token, which is what every assertion about a *served* spawn needs. What it
@@ -15,6 +15,10 @@
 //! this file still does not do is *launch* one, because launching a root means a real harness
 //! binary, a real working tree and a provider — which is `tests/client_run.rs`'s bed, driven
 //! through `marion run` the way an operator drives it.
+//!
+//! The *child* half of this method is exercised end to end by `tests/background_spawn.rs`, where a
+//! real bridge presents a real capability token over this same socket (step 5). What this file adds
+//! is the argument about the **constructor**, which no bridge can make.
 //!
 //! What is observable here without any of that is **which refusal comes back**, and it is still
 //! enough to pin the constructor: a stage 3 built by `RegistryHandle::new` refuses every

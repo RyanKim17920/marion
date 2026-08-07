@@ -8,10 +8,23 @@
 //! re-subscribe to, whose whole existence must be reconstructible from disk.
 //!
 //! The journal already recorded *that* such a child existed and how it ended. It records not one
-//! word of what the child **said**. That is what this asserts is now on disk, for both node kinds
-//! and therefore both call sites: a root recorded by `root::launch_watched` in `marion run`'s
-//! process, and a child recorded by `run::run_spawn` inside the **bridge's** process, which is the
-//! only process that ever has a child's frames.
+//! word of what the child **said**. That is what this asserts is now on disk, for both node kinds.
+//!
+//! # The split this file used to pin, and why there is no longer one
+//!
+//! It read: *"a root recorded by `root::launch_watched` in `marion run`'s process, and a child
+//! recorded by `run::run_spawn` inside the **bridge's** process, which is the only process that
+//! ever has a child's frames."* That was §7.3.3's own claim and it was true when it was written.
+//! §11 item 28 steps 5 and 6 made every clause of it false: `marion run` is a socket client that
+//! renders what it is sent, the per-child bridge is a courier that dials `agent/spawn`, and **one
+//! process holds both node kinds' streams** — the supervisor, which §2 and §5.7 make exactly one
+//! per project and the socket lock enforces.
+//!
+//! So the property is stronger than the one it replaced, and the test's name says which: two node
+//! kinds, two recording paths inside one process (`root::launch_owned`'s duplex stream and
+//! `run::run_spawn`'s post-hoc capture of a `LaunchOnly` child), one project directory, and every
+//! stream bookended at both ends. The old shape could not have asserted the last part, because a
+//! child's stream lived or died with a process the harness owned.
 //!
 //! # Running it
 //!
@@ -106,7 +119,7 @@ fn kinds(events: &[Event]) -> Vec<String> {
 }
 
 #[test]
-fn a_real_run_leaves_every_node_replayable_from_its_own_events_file() {
+fn a_real_run_leaves_both_node_kinds_replayable_from_streams_one_supervisor_wrote() {
     let dir = scratch("child-events");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
@@ -153,6 +166,16 @@ fn a_real_run_leaves_every_node_replayable_from_its_own_events_file() {
         dirs.len(),
         2,
         "one root and one child were expected: {dirs:?}"
+    );
+    // **One project, therefore one supervisor** (§2 keys a supervisor on the project and the socket
+    // lock makes it one; §5.7's start race is what settles it). Two agent directories under one
+    // `<state>/<project-hash>/agents/` is the checkable half of the claim above: whichever process
+    // wrote these two streams, it was not two of them in the way it used to be — the root's client
+    // has exited by now and no bridge outlives its harness.
+    assert_eq!(
+        dirs[0].parent(),
+        dirs[1].parent(),
+        "both nodes' streams belong to one project's directory: {dirs:?}"
     );
 
     // ---- every node that ran has a stream, and it is bounded at both ends ----------------------

@@ -12,10 +12,14 @@
 //! `marion-supervisor mcp` call the *same* `run::run_spawn`, not two copies that could drift while
 //! the socket is not yet there to force agreement.
 
-/// §5.4's `background`, honoured: the bridge's table of children running while their caller has
-/// the turn back, and the `wait` that resolves the handle it hands out.
+/// §5.4's `background`, honoured: the handles this bridge has handed out, and which node each one
+/// is about. Since §11 item 28 step 5 it owns no child and runs no thread.
 pub mod background;
 pub mod bridge;
+/// §11 item 28 step 5: the per-child MCP bridge as a **socket client**. It dials §2's socket,
+/// sends `agent/spawn`, and reads the node's own stream back — carrying a request and an answer
+/// rather than owning a process.
+pub mod courier;
 /// §5.7's start and S15's detach: how a `marion-supervisor` comes to exist detached, and how a
 /// client that finds nothing listening asks for one without becoming a second start race.
 pub mod detach;

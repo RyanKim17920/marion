@@ -61,13 +61,20 @@ pub const DEPTH_ENV: &str = "MARION_DEPTH";
 /// capability token bound to its `AgentId`"*, which until §11 item 28 step 4 was a sentence in the
 /// design with nothing implementing it.
 ///
-/// [`AGENT_ID_ENV`] tells the bridge who it serves, and once `agent/spawn` is on the socket the
-/// bridge states that identity back over a connection nobody authenticated: `serve_conn` performs
-/// no `SO_PEERCRED`/`getpeereid` check, so **any process that can `connect(2)` could assert
-/// `depth: 0` and spawn**, and §6.1 step 2's gates would be a check the caller chooses whether to
-/// fail. This is what makes the identity provable rather than merely stated: the supervisor minted
-/// the value, holds the `AgentId → token` binding in memory, and wrote it into exactly one place —
-/// this declaration, which only the node's own bridge reads.
+/// [`AGENT_ID_ENV`] tells the bridge who it serves, and since §11 item 28 step 5 the bridge states
+/// that identity back over a connection nobody authenticated: `serve_conn` performs no
+/// `SO_PEERCRED`/`getpeereid` check for a node's spawn, so **any process that can `connect(2)` could
+/// assert another node's `AgentId`**, and §6.1 step 2's gates would be a check the caller chooses
+/// whether to fail. This is what makes the identity provable rather than merely stated: the
+/// supervisor minted the value, holds the `AgentId → token` binding in memory, and wrote it into
+/// exactly one place — this declaration, which only the node's own bridge reads.
+///
+/// **In memory, so a supervisor restart invalidates it**, and that is now visible rather than
+/// theoretical: the node keeps running, its bridge keeps serving, and its next `spawn` is refused
+/// because the supervisor that minted this value is gone (`handler::resolve_caller` says so in the
+/// refusal). §5.4 asks for a capability bound to an `AgentId`, and a secret at rest under `<state>`
+/// would be readable by exactly the processes it excludes — so the cost is the restart, taken
+/// deliberately (§11 item 28, open question 2).
 ///
 /// **Present or absent, never empty**, for [`BASE_URL_ENV`]'s reason sharpened: `MARION_NODE_TOKEN=""`
 /// read back through `var()` is `Ok("")`, and a capability token every process on the machine can
@@ -348,8 +355,10 @@ pub struct McpEnv {
     /// The node's depth, root = 0. Its `spawn` creates a node at `depth + 1`.
     pub depth: u32,
     /// §5.4's capability token for this node. `None` where the supervisor minted none — a node
-    /// spawned by a path that does not own it, which is every path but the socket's `agent/spawn`
-    /// until steps 5 and 6 land. See [`NODE_TOKEN_ENV`].
+    /// spawned by a path that does not own it, which since steps 5 and 6 is no production path at
+    /// all: every root and every child now comes through the socket's `agent/spawn`. A node that
+    /// somehow has none runs normally and cannot spawn, which its bridge reports by name. See
+    /// [`NODE_TOKEN_ENV`].
     pub node_token: Option<String>,
     pub ready_file: PathBuf,
 }

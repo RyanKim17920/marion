@@ -1,29 +1,40 @@
-//! **`spawn { background: true }` really is not synchronous** — and the other three things that
-//! only became true, or only became false, on the day it stopped being.
+//! **The bridge is a courier** — §11 item 28 step 5 — and `spawn { background: true }` really is
+//! not synchronous.
 //!
 //! Driven through the **real `marion-supervisor mcp` binary over stdio**, the way a harness drives
-//! it, because `background` is read in `main::handle_tool_call` and a library-level test would
-//! assert about `Background` rather than about the verb a model actually calls.
+//! it, against a **real detached supervisor** started the way `detach.rs` stage 3 starts one. Both
+//! halves are real processes because the property under test is a property of processes: which one
+//! owns a child, and what happens to that child when the other one dies.
+//!
+//! # The bed, and why each piece of it is a real thing
+//!
+//! Every test here needs a caller with a name and a capability, because since step 5 that is what a
+//! `spawn` presents: `SpawnCaller { agent_id, node_token }`, checked against the supervisor's own
+//! table. There is exactly one honest way to obtain those — be a node the supervisor started — and
+//! so the fixture does the whole bootstrap:
+//!
+//! 1. a supervisor, spawned as stage 3 with the shim ahead of `codex` on its `PATH` (the supervisor
+//!    is what `exec`s a harness now, so its `PATH` is the one that decides which binary runs);
+//! 2. a **root**, created over the socket with `caller: None` — the shim again, blocked on a gate
+//!    the fixture holds shut for the whole test, so the caller stays non-terminal;
+//! 3. the bridge, started with **the environment marion itself wrote into that root's declaration**,
+//!    read back off the `config.toml` the supervisor generated. Not a hand-written env block: a
+//!    declaration marion wrote is the only thing a real harness ever hands a bridge, and reading it
+//!    back is what makes these tests fail if `bridge_env_pairs` ever stops carrying the token.
 //!
 //! # The child is a shim, and that is the point
 //!
-//! Every test here puts a `codex` shim first on `PATH`. The shim is a real process that marion
-//! really launches, really waits on and really reaps — what it is not is a language model. It
-//! **blocks until the test creates a gate file**, and that is the entire reason this file can make
-//! an ordering claim at all:
+//! The shim is a real process that marion really launches, really waits on and really reaps — what
+//! it is not is a language model. It **blocks until the test creates a gate file**, and that is the
+//! entire reason this file can make an ordering claim at all:
 //!
 //! > if `spawn` were synchronous, the reply to the `spawn` frame could not arrive until the child
 //! > exited, and the child cannot exit until the test — which is blocked reading that reply —
 //! > creates the gate file. A synchronous implementation **deadlocks**.
 //!
 //! No elapsed time is measured anywhere and no assertion says "this was fast". The bound in
-//! [`read_reply`] exists solely so a deadlock is a loud failure naming the deadlock instead of a
-//! suite that hangs, which is `duplex.rs`'s self-destruct idiom applied to a test.
-//!
-//! **Why a shim rather than a real `codex` against the canned provider.** A real child finishes on
-//! its own schedule, so every assertion about *"the caller is here while the child is there"* would
-//! be a race the test happened to win. The shim makes the child's terminal transition an event the
-//! test causes, which is the difference between an ordering assertion and a timing one.
+//! [`Bridge::read_reply`] exists solely so a deadlock is a loud failure naming the deadlock instead
+//! of a suite that hangs, which is `duplex.rs`'s self-destruct idiom applied to a test.
 //!
 //! # Running it
 //!
@@ -31,25 +42,37 @@
 //! cargo test -p marion-supervisor --test background_spawn
 //! ```
 //!
-//! It needs **no harness binary, no network and no credential**: the shim replaces `codex` and
-//! nothing here reaches a model.
+//! It needs **no harness binary, no network and no credential**: the shim replaces `codex` for the
+//! root and for every child, and nothing here reaches a model.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
-use marion_testsupport::{Liveness, Scratch, fixture_repo, liveness, scratch};
+use marion_core::contract::AgentId;
+use marion_proto::params::AgentSpawnParams;
+use marion_proto::{Call, Method, MethodResult};
+use marion_supervisor::socket::project_root;
+use marion_testsupport::{Liveness, Scratch, fixture_repo, liveness, scratch, survivors, sweep};
 use serde_json::{Value, json};
+
+mod common;
+use common::{Supervisor, declaration_of, walk};
+
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
 
 /// A bound that exists **only to fail**, never to be reached on a passing run.
 ///
-/// Every reply this file waits for is produced by a bridge that is not waiting on anything the
-/// test has not already done, so the passing path takes milliseconds. Reaching this bound means
-/// the bridge is blocked — which, for the ordering control, is precisely the bug under test. It is
-/// therefore deliberately generous: a bound tight enough to be a *timing* assertion would turn a
-/// slow machine into a false failure, and this bound is never the thing being measured.
+/// Every reply this file waits for is produced by a bridge and a supervisor that are not waiting on
+/// anything the test has not already done, so the passing path takes milliseconds. Reaching this
+/// bound means something is genuinely blocked — which, for the ordering control, is precisely the
+/// bug under test. It is therefore deliberately generous: a bound tight enough to be a *timing*
+/// assertion would turn a slow machine into a false failure.
 ///
 /// **It must never be widened to fix a flake.** If it is ever reached, something is genuinely
 /// blocked and the fix is upstream of this file.
@@ -66,29 +89,42 @@ const CHILD_TIMEOUT_SECS: u64 = 120;
 /// the thing that ends one on a failing run.
 const SHIM_LIFE: Duration = Duration::from_secs(90);
 
-/// How long the EOF-hold control samples for an early departure.
+/// How long a departure control samples for an early death.
 ///
-/// **Not a correctness bound.** A bridge that drops the hold exits within milliseconds of EOF, so
-/// this only has to be longer than a process teardown; a machine slow enough to exceed it takes
+/// **Not a correctness bound.** A child that died with its bridge dies within milliseconds of it,
+/// so this only has to be longer than a process teardown; a machine slow enough to exceed it takes
 /// the test's other branch and still passes. It is deliberately *not* named a timeout: nothing
 /// fails because this elapsed.
-const EOF_SAMPLE: Duration = Duration::from_secs(3);
+const DEPARTURE_SAMPLE: Duration = Duration::from_secs(3);
+
+/// §5.7's idle grace for the fixture's supervisor.
+///
+/// Generous on purpose and never waited out: every test holds a live root, so §5.7's exclusion list
+/// keeps the supervisor resident regardless, and the fixture ends it explicitly. A short grace would
+/// make a test that opened its gates early race a supervisor that had decided to leave.
+const IDLE_GRACE: Duration = Duration::from_secs(600);
+
+/// Appears in the **root's** argv and nowhere else, so the shim can tell the one invocation that
+/// must outlive the test from the children that must not.
+const ROOT_MARKER: &str = "MARION-BACKGROUND-SPAWN-ROOT-a41f";
 
 /// A `codex` that blocks until the test says otherwise.
 ///
 /// * `--version` answers immediately — unless the `slow_version` marker exists, which is how one
-///   test reproduces a harness that answers its run and then hangs on the version probe.
-/// * Anything else writes a *started* marker — which is what lets a test assert a real process
-///   existed, rather than inferring it — then polls for the gate file and exits 0.
-/// * Anything else writes a *started* marker — which is what lets a test assert a real process
-///   existed, rather than inferring it — then polls for the gate file and exits 0.
+///   test reproduces a harness that hangs on the version probe.
+/// * An invocation whose argv carries [`ROOT_MARKER`] is **the root**: it waits on the root gate,
+///   which the fixture opens only as it tears down, and writes no child markers.
+/// * Anything else is a child: it writes a *started* marker — which is what lets a test assert a
+///   real process existed, rather than inferring it — then polls for the gate file and exits 0,
+///   writing a *done* marker on the way out.
 ///
-/// It writes nothing to stdout, so the child's contract lands `Unreported`. That is correct and
+/// It writes nothing to stdout, so a child's contract lands `Unreported`. That is correct and
 /// irrelevant: this file asserts about *when* contracts arrive and *whether* spawns are refused,
 /// never about what a child said.
 fn shim(
     dir: &Path,
     gate: &Path,
+    root_gate: &Path,
     started_dir: &Path,
     done_dir: &Path,
     slow_version: &Path,
@@ -100,44 +136,48 @@ case "$1" in
   --version)
     # **A harness that hangs on `--version`.** Opt-in, because every other test in this file needs
     # the probe to be instant — which, since §11 item 28 step 1 moved the probe ahead of the launch
-    # (§6.1 step 3), is now a claim about the *pre-launch* path rather than about a caller waiting
-    # after its child is done. The child's `timeout_secs` bounds the run and never this, so an
-    # unbounded probe is an unbounded `run_spawn` either way, and on the background path a `wait`
-    # that never returns.
-    #
-    # It sleeps rather than waiting for the gate, so the hang does not depend on the gate's state
-    # in either ordering; it only has to outlast marion's own probe bound to be a hang at all. The
-    # sleep is the shim's own life cap, so no bad run strands it indefinitely.
+    # (§6.1 step 3), is a claim about the *pre-launch* path. It sleeps rather than waiting for a
+    # gate, so the hang does not depend on either gate's state; the sleep is the shim's own life cap,
+    # so no bad run strands it indefinitely.
     if [ -e {slow_version} ]; then sleep {life_secs}; fi
     echo "codex-cli 0.146.0-marion-shim"; exit 0 ;;
 esac
-mkdir -p {started} {done}
-# A distinct marker per invocation, so a test can count the children that really launched.
-: > {started}/$$
+# The root is told apart by its own argv and waits on its own gate: it must outlive every child,
+# because it is the caller whose `agent_id` and capability token every `spawn` in this file
+# presents. It writes no marker, so a test counting children counts children.
+case "$*" in
+  *{root_marker}*) wait_for={root_gate} ;;
+  *) wait_for={gate}
+     mkdir -p {started} {done}
+     # A distinct marker per invocation, so a test can count the children that really launched.
+     : > {started}/$$ ;;
+esac
 # **Mortal by construction.** The gate lives in a `Scratch` directory that is removed when the
-# test's fixture drops, so a shim that only ever waited for the gate would spin forever if the
-# test panicked, or if the bridge holding it was killed by `Bridge::drop` — which is exactly what
-# a mutation run does. One was found stranded that way on 2026-08-06. This is S16's own lesson
-# applied to a test fixture: a probe that cannot die on its own is a leak waiting for a bad run,
-# and the cap must be shorter than the child's contract timeout so it is never what ends a
-# passing run.
+# test's fixture drops, so a shim that only ever waited for the gate would spin forever if the test
+# panicked. This is S16's own lesson applied to a test fixture: a probe that cannot die on its own
+# is a leak waiting for a bad run, and the cap must be shorter than the child's contract timeout so
+# it is never what ends a passing run.
 waited=0
-while [ ! -e {gate} ]; do
+while [ ! -e "$wait_for" ]; do
   sleep 0.05
   waited=$((waited + 1))
   if [ "$waited" -gt {life_ticks} ]; then
     exit 0
   fi
 done
-# And a second marker at exit, so "the child has finished" is an event the test can observe
-# rather than a time it has to guess. The EOF-hold control is an ordering claim between this
-# marker and the bridge's own exit.
-: > {done}/$$
+case "$*" in
+  *{root_marker}*) : ;;
+  # A second marker at exit, so "the child has finished" is an event the test can observe rather
+  # than a time it has to guess.
+  *) : > {done}/$$ ;;
+esac
 exit 0
 "#,
         started = shell_quote(started_dir),
         done = shell_quote(done_dir),
         gate = shell_quote(gate),
+        root_gate = shell_quote(root_gate),
+        root_marker = ROOT_MARKER,
         slow_version = shell_quote(slow_version),
         life_ticks = SHIM_LIFE.as_millis() / 50,
         life_secs = SHIM_LIFE.as_secs(),
@@ -156,12 +196,15 @@ fn shell_quote(p: &Path) -> String {
     format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
 }
 
+// ---------------------------------------------------------------------------------------------
+// The supervisor, and the root whose declaration every bridge here is started from.
+// ---------------------------------------------------------------------------------------------
+
 /// One bridge process, driven the way a harness drives it.
 struct Bridge {
     child: Child,
-    /// `Option` so stdin can be closed *without* consuming the `Bridge` — the EOF hold test has to
-    /// close it and then keep observing the process, and `Drop`'s cleanup must survive a panic in
-    /// between.
+    /// `Option` so stdin can be closed *without* consuming the `Bridge` — the departure tests have
+    /// to close it and then keep observing, and `Drop`'s cleanup must survive a panic in between.
     stdin: Option<ChildStdin>,
     /// Lines, read by a thread, so [`DEADLOCK_BOUND`] can actually bound the wait.
     ///
@@ -175,43 +218,21 @@ struct Bridge {
 }
 
 impl Bridge {
-    /// Start `marion-supervisor mcp` with the declaration marion would have written for a **root**
-    /// (`MARION_AGENT_ID` / `MARION_AGENT_TYPE` / `MARION_DEPTH`), plus the shim ahead of `codex`
-    /// on `PATH`.
+    /// Start `marion-supervisor mcp` with **the declaration marion wrote for the fixture's root**,
+    /// optionally with one key overridden.
     ///
-    /// The environment is set on the child process, never on the test process: `PATH` is global
-    /// state and a test that mutated its own would leak the shim into every other test in this
-    /// binary, including ones that expect a real harness.
-    fn start(repo: &Path, state: &Path, shim_dir: &Path) -> Self {
-        Self::start_with_path(
-            repo,
-            state,
-            &format!(
-                "{}:{}",
-                shim_dir.to_string_lossy(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
-    }
-
-    /// [`Bridge::start`] with the `PATH` stated outright, for the one test that needs to control
-    /// what marion can and cannot find.
-    ///
-    /// **`execvp` does not stop at the first match.** A `PATH` entry whose `codex` fails to exec is
-    /// skipped and the search continues, so putting a deliberately unlaunchable shim first proves
-    /// nothing while a real `codex` sits further along — which is exactly what this file's own
-    /// fixture did on the first run of that test, launching the machine's real harness. The only
-    /// way to make "the harness cannot be launched" a fact rather than a hope is to state the whole
-    /// search path.
-    fn start_with_path(repo: &Path, state: &Path, path: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_marion-supervisor"))
-            .arg("mcp")
-            .env("PATH", path)
-            .env("MARION_REPO", repo)
-            .env("MARION_STATE_DIR", state)
-            .env("MARION_AGENT_ID", "root-background-spawn")
-            .env("MARION_AGENT_TYPE", "claude")
-            .env("MARION_DEPTH", "0")
+    /// The environment is set on the child process, never on the test process: it is global state
+    /// and a test that mutated its own would leak into every other test in this binary.
+    fn start(declaration: &BTreeMap<String, String>, overrides: &[(&str, &str)]) -> Self {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_marion-supervisor"));
+        cmd.arg("mcp");
+        for (k, v) in declaration {
+            cmd.env(k, v);
+        }
+        for (k, v) in overrides {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -293,18 +314,23 @@ impl Bridge {
     }
 
     /// EOF: what a *well-behaved* client's departure looks like to the bridge. `s16` measured that
-    /// a real Claude Code harness does **not** do this — see the module note on that test.
+    /// a real Claude Code harness does **not** do this — see the departure tests.
     fn close_stdin(&mut self) {
         self.stdin = None;
     }
 
-    /// The bridge's **own** pid — the process that calls `run_spawn`, not the process it starts.
-    ///
-    /// Held only so the pid assertion can name the mutation it rules out: a `Spawned` record
-    /// filled in with `std::process::id()` names a live process and would satisfy any assertion
-    /// that only asked for liveness.
     fn pid(&self) -> i32 {
         self.child.id() as i32
+    }
+
+    /// SIGKILL, waited on. **Uncatchable, and that is the point**: it is what s16 measured a real
+    /// harness doing to its MCP server, so nothing the bridge might run on the way out can be what
+    /// keeps a child alive.
+    fn kill_hard(&mut self) {
+        // SAFETY: `kill` on the pid of a child this process spawned and has not reaped.
+        unsafe { kill(self.child.id() as i32, 9) };
+        let _ = self.child.wait();
+        self.stdin = None;
     }
 
     /// Close stdin and wait for the bridge to leave.
@@ -316,9 +342,9 @@ impl Bridge {
 
 impl Drop for Bridge {
     fn drop(&mut self) {
-        // A test that panicked mid-conversation must not leave a bridge — or the shim children it
-        // is holding — behind. `kill` is unconditional and its error ignored: the process may
-        // already be gone, which is the outcome this wants.
+        // A test that panicked mid-conversation must not leave a bridge behind. `kill` is
+        // unconditional and its error ignored: the process may already be gone, which is the
+        // outcome this wants.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -365,82 +391,172 @@ struct Fixture {
     _scratch: Scratch,
     repo: PathBuf,
     state: PathBuf,
-    shim_dir: PathBuf,
     gate: PathBuf,
+    root_gate: PathBuf,
     started: PathBuf,
     done: PathBuf,
     slow_version: PathBuf,
+    shim_dir: PathBuf,
+    supervisor: Supervisor,
+    /// The node every bridge in this file serves, and whose capability token it presents.
+    root_id: AgentId,
+    /// The `env` block marion wrote into that root's own declaration.
+    declaration: BTreeMap<String, String>,
+    needle: String,
 }
+
+/// The caller's agent type, which is the root's — §6.1 step 2's gates read the **caller's** bounds.
+const CALLER_TYPE: &str = "codex";
 
 fn fixture(tag: &str) -> Fixture {
     let s = scratch(tag);
-    let root = s.to_path_buf();
-    let repo = fixture_repo(&root);
-    let state = root.join("state");
-    let shim_dir = root.join("bin");
-    let started = root.join("started");
-    let done = root.join("done");
-    let gate = root.join("gate");
-    let slow_version = root.join("slow-version");
+    let dir = s.to_path_buf();
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    let shim_dir = dir.join("bin");
+    let started = dir.join("started");
+    let done = dir.join("done");
+    let gate = dir.join("gate");
+    let root_gate = dir.join("root-gate");
+    let slow_version = dir.join("slow-version");
     std::fs::create_dir_all(&shim_dir).expect("the shim dir");
     std::fs::create_dir_all(&state).expect("the state dir");
-    shim(&shim_dir, &gate, &started, &done, &slow_version);
+    shim(&shim_dir, &gate, &root_gate, &started, &done, &slow_version);
+
+    // **The whole search path is stated, not extended.** `execvp` does not stop at the first match:
+    // a `PATH` entry whose `codex` fails to exec is skipped and the search continues, so a test that
+    // deliberately breaks the shim would otherwise launch the machine's real harness — which is how
+    // that was discovered rather than reasoned about. The two system directories are *asserted* to
+    // hold no `codex` rather than assumed to, so the bed states its own precondition; `git`, `sh`
+    // and `ps` — the only other programs the spawn path shells out to — live in them.
+    for dir in ["/usr/bin", "/bin"] {
+        assert!(
+            !Path::new(dir).join("codex").exists(),
+            "{dir} holds a `codex`, so this bed could launch a real harness and assert nothing"
+        );
+    }
+    let path_env = format!("{}:/usr/bin:/bin", shim_dir.to_string_lossy());
+    let key = project_root(&repo);
+    let supervisor = Supervisor::start(
+        &state,
+        &key,
+        &path_env,
+        // Nothing here reaches it: every harness invocation is the shim.
+        "http://127.0.0.1:8099/v1",
+        IDLE_GRACE,
+    );
+
+    // The root, over the socket, with `caller: None` — the one spawn in this file that needs no
+    // capability, because there is no node behind it yet (`handler::root_spawn_authorized`).
+    let answered = supervisor
+        .call(Call::AgentSpawn(AgentSpawnParams {
+            agent_type: CALLER_TYPE.into(),
+            prompt: format!("{ROOT_MARKER}: hold until this fixture is torn down"),
+            caller: None,
+            repo: Some(repo.clone()),
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            timeout_secs: Some(SHIM_LIFE.as_secs()),
+            model: None,
+            // §9's change record declined, deliberately: it is a `git add -A` walk of the operator's
+            // own checkout on every fixture in this file, and nothing here asserts on it.
+            no_change_record: Some(true),
+        }))
+        .expect("the root is created over the socket");
+    let MethodResult::AgentSpawn(root) = Method::AgentSpawn
+        .decode_result(&answered)
+        .expect("a readable agent/spawn result")
+    else {
+        panic!("agent/spawn answers with an agent/spawn result");
+    };
+    assert_eq!(
+        root.task_id, None,
+        "§9: a root has no task contract, so nothing may name one for it"
+    );
+    let declaration = declaration_of(&state, &root.agent_id);
     Fixture {
+        needle: dir.to_string_lossy().to_string(),
         _scratch: s,
         repo,
         state,
-        shim_dir,
         gate,
+        root_gate,
         started,
         done,
         slow_version,
+        shim_dir,
+        supervisor,
+        root_id: root.agent_id,
+        declaration,
+    }
+}
+
+impl Drop for Fixture {
+    /// **Release every shim, then end the supervisor, then prove nothing is left.**
+    ///
+    /// In that order and not the other: the supervisor does not signal a node's process group when
+    /// it is killed, so a fixture that killed it first would leave every blocked shim waiting out
+    /// its own life cap. The gates are opened first so the ordinary path ends the children the way
+    /// a run ends them, and `sweep` is the safety net for the run where it did not.
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.gate, b"go");
+        let _ = std::fs::write(&self.root_gate, b"go");
+        let deadline = Instant::now() + DEPARTURE_SAMPLE;
+        while Instant::now() < deadline && !survivors(&self.needle).is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.supervisor.stop();
+        let left = sweep(&self.needle);
+        assert!(
+            left.is_empty(),
+            "this fixture left live processes behind: {left:?}"
+        );
     }
 }
 
 impl Fixture {
     fn bridge(&self) -> Bridge {
-        Bridge::start(&self.repo, &self.state, &self.shim_dir)
+        Bridge::start(&self.declaration, &[])
     }
-    /// A bridge whose **only** `codex` is a deliberately unlaunchable one.
+
+    /// A bridge whose declaration carries a token the supervisor never minted.
+    fn bridge_with_a_forged_token(&self) -> Bridge {
+        Bridge::start(&self.declaration, &[("MARION_NODE_TOKEN", "not-the-token")])
+    }
+
+    /// A bridge pointed at a project whose supervisor does not exist.
     ///
-    /// The shim is rewritten with an interpreter that does not exist, so it is still found and
-    /// still executable and the failure lands inside `command.spawn()` — and the `PATH` is cut
-    /// down to the system directories, because `execvp` skips a match that fails to exec and keeps
-    /// searching. With the ordinary `PATH` this test launched the machine's real `codex` instead,
-    /// which is how that was discovered rather than reasoned about.
-    ///
-    /// The two system directories are asserted to hold no `codex` rather than assumed to, so the
-    /// test states its own precondition instead of depending on how the machine was set up. `git`
-    /// and `ps` — the only other programs the spawn path shells out to — live in them.
-    fn bridge_with_an_unlaunchable_harness(&self) -> Bridge {
+    /// The socket path is *derived* from `MARION_STATE_DIR` and the tree, so this is the only way to
+    /// aim a bridge somewhere else — there is deliberately no environment variable that names the
+    /// socket, and that absence is what the test using this depends on.
+    fn bridge_with_no_supervisor(&self, empty_state: &Path) -> Bridge {
+        Bridge::start(
+            &self.declaration,
+            &[("MARION_STATE_DIR", &empty_state.to_string_lossy())],
+        )
+    }
+
+    /// Break the shim so that a launch fails **inside `command.spawn()`**: the interpreter does not
+    /// exist, so the file is still found and still executable and the failure is the exec.
+    fn break_the_harness(&self) {
         let bin = self.shim_dir.join("codex");
         std::fs::write(&bin, "#!/marion/no/such/interpreter\nexit 0\n")
             .expect("the broken shim is written");
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
             .expect("the broken shim is executable");
-        for dir in ["/usr/bin", "/bin"] {
-            assert!(
-                !Path::new(dir).join("codex").exists(),
-                "{dir} holds a `codex`, so the reduced PATH below would let marion launch a real \
-                 harness and this test would assert nothing"
-            );
-        }
-        Bridge::start_with_path(
-            &self.repo,
-            &self.state,
-            &format!("{}:/usr/bin:/bin", self.shim_dir.to_string_lossy()),
-        )
     }
 
     /// Make the shim hang when asked its version, from the next invocation on.
     fn make_version_slow(&self) {
         std::fs::write(&self.slow_version, b"hang").expect("the slow-version marker is written");
     }
-    /// Release every blocked shim child.
+
+    /// Release every blocked child. The root has its own gate and is untouched.
     fn open_gate(&self) {
         std::fs::write(&self.gate, b"go").expect("the gate opens");
     }
+
     /// How many shim children have actually started. A *measurement* of processes marion launched,
     /// not an inference from marion's own bookkeeping — the S7 lesson is that a check which reads
     /// only the thing under test cannot see it lying.
@@ -449,13 +565,13 @@ impl Fixture {
             .map(|d| d.flatten().count())
             .unwrap_or(0)
     }
+
     /// The pids of the shim children that have actually started, **as the children named
     /// themselves**.
     ///
     /// The shim's marker file is named `$$` — the started process's own pid, written by that
     /// process. So this is the one measurement in the file that can contradict marion about
-    /// *which* process it started, rather than only about how many. Every other route to a pid
-    /// here would be marion's own bookkeeping restated.
+    /// *which* process it started, rather than only about how many.
     fn started_pids(&self) -> Vec<i32> {
         let mut pids: Vec<i32> = std::fs::read_dir(&self.started)
             .map(|d| {
@@ -468,80 +584,137 @@ impl Fixture {
         pids
     }
 
-    /// How many shim children have actually *exited*. The other end of the same measurement, and
-    /// the one the EOF-hold control orders the bridge's own exit against.
+    /// How many shim children have actually *exited*. The other end of the same measurement.
     fn finished_children(&self) -> usize {
         std::fs::read_dir(&self.done)
             .map(|d| d.flatten().count())
             .unwrap_or(0)
     }
 
+    /// Wait until at least `n` children have started, or fail naming what was seen.
+    fn await_children(&self, n: usize) {
+        let deadline = Instant::now() + DEADLOCK_BOUND;
+        while self.started_children() < n {
+            assert!(
+                Instant::now() < deadline,
+                "expected {n} child process(es) to have started, saw {}",
+                self.started_children()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Every `journal.jsonl` under this fixture's state dir, concatenated.
     ///
-    /// The project hash that names the directory is derived inside the bridge, so the path is
+    /// The project hash that names the directory is derived inside marion, so the path is
     /// discovered rather than reconstructed — a test that recomputed the hash would be asserting
     /// against its own copy of the derivation instead of against the file marion wrote.
     fn journal_text(&self) -> String {
-        fn walk(dir: &Path, out: &mut String) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
+        let mut out = String::new();
+        walk(&self.state, &mut |p| {
+            if p.file_name().is_some_and(|n| n == "journal.jsonl") {
+                out.push_str(&std::fs::read_to_string(p).unwrap_or_default());
+            }
+        });
+        out
+    }
+
+    /// The `pid` of every `Spawned` record about a node that is **not the root**, in order.
+    ///
+    /// `Option<i32>` and not `i32`, because the two absences this file has to keep apart are *"no
+    /// `Spawned` record has been written yet"* (an empty vector) and *"a `Spawned` record was
+    /// written and records no pid"* (a `None` element). Collapsing them would let the record's own
+    /// regression — going back to `pid: None` — read as a record that had not arrived yet, which is
+    /// the one mutation the pid assertion exists to catch.
+    ///
+    /// The root is excluded because the fixture's own caller is a node too, and its pid is not the
+    /// news any test here is about.
+    fn child_spawned_pids(&self) -> Vec<Option<i32>> {
+        self.journal_text()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v.get("kind").and_then(|k| k.get("Spawned")).cloned())
+            .filter(|s| s.get("agent_id").and_then(Value::as_str) != Some(&self.root_id.0))
+            .map(|s| s.get("pid").and_then(Value::as_i64).map(|p| p as i32))
+            .collect()
+    }
+
+    /// The one child agent directory this fixture's node has, discovered rather than computed.
+    fn child_dir(&self) -> PathBuf {
+        let mut dirs = Vec::new();
+        let mut stack = vec![self.state.clone()];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
             };
             for e in entries.flatten() {
                 let p = e.path();
-                if p.is_dir() {
-                    walk(&p, out);
-                } else if p.file_name().is_some_and(|n| n == "journal.jsonl") {
-                    out.push_str(&std::fs::read_to_string(&p).unwrap_or_default());
+                if !p.is_dir() {
+                    continue;
+                }
+                if d.file_name().is_some_and(|n| n == "agents") {
+                    if !p.to_string_lossy().contains(&self.root_id.0) {
+                        dirs.push(p);
+                    }
+                } else {
+                    stack.push(p);
                 }
             }
         }
-        let mut out = String::new();
-        walk(&self.state, &mut out);
-        out
+        assert_eq!(
+            dirs.len(),
+            1,
+            "exactly one child was asked for, and its stream is what this asserts about: {dirs:?}"
+        );
+        dirs.pop().expect("checked")
     }
 }
 
-/// The `pid` field of every `Spawned` record in a journal, in order.
-///
-/// `Option<i32>` and not `i32`, because the two absences this file has to keep apart are *"no
-/// `Spawned` record has been written yet"* (an empty vector) and *"a `Spawned` record was written
-/// and records no pid"* (a `None` element). Collapsing them would let the record's own regression
-/// — going back to `pid: None` — read as a record that had not arrived yet, which is the one
-/// mutation the pid assertion exists to catch.
-fn spawned_pids(journal: &str) -> Vec<Option<i32>> {
-    journal
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter_map(|v| {
-            v.get("kind")
-                .and_then(|k| k.get("Spawned"))
-                .map(|s| s.get("pid").and_then(Value::as_i64).map(|p| p as i32))
-        })
-        .collect()
+/// How many bytes a node's stream holds right now. `0` for a stream that does not exist yet, which
+/// is distinguishable here only because every use below compares two readings of the same path.
+fn stream_len(agent_dir: &Path) -> u64 {
+    std::fs::metadata(agent_dir.join("events.jsonl"))
+        .map(|m| m.len())
+        .unwrap_or(0)
 }
+
+/// Wait for a node's stream to grow past `was`, or fail saying it did not.
+fn await_growth(agent_dir: &Path, was: u64, why: &str) {
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    while stream_len(agent_dir) <= was {
+        assert!(
+            Instant::now() < deadline,
+            "{why}: {} is still {was} bytes",
+            agent_dir.join("events.jsonl").display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The tests.
+// ---------------------------------------------------------------------------------------------
 
 /// **THE ordering control: the caller regains the turn while its child is still running.**
 ///
-/// This is the assertion the whole change exists to make true, and it is stated as an ordering,
-/// never as a duration. The sequence, in the order the test forces it to happen:
+/// Stated as an ordering, never as a duration. The sequence, in the order the test forces it:
 ///
 /// 1. `spawn { background: true }` **replies**, with a handle and `isError: false`;
 /// 2. at that instant a real child process **has started** (the shim's marker) and **has not
-///    finished** (the gate is still shut, and no contract exists);
+///    finished** (the gate is still shut);
 /// 3. only then does the test open the gate;
 /// 4. `wait` returns the child's contract.
 ///
 /// **Why a synchronous implementation cannot pass.** Step 1's reply would be withheld until the
 /// child exited; the child cannot exit until step 3; step 3 is downstream of step 1. The test
-/// deadlocks and fails at [`DEADLOCK_BOUND`] naming the frame it was waiting on. That is the whole
-/// negative control, and it depends on nothing being fast.
+/// deadlocks and fails at [`DEADLOCK_BOUND`] naming the frame it was waiting on.
 ///
 /// Step 2 is what makes it more than a shape assertion. A `spawn` that returned a handle and
-/// started *nothing* would satisfy step 1 and step 4 could be made to satisfy itself; the started
-/// marker is written by the child's own process, so it cannot be faked by marion's bookkeeping.
+/// started *nothing* would satisfy step 1, and the started marker is written by the child's own
+/// process, so it cannot be faked by marion's bookkeeping.
 #[test]
 fn a_backgrounded_spawn_returns_while_its_child_is_still_running() {
-    let fx = fixture("background-ordering");
+    let fx = fixture("bg-ordering");
     let mut bridge = fx.bridge();
 
     let reply = bridge.tool("spawn", spawn_args(true));
@@ -560,16 +733,7 @@ fn a_backgrounded_spawn_returns_while_its_child_is_still_running() {
     );
     let task_id = handle_task_id(&reply);
 
-    // The child really launched, and really has not finished. Both halves are read from the
-    // *child's* own side of the world, not from marion's.
-    let deadline = Instant::now() + DEADLOCK_BOUND;
-    while fx.started_children() == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "the handle came back but no child process ever started"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    fx.await_children(1);
     assert!(
         !fx.gate.exists(),
         "the gate is still shut, so the child cannot have exited — this is the ordering claim"
@@ -582,7 +746,8 @@ fn a_backgrounded_spawn_returns_while_its_child_is_still_running() {
     let text = text_of(&collected);
     assert!(
         text.contains("\"task_id\"") && text.contains(&task_id),
-        "wait returns the child's own contract: {text}"
+        "wait returns the child's own contract, read back from the file the supervisor wrote under \
+         the id `agent/spawn` named: {text}"
     );
     assert!(
         text.contains("\"completion\""),
@@ -595,50 +760,34 @@ fn a_backgrounded_spawn_returns_while_its_child_is_still_running() {
 /// **`Spawned` is durable at the instant the process exists, and it names *that* process** —
 /// design §11 item 28 step 1, and the record §6.1 step 7 asks for.
 ///
-/// Until this, `run_spawn` journalled `Spawned` after the child had already been run **and
-/// reaped**, so `pid` was `None` at every production writer and a pid captured there would have
-/// named a process marion had watched die. Two live consequences, both closed by the assertion
-/// below: `session/quit`'s `KillTree` preflight refused whenever there was anything to kill, and
-/// item 30's two runaway shapes — *a live reparented process* and *a process already dead* — were
-/// indistinguishable on disk.
-///
 /// **Three properties, and each rules out a different way of passing cheaply.**
 ///
-/// 1. *A pid is recorded at all.* `pid: None` leaves `spawned_pids` reading `[None]`, which is
-///    deliberately distinguishable from the record not having arrived.
-/// 2. *It is the child's pid, not some live pid.* The shim names its own marker file `$$`, so the
-///    journal is checked against a number the child wrote about itself. `std::process::id()` — the
-///    bridge's own pid, the obvious wrong fill-in — is never in that set, and is named separately
-///    so the failure says which mutation it caught.
-/// 3. *The record is durable while the process is still running.* The gate is shut for the whole
-///    of the assertion, so no child can have exited; moving the append back after `child.wait()`
-///    means there is no record to read at all here, and the deadlock bound fails naming it.
+/// 1. *A pid is recorded at all.* `pid: None` leaves the reading `[None]`, which is deliberately
+///    distinguishable from the record not having arrived.
+/// 2. *It is the child's pid, and nobody else's.* The shim names its own marker file `$$`, so the
+///    journal is checked against a number the child wrote about itself — and the two plausible
+///    wrong fill-ins, the bridge's pid and the supervisor's, are ruled out by name. The second is
+///    new since step 5: the process doing the spawning is the supervisor now, so
+///    `std::process::id()` inside `run_spawn` would be *its* pid rather than the bridge's.
+/// 3. *The record is durable while the process is still running.* The gate is shut for the whole of
+///    the assertion, so no child can have exited; moving the append back after `child.wait()` means
+///    there is no record to read at all here.
 ///
 /// Liveness is read three-valued through `ps` ([`marion_testsupport::liveness`]) and never as
-/// `kill(pid, 0)`, which calls a zombie alive — the reading that would let property 3 pass over a
-/// corpse the bridge had not yet reaped.
+/// `kill(pid, 0)`, which calls a zombie alive.
 ///
-/// **The journal is read from a second process.** The bridge writes it; this test reads it. That
-/// is not incidental: the whole value of the record is to a process that did not start the child,
-/// and a same-process assertion could be satisfied by in-memory state that never reached disk.
+/// **The journal is read from a third process.** The supervisor writes it, the bridge asked for it,
+/// and this test reads it — which is the whole value of the record.
 #[test]
 fn the_journal_names_the_childs_own_live_pid_while_the_child_is_still_running() {
-    let fx = fixture("background-spawned-pid");
+    let fx = fixture("bg-spawned-pid");
     let mut bridge = fx.bridge();
 
     let reply = bridge.tool("spawn", spawn_args(true));
     assert!(!is_error(&reply), "the spawn started: {reply}");
     let task_id = handle_task_id(&reply);
 
-    // The child's own side of the world first: a process exists and has told us its pid.
-    let deadline = Instant::now() + DEADLOCK_BOUND;
-    while fx.started_children() == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "the handle came back but no child process ever started"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    fx.await_children(1);
     let started = fx.started_pids();
     assert_eq!(
         started.len(),
@@ -646,7 +795,7 @@ fn the_journal_names_the_childs_own_live_pid_while_the_child_is_still_running() 
         "exactly one child was asked for: {started:?}"
     );
 
-    // Then marion's side, read off the file the bridge wrote.
+    let deadline = Instant::now() + DEADLOCK_BOUND;
     let mut pids = Vec::new();
     while pids.is_empty() {
         assert!(
@@ -655,15 +804,14 @@ fn the_journal_names_the_childs_own_live_pid_while_the_child_is_still_running() 
              still written after the child is reaped — which is what this test exists to forbid — \
              or it was never written at all."
         );
-        pids = spawned_pids(&fx.journal_text());
+        pids = fx.child_spawned_pids();
         if pids.is_empty() {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
     assert_eq!(pids.len(), 1, "one child, one Spawned record: {pids:?}");
 
-    // Property 3, asserted **before** the pid is looked at: the gate has not been opened, so the
-    // process this record is about cannot have exited between the record and this line.
+    // Property 3, asserted **before** the pid is looked at.
     assert!(
         !fx.gate.exists() && fx.finished_children() == 0,
         "the gate is shut and no child has exited, so `Spawned` is on disk about a process that \
@@ -685,8 +833,13 @@ fn the_journal_names_the_childs_own_live_pid_while_the_child_is_still_running() 
     assert_ne!(
         pid,
         bridge.pid(),
-        "the recorded pid is the bridge's own, so the record names the process that did the \
-         spawning rather than the one that was spawned"
+        "the recorded pid is the bridge's own, so the record names a courier rather than the node"
+    );
+    assert_ne!(
+        pid,
+        fx.supervisor.child.id() as i32,
+        "the recorded pid is the supervisor's own — the process that did the spawning — rather \
+         than the process that was spawned"
     );
     assert_eq!(
         liveness(pid),
@@ -695,7 +848,6 @@ fn the_journal_names_the_childs_own_live_pid_while_the_child_is_still_running() 
          means the record was written about a child marion had already finished with"
     );
 
-    // Only now is the child allowed to finish, and the run completes normally around the record.
     fx.open_gate();
     let collected = bridge.tool("wait", json!({"task_id": &task_id}));
     assert!(
@@ -703,9 +855,219 @@ fn the_journal_names_the_childs_own_live_pid_while_the_child_is_still_running() 
         "the child still reaches a terminal state: {collected}"
     );
     assert_eq!(
-        spawned_pids(&fx.journal_text()),
+        fx.child_spawned_pids(),
         vec![Some(pid)],
         "and the record is written once, at the spawn, not again at the reap"
+    );
+    assert!(bridge.close().success());
+}
+
+/// **The bridge's death does not touch the node** — T4, and the whole of what §11 item 28 step 5
+/// buys.
+///
+/// This test could not be written before step 5, because before step 5 it was false: the child was
+/// a process the *bridge* had spawned, running on a thread the bridge owned, and s16 measured what
+/// a real Claude Code harness does to its MCP server — SIGINT, SIGTERM 100 ms later, SIGKILL
+/// ~450 ms after that. The child outliving that was §11 item 30's runaway: reparented to pid 1,
+/// wall clock unenforced because the enforcer was in the bridge, `SpawnIntent` unresolved.
+///
+/// **SIGKILL, because it is uncatchable.** Nothing the bridge might run on its way out can be what
+/// keeps the node alive; the node is alive because it was never the bridge's.
+///
+/// **And the assertion is liveness, not presence.** A pid in the process table can be a zombie and
+/// a live process can have stopped working, so the load-bearing clause is that the node's own
+/// `events.jsonl` **grew after the kill** — work marion recorded for a node whose bridge no longer
+/// exists. The growth is *caused* after the kill, not merely observed after it: the gate is opened
+/// only once the bridge is confirmed gone, and the child cannot exit until it is.
+#[test]
+fn a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing() {
+    let fx = fixture("bg-kill-bridge");
+    let mut bridge = fx.bridge();
+    assert!(!is_error(&bridge.tool("spawn", spawn_args(true))));
+    fx.await_children(1);
+
+    let child_pid = fx.started_pids()[0];
+    let child_dir = fx.child_dir();
+    let before = stream_len(&child_dir);
+    assert_eq!(
+        fx.finished_children(),
+        0,
+        "the child has not been released yet, so everything after the kill is caused after it"
+    );
+
+    let bridge_pid = bridge.pid();
+    bridge.kill_hard();
+    assert_eq!(
+        liveness(bridge_pid),
+        Liveness::Gone,
+        "the bridge must really be gone before anything below is attributed to its absence"
+    );
+    assert_eq!(
+        liveness(child_pid),
+        Liveness::Alive,
+        "the child was the supervisor's, not the bridge's: killing a courier must not end a node"
+    );
+
+    // Now let the child finish. Everything the node writes from here is written for a node whose
+    // bridge no longer exists.
+    fx.open_gate();
+    await_growth(
+        &child_dir,
+        before,
+        "the node's stream stopped growing when its bridge was killed, so the child was the \
+         bridge's after all",
+    );
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    while fx.finished_children() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the child never reached its own exit after the bridge was killed"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let journal = fx.journal_text();
+    assert!(
+        journal.contains("ContractPersisted"),
+        "the node ran to a contract with nobody holding its handle — the supervisor owns the \
+         lifecycle, so the answer being undeliverable does not make the work stop: {journal}"
+    );
+}
+
+/// **A bridge that leaves at EOF leaves its children running** — the same property through the
+/// orderly departure, which is the one a bridge can still act on.
+///
+/// This is the inversion of `the_bridge_waits_for_an_outstanding_child_before_leaving_at_eof`, and
+/// the inversion is deliberate rather than a regression. That test pinned `Background::join_all`: a
+/// bridge that owned a child had to hold the process open at EOF, because leaving would kill the
+/// child mid-run and leave its `SpawnIntent` unresolved — §5.7's *"MUST NOT exit while any `spawn`
+/// is outstanding"*, read one level down. Nothing is outstanding here any more. The child is a node
+/// of the supervisor's, so §5.7 binds the process that owns the lifecycle, and this one is free to
+/// go the instant its stdin closes.
+///
+/// SIGKILL is covered separately; this one exists because it is the departure where the bridge
+/// *does* get to run code, and therefore the one where a well-meaning "clean up my children on the
+/// way out" could be written.
+#[test]
+fn a_bridge_that_leaves_at_eof_leaves_its_children_running() {
+    let fx = fixture("bg-eof");
+    let mut bridge = fx.bridge();
+    assert!(!is_error(&bridge.tool("spawn", spawn_args(true))));
+    fx.await_children(1);
+
+    let child_pid = fx.started_pids()[0];
+    let child_dir = fx.child_dir();
+    let before = stream_len(&child_dir);
+    assert_eq!(fx.finished_children(), 0, "the child is still blocked");
+
+    assert!(
+        bridge.close().success(),
+        "the bridge leaves cleanly at EOF, with nothing to wait for"
+    );
+
+    // The sample is not a correctness bound: a child killed with its bridge dies within
+    // milliseconds, and a machine slow enough to miss that still passes on the liveness reading.
+    std::thread::sleep(DEPARTURE_SAMPLE);
+    assert_eq!(
+        liveness(child_pid),
+        Liveness::Alive,
+        "the child died with the bridge that asked for it — §5.7 now binds the supervisor, which \
+         is still running, and a bridge must not take a node with it"
+    );
+    assert_eq!(
+        fx.finished_children(),
+        0,
+        "and it did not finish early either: the gate is still shut"
+    );
+
+    fx.open_gate();
+    await_growth(
+        &child_dir,
+        before,
+        "the node's stream stopped growing when its bridge left",
+    );
+}
+
+/// **A spawn whose supervisor is not listening is refused, and starts nothing.**
+///
+/// The dial is the only path: there is deliberately no in-process fallback, because a fallback is
+/// invisible — the same tool result, a real child, and a live node no supervisor owns, can kill, or
+/// can hand to a re-attaching client. `bin/marion.rs` made the same choice for the client at step 6.
+///
+/// The bridge is aimed at an empty state directory, which is the *only* way to aim one somewhere
+/// else: §2's socket path is derived from `<state>` and the tree, and no environment variable names
+/// it. So this test also pins that absence.
+///
+/// `started_children() == 0` is the half that cannot be faked from marion's side — the children's
+/// own account of never having run.
+#[test]
+fn a_spawn_whose_supervisor_is_not_listening_is_refused_and_starts_nothing() {
+    let fx = fixture("bg-no-supervisor");
+    let empty = fx.state.parent().expect("scratch root").join("empty-state");
+    std::fs::create_dir_all(&empty).expect("an empty state dir");
+    let mut bridge = fx.bridge_with_no_supervisor(&empty);
+
+    let reply = bridge.tool("spawn", spawn_args(false));
+    assert!(
+        is_error(&reply),
+        "an unreachable supervisor is a refusal, not a quietly in-process spawn: {reply}"
+    );
+    let text = text_of(&reply);
+    assert!(
+        text.contains("supervisor"),
+        "the refusal is in the bridge's own voice and names what was not there: {text}"
+    );
+    assert!(
+        text.contains(".sock"),
+        "and names the socket it derived, since that is the whole diagnosis: {text}"
+    );
+    assert!(
+        text.contains("Nothing was started"),
+        "and says nothing happened — the claim a fallback would make false: {text}"
+    );
+    assert_eq!(
+        fx.started_children(),
+        0,
+        "no child process ever ran, by the children's own account"
+    );
+    assert!(bridge.close().success());
+}
+
+/// **A spawn presenting a token this supervisor did not mint is refused, and journals nothing.**
+///
+/// §5.4's capability, at the point where it is spent. The bridge's identity is no longer a claim
+/// only the bridge can see: it travels on a socket any process of this user can `connect(2)` to, so
+/// the `agent_id` is checked against a secret the supervisor minted when it claimed that node. A
+/// build that stopped sending the token, or a supervisor that stopped checking it, fails here.
+///
+/// **Three assertions, because a refusal that creates something is not a refusal**: the answer is an
+/// error, the journal grew by nothing, and no child process exists by the children's own account.
+/// The `agent_id` is the *real* one, so the only thing wrong with this call is the proof — which is
+/// what keeps this test about the token rather than about a malformed frame.
+#[test]
+fn a_spawn_presenting_a_forged_node_token_is_refused_and_journals_nothing() {
+    let fx = fixture("bg-forged-token");
+    let before = fx.journal_text().lines().count();
+    let mut bridge = fx.bridge_with_a_forged_token();
+
+    let reply = bridge.tool("spawn", spawn_args(false));
+    assert!(
+        is_error(&reply),
+        "a caller that cannot prove who it is may not spawn: {reply}"
+    );
+    let text = text_of(&reply);
+    assert!(
+        text.contains("did not mint that node token"),
+        "the supervisor's own sentence reaches the caller verbatim: {text}"
+    );
+    assert_eq!(
+        fx.journal_text().lines().count(),
+        before,
+        "an unauthorized spawn is refused before every side effect, so the journal records nothing"
+    );
+    assert_eq!(
+        fx.started_children(),
+        0,
+        "and no child process ever ran, by the children's own account"
     );
     assert!(bridge.close().success());
 }
@@ -716,21 +1078,16 @@ fn the_journal_names_the_childs_own_live_pid_while_the_child_is_still_running() 
 /// The pid assertion above says a record that *is* written names a live process. This says the
 /// record is not written when there is nothing to name. Together they are what makes
 /// `SpawnIntent`-and-nothing-after mean **no process exists, full stop** — §11 item 30's shapes 1
-/// and 2 ceasing to be indistinguishable on disk — and what lets `handler.rs`'s `abandoned()` read
-/// `SpawnIntent` + `SpawnAborted` as a node that strands nothing.
+/// and 2 ceasing to be indistinguishable on disk.
 ///
-/// **The strictness is the safe direction and this is what pins it.** `abandoned()` requires no
-/// `Spawned` and no pid; step 1 makes `Spawned` arrive far earlier, so a change that fired the
-/// hook one line too early — before `command.spawn()` could fail — would leave a `Spawned` beside
-/// the abort and hold the supervisor resident over a process that never existed. That is the
-/// b600d82 case in reverse, and no argument distinguishes the two: only the record does.
-///
-/// `started_children() == 0` is the half that cannot be faked from marion's side. The shim writes
-/// its own marker, so this is the child's account of never having run, not marion's.
+/// The failure is now the supervisor's to report and the bridge's to carry: the harness is
+/// unlaunchable on the *supervisor's* `PATH`, `agent/spawn` never sees a process, and the sentence
+/// travels back over the socket rather than being formed where the child would have run.
 #[test]
 fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
-    let fx = fixture("background-launch-fails");
-    let mut bridge = fx.bridge_with_an_unlaunchable_harness();
+    let fx = fixture("bg-launch-fails");
+    fx.break_the_harness();
+    let mut bridge = fx.bridge();
 
     let reply = bridge.tool("spawn", spawn_args(false));
     assert!(
@@ -744,14 +1101,14 @@ fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
         "no child process ever ran, by the children's own account"
     );
     assert_eq!(
-        spawned_pids(&fx.journal_text()),
+        fx.child_spawned_pids(),
         Vec::new(),
-        "and no `Spawned` record was written, so the intent alone means what it now claims to \
-         mean: there is no process and there never was one"
+        "and no `Spawned` record was written about a child, so the intent alone means what it now \
+         claims to mean: there is no process and there never was one"
     );
     let journal = fx.journal_text();
     assert!(
-        journal.contains("SpawnIntent") && journal.contains("SpawnAborted"),
+        journal.contains("SpawnAborted"),
         "the intent is still resolved as an abort — §7.2: a node marion decided the fate of is \
          never one marion lost: {journal}"
     );
@@ -760,19 +1117,19 @@ fn a_launch_that_fails_before_the_process_exists_journals_no_spawned_record() {
 
 /// **A second `wait` on the same handle says so, rather than blocking forever.**
 ///
-/// The other half of the handle's contract. A `JoinHandle` can be joined once; the mistake this
-/// guards is answering the second `wait` by blocking on a consumed handle, which would hang the
-/// caller's turn on a child that has already been delivered.
+/// The other half of the handle's contract. The mistake this guards has changed shape with the
+/// path: a `wait` is now an attach-and-read, so a second one would happily replay the node's whole
+/// stream and hand back the same contract a second time — which reads as a second run. The table
+/// remembers what the first `wait` got precisely so the second can be told the truth.
 #[test]
 fn a_collected_handle_cannot_be_collected_twice() {
-    let fx = fixture("background-collect-twice");
+    let fx = fixture("bg-collect-twice");
     let mut bridge = fx.bridge();
     let task_id = handle_task_id(&bridge.tool("spawn", spawn_args(true)));
     fx.open_gate();
     // The shim never calls `report`, so this contract is `Unreported` and therefore `isError:
-    // true` — which is `spawn_result`'s deliberate shape for a child that produced no answer, and
-    // is *not* what this test is about. What matters is that the contract came back at all, so
-    // the assertion is on the contract's presence rather than on the flag.
+    // true` — `spawn_result`'s deliberate shape for a child that produced no answer, and not what
+    // this test is about. What matters is that the contract came back at all.
     let first = bridge.tool("wait", json!({"task_id": &task_id}));
     assert!(
         text_of(&first).contains("\"completion\""),
@@ -789,26 +1146,26 @@ fn a_collected_handle_cannot_be_collected_twice() {
     assert!(bridge.close().success());
 }
 
-/// **`max_concurrent_children` refuses rather than queues** — §3.1, and inert until today.
+/// **`max_concurrent_children` refuses rather than queues** — §3.1.
 ///
-/// `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER = 0` made this bound unreachable: 0 is never `>= 4`, so
-/// the concurrency half of §6.1 step 2's gate was wired and could not fire. Backgrounding is what
-/// gives a caller a second live child, and this is the first test in the repo that can observe the
-/// bound at all.
+/// **The count now comes from the registry, not from this bridge's table**, which is the inversion
+/// §11 item 28 step 4 made and step 5 finished: `handler::live_children_of` counts the caller's
+/// non-terminal children in the journal, so the bound holds across bridges, across restarts, and
+/// against a caller that cannot state it. This test cannot tell those two implementations apart on
+/// its own — that is `handler`'s own
+/// `the_concurrency_gate_counts_the_callers_children_in_the_journal` — and what it does assert is
+/// that the bound is live on the surface a model actually calls.
 ///
 /// **Refuses, not queues, and the difference is observable here rather than argued.** A queueing
 /// implementation would answer the fifth `spawn` with a handle and start the child once a slot
-/// freed; this asserts the fifth `spawn` comes back an **error, in the same frame**, while all four
-/// predecessors are still blocked on the gate. It also asserts the refusal **names the bound**,
-/// since §3.1 requires a refusal that says what it refused and a bare failure would not.
-///
-/// The count is verified from the children's own markers as well as from marion's answer: exactly
-/// four processes exist, so the fifth was refused rather than started and discarded.
+/// freed; this asserts the fifth comes back an **error, in the same frame**, while all four
+/// predecessors are still blocked on the gate — and that the refusal **names the bound**, since
+/// §3.1 requires a refusal that says what it refused.
 #[test]
 fn the_fifth_concurrent_background_child_is_refused_in_the_same_frame() {
-    let fx = fixture("background-concurrency");
+    let fx = fixture("bg-concurrency");
     let mut bridge = fx.bridge();
-    let max = marion_core::agent_type::builtin("claude")
+    let max = marion_core::agent_type::builtin(CALLER_TYPE)
         .expect("the caller's type resolves")
         .max_concurrent_children;
 
@@ -838,15 +1195,7 @@ fn the_fifth_concurrent_background_child_is_refused_in_the_same_frame() {
 
     // Every one of the four is still blocked, which is what makes the refusal a *concurrency*
     // refusal rather than an artefact of children finishing between calls.
-    let deadline = Instant::now() + DEADLOCK_BOUND;
-    while fx.started_children() < max as usize {
-        assert!(
-            Instant::now() < deadline,
-            "expected {max} live children, saw {}",
-            fx.started_children()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    fx.await_children(max as usize);
     assert_eq!(
         fx.started_children(),
         max as usize,
@@ -858,30 +1207,64 @@ fn the_fifth_concurrent_background_child_is_refused_in_the_same_frame() {
     assert!(bridge.close().success());
 }
 
+/// **A collected child frees the slot it was holding** — §3.1 bounds concurrency, not a lifetime.
+///
+/// The regression this was written for was `Background::live_children` counting rows that `wait`
+/// never removed: four children started, finished and collected refused the fifth for the life of
+/// the bridge. The count is the registry's now, and the same property has to hold for a different
+/// reason — a child whose `Exited` record is on disk is not a live child — so the test survives the
+/// move and its subject changed underneath it. It says nothing about the *uncollected* case, which
+/// is a slot genuinely still occupied.
+#[test]
+fn a_collected_child_frees_the_concurrency_slot_it_was_holding() {
+    let fx = fixture("bg-slot-release");
+    let mut bridge = fx.bridge();
+    let max = marion_core::agent_type::builtin(CALLER_TYPE)
+        .expect("the caller's type resolves")
+        .max_concurrent_children;
+
+    let mut ids = Vec::new();
+    for i in 0..max {
+        let reply = bridge.tool("spawn", spawn_args(true));
+        assert!(!is_error(&reply), "child {i} is within the bound: {reply}");
+        ids.push(handle_task_id(&reply));
+    }
+    fx.open_gate();
+    for id in &ids {
+        let reply = bridge.tool("wait", json!({"task_id": id}));
+        assert!(
+            text_of(&reply).contains("\"completion\""),
+            "every child is collected, so every slot it held is genuinely free: {reply}"
+        );
+    }
+
+    let again = bridge.tool("spawn", spawn_args(true));
+    assert!(
+        !text_of(&again).contains("max_concurrent_children"),
+        "with every child terminal there is nothing to be concurrent with, so the refusal that \
+         must not happen is the concurrency one: {}",
+        text_of(&again)
+    );
+    assert!(bridge.close().success());
+}
+
 /// **`allow_concurrent_writes: false` is honoured structurally** — no two live children share a
 /// cwd, because each one gets its own worktree.
 ///
-/// §11 item 23 called this parameter inverted: with no §6.6 holder check in code, `true` was said
-/// to be honoured accidentally and `false` to be the value marion could not honour. That reasoning
-/// assumed `isolation` was live. It is not — `shared-cwd` is refused by name and `make_worktree`
-/// runs unconditionally — so the guarantee `false` asks for is delivered by the code path rather
-/// than by a check marion has to remember to run. This is that guarantee as an assertion instead of
-/// a claim: with the maximum number of children alive **at once**, every workspace path is
-/// distinct and none of them is the repo.
+/// **It is also the git-serialization control, and a weak one — see `spawn::repo_write_guard`.**
+/// Concurrent `git worktree add`/`remove` against one repository really does fail, but S17 measured
+/// the failure in `.git/worktrees/` bookkeeping rather than in `index.lock`, and measured its rate:
+/// at four concurrent writers it needs a few hundred iterations to appear. This test performs four
+/// `worktree add`s **once**, so it is three orders of magnitude short of witnessing it. Read it as
+/// what it reliably is — **every** concurrent child got its own workspace and none was lost.
 ///
-/// **It is also the git-serialization control, and it is a weak one — see `spawn::repo_write_guard`.**
-/// Concurrent `git worktree add`/`remove` against one repository really does fail, but S17
-/// (`tests/fixtures/s17/README.md`) measured the failure in `.git/worktrees/` bookkeeping rather
-/// than in `index.lock`, and measured its rate: at four concurrent writers it needs a few hundred
-/// iterations to appear. This test performs four `worktree add`s **once**, so it is three orders of
-/// magnitude short of witnessing it, which is why deleting the guard leaves it green. Read it as
-/// what it reliably is — **every** concurrent child got its own workspace and none was lost — and
-/// not as evidence about the guard.
+/// The writers are all one process now (the supervisor) where they used to be one process too (the
+/// bridge), so the guard's subject is unchanged by step 5.
 #[test]
 fn concurrent_children_never_share_a_workspace_and_never_lose_one_to_a_git_lock() {
-    let fx = fixture("background-worktrees");
+    let fx = fixture("bg-worktrees");
     let mut bridge = fx.bridge();
-    let max = marion_core::agent_type::builtin("claude")
+    let max = marion_core::agent_type::builtin(CALLER_TYPE)
         .expect("the caller's type resolves")
         .max_concurrent_children;
 
@@ -900,9 +1283,11 @@ fn concurrent_children_never_share_a_workspace_and_never_lose_one_to_a_git_lock(
     for id in &ids {
         let reply = bridge.tool("wait", json!({"task_id": id}));
         let text = text_of(&reply);
-        let contract: Value = serde_json::from_str(text.split_once('{').map_or(&text[..], |_| {
-            &text[text.find('{').expect("a contract is json")..]
-        }))
+        let contract: Value = serde_json::from_str(
+            &text[text
+                .find('{')
+                .unwrap_or_else(|| panic!("a contract is json: {text}"))..],
+        )
         .unwrap_or_else(|e| panic!("wait returned a contract for {id}: {e}: {text}"));
         let path = contract["workspace"]["Worktree"]["path"]
             .as_str()
@@ -930,111 +1315,25 @@ fn concurrent_children_never_share_a_workspace_and_never_lose_one_to_a_git_lock(
     assert!(bridge.close().success());
 }
 
-/// **The bridge does not leave at EOF while a child is still running** (§5.7).
-///
-/// The rule is *"a supervisor MUST NOT exit while any `spawn` is outstanding"*, and while `spawn`
-/// blocked it was free — EOF was unreachable with a spawn in flight. Backgrounding makes it a real
-/// obligation, and breaking it is worse than losing the child: the child's `SpawnIntent` is
-/// journaled with no resolution, which §7.2 reads as a node marion **lost**, asserting an accident
-/// about a process marion in fact chose to abandon.
-///
-/// Asserted as an ordering: stdin is closed while the gate is shut, the bridge is observed **still
-/// alive**, the gate is opened, and only then does the bridge exit. A bridge that left at EOF would
-/// be gone at the first check.
-///
-/// **What this does not claim, and it is the important half.** It is the EOF case only, and s16
-/// measured that a real Claude Code harness **never produces one**: it sends SIGINT, SIGTERM 100 ms
-/// later, then SIGKILL, all pid-targeted at the MCP server. So this hold does not run in
-/// production, the backgrounded child outlives the SIGKILL as an untracked process reparented to
-/// pid 1, and that is §11 item 30 — a recorded hole, not a solved problem. This test guards the
-/// hold for the clients marion itself writes; it is not evidence that a child survives a harness
-/// exit, and must not be read as any.
-#[test]
-fn the_bridge_waits_for_an_outstanding_child_before_leaving_at_eof() {
-    let fx = fixture("background-eof-hold");
-    let mut bridge = fx.bridge();
-    assert!(!is_error(&bridge.tool("spawn", spawn_args(true))));
-
-    let deadline = Instant::now() + DEADLOCK_BOUND;
-    while fx.started_children() == 0 {
-        assert!(Instant::now() < deadline, "no child process ever started");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    // EOF, with the gate still shut and the child provably unfinished.
-    assert_eq!(
-        fx.finished_children(),
-        0,
-        "the child has not been released yet"
-    );
-    bridge.close_stdin();
-
-    // **The ordering assertion.** The bridge's stdout reaches EOF exactly when the bridge exits,
-    // so waiting on the reader is waiting on the bridge's own departure. Two outcomes and only one
-    // of them is legal:
-    //
-    // * EOF arrives → the bridge left. Legal *only* if its child had already finished, which the
-    //   child's own exit marker answers. With the gate shut it has not, so this is the §5.7
-    //   violation, caught as an ordering between two observed events rather than as a duration.
-    // * nothing arrives within the sampling window → the bridge is still here, holding. Open the
-    //   gate and it leaves.
-    //
-    // The window is a *sample*, not a bound on correctness: a machine slow enough to miss an
-    // early EOF simply takes the second branch and still passes, so this cannot fail falsely in
-    // either direction. What it cannot miss is a bridge that leaves immediately, which is what
-    // dropping the hold produces.
-    match bridge.lines.recv_timeout(EOF_SAMPLE) {
-        Ok(None) => panic!(
-            "the bridge exited at EOF with {} child process(es) started and {} finished — §5.7 \
-             forbids leaving while a spawn is outstanding, and the child's SpawnIntent is now \
-             journaled with no resolution, which §7.2 reads as a node marion *lost*",
-            fx.started_children(),
-            fx.finished_children()
-        ),
-        Ok(Some(line)) => panic!("the bridge answered a frame nobody sent: {line}"),
-        Err(RecvTimeoutError::Timeout) => {}
-        Err(RecvTimeoutError::Disconnected) => panic!("the reader thread is gone"),
-    }
-
-    fx.open_gate();
-    let status = bridge
-        .child
-        .wait()
-        .expect("the bridge leaves once its child is done");
-    assert!(status.success(), "and leaves cleanly: {status:?}");
-    // The other half of the ordering, and a leak check in the same assertion: the bridge left
-    // *after* its child, so the child's own exit marker must exist by now. Without this the
-    // fixture could drop — deleting the gate file out from under a shim that had not yet noticed
-    // it — and strand the child. Two were found stranded exactly that way on 2026-08-06, which is
-    // the product's own hazard (§11 item 30) reproduced by accident in a test.
-    assert_eq!(
-        fx.finished_children(),
-        1,
-        "the bridge outlived its child, so the child has recorded its own exit"
-    );
-}
-
 /// **A `timeout_secs` the machine's clock cannot represent is answered, not detonated** — B1, the
 /// synchronous half.
 ///
-/// `timeout_secs` is caller-controlled and typed `u64` all the way down: `main::handle_tool_call`
-/// reads `args["timeout_secs"].as_u64()`, `run_spawn` turns it into a `Duration`, and
-/// `run_bounded` computes `Instant::now() + timeout`. `Instant + Duration` **panics** on overflow,
-/// and it does so *after* `command.spawn()` has already started a real OS process.
+/// `timeout_secs` is caller-controlled and typed `u64` all the way down, and `Instant + Duration`
+/// **panics** on overflow — after `command.spawn()` has already started a real OS process.
 ///
-/// On this path the panic is on the bridge's **own** thread — `handle_tool_call` is called inline
-/// from `run_bridge`'s read loop — so the unwind takes the whole MCP server down. Every other live
-/// child of this node dies with it, over one arithmetic overflow a child agent can ask for by name.
-///
-/// The assertion is therefore the crudest possible one and deliberately so: **the bridge is still
-/// there and it answered.** Before the fix `read_reply` sees the server's stdout close instead of a
-/// reply and fails naming that, which is the failure mode, not a proxy for it.
+/// **Whose process dies has changed, and the number has one more clock to survive now.** The panic
+/// used to land on the bridge's own dispatch thread and take the MCP server down with it; it would
+/// now land on a node's thread inside the *supervisor*, which is worse — one child's arithmetic
+/// would take out the fleet. And the bridge derives its own waiting bound from the same field, so an
+/// unclamped `u64::MAX` there would be a second overflow on this side of the socket. The assertion
+/// stays the crudest possible one, deliberately: **both processes are still there and the caller was
+/// answered.**
 ///
 /// The gate is opened before the spawn because this path is synchronous: the reply cannot arrive
-/// until the child exits, and the child exits as soon as the gate is there.
+/// until the child exits.
 #[test]
 fn a_timeout_the_clock_cannot_represent_is_answered_rather_than_killing_the_bridge() {
-    let fx = fixture("background-overflow-sync");
+    let fx = fixture("bg-overflow-sync");
     fx.open_gate();
     let mut bridge = fx.bridge();
 
@@ -1049,10 +1348,8 @@ fn a_timeout_the_clock_cannot_represent_is_answered_rather_than_killing_the_brid
         "the child ran to a terminal state under a clock marion could hold: {text}"
     );
 
-    // **The clamp is recorded, not silently substituted.** §6.7's rule everywhere else in
-    // `run_spawn` is that the contract names the compiled value rather than the asked-for one, and
-    // the wall clock obeys it: a reader of this contract can see exactly how long marion was
-    // willing to hold the node, and can see that it is not what was requested.
+    // **The clamp is recorded, not silently substituted.** §6.7's rule everywhere else is that the
+    // contract names the compiled value rather than the asked-for one.
     assert!(
         text.contains(&marion_supervisor::run::MAX_TIMEOUT_SECS.to_string()),
         "the contract records the bound marion actually enforced: {text}"
@@ -1076,24 +1373,14 @@ fn a_timeout_the_clock_cannot_represent_is_answered_rather_than_killing_the_brid
 
 /// **The same number on the background path leaves no abandoned intent and no orphan** — B1.
 ///
-/// Here the panic lands on the child's own thread, so the bridge survives and the damage is
-/// quieter and worse. The sequence before the fix, in order:
-///
-/// 1. `run_spawn` journals `SpawnIntent`, makes the worktree and branch, writes the agent and
-///    config directories, and **starts a real process** (the shim's marker proves it);
-/// 2. `Instant::now() + Duration::from_secs(u64::MAX)` panics one line later;
-/// 3. `AbortOnDrop` writes `SpawnAborted` on the way out — the record that says *marion decided
-///    this node's fate*, which §7.2 reads as "no process ever existed";
-/// 4. dropping `std::process::Child` does **not** kill anything, so the process it started is
-///    still there, reparented and unenforced, with its worktree, branch and directories intact;
-/// 5. `wait` converts the unwind into `SpawnError::Panicked`.
-///
-/// So the journal ends `SpawnIntent + SpawnAborted` — a *decided* node — while a live process and
-/// its whole workspace remain. That mismatch is what this test refuses: the intent must be
-/// resolved by the child actually running, and `SpawnAborted` must not appear at all.
+/// Before the fix: `run_spawn` journals `SpawnIntent`, makes the worktree, **starts a real
+/// process**, panics one line later on `Instant::now() + Duration::from_secs(u64::MAX)`,
+/// `AbortOnDrop` writes `SpawnAborted` — the record that says *marion decided this node's fate* —
+/// and dropping `std::process::Child` kills nothing, so the process it started is still there. The
+/// journal reads as a decided node while a live process and its whole workspace remain.
 #[test]
 fn a_backgrounded_timeout_the_clock_cannot_represent_resolves_its_intent_rather_than_aborting_it() {
-    let fx = fixture("background-overflow-bg");
+    let fx = fixture("bg-overflow-bg");
     let mut bridge = fx.bridge();
 
     let reply = bridge.tool("spawn", spawn_args_with_timeout(true, u64::MAX));
@@ -1103,16 +1390,7 @@ fn a_backgrounded_timeout_the_clock_cannot_represent_resolves_its_intent_rather_
     );
     let task_id = handle_task_id(&reply);
 
-    // A real process exists — measured from the child's own side, so it is not marion's bookkeeping
-    // agreeing with itself.
-    let deadline = Instant::now() + DEADLOCK_BOUND;
-    while fx.started_children() == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "the handle came back but no child process ever started"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    fx.await_children(1);
     fx.open_gate();
 
     let collected = bridge.tool("wait", json!({"task_id": task_id}));
@@ -1135,74 +1413,22 @@ fn a_backgrounded_timeout_the_clock_cannot_represent_resolves_its_intent_rather_
     assert!(bridge.close().success());
 }
 
-/// **`max_concurrent_children` bounds how many children run at once, not how many this bridge may
-/// ever start** — B4.
+/// **A harness that hangs answering `--version` does not hang anybody** — B3's root cause, one
+/// process further out.
 ///
-/// `Background::live_children` is the table's length and `wait` takes only the join handle, leaving
-/// the entry behind; nothing but process exit ever pops one. So a caller that starts the maximum,
-/// lets every one of them finish, and successfully collects every contract has **zero** running
-/// processes, **zero** unjoined threads, and is still refused — for the life of the bridge. §3.1's
-/// bound has silently become a lifetime quota.
+/// The probe used a plain `Command::output`, which blocks until the process closes its pipes and
+/// has no deadline at all, and §11 item 28 step 1 moved it *ahead* of the launch (§6.1 step 3). So
+/// an unbounded probe would now hold `agent/spawn` itself rather than a `wait` — the same bug with
+/// a wider blast radius, since the call it blocks is on the supervisor's socket.
 ///
-/// The test is the direct statement of that: collect all of them, then ask for one more. It says
-/// nothing about the *uncollected* case, which is a slot genuinely still occupied and is pinned
-/// separately in `background.rs`'s own unit tests.
-#[test]
-fn a_collected_child_frees_the_concurrency_slot_it_was_holding() {
-    let fx = fixture("background-slot-release");
-    let mut bridge = fx.bridge();
-    let max = marion_core::agent_type::builtin("claude")
-        .expect("the caller's type resolves")
-        .max_concurrent_children;
-
-    let mut ids = Vec::new();
-    for i in 0..max {
-        let reply = bridge.tool("spawn", spawn_args(true));
-        assert!(!is_error(&reply), "child {i} is within the bound: {reply}");
-        ids.push(handle_task_id(&reply));
-    }
-    fx.open_gate();
-    for id in &ids {
-        let reply = bridge.tool("wait", json!({"task_id": id}));
-        assert!(
-            text_of(&reply).contains("\"completion\""),
-            "every child is collected, so every slot it held is genuinely free: {reply}"
-        );
-    }
-
-    let again = bridge.tool("spawn", spawn_args(true));
-    assert!(
-        !is_error(&again),
-        "with every child terminal and every contract delivered there is nothing to be concurrent \
-         with, so this spawn is within the bound: {again}"
-    );
-    assert!(
-        !text_of(&again).contains("max_concurrent_children"),
-        "and the refusal that must not happen is the concurrency one: {}",
-        text_of(&again)
-    );
-    assert!(bridge.close().success());
-}
-
-/// **A harness that hangs answering `--version` does not hang the bridge** — B3's root cause.
-///
-/// The child's `timeout_secs` bounds exactly one thing: the harness invocation, inside
-/// `run_bounded`. `run_spawn` then asks the harness what version it is — *after* the child has been
-/// reaped — and that probe used a plain `Command::output`, which blocks until the process closes
-/// its pipes and has no deadline at all. So a harness that ran fine and then hung on `--version`
-/// left `run_spawn` unable to return, and on the background path left `wait` blocked on a thread
-/// that would never finish.
-///
-/// **And a blocked `wait` is not one stuck caller.** `main::run_bridge` reads and dispatches frames
-/// on one thread, calling `handle_tool_call` inline, so nothing after it is even read: no sibling's
-/// `spawn`, no other `wait`, no `report`. The last two assertions are that half — the bridge is
-/// still serving afterwards, and still leaves cleanly.
+/// The last two assertions are the other half: the bridge is still reading frames afterwards, which
+/// a `wait`-only assertion would miss.
 ///
 /// The absent version is recorded as *absent*, never guessed: a node's whole contract must not be
 /// lost because a version string did not arrive, and a fabricated one would be worse than either.
 #[test]
 fn a_harness_that_hangs_answering_its_version_does_not_hang_the_bridge() {
-    let fx = fixture("background-slow-version");
+    let fx = fixture("bg-slow-version");
     fx.make_version_slow();
     let mut bridge = fx.bridge();
 
@@ -1221,8 +1447,6 @@ fn a_harness_that_hangs_answering_its_version_does_not_hang_the_bridge() {
         "a probe that expired is recorded as an absence, never guessed: {text}"
     );
 
-    // The bridge is still reading frames — which is the half of this that a `wait`-only assertion
-    // would miss, since an unbounded probe stalls the read loop rather than just this caller.
     let after = bridge.tool("wait", json!({"task_id": "task-nobody-started"}));
     assert!(
         is_error(&after) && !text_of(&after).is_empty(),

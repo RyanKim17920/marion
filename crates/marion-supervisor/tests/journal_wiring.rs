@@ -8,10 +8,20 @@
 //! assertion here is over a real run's real journal, replayed, compared to the nodes and contracts
 //! that run actually left on disk.
 //!
-//! **Two processes write it, and that is the point.** `marion run` journals the root; the child's
-//! `spawn` is served by a `marion-supervisor mcp` bridge the *harness* started, in a separate
-//! process (§10), and its records have to land in the same file. That is the case no single-process
-//! test can cover, and it is asserted directly below — by writer identity, off the raw records.
+//! **One process writes it, and that is the point — it used to be the opposite one.**
+//!
+//! This file was built on §10's split: `marion run` journalled the root, and the child's `spawn` was
+//! served by a `marion-supervisor mcp` bridge the *harness* started in a separate process, whose
+//! records had to land in the same file. The writer identities were asserted **disjoint**, and that
+//! was the strongest available evidence that a run had crossed a process boundary at all.
+//!
+//! §11 item 28 steps 5 and 6 deleted the boundary rather than moved it. The supervisor owns every
+//! node: it drives the root (step 6) and it runs every child a bridge asks for (step 5), so one
+//! process writes every record about every node of a project. The assertion is therefore inverted
+//! rather than dropped, and the inverted form is the **stronger** of the two — a *second* writer
+//! appearing now means a bridge has started journalling on its own, which is precisely the
+//! in-process `run_spawn` fallback [`marion_supervisor::courier`] refuses to have. The old form
+//! could not have caught that; this one fails on it, per harness pairing, in a real run.
 //!
 //! # Running it
 //!
@@ -245,8 +255,11 @@ fn agent_dirs(project: &ProjectDir) -> BTreeSet<String> {
         .collect()
 }
 
-/// Which writer wrote each record about each node — the cross-process evidence. Two distinct
-/// writers must appear, because `marion run` and the bridge are two processes (§10).
+/// Which writer wrote each record about each node.
+///
+/// It was the *cross-process* evidence — two distinct writers had to appear, because `marion run`
+/// and the bridge were two processes (§10). Since §11 item 28 steps 5 and 6 one supervisor writes
+/// every node's records, so the same reading is now the evidence that **no second writer exists**.
 fn writers_by_agent(journal: &Path) -> Vec<(String, String)> {
     std::fs::read(journal)
         .expect("the journal is readable")
@@ -275,7 +288,7 @@ struct JournalEvidence {
     /// The agent-dirs marion actually created — the ground truth the replayed nodes are compared
     /// against, rather than a count written here.
     agent_dirs: BTreeSet<String>,
-    /// `(agent_id, writer_id)` for every record, the cross-process evidence.
+    /// `(agent_id, writer_id)` for every record — the evidence that one process wrote them all.
     writers: Vec<(String, String)>,
     /// Each record's kind, in file order.
     kinds: Vec<&'static str>,
@@ -573,14 +586,20 @@ fn assert_pairing(root: &Node, child: &Node) {
          ended"
     );
 
-    // ---- the bridge is a separate process, and its records are in the same file. --------------
-    // **The claim no single-process test can cover, and the reason this runs per pairing at all.**
-    // The root's records are written by `marion run`; the child's by the `marion-supervisor mcp`
-    // bridge that the *root's harness* started (§10). Which means the writer identity below is
-    // evidence about the ROOT's adapter: its MCP declaration is what carries the five env vars the
-    // bridge reads, and an adapter that emitted no `env` block would produce a bridge that either
-    // refuses or journals against the wrong node. That plumbing is per-harness, so it is proven
-    // per-harness.
+    // ---- one process wrote both nodes' records, and it is not the harness's bridge. -----------
+    // **The inverted claim (§11 item 28 steps 5-6), and why it is worth more than the one it
+    // replaced.** This used to assert the root's and the child's writers were *disjoint*: the root's
+    // records came from `marion run` and the child's from the bridge the root's harness started, so
+    // disjointness was the evidence that a run had crossed a process boundary. The boundary is gone
+    // — the supervisor drives the root and runs every child — so the same records now carry one
+    // writer, and the assertion says so.
+    //
+    // It is still evidence about the ROOT's adapter, for the same reason: the bridge only reaches
+    // the supervisor at all if that adapter's MCP declaration carried `MARION_REPO`,
+    // `MARION_AGENT_ID` and §5.4's capability token, and a bridge that could not dial refuses
+    // instead of spawning. And it is evidence about something the old form could not see: a second
+    // writer here means a bridge journalled a child *itself*, which is the in-process fallback
+    // `courier.rs` exists to refuse.
     let root_writers: BTreeSet<&String> = ev
         .writers
         .iter()
@@ -601,13 +620,14 @@ fn assert_pairing(root: &Node, child: &Node) {
     assert_eq!(
         child_writers.len(),
         1,
-        "{label}: one bridge journals the child: {child_writers:?}"
+        "{label}: one process journals the child: {child_writers:?}"
     );
-    assert!(
-        root_writers.is_disjoint(&child_writers),
-        "{label}: the child's records must come from the bridge's own process, not the root's — \
-         otherwise this run never crossed the process boundary and the cross-process claim is \
-         untested: root {root_writers:?}, child {child_writers:?}"
+    assert_eq!(
+        root_writers, child_writers,
+        "{label}: the root and its child must be journalled by the same process — the supervisor \
+         owns both since §11 item 28 steps 5 and 6. A second writer means something else ran a \
+         node: a bridge that spawned in-process rather than dialling, or a client that drove the \
+         root itself. root {root_writers:?}, child {child_writers:?}"
     );
 
     // ---- and the record vocabulary is the one `marion-core` already defines. ------------------
@@ -804,10 +824,10 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
         "how the contract ended, as the journal records it, is how the contract says it ended"
     );
 
-    // ---- the bridge is a separate process, and its records are in the same file. --------------
-    // The case a single-process test cannot cover (§10): the root's records are written by
-    // `marion run`, the child's by the `marion-supervisor mcp` bridge the *harness* started. Two
-    // writer identities, one journal.
+    // ---- one process wrote both nodes' records. ------------------------------------------------
+    // The inverted form of §10's old cross-process claim — see the module doc and the per-pairing
+    // assertion above. Since §11 item 28 steps 5 and 6 the supervisor owns the root *and* every
+    // child, so a second writer identity here means a bridge journalled a node itself.
     let by_agent = writers_by_agent(&journal);
     let root_writers: BTreeSet<&String> = by_agent
         .iter()
@@ -820,12 +840,11 @@ fn a_real_run_journals_every_node_it_creates_and_replay_reconstructs_the_tree() 
         .map(|(_, w)| w)
         .collect();
     assert_eq!(root_writers.len(), 1, "one process journals the root");
-    assert_eq!(child_writers.len(), 1, "one bridge journals the child");
-    assert!(
-        root_writers.is_disjoint(&child_writers),
-        "the child's records must come from the bridge's own process, not the root's — otherwise \
-         this run never crossed the process boundary and the cross-process claim is untested: \
-         root {root_writers:?}, child {child_writers:?}"
+    assert_eq!(child_writers.len(), 1, "one process journals the child");
+    assert_eq!(
+        root_writers, child_writers,
+        "the root and its child must be journalled by the same process — the supervisor owns both \
+         since §11 item 28 steps 5 and 6: root {root_writers:?}, child {child_writers:?}"
     );
 
     // ---- and the record vocabulary is the one `marion-core` already defines. ------------------
@@ -985,76 +1004,76 @@ const DENIED_VERB: &str = "mcp__marion__spawn";
 // as the worked example this function is the generalisation of. Running it twice would buy nothing.
 
 #[test]
-fn b_claude_root_journals_a_claude_child_across_the_process_boundary() {
+fn b_claude_root_journals_a_claude_child_into_one_supervisors_journal() {
     assert_pairing(&CLAUDE, &CLAUDE);
 }
 
 #[test]
-fn c_claude_root_journals_a_gemini_child_across_the_process_boundary() {
+fn c_claude_root_journals_a_gemini_child_into_one_supervisors_journal() {
     assert_pairing(&CLAUDE, &GEMINI);
 }
 
 #[test]
-fn d_claude_root_journals_an_opencode_child_across_the_process_boundary() {
+fn d_claude_root_journals_an_opencode_child_into_one_supervisors_journal() {
     assert_pairing(&CLAUDE, &OPENCODE);
 }
 
 #[test]
-fn e_codex_root_journals_a_claude_child_across_the_process_boundary() {
+fn e_codex_root_journals_a_claude_child_into_one_supervisors_journal() {
     assert_pairing(&CODEX, &CLAUDE);
 }
 
 #[test]
-fn f_codex_root_journals_a_codex_child_across_the_process_boundary() {
+fn f_codex_root_journals_a_codex_child_into_one_supervisors_journal() {
     assert_pairing(&CODEX, &CODEX);
 }
 
 #[test]
-fn g_codex_root_journals_a_gemini_child_across_the_process_boundary() {
+fn g_codex_root_journals_a_gemini_child_into_one_supervisors_journal() {
     assert_pairing(&CODEX, &GEMINI);
 }
 
 #[test]
-fn h_codex_root_journals_an_opencode_child_across_the_process_boundary() {
+fn h_codex_root_journals_an_opencode_child_into_one_supervisors_journal() {
     assert_pairing(&CODEX, &OPENCODE);
 }
 
 #[test]
-fn i_gemini_root_journals_a_claude_child_across_the_process_boundary() {
+fn i_gemini_root_journals_a_claude_child_into_one_supervisors_journal() {
     assert_pairing(&GEMINI, &CLAUDE);
 }
 
 #[test]
-fn j_gemini_root_journals_a_codex_child_across_the_process_boundary() {
+fn j_gemini_root_journals_a_codex_child_into_one_supervisors_journal() {
     assert_pairing(&GEMINI, &CODEX);
 }
 
 #[test]
-fn k_gemini_root_journals_a_gemini_child_across_the_process_boundary() {
+fn k_gemini_root_journals_a_gemini_child_into_one_supervisors_journal() {
     assert_pairing(&GEMINI, &GEMINI);
 }
 
 #[test]
-fn l_gemini_root_journals_an_opencode_child_across_the_process_boundary() {
+fn l_gemini_root_journals_an_opencode_child_into_one_supervisors_journal() {
     assert_pairing(&GEMINI, &OPENCODE);
 }
 
 #[test]
-fn m_opencode_root_journals_a_claude_child_across_the_process_boundary() {
+fn m_opencode_root_journals_a_claude_child_into_one_supervisors_journal() {
     assert_pairing(&OPENCODE, &CLAUDE);
 }
 
 #[test]
-fn n_opencode_root_journals_a_codex_child_across_the_process_boundary() {
+fn n_opencode_root_journals_a_codex_child_into_one_supervisors_journal() {
     assert_pairing(&OPENCODE, &CODEX);
 }
 
 #[test]
-fn o_opencode_root_journals_a_gemini_child_across_the_process_boundary() {
+fn o_opencode_root_journals_a_gemini_child_into_one_supervisors_journal() {
     assert_pairing(&OPENCODE, &GEMINI);
 }
 
 #[test]
-fn p_opencode_root_journals_an_opencode_child_across_the_process_boundary() {
+fn p_opencode_root_journals_an_opencode_child_into_one_supervisors_journal() {
     assert_pairing(&OPENCODE, &OPENCODE);
 }

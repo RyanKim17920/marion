@@ -25,9 +25,13 @@
 //!
 //! # Concurrency: `O_APPEND`, not a lock
 //!
-//! `marion run` and each `marion-supervisor mcp` bridge are **separate processes** that both cause
-//! lifecycle events, so the file has concurrent writers by construction. marion serialises them
-//! with `O_APPEND` atomicity rather than a lock:
+//! One project's journal has concurrent writers by construction, and **§11 item 28 changed who they
+//! are without reducing how many**. Until steps 5 and 6 they were separate *processes*: `marion run`
+//! wrote the root's records and each `marion-supervisor mcp` bridge wrote its own children's. Now
+//! the supervisor owns every node, so the writers are its per-node threads — one per running node,
+//! plus its own — and a restarted supervisor appending after a crashed one is still a second
+//! process against the same file. marion serialises all of them with `O_APPEND` atomicity rather
+//! than a lock, which covers both cases with one mechanism:
 //!
 //! * POSIX requires that for a file opened `O_APPEND`, the seek-to-end and the write happen
 //!   atomically with respect to other writers. Every record is written with **one** `write(2)`, so
@@ -39,6 +43,12 @@
 //!   writer immediately appends a lone `\n` to **close the torn line**, so a concurrent writer's
 //!   next record can never be glued onto the fragment, and reports [`JournalError::TornWrite`].
 //!   Replay then discards the fragment as an unparsable line.
+//!
+//! **The process case is not hypothetical after the move, and it is the reason nothing here
+//! narrowed to an in-process lock.** A supervisor that dies leaves a journal a successor appends
+//! to; §7.2's restart marking is written by that successor over records the dead one wrote. An
+//! in-process mutex would be correct for the common case and silently wrong for exactly the case
+//! recovery depends on.
 //!
 //! A lock was rejected on two grounds. The workspace's dependency set is deliberately
 //! serde/serde_json/thiserror, and `flock` is not in `std` — it would mean either a new dependency

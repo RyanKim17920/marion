@@ -1490,9 +1490,10 @@ fn main() -> ExitCode {
     // journal's current end, so this run's own children are the only news it can report.
     //
     // **Still a file tail, and deliberately not `tree/subscribe`.** The children are not this
-    // process's to own either way — the root's own bridge spawns them until step 5 lands — and the
-    // journal is what both a watching client and a restarting supervisor read. What changed at step
-    // 6 is only who writes the *root's* records; the reader is unmoved.
+    // process's to own — since step 5 the root's bridge asks the supervisor for them and the
+    // supervisor runs them — and the journal is what both a watching client and a restarting
+    // supervisor read. Steps 5 and 6 changed only *who writes* the records this tails; the reader is
+    // unmoved, which is `events.rs`'s argument for a file cursor holding whoever the writer is.
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let poller = {
         let journal = project.journal();

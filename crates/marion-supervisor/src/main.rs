@@ -10,12 +10,16 @@
 //! `bin/marion.rs` refuses every argv[0] but `run`, a refusal that is pinned by a test and that
 //! this change deliberately leaves standing. `detach.rs` owns all three of its stages.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
+use std::time::Duration;
 
-use marion_core::ids::{RAND_BYTES, new_task_id as core_new_task_id};
+use marion_core::contract::{AgentId, TaskId};
 use marion_core::paths::{ProjectDir, state_dir};
-use marion_supervisor::root::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
-use marion_supervisor::{bridge, detach, run, spawn};
+use marion_harness::claude_code::NODE_TOKEN_ENV;
+use marion_supervisor::root::{AGENT_ID_ENV, DEPTH_ENV, READY_FILE_ENV};
+use marion_supervisor::socket::SocketPaths;
+use marion_supervisor::spawn::SpawnError;
+use marion_supervisor::{background, bridge, courier, detach, run, socket, spawn};
 
 fn usage() -> ! {
     eprintln!("usage: marion-supervisor <mcp|serve|doctor>");
@@ -43,16 +47,22 @@ fn main() {
     }
 }
 
-/// `spawn` runs the child and returns its completed contract — or, with `background: true`,
-/// returns a handle immediately and runs the child on a thread this bridge owns; `wait` collects
-/// that child; `report` stages the child's payload, which the parent's own `spawn` then returns.
+/// `spawn` asks this project's supervisor for a child and returns its completed contract — or, with
+/// `background: true`, returns a handle immediately; `wait` resolves that handle; `report` stages
+/// the child's payload, which the parent's own `spawn` then returns.
+///
+/// **Since §11 item 28 step 5 nothing here starts a process.** The `spawn` arm dials §2's socket
+/// and sends `agent/spawn`; the supervisor owns the child's thread, its `Child`, its pipe and its
+/// pid, and this process is a courier for the request and the answer. See [`courier`] for the three
+/// decisions that shape it — no fallback, a derived socket path, and a synchronous `spawn` that is
+/// a client-side composition rather than a sixteenth method.
 ///
 /// **`bg` is threaded through rather than being a `static`** so the table's lifetime is the
 /// bridge's, and so the unit tests below can each hold their own. A process-wide table would make
-/// one test's live-children count depend on which other tests had run — the exact defect class this
-/// repo keeps finding, one level down.
+/// one test's answers depend on which other tests had run — the exact defect class this repo keeps
+/// finding, one level down.
 fn handle_tool_call(
-    bg: &marion_supervisor::background::Background,
+    bg: &background::Background,
     id: &serde_json::Value,
     name: &str,
     args: &serde_json::Value,
@@ -75,103 +85,117 @@ fn handle_tool_call(
                     Err(e),
                 );
             }
-            // Two values and not one: the tree is per-spawn (`run::SpawnRequest::repo`) and the
-            // environment is per-supervisor, which is the split `run::Env` was carrying wrongly.
-            // In *this* process they come from the same declaration, which is exactly why the type
-            // system has to keep them apart — a bridge serves one node, so the two cannot be told
-            // apart by observation here.
-            let Ok((env, repo)) = spawn_env() else {
-                return bridge::tool_result(id, "marion: MARION_REPO is not set", true);
-            };
-            // §6.1 step 2's gates read the caller's agent type and depth, and this bridge is the
-            // only place that knows which node it is serving. A bridge that was not told cannot
-            // evaluate them, so it refuses rather than spawning ungated — which is exactly the
-            // hazard this path exists to close, and the same shape as `spawn_env`'s refusal above.
-            //
-            // The **live-children count** is stamped on here rather than inside `caller()`, because
-            // it is the one field of the three that is a property of this bridge's own table and
-            // not of the declaration marion wrote. It was the constant
-            // `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER = 0` until backgrounding landed; `run_spawn`
-            // reads it off the `Caller` and refuses before every side effect.
-            let caller = match caller(&requester()) {
-                Ok(c) => run::Caller {
-                    live_children: bg.live_children(),
-                    ..c
-                },
+            let agent_type = args["agent_type"]
+                .as_str()
+                .unwrap_or("codex-impl")
+                .to_string();
+            // Two refusals before anything is sent, and both are about a bridge that was started
+            // wrong rather than about the call: one cannot work out *which supervisor* to ask, the
+            // other cannot say *who is asking*. Neither is a rule the caller broke, so neither
+            // reads like `spawn_result`'s refusals — the fix is in the node's declaration.
+            let (sock, project) = match supervisor_paths() {
+                Ok(v) => v,
                 Err(e) => return bridge::tool_result(id, &e, true),
             };
-            let req = run::SpawnRequest {
-                repo,
-                agent_type: args["agent_type"]
-                    .as_str()
-                    .unwrap_or("codex-impl")
-                    .to_string(),
+            let caller = match node_identity() {
+                Ok(c) => c,
+                Err(e) => return bridge::tool_result(id, &e, true),
+            };
+            // **Every gated fact is left to the supervisor**, and that is the shape of step 5 rather
+            // than a simplification. §6.1 step 2's gates read the caller's agent type, its depth and
+            // its live-children count; all three used to be read here — the first two off the
+            // declaration marion wrote into this process's environment, the third off a table this
+            // process kept. The supervisor derives all three from the registry it wrote itself, so a
+            // caller can no longer state any of them, and the `MARION_DEPTH`-unreadable refusal that
+            // guarded the spawn path is gone with the field it guarded. `SpawnCaller` states who,
+            // and proves it; nothing else.
+            let params = marion_proto::params::AgentSpawnParams {
+                agent_type: agent_type.clone(),
                 prompt: args["prompt"].as_str().unwrap_or_default().to_string(),
-                acceptance_criteria: args["acceptance_criteria"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                writable_scope: args["writable_scope"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                timeout_secs: args["timeout_secs"].as_u64().unwrap_or(900),
+                caller: Some(caller),
+                // Forbidden with a caller, by name: the supervisor already knows which tree this
+                // node lives in, and a caller that states it is a caller that can lie about it.
+                repo: None,
+                acceptance_criteria: string_list(&args["acceptance_criteria"]),
+                writable_scope: string_list(&args["writable_scope"]),
+                // **Sent as the caller stated it, absent and all.** The wire carries an `Option` so
+                // that the supervisor performs the one resolution (`handler`'s own default, then
+                // `effective_timeout`'s clamp); a number invented here would be a second source of
+                // truth for §3.1's key, and the node could run under a bound this tool never named.
+                timeout_secs: args["timeout_secs"].as_u64(),
                 // Absent is not empty: `None` falls back to the agent type's own `model` key
                 // (§3.1), which is what makes a `gemini` or `opencode` spawn launchable without
                 // the parent having to know which harness needs a model and in what spelling.
                 model: args["model"].as_str().map(str::to_string),
+                // Root-only (§9): a child's writes are judged against the worktree marion made it,
+                // so there is no snapshot of anybody's checkout here to decline.
+                no_change_record: None,
             };
-            let Ok(task_id) = new_task_id() else {
-                return bridge::tool_result(id, "marion: could not generate task id", true);
+            // **The dial. There is no other branch.** A supervisor that does not answer is a
+            // refusal in marion's own voice — see [`SpawnError::SupervisorUnreachable`] and
+            // [`courier`] for why an in-process fallback is the one thing this must not have.
+            let spawned = match courier::spawn(sock.socket(), params) {
+                Ok(s) => s,
+                Err(e) => return bridge::spawn_result(id, &agent_type, Err(e)),
             };
-            // **§5.4's `background`, read for its value.** Absent and `false` both mean "block",
-            // which is what marion did for every spawn until now and what the schema's own comment
-            // pinned for M1. `true` starts the child on a thread and returns a handle in the same
-            // frame — see `background`'s module docs for why the thread lives in this process and
-            // what that costs.
+            let Some(task_id) = spawned.task_id else {
+                // Unreachable through a supervisor of this version — `agent/spawn` names the
+                // contract file for every spawn that has a caller — and answered rather than
+                // panicked, because a child really was started and the parent needs to know that
+                // much even when marion cannot say where its answer will land.
+                return bridge::spawn_result(
+                    id,
+                    &agent_type,
+                    Err(SpawnError::NoContract {
+                        path: project.agent(&spawned.agent_id).contracts_dir(),
+                        why: "this project's supervisor started the child without naming the \
+                              contract file it will write (`agent/spawn` answers with a `task_id` \
+                              for every spawn that has a caller), so marion cannot tell which run \
+                              to read back"
+                            .into(),
+                    }),
+                );
+            };
+            let bound = wait_bound(args["timeout_secs"].as_u64());
+            // **§5.4's `background`, read for its value.** Absent and `false` both mean "block".
+            // `true` records the pairing the answer just carried and hands back a handle in the
+            // same frame; the child is already running either way, because `agent/spawn` answers
+            // when the process exists. The two paths now differ in *when the caller is told*, and
+            // in nothing else — before step 5 they also differed in which thread ran the child.
             //
-            // **§6.1 step 2 is evaluated here as well as inside `run_spawn`, and that is not
-            // drift.** It is the *same function* — `marion_core::agent_type::check_spawn_gates`,
-            // pure and idempotent — called from two places, not two implementations of one rule.
-            // §9's warning is about two derivations that can disagree; this cannot.
-            //
-            // It has to be here because of what a handle *means*. `run_spawn` refuses before every
-            // side effect, which is right, but on the background path that refusal happens inside
-            // the thread and would reach the caller only through a later `wait` — so a `spawn`
-            // that marion had already decided to refuse would answer *"the child is running"*.
-            // That is a lie in the result slot, and deleting lies in the result slot is what this
-            // whole change is about. A refused background spawn is refused in the same frame that
-            // asked for it, in the same shape a synchronous one takes.
-            //
-            // `run_spawn` keeps its own call: it is a public library entry point with callers
-            // (`marion run`, the tests) that do not come through here, and a gate that only ran at
-            // one call site is the hole `depth_gate` was written about.
+            // §6.1 step 2's gates were evaluated here on the background path, because a refusal
+            // reaching the caller only through a later `wait` would have answered *"the child is
+            // running"* about a spawn marion had already decided to refuse. That cannot happen now:
+            // the supervisor evaluates the gates before it answers *this* call, so a refused spawn
+            // is refused in the frame that asked for it on both paths, by construction rather than
+            // by a second call site.
             if args["background"].as_bool() == Some(true) {
-                if let Err(e) = marion_core::agent_type::check_spawn_gates(
-                    &caller.agent_type,
-                    caller.depth,
-                    caller.live_children,
-                ) {
-                    return bridge::spawn_result(id, &req.agent_type, Err(e.into()));
-                }
-                let started = bg.start(env, req, task_id, caller);
+                let started = bg.hand_out(task_id, spawned.agent_id, agent_type, bound);
                 return bridge::background_result(id, &started);
             }
-            // A child that ran and failed and a spawn that never launched are the same news to
-            // the parent, and used to arrive in two different shapes. `bridge::spawn_result` is
+            // The blocking half: read the node's own stream until it ends, then read the contract
+            // the supervisor wrote before that bookend. A child that ran and failed and a spawn
+            // that never launched are the same news to the parent, and `bridge::spawn_result` is
             // where that is decided, in one place, so both read alike.
             bridge::spawn_result(
                 id,
-                &req.agent_type,
-                run::run_spawn(&env, &req, &task_id, &caller),
+                &agent_type,
+                match courier::await_contract(
+                    sock.socket(),
+                    &project,
+                    &spawned.agent_id,
+                    &task_id,
+                    bound,
+                ) {
+                    Ok(courier::Delivered::Contract(c)) => Ok(*c),
+                    // The bridge stopped holding this caller's turn; the child did not stop. Said
+                    // as its own sentence rather than as a failure, and the caller is pointed at
+                    // the handle-shaped way to ask again.
+                    Ok(courier::Delivered::StillRunning) => {
+                        Err(SpawnError::OutlivedTheWait(bound.as_secs()))
+                    }
+                    Err(e) => Err(e),
+                },
             )
         }
         // **The handle's resolving verb** (§5.4). Deliberately the same `bridge::spawn_result`
@@ -190,24 +214,60 @@ fn handle_tool_call(
                     true,
                 );
             };
-            match bg.wait(task_id) {
-                marion_supervisor::background::Wait::Finished(outcome) => {
-                    // The agent type for the "could not be launched" line comes from the table,
-                    // not from these arguments: a `wait` carries no `agent_type`, and inventing
-                    // one would put a name in a refusal that names the wrong thing.
-                    bridge::spawn_result(id, "backgrounded", *outcome)
+            // The table answers **which node** — the one fact only `agent/spawn`'s answer carried
+            // — and the blocking is the same read the synchronous path does.
+            let (agent_id, agent_type, bound) = match bg.resolve(task_id) {
+                background::Wait::Pending {
+                    agent_id,
+                    agent_type,
+                    bound,
+                } => (agent_id, agent_type, bound),
+                background::Wait::Unknown => return bridge::wait_unknown(id, task_id),
+                background::Wait::AlreadyCollected(what) => {
+                    return bridge::wait_already_collected(id, task_id, what);
                 }
-                marion_supervisor::background::Wait::Unknown => bridge::wait_unknown(id, task_id),
-                marion_supervisor::background::Wait::AlreadyCollected(what) => {
-                    bridge::wait_already_collected(id, task_id, what)
+            };
+            let (sock, project) = match supervisor_paths() {
+                Ok(v) => v,
+                Err(e) => return bridge::tool_result(id, &e, true),
+            };
+            match courier::await_contract(
+                sock.socket(),
+                &project,
+                &agent_id,
+                &TaskId(task_id.to_string()),
+                bound,
+            ) {
+                Ok(courier::Delivered::Contract(c)) => {
+                    bg.collected(task_id, background::Collected::Contract);
+                    // The agent type for the result line comes from the table, not from these
+                    // arguments: a `wait` carries no `agent_type`, and inventing one would put a
+                    // name in an answer that names the wrong thing.
+                    bridge::spawn_result(id, &agent_type, Ok(*c))
                 }
                 // Deliberately **not** routed through `spawn_result`: every other arm here carries
                 // an outcome, and this one carries the absence of an outcome about a child that is
                 // still going. Flattening it into the contract-shaped reply would make "still
                 // running" indistinguishable from "ran and produced nothing", which is the exact
-                // confusion §7.6's worked example is about.
-                marion_supervisor::background::Wait::StillRunning { agent_type, waited } => {
-                    bridge::wait_still_running(id, task_id, &agent_type, waited.as_secs())
+                // confusion §7.6's worked example is about. The handle is left uncollected, because
+                // the child really is still running and its contract really will be written.
+                Ok(courier::Delivered::StillRunning) => {
+                    bridge::wait_still_running(id, task_id, &agent_type, bound.as_secs())
+                }
+                Err(e) => {
+                    // **Only a terminal outcome burns the handle.** A node that aborted, or whose
+                    // contract marion cannot read, has nothing more to give and a second `wait`
+                    // must be told so. A supervisor that could not be reached is a different fact
+                    // entirely — nothing was learnt about the child — and marking the handle
+                    // collected there would turn one unreachable moment into a handle that can
+                    // never be resolved again.
+                    if matches!(
+                        e,
+                        SpawnError::NodeAborted(_) | SpawnError::NoContract { .. }
+                    ) {
+                        bg.collected(task_id, background::Collected::NoContract);
+                    }
+                    bridge::spawn_result(id, &agent_type, Err(e))
                 }
             }
         }
@@ -252,10 +312,14 @@ fn handle_tool_call(
 /// rule; a node that gets the other was started wrong, and only the first is something it can act
 /// on.
 ///
-/// [`caller_depth`] is shared with [`caller_from`] so the two gates cannot drift into reading the
-/// same key by different rules; the consequence clause differs because the verbs differ. All four
-/// adapters emit `MARION_DEPTH`, swept by `marion_harness::adapter`'s own test, so the only caller
-/// that can land in the second refusal is a hand-started bridge.
+/// **`spawn` no longer reads this key and `report` still does**, which is why the parse below has
+/// one caller where it used to have two. §11 item 28 step 5 moved the `spawn` gate to the
+/// supervisor, which derives the caller's depth from the `SpawnIntent` it wrote itself rather than
+/// believing a declaration — so the whole `MARION_DEPTH`-unreadable refusal class went with it on
+/// that path. `report` is decided *here*, on a node with no socket call to make, so it reads the
+/// declaration and refuses when it cannot. All four adapters emit `MARION_DEPTH`, swept by
+/// `marion_harness::adapter`'s own test, so the only caller that can land in that refusal is a
+/// hand-started bridge.
 fn report_refusal(depth: Option<String>) -> Option<String> {
     match caller_depth(depth) {
         Ok(depth) => bridge::authorization_refusal(depth, bridge::REPORT).map(str::to_string),
@@ -271,11 +335,12 @@ fn report_refusal(depth: Option<String>) -> Option<String> {
 
 /// **Why `MARION_DEPTH` could not be read**, stated once for both gates that read it.
 ///
-/// The two refusals differ in what they protect — one an ungated `spawn`, one an unattributable
-/// `report` — but not in what went wrong, and two hand-rolled parses of one environment variable
-/// with two failure directions is how [`report_refusal`] came to serve where [`caller_from`]
-/// refused. Sharing the parse makes the direction a single decision: unreadable is `Err`, and every
-/// caller of this decides only what to say about it.
+/// One caller today ([`report_refusal`]) and two when it was written: the `spawn` gate read the same
+/// key, and two hand-rolled parses of one environment variable with two failure directions is how
+/// `report` came to *serve* where `spawn` refused. The type is kept for the surviving reader
+/// because the direction is the point — unreadable is `Err`, and the caller decides only what to
+/// say about it — and because a `None` that falls out of a parse is how the receipt-for-nothing came
+/// back the first time.
 enum UnreadableDepth {
     Absent,
     NotADepth(String),
@@ -354,77 +419,169 @@ fn unimplemented_parameter(args: &serde_json::Value) -> Option<spawn::SpawnError
     None
 }
 
-/// The node this bridge instance is serving, which becomes `TaskContract.requester`.
+/// **Which supervisor this bridge talks to, and where the nodes it asks about keep their files.**
 ///
-/// §9: *"`requester` for a top-level `spawn` is the root's `AgentId`."* marion is not this
-/// process's parent — the harness is — so the id rides the server declaration marion wrote
-/// (`root::mcp_config_json`) rather than an inherited fd. The literal fallback is what a
-/// hand-started bridge gets: honest about being unattributed rather than inventing a uuid that
-/// names no agent-dir.
-fn requester() -> String {
-    std::env::var(AGENT_ID_ENV).unwrap_or_else(|_| "unattributed-root".into())
-}
-
-/// The caller of this `spawn`, rebuilt from the declaration marion wrote (§6.1 step 2).
+/// §2: *"the per-child MCP bridge derives this path by the same rule"* — and this is that rule,
+/// applied literally. `<state>` comes from §4.3's precedence and the key is
+/// `git rev-parse --git-common-dir` over the tree this node lives in, so `marion run`,
+/// `detach::ensure_supervisor` and this function compute one path from one derivation. **There is
+/// deliberately no environment variable for the socket.** A bridge that could be *told* where to
+/// dial is a bridge that can be pointed at another project's supervisor, and the failure would be
+/// invisible: a real child, a real contract, in the wrong journal.
 ///
-/// The whole of the gate's input arrives through the per-server MCP `env` block, for the reason
-/// [`requester`] gives about the id: marion is not this process's parent. `agent_type` names the
-/// type whose `max_depth` / `max_concurrent_children` the gate reads, and `depth` says where in the
-/// tree this node sits, with the root at 0.
+/// The [`ProjectDir`] comes back with it because the two are one lookup and are spent together: the
+/// synchronous `spawn` reads `agents/<agent_id>/contracts/<task_id>.json` under exactly the project
+/// whose supervisor answered it, and deriving them separately is how a bridge ends up reading one
+/// project's contract after asking another project's supervisor.
 ///
-/// **Absent or unresolvable is a refusal, not a default**, and the two candidate defaults are both
-/// wrong in the same direction: assuming depth 0 makes every node look like a root, and assuming
-/// `DEFAULT_MAX_DEPTH` makes the per-type key a constant nothing reads. Either would restore
-/// exactly the unbounded recursion this is here to stop, silently. All four adapters emit both
-/// keys — `marion_harness::adapter`'s own test sweeps `Harness::ALL` — so the only caller that can
-/// land here is a hand-started bridge, which is the one that most needs to be told.
-///
-/// [`report_refusal`] now fails in the same direction on the same key, through [`caller_depth`].
-fn caller(agent_id: &str) -> Result<run::Caller, String> {
-    caller_from(
-        agent_id,
-        std::env::var(AGENT_TYPE_ENV).ok(),
-        std::env::var(DEPTH_ENV).ok(),
+/// Both refusals name the key, because the fix is in the node's declaration and not in the call —
+/// the same reason [`report_refusal`] names `MARION_DEPTH`.
+fn supervisor_paths() -> Result<(SocketPaths, ProjectDir), String> {
+    let repo = std::env::var("MARION_REPO").map_err(|_| {
+        "marion: MARION_REPO is not set, so this bridge cannot work out which project's supervisor \
+         to ask for a child (§2 keys a supervisor on the tree's git common directory). Refusing \
+         rather than guessing: a spawn sent to another project's supervisor would run, and would be \
+         journaled somewhere nobody watching this node will look. This is a broken launch, not a \
+         rule — the key belongs in the node's marion server declaration."
+            .to_string()
+    })?;
+    let repo = std::path::PathBuf::from(repo).canonicalize().map_err(|e| {
+        format!(
+            "marion: MARION_REPO does not resolve to a directory marion can read ({e}), so this \
+             bridge cannot derive its project's socket path (§2). Refusing rather than guessing."
+        )
+    })?;
+    let legacy = std::env::var("MARION_STATE").ok();
+    let documented = std::env::var("MARION_STATE_DIR").ok();
+    let state = state_dir(
+        documented.as_deref().or(legacy.as_deref()),
+        std::env::var("XDG_STATE_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
     )
+    .ok_or_else(|| {
+        "marion: this bridge cannot resolve a state directory (MARION_STATE_DIR, else \
+         XDG_STATE_HOME, else HOME), so it can derive neither its project's socket path nor where \
+         a child's contract would be written (§4.3). Refusing rather than guessing."
+            .to_string()
+    })?;
+    // §2's key — the git common dir, not the cwd. The bridge is spawned *inside* the node's
+    // worktree in some configurations, so this is the call that stops a child from being asked of
+    // a supervisor for a project of its own. `marion run` and `root::prepare` make the same one.
+    let key = socket::project_root(&repo);
+    Ok((
+        socket::socket_paths(&state, &key, uid()),
+        ProjectDir::new(&state, &key),
+    ))
 }
 
-/// The pure half, so the resolution is testable without an environment.
-fn caller_from(
-    agent_id: &str,
-    agent_type: Option<String>,
-    depth: Option<String>,
-) -> Result<run::Caller, String> {
-    let name = agent_type.ok_or_else(|| {
+/// This process's own uid, which §2's `/tmp` fallback path is keyed on.
+fn uid() -> u32 {
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    // SAFETY: reads the calling process's real uid and cannot fail.
+    unsafe { getuid() }
+}
+
+/// **Who this bridge is serving, and its proof** — §5.4's *"per-node capability token bound to its
+/// `AgentId`"*, presented.
+///
+/// marion is not this process's parent — the harness is — so both values ride the per-server `env`
+/// block marion wrote into the node's declaration, beside each other, and the supervisor minted
+/// both at the instant it claimed the node. That is what makes them checkable: `handler`'s
+/// `resolve_caller` compares the token against its own table in constant time and derives every
+/// gated fact from the registry, so this frame states *who* and nothing else.
+///
+/// **Absent is a refusal, and it always was, but the refusal has changed shape.** What used to be
+/// missing here was `MARION_AGENT_TYPE` and `MARION_DEPTH`, and refusing was the only way to avoid
+/// spawning ungated. Those are the supervisor's now. What must not be missing is the pair below —
+/// an unattributed spawn cannot be gated at all, because there is no caller to read a depth or a
+/// child count for, and the old literal fallback (`"unattributed-root"`) would now be a claim on
+/// the wire rather than a string in a contract.
+///
+/// The token in particular is refused rather than sent empty: `SpawnCaller` has no `default` for
+/// it, so an empty one would be a credential every process on the machine already has, presented as
+/// if it were proof.
+fn node_identity() -> Result<marion_proto::SpawnCaller, String> {
+    identity_from(non_empty(AGENT_ID_ENV), non_empty(NODE_TOKEN_ENV))
+}
+
+/// The pure half, so the resolution is testable without an environment — the same split
+/// [`report_refusal`] and [`caller_depth`] keep, and for the same reason: a refusal is a sentence
+/// somebody has to read, and a sentence nothing pins is a sentence that drifts.
+fn identity_from(
+    agent_id: Option<String>,
+    node_token: Option<String>,
+) -> Result<marion_proto::SpawnCaller, String> {
+    let agent_id = agent_id.ok_or_else(|| {
         format!(
-            "marion: {AGENT_TYPE_ENV} is not set, so this bridge does not know which agent type is \
-             calling and cannot read its max_depth (§6.1 step 2). Refusing rather than spawning \
-             ungated."
+            "marion: {AGENT_ID_ENV} is not set, so this bridge cannot say which node is asking for \
+             a child. §6.1 step 2's gates are evaluated against the caller's own place in the tree, \
+             and a spawn from nobody cannot be gated at all — the supervisor would have no depth \
+             and no child count to read. Refusing rather than spawning unattributed. This is a \
+             broken launch, not a rule: the key belongs in the node's marion server declaration."
         )
     })?;
-    let agent_type = marion_core::agent_type::builtin(&name).ok_or_else(|| {
+    let node_token = node_token.ok_or_else(|| {
         format!(
-            "marion: {AGENT_TYPE_ENV}={name:?} names no known agent type, so its spawn gates \
-                 cannot be read. Refusing rather than spawning ungated."
+            "marion: {NODE_TOKEN_ENV} is not set, so this bridge holds no proof that it serves \
+             node {agent_id}. §5.4 binds a capability token to an `AgentId` and the supervisor \
+             checks it, so an unproven claim would be refused on the socket anyway — and sending an \
+             empty one would present a secret every process on this machine already has. A node \
+             whose supervisor has restarted is in this case and it is not a mistake the caller \
+             made: the token was minted in memory and died with that supervisor."
         )
     })?;
-    // The same read as [`report_refusal`]'s, deliberately — see [`caller_depth`]. Only the
-    // consequence clause is this gate's own, because only this gate creates anything.
-    let depth = caller_depth(depth).map_err(|e| {
-        format!(
-            "marion: {e}, so this bridge does not know how deep in the tree it is and cannot \
-             enforce max_depth (§6.1 step 2). Refusing rather than spawning ungated."
-        )
-    })?;
-    Ok(run::Caller {
-        agent_id: agent_id.to_string(),
-        agent_type,
-        depth,
-        // A placeholder the *caller* of this function overwrites from the bridge's own background
-        // table before any gate reads it (`handle_tool_call`). It is not a default that stands: a
-        // zero left standing here would be `LIVE_CHILDREN_OF_A_SYNCHRONOUS_CALLER` reintroduced
-        // under a new name, with the concurrency gate inert again and nothing saying so.
-        live_children: 0,
+    Ok(marion_proto::SpawnCaller {
+        agent_id: AgentId(agent_id),
+        node_token,
     })
+}
+
+/// An environment value that is present **and says something**. An empty declaration key is a
+/// declaration written wrong, never a value, for the reason every adapter's `env` block writes
+/// these keys as present-or-absent and never empty.
+fn non_empty(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// How much longer than the child's own wall clock marion will block a caller.
+///
+/// The child's `timeout_secs` bounds one thing: its harness invocation. Everything the supervisor
+/// does around it — `git worktree add`, the config documents, the `--version` probe, the diff, the
+/// contract write, `git worktree remove` — is outside that clock, so a bound of exactly
+/// `timeout_secs` would expire on a healthy child that happened to be inside `git`.
+///
+/// **Deliberately generous, and deliberately finite.** Generous because expiring early hands the
+/// caller a non-answer about a child that was about to finish. Finite because the bridge dispatches
+/// frames on one thread: a read with no bound means no later frame from any caller is even read.
+const WAIT_GRACE: Duration = Duration::from_secs(120);
+
+/// The bound a `spawn` or a `wait` on this child may block for: **the node's own clock, plus
+/// [`WAIT_GRACE`]**.
+///
+/// Derived from the request rather than invented beside it, and resolved through the same two
+/// functions the supervisor resolves the node's real bound with — `handler`'s default for an absent
+/// value and `run::effective_timeout`'s clamp — so marion cannot hold a caller for a period it
+/// never agreed to run the node for, in either direction. Saturating, because the clamp caps the
+/// request but the sum with the grace must still be a duration that exists.
+fn wait_bound(timeout_secs: Option<u64>) -> Duration {
+    run::effective_timeout(
+        timeout_secs.unwrap_or(marion_supervisor::handler::DEFAULT_SPAWN_TIMEOUT_SECS),
+    )
+    .saturating_add(WAIT_GRACE)
+}
+
+/// A JSON array of strings, as the strings. Absent and empty are the same request — none — which is
+/// what both `acceptance_criteria` and `writable_scope` read as one layer down.
+fn string_list(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Tell marion the harness now has our tool list.
@@ -438,119 +595,31 @@ fn signal_ready() {
     }
 }
 
-/// The bridge's half of a spawn: the supervisor-wide environment, **and** the one tree this bridge
-/// serves, returned as two values because they are two facts. See [`run::SpawnRequest::repo`].
-fn spawn_env() -> Result<(run::Env, std::path::PathBuf), ()> {
-    let repo = std::path::PathBuf::from(std::env::var("MARION_REPO").map_err(|_| ())?);
-    let repo = repo.canonicalize().map_err(|_| ())?;
-    let legacy = std::env::var("MARION_STATE").ok();
-    let documented = std::env::var("MARION_STATE_DIR").ok();
-    let explicit = documented.as_deref().or(legacy.as_deref());
-    let state = state_dir(
-        explicit,
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
-    .ok_or(())?;
-    let (auth, base_url) = auth_from_env(
-        std::env::var(marion_supervisor::root::AUTH_ENV).ok(),
-        std::env::var(marion_supervisor::root::BASE_URL_ENV).ok(),
-    );
-    Ok((
-        run::Env {
-            // §2's key — the git common dir, not the cwd. The bridge is spawned *inside* the node's
-            // worktree in some configurations, so this is the call that stops a child from
-            // journalling into a project of its own. `marion run` and `root::prepare` make the same
-            // one. It is also precisely why the repository cannot live here: this hash is the same
-            // for `/r` and for every linked worktree of `/r`, and a worktree is made from one
-            // tree's HEAD.
-            project_dir: ProjectDir::new(&state, &marion_supervisor::socket::project_root(&repo)),
-            state: state.clone(),
-            bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
-            base_url,
-            auth,
-        },
-        repo,
-    ))
-}
-
-/// **How `--live` crosses a spawn hop.**
+/// Serve MCP over stdio until the harness closes our stdin, **and then leave**.
 ///
-/// The bridge serves a node marion did not start, so its only channel is the per-server `env` block
-/// marion wrote into that node's declaration. `MARION_AUTH` is the key that carries the mode; the
-/// pure half is here so the hop is testable without an environment.
+/// # The hold that used to be here, and why its deletion is the point
 ///
-/// Three rules, and each is the answer to a way this could go quietly wrong:
+/// This function ended `bg.join_all()`: at EOF it blocked until every backgrounded child had
+/// finished. That was §5.7's exit rule read one level down — a supervisor MUST NOT exit while *"any
+/// `spawn` is outstanding"* — and it was correct while a child's `Child`, its pipe and its thread
+/// lived in **this** process, where leaving would have killed the child mid-run and left its
+/// `SpawnIntent` journaled with no resolution.
 ///
-/// 1. **`inherited` means the child is live too, and marion names no endpoint for it.** A live root
-///    delegating to a canned child would launch that child against a server that is not running —
-///    the failure that motivated part 2 — and a canned root delegating to a live child would spend
-///    the operator's money without anyone asking for it.
-/// 2. **An absent `MARION_AUTH` is `Canned`**, which is what every declaration written before the
-///    key existed meant. It is *not* inferred from an absent `MARION_BASE_URL`: guessing live from a
-///    missing key points a real credential somewhere marion did not choose.
-/// 3. **An unrecognised value is `Canned` too, not a guess in the expensive direction.** The two
-///    errors are not symmetric — see [`marion_harness::Auth::from_wire`].
+/// §11 item 28 step 5 moved all of that to the supervisor. There is nothing outstanding here to
+/// hold for: a child of this node is a node of the supervisor's, running on the supervisor's
+/// thread, with the supervisor's `Child` and the supervisor's pid in its `Spawned` record. §5.7's
+/// rule now binds the process it was always about, which is the one that owns the lifecycle — and
+/// this process leaving is a courier hanging up.
 ///
-/// The empty string is the state this function exists to make impossible downstream: a
-/// `MARION_BASE_URL=""` (which is what `unwrap_or_default()` used to write into a live root's
-/// declaration) is treated as absent, never as an endpoint.
-fn auth_from_env(
-    auth: Option<String>,
-    base_url: Option<String>,
-) -> (marion_harness::Auth, Option<String>) {
-    let auth = auth
-        .as_deref()
-        .and_then(marion_harness::Auth::from_wire)
-        .unwrap_or(marion_harness::Auth::Canned);
-    let base_url = match auth {
-        // Live means marion overlays no endpoint on the child, exactly as `marion run --live`
-        // overlays none on the root. Any inherited value is ignored rather than obeyed.
-        marion_harness::Auth::Inherited => None,
-        marion_harness::Auth::Canned => Some(
-            base_url
-                .filter(|u| !u.trim().is_empty())
-                .unwrap_or_else(|| "http://127.0.0.1:8099/v1".into()),
-        ),
-    };
-    (auth, base_url)
-}
-
-fn new_task_id() -> std::io::Result<marion_core::contract::TaskId> {
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let mut entropy = [0; RAND_BYTES];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut entropy)?;
-    Ok(core_new_task_id(ms, entropy))
-}
-
-/// Serve MCP over stdio until the harness closes our stdin — **and then wait for any child still
-/// running before leaving.**
-///
-/// The hold is §5.7's exit rule one level down: a supervisor MUST NOT exit while *"any `spawn` is
-/// outstanding"*, and while `spawn` was synchronous that was free — a spawn in flight meant this
-/// loop was inside `handle_tool_call` and could not reach EOF. Backgrounding makes it a real
-/// obligation. Exiting at EOF with a live child would kill that child's process group mid-run and
-/// leave a `SpawnIntent` journaled with no resolution, which §7.2 reads as a node marion **lost** —
-/// asserting an accident about a process marion in fact chose to abandon.
-///
-/// **This hold is unreachable under a real Claude Code harness, and that is measured.** s16
-/// (2026-08-06, `claude` 2.1.222, four runs) found **no EOF at all**: SIGINT, SIGTERM 100 ms later,
-/// then SIGKILL ~450 ms after that, all pid-targeted at the server rather than sent to its group.
-/// So the loop above does not end — the process is killed inside it. The hold is kept because it is
-/// correct for every client marion itself writes (`marion run`, the tests, a future TUI), and the
-/// gap it leaves is §11 item 30: a backgrounded child outlives the SIGKILL as an untracked process
-/// reparented to pid 1, which is what §9's *"no untracked live process"* forbids.
-///
-/// **§11 item 30 lists six journal shapes that kill can leave, not one**, because it can land
-/// anywhere in `run_spawn`'s timeline and that timeline separates intent, confirmation and
-/// persistence. Nothing in this function recovers any of them, and nothing pretends to: a restarted
-/// bridge starts with an empty `Background` table and no pid, so a survivor cannot be re-associated
-/// with the handle this process handed out.
+/// **That is also what made the hold unfixable rather than merely unreached.** s16 measured a real
+/// Claude Code harness ending its MCP server with SIGINT, SIGTERM 100 ms later and SIGKILL ~450 ms
+/// after that, all pid-targeted, and **no EOF at all** — so the hold never ran in production, and a
+/// bridge that ignored SIGTERM would have bought ~450 ms and died anyway. The child outliving the
+/// bridge was §11 item 30's runaway; it is now the ordinary case, and
+/// `tests/background_spawn.rs`'s `a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing`
+/// is where it is measured rather than argued.
 fn run_bridge() {
-    let bg = marion_supervisor::background::Background::new();
+    let bg = background::Background::new();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -586,18 +655,13 @@ fn run_bridge() {
             signal_ready();
         }
     }
-    // EOF. Every child this bridge started and nobody collected is finished here, not abandoned.
-    bg.join_all();
+    // EOF, and nothing to wait for. The children of this node belong to the supervisor; this
+    // process was the courier, and the courier is leaving.
 }
 
 #[cfg(test)]
 mod main_tests {
     use super::*;
-
-    #[test]
-    fn task_ids_minted_back_to_back_use_entropy_and_do_not_collide() {
-        assert_ne!(new_task_id().unwrap(), new_task_id().unwrap());
-    }
 
     /// **`wait` answers a handle it does not recognise with a sentence, not by blocking.**
     ///
@@ -891,170 +955,85 @@ mod main_tests {
         }
     }
 
-    /// The gate's inputs come off the declaration marion wrote, and both are load-bearing: without
-    /// the type there is no `max_depth` to read, and without the depth there is nothing to compare
-    /// it against.
+    /// **A bridge that cannot prove which node it serves refuses, rather than spawning
+    /// unattributed** — §5.4's token, at the point where it is presented.
+    ///
+    /// This replaces `a_bridge_that_was_not_told_which_node_it_serves_refuses_rather_than_spawning_ungated`,
+    /// and the replacement is the whole of §11 item 28 step 5 in one test. That test pinned refusals
+    /// on `MARION_AGENT_TYPE` and `MARION_DEPTH`, because this process evaluated §6.1 step 2's gates
+    /// and could not evaluate them without both. It does not evaluate them any more: the supervisor
+    /// derives the caller's type, depth and live-child count from the registry it wrote itself, so
+    /// a caller that *stated* any of them could lie about them and now cannot state them at all.
+    ///
+    /// What must still be present is the pair below, and each is refused for its own reason:
+    ///
+    /// * **the id**, because a spawn from nobody cannot be gated at all — there is no caller whose
+    ///   depth or child count the supervisor could read. The old literal fallback
+    ///   (`"unattributed-root"`) was a string in a contract; over the socket it would be a claim.
+    /// * **the token**, because §5.4 binds a capability to an `AgentId` and an empty one is a
+    ///   secret every process on this machine already has, presented as proof. `SpawnCaller` has no
+    ///   `default` for it precisely so that it cannot be sent absent.
     #[test]
-    fn the_callers_type_and_depth_are_read_off_the_declaration() {
-        let c = caller_from("019f-node", Some("codex".into()), Some("2".into()))
-            .expect("a declaration carrying both resolves");
-        assert_eq!(c.agent_id, "019f-node");
-        assert_eq!(
-            c.agent_type.name, "codex-impl",
-            "the alias resolves to the one definition, not a second one"
-        );
-        assert_eq!(c.depth, 2);
-        assert_eq!(
-            c.agent_type.max_depth, 3,
-            "which is the bound the gate reads"
-        );
-    }
-
-    /// **A bridge that was not told is a refusal, not a default.** Both plausible defaults restore
-    /// the unbounded recursion this exists to stop: depth 0 makes every node look like a root, and
-    /// a constant `max_depth` makes the per-type key a number nothing reads. The message has to say
-    /// which piece is missing, because the operator's fix differs.
-    #[test]
-    fn a_bridge_that_was_not_told_which_node_it_serves_refuses_rather_than_spawning_ungated() {
-        for (agent_type, depth, expected) in [
-            (None, Some("0".to_string()), "MARION_AGENT_TYPE is not set"),
-            (Some("claude".to_string()), None, "MARION_DEPTH is not set"),
+    fn a_bridge_that_cannot_prove_which_node_it_serves_refuses_rather_than_spawning_unattributed() {
+        for (label, agent_id, token, expected) in [
+            ("a bridge that was told nothing", None, None, AGENT_ID_ENV),
             (
-                Some("not-a-type".to_string()),
-                Some("0".to_string()),
-                "names no known agent type",
+                "an id with no proof behind it",
+                Some("019f-node".to_string()),
+                None,
+                NODE_TOKEN_ENV,
             ),
             (
-                Some("claude".to_string()),
-                Some("deep".to_string()),
-                "is not a depth",
+                "a token attached to nobody",
+                None,
+                Some("tok".to_string()),
+                AGENT_ID_ENV,
             ),
         ] {
-            let e = caller_from("019f-node", agent_type.clone(), depth.clone())
-                .expect_err("an unevaluable gate must refuse");
-            assert!(e.contains(expected), "expected {expected:?} in: {e}");
+            let e = identity_from(agent_id, token).expect_err("an unprovable caller must refuse");
             assert!(
-                e.contains("ungated"),
-                "the refusal must say what it is protecting against: {e}"
+                e.contains(expected),
+                "{label}: the refusal must name the key that is missing, since the fix is in the \
+                 node's declaration and not in the call: {e}"
+            );
+            assert!(
+                e.contains("Refusing") || e.contains("refused"),
+                "{label}: and say that nothing was attempted: {e}"
             );
         }
+        let c = identity_from(Some("019f-node".into()), Some("tok-abc".into()))
+            .expect("a declaration carrying both resolves");
+        assert_eq!(c.agent_id.0, "019f-node");
+        assert_eq!(c.node_token, "tok-abc");
     }
 
-    /// **An absent `MARION_AUTH` is `Canned`, and the fallback is stated rather than inferred.**
+    /// **The bound marion will hold a caller for is the node's own clock plus the grace** — and a
+    /// wall clock no `Instant` can represent does not detonate on the way to it.
     ///
-    /// This is the one declaration key that falls back silently where its siblings refuse:
-    /// `caller_from` turns a missing `MARION_AGENT_TYPE` or `MARION_DEPTH` into an error, because
-    /// both plausible defaults there restore the unbounded recursion the gate exists to stop. Here
-    /// the cheap direction is the safe one — every declaration written before this key existed
-    /// meant canned — so the fallback is deliberate, and a silent default that nothing pins is a
-    /// default that can drift into the expensive direction without a test noticing.
-    ///
-    /// The endpoint is asserted alongside the mode because a canned node with no endpoint is not
-    /// canned in any usable sense: it is the third state `auth_from_env` exists to make impossible.
+    /// Both halves have a history. The clamp is B1: `timeout_secs` is caller-controlled and typed
+    /// `u64`, and `Instant + Duration` panics on overflow — which used to happen on this process's
+    /// own dispatch thread. And the *default* is read from `handler`'s constant rather than written
+    /// again here, because the bridge no longer resolves the number it sends: an absent
+    /// `timeout_secs` goes over the wire absent, the supervisor resolves it, and a `900` spelled
+    /// twice is how the tool's promise and the node's real clock come to disagree.
     #[test]
-    fn an_absent_auth_key_is_canned_rather_than_a_guess_at_live() {
-        let (auth, base_url) = auth_from_env(None, None);
+    fn the_bound_a_wait_may_block_is_the_nodes_own_clock_plus_the_grace() {
         assert_eq!(
-            auth,
-            marion_harness::Auth::Canned,
-            "a declaration written before MARION_AUTH existed meant canned; inferring live from an \
-             absent key points a real credential somewhere marion did not choose"
+            wait_bound(Some(60)),
+            Duration::from_secs(60) + WAIT_GRACE,
+            "a stated clock is the caller's, and the grace is for the work around the run"
         );
         assert_eq!(
-            base_url.as_deref(),
-            Some("http://127.0.0.1:8099/v1"),
-            "a canned node with no endpoint is neither canned nor live"
-        );
-    }
-
-    /// **An unrecognised `MARION_AUTH` is `Canned` too, not a guess in the expensive direction.**
-    ///
-    /// [`marion_harness::Auth::from_wire`] returns `None` for anything it does not know, and the
-    /// asymmetry is the whole point: guessing canned costs a run against an endpoint that is not
-    /// listening — loud, local, free — while guessing live spends the operator's credential on a
-    /// value marion could not even parse. A typo in a declaration must therefore fail cheap.
-    #[test]
-    fn an_unrecognised_auth_value_is_canned_rather_than_a_guess_at_live() {
-        let (auth, base_url) = auth_from_env(Some("Inherited".into()), None);
-        assert_eq!(
-            auth,
-            marion_harness::Auth::Canned,
-            "from_wire is exact: a near-miss spelling must fail toward the cheap error, not spend \
-             a real credential"
-        );
-        assert_eq!(base_url.as_deref(), Some("http://127.0.0.1:8099/v1"));
-    }
-
-    /// **A live root's child is live.** The reading half of the hop; the writing half is
-    /// `tests/auth_mode.rs`, which pins that all four adapters put this exact value into the
-    /// declaration this reads back. Nothing launches.
-    ///
-    /// **The input is `as_wire`, not a typed `"inherited"`**, and that is what keeps the two halves
-    /// from drifting: both ends take the token from the one function every adapter serialises
-    /// through, so a rename cannot leave one side passing against a stale literal. The tables are
-    /// tied to each other by `the_wire_spelling_round_trips_so_the_two_halves_cannot_drift_apart`
-    /// over in that file — `as_wire` and `from_wire` are two independent `match`es.
-    ///
-    /// The endpoint is `None` and that is the point: live means marion overlays no endpoint on the
-    /// child, exactly as it overlays none on the root. A canned child of a live root would launch
-    /// against marion's canned server, which under real auth is not running.
-    #[test]
-    fn a_declaration_saying_inherited_makes_the_child_live_and_names_it_no_endpoint() {
-        let (auth, base_url) = auth_from_env(
-            Some(marion_harness::Auth::Inherited.as_wire().to_string()),
-            None,
-        );
-        assert_eq!(auth, marion_harness::Auth::Inherited);
-        assert_eq!(
-            base_url, None,
-            "a live child is overlaid no endpoint, exactly as `marion run` overlays none on a live \
-             root"
-        );
-    }
-
-    /// **The mode is a stated decision, never inferred from a URL.**
-    ///
-    /// An `Inherited` run can legitimately carry a base URL — a proxy or a gateway is a reasonable
-    /// thing to point a real credential at, and `resolve_base_url` accepts a non-loopback one. So a
-    /// carried endpoint must not demote the child to canned: that is the "endpoint-as-mode
-    /// conflation" the design names, and inferring the mode from the URL would send a child that
-    /// was declared live to marion's canned server instead.
-    #[test]
-    fn a_carried_base_url_does_not_demote_a_child_that_was_declared_live() {
-        let (auth, base_url) = auth_from_env(
-            Some(marion_harness::Auth::Inherited.as_wire().to_string()),
-            Some("https://gateway.corp.example/v1".into()),
+            wait_bound(None),
+            Duration::from_secs(marion_supervisor::handler::DEFAULT_SPAWN_TIMEOUT_SECS)
+                + WAIT_GRACE,
+            "an absent clock resolves to the same default the supervisor will resolve it to"
         );
         assert_eq!(
-            auth,
-            marion_harness::Auth::Inherited,
-            "the declaration said inherited; an endpoint beside it is not a second opinion on the \
-             mode"
-        );
-        assert_eq!(
-            base_url, None,
-            "and the endpoint is ignored rather than obeyed — see tests/auth_mode.rs, which pins \
-             that every adapter drops it too"
-        );
-    }
-
-    /// **An empty `MARION_BASE_URL` is absent, not an endpoint.** The measured regression, not a
-    /// hypothetical: `unwrap_or_default()` wrote `MARION_BASE_URL: ""` into a live root's
-    /// declaration, this function's caller read it back as `Ok("")`, and the child was compiled
-    /// canned against an endpoint spelled as the empty string — neither live nor working, with
-    /// nothing anywhere reporting it. A canned child gets marion's own provider instead.
-    #[test]
-    fn an_empty_base_url_falls_back_to_the_canned_endpoint_rather_than_being_obeyed() {
-        let (auth, base_url) = auth_from_env(
-            Some(marion_harness::Auth::Canned.as_wire().to_string()),
-            Some("   ".into()),
-        );
-        assert_eq!(auth, marion_harness::Auth::Canned);
-        assert_eq!(
-            base_url.as_deref(),
-            Some("http://127.0.0.1:8099/v1"),
-            "a blank endpoint is a third state — neither live nor canned — and this is where it is \
-             made impossible"
+            wait_bound(Some(u64::MAX)),
+            Duration::from_secs(run::MAX_TIMEOUT_SECS) + WAIT_GRACE,
+            "a number no clock can hold is clamped to the bound marion actually enforces, not \
+             passed on to be added to an `Instant`"
         );
     }
 

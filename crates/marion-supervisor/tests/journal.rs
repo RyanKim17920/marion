@@ -273,9 +273,14 @@ fn two_concurrent_writers_in_one_process_interleave_at_record_granularity() {
     assert_all_present(&path, &["thread-a", "thread-b"]);
 }
 
-/// **Two processes, one file** — the half that actually matters, because `marion run` and
-/// `marion-supervisor mcp` are separate processes (§10) and no in-process lock could serialise
-/// them. The child is this same test binary, re-invoked on the helper below.
+/// **Two processes, one file** — the half that actually matters, and it survives §11 item 28.
+///
+/// It was written for `marion run` and `marion-supervisor mcp` being separate processes (§10).
+/// Steps 5 and 6 made one supervisor the writer of every node's records, so the *ordinary* case is
+/// now threads — covered by the test above — and the process case is the one recovery depends on: a
+/// supervisor that died leaves a journal its successor appends to, over records it did not write.
+/// No in-process lock could serialise that, which is why `O_APPEND` rather than a mutex. The child
+/// is this same test binary, re-invoked on the helper below.
 #[test]
 fn two_concurrent_writer_processes_interleave_at_record_granularity() {
     let dir = scratch("journal-it-processes");

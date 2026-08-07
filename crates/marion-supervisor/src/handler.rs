@@ -314,11 +314,16 @@ unsafe extern "C" {
 
 /// **The wall clock an `agent/spawn` gets when the caller states none.**
 ///
-/// The same 900 the bridge's `spawn` tool has always defaulted to (`main::handle_tool_call`), kept
-/// as one constant rather than a second literal so the two surfaces cannot drift into promising
-/// different bounds for the same absent field. `run::effective_timeout` clamps it exactly as it
-/// clamps a stated one.
-const DEFAULT_SPAWN_TIMEOUT_SECS: u64 = 900;
+/// The same 900 the bridge's `spawn` tool has always defaulted to, kept as one constant rather than
+/// a second literal so the two surfaces cannot drift into promising different bounds for the same
+/// absent field. `run::effective_timeout` clamps it exactly as it clamps a stated one.
+///
+/// **Public since §11 item 28 step 5**, and read by the bridge rather than re-spelled there. The
+/// bridge no longer resolves this number — it sends the caller's `Option` untouched and the
+/// resolution happens here — but it still has to know how long a `wait` on the resulting child may
+/// block, and a `900` written beside this one is how the tool's promise and the node's actual
+/// clock come to disagree.
+pub const DEFAULT_SPAWN_TIMEOUT_SECS: u64 = 900;
 
 /// **How long `agent/spawn` will hold its caller waiting for a process to exist.**
 ///
