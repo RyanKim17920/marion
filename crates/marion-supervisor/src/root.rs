@@ -1387,8 +1387,9 @@ fn judge_scope(scope: &RootScope, changed: &[PathBuf]) -> (RootScope, Vec<PathBu
 /// process execution to every `marion run` — an observable change, and one `launch_only_root`'s
 /// fake-harness tests measure directly, since they assert over the argv their stub was invoked
 /// with and a stub that never exits would turn the extra call into a hang. §4.3 puts the binary's
-/// path and version in `meta.json`; when marion writes that file the value comes from there,
-/// measured once, and this reads it rather than re-deriving it.
+/// path and version in `meta.json` — declared and unwritten, and with no accessor to reach for
+/// (`marion_core::paths`). When marion writes that file the value comes from there, measured once,
+/// and this reads it rather than re-deriving it. Until then `"unknown"` is what marion knows.
 fn spawned_record(node: &RootNode, pid: Option<i32>) -> RecordKind {
     RecordKind::Spawned(Spawned {
         agent_id: node.agent_id.clone(),

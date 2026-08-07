@@ -329,9 +329,11 @@ pub enum Lifecycle {
     /// frames but no terminal event says the stream stopped mid-turn.
     ///
     /// **Carries nothing**, for the same one-fact-one-home reason: every field §4 lists is already
-    /// in the journal's `SpawnIntent`/`Spawned` or in `meta.json` (§4.3: *"compiled spec, caps,
-    /// harness ref, binary path + version"*), and a client attaching has its `NodeSummary` from the
-    /// registry before it opens this file.
+    /// in the journal's `SpawnIntent`/`Spawned` or belongs to `meta.json` (§4.3: *"compiled spec,
+    /// caps, harness ref, binary path + version"* — declared and unwritten, see [`crate::paths`]),
+    /// and a client attaching has its `NodeSummary` from the registry before it opens this file.
+    /// Neither of the two is a reason to duplicate them *here*: this event's job is to say the
+    /// stream started, and a field marion cannot source would be filled in with a guess.
     Opened,
     /// The stream ends here, with the terminal status marion observed.
     ///

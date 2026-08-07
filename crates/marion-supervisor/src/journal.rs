@@ -102,18 +102,18 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// Open (creating) the project's journal.
+    /// Open (creating) a journal file, naming the writer.
+    ///
+    /// **Not the door production uses.** A `Journal` owns `seq` and `mono_ns`'s origin, so a second
+    /// one on the same file restarts both; [`append_at`] and [`record`] go through the process-wide
+    /// [`OPEN`] pool for exactly that reason and this is what the pool calls. It stays public for
+    /// tests that mean to open twice — `a_second_open_appends_rather_than_truncating` is
+    /// about the *file* not being truncated — and for a replay tool pointed at a journal outside a
+    /// state directory.
     ///
     /// `writer` names this process. It must be unique per process — the per-writer ordinal is what
     /// makes loss detectable (§4.2's `Ordinal` form), and two processes sharing an identity would
     /// read as one writer emitting an interleaved, gap-ridden sequence.
-    pub fn open(project: &ProjectDir, writer: WriterId) -> Result<Self, JournalError> {
-        std::fs::create_dir_all(project.path())?;
-        Self::open_path(&project.journal(), writer)
-    }
-
-    /// The same, naming the file directly. Exists for tests and for a replay tool pointed at a
-    /// journal outside a state directory.
     pub fn open_path(path: &Path, writer: WriterId) -> Result<Self, JournalError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -246,6 +246,14 @@ pub fn read_path(path: &Path) -> Result<Replay, JournalError> {
 /// rather than a map because a supervisor process serves one project — `marion run` opens exactly
 /// one, a bridge exactly one — and only the test binary, which drives many temp projects in one
 /// process, ever holds more than a single entry.
+///
+/// **`seq` is not the only field a second handle would ruin, and the other one is worse.**
+/// `handler.rs` used to open its own `Journal` per `session/quit`, with a *fresh* [`writer_id`]
+/// each time. That produced no [`marion_core::registry::SeqGap`] — replay seeds a writer's
+/// expectation from the first ordinal it sees — so the damage was silent: a supervisor that is one
+/// process read back as a crowd of one-record writers, and `mono_ns`, whose whole stated job (§4.2)
+/// is to anchor a record against `pty.cast`, was a few microseconds from zero on every one of them.
+/// [`append_at`] is that call path routed through here; it is the reason the function exists.
 static OPEN: std::sync::Mutex<Vec<(PathBuf, Journal)>> = std::sync::Mutex::new(Vec::new());
 
 /// This process's writer identity, minted once. See [`WriterId`]: two writers sharing an identity
@@ -253,6 +261,36 @@ static OPEN: std::sync::Mutex<Vec<(PathBuf, Journal)>> = std::sync::Mutex::new(V
 fn this_writer() -> WriterId {
     static ID: std::sync::OnceLock<WriterId> = std::sync::OnceLock::new();
     ID.get_or_init(writer_id).clone()
+}
+
+/// This process's handle on `path`, opened on first use and kept.
+///
+/// **The only way to reach a [`Journal`] from inside the supervisor**, and that is the point rather
+/// than a convenience: `seq` counts from 0 per object and `mono_ns` from the object's own `start`,
+/// so a second handle on one file — even in one process, even under [`this_writer`]'s single
+/// identity — restarts both. See [`OPEN`].
+fn entry<'a>(
+    open: &'a mut Vec<(PathBuf, Journal)>,
+    path: &Path,
+) -> Result<&'a mut Journal, JournalError> {
+    if let Some(i) = open.iter().position(|(p, _)| p == path) {
+        return Ok(&mut open[i].1);
+    }
+    let journal = Journal::open_path(path, this_writer())?;
+    open.push((path.to_path_buf(), journal));
+    Ok(&mut open.last_mut().expect("just pushed").1)
+}
+
+/// Append one record to this process's handle on `path`, and **hand the failure back**.
+///
+/// [`record`]'s policy — report on stderr, never fail the run — is right for a lifecycle transition
+/// nothing reads yet, and wrong for `session/quit`, which orders a kill against a *durable* intent
+/// and has to be told when the append did not happen. So the difference between the two is the
+/// failure policy and nothing else; both go through one handle, because the alternative is the
+/// per-call open this function exists to remove.
+pub fn append_at(path: &Path, kind: RecordKind) -> Result<JournalRecord, JournalError> {
+    let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
+    entry(&mut open, path)?.append(kind)
 }
 
 /// **Record one lifecycle transition, and never fail the run over it.**
@@ -275,17 +313,9 @@ fn this_writer() -> WriterId {
 pub fn record(project: &ProjectDir, kind: RecordKind) {
     let path = project.journal();
     let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
-    if !open.iter().any(|(p, _)| *p == path) {
-        match Journal::open(project, this_writer()) {
-            Ok(j) => open.push((path.clone(), j)),
-            Err(e) => {
-                eprintln!("marion: cannot open the journal {}: {e}", path.display());
-                return;
-            }
-        }
-    }
-    if let Some((_, j)) = open.iter_mut().find(|(p, _)| *p == path) {
-        j.record(kind);
+    match entry(&mut open, &path) {
+        Ok(j) => j.record(kind),
+        Err(e) => eprintln!("marion: cannot open the journal {}: {e}", path.display()),
     }
 }
 
@@ -466,6 +496,39 @@ mod tests {
         let r = read_path(&dir.join("nope.jsonl")).unwrap();
         assert_eq!(r.records, 0);
         assert!(r.nodes().is_empty());
+    }
+
+    /// **The pool is what makes the ordinal an ordinal**, and it is reachable only through
+    /// [`append_at`] and [`record`] — which is the whole reason [`append_at`] exists rather than
+    /// each caller opening its own handle.
+    ///
+    /// Two independent calls, no shared `Journal` value between them: one writer, `seq` continuing.
+    /// Contrast [`a_second_open_appends_rather_than_truncating`] directly above, which opens twice
+    /// **on purpose** to prove the file is not truncated — and produces, correctly, two writers each
+    /// starting at 0. That is the shape this test forbids for one process's own records.
+    #[test]
+    fn two_appends_through_the_pool_are_one_writer_continuing_its_sequence() {
+        let dir = scratch("journal-pool");
+        let path = dir.join("journal.jsonl");
+        let first = append_at(&path, intent("root", None)).unwrap();
+        let second = append_at(&path, intent("child", Some("root"))).unwrap();
+        assert_eq!(
+            first.writer, second.writer,
+            "one process, one identity — `this_writer` is a `OnceLock` and the handle is pooled"
+        );
+        assert_eq!((first.seq, second.seq), (0, 1), "the ordinal continues");
+        assert!(
+            first.mono_ns <= second.mono_ns,
+            "and `mono_ns` shares one origin rather than restarting: {} then {}",
+            first.mono_ns,
+            second.mono_ns
+        );
+        let r = read_path(&path).unwrap();
+        assert_eq!(r.records, 2);
+        assert!(
+            r.gaps.is_empty(),
+            "gapless by construction, which is what makes a gap mean loss"
+        );
     }
 
     #[test]

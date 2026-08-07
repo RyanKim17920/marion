@@ -216,10 +216,13 @@ impl RecordKind {
 ///
 /// This is §4's `Lifecycle::Spawned` payload **minus what `marion-core` cannot name**: `isolation`,
 /// `caps` and `surfaces` are `marion-harness` types, and core does not depend on harness (the
-/// dependency runs the other way). They are recoverable from `meta.json`, which §4.3 already makes
-/// the home of *"compiled spec, caps, harness ref"*; carrying them here too would be a second
-/// source of truth for the same three facts. `harness_version` and `model` are on [`Spawned`]
-/// instead of here, because both are resolved by *launching* and are not known at intent time.
+/// dependency runs the other way). §4.3 makes `meta.json` the home of *"compiled spec, caps,
+/// harness ref"*, so carrying them here too would be a second source of truth for the same three
+/// facts — but **`meta.json` is declared and unwritten** ([`crate::paths`]), so today those three
+/// are recoverable from *nothing*. That is a gap in what marion records, and naming it is worth more
+/// than the layering argument: adding them here would put harness types in core and still be the
+/// wrong home. `harness_version` and `model` are on [`Spawned`] instead of here, because both are
+/// resolved by *launching* and are not known at intent time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnIntent {
     pub agent_id: AgentId,
