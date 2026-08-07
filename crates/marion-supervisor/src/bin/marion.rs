@@ -1257,6 +1257,15 @@ fn main() -> ExitCode {
     // different question the key was never answering.
     let project_key = socket::project_root(&repo);
     let sock = socket::socket_paths(&state, &project_key, uid());
+    // **Resolved once and spent twice**, on the supervisor this run may start and on the root it
+    // prepares. Two literals here would let a `--canned` run start an `Inherited` supervisor, whose
+    // children would then reach the vendor directly while the root talked to the canned endpoint —
+    // and nothing would say so.
+    let auth = if args.canned {
+        marion_harness::Auth::Canned
+    } else {
+        marion_harness::Auth::Inherited
+    };
     let _supervisor = match detach::ensure_supervisor(
         &sock,
         &detach::Launch {
@@ -1277,6 +1286,12 @@ fn main() -> ExitCode {
             // clients that did **not** say they were leaving. `Handle::idle_exit_grace_waived` is
             // where that distinction is spent.
             idle_grace: RUN_IDLE_GRACE,
+            // Carried onto the supervisor's argv rather than left to its environment: see
+            // `detach::Launch::auth`. `resolve_base_url` already makes these a pair — `--canned`
+            // yields an endpoint and nothing else does — which is the same pairing `parse_serve`
+            // re-checks on the far side.
+            auth,
+            base_url: base_url.clone(),
         },
     ) {
         Ok(ensured) => Some(SupervisorSession {
@@ -1307,11 +1322,7 @@ fn main() -> ExitCode {
         // both adapters refuse to compile without an explicit model (§6.4).
         model: args.model.or_else(|| agent_type.model.clone()),
         no_change_record: args.no_change_record,
-        auth: if args.canned {
-            marion_harness::Auth::Canned
-        } else {
-            marion_harness::Auth::Inherited
-        },
+        auth,
     };
     let node = match root::prepare(&spec) {
         Ok(n) => n,

@@ -75,7 +75,12 @@ fn handle_tool_call(
                     Err(e),
                 );
             }
-            let Ok(env) = spawn_env() else {
+            // Two values and not one: the tree is per-spawn (`run::SpawnRequest::repo`) and the
+            // environment is per-supervisor, which is the split `run::Env` was carrying wrongly.
+            // In *this* process they come from the same declaration, which is exactly why the type
+            // system has to keep them apart — a bridge serves one node, so the two cannot be told
+            // apart by observation here.
+            let Ok((env, repo)) = spawn_env() else {
                 return bridge::tool_result(id, "marion: MARION_REPO is not set", true);
             };
             // §6.1 step 2's gates read the caller's agent type and depth, and this bridge is the
@@ -96,6 +101,7 @@ fn handle_tool_call(
                 Err(e) => return bridge::tool_result(id, &e, true),
             };
             let req = run::SpawnRequest {
+                repo,
                 agent_type: args["agent_type"]
                     .as_str()
                     .unwrap_or("codex-impl")
@@ -432,7 +438,9 @@ fn signal_ready() {
     }
 }
 
-fn spawn_env() -> Result<run::Env, ()> {
+/// The bridge's half of a spawn: the supervisor-wide environment, **and** the one tree this bridge
+/// serves, returned as two values because they are two facts. See [`run::SpawnRequest::repo`].
+fn spawn_env() -> Result<(run::Env, std::path::PathBuf), ()> {
     let repo = std::path::PathBuf::from(std::env::var("MARION_REPO").map_err(|_| ())?);
     let repo = repo.canonicalize().map_err(|_| ())?;
     let legacy = std::env::var("MARION_STATE").ok();
@@ -448,16 +456,21 @@ fn spawn_env() -> Result<run::Env, ()> {
         std::env::var(marion_supervisor::root::AUTH_ENV).ok(),
         std::env::var(marion_supervisor::root::BASE_URL_ENV).ok(),
     );
-    Ok(run::Env {
-        // §2's key — the git common dir, not the cwd. The bridge is spawned *inside* the node's
-        // worktree in some configurations, so this is the call that stops a child from journalling
-        // into a project of its own. `marion run` and `root::prepare` make the same one.
-        project_dir: ProjectDir::new(&state, &marion_supervisor::socket::project_root(&repo)),
+    Ok((
+        run::Env {
+            // §2's key — the git common dir, not the cwd. The bridge is spawned *inside* the node's
+            // worktree in some configurations, so this is the call that stops a child from
+            // journalling into a project of its own. `marion run` and `root::prepare` make the same
+            // one. It is also precisely why the repository cannot live here: this hash is the same
+            // for `/r` and for every linked worktree of `/r`, and a worktree is made from one
+            // tree's HEAD.
+            project_dir: ProjectDir::new(&state, &marion_supervisor::socket::project_root(&repo)),
+            bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
+            base_url,
+            auth,
+        },
         repo,
-        bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
-        base_url,
-        auth,
-    })
+    ))
 }
 
 /// **How `--live` crosses a spawn hop.**

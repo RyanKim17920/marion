@@ -401,6 +401,8 @@ impl Supervisor {
             state_dir: state.to_path_buf(),
             project_root: marion_supervisor::socket::project_root(repo),
             idle_grace: Duration::from_millis(300),
+            auth: marion_harness::Auth::Canned,
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
         };
         let held = marion_supervisor::detach::ensure_supervisor(&paths, &launch)
             .expect("a supervisor starts over this project");

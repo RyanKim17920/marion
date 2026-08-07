@@ -105,6 +105,13 @@ pub const SESSION_LEADER_FLAG: &str = "--session-leader";
 /// Stage 3's marker.
 pub const DETACHED_FLAG: &str = "--detached";
 
+/// [`Launch::auth`]'s flag. **Mandatory** — see that field.
+pub const AUTH_FLAG: &str = "--auth";
+
+/// [`Launch::base_url`]'s flag. Present exactly when the endpoint exists, which under
+/// [`marion_harness::Auth::Canned`] is always and under `Inherited` is never.
+pub const BASE_URL_FLAG: &str = "--base-url";
+
 /// How long [`ensure_supervisor`] keeps dialing before reporting that it could not reach one.
 ///
 /// **A bound, not a measurement.** It covers two `fork`+`exec` pairs and one `bind`, which is
@@ -129,6 +136,29 @@ pub struct Launch {
     /// waiting out five minutes, and so the default lives in exactly one place
     /// ([`crate::serve::DEFAULT_IDLE_GRACE`]).
     pub idle_grace: Duration,
+    /// Whether the nodes this supervisor spawns present a credential marion minted or the
+    /// operator's own login — [`crate::run::Env::auth`].
+    ///
+    /// **Carried, never re-read from the environment.** Stage 3 could call the bridge's
+    /// `auth_from_env`, and that function's documented rule is that an *absent* `MARION_AUTH`
+    /// means [`marion_harness::Auth::Canned`] — correct where it lives, because every declaration
+    /// written before the key existed meant canned. Here it would mean something else entirely: a
+    /// detached supervisor started by a launcher whose environment did not survive the double fork
+    /// would quietly run an operator's live fleet against a canned endpoint that is not listening,
+    /// and report nothing. So the launcher states it and [`parse_serve`] refuses an argv that does
+    /// not.
+    ///
+    /// **argv is safe for this.** The value is a two-valued enum with no secret in it
+    /// ([`marion_harness::Auth::as_wire`]), and the credential paired with the canned endpoint is
+    /// the literal [`crate::run::PLACEHOLDER_API_KEY`], documented there as not a secret and
+    /// checked by nothing. Nothing here is world-visible in `ps` that was not already.
+    pub auth: marion_harness::Auth,
+    /// The canned provider's endpoint — [`crate::run::Env::base_url`].
+    ///
+    /// `None` is meaningful and is not "unstated": under [`marion_harness::Auth::Inherited`] marion
+    /// overlays no endpoint at all and each harness resolves its own. So the two fields are
+    /// validated as a pair — see [`parse_serve`] — rather than this one defaulting.
+    pub base_url: Option<String>,
 }
 
 impl Launch {
@@ -147,7 +177,7 @@ impl Launch {
     /// The argv stage 1 is started with. Stages 2 and 3 append their own marker to it, so the three
     /// can never disagree about the project they are serving.
     pub fn argv(&self) -> Vec<String> {
-        vec![
+        let mut argv = vec![
             SERVE.to_string(),
             "--state-dir".to_string(),
             self.state_dir.display().to_string(),
@@ -155,7 +185,16 @@ impl Launch {
             self.project_root.display().to_string(),
             "--idle-grace-ms".to_string(),
             self.idle_grace.as_millis().to_string(),
-        ]
+            // Always present, so its absence downstream is a fault and never a default. See the
+            // field's doc for why an environment variable would have been the silent option.
+            AUTH_FLAG.to_string(),
+            self.auth.as_wire().to_string(),
+        ];
+        if let Some(url) = &self.base_url {
+            argv.push(BASE_URL_FLAG.to_string());
+            argv.push(url.clone());
+        }
+        argv
     }
 }
 
@@ -462,6 +501,8 @@ pub fn parse_serve(program: PathBuf, argv: &[String]) -> Option<(Launch, Stage)>
     let mut state_dir: Option<PathBuf> = None;
     let mut project_root: Option<PathBuf> = None;
     let mut idle_grace: Option<Duration> = None;
+    let mut auth: Option<marion_harness::Auth> = None;
+    let mut base_url: Option<String> = None;
     let mut stage = Stage::One;
     let mut rest = argv.iter();
     while let Some(arg) = rest.next() {
@@ -471,17 +512,40 @@ pub fn parse_serve(program: PathBuf, argv: &[String]) -> Option<(Launch, Stage)>
             "--idle-grace-ms" => {
                 idle_grace = Some(Duration::from_millis(rest.next()?.parse().ok()?))
             }
+            // **`from_wire` and not a local match**, so `"live"` or `"true"` is a refusal here
+            // exactly as it is in a declaration's `env` block, and neither spelling can acquire a
+            // second meaning on this surface.
+            AUTH_FLAG => auth = Some(marion_harness::Auth::from_wire(rest.next()?)?),
+            BASE_URL_FLAG => base_url = Some(rest.next()?.clone()),
             SESSION_LEADER_FLAG => stage = Stage::SessionLeader,
             DETACHED_FLAG => stage = Stage::Detached,
             _ => return None,
         }
     }
+    // **An absent `--auth` is a refusal, not `Canned`.** This is the whole reason the mode travels
+    // on argv rather than being re-derived in stage 3; see [`Launch::auth`]. `idle_grace` above
+    // *does* default, and the difference is which way absence is wrong: an unstated grace costs a
+    // supervisor that lingers five minutes and says so in §5.7's own terms, while an unstated auth
+    // mode costs an operator's live fleet pointed at an endpoint nobody is running.
+    let auth = auth?;
+    // The pair, checked as a pair, in the direction each mode makes true: `Canned` means marion
+    // names the endpoint, `Inherited` means marion names none and the harness resolves its own. A
+    // `--base-url` under `Inherited` would be a value stage 3 must then ignore, which is a flag
+    // that says one thing and does another.
+    let base_url = match (auth, base_url) {
+        (marion_harness::Auth::Canned, Some(u)) if !u.trim().is_empty() => Some(u),
+        (marion_harness::Auth::Canned, _) => return None,
+        (marion_harness::Auth::Inherited, None) => None,
+        (marion_harness::Auth::Inherited, Some(_)) => return None,
+    };
     Some((
         Launch {
             program,
             state_dir: state_dir?,
             project_root: project_root?,
             idle_grace: idle_grace.unwrap_or(crate::serve::DEFAULT_IDLE_GRACE),
+            auth,
+            base_url,
         },
         stage,
     ))
@@ -494,7 +558,10 @@ pub fn run_serve(program: PathBuf, argv: &[String]) -> Result<(), DetachError> {
             program,
             source: std::io::Error::other(format!(
                 "usage: marion-supervisor {SERVE} --state-dir <dir> --project-root <dir> \
-                 [--idle-grace-ms <n>]. A supervisor is started on demand by the first client that \
+                 --auth <canned|inherited> [--base-url <url>] [--idle-grace-ms <n>]. `--auth` is \
+                 required and `--base-url` is required with `canned` and refused with \
+                 `inherited`: a supervisor that guessed either would run a fleet against an \
+                 endpoint nobody chose. A supervisor is started on demand by the first client that \
                  dials and finds nothing listening (§5.7); it is not normally typed."
             )),
         });
@@ -538,8 +605,26 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
     })?;
     let live = std::sync::Arc::new(LiveRegistry::follow(registry, REGISTRY_POLL));
     let sentry = serving.sentry();
-    let server =
-        Server::start_with_idle_grace(serving, RegistryHandle::new(live), launch.idle_grace);
+    // **`owning`, so §2's `agent/spawn` is answered rather than refused** (§11 item 28 step 5).
+    //
+    // Every field is either derived from what this launch was already told or carried on its argv,
+    // and there is deliberately no repository among them: §2 keys this supervisor on the git common
+    // dir, so it serves a repository *and every linked worktree of it*, and a supervisor-wide
+    // `repo` would branch a feature worktree's children off the main tree's HEAD. The tree is a
+    // per-spawn input — `run::SpawnRequest::repo`, resolved from the caller's own node entry.
+    let env = crate::run::Env {
+        project_dir: project.clone(),
+        // The binary this process is, not a name looked up on a `$PATH` a detached process does not
+        // have. Same fallback `main::spawn_env` takes, and for the same reason.
+        bridge: std::env::current_exe().unwrap_or_else(|_| launch.program.clone()),
+        base_url: launch.base_url.clone(),
+        auth: launch.auth,
+    };
+    let server = Server::start_with_idle_grace(
+        serving,
+        RegistryHandle::owning(live, env),
+        launch.idle_grace,
+    );
     watch_entitlement(sentry);
     // §5.7: the supervisor's lifetime is not its client's. The only way out of this call is the
     // accept loop's own idle exit, which has already journaled the record by the time it returns.
@@ -659,6 +744,8 @@ mod tests {
             state_dir: PathBuf::from("/s"),
             project_root: PathBuf::from("/p/.git"),
             idle_grace: Duration::from_millis(250),
+            auth: marion_harness::Auth::Canned,
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
         };
         let base = launch.argv();
         assert_eq!(base[0], SERVE);

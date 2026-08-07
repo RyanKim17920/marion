@@ -101,7 +101,6 @@ fn fixture(root: &Path, patch: &str) -> Fixture {
     .expect("the canned provider binds");
 
     let env = Env {
-        repo: repo.clone(),
         project_dir: ProjectDir::new(&state, &repo),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         base_url: Some(server.base_url()),
@@ -119,6 +118,7 @@ fn spawn_one(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {
     let req = SpawnRequest {
         agent_type: "codex-impl".into(),
         prompt: "Edit the file under src/ and report back through marion.".into(),
+        repo: fx.repo.clone(),
         acceptance_criteria: vec!["a file under src/ was edited".into()],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,

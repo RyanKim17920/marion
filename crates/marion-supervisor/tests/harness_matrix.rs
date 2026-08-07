@@ -172,7 +172,6 @@ fn drive(cell: &Cell) -> Evidence {
     .expect("the canned provider binds");
 
     let env = Env {
-        repo: repo.clone(),
         project_dir: ProjectDir::new(&state, &repo),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         base_url: Some(server.base_url()),
@@ -181,6 +180,7 @@ fn drive(cell: &Cell) -> Evidence {
     let req = SpawnRequest {
         agent_type: cell.agent_type.into(),
         prompt: "Add the matrix marker file under src/ and report back through marion.".into(),
+        repo: repo.clone(),
         acceptance_criteria: vec!["a file exists under src/ containing the matrix marker".into()],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,

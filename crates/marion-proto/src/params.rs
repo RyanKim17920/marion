@@ -11,6 +11,8 @@
 //! Every struct also carries `#[serde(deny_unknown_fields)]`. The crate doc argues the asymmetry
 //! with results; the short form is that a typo in a parameter changes what runs.
 
+use std::path::PathBuf;
+
 use marion_core::contract::AgentId;
 use marion_core::harness::Harness;
 use serde::{Deserialize, Serialize};
@@ -266,6 +268,26 @@ pub struct AgentSpawnParams {
     /// `None` is a client creating a root; `Some` is a node spawning a child. See [`SpawnCaller`].
     #[serde(default)]
     pub caller: Option<SpawnCaller>,
+    /// **The working tree the spawn is of** — required with `caller: None`, forbidden with
+    /// `caller: Some(_)`, and the supervisor refuses both mismatches by name.
+    ///
+    /// The pairing is not a style choice, it is the two halves of one fact about *who knows*:
+    ///
+    /// * With **no caller**, nobody but the client does. §2 keys a supervisor on `git rev-parse
+    ///   --git-common-dir`, so one supervisor serves a repository and every linked worktree of it
+    ///   over one socket and one journal; `<state>/<project-hash>` names the project and cannot be
+    ///   inverted into a working tree, and there is no *right* default among the trees it covers.
+    ///   Defaulting to the project root would branch a feature worktree's children off the main
+    ///   tree's HEAD — a real branch off real commits, silently.
+    /// * With a **caller**, the supervisor already knows, because it recorded the tree when it
+    ///   claimed that node. A caller that states it is a caller that can lie about it, and this
+    ///   type keeps `agent_type` and `depth` off [`SpawnCaller`] for exactly that reason: every
+    ///   gated fact is derived from what the supervisor minted, never asserted by the frame.
+    ///
+    /// A single `Option` and not a second method, for the reason the doc above already gives: §2
+    /// enumerates fifteen methods and [`crate::Method::ALL`] is pinned at fifteen by test.
+    #[serde(default)]
+    pub repo: Option<PathBuf>,
     /// §9's contract terms. Empty is *"none stated"*, which is what a root has.
     #[serde(default)]
     pub acceptance_criteria: Vec<String>,
@@ -358,6 +380,7 @@ mod tests {
             agent_type: "codex-impl".into(),
             prompt: "implement §6.3".into(),
             caller: None,
+            repo: Some("/r".into()),
             acceptance_criteria: vec![],
             writable_scope: vec![],
             timeout_secs: None,
@@ -370,6 +393,7 @@ mod tests {
                 agent_id: agent(),
                 node_token: "tok-abc".into(),
             }),
+            repo: None,
             acceptance_criteria: vec!["the suite is green".into()],
             writable_scope: vec!["src/**".into()],
             timeout_secs: Some(120),
@@ -431,13 +455,14 @@ mod tests {
                 agent_type: "codex-impl".into(),
                 prompt: "go".into(),
                 caller: None,
+                repo: Some("/r".into()),
                 acceptance_criteria: vec![],
                 writable_scope: vec![],
                 timeout_secs: None,
                 model: None,
             })
             .unwrap(),
-            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null}"#
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null}"#
         );
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
@@ -447,13 +472,14 @@ mod tests {
                     agent_id: AgentId("a".into()),
                     node_token: "t".into(),
                 }),
+                repo: None,
                 acceptance_criteria: vec!["c".into()],
                 writable_scope: vec!["src/**".into()],
                 timeout_secs: Some(60),
                 model: Some("sonnet".into()),
             })
             .unwrap(),
-            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet"}"#
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet"}"#
         );
     }
 
@@ -465,6 +491,12 @@ mod tests {
         let p: AgentSpawnParams =
             serde_json::from_str(r#"{"agent_type":"codex-impl","prompt":"go"}"#).unwrap();
         assert_eq!(p.caller, None, "no caller means a client creating a root");
+        assert_eq!(
+            p.repo, None,
+            "the deserializer permits it absent — a required-here `repo` would make the field \
+             undeserializable for the `caller: Some(_)` half, where stating it is the error. The \
+             pairing is the supervisor's to refuse, by name, and it does"
+        );
         assert!(p.acceptance_criteria.is_empty());
         assert!(p.writable_scope.is_empty());
         assert_eq!(

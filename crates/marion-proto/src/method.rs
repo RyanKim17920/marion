@@ -428,6 +428,9 @@ mod tests {
                         agent_id: agent("parent"),
                         node_token: "tok-9f2c".into(),
                     }),
+                    // Absent, and that is the shape: a caller does not state its repository, the
+                    // supervisor knows it. See `AgentSpawnParams::repo`.
+                    repo: None,
                     acceptance_criteria: vec!["the suite is green".into()],
                     writable_scope: vec!["src/**".into()],
                     timeout_secs: Some(900),

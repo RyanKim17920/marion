@@ -909,7 +909,6 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
     .expect("the canned provider binds");
 
     let env = Env {
-        repo: repo.clone(),
         project_dir: ProjectDir::new(&state, &repo),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         base_url: Some(server.base_url()),
@@ -920,6 +919,7 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
         &SpawnRequest {
             agent_type: "claude".into(),
             prompt: "Try the verb you were not given.".into(),
+            repo: repo.clone(),
             acceptance_criteria: vec![],
             writable_scope: vec!["src/**".into()],
             timeout_secs: 60,

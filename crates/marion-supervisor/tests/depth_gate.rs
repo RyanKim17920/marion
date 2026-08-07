@@ -333,7 +333,6 @@ fn drive(node: &Node) -> Evidence {
     .expect("the canned provider binds");
 
     let env = Env {
-        repo: repo.clone(),
         project_dir: ProjectDir::new(&state, &repo),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         base_url: Some(server.base_url()),
@@ -342,6 +341,7 @@ fn drive(node: &Node) -> Evidence {
     let req = SpawnRequest {
         agent_type: node.agent_type.into(),
         prompt: format!("{DELEGATOR_MARKER}: delegate this task to a child of your own."),
+        repo: repo.clone(),
         acceptance_criteria: vec!["the task is delegated".into()],
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,

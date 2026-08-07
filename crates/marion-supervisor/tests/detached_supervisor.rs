@@ -64,6 +64,10 @@ impl Bed {
             state_dir: self.state.clone(),
             project_root: self.root.clone(),
             idle_grace: GRACE,
+            // Stated, because `parse_serve` refuses an argv that does not: a stage 3 that inferred
+            // its auth mode from an absent environment variable would silently mean `Canned`.
+            auth: marion_harness::Auth::Canned,
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
         }
     }
 

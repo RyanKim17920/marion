@@ -104,6 +104,23 @@ const HARNESS_VERSION_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 pub struct SpawnRequest {
     pub agent_type: String,
     pub prompt: String,
+    /// **The tree this child branches from** — the argument [`crate::spawn::make_worktree`] takes,
+    /// and the one thing about a spawn that is *not* a property of the supervisor serving it.
+    ///
+    /// It used to live on [`Env`], which was wrong the moment a supervisor stopped being one per
+    /// directory. §2 keys a supervisor on `git rev-parse --git-common-dir`, so `/r` and **every
+    /// linked worktree of `/r`** reach the same supervisor over the same journal; but
+    /// `make_worktree` runs `git -C <repo> rev-parse HEAD`, so a single supervisor-wide `repo`
+    /// would branch a feature-worktree root's children off the *other* tree's HEAD — silently,
+    /// with a real worktree and a real branch and nothing anywhere reporting a problem.
+    ///
+    /// So it rides the request, beside the prompt and the scope: one value per spawn, resolved by
+    /// whoever knows which tree the spawn is *of*. On the socket that is the caller's own node
+    /// entry (`handler::NodeHandle::repo`); in the bridge it is `MARION_REPO`; in `marion run` it
+    /// is `--repo`. Putting it here rather than in a sixth argument also means every existing
+    /// carrier of a spawn — `background::Background::start`'s owned clone in particular — carries
+    /// it already, so there is no second channel that could disagree with this one.
+    pub repo: PathBuf,
     pub acceptance_criteria: Vec<String>,
     pub writable_scope: Vec<String>,
     pub timeout_secs: u64,
@@ -191,9 +208,15 @@ impl Caller {
 ///
 /// `Clone` here is part of the same change: a backgrounded child's thread owns its environment
 /// outright rather than borrowing the bridge's stack frame.
+///
+/// **Everything here is a property of the supervisor, not of a spawn.** That is now a checkable
+/// claim rather than a habit: `repo` used to sit at the top of this struct and it was the one field
+/// that failed the test — see [`SpawnRequest::repo`] for what a supervisor-wide repository does to
+/// a linked worktree's children. What is left is derivable by a detached stage 3 from what §5.7
+/// already tells it (`project_dir` from `(state, project root)`, `bridge` from
+/// `current_exe`) or is carried to it explicitly on argv (`base_url`, `auth`).
 #[derive(Clone)]
 pub struct Env {
-    pub repo: PathBuf,
     pub project_dir: ProjectDir,
     pub bridge: PathBuf,
     /// The canned provider's base URL, `None` where marion overrides no endpoint (`Auth::Inherited`)
@@ -1049,7 +1072,7 @@ pub fn run_spawn_watched(
     std::fs::create_dir_all(&ch)?;
     std::fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
     let branch = format!("marion/{}", task_id.0);
-    let base = make_worktree(&env.repo, &wt, &branch)?;
+    let base = make_worktree(&req.repo, &wt, &branch)?;
 
     // §6.1 step 5, through the seam, **dispatched on the agent type's harness**. This was a
     // constant until now, which meant a `claude` agent type wrote a Codex config, exec'd `codex`,
@@ -1158,7 +1181,7 @@ pub fn run_spawn_watched(
         // through the same per-server `env` block `agent_id` and `depth` ride, because that block
         // is the only channel marion has to a process the *harness* starts.
         node_token: node_token.clone(),
-        repo: env.repo.clone(),
+        repo: req.repo.clone(),
         // §4.3's `<state>` **root**, which is `<state>/<project-hash>`'s parent — not the project
         // dir itself. This used to be the project dir behind a `TODO(phase-3)` that called itself
         // harmless because codex's `config_toml` emitted no per-server `env` and so read neither
@@ -1332,7 +1355,7 @@ pub fn run_spawn_watched(
         task_id.clone(),
         AgentId(caller.agent_id.clone()),
         RepoIdentity {
-            git_common_dir: env.repo.join(".git"),
+            git_common_dir: req.repo.join(".git"),
             head_branch: None,
         },
         base,
@@ -1437,7 +1460,7 @@ pub fn run_spawn_watched(
     // The intent is resolved: `Spawned` and `Exited` are on the record above, so the abort this
     // guard would otherwise write would contradict them.
     resolution.armed = false;
-    cleanup(&env.repo, &wt);
+    cleanup(&req.repo, &wt);
     Ok(returned)
 }
 
@@ -1974,7 +1997,6 @@ mod tests {
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();
         let env = Env {
-            repo: repo.clone(),
             project_dir: ProjectDir::new(&state, &repo),
             bridge: PathBuf::from("/bin/marion-supervisor"),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -1983,6 +2005,7 @@ mod tests {
         let req = SpawnRequest {
             agent_type: "claude".into(),
             prompt: "do the task".into(),
+            repo: repo.clone(),
             acceptance_criteria: vec![],
             writable_scope: vec!["src/**".into()],
             // Short: the base URL below answers nothing, so this bounds the launch to a second —
@@ -2099,7 +2122,6 @@ mod tests {
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();
         let env = Env {
-            repo: repo.clone(),
             project_dir: ProjectDir::new(&state, &repo),
             bridge: PathBuf::from("/bin/marion-supervisor"),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -2108,6 +2130,7 @@ mod tests {
         let req = SpawnRequest {
             agent_type: "claude".into(),
             prompt: "do the task".into(),
+            repo: repo.clone(),
             acceptance_criteria: vec![],
             writable_scope: vec!["src/**".into()],
             timeout_secs: 1,
@@ -2382,6 +2405,9 @@ mod tests {
         SpawnRequest {
             agent_type: agent_type.into(),
             prompt: "do the task".into(),
+            // A placeholder, overwritten by every caller that actually launches: `resolve_model`
+            // is pure and never reaches a filesystem, so a real tree here would be scenery.
+            repo: PathBuf::from("/repo"),
             acceptance_criteria: vec![],
             writable_scope: vec![],
             timeout_secs: 1,
@@ -2483,20 +2509,22 @@ mod tests {
         );
     }
 
-    /// An `Env` and a fixture repo, for the tests that call `run_spawn` for real.
-    fn spawn_env(name: &str) -> (Scratch, PathBuf, Env) {
+    /// An `Env`, a state dir and a fixture repo, for the tests that call `run_spawn` for real.
+    ///
+    /// The repo is returned separately because it is no longer part of the environment: it is a
+    /// per-spawn input, so each of these tests states it on its own request.
+    fn spawn_env(name: &str) -> (Scratch, PathBuf, PathBuf, Env) {
         let root = scratch(&format!("supervisor-{name}"));
         let repo = fixture_repo(&root);
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();
         let env = Env {
-            repo: repo.clone(),
             project_dir: ProjectDir::new(&state, &repo),
             bridge: PathBuf::from("/bin/marion-supervisor"),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             auth: Auth::Canned,
         };
-        (root, state, env)
+        (root, state, repo, env)
     }
 
     /// **The gate, and the side effects it must precede.**
@@ -2515,7 +2543,7 @@ mod tests {
     ///    what this gate exists to prevent, so "refused" has to mean none of them happened.
     #[test]
     fn a_spawn_past_max_depth_is_refused_by_name_and_creates_nothing() {
-        let (root, state, env) = spawn_env("depth-gate");
+        let (root, state, repo, env) = spawn_env("depth-gate");
         let caller = Caller {
             agent_id: "caller".into(),
             agent_type: builtin("claude").unwrap(),
@@ -2524,7 +2552,8 @@ mod tests {
         };
         // codex-impl: a type whose child would really launch a process, so a missing gate is a real
         // grandchild rather than a failure somewhere else.
-        let req = request("codex-impl", None);
+        let mut req = request("codex-impl", None);
+        req.repo = repo;
 
         let err = run_spawn(&env, &req, &TaskId("too-deep".into()), &caller)
             .expect_err("a spawn past max_depth must be refused");
@@ -2587,7 +2616,7 @@ mod tests {
     fn a_spawn_within_max_depth_is_not_refused_by_the_gate() {
         // `_root` and not `_`: the underscore-prefixed binding still lives to the end of the test,
         // where its `Drop` removes the scratch dir. A bare `_` would drop it here, mid-test.
-        let (_root, state, env) = spawn_env("depth-allowed");
+        let (_root, state, repo, env) = spawn_env("depth-allowed");
         let caller = Caller {
             agent_id: "caller".into(),
             agent_type: builtin("claude").unwrap(),
@@ -2596,6 +2625,7 @@ mod tests {
             live_children: 0,
         };
         let mut req = request("codex-impl", None);
+        req.repo = repo;
         req.timeout_secs = 1;
 
         let result = run_spawn(&env, &req, &TaskId("deep-enough".into()), &caller);
@@ -2621,7 +2651,7 @@ mod tests {
     #[test]
     fn a_childs_bridge_is_told_a_depth_one_below_its_callers() {
         // Held, not dropped: see the note in the test above.
-        let (_root, state, env) = spawn_env("depth-carried");
+        let (_root, state, repo, env) = spawn_env("depth-carried");
         let caller = Caller {
             agent_id: "caller".into(),
             agent_type: builtin("claude").unwrap(),
@@ -2629,6 +2659,7 @@ mod tests {
             live_children: 0,
         };
         let mut req = request("codex-impl", None);
+        req.repo = repo;
         req.timeout_secs = 1;
         let _ = run_spawn(&env, &req, &TaskId("carry".into()), &caller);
 

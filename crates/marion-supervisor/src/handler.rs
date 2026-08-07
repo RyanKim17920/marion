@@ -221,6 +221,22 @@ pub struct NodeHandle {
     /// §5.4's per-node capability, minted here and written into exactly one other place: the MCP
     /// declaration this node's own bridge reads. See [`RegistryHandle::claim`].
     token: String,
+    /// **The tree this node lives in**, and therefore the tree its own children branch from —
+    /// [`crate::run::SpawnRequest::repo`] for the child of this node's next `agent/spawn`.
+    ///
+    /// One supervisor serves `/r` and every linked worktree of `/r` (§2 keys on the git common
+    /// dir), so the repository cannot be a field of the supervisor; it has to be remembered per
+    /// node and inherited down the tree from whichever root stated it.
+    ///
+    /// **In memory, and deliberately not in the journal.** This entry's lifetime is exactly the
+    /// lifetime of the capability token beside it: both are minted at [`RegistryHandle::claim`]
+    /// and both die with the process. A caller whose supervisor has restarted cannot present a
+    /// token this supervisor minted, so its `agent/spawn` is refused before the repository is ever
+    /// consulted — which means a repository that did not survive the restart cannot be a
+    /// repository any authorized spawn needed. Persisting it would add a second, longer-lived
+    /// copy of a fact that is only ever read under the shorter lifetime, and a journal that
+    /// recorded a path would then have to be right about it after the tree moved on disk.
+    repo: PathBuf,
     /// `None` until the process exists. The window is one `write(2)` plus one fsync wide — step 1
     /// made `Spawned` durable at `command.spawn()`, and this is filled from the same hook.
     pid: Option<i32>,
@@ -344,6 +360,9 @@ enum Progress {
 struct NodeOwner {
     handle: Arc<RegistryHandle>,
     task_id: TaskId,
+    /// The tree this node is being launched in, carried so [`RegistryHandle::claim`] can record it
+    /// on the entry the node's *own* children will inherit from. See [`NodeHandle::repo`].
+    repo: PathBuf,
     tx: std::sync::mpsc::Sender<Progress>,
     /// The id this spawn minted, once it has one — read by the thread body after `run_spawn`
     /// returns, so the outcome can be filed under the node it belongs to.
@@ -358,7 +377,9 @@ impl NodeOwner {
 
 impl crate::run::SpawnObserver for NodeOwner {
     fn identified(&self, agent_id: &AgentId) -> Option<String> {
-        let token = self.handle.claim(agent_id, self.task_id.clone());
+        let token = self
+            .handle
+            .claim(agent_id, self.task_id.clone(), self.repo.clone());
         *lock(&self.identified) = Some(agent_id.clone());
         // Ignored: a receiver dropped before this fires means the call that started the spawn has
         // already given up on it, and the node goes on running either way. Panicking here would
@@ -475,12 +496,22 @@ pub struct RegistryHandle {
     nodes: Mutex<HashMap<AgentId, NodeHandle>>,
     /// **What `agent/spawn` runs a node in**, or `None` for a supervisor that cannot spawn.
     ///
-    /// `None` is not a degenerate case, it is production today: `detach.rs`'s stage 3 builds this
-    /// handle from a journal path, and the *repo* — which `run::Env` needs and a `<project-hash>`
-    /// cannot be inverted back into — reaches that process as `Launch::project_root` and goes no
-    /// further. Wiring it through is §11 item 28 step 5's one-line change there, and until it lands
-    /// a socket `agent/spawn` is refused with a sentence that says exactly this rather than failing
-    /// somewhere further in. See [`RegistryHandle::owning`].
+    /// **Production fills this.** `detach.rs`'s stage 3 builds [`RegistryHandle::owning`] from what
+    /// its `Launch` carries: `project_dir` from `(state, project root)`, `bridge` from
+    /// `current_exe`, and `base_url`/`auth` from argv — carried rather than re-read from the
+    /// environment, because `main::auth_from_env` turns an absent key into `Canned`, and a
+    /// supervisor that silently downgraded a live fleet to the canned endpoint would be the exact
+    /// silent-degradation shape this codebase refuses.
+    ///
+    /// The repository is **not** here and cannot be: one supervisor serves a repository and all of
+    /// its linked worktrees (§2 keys on the git common dir), while a worktree is made from a
+    /// specific tree's HEAD. It is per-spawn — [`crate::run::SpawnRequest::repo`], resolved from
+    /// the caller's own [`NodeHandle::repo`].
+    ///
+    /// So `None` now means only *"this handle was built by [`RegistryHandle::new`]"* — a describing
+    /// handle, which is what `restart.rs`'s and the unit tests' fixtures want and what any future
+    /// read-only surface would want. A handle in that state refuses `agent/spawn` rather than
+    /// failing somewhere further in, and the refusal says which constructor was used.
     spawn_env: Option<crate::run::Env>,
     /// **One spawn decision at a time**, held from the gate evaluation until the child's
     /// `SpawnIntent` is durable — and released before the worktree, the compile and the launch.
@@ -750,16 +781,21 @@ impl RegistryHandle {
     /// already durable and no side effect yet taken. The token returned is written into the node's
     /// MCP declaration a few lines later, so this is the last moment it can be decided.
     ///
+    /// `repo` is the tree this node lives in, remembered so this node's own children can branch
+    /// from it — see [`NodeHandle::repo`]. It is the caller's `repo`, inherited rather than
+    /// re-derived, because "which tree" is a fact about the subtree and not about the spawn.
+    ///
     /// `pub(crate)` rather than private because it is also the whole of what a test needs to put a
     /// node in this table — and a test that reached in through a back door would be asserting
     /// against a binding production does not make.
-    pub(crate) fn claim(&self, agent_id: &AgentId, task_id: TaskId) -> String {
+    pub(crate) fn claim(&self, agent_id: &AgentId, task_id: TaskId, repo: PathBuf) -> String {
         let token = mint_token();
         lock(&self.nodes).insert(
             agent_id.clone(),
             NodeHandle {
                 task_id,
                 token: token.clone(),
+                repo,
                 pid: None,
                 pgid: None,
                 started_at: None,
@@ -963,15 +999,51 @@ impl RegistryHandle {
                 "this supervisor is being dropped and will not start a node it could not then own",
             )
         })?;
+        // **The `caller`/`repo` pairing, before anything else and before any state is consulted.**
+        // It is a property of the frame alone, so it is answered from the frame alone — and
+        // answering it first is what keeps both halves reachable no matter which other refusals
+        // this build still owes (see the step-6 arm below).
+        //
+        // `deny_unknown_fields` makes an *unknown* key a refusal already; these are the two ways a
+        // known key can be wrong.
+        match (p.caller.as_ref(), p.repo.as_ref()) {
+            (None, None) => {
+                return Err(RpcError::refused(
+                    "repo",
+                    "a spawn with no `caller` is a client creating a root, and only the client \
+                     knows which tree the root is of. §2 keys this supervisor on `git rev-parse \
+                     --git-common-dir`, so it serves a repository *and every linked worktree of \
+                     it* over one socket and one journal — `<state>/<project-hash>` names the \
+                     project, never the working tree, and no derivation here could recover which \
+                     of them was meant. A worktree branched from the wrong tree's HEAD is a real \
+                     branch off real commits with nothing reporting a problem, so the field is \
+                     required rather than defaulted to the supervisor's own project root.",
+                    "§2, §6.6",
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err(RpcError::refused(
+                    "repo",
+                    "a spawn with a `caller` must not state a `repo`: the supervisor already knows \
+                     which tree that node lives in, and a caller that states it is a caller that \
+                     can lie about it. This is the same rule that keeps `agent_type` and `depth` \
+                     off `SpawnCaller` — every gated fact about a caller is derived from what the \
+                     supervisor minted, never from what the frame asserts. A node that could name \
+                     its own repository could branch its children off a tree its parent never \
+                     entitled it to touch.",
+                    "§5.4, §6.1",
+                ));
+            }
+            (Some(_), None) | (None, Some(_)) => {}
+        }
         let Some(env) = self.spawn_env.clone() else {
             return Err(RpcError::unimplemented(
                 "agent/spawn",
-                "this supervisor was booted without a spawn environment, so it can describe nodes \
-                 and cannot start one. `run::Env` needs the repository path, and a supervisor \
-                 recovers only `<state>/<project-hash>` from its journal — a hash it cannot invert. \
-                 The path reaches this process as `Launch::project_root` and stops there; §11 item \
-                 28 step 5 is what carries it in. Refused here rather than further in, where the \
-                 failure would be about a directory instead of about a build.",
+                "this handle was built by `RegistryHandle::new`, which describes nodes and owns \
+                 none, so there is no environment to run one in. A detached supervisor is built by \
+                 `RegistryHandle::owning` and does serve this method; a handle in this state is a \
+                 describing fixture. Refused here rather than further in, where the failure would \
+                 be about a directory instead of about a build.",
                 "§2",
             ));
         };
@@ -982,7 +1054,9 @@ impl RegistryHandle {
                  serve it. `root::prepare` owns a root's launch — its own agent-dir layout, its \
                  `ROOT_DEPTH`, its change record and the `parent_id: None` that makes it a root — \
                  and `run_spawn` would give it a parent it does not have. A spawn with a `caller` \
-                 is served; one without is refused rather than served as a child of nobody.",
+                 is served; one without is refused rather than served as a child of nobody. The \
+                 `repo` this frame carries is the one thing step 6 will need and is already \
+                 validated above, so a client that gets this far has got the shape right.",
                 "§2",
             ));
         };
@@ -993,6 +1067,25 @@ impl RegistryHandle {
         let decision = lock(&self.spawn_decision);
         self.live.refresh();
         let caller = self.resolve_caller(caller_id)?;
+        // **The child's tree is its caller's tree**, read off the entry `resolve_caller` has just
+        // proved this caller owns. Not derived from `<project-hash>` — that is the git common dir
+        // shared by every linked worktree of this repository, so deriving it would branch a
+        // feature-worktree node's children off the main tree's HEAD. See [`NodeHandle::repo`].
+        let repo = lock(&self.nodes)
+            .get(&caller_id.agent_id)
+            .map(|n| n.repo.clone())
+            .ok_or_else(|| {
+                // Unreachable through `resolve_caller`, which compared this caller's token against
+                // this same table. Kept as a refusal rather than an `expect` because the lock is
+                // dropped and retaken between the two reads, and the honest answer to "the entry
+                // went away" is not a panic in a supervisor that owns other nodes.
+                RpcError::refused(
+                    &caller_id.agent_id.0,
+                    "this supervisor no longer owns that node, so it cannot say which tree a \
+                     child of it would branch from.",
+                    "§5.4",
+                )
+            })?;
         // §6.1 step 2, before every side effect — the same pure function `run_spawn` calls, run
         // here as well so the refusal arrives in the frame that asked for it rather than as a node
         // that was never going to start. Two call sites of one function, never two rules.
@@ -1011,6 +1104,7 @@ impl RegistryHandle {
         let req = crate::run::SpawnRequest {
             agent_type: p.agent_type.clone(),
             prompt: p.prompt.clone(),
+            repo: repo.clone(),
             acceptance_criteria: p.acceptance_criteria.clone(),
             writable_scope: p.writable_scope.clone(),
             // **Resolved here, not defaulted in the params.** `params.rs` argues why the wire
@@ -1024,6 +1118,8 @@ impl RegistryHandle {
         let observer = NodeOwner {
             handle: me.clone(),
             task_id: task_id.clone(),
+            // The child inherits its caller's tree and hands the same one to *its* children.
+            repo,
             tx,
             identified: Mutex::new(None),
         };
@@ -4334,6 +4430,9 @@ mod tests {
         struct Owning {
             handle: Arc<RegistryHandle>,
             project: ProjectDir,
+            /// The tree these nodes live in. Held because it is now a per-node fact the fixture
+            /// has to state when it claims one — see [`NodeHandle::repo`].
+            repo: PathBuf,
             /// **Declared last so it is dropped last.** Rust drops fields in declaration order,
             /// and a scratch directory removed while a node's thread is still writing into it
             /// would turn a clean failure into an unrelated io error.
@@ -4361,7 +4460,6 @@ mod tests {
             let handle = RegistryHandle::owning(
                 live,
                 crate::run::Env {
-                    repo,
                     project_dir: project.clone(),
                     bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
                     // Answers nothing, which is what bounds the two tests below that really launch.
@@ -4372,6 +4470,7 @@ mod tests {
             Owning {
                 handle,
                 project,
+                repo,
                 _dir: dir,
             }
         }
@@ -4381,6 +4480,9 @@ mod tests {
                 agent_type: "claude".into(),
                 prompt: "do the task".into(),
                 caller,
+                // Every caller in this module is a `Some`, and a `Some` that states a repository
+                // is refused by name — see `a_caller_that_states_its_own_repository_is_refused`.
+                repo: None,
                 acceptance_criteria: vec![],
                 writable_scope: vec!["src/**".into()],
                 timeout_secs: Some(secs),
@@ -4424,9 +4526,11 @@ mod tests {
         #[test]
         fn a_socket_spawn_with_a_forged_caller_is_refused_and_journals_nothing() {
             let fx = owning("owns-forged", vec![intent("root", None, "claude", 0)]);
-            let real = fx
-                .handle
-                .claim(&id("root"), marion_core::contract::TaskId("t".into()));
+            let real = fx.handle.claim(
+                &id("root"),
+                marion_core::contract::TaskId("t".into()),
+                fx.repo.clone(),
+            );
             let before = journal_len(&fx);
             // **Derived from the real token, never a fixed digit.** Spelling this as
             // `format!("{}0", &real[..real.len() - 1])` made the case *conditional on the token's
@@ -4539,9 +4643,11 @@ mod tests {
                 "owns-depth-deep",
                 vec![intent("deep", None, "claude", ty.max_depth)],
             );
-            let token = deep
-                .handle
-                .claim(&id("deep"), marion_core::contract::TaskId("t".into()));
+            let token = deep.handle.claim(
+                &id("deep"),
+                marion_core::contract::TaskId("t".into()),
+                deep.repo.clone(),
+            );
             let before = journal_len(&deep);
             let e = spawn(
                 &deep,
@@ -4587,9 +4693,11 @@ mod tests {
                 records.push(intent(&format!("kid{i}"), Some("root"), "claude", 1));
             }
             let fx = owning("owns-concurrency", records);
-            let token = fx
-                .handle
-                .claim(&id("root"), marion_core::contract::TaskId("t".into()));
+            let token = fx.handle.claim(
+                &id("root"),
+                marion_core::contract::TaskId("t".into()),
+                fx.repo.clone(),
+            );
             assert_eq!(
                 fx.handle.live_children_of(&id("root")),
                 max,
@@ -4679,12 +4787,16 @@ mod tests {
         #[test]
         fn every_node_gets_its_own_unguessable_token() {
             let fx = owning("owns-tokens", vec![]);
-            let a = fx
-                .handle
-                .claim(&id("a"), marion_core::contract::TaskId("t".into()));
-            let b = fx
-                .handle
-                .claim(&id("b"), marion_core::contract::TaskId("t".into()));
+            let a = fx.handle.claim(
+                &id("a"),
+                marion_core::contract::TaskId("t".into()),
+                fx.repo.clone(),
+            );
+            let b = fx.handle.claim(
+                &id("b"),
+                marion_core::contract::TaskId("t".into()),
+                fx.repo.clone(),
+            );
             assert_ne!(
                 a, b,
                 "a per-node token that is not per-node is a fleet token"
@@ -4743,9 +4855,11 @@ mod tests {
 
         /// Spawn a real child and hand back the node's id, once the response has arrived.
         fn spawn_a_real_child(fx: &Owning, secs: u64) -> AgentId {
-            let token = fx
-                .handle
-                .claim(&id("root"), marion_core::contract::TaskId("t".into()));
+            let token = fx.handle.claim(
+                &id("root"),
+                marion_core::contract::TaskId("t".into()),
+                fx.repo.clone(),
+            );
             spawn(
                 fx,
                 params(
@@ -4900,8 +5014,11 @@ mod tests {
                 fx.handle.idle_exit_eligible(),
                 "an empty supervisor with no clients may exit"
             );
-            fx.handle
-                .claim(&id("ghost"), marion_core::contract::TaskId("t".into()));
+            fx.handle.claim(
+                &id("ghost"),
+                marion_core::contract::TaskId("t".into()),
+                fx.repo.clone(),
+            );
             assert!(
                 !fx.handle.idle_exit_eligible(),
                 "a node this process still owns and has no outcome for must hold the supervisor, \
