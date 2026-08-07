@@ -20,8 +20,9 @@
 //! to it, because "a new client shows the full tree" is worth nothing if the tree it shows is a
 //! corpse:
 //!
-//! * **(i) the same supervisor** — by pid *and* `ps` start time, so a reissued pid cannot satisfy
-//!   it. `restart.rs` is emphatic that a bare pid is not an identity.
+//! * **(i) the same supervisor** — by pid *and* the kernel's start identity for whatever wears it,
+//!   so a reissued pid cannot satisfy it. `restart.rs` is emphatic that a bare pid is not an
+//!   identity, and the comparison is `procid::resolve`'s rather than one restated here.
 //! * **(ii) events emitted after the new client attached** — §6.1 step 8's *MUST NOT substitute a
 //!   sleep for an observation* binds a test as hard as it binds a launcher, so the node's next turn
 //!   is **held** at the provider until the attach has happened, and the ordering is proved from the
@@ -50,6 +51,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
+use marion_core::node::StartId;
 use marion_proto::notify::Event as Note;
 use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
 use marion_provider::script::classify_root;
@@ -57,6 +59,7 @@ use marion_provider::{
     CannedServer, Config, RequestKind, RootScript, RootStep, RootTurn, Script, TurnGate,
     classify_anthropic,
 };
+use marion_supervisor::procid::{self, Resolution};
 use marion_supervisor::socket::{SocketPaths, read_identity, socket_paths};
 use marion_testsupport::{Liveness, fixture_repo, liveness, scratch, sweep};
 use serde_json::json;
@@ -336,19 +339,57 @@ fn assert_contiguous_from(seqs: &[u64], first: u64, what: &str) {
 // Facts about the supervisor, the node and the provider, read from outside.
 // ------------------------------------------------------------------------------------------
 
-/// A supervisor's identity as something a *recycled pid* cannot forge. `ps`'s `lstart` is the start
-/// time of the process **currently** holding that pid.
-fn supervisor_identity(paths: &SocketPaths) -> (i32, String) {
+/// A supervisor's identity as something a *recycled pid* cannot forge: the pid beside the kernel's
+/// **start identity** for whatever wears it.
+///
+/// This used to shell out to `ps -o lstart=`. Same idea, three defects the direct read does not
+/// have, and `procid`'s own module doc measured all three on this platform:
+///
+/// * **cost** — `sysctl(KERN_PROC_PID)` is 15.2 µs against `ps`'s 4.35 ms *and a fork*, about 285×.
+///   A fork per reading is what confined this check to a snapshot at either end of a test; at 15.2
+///   µs it can be polled, which is a different and stronger kind of assertion;
+/// * **resolution** — `lstart` is a one-second clock, so two processes born inside the same second
+///   are indistinguishable to it. `p_starttime` is a `timeval`, so they are not. The property this
+///   function exists for is *strictly stronger* after the change, not merely cheaper;
+/// * **the reading itself** — `procid` distinguishes *"no process wears this pid"* from *"marion
+///   could not ask"*, where an empty `ps` stdout conflates them.
+///
+/// It also retires the last `ps -o lstart=` fork in the workspace, which `procid`'s module doc
+/// already argued against on the boundary `Cargo.toml` draws around shelling out.
+fn supervisor_identity(paths: &SocketPaths) -> (i32, StartId) {
     let pid = read_identity(paths)
         .expect("a serving supervisor publishes its identity")
         .pid;
-    let out = Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
-        .expect("ps runs");
-    let started = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(!started.is_empty(), "pid {pid} is not in the process table");
-    (pid, started)
+    match procid::read(pid) {
+        procid::Read::Id(start) => (pid, start),
+        other => panic!("the kernel cannot identify the serving supervisor's pid {pid}: {other:?}"),
+    }
+}
+
+/// Whether the process serving this project **is the one [`supervisor_identity`] named earlier**.
+///
+/// The comparison is `procid::resolve`'s and deliberately not a tuple `==` written out here. That
+/// function is the one place in the workspace where *"the pid matches but the start identity does
+/// not"* is decided, its mismatch arm answers `Gone` rather than a doubt, and
+/// `procid::tests::the_resolution_table_is_exactly_the_four_rows_and_a_mismatch_is_evidence` kills
+/// any build that softens it. Routing the same-process assertions through it means the reissued-pid
+/// property they rest on cannot be weakened without a named test dying — which is what the `ps`
+/// tuple bought by hand and what a hand-written tuple here would silently give back.
+fn still_the_same_supervisor(paths: &SocketPaths, before: &(i32, StartId)) -> Resolution {
+    // **No serving supervisor is `Gone`, not a panic.** `read_identity` answers `None` only while
+    // the lock behind it is free, which is proof that nothing is serving this project — so the
+    // supervisor that was fingerprinted is not there, which is the answer this function exists to
+    // give. Panicking here instead would report the most interesting failure these assertions have
+    // — *the supervisor left* — as a missing file, and the caller's sentence would never print.
+    let Some(id) = read_identity(paths) else {
+        return Resolution::Gone;
+    };
+    if id.pid != before.0 {
+        // A different pid is a different process with no kernel reading required — and saying so
+        // here keeps `resolve` answering the only question it is about, which is same-pid identity.
+        return Resolution::Gone;
+    }
+    procid::resolve(Some(&before.1), procid::read(id.pid))
 }
 
 /// How many times the provider has been asked for one step of the **root's own** script — its
@@ -508,9 +549,9 @@ fn a_killed_client_leaves_its_agents_running_and_a_new_client_sees_the_whole_tre
          three-valued reading and never `kill(pid, 0)`, which reports a zombie as alive"
     );
     assert_eq!(
-        supervisor_identity(&paths),
-        before,
-        "the supervisor outlived the client that started it — by pid *and* start time, so a \
+        still_the_same_supervisor(&paths, &before),
+        Resolution::AliveAndOurs,
+        "the supervisor outlived the client that started it — by pid *and* start identity, so a \
          reissued pid cannot satisfy it"
     );
 
@@ -595,8 +636,8 @@ fn a_killed_client_leaves_its_agents_running_and_a_new_client_sees_the_whole_tre
     );
 
     assert_eq!(
-        supervisor_identity(&paths),
-        before,
+        still_the_same_supervisor(&paths, &before),
+        Resolution::AliveAndOurs,
         "one supervisor, across the client's whole life and death"
     );
 
