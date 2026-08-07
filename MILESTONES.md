@@ -437,7 +437,10 @@ how much code exists.
   **[done] here means exactly what the convention says and nothing more: every criterion M1 names
   is met and verified.** It does **not** mean marion is usable for real work — read the two
   sections below, in order, before quoting this line.
-- **M2 [open]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
+- **M2 [partial]** — supervisor split: TUI crash does not kill agents; reattach restores the tree.
+  **Criteria 1, 2 and 3 are met and verified as of 2026-08-07; criterion 4 is not measured as
+  specified — see the bottom of this entry.** The paragraphs below are kept in date order because
+  each records what was true when written, and two of them are now history.
   **Still [open] as of 2026-08-05 and not upgraded**, though its substrate moved twice: the journal
   is written and provably replayable (all sixteen pairings, `fdf2e7a`), and as of `8a16427` it is
   also **read at runtime** — `crates/marion-supervisor/src/watch.rs`, polled from a thread in
@@ -487,9 +490,42 @@ how much code exists.
     SIGKILLs a bridge mid-child and requires the node's own `events.jsonl` to **grow afterwards** —
     liveness, not presence in the process table. §11 item 30's *bridge*-death runaway is closed;
     the supervisor-death half is not.
-  - **What is still open in M2**: criterion 3's *"no untracked live process"* on the
-    supervisor-death side (§11 item 30, one half only) and criterion 2's structural replay
-    identity. M2 stays **[open]**.
+  - **Criterion 2** — `crates/marion-supervisor/tests/client_run.rs::a_new_clients_tree_is_the_journal_the_supervisor_read_including_the_window_no_client_saw`,
+    added 2026-08-07. Stated structurally, per §9, because no node M2 ships carries source-side
+    ordering evidence — the test asserts `last_src_seq` is `None` so a future adapter that does
+    carry it forces someone back to add the per-node form §9 owes that surface. §9's four things are
+    four assertions, compared against a replay of exactly the `read_point.records` the supervisor
+    handed back with that snapshot, never against the pre-kill tree. What makes it a measurement
+    rather than a tautology: a node is mid-turn at the kill, and a second node **terminates during
+    the detached window**, so replay has to pick up a terminal state and a contract no client ever
+    saw. Each of the four has a corroborating reading that shares no code with the tree — the agent
+    directories, the contract files, the contract's `requester`, the pid — because a mutation inside
+    `Replay` moves both sides together and two of them proved exactly that.
+  - **Criterion 3** — `crates/marion-supervisor/tests/client_run.rs::after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for`,
+    added 2026-08-07, closing the *"no untracked live process"* half. `Spawned` now carries an
+    opaque, platform-tagged start identity beside its pid, read in the `on_started` hook while
+    marion still holds the `Child` — the one instant where the read is race-free — so replay can
+    tell a survivor from a recycled pid. `procid::Claim` is three-valued and **cannot-tell blocks
+    the claim**; it is never rounded up. *"Untracked"* is §11 item 30's sense — a process nothing
+    will attend to — not *"any live process"*, since §7.2 sanctions a running orphan and a
+    SIGKILLed supervisor leaves its fleet running by design. The `ReapedIdle`-resumable and
+    `Live` → `Orphaned` halves were already covered in `restart.rs`.
+    **Linux is not shipped**: `/proc/<pid>/stat` field 22 is designed and unmeasured, so non-macOS
+    returns an explicit refusal that resolves to cannot-tell, and the consequence is tested.
+  - **What is still open in M2, and why it is [partial] rather than [done]**: **criterion 4 is not
+    measured as specified.** §9 states it as *a clean quit-and-return* — *"a client calls
+    `session/quit` with disposition (b) … the client exits"* — and says in as many words that the
+    three kill-based criteria *"cannot distinguish"* it. The test credited above for criterion 4's
+    load-bearing half **SIGKILLs** its client, and §7.3.1 is precisely the distinction between a
+    client that said it was leaving and one that vanished. What that test does prove is the
+    *mechanism* (ii) depends on: a new client receives events emitted after it attached, so this is
+    not replay of a corpse. What is unproven is the scenario — in particular (i), *"the supervisor
+    was still the same process"*, after a **voluntary** departure, which is the case §5.7's idle
+    grace actually governs and the one where a supervisor could legitimately exit. No test in the
+    tree calls `session/quit` and then reattaches; `Client::quit` appears only as teardown, and
+    `detached_supervisor.rs`'s quit tests assert supervisor lifecycle with no `node/attach` and no
+    events. M2 is therefore **[partial]**: criteria 1, 2 and 3 met and verified, criterion 4's
+    mechanism proven but its scenario unmeasured.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
