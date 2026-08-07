@@ -1,7 +1,13 @@
-//! **`marion run` is a client, and M2's acceptance criterion 1** (§9, §11 item 28 step 6).
+//! **`marion run` is a client, and M2's acceptance criteria 1 and 2** (§9, §11 item 28 step 6).
 //!
 //! > *"A TUI crash cannot kill running agents: agents keep running, and a new client shows the full
 //! > tree."*
+//!
+//! Criterion 2 is measured here too, and in the same bed, because it is the same kill: criterion 1
+//! is that the tree *survives* the client, criterion 2 is that the tree a replacement client is
+//! shown **is the journal** — same nodes, same parent edges, same terminal states, same contracts,
+//! compared as of that client's own read. See
+//! [`a_new_clients_tree_is_the_journal_the_supervisor_read_including_the_window_no_client_saw`].
 //!
 //! Until step 6 this criterion was unmeetable and `MILESTONES.md` said so: `marion run` held the
 //! root's `Child`, its pipe and its whole turn, so killing it killed the root. Now the supervisor
@@ -237,6 +243,15 @@ impl Client {
     }
 
     fn tree(&mut self) -> Vec<marion_proto::NodeSummary> {
+        self.tree_at().nodes
+    }
+
+    /// The snapshot **and the read point it is as of**, which the criterion-2 test needs together:
+    /// §7.3.3's seam is that a snapshot without its read point cannot be compared to anything, and
+    /// `TreeSubscribeResult` carries the two because the supervisor builds them under one lock from
+    /// one read (`handler::subscribe`). Splitting them here would re-introduce the race the
+    /// protocol removed.
+    fn tree_at(&mut self) -> marion_proto::result::TreeSubscribeResult {
         let id = self.send(Call::TreeSubscribe(
             marion_proto::params::TreeSubscribeParams {},
         ));
@@ -248,7 +263,7 @@ impl Client {
         else {
             panic!("wrong result")
         };
-        s.nodes
+        s
     }
 
     fn attach(&mut self, agent: &AgentId) -> (Vec<Note>, marion_proto::result::NodeAttachResult) {
@@ -365,8 +380,19 @@ fn root_turns_asked(server: &CannedServer, step: RootStep) -> usize {
         .count()
 }
 
-fn until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + BOUND;
+fn until(cond: impl FnMut() -> bool) -> bool {
+    until_within(BOUND, cond)
+}
+
+/// [`until`] with its own budget, for the one wait whose *expiry is itself a defect report*.
+///
+/// The registry polls every 10 ms (`detach::REGISTRY_POLL`), so a supervisor catching up with a
+/// journal that has stopped growing is a matter of milliseconds. A wait for that which runs to
+/// [`BOUND`] would turn a follower that has permanently lost a record — the seam defect criterion 2
+/// is about — into a three-minute timeout instead of a named failure. So the caller gives it a
+/// short budget and then *asserts about the numbers*, which is what says which record went missing.
+fn until_within(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
         if cond() {
             return true;
@@ -796,4 +822,433 @@ fn a_run_whose_supervisor_cannot_start_is_refused_and_journals_nothing() {
         "a refused run wrote into <state>: {entries:?}"
     );
     let _ = std::fs::remove_dir_all(&state);
+}
+
+// ------------------------------------------------------------------------------------------
+// T-crit2 — M2 acceptance criterion 2, and the structure it is stated over
+// ------------------------------------------------------------------------------------------
+
+/// How long the supervisor's follower may take to reach the end of a journal that has **stopped
+/// growing**. See [`until_within`]: expiry here is a defect report, not a slow machine.
+const CATCH_UP: Duration = Duration::from_secs(15);
+
+/// **§9's four things, kept as four**: *"same nodes, same parent edges, same terminal states, same
+/// contracts."*
+///
+/// Four named maps and not one derived blob, because the whole value of the criterion is in *which*
+/// of the four broke. A single `assert_eq!` over an opaque struct reports a diff of the whole tree
+/// and leaves the reader to work out whether a parent moved or a contract vanished; these report
+/// one sentence each.
+///
+/// Every key is the `AgentId` string, so the two sides are comparable without either of them
+/// knowing how the other was built — one is a journal replay, the other is what a client can see
+/// (`tree/subscribe`, plus the contract files §9 and `AgentSpawnResult::task_id` tell a client to
+/// read for itself).
+#[derive(Debug, PartialEq, Eq)]
+struct Structure {
+    nodes: std::collections::BTreeSet<String>,
+    edges: std::collections::BTreeMap<String, Option<String>>,
+    states: std::collections::BTreeMap<String, marion_core::node::NodeState>,
+    /// `(task_id, requester, status)` per node, sorted — the three fields a `ContractPersisted`
+    /// carries and the three a `TaskContract` on disk can be read back for.
+    contracts: std::collections::BTreeMap<
+        String,
+        Vec<(String, String, Option<marion_core::contract::ResultStatus>)>,
+    >,
+}
+
+impl Structure {
+    /// The tree **as the journal records it**, from a replay of an explicit byte prefix.
+    fn from_journal(replay: &marion_core::registry::Replay) -> Structure {
+        let mut s = Structure::empty();
+        for n in replay.nodes() {
+            let id = n.agent_id.0.clone();
+            s.nodes.insert(id.clone());
+            s.edges
+                .insert(id.clone(), n.parent_id().map(|p| p.0.clone()));
+            s.states.insert(id.clone(), n.state);
+            let mut cs: Vec<_> = n
+                .contracts
+                .iter()
+                .map(|c| (c.task_id.0.clone(), c.requester.0.clone(), c.status))
+                .collect();
+            cs.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+            s.contracts.insert(id, cs);
+        }
+        s
+    }
+
+    /// The tree **as a client reconstructs it**: nodes, parents and states off the socket, and each
+    /// node's contracts read from `agents/<agent_id>/contracts/<task_id>.json` — which is the
+    /// composition `AgentSpawnResult::task_id` documents, and the only way a client learns a
+    /// contract at all (no method on the fifteen returns one).
+    fn from_client(
+        nodes: &[marion_proto::NodeSummary],
+        project: &marion_core::paths::ProjectDir,
+    ) -> Structure {
+        let mut s = Structure::empty();
+        for n in nodes {
+            let id = n.agent_id.0.clone();
+            s.nodes.insert(id.clone());
+            s.edges
+                .insert(id.clone(), n.parent_id.as_ref().map(|p| p.0.clone()));
+            s.states.insert(id.clone(), n.state);
+            s.contracts
+                .insert(id, contracts_on_disk(project, &n.agent_id));
+        }
+        s
+    }
+
+    fn empty() -> Structure {
+        Structure {
+            nodes: Default::default(),
+            edges: Default::default(),
+            states: Default::default(),
+            contracts: Default::default(),
+        }
+    }
+}
+
+/// `(task_id, requester, status)` for every contract file under one node's directory.
+///
+/// Read from the filesystem rather than from the journal on purpose: this is the **independent**
+/// half of the contract assertion. A replay that stopped reconstructing `ContractPersisted` would
+/// agree with a supervisor that had also stopped — they are the same code — and only the files the
+/// run actually wrote can catch that.
+fn contracts_on_disk(
+    project: &marion_core::paths::ProjectDir,
+    id: &AgentId,
+) -> Vec<(String, String, Option<marion_core::contract::ResultStatus>)> {
+    let dir = project.agent(id).contracts_dir();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for e in entries.filter_map(Result::ok) {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "json") {
+            let body =
+                std::fs::read(&p).unwrap_or_else(|e| panic!("{} is unreadable: {e}", p.display()));
+            let c: marion_core::contract::TaskContract = serde_json::from_slice(&body)
+                .unwrap_or_else(|e| panic!("{} is not a TaskContract: {e}", p.display()));
+            out.push((
+                c.task_id.0,
+                c.requester.0,
+                c.completion.as_ref().map(|x| x.status),
+            ));
+        }
+    }
+    // By the two identifiers, because `ResultStatus` is not `Ord` — and it is not the sort key
+    // anyway: a node's contracts are distinguished by their task ids.
+    out.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    out
+}
+
+/// The whole journal's bytes, read from a second process.
+fn journal_bytes(state: &Path, repo: &Path) -> Vec<u8> {
+    std::fs::read(project(state, repo).journal()).unwrap_or_default()
+}
+
+/// **Replay exactly `records` records**, which is what *"the journal as of the replay's own read"*
+/// means as a value.
+///
+/// Records and not bytes, because the read point the supervisor hands back is a record count
+/// (`ReplayPoint::records`) and the journal is append-only: the first *n* records of the file are
+/// the same *n* records the supervisor folded, whatever has landed since. Fed one line at a time so
+/// the prefix can be stopped at a count rather than at an offset the client never told anyone.
+fn replay_to(bytes: &[u8], records: u64) -> marion_core::registry::Replay {
+    let mut r = marion_core::registry::Replay::default();
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        if r.records as u64 == records {
+            break;
+        }
+        r.extend(line);
+    }
+    assert_eq!(
+        r.records as u64, records,
+        "the supervisor says it read {records} records and this journal holds only {}; a read \
+         point past the end of the file it is a read of is not a prefix of anything",
+        r.records
+    );
+    r
+}
+
+/// §9's four assertions, each named, over one pair of readings.
+fn assert_structurally_identical(journal: &Structure, client: &Structure, label: &str) {
+    assert_eq!(
+        journal.nodes, client.nodes,
+        "{label}: **same nodes**. A node in the journal and not in the client's tree is a node the \
+         replay dropped; one in the tree and not the journal is a node the supervisor invented"
+    );
+    assert_eq!(
+        journal.edges, client.edges,
+        "{label}: **same parent edges**. §7.5 makes a parent immutable, so a difference here is a \
+         re-parenting no record authorises"
+    );
+    assert_eq!(
+        journal.states, client.states,
+        "{label}: **same terminal states**. The states are the journal's own: a node the client \
+         shows running over a journal that records its exit is the failure this clause exists for"
+    );
+    assert_eq!(
+        journal.contracts, client.contracts,
+        "{label}: **same contracts**. The client's side is the files the run wrote, so a \
+         difference is either a contract the journal records and nothing produced, or one on disk \
+         that replay did not reconstruct"
+    );
+}
+
+/// The agent directories the run actually created — a third reading of *"same nodes"* that shares
+/// no code with either of the other two.
+fn agent_dirs(state: &Path, repo: &Path) -> std::collections::BTreeSet<String> {
+    std::fs::read_dir(project(state, repo).agents_dir())
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn node_at_depth(nodes: &[marion_core::registry::ReplayedNode], depth: u32) -> AgentId {
+    nodes
+        .iter()
+        .find(|n| n.depth() == Some(depth))
+        .unwrap_or_else(|| panic!("the run has a node at depth {depth}: {nodes:?}"))
+        .agent_id
+        .clone()
+}
+
+/// **M2 acceptance criterion 2**: the tree a new client reconstructs *is* the journal the
+/// supervisor had read at the moment it answered — including everything that happened while no
+/// client existed at all.
+///
+/// # Why this is stated structurally and not as `src_seq` contiguity
+///
+/// §9 states criterion 2 **per node**, because which form of `src_seq` applies is a property of the
+/// surface. A transcript-sourced `interactive` Claude Code node would owe an unbroken
+/// `uuid`/`parentUuid` chain; **every node M2 ships — the headless Claude root here and the Codex
+/// child — has no ordering evidence at all**, so `Replay::last_src_seq` is `None` on every record
+/// in this journal and an ordinal check would be a check of nothing. §4.2 also refuses `agent_seq`
+/// contiguity as a substitute: a dropped notification simply never gets a number, so contiguity
+/// proves nothing about loss. What is left, and what §9 names the *primary* criterion, is that the
+/// replayed tree is structurally identical: same nodes, same parent edges, same terminal states,
+/// same contracts.
+///
+/// # The two things that make it a measurement rather than a tautology
+///
+/// * **A node is mid-turn when the client dies.** The child's second turn is held at the provider,
+///   so at the kill the child is parked with its question asked and the root is inside the `spawn`
+///   that is waiting for it. Neither is terminal and neither has a contract.
+/// * **A node terminates while nobody is watching.** The hold is released *after* the kill and
+///   *before* any new client dials, so the child runs to completion, writes its `TaskContract` and
+///   exits with no client in existence. The replay therefore has to pick up a terminal state and a
+///   contract that no client ever saw live — which is the difference between replaying a tree and
+///   remembering one.
+///
+/// # And the comparison is against the journal, at the read point the supervisor named
+///
+/// Not against the pre-kill tree, which §9 is explicit about: agents keep running while the client
+/// is dead, so nodes appear, terminate and gain contracts in between, and a diff against a
+/// concurrently-evolving tree would fail for reasons that have nothing to do with replay. This test
+/// asserts the *change* separately (below) and then compares the client's snapshot to a replay of
+/// exactly `read_point.records` records — the number the supervisor handed back with that same
+/// snapshot, built under one lock from one read (`handler::subscribe`).
+#[test]
+fn a_new_clients_tree_is_the_journal_the_supervisor_read_including_the_window_no_client_saw() {
+    let dir = scratch("client-run-crit2");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+
+    let gate = TurnGate::holding_from(CHILD_WIRE, 2);
+    let server = CannedServer::start_gated(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: dir.join("provider-requests.jsonl"),
+            script: script(),
+        },
+        Some(Arc::clone(&gate)),
+    )
+    .expect("the canned provider binds");
+
+    let mut run = start_run(&dir, &repo, &state, &server.base_url(), &gate);
+    let client_pid = run.pid();
+    let paths = paths_for(&state, &repo);
+
+    assert!(
+        until(|| gate.parked() == 1),
+        "the child's second turn is held, so the tree is parked with its question asked"
+    );
+    assert!(
+        until(|| journal_nodes(&state, &repo).len() == 2),
+        "both nodes are in the journal before the kill"
+    );
+
+    // ---- the pre-kill tree: two nodes, both mid-turn, no contract anywhere ---------------------
+    let before = journal_nodes(&state, &repo);
+    let root = node_at_depth(&before, 0);
+    let child = node_at_depth(&before, 1);
+    let before_child = before.iter().find(|n| n.agent_id == child).unwrap();
+    let child_pid = before_child
+        .pid
+        .expect("the supervisor journals a child's `Spawned` with its pid");
+    let root_pid = before
+        .iter()
+        .find(|n| n.agent_id == root)
+        .and_then(|n| n.pid)
+        .expect("and the root's");
+    assert!(
+        !before_child.state.is_exited(),
+        "**the mid-turn premise**: at the kill the child is parked at the provider, not finished — \
+         {:?}",
+        before_child.state
+    );
+    assert!(
+        before_child.contracts.is_empty(),
+        "and it has no contract yet, so the one asserted on below cannot already exist"
+    );
+    assert!(
+        before
+            .iter()
+            .all(|n| !n.state.is_exited() && n.contracts.is_empty()),
+        "neither node is terminal while the client is alive: {:?}",
+        before
+            .iter()
+            .map(|n| (n.agent_id.clone(), n.state))
+            .collect::<Vec<_>>()
+    );
+
+    // ---- the client dies, uncatchably, and only then is the turn released ----------------------
+    run.kill_client();
+    assert_eq!(
+        liveness(client_pid),
+        Liveness::Gone,
+        "the client is really gone, so everything below happened with no client in existence"
+    );
+    gate.release();
+
+    // ---- the detached window, gated on facts that are **not** what is asserted about ------------
+    //
+    // The wait is on the two processes ending and the contract file appearing, deliberately, and
+    // not on the journal's own `Exited` records: the states and the contracts in the journal are
+    // precisely what the comparison below is *about*, and a test that waited for them would report
+    // a broken reconstruction as a timeout instead of as an assertion. Liveness is S15's
+    // three-valued reading, so a zombie does not read as alive; the contract file is the run's own
+    // artefact, written before the closing bookend (`run::run_spawn`).
+    assert!(
+        until(|| liveness(child_pid) == Liveness::Gone && liveness(root_pid) == Liveness::Gone),
+        "both processes end while no client exists — child {child_pid} is {:?}, root {root_pid} is \
+         {:?}",
+        liveness(child_pid),
+        liveness(root_pid)
+    );
+    assert!(
+        until(|| !contracts_on_disk(&project(&state, &repo), &child).is_empty()),
+        "and the child's contract is written with nothing attached to the supervisor: §9 gives the \
+         child of a top-level spawn exactly one, and no client ever saw it"
+    );
+
+    // ---- a new client, and the journal as of *its* read ----------------------------------------
+    let mut b = Client::dial(&paths);
+    let mut snapshot = b.tree_at();
+    let mut bytes = journal_bytes(&state, &repo);
+    let mut total = marion_core::registry::replay(&bytes).records as u64;
+    let caught_up = until_within(CATCH_UP, || {
+        snapshot = b.tree_at();
+        bytes = journal_bytes(&state, &repo);
+        total = marion_core::registry::replay(&bytes).records as u64;
+        snapshot.read_point.records == total
+    });
+    assert!(
+        caught_up,
+        "**the seam.** Both processes are gone, so the journal has stopped growing — at {total} \
+         records, of which the supervisor's registry has folded {}. A follower that never reaches \
+         the end of a file nobody is writing is serving a tree that is short of its own read point, \
+         whether it skipped the record for good or defers it for ever",
+        snapshot.read_point.records
+    );
+
+    let replayed = replay_to(&bytes, snapshot.read_point.records);
+    // **Why the criterion below is structural, as a checked fact rather than a claim.** §9 states
+    // criterion 2 per node because the form of `src_seq` is a property of the surface, and neither
+    // node here has one: a `Predecessor` check would need an `interactive` transcript and an
+    // `Ordinal` gap check an adapter that reports one. This says so out loud — if a future adapter
+    // starts carrying source-side evidence, this assertion is what makes someone come back and add
+    // the per-node form §9 owes that surface.
+    assert!(
+        replayed.last_src_seq.is_none(),
+        "no record in this journal carries source-side ordering evidence, so structural identity is \
+         the whole of the criterion here: {:?}",
+        replayed.last_src_seq
+    );
+    assert!(
+        replayed.gaps.is_empty(),
+        "marion's own per-writer ordinals are intact — a gap would mean a record was written and \
+         lost, which is a different failure from the one below: {:?}",
+        replayed.gaps
+    );
+    let from_journal = Structure::from_journal(&replayed);
+    let from_client = Structure::from_client(&snapshot.nodes, &project(&state, &repo));
+    assert_structurally_identical(&from_journal, &from_client, "the new client's tree");
+
+    // ---- the window was picked up, and not merely agreed about ---------------------------------
+    //
+    // Both readings above would be satisfied by a supervisor that had stopped reading the journal
+    // at the kill *and* a replay that had done the same. These are what say the tree is the one
+    // that includes what happened while no client existed.
+    assert_eq!(
+        from_client.nodes,
+        agent_dirs(&state, &repo),
+        "**same nodes**, against a third reading that shares no code with the other two: the \
+         directories the run actually created"
+    );
+    let disk = contracts_on_disk(&project(&state, &repo), &child);
+    assert_eq!(
+        disk.len(),
+        1,
+        "the child ran once and wrote one contract while no client existed: {disk:?}"
+    );
+    assert_eq!(
+        disk[0].1, root.0,
+        "**same parent edges**, corroborated off the tree entirely: §9 makes the requester of a \
+         top-level spawn the root's own `AgentId`, and the file that says so is in the child's own \
+         directory"
+    );
+    assert_eq!(
+        from_client.edges.get(&child.0),
+        Some(&Some(root.0.clone())),
+        "and the client's tree says the same"
+    );
+    assert_eq!(
+        from_client.edges.get(&root.0),
+        Some(&None),
+        "§9: a root has no parent"
+    );
+    assert!(
+        disk[0].2.is_some(),
+        "the contract file records a completion, so the run it is about is over: {disk:?}"
+    );
+    assert!(
+        from_client
+            .states
+            .get(&child.0)
+            .expect("the child is in the tree")
+            .is_exited(),
+        "**same terminal states**: the child's process is gone and its contract records a \
+         completion, so a tree that reports it running is reporting a corpse as a worker — {:?}",
+        from_client.states.get(&child.0)
+    );
+    assert!(
+        !before_child.state.is_exited() && before_child.contracts.is_empty(),
+        "…and neither the terminal state nor the contract existed when the client died, so replay \
+         picked up both from the window it never saw"
+    );
+
+    b.quit();
+    drop(b);
+    drop(run);
+    drop(server);
 }
