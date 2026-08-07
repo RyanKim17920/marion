@@ -1178,3 +1178,77 @@ fn leasing_the_write_half_does_not_make_reading_exclusive() {
         "a read-only second attacher must still receive the stream"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// What still stands between this module and production
+// ---------------------------------------------------------------------------------------------
+
+/// **The seam is one level above `launch_path`, and this pins where.**
+///
+/// I4's brief locates the gap at `duplex::launch_path`, which answers `None` for `TerminalInput`
+/// — the reading being that a third `LaunchPath` arm is all that stands between this module and a
+/// live pty. **Measured, that is not the blocker.** `spawn_pty` cannot be called without a
+/// `PtyWitness`, `PtyWitness` comes only from `ExecutionSurfaces::display_plane`, and that is
+/// `Some` iff `display == NativePty` — which is the *display* axis, not the control axis
+/// `launch_path` branches on. Adding a `LaunchPath::Terminal` arm would therefore change nothing:
+/// even the `Duplex` path cannot obtain a witness today.
+///
+/// The actual state, asserted rather than described: **no built-in adapter declares a display
+/// plane at all.** `claude` is `headless(StreamJson)` (`StructuredUi`) and the other three are
+/// `launch_only_with_protocol_events()` (`None`). `ExecutionSurfaces::shared` — the one preset
+/// that yields a witness while still speaking a typed protocol over pipes, and the case
+/// [`stdin_plan`]'s exhaustive match was written for — is constructed nowhere outside tests.
+///
+/// So the change that makes this module reachable is a **one-line edit in an adapter**:
+/// `ClaudeCodeAdapter::surfaces` returning `ExecutionSurfaces::shared(TypedKind::StreamJson)`
+/// instead of `headless`. Everything downstream already exists and is tested here — the witness
+/// would flow, `stdin_plan` would answer `Piped` (a `shared` node still speaks stream-json over a
+/// pipe, which is exactly why the two axes are separate), and `PtyHost` would have a master.
+///
+/// That edit is deliberately **not** made in this increment. It changes how the root node marion
+/// runs today is launched, on the one path M1 and M2's criteria are measured through, and it is a
+/// product decision rather than plumbing. What is not acceptable is for the gap to be rediscovered
+/// a third time, so it is recorded here as a failing-when-fixed assertion: the day an adapter
+/// declares `NativePty`, this test fails and points at the wiring that must accompany it.
+#[test]
+fn no_built_in_adapter_yet_declares_the_display_plane_this_module_needs() {
+    use marion_core::harness::Harness;
+    use marion_harness::adapter_for;
+
+    for h in Harness::ALL {
+        let surfaces = adapter_for(h).expect("a built-in adapter").surfaces();
+        assert!(
+            surfaces.display_plane().is_none(),
+            "{h:?} now declares a display plane. PtyHost is reachable from production for the \
+             first time, so `run_spawn`/`root` must construct one (PtyMaster::open -> \
+             PtyHost::start -> spawn_pty with the witness, stdin from `stdin_plan`), and \
+             `node/attach` must register the client as a listener and lease it the write half. \
+             Update this test in the same commit that does so."
+        );
+    }
+}
+
+/// The corollary, stated separately because it is the fact a reader actually needs: the pty path
+/// is unreachable, so `Event::NodePty` cannot occur in production yet however many clients attach.
+/// A client written against it is correct and idle, which is a very different thing from broken.
+#[test]
+fn a_terminal_control_transport_is_reachable_from_no_built_in_agent_type() {
+    use marion_core::harness::Harness;
+    use marion_harness::{ControlTransport, adapter_for};
+
+    let terminal: Vec<Harness> = Harness::ALL
+        .into_iter()
+        .filter(|h| {
+            adapter_for(*h)
+                .expect("a built-in adapter")
+                .surfaces()
+                .control
+                == ControlTransport::TerminalInput
+        })
+        .collect();
+    assert!(
+        terminal.is_empty(),
+        "{terminal:?} declare TerminalInput, so `launch_path` now refuses a reachable node \
+         rather than a hypothetical one — it needs a third arm, and that arm needs this module"
+    );
+}
