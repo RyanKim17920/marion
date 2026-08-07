@@ -89,6 +89,29 @@ independently find the supervisor its parent bound.
 `node/prompt`, `node/steer`, `node/cancel`, `node/kill`, `node/rename`, `permission/reply`,
 `elicitation/reply`, `policy/set`, `agent/spawn`, `doctor/run`, `session/quit`.
 
+**Client→supervisor notifications:** `node/pty-write { agent_id, bytes }`, `node/resize { agent_id,
+cols, rows }`.
+
+These are **notifications, not methods**, and the method list above stays at fifteen. M3's display
+plane needs a route from an operator's keyboard to a node's pty master, and §5.2 already names the
+two operations it needs — `DisplayPlane::write_keys` and `DisplayPlane::resize` — as *plane*
+operations rather than RPC verbs. Neither is a request, because **neither has an answer**: the
+acknowledgement of a keystroke is the pty's own echo, which arrives as a `node/pty` notification
+whether marion replies or not, so a request would put a socket round trip between one key press and
+the next. The refusal that does need saying — a second attacher gets the read half only (§5.3) — is
+said once, in `node/attach`'s response, not once per key.
+
+They are two rather than one because a resize is not a keystroke in different bytes: it is
+`TIOCSWINSZ` plus a `SIGWINCH` to the foreground process group plus an `r` record in `pty.cast`,
+and none of the three is a write to the master. Composition over the fifteen was tried and does not
+reach: `node/prompt` and `node/steer` are `{agent_id, text}` but §6.3 makes the choice between them
+a function of the node's state, and a keystroke has no state precondition, so routing bytes through
+either collapses that rule into the byte path; widening `node/attach` with `cols`/`rows` carries the
+geometry at attach time and says nothing about any later `SIGWINCH`. Notification names live in a
+namespace disjoint from the method list and from the supervisor→client events, asserted by test in
+all three directions — the name is the only thing that says which end of the socket a frame came
+from.
+
 `session/quit { disposition }` is **M2+** and is the only method on this list that can end the
 supervisor. It exists because none of the others can express "I am leaving": `node/kill` is
 per-node and §6.7 classifies it as `Cancelled`, `node/detach` is subscription bookkeeping over a

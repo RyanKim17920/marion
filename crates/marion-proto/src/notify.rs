@@ -20,6 +20,11 @@
 //! Notification method names live in a **disjoint namespace** from [`crate::Method`] — asserted by
 //! test. An overlap would make a frame's classification depend on whether it carried an `id`, and
 //! a truncated line is exactly where that goes wrong.
+//!
+//! There is now a **third** table, [`crate::Input`], and it is the client→supervisor direction. The
+//! seam this module's doc describes above is what made it possible without moving the fifteen-pin;
+//! what it costs is that "id-less" no longer implies "outbound", so the disjointness assertion is
+//! three-way and lives in `input.rs` beside the newer table.
 
 use marion_core::contract::AgentId;
 use marion_core::encoding::SystemTime;

@@ -241,6 +241,22 @@ pub trait Handle: Send + Sync + 'static {
     /// connection or the supervisor.
     fn call(&self, conn: ConnId, call: &Call, out: &Outbound) -> Result<MethodResult, RpcError>;
 
+    /// Deliver one **client→supervisor notification** (§2's inbound table): a keystroke or a
+    /// resize for a node with a display plane.
+    ///
+    /// Returns nothing, and that is the whole shape of it. A notification has no `id`, so there is
+    /// no frame in which an answer could be correlated — see [`marion_proto::input`] for why a
+    /// keystroke must not be a request, and [`answer_one`]'s `None` for what the transport does
+    /// with an id-less line either way. A handler that cannot deliver the bytes says so on the
+    /// channel the operator is already watching: the node's own pty stream, or the refusal already
+    /// given in `node/attach`'s answer.
+    ///
+    /// Defaulted to a no-op so a handler that implements no display plane does not have to write
+    /// one. That is the same defaulting rule [`Handle::connected`] uses, and it is safe here for the
+    /// same reason: a dropped keystroke on a node that has no pty is not a silent wrong answer, it
+    /// is the only answer there is.
+    fn input(&self, _conn: ConnId, _input: &marion_proto::Input) {}
+
     /// A connection ended. Both readings are supplied: §7.3.1's, which is what may act on nodes,
     /// and the transport's, which is what can be reported.
     fn gone(&self, conn: ConnId, gone: &ClientGone, why: &Departure);
@@ -781,8 +797,20 @@ fn answer_one(
             ),
             false,
         )),
+        // A *supervisor→client* notification arriving here is still a protocol error, and still an
+        // unanswerable one: it carries no id. It is dropped rather than reported, exactly as before.
         Ok(Frame::Notification(n)) => {
             let _ = n;
+            None
+        }
+        // The inbound table, which is not an error: §2's `node/pty-write` and `node/resize`. Also
+        // unanswerable, and deliberately so — the acknowledgement of a keystroke is the pty echo.
+        Ok(Frame::Input(n)) => {
+            // Caught for the same reason `call` is: a handler that panics on a malformed keystroke
+            // must not take the connection, and through it the operator's whole attach, with it.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle.input(id, &n.input)
+            }));
             None
         }
         Err(e) => recover_id(line).map(|rid| (Response::err(rid, e), false)),
@@ -1152,6 +1180,7 @@ mod tests {
         calls: Mutex<Vec<(ConnId, Method)>>,
         gone: Mutex<Vec<(ConnId, ClientGone, Departure)>>,
         subs: Mutex<Vec<Outbound>>,
+        inputs: Mutex<Vec<(ConnId, marion_proto::Input)>>,
         panic_on: Mutex<Option<Method>>,
         quit_ok: AtomicBool,
     }
@@ -1214,6 +1243,10 @@ mod tests {
                     "§2",
                 )),
             }
+        }
+
+        fn input(&self, conn: ConnId, input: &marion_proto::Input) {
+            lock(&self.inputs).push((conn, input.clone()));
         }
 
         fn gone(&self, conn: ConnId, gone: &ClientGone, why: &Departure) {
@@ -1298,6 +1331,82 @@ mod tests {
         Call::NodeGet(marion_proto::params::NodeGetParams {
             agent_id: AgentId(agent.into()),
         })
+    }
+
+    /// **§2's inbound notifications reach the handler and produce no frame.**
+    ///
+    /// Both halves matter. A keystroke that never reached the handler is a dead keyboard; a
+    /// keystroke that produced a *response* would desynchronize every client, because a client
+    /// awaiting one request's answer would read the keystroke's answer instead — and it has no
+    /// `id` to correlate it by. The `node/get` after them is the proof of the second half: it gets
+    /// the next frame on the wire, so nothing was emitted in between.
+    #[test]
+    fn an_inbound_notification_reaches_the_handler_and_is_never_answered() {
+        let f = Fixture::new("input");
+        let mut s = f.dial();
+        for input in [
+            marion_proto::Input::NodePtyWrite {
+                agent_id: AgentId("a".into()),
+                bytes: "ls\r".into(),
+            },
+            marion_proto::Input::NodeResize {
+                agent_id: AgentId("a".into()),
+                cols: 140,
+                rows: 40,
+            },
+        ] {
+            let line = Frame::Input(marion_proto::ClientNotification::new(input)).to_line();
+            s.write_all(line.as_bytes()).unwrap();
+        }
+        s.flush().unwrap();
+        assert!(
+            until(|| lock(&f.rec.inputs).len() == 2),
+            "the handler never saw them"
+        );
+        let got: Vec<marion_proto::Input> =
+            lock(&f.rec.inputs).iter().map(|(_, i)| i.clone()).collect();
+        assert_eq!(
+            got,
+            vec![
+                marion_proto::Input::NodePtyWrite {
+                    agent_id: AgentId("a".into()),
+                    bytes: "ls\r".into()
+                },
+                marion_proto::Input::NodeResize {
+                    agent_id: AgentId("a".into()),
+                    cols: 140,
+                    rows: 40
+                },
+            ]
+        );
+
+        let mut r = std::io::BufReader::new(s.try_clone().unwrap());
+        send(&mut s, node_get("a"), 7);
+        match read_frame(&mut r) {
+            Frame::Response(resp) => assert_eq!(resp.id, RequestId::Number(7)),
+            other => panic!("a keystroke put a frame on the wire: {other:?}"),
+        }
+    }
+
+    /// A handler that panics on a keystroke must not take the operator's whole attach with it: the
+    /// connection reads on and the next request is still answered.
+    #[test]
+    fn a_panic_on_an_inbound_notification_does_not_end_the_connection() {
+        let rec = Arc::new(Recorder::default());
+        let handle = Arc::clone(&rec) as Arc<dyn Handle>;
+        let out = sink(ConnId(1));
+        let line = Frame::Input(marion_proto::ClientNotification::new(
+            marion_proto::Input::NodePtyWrite {
+                agent_id: AgentId("boom".into()),
+                bytes: "x".into(),
+            },
+        ))
+        .to_line();
+        let mut stated = None;
+        assert!(
+            answer_one(ConnId(1), &line, &handle, &out, &mut stated).is_none(),
+            "an inbound notification is never answered"
+        );
     }
 
     #[test]

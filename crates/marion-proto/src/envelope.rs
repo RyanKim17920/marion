@@ -27,6 +27,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::RpcError;
+use crate::input::Input;
 use crate::method::Call;
 use crate::notify::Event;
 
@@ -157,13 +158,40 @@ impl Notification {
     }
 }
 
+/// A client→supervisor notification: a request with no `id`, and therefore no answer. See
+/// [`crate::input`] for why a keystroke must not be a request, and why the transport it needs is a
+/// second notification table rather than a sixteenth method.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClientNotification {
+    #[serde(default)]
+    pub jsonrpc: JsonRpcVersion,
+    #[serde(flatten)]
+    pub input: Input,
+}
+
+impl ClientNotification {
+    pub fn new(input: Input) -> Self {
+        Self {
+            jsonrpc: JsonRpcVersion,
+            input,
+        }
+    }
+}
+
 /// Anything that can appear on one NDJSON line.
+///
+/// **Four variants, not three, and the fourth is a direction rather than a kind.** A notification
+/// is an id-less frame either way; what [`Frame::Input`] adds is that the *name* says which end
+/// sent it. Keeping the two in one variant would have meant a supervisor accepting `node/pty` from
+/// a client — a client asserting what a node printed — which the outbound table's own doc rules
+/// out by saying the ordinal is *"assigned by the single reader of that master"*.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Frame {
     Request(Request),
     Response(Response),
     Notification(Notification),
+    Input(ClientNotification),
 }
 
 impl Frame {
@@ -220,16 +248,26 @@ impl Frame {
                     .map(Frame::Request)
                     .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
             }
+            // **Two tables, matched exactly.** A prefix or `starts_with` test would route
+            // `node/pty-write` into the outbound table, where it would parse as nothing and be
+            // reported as a malformed `node/pty`. Which table a name is in is also which
+            // *direction* it travels, so the choice is not cosmetic: it is what stops a client
+            // asserting what a node printed.
             (Some(method), false) => {
                 let method = method?;
-                if !Event::METHODS.contains(&method.as_str()) {
-                    return Err(RpcError::method_not_found(format!(
+                if Event::METHODS.contains(&method.as_str()) {
+                    serde_json::from_value::<Notification>(value)
+                        .map(Frame::Notification)
+                        .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
+                } else if Input::METHODS.contains(&method.as_str()) {
+                    serde_json::from_value::<ClientNotification>(value)
+                        .map(Frame::Input)
+                        .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
+                } else {
+                    Err(RpcError::method_not_found(format!(
                         "no such notification: {method}"
-                    )));
+                    )))
                 }
-                serde_json::from_value::<Notification>(value)
-                    .map(Frame::Notification)
-                    .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
             }
             (None, true) => serde_json::from_value::<Response>(value)
                 .map(Frame::Response)
@@ -246,6 +284,7 @@ impl Frame {
 mod tests {
     use super::*;
     use crate::error::FailureKind;
+    use crate::input::Input;
     use crate::method::{Method, MethodResult};
     use crate::model::*;
     use crate::params::*;
@@ -282,6 +321,13 @@ mod tests {
         })
     }
 
+    fn input_write() -> ClientNotification {
+        ClientNotification::new(Input::NodePtyWrite {
+            agent_id: AgentId("a".into()),
+            bytes: "ls -la\r".into(),
+        })
+    }
+
     fn every_frame() -> Vec<Frame> {
         vec![
             Frame::Request(req()),
@@ -291,6 +337,12 @@ mod tests {
                 RpcError::refused("a", "the node is running; use node/steer", "§6.3"),
             )),
             Frame::Notification(note()),
+            Frame::Input(input_write()),
+            Frame::Input(ClientNotification::new(Input::NodeResize {
+                agent_id: AgentId("a".into()),
+                cols: 140,
+                rows: 40,
+            })),
         ]
     }
 
@@ -401,6 +453,57 @@ mod tests {
             // FailureKind for them would invent a classification.
             assert_eq!(e.kind(), None);
         }
+    }
+
+    /// **The direction seam.** An id-less frame is a notification either way, so the *only* thing
+    /// that says which end sent it is which table its name is in. Both tables are consulted, and a
+    /// name in neither is still refused by name.
+    #[test]
+    fn an_id_less_frame_is_classified_by_which_notification_table_names_it() {
+        let inbound =
+            Frame::from_line(r#"{"jsonrpc":"2.0","method":"node/resize","params":{"agent_id":"a","cols":80,"rows":24}}"#)
+                .unwrap();
+        assert!(
+            matches!(inbound, Frame::Input(_)),
+            "an inbound name must not parse as a supervisor event: {inbound:?}"
+        );
+        let outbound = Frame::from_line(
+            r#"{"jsonrpc":"2.0","method":"node/pty","params":{"agent_id":"a","seq":0,"mono_ns":0,"bytes":"x"}}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(outbound, Frame::Notification(_)),
+            "an outbound name must not parse as client input: {outbound:?}"
+        );
+    }
+
+    /// `node/pty-write` is `node/pty` plus a suffix, and the reader matches exactly. A
+    /// `starts_with` reader — the natural way to write this — would route every keystroke into the
+    /// outbound table and report it as a malformed `node/pty`.
+    #[test]
+    fn a_keystroke_is_not_read_as_a_truncated_pty_event() {
+        let f = Frame::from_line(
+            r#"{"jsonrpc":"2.0","method":"node/pty-write","params":{"agent_id":"a","bytes":"q"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            f,
+            Frame::Input(ClientNotification::new(Input::NodePtyWrite {
+                agent_id: AgentId("a".into()),
+                bytes: "q".into(),
+            }))
+        );
+    }
+
+    /// A keystroke carries no `id`, and a client that gave it one would be waiting for an answer
+    /// that has no sender. The refusal names the method rather than the shape.
+    #[test]
+    fn a_keystroke_sent_as_a_request_is_refused_because_it_is_not_a_method() {
+        let e = Frame::from_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"node/pty-write","params":{"agent_id":"a","bytes":"q"}}"#,
+        )
+        .unwrap_err();
+        assert!(e.message.contains("no such method: node/pty-write"), "{e}");
     }
 
     #[test]
