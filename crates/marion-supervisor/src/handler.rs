@@ -1264,6 +1264,9 @@ impl RegistryHandle {
             model: p.model.clone(),
         };
 
+        // Kept out of the thread's move, because the answer names it: the composing client reads
+        // `contracts/<task_id>.json` and cannot mint this id itself (see `AgentSpawnResult`).
+        let answered_task_id = task_id.clone();
         let (tx, progress) = std::sync::mpsc::channel();
         let observer = NodeOwner {
             handle: me.clone(),
@@ -1336,6 +1339,9 @@ impl RegistryHandle {
                 .read(|r| r.tree().get(&agent_id).map(|n| n.state))
                 .unwrap_or(NodeState::Spawning),
             agent_id,
+            // §9's contract, named before it exists: this call answers at `Spawned`, and the id is
+            // what lets the caller find the file when the run ends.
+            task_id: Some(answered_task_id),
         })
     }
 
@@ -1493,6 +1499,9 @@ impl RegistryHandle {
                 .read(|r| r.tree().get(&agent_id).map(|n| n.state))
                 .unwrap_or(NodeState::Spawning),
             agent_id,
+            // §9: a root has no `TaskContract`, so there is no file to name. See
+            // [`NodeHandle::task_id`], which is `None` here for the same reason.
+            task_id: None,
         })
     }
 

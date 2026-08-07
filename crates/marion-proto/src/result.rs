@@ -8,7 +8,7 @@
 //! A result is a struct even where it holds one field. `node/get` returning a bare `NodeSummary`
 //! would be shorter and would make the first added field a wire break for every client.
 
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, TaskId};
 use marion_core::node::{NodeState, ReapState};
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +117,22 @@ pub struct AgentSpawnResult {
     /// Typically `Spawning` — §6.1 step 7 journals the intent, starts the process, journals the
     /// confirmation, and this returns once the node exists in the registry.
     pub state: NodeState,
+    /// **The name of the file this run's contract will be written to**, for a child; `None` for a
+    /// root, which has none (§9).
+    ///
+    /// A field and not a sixteenth method, and not something the caller reconstructs. §11 item 28
+    /// step 5 makes the agent-facing synchronous `spawn` a *client-side composition* — this call,
+    /// then `node/attach`, then read `agents/<agent_id>/contracts/<task_id>.json` — because a call
+    /// that blocked until the contract existed would put a minutes-long request on this wire. The
+    /// composing client therefore has to know which file to read, and only the supervisor can say:
+    /// the id is minted inside `agent/spawn` from marion's own entropy so that two runs can never
+    /// share a contract file, so a caller that "worked it out" would be minting a second one and
+    /// reading a path nothing writes.
+    ///
+    /// `Option`, and the two values are the two node kinds rather than a presence flag: §9 gives a
+    /// root no `TaskContract`, so `None` here is a fact about the node and not an omission.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,7 +193,13 @@ mod tests {
         });
         rt!(AgentSpawnResult {
             agent_id: AgentId("a".into()),
-            state: NodeState::Spawning
+            state: NodeState::Spawning,
+            task_id: None,
+        });
+        rt!(AgentSpawnResult {
+            agent_id: AgentId("a".into()),
+            state: NodeState::Spawning,
+            task_id: Some(TaskId("task-1".into())),
         });
         rt!(DoctorRunResult { reports: vec![] });
         rt!(SessionQuitResult {
@@ -203,6 +225,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.state, NodeState::Running);
+    }
+
+    /// **A spawn answered without a `task_id` is a spawn with no contract, never a parse failure.**
+    ///
+    /// Two callers land here and they must not be told apart by whether the frame deserializes: a
+    /// root spawn, which has no `TaskContract` at all (§9), and a supervisor built before the field
+    /// existed. Both mean "there is no contract file for you to read", which is exactly what the
+    /// composing client (§11 item 28 step 5) has to branch on — so the absence is a value and the
+    /// `default` is what makes it one.
+    #[test]
+    fn a_spawn_result_without_a_task_id_is_a_node_with_no_contract() {
+        let r: AgentSpawnResult =
+            serde_json::from_str(r#"{"agent_id":"a","state":"Spawning"}"#).unwrap();
+        assert_eq!(r.task_id, None);
     }
 
     #[test]

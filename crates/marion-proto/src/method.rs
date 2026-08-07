@@ -440,6 +440,7 @@ mod tests {
                 MethodResult::AgentSpawn(AgentSpawnResult {
                     agent_id: agent("a"),
                     state: NodeState::Spawning,
+                    task_id: Some(marion_core::contract::TaskId("task-9f2c".into())),
                 }),
             ),
             (
