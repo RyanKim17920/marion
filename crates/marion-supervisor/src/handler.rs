@@ -1732,14 +1732,21 @@ impl RegistryHandle {
         self.live.read(|r| r.path().to_path_buf())
     }
 
-    fn journal(&self) -> Result<crate::journal::Journal, RpcError> {
-        crate::journal::Journal::open_path(&self.journal_path(), crate::journal::writer_id())
-            .map_err(|e| {
-                RpcError::internal(format!(
-                    "session/quit could not open the journal, so it refused before changing any \
-                     node: {e}"
-                ))
-            })
+    /// Append one record through **the supervisor's single journal handle** (`journal::append_at`).
+    ///
+    /// This used to open a `Journal` of its own, with a fresh `writer_id`, once per call. Nothing
+    /// depended on that and two fields were the worse for it: `seq` restarted at 0 on every RPC, and
+    /// `mono_ns` — §4.2's anchor between a record and `pty.cast` — was measured from an origin a few
+    /// microseconds old, so it was ~0 on essentially every record the handler wrote. The node
+    /// threads were already sharing one handle via `journal::record`; this is the same handle, with
+    /// the error handed back rather than printed, because `session/quit` orders a kill against a
+    /// durable intent and has to know when the append failed.
+    ///
+    /// A failed *open* now surfaces as the first append's failure rather than as a distinct refusal.
+    /// That is the honest report: nothing had been signalled at that point either way, and a
+    /// disposition with nothing to journal no longer fails on a file it never needed to touch.
+    fn journal_append(&self, kind: RecordKind) -> Result<(), crate::journal::JournalError> {
+        crate::journal::append_at(&self.journal_path(), kind).map(|_| ())
     }
 
     fn guidance(&self) -> DetachGuidance {
@@ -1966,15 +1973,13 @@ impl RegistryHandle {
             ));
         }
 
-        let mut journal = self.journal()?;
         let mut killed = Vec::with_capacity(targets.len());
         for node in targets {
-            journal
-                .append(RecordKind::KillIntent(KillIntent {
-                    agent_id: node.agent_id.clone(),
-                    was: node.state,
-                }))
-                .map_err(journal_failure_before_signal)?;
+            self.journal_append(RecordKind::KillIntent(KillIntent {
+                agent_id: node.agent_id.clone(),
+                was: node.state,
+            }))
+            .map_err(journal_failure_before_signal)?;
             let signal = node.reap_state != ReapState::ReapedIdle;
             if signal
                 && !self.runtime.kill_process_tree_and_wait(
@@ -1988,22 +1993,21 @@ impl RegistryHandle {
                     node.agent_id.0
                 )));
             }
-            journal
-                .append(RecordKind::KillConfirmed(KillConfirmed {
-                    agent_id: node.agent_id.clone(),
-                    exit: ProcessExit {
-                        code: None,
-                        signal: signal.then_some(9),
-                        description: if signal {
-                            "marion sent SIGKILL for confirmed session/quit KillTree".into()
-                        } else {
-                            "confirmed session/quit retired an already ReapedIdle node; no process \
-                             existed to signal"
-                                .into()
-                        },
+            self.journal_append(RecordKind::KillConfirmed(KillConfirmed {
+                agent_id: node.agent_id.clone(),
+                exit: ProcessExit {
+                    code: None,
+                    signal: signal.then_some(9),
+                    description: if signal {
+                        "marion sent SIGKILL for confirmed session/quit KillTree".into()
+                    } else {
+                        "confirmed session/quit retired an already ReapedIdle node; no process \
+                         existed to signal"
+                            .into()
                     },
-                }))
-                .map_err(journal_failure_after_signal)?;
+                },
+            }))
+            .map_err(journal_failure_after_signal)?;
             killed.push(KilledNode {
                 agent_id: node.agent_id.clone(),
                 was: node.state,
@@ -2051,14 +2055,12 @@ impl RegistryHandle {
             })
             .map(|n| n.agent_id.clone())
             .collect();
-        let mut journal = self.journal()?;
         for node in reaping {
-            journal
-                .append(RecordKind::ReapIntent(ReapIntent {
-                    agent_id: node.agent_id.clone(),
-                    reason: "session/quit reaped an idle node before detaching busy work".into(),
-                }))
-                .map_err(journal_failure_before_signal)?;
+            self.journal_append(RecordKind::ReapIntent(ReapIntent {
+                agent_id: node.agent_id.clone(),
+                reason: "session/quit reaped an idle node before detaching busy work".into(),
+            }))
+            .map_err(journal_failure_before_signal)?;
             let pid = node.pid.expect("preflight required every reap PID");
             if !self.runtime.kill_process_tree_and_wait(pid) {
                 return Err(RpcError::internal(format!(
@@ -2068,11 +2070,10 @@ impl RegistryHandle {
                     node.agent_id.0
                 )));
             }
-            journal
-                .append(RecordKind::ReapConfirmed(ReapConfirmed {
-                    agent_id: node.agent_id.clone(),
-                }))
-                .map_err(journal_failure_after_signal)?;
+            self.journal_append(RecordKind::ReapConfirmed(ReapConfirmed {
+                agent_id: node.agent_id.clone(),
+            }))
+            .map_err(journal_failure_after_signal)?;
         }
         self.live.refresh();
         let supervisor = self
@@ -2327,12 +2328,9 @@ impl Handle for RegistryHandle {
         // Every node this supervisor owns has finished — that is what the predicate above just
         // established — so this is the epilogue, not a wait. See [`Self::join_finished_nodes`].
         self.join_finished_nodes();
-        let result = self.journal().and_then(|mut journal| {
-            journal
-                .append(RecordKind::SupervisorExited(SupervisorExited {}))
-                .map(|_| ())
-                .map_err(journal_failure_after_signal)
-        });
+        let result = self
+            .journal_append(RecordKind::SupervisorExited(SupervisorExited {}))
+            .map_err(journal_failure_after_signal);
         match result {
             Ok(()) => {
                 self.live.refresh();
@@ -2762,6 +2760,18 @@ mod tests {
             MethodResult::SessionQuit(r) => Ok(r),
             other => panic!("wrong result: {}", other.method().as_str()),
         }
+    }
+
+    /// The file's records, decoded — the envelope, not just the payload. `journal_tags` answers
+    /// *what* was written; this answers *who wrote it and in what order*, which is a different
+    /// question and the one §4.2's `seq` and `mono_ns` are the answer to.
+    fn journal_records(path: &Path) -> Vec<JournalRecord> {
+        std::fs::read(path)
+            .unwrap()
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| marion_core::journal::decode(l).expect("a record marion wrote decodes"))
+            .collect()
     }
 
     fn journal_tags(path: &Path) -> Vec<String> {
@@ -4128,6 +4138,96 @@ mod tests {
                 .unwrap()
                 .signal,
             Some(9)
+        );
+    }
+
+    /// **One supervisor is one writer, across every RPC it serves — `seq` and `mono_ns` say so or
+    /// they are decoration.**
+    ///
+    /// `JournalRecord.seq` is documented as *"this writer's ordinal, from 0, gapless by
+    /// construction"* and `mono_ns` as monotonic since the writer started, existing (§4.2) to anchor
+    /// a record against `pty.cast`. The handler used to open a `Journal` per `session/quit` with a
+    /// fresh `writer_id`, which made both untrue in a way nothing could see: replay seeds a writer's
+    /// expected ordinal from the first record it reads, so a crowd of one-RPC writers raises **no**
+    /// `SeqGap` — it just quietly stops being a timeline.
+    ///
+    /// Three call paths, three RPCs, one file: the reap, the kill, and the supervisor's own exit
+    /// record. Reading the writers and ordinals back off the bytes is the only way to see it, since
+    /// the tree replay is identical either way — which is exactly why it went unnoticed.
+    #[test]
+    fn records_written_across_separate_rpcs_share_one_writer_and_one_rising_sequence() {
+        let (fx, runtime) = recording_fx_with(
+            "handler-one-writer",
+            vec![
+                intent("idle", None, "claude", 0),
+                spawned("idle", 71),
+                state("idle", NodeState::Idle),
+                intent("busy", None, "claude", 0),
+                spawned("busy", 72),
+                state("busy", NodeState::Running),
+            ],
+        );
+        let seeded = journal_records(&fx.path).len();
+
+        // RPC 1 — reaps the idle root, detaches the busy one.
+        quit(&fx, marion_proto::QuitDisposition::ReapIdleDetachBusy)
+            .expect("one idle root is reapable");
+        // RPC 2 — a different handler method, over the same registry. The reaped node is still
+        // non-terminal by `state`, so §7.3.2 requires it in the confirmed set.
+        quit(
+            &fx,
+            marion_proto::QuitDisposition::KillTree {
+                confirmed: vec![id("idle"), id("busy")],
+            },
+        )
+        .expect("the exact non-terminal set was confirmed");
+        // RPC 3 — not a client call at all, and the third place that used to mint its own writer.
+        assert!(fx.handle.begin_idle_exit());
+        assert_eq!(
+            runtime.killed(),
+            [71, 72],
+            "the reaped root was not re-signalled"
+        );
+
+        let written: Vec<_> = journal_records(&fx.path).into_iter().skip(seeded).collect();
+        assert_eq!(
+            journal_tags(&fx.path)[seeded..],
+            [
+                "ReapIntent",
+                "ReapConfirmed",
+                "KillIntent",
+                "KillConfirmed",
+                "KillIntent",
+                "KillConfirmed",
+                "SupervisorExited",
+            ],
+            "the fixture is only interesting if all three call paths really wrote"
+        );
+
+        let writers: std::collections::BTreeSet<_> =
+            written.iter().map(|r| r.writer.0.clone()).collect();
+        assert_eq!(
+            writers.len(),
+            1,
+            "three RPCs, one supervisor process, one writer identity; got {writers:?}"
+        );
+        assert_ne!(
+            writers.iter().next().unwrap(),
+            "w",
+            "and it is the supervisor's own identity, not the fixture's seeded one"
+        );
+        assert_eq!(
+            written.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4, 5, 6],
+            "`seq` continues across RPCs. Restarting at 0 per call raises no `SeqGap` — replay \
+             seeds a new writer's expectation from whatever ordinal it first sees — so this \
+             assertion is the only thing that can catch it"
+        );
+        assert!(
+            written.windows(2).all(|w| w[0].mono_ns <= w[1].mono_ns),
+            "one writer, one `Instant` origin, so §4.2's `pty.cast` anchor advances rather than \
+             resetting: {:?}",
+            written.iter().map(|r| r.mono_ns).collect::<Vec<_>>()
         );
     }
 
