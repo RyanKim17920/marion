@@ -36,6 +36,7 @@ pub mod handler;
 pub mod journal;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.
+pub mod procid;
 pub mod registry;
 /// §7.2's supervisor-restart marking: the `Live` → `Orphaned` judgement applied to a replayed
 /// tree, and what it refuses to decide without a process to look at.

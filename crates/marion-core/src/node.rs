@@ -10,6 +10,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::contract::ExitStatus;
 
+/// **A process's start identity: the one thing that distinguishes a survivor from a recycled pid.**
+///
+/// §7.2's probe branch — *"resolved by checking for the process"* — needs to know whether the
+/// process this journal is about is the one wearing that pid *today*. A bare pid cannot answer it:
+/// after a supervisor crash of unknown duration, nothing distinguishes a surviving node from an
+/// unrelated process the kernel handed the same number. `restart.rs` refuses the probe for exactly
+/// that reason, and is right to while this is absent.
+///
+/// **Opaque, platform-tagged, and compared only for equality.** The value inside is whatever the
+/// platform's kernel reports as a process start time, in that platform's own units — microseconds
+/// in a `timeval` on macOS, clock ticks since boot on Linux, one-second granularity from `lstart`.
+/// Different units, different epochs, and on some platforms a granularity coarse enough that two
+/// processes can share a value. So it is never parsed, never ordered, and never compared across
+/// platforms: the tag is part of the string precisely so a journal carried between machines cannot
+/// produce a false match. Equality is the only sound operation, and equality is all §7.2 needs.
+///
+/// Marion never derives a *time* from this. A reader wanting when a node started has
+/// `Spawned`'s own `ts`, which is marion's observation in marion's units.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartId(pub String);
+
+impl std::fmt::Display for StartId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Why a node is held. §3.2: `Descendants` is §7.6's hold, resolved by a re-prompt or a timeout;
 /// `Permission` and `Elicitation` await an answer and are resolved by one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
