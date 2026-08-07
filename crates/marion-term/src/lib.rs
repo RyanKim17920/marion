@@ -56,6 +56,21 @@ impl Dimensions for Size {
     }
 }
 
+/// Bytes one retained grid cell costs, taken from the type rather than from a comment.
+///
+/// A client choosing a scrollback bound is really choosing a memory bound, and the conversion
+/// factor is `columns × CELL_BYTES` per row. Writing that factor down as a literal is how it goes
+/// stale: `alacritty_terminal::term::cell::Cell` is `#[repr(Rust)]` and its size is a property of
+/// the version in `Cargo.lock`, not a constant of the format. **Measured 24 on
+/// `alacritty_terminal` 0.26**, which is the ~3 kB a row at the 140 columns §5.3's captures resize
+/// to. Taking it from `size_of` means a version bump moves the client's memory arithmetic with it
+/// instead of silently invalidating it.
+///
+/// This is retained-cell cost only. It excludes the `Row` header and any `CellExtra` a hyperlink
+/// or an underline colour allocates on the side, so a bound derived from it is a floor — which is
+/// the safe direction for a cap.
+pub const CELL_BYTES: usize = std::mem::size_of::<Cell>();
+
 /// How the screen should behave. Only the choices a caller can reasonably differ on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
@@ -102,6 +117,23 @@ pub struct Stats {
     pub top_anchored_partial_regions: usize,
     cup_in_frame: bool,
     in_frame: bool,
+}
+
+impl Stats {
+    /// Whether a DECSET 2026 bracket is currently **open**.
+    ///
+    /// Exposed because a viewer needs it and cannot derive it: `alacritty_terminal` deliberately
+    /// drops `SyncUpdate` on the floor (`term/mod.rs` answers `NamedPrivateMode::SyncUpdate => ()`
+    /// in both `set_private_mode` and `unset_private_mode`), so `TermMode` never carries the bit
+    /// and there is nothing to query on the grid. The alternative for a client is to scan the byte
+    /// stream for `?2026h`/`?2026l` itself — a second parser, disagreeing with this one at exactly
+    /// the chunk boundaries [`Suppressor::unset_private_mode`] documents.
+    ///
+    /// A client withholds its paint while this is true: a half-applied frame is the thing
+    /// synchronized output exists to hide.
+    pub fn in_frame(&self) -> bool {
+        self.in_frame
+    }
 }
 
 /// A VT screen: alacritty's grid, a streaming parser, and the `CSI 3J` policy.
