@@ -51,6 +51,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
+use marion_core::event::{Lifecycle, Payload};
 use marion_core::node::StartId;
 use marion_proto::notify::Event as Note;
 use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
@@ -283,6 +284,33 @@ impl Client {
         (notes, r)
     }
 
+    /// **Tighten this client's socket read timeout**, for the one wait whose expiry is itself the
+    /// defect report.
+    ///
+    /// [`BOUND`] is three minutes, which is right for a wait that should normally succeed and whose
+    /// failure means something is wrong somewhere unknown. It is wrong for clause (ii) of §9's
+    /// criterion 4: a supervisor whose attach serves replay only never sends the event, so the
+    /// wait's *expiry* is the finding, and at three minutes that finding arrives as a timeout
+    /// instead of as a sentence. The whole test runs in about two seconds, so a budget an order of
+    /// magnitude above that discriminates without being a race.
+    fn read_bound(&mut self, d: Duration) {
+        self.sock.set_read_timeout(Some(d)).unwrap();
+    }
+
+    /// [`Self::wait_for_event`], reporting an expiry **as the assertion it is**.
+    ///
+    /// `wait_for_event` panics with "a frame arrives" when the socket times out, which is true and
+    /// tells the reader nothing. Here the absence of the event is the whole result, so it is said
+    /// out loud.
+    fn expect_event(&mut self, why: &str, want: impl FnMut(&Note) -> bool) -> (Vec<Note>, Note) {
+        let r =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.wait_for_event(want)));
+        match r {
+            Ok(v) => v,
+            Err(_) => panic!("{why}"),
+        }
+    }
+
     /// Read notifications until one satisfies `want`. **A blocking read on the socket**, with no
     /// fallback to the file: a supervisor that stops sending is a failure here rather than a slower
     /// success.
@@ -297,14 +325,48 @@ impl Client {
         }
     }
 
+    /// §11 item 28 step 6's `agent/spawn` with **no caller** — a client creating a root.
+    ///
+    /// The criterion-4 test needs the tree to be created by a client whose departure it controls,
+    /// which `marion run` is not: that process leaves when its root's turn is over, and the whole
+    /// criterion is about a client leaving while a node is still mid-turn.
+    fn spawn_root(&mut self, repo: &Path, prompt: &str) -> AgentId {
+        let id = self.send(Call::AgentSpawn(marion_proto::params::AgentSpawnParams {
+            agent_type: "claude".into(),
+            prompt: prompt.into(),
+            caller: None,
+            repo: Some(repo.to_path_buf()),
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            timeout_secs: Some(ROOT_BLOCKED_SECS.parse().expect("a number")),
+            model: None,
+            no_change_record: None,
+        }));
+        let (_, outcome) = self.read_to_response(id);
+        let Outcome::Result(body) = outcome else {
+            panic!("agent/spawn was refused: {outcome:?}")
+        };
+        let MethodResult::AgentSpawn(r) = Method::AgentSpawn.decode_result(&body).unwrap() else {
+            panic!("wrong result")
+        };
+        r.agent_id
+    }
+
     /// §7.3.2's voluntary departure. Sent so that a supervisor whose only other client was killed
     /// does not wait out §5.7's full grace after the suite has finished with it — the same call
     /// `marion run` makes on its way out.
-    fn quit(&mut self) {
+    fn quit(&mut self) -> marion_proto::QuitOutcome {
         let id = self.send(Call::SessionQuit(marion_proto::params::SessionQuitParams {
             disposition: marion_proto::QuitDisposition::DetachAll,
         }));
-        let (_, _outcome) = self.read_to_response(id);
+        let (_, outcome) = self.read_to_response(id);
+        let Outcome::Result(body) = outcome else {
+            panic!("session/quit was refused: {outcome:?}")
+        };
+        let MethodResult::SessionQuit(r) = Method::SessionQuit.decode_result(&body).unwrap() else {
+            panic!("wrong result")
+        };
+        r.outcome
     }
 }
 
@@ -347,7 +409,8 @@ fn assert_contiguous_from(seqs: &[u64], first: u64, what: &str) {
 ///
 /// * **cost** — `sysctl(KERN_PROC_PID)` is 15.2 µs against `ps`'s 4.35 ms *and a fork*, about 285×.
 ///   A fork per reading is what confined this check to a snapshot at either end of a test; at 15.2
-///   µs it can be polled, which is a different and stronger kind of assertion;
+///   µs it can be polled, which is what [`while_the_supervisor_holds`] does and is a different and
+///   stronger kind of assertion;
 /// * **resolution** — `lstart` is a one-second clock, so two processes born inside the same second
 ///   are indistinguishable to it. `p_starttime` is a `timeval`, so they are not. The property this
 ///   function exists for is *strictly stronger* after the change, not merely cheaper;
@@ -441,6 +504,42 @@ fn until_within(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(5));
     }
     cond()
+}
+
+/// [`until_within`] with **§9 criterion 4's clause (i) as a standing invariant of the wait**, not
+/// as a snapshot taken once the wait is over.
+///
+/// The natural shape is to wait out the detached window and *then* ask whether the supervisor is
+/// still there, and it is the wrong one: a supervisor that left the moment its last client did is
+/// then discovered by the *expiry* of a wait for something it was supposed to be driving. That is a
+/// defect reported as a timeout, which is what §9's budgets exist to avoid — and clause (i), the
+/// thing actually broken, never fails at all. Measured: as a trailing snapshot that build failed in
+/// 31 s at the wrong sentence; as an invariant it fails in 1 s at the right one.
+///
+/// So the identity is re-read on every 5 ms tick and a change is an immediate panic naming clause
+/// (i). **This is affordable only because the reading no longer forks**: at `ps`'s measured 4.35 ms
+/// it would have been most of a tick and a fork per tick, which is why the check used to be a
+/// snapshot. At `sysctl`'s 15.2 µs it is 0.3% of a tick, so the strongest available form of the
+/// clause — *held throughout* rather than *true at one instant* — is also the cheap one.
+fn while_the_supervisor_holds(
+    budget: Duration,
+    paths: &SocketPaths,
+    before: &(i32, StartId),
+    mut cond: impl FnMut() -> bool,
+) -> bool {
+    until_within(budget, || {
+        assert_eq!(
+            still_the_same_supervisor(paths, before),
+            Resolution::AliveAndOurs,
+            "**§9 criterion 4 (i)**: the supervisor stopped being the process it was, *during* the \
+             detached window. Its last client left voluntarily and §7.3.2 waives §5.7's grace for a \
+             client that announced itself — so the only thing keeping this process alive was §5.7's \
+             other clause, a node that has not finished, and a build that reads a clean quit as its \
+             own cue to go walks straight through it. Same pid *and* same kernel start identity, so \
+             a reissued pid cannot paper over it"
+        );
+        cond()
+    })
 }
 
 fn project(state: &Path, repo: &Path) -> marion_core::paths::ProjectDir {
@@ -1470,4 +1569,452 @@ fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
         audit.resolved
     );
     assert_eq!(audit.claim(), marion_supervisor::procid::Claim::Holds);
+}
+
+// ------------------------------------------------------------------------------------------
+// T-crit4 — M2 acceptance criterion 4, the clean quit-and-return
+// ------------------------------------------------------------------------------------------
+
+/// §5.7's grace, set **short on purpose** — and it is not what makes clause (i) capable of failing,
+/// which is worth stating plainly because the obvious reading is that it is.
+///
+/// A short grace *cannot* be what gives the clause its force here, for two measured reasons that
+/// both point the same way:
+///
+/// * §7.3.2 waives the grace outright for a client that announced itself
+///   (`handler::quit_waived_grace`), so its length is irrelevant from the moment the quit below
+///   returns;
+/// * and the grace is never consulted anyway. §5.7's exit is gated on **zero clients**, and each
+///   node's MCP bridge is itself a socket client of this supervisor (§11 item 28 step 5). While any
+///   node is running there is at least one connection, so `idle_exit_eligible` is false regardless
+///   of what this constant says, and a build that made it permissive would change nothing.
+///
+/// What actually makes clause (i) falsifiable is therefore neither the grace nor the eligibility
+/// predicate: it is that a supervisor **must not read a clean quit as its own cue to go**. That is
+/// the mutation clause (i) is checked against, it walks straight past both mechanisms above, and
+/// [`while_the_supervisor_holds`] names it in about a second. Lengthening this constant would not
+/// weaken the test — nothing rests on it — and shortening it further would not strengthen it. It is
+/// short so that the *suite's* teardown is quick, and that is the whole of its job.
+///
+/// The consequence for §9 is stated in `MILESTONES.md` rather than hidden here: §5.7's
+/// zero-clients-with-a-live-node clause is **structurally unreachable** in marion today, so no test
+/// exercises it, and clause (i) is measured on the quit path instead.
+const QUIT_GRACE: Duration = Duration::from_millis(300);
+
+/// How long clause (ii) waits for the event the release caused. See [`Client::read_bound`]: this
+/// wait's expiry is the defect report, so it gets a budget of its own rather than [`BOUND`].
+///
+/// **Sized from the measurement, because clause (ii) can only fail by absence.** An event that is
+/// never sent cannot be detected except by waiting, so the budget *is* the report's latency and a
+/// generous one is not free — it is how long a replay-only build takes to be named. Measured on
+/// this platform over five runs, gate release to the event arriving at the client is **5.1–6.0 ms**;
+/// five seconds is ~830× that, which is a bound the causal path cannot plausibly cross and a
+/// failure that arrives in seconds rather than in [`BOUND`]'s three minutes. Measured against the
+/// mutation it exists for: an attach that serves replay and goes quiet is named in ~7 s.
+const LIVE_LEG: Duration = Duration::from_secs(5);
+
+/// How long the detached window may take. **Measured at 0.78–0.82 s** over three runs, from the
+/// quit to the root parked at its closing turn, so this is ~37× headroom — enough for a loaded
+/// machine and short enough that a stalled tree is a named failure rather than a three-minute
+/// expiry. See the assertion that uses it.
+///
+/// It is not the reporting path for clause (i) any more, and that is deliberate:
+/// [`while_the_supervisor_holds`] carries the clause *into* both of these waits, so a supervisor
+/// that leaves is named in about a second instead of surfacing as this budget running out.
+const WINDOW: Duration = Duration::from_secs(30);
+
+/// Start a supervisor this test owns, rather than one `marion run` started as a side effect.
+fn start_supervisor(
+    state: &Path,
+    repo: &Path,
+    base_url: &str,
+) -> marion_supervisor::detach::Ensured {
+    let paths = paths_for(state, repo);
+    marion_supervisor::detach::ensure_supervisor(
+        &paths,
+        &marion_supervisor::detach::Launch {
+            program: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
+            state_dir: state.to_path_buf(),
+            // §2's key, resolved the way production resolves it — `marion.rs` derives the socket,
+            // the `Launch` and the `ProjectDir` from this one call.
+            project_root: marion_supervisor::socket::project_root(repo),
+            idle_grace: QUIT_GRACE,
+            auth: marion_harness::Auth::Canned,
+            base_url: Some(base_url.to_string()),
+        },
+    )
+    .expect("a supervisor starts")
+}
+
+/// **M2 acceptance criterion 4: a clean quit-and-return.**
+///
+/// # Why this could not be credited to the criterion-1 test
+///
+/// §9 states this one as *a clean quit-and-return* and says in as many words that the three
+/// kill-based criteria *"cannot distinguish"* it: *"a supervisor that only ever replays passes every
+/// one of them — and a supervisor that dropped its channels and rebuilt the tree from disk would
+/// too."* The criterion-1 test **SIGKILLs** its client, and §7.3.1 exists precisely to distinguish a
+/// client that said it was leaving from one that vanished. What that test genuinely proves is the
+/// *mechanism* clause (ii) turns on; what it cannot prove is the *scenario*, and in particular
+/// clause (i) after a **voluntary** departure — which is the case §5.7's grace governs and the one
+/// where a supervisor could legitimately have exited.
+///
+/// So the client here is not `marion run`. It is a socket client this test owns, which creates the
+/// root with `agent/spawn { caller: None }`, leaves through the real `session/quit` path with
+/// disposition **(b)**, and is never signalled.
+///
+/// # The shape, and why one run covers §9's second run too
+///
+/// The gate holds the **root's third `anthropic` turn**, which is its closing one. Three is
+/// measured, not assumed: the root's wire carries a session-title request and two scripted turns,
+/// and while the title races the first turn, both precede the closing turn by the whole of the
+/// child's run — so the third is deterministically `Finish` even though the first two are not
+/// ordered.
+///
+/// That buys the entire criterion from one run:
+///
+/// * **at least one node mid-turn** at the quit — the child is running and the root is inside the
+///   `spawn` that is waiting for it, so neither is terminal;
+/// * **the node keeps producing events while no client exists** — with nothing released, the child
+///   runs to completion on its own and the root's tool call returns, all after the quit;
+/// * §9's *"run it also with a node that terminated **during** the detached window, whose journal
+///   tail must appear in the same attach"* — that is the child, which finishes and exits inside the
+///   window and is asserted on below in its own attach;
+/// * and the root is left **parked and alive** at its closing turn, which is what leaves something
+///   for clause (ii) to hear.
+///
+/// # No sleeps
+///
+/// Every wait is on a fact: the journal reaching two nodes, the child reaching a terminal record,
+/// the gate parking, the root's `events.jsonl` growing. The ordering clause (ii) rests on is read
+/// out of the **provider's own request log** — zero closing turns asked at attach, non-zero after —
+/// which is a third party's account, not this test's.
+#[test]
+fn a_client_that_quits_cleanly_leaves_the_supervisor_running_and_a_new_client_resubscribes() {
+    let dir = scratch("client-run-crit4");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+
+    let gate = TurnGate::holding_from(ROOT_WIRE, 3);
+    let server = CannedServer::start_gated(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: dir.join("provider-requests.jsonl"),
+            script: script(),
+        },
+        Some(Arc::clone(&gate)),
+    )
+    .expect("the canned provider binds");
+
+    let paths = paths_for(&state, &repo);
+    let ensured = start_supervisor(&state, &repo, &server.base_url());
+    let before = supervisor_identity(&paths);
+
+    // ---- a client, a tree, and a node mid-turn -------------------------------------------------
+    let mut a = Client::dial(&paths);
+    // **`Ensured` holds a live connection, and it has to be let go here or the criterion is
+    // vacuous.** §5.7's *"the loser dials the winner"* makes that dial the proof that a supervisor
+    // is serving, so `ensure_supervisor` hands the caller the socket rather than throwing it away.
+    // Held for the length of this test it would mean a client existed throughout — and *"the node
+    // keeps producing events while no client exists"* would be false, clause (i) would be asserting
+    // about a supervisor that was never at zero clients, and the mutation that lets a supervisor
+    // exit on its last client's departure would survive. It did survive, until this line.
+    //
+    // Dropped **after** A has dialled rather than before, so the count goes two, one, zero with no
+    // window in which it is zero by accident and the supervisor could leave for the right reason at
+    // the wrong time.
+    drop(ensured);
+    let root = a.spawn_root(
+        &repo,
+        &format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
+    );
+    assert!(
+        until(|| journal_nodes(&state, &repo).len() == 2),
+        "the root spawned a child, so there is a tree to be mid-turn"
+    );
+    let at_quit = journal_nodes(&state, &repo);
+    let child = at_quit
+        .iter()
+        .find(|n| n.depth() == Some(1))
+        .expect("a child")
+        .agent_id
+        .clone();
+    assert!(
+        at_quit.iter().all(|n| !n.state.is_exited()),
+        "**§9's premise: at least one node mid-turn.** Neither node has finished when the client \
+         announces its departure: {:?}",
+        at_quit.iter().map(|n| n.state).collect::<Vec<_>>()
+    );
+    let root_events_at_quit = events_len(&state, &repo, &root);
+    assert_eq!(
+        root_turns_asked(&server, RootStep::Finish),
+        0,
+        "the root has not asked for its closing turn yet, so nothing asserted on later exists"
+    );
+
+    // ---- (b) the departure is *voluntary*, and the client is never signalled --------------------
+    // **What "no client exists" does and does not mean here, because it is not what it looks
+    // like.** After this the *operator's* client is gone, and that is §9's sense. It is **not**
+    // zero connections: each node's MCP bridge is itself a socket client of this supervisor
+    // (§11 item 28 step 5), so while the root is running its bridge is connected and §5.7's
+    // zero-clients clause is unreachable. Measured, not assumed — instrumenting the accept loop
+    // showed the connection count never falling below one across this window.
+    //
+    // That is why clause (i) is guarded by two independent things, and why the mutation for it
+    // has to be a supervisor that treats a *quit* as its own cue to go: making
+    // `idle_exit_eligible` permissive changes nothing, because with a node's bridge attached the
+    // loop never asks it.
+    let outcome = a.quit();
+    assert!(
+        matches!(outcome, marion_proto::QuitOutcome::Detached { .. }),
+        "**disposition (b), and the supervisor's own answer says so.** (a) answers `Killed` and \
+         (c) answers `ReapedAndDetached`; a build that served one of those in place of (b) would \
+         leave a differently-shaped tree behind and this is the cheapest place to notice: {outcome:?}"
+    );
+    drop(a);
+
+    // ---- the detached window: nobody is watching, and the tree carries on -----------------------
+    //
+    // Nothing is released here. The child finishes on its own, the root's `spawn` returns, and the
+    // root then parks at its closing turn — every byte of it written with no client in existence.
+    //
+    // **Both waits carry clause (i) with them** — see [`while_the_supervisor_holds`]. The point of
+    // the detached window is that the supervisor is still here to drive it, so a supervisor that
+    // left is not a slow window and must not be reported as one.
+    assert!(
+        while_the_supervisor_holds(WINDOW, &paths, &before, || journal_nodes(&state, &repo)
+            .iter()
+            .any(|n| n.agent_id == child && n.state.is_exited())),
+        "§9's second run, folded into this one: a node **terminates during the detached window**"
+    );
+    assert!(
+        while_the_supervisor_holds(WINDOW, &paths, &before, || gate.parked() == 1),
+        "the root must reach its closing turn and park there — alive, non-terminal, and with \
+         something still to say, which is what clause (ii) needs. **Its own budget, not `BOUND`**: \
+         the tree gets here in about a second, and the interesting way to fail is for the root's \
+         `spawn` never to return — which is what happens if `node/attach` serves replay only, since \
+         the child's own MCP bridge attaches and reads until the closing bookend. At `BOUND` that \
+         arrives as a three-minute expiry instead of this sentence"
+    );
+    assert!(
+        events_len(&state, &repo, &root) > root_events_at_quit,
+        "**the node kept producing events while no client existed**: the root's own stream was \
+         {root_events_at_quit} bytes when its client left and must be longer now"
+    );
+
+    // ---- (i) the supervisor is the same process ------------------------------------------------
+    assert_eq!(
+        still_the_same_supervisor(&paths, &before),
+        Resolution::AliveAndOurs,
+        "**(i)**, once more at the end of the window and after the whole of it: same pid *and* same \
+         kernel start identity, so a reissued pid cannot satisfy it. §7.3.2 waives §5.7's grace for \
+         a client that announced itself, so the only thing keeping this process alive is the node \
+         that has not finished — which is exactly the clause a supervisor that took its last \
+         client's departure as its own cue would get wrong"
+    );
+
+    // ---- a new client attaches -----------------------------------------------------------------
+    let mut b = Client::dial(&paths);
+    let nodes = b.tree();
+    assert_eq!(nodes.len(), 2, "the whole tree is there: {nodes:?}");
+
+    // §9: the terminated node's journal tail must appear in the same attach.
+    let (child_replay, child_attached) = b.attach(&child);
+    let child_stream = stream(&child_replay, &child);
+    assert!(
+        !child_stream.is_empty(),
+        "the child ran and exited entirely inside the detached window, and its stream is served \
+         from replay to a client that never saw any of it"
+    );
+    assert_contiguous_from(
+        &child_stream.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+        0,
+        "B's replay of the child that terminated while nobody was attached",
+    );
+    assert!(
+        !child_attached.mode.is_live(),
+        "the child is over, so its attach is a completed reading rather than a subscription — {:?}",
+        child_attached.mode
+    );
+    // **§9's *"whose journal tail must appear in the same attach"*, and `tail` is the load-bearing
+    // word.** Everything above this is satisfied by a replay that served the child's opening
+    // bookend and then stopped: non-empty holds, contiguity from 0 holds, and the mode is not live
+    // either way. What such a replay drops is precisely the records that say the run *ended* — and
+    // §7.3.3 names that failure in as many words: *"a stream without a terminal event is
+    // indistinguishable from one cut mid-turn"*. So this asserts the **last** record, and asserts
+    // it is the terminal bookend rather than merely that more than one arrived.
+    let bookends: Vec<Payload> = [child_stream.first(), child_stream.last()]
+        .into_iter()
+        .map(|e| {
+            serde_json::from_value(e.expect("a non-empty stream").1.clone()).expect("a payload")
+        })
+        .collect();
+    assert!(
+        matches!(bookends[0], Payload::Lifecycle(Lifecycle::Opened)),
+        "the child's replay must start where marion started recording it: {bookends:?}"
+    );
+    assert!(
+        matches!(bookends[1], Payload::Lifecycle(Lifecycle::Exited { .. })),
+        "**the journal tail is there**: the child started, ran and finished with nobody attached, \
+         and the attach that first shows it to anyone must carry the record of how it ended — \
+         {bookends:?}"
+    );
+
+    // ---- (iii) the detached window, replayed exactly once ---------------------------------------
+    let closing_turns_at_attach = root_turns_asked(&server, RootStep::Finish);
+    let (replay, attached) = b.attach(&root);
+    let replayed = stream(&replay, &root);
+    let replay_seqs: Vec<u64> = replayed.iter().map(|(s, _)| *s).collect();
+    assert_contiguous_from(&replay_seqs, 0, "B's replay of the root's detached window");
+    let point = attached.mode.replay_point().records;
+    assert_eq!(
+        point,
+        replayed.len() as u64,
+        "**(iii)**: the read point counts exactly what has already been delivered, so there is \
+         neither a gap nor a repeat where the replay meets the live leg"
+    );
+    assert!(
+        attached.mode.is_live(),
+        "the root is parked, not finished, so this is a subscription: {:?}",
+        attached.mode
+    );
+    assert!(
+        !replayed
+            .iter()
+            .any(|(_, p)| p.to_string().contains(ROOT_FINAL_MARKER)),
+        "the root's closing turn has not happened, so the event clause (ii) rests on cannot \
+         already be in the replay"
+    );
+    // **The checkable fact §6.1 step 8 requires in place of a sleep, and it is not the same fact
+    // the criterion-1 test uses.** There the gate holds a *different* wire, so the root's closing
+    // turn has not been asked for at all and the count is zero. Here the gate holds that very turn,
+    // and `gate.rs` places the hold **after** the request is logged and before it is answered — on
+    // purpose, so the evidence survives on disk while the turn is still parked. So the request is
+    // already counted, and what is withheld is the **answer**.
+    //
+    // That makes the causal statement sharper rather than weaker: at the instant of the attach the
+    // provider is holding the root's closing answer, so the event asserted on below cannot exist
+    // anywhere — and the count staying at one afterwards proves the event came from releasing that
+    // held answer rather than from some later turn.
+    assert_eq!(
+        closing_turns_at_attach, 1,
+        "the root asked for its closing turn and the provider logged it before parking it"
+    );
+    assert_eq!(
+        gate.parked(),
+        1,
+        "and the answer is still withheld at attach time, so nothing downstream of it exists yet"
+    );
+
+    // ---- (ii) an event emitted *after* the attach ----------------------------------------------
+    gate.release();
+    b.read_bound(LIVE_LEG);
+    let (between, caused) = b.expect_event(
+        "**(ii) failed.** The provider's held answer was released, so the root emitted its closing \
+         event — and this attach never delivered it. An attach that serves replay and then goes \
+         quiet is the replay-only implementation §9 says criterion 4 exists to catch, and it is \
+         the one assertion in §9 such an implementation fails.",
+        |n| match n {
+            Note::NodeEvent {
+                agent_id, payload, ..
+            } => agent_id == &root && payload.to_string().contains(ROOT_FINAL_MARKER),
+            _ => false,
+        },
+    );
+    let Note::NodeEvent { agent_seq, .. } = caused else {
+        unreachable!()
+    };
+    assert!(
+        agent_seq >= point,
+        "**(ii)**: an event caused after the attach carries an ordinal past the read point \
+         ({agent_seq} < {point}) — this is the one assertion in §9 a replay-only implementation \
+         fails"
+    );
+    assert_eq!(
+        root_turns_asked(&server, RootStep::Finish),
+        closing_turns_at_attach,
+        "and it came from the answer this test released, not from a turn the root asked for later \
+         — the provider's log still shows exactly one closing request, the one that was parked \
+         across the attach"
+    );
+
+    let mut live_seqs: Vec<u64> = stream(&between, &root).iter().map(|(s, _)| *s).collect();
+    live_seqs.push(agent_seq);
+    assert_contiguous_from(&live_seqs, point, "B's live leg after the replay");
+
+    assert_eq!(
+        still_the_same_supervisor(&paths, &before),
+        Resolution::AliveAndOurs,
+        "one supervisor, across a client's clean departure and a second client's whole session"
+    );
+
+    b.quit();
+    drop(b);
+    drop(server);
+    sweep(&dir.display().to_string());
+}
+
+/// **The control on clause (i)'s identity reading: a reissued pid is not the same supervisor.**
+///
+/// Clause (i) of §9's criterion 4 is *"the supervisor was still the same process — same pid, no
+/// restart"*, and the whole force of it lives in the second half. A check that compared pids alone
+/// would be satisfied by a supervisor that exited and was replaced by one the kernel happened to
+/// hand the same number — the reading that turns *"it outlived its last client"* into *"something
+/// is listening"*. That is why [`supervisor_identity`] carries the kernel's start identity beside
+/// the pid, and it is what had to survive the move off `ps -o lstart=` onto `procid::read`.
+///
+/// **The criterion-4 test itself cannot exercise this**, and saying so is why this one exists: pid
+/// reuse is the kernel's to schedule, so no test can arrange for a *second* supervisor to be born
+/// wearing the first one's number. What it can do is present the identical evidence — a serving
+/// supervisor whose pid is the recorded one and whose **start identity is not** — and that is what
+/// this does, with a real second reading rather than a fabricated one: the start identity of this
+/// test's own process, taken from the same `procid::read` the comparison uses.
+///
+/// So a build in which the fingerprint degenerated to a pid, or in which `procid::resolve` stopped
+/// treating a start-identity mismatch as evidence, fails here — with the supervisor **genuinely
+/// alive and genuinely serving**, so nothing about the failure can be blamed on a dead process.
+#[test]
+fn a_supervisor_wearing_a_reissued_pid_is_not_the_supervisor_that_was_there_before() {
+    let dir = scratch("client-run-reissued-pid");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+
+    let paths = paths_for(&state, &repo);
+    // Nothing spawns a node here, so no provider is ever dialled and the base URL only has to be
+    // a URL.
+    let ensured = start_supervisor(&state, &repo, "http://127.0.0.1:1");
+    let real = supervisor_identity(&paths);
+
+    assert_eq!(
+        still_the_same_supervisor(&paths, &real),
+        Resolution::AliveAndOurs,
+        "the control's control: the supervisor that is serving *is* the one just fingerprinted, so \
+         the `Gone` below is about the identity and not about a dead process"
+    );
+
+    // The same pid, paired with a start identity that is real and is somebody else's. This is what
+    // a reissued pid looks like from the outside, and it is the only way to look at one on purpose.
+    let stranger = (
+        real.0,
+        match procid::read(std::process::id() as i32) {
+            procid::Read::Id(start) => start,
+            other => panic!("this test's own process must be identifiable: {other:?}"),
+        },
+    );
+    assert_ne!(
+        stranger.1, real.1,
+        "two different processes must not share a start identity, or the premise is empty"
+    );
+    assert_eq!(
+        still_the_same_supervisor(&paths, &stranger),
+        Resolution::Gone,
+        "**a process wearing the supervisor's pid is not the supervisor** unless it carries the \
+         same start identity. Answered `Gone` rather than a doubt, because a mismatch is evidence: \
+         marion knows this is a different process, it is not merely unable to say"
+    );
+
+    drop(ensured);
+    sweep(&dir.display().to_string());
 }
