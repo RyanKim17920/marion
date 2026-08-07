@@ -295,10 +295,14 @@ round-tripping, and accurate token counts.
 | Fixture format | asciicast v3 NDJSON, hand-rolled serde (the `asciicast` crate died in 2018) | — |
 | Seed VT corpus | vendor `vt100-rust` `tests/data/fixtures/` (MIT) | — |
 
-`wezterm-term` is **not on crates.io**. `vt100` retained **0** scrollback lines in every real
-capture and is disqualified — but that retention figure is **unverified**: no committed fixture
-reproduces what either emulator retained, since no Rust exists yet (design doc §11 item 10). The
-choice rests on `wezterm-term` being unpublished and alacritty modelling scrollback at all.
+`wezterm-term` is **not on crates.io**. `vt100` is disqualified on retention, and that figure is
+now **derived** from the committed `tests/fixtures/s2` captures by
+`crates/marion-term/tests/vt100_comparison.rs` (design doc §11 item 10, closed 2026-08-07): vt100
+retains **0** rows where alacritty retains 94 and 16, and **26** where alacritty retains 121 — so
+"0 in every real capture" was slightly too strong, and the gap is not. The cause is asserted too:
+vt100 drops history under a top-anchored but not full-height DECSTBM, the shape Codex sets on
+every frame. `vt100` is a dev-dependency of `marion-term` only — evidence, not a component. The
+choice also rests on `wezterm-term` being unpublished and alacritty modelling scrollback at all.
 
 **Prior art to port** (read-and-port, not dependencies): `openai/codex` →
 `codex-rs/app-server/tests/common/mock_model_server.rs` (the canned provider) and

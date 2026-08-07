@@ -41,9 +41,9 @@ transports (§11 item 1). S8's report lives in `spikes/s8/` and carries structur
 because that spike touched real OAuth credentials. The **Gemini and opencode launcher findings (§6.4) and the
 entire resource model (`MILESTONES.md`) have no committed fixture** — they rest on single
 uncommitted sessions and should be re-measured before they harden into assumptions — **and further
-claim families are unfixtured, all listed in §11 item 10**: the vt100-vs-alacritty scrollback
-comparison **in part** (only the **vt100** column now — `marion-term` derived every alacritty
-retention figure from the committed captures on 2026-08-07, and corrected one of them),
+claim families are unfixtured, all listed in §11 item 10**: ~~the vt100-vs-alacritty scrollback
+comparison~~ (**no longer** — `marion-term` derived both columns from the committed captures on
+2026-08-07, correcting one figure on each side),
 the entire vendor prior-art body (§7.6), `s2/analyze.py`, which cannot read the
 committed captures at all, the 1478-byte `ESC[6n` stall (§5.3), and the `turn/steer` half of §5.2's
 thread-ownership claim. That violates this project's own "every spike emits a fixture"
@@ -1045,13 +1045,18 @@ deferred.
 handles OSC 8 and DECSET 2026, and models real scrollback history with `display_offset`.
 
 **`vt100` is disqualified** — in the original spike it retained **0** scrollback lines against
-alacritty's 94 from a 14-row Codex run. *(**alacritty's 94 is now derived**, not merely observed:
-`marion-term`'s `retained_history_matches_scrollattr_ground_truth` replays the committed
+alacritty's 94 from a 14-row Codex run. *(**Both figures are now derived**, and §11 item 10 is
+closed. `marion-term`'s `retained_history_matches_scrollattr_ground_truth` replays the committed
 `codex-cli-0.146.0-14row-heavy-history-insert.raw.bin` and measures exactly 94 retained rows, 82 of
-them non-blank — matching `s2/scrollattr.py`'s 2 + 92 top-anchored scroll-ups. **vt100's 0 remains
-unfixtured**: marion depends on no `vt100` crate, so nothing in this tree re-derives it, and §11
-item 10 keeps that half open. The choice stands on `wezterm-term` being unpublished, on alacritty
-modelling scrollback at all, and now on a measured retention figure.)*
+them non-blank — matching `s2/scrollattr.py`'s 2 + 92 top-anchored scroll-ups — and
+`vt100_comparison.rs` replays the same bytes through `vt100` 0.16.2, a **dev-dependency of
+`marion-term` alone**, for **0**. The `0` reproduces on that capture and on
+`codex-cli-0.146.0-boot-status-help-resize`; on `codex-cli-0.145.0-boot-status-help-diff-resize`
+it is **26**, not 0, against alacritty's 121 — a correction to "0 in every real capture". The
+cause is asserted alongside the number: vt100 drops history under a **top-anchored but not
+full-height** DECSTBM, which the codex captures set and the Claude captures never do. The choice
+stands on `wezterm-term` being unpublished, on alacritty modelling scrollback at all, and now on
+measured retention figures on both sides.)*
 
 **Per-harness screen model.** Established by two separate experiments — the second run
 adversarially to resolve a contradiction with an earlier one — but both on the same host and the
@@ -4332,16 +4337,16 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       build. Also still unfixtured for opencode: **no test has exercised it as a marion child end to
       end** — S13 characterises the CLI only.
     - The entire resource model (`MILESTONES.md`).
-    - **~~The `vt100`-vs-`alacritty` scrollback comparison~~ — the alacritty half is CLOSED
-      (2026-08-07); the vt100 half stays open.** "No Rust exists yet to run them" is no longer
-      true: `crates/marion-term` is that Rust, and it derives every alacritty figure from the
-      committed `tests/fixtures/s2/*.raw.bin` captures rather than re-asserting them.
+    - **~~The `vt100`-vs-`alacritty` scrollback comparison~~ — CLOSED (2026-08-07), both
+      halves.** "No Rust exists yet to run them" is no longer true: `crates/marion-term` is that
+      Rust, and it derives every figure below from the committed `tests/fixtures/s2/*.raw.bin`
+      captures rather than re-asserting them.
 
       | capture | alacritty, `3J` suppressed | alacritty, `3J` honoured | vt100 |
       |---|---|---|---|
-      | codex 0.146.0 14-row heavy-history | 94 (82 non-blank) | 94 — no `3J` in that stream | **unmeasured** |
-      | codex 0.145.0 boot-status-help-diff-resize | 121 | **25** | **unmeasured** |
-      | codex 0.146.0 boot-status-help-resize | 16 (9 non-blank) | 1 (0 non-blank) | **unmeasured** |
+      | codex 0.146.0 14-row heavy-history | 94 (82 non-blank) | 94 — no `3J` in that stream | **0** |
+      | codex 0.145.0 boot-status-help-diff-resize | 121 | **25** | **26** (21 non-blank) |
+      | codex 0.146.0 boot-status-help-resize | 16 (9 non-blank) | 1 (0 non-blank) | **0** |
 
       Derived by `crates/marion-term/tests/replay.rs`:
       `retained_history_matches_scrollattr_ground_truth` (the 94, against `s2/scrollattr.py`'s
@@ -4352,12 +4357,42 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       wrong — the measured collapse is 121 → 25**, because the last `CSI 3J` lands mid-session and
       the 25 rows scrolled up after it survive. §5.3 now carries 25.
 
-      **What is still unfixtured is the vt100 column.** marion depends on no `vt100` crate, so
-      `marion-term` cannot and does not re-derive the original spike's `0`. The disqualification
-      still rests on an uncommitted session — it is merely no longer the *only* unverified half of
-      the comparison. (The `scrollattr.py` tool hardcodes a 40×120 replay, cosmetically wrong for a
-      14-row capture but harmless; replaying at the true 14×100 yields the same 94, and
-      `marion-term` asserts that 100×14 size explicitly.)
+      **The vt100 column is now derived too**, by
+      `crates/marion-term/tests/vt100_comparison.rs`, against `vt100` 0.16.2 added as a
+      **dev-dependency of `marion-term` alone** — it is evidence, not a component. Both emulators
+      replay the same bytes at the same size with the same resizes, and the test asserts they end
+      the same size before it compares retention. The original spike's **0 reproduces exactly** on
+      two of the three captures; the third is the correction: vt100 retains **26** rows on
+      codex 0.145.0, not 0. `vt100` implements no `CSI 3J` at all (`Screen::ed` handles modes
+      0/1/2 and drops the rest, pinned by
+      `vt100_ignores_erase_saved_so_the_comparison_is_like_for_like`), so its column is already a
+      suppressed-equivalent figure and belongs against alacritty's suppressed column — 26 against
+      121, not against 25.
+
+      **The cause is asserted, not just the number**, because three separate faults yield the same
+      `0`. Ruled out first: vt100 modelling no scrollback (it retains 7 of 12 lines through a 6-row
+      screen with no region set, matching alacritty exactly), and the harness mis-reading it. What
+      remains is the mechanism §5.3 alleges, isolated over identical bytes under four DECSTBMs —
+      `vt100`'s `Grid::scroll_up` pushes a displaced row into scrollback only when
+      `!scroll_region_active()`, and `scroll_region_active()` is
+      `scroll_top != 0 || scroll_bottom != rows - 1`, so **top-anchored is not sufficient; the
+      region must also reach the last row**:
+
+      | DECSTBM on a 6-row screen | vt100 | alacritty |
+      |---|---|---|
+      | none | 7 | 7 |
+      | `1;6` — top-anchored *and* full-height | 7 | 7 |
+      | `1;5` — top-anchored, partial | **0** | **8** |
+      | `2;6` — not top-anchored | 0 | 0 |
+
+      `Stats::top_anchored_partial_regions` counts that shape as marion parses, so each capture's
+      loss is tied to a region it actually set (6, 8 and 4 respectively). The two Claude captures
+      retain 0 in *both* emulators and set **no** DECSTBM at all — asserted separately, so the
+      table cannot be misread as "vt100 always returns 0"; their 0 is the alternate screen,
+      which has no scrollback in either emulator by construction. (The `scrollattr.py` tool
+      hardcodes a 40×120 replay, cosmetically wrong for a 14-row capture but harmless; replaying
+      at the true 14×100 yields the same 94, and `marion-term` asserts that 100×14 size
+      explicitly.)
     - **The entire vendor prior-art body (§7.6)** — prompt strings plus behavioural inferences
       about Gemini's grace window, its non-compliance terminal, and Claude Code's Write-block
       telemetry.
@@ -5338,7 +5373,7 @@ different provenance from either. No row is renumbered and no spike is invented 
 |---|---|
 | Codex app-server reaped when idle at ~86–90 s; 25 s heartbeat required | **RETRACTED.** No reaper exists (six invocations; four to ~10.5 min, two thread-holding to 703/763 s, and the D server logged alive at 2432 s ≈ 40.5 min). The phantom SIGTERM was most likely our own `codex-app-server-test-client`, which kills whatever answers on its port with no delay floor — explaining even death while SIGSTOPped. Replaced by the real hazard: `THREAD_UNLOADING_DELAY = 1800 s` on **unsubscribed threads**. |
 | Scrubbing `CLAUDE_CODE_CHILD_SESSION` is required or no transcript is written | **CORRECTED.** A/B tested at 2.1.220 — transcripts written both ways. The gate also requires the interactive path, not-a-teammate, and no tmux marker. Use `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`. |
-| `vt100` loses scrollback under DECSTBM and alacritty does not | **CORRECTED.** Both drop it under a top-offset region; alacritty keeps top-anchored history. Moot in practice — every history-producing scroll is top-anchored. alacritty is the pick because vt100 retained **0** lines in every real capture — a figure that is itself still unfixtured (§11 item 10), though the alacritty side of the comparison is now derived by `marion-term` from the committed captures. |
+| `vt100` loses scrollback under DECSTBM and alacritty does not | **CORRECTED.** Both drop it under a top-offset region; alacritty keeps top-anchored history. Moot in practice — every history-producing scroll is top-anchored. alacritty is the pick because vt100 retains far less: **0** rows on two of the three history-producing captures and **26** against alacritty's **121** on the third — all now derived by `marion-term` from the committed captures (§11 item 10, closed 2026-08-07), which also corrects "0 in every real capture" to "0 in most". |
 | Rollout compression can replace a live `.jsonl` under a tailer | **RETIRED.** Default-off flag, 7-day age minimum, skips referenced rollouts. Not a live hazard. |
 | Neither harness uses the alternate screen | **RETRACTED.** Claude Code uses it for its entire session; Codex uses the main screen but **does** enter it transiently for the `/diff` pager (verified, 0.145.0 capture). The original capture had stalled at the trust dialog *before* `?1049h`, which is what made it look like there was no alt screen. |
 | A dumb pty host deadlocks both harnesses; answering DA1/XTVERSION/CPR is mandatory | **RETRACTED — this was our own overcorrection, refuted by our own fixture.** `tests/fixtures/s2/ptyhost.py` answers no probes and drove full boot-to-exit sessions on both (though two captures' `/status` produced no panel — one swallowed by the boot modal, the other by an already-open `/help` overlay, so "wait for the boot modal" is not a sufficient injection rule — §5.3). One earlier capture did show Codex stalling after `ESC[6n`, but on a host that also sent no keystrokes, so input starvation is the likelier cause. marion answers probes anyway (cheap, removes a class of boot-hang) but the docs must not call it required. **Why that capture stalled is unresolved — §11.** |
