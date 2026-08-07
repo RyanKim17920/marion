@@ -91,6 +91,15 @@ pub struct Stats {
     pub suppressed_erase_saved: usize,
     /// `CSI 3J`s that reached the grid (always 0 when suppression is on).
     pub honoured_erase_saved: usize,
+    /// DECSTBM regions that are top-anchored (`top == 1`) but stop short of the last row.
+    ///
+    /// This is the exact shape under which the two emulators disagree: `vt100`'s
+    /// `Grid::scroll_up` pushes a displaced row into scrollback only when
+    /// `!scroll_region_active()`, and its `scroll_region_active()` is
+    /// `scroll_top != 0 || scroll_bottom != rows - 1` — so a top-anchored *partial* region
+    /// silently discards history, while alacritty rotates it in. Counted so the
+    /// vt100-vs-alacritty comparison can assert its own *cause* and not just its result.
+    pub top_anchored_partial_regions: usize,
     cup_in_frame: bool,
     in_frame: bool,
 }

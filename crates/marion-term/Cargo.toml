@@ -11,3 +11,4 @@ ratatui = { version = "0.30", default-features = false }
 [dev-dependencies]
 insta = "1"
 serde_json.workspace = true
+vt100 = "0.16"

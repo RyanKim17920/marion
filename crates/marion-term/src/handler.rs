@@ -6,6 +6,7 @@
 //! one `Handler` method the sequence dispatches to is the only place the decision is unambiguous.
 
 use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Term as ATerm;
 use alacritty_terminal::vte::ansi::{
     Attr, CharsetIndex, ClearMode, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
@@ -19,10 +20,12 @@ use crate::Stats;
 
 /// Wraps alacritty's `Term` for the duration of one `advance` call.
 ///
-/// Overrides three methods and delegates the rest verbatim:
+/// Overrides one method behaviourally and three observationally, delegating the rest verbatim:
 /// * `clear_screen(ClearMode::Saved)` — swallowed, so marion's history outlives the display.
 /// * `unset_private_mode(SyncUpdate)` — the DECSET 2026 frame boundary, counted then delegated.
 /// * `goto` / `goto_line` — recorded only so a test can show frames without a CUP exist.
+/// * `set_scrolling_region` — recorded only so a test can show *why* `vt100` drops the history
+///   alacritty keeps.
 pub struct Suppressor<'a> {
     pub(crate) term: &'a mut ATerm<VoidListener>,
     pub(crate) stats: &'a mut Stats,
@@ -99,6 +102,18 @@ impl Handler for Suppressor<'_> {
         self.term.goto_line(line)
     }
 
+    /// DECSTBM. Recorded, never altered — see [`Stats::top_anchored_partial_regions`].
+    ///
+    /// `top` is the 1-based parameter and `bottom` is `None` for the parameterless reset, which is
+    /// full-height by definition.
+    #[inline]
+    fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
+        if top <= 1 && bottom.is_some_and(|b| b < self.term.screen_lines()) {
+            self.stats.top_anchored_partial_regions += 1;
+        }
+        self.term.set_scrolling_region(top, bottom)
+    }
+
     delegate! {
         fn set_title(title: Option<String>);
         fn set_cursor_style(style: Option<CursorStyle>);
@@ -142,7 +157,6 @@ impl Handler for Suppressor<'_> {
         fn unset_mode(mode: Mode);
         fn report_mode(mode: Mode);
         fn report_private_mode(mode: PrivateMode);
-        fn set_scrolling_region(top: usize, bottom: Option<usize>);
         fn set_keypad_application_mode();
         fn unset_keypad_application_mode();
         fn set_active_charset(index: CharsetIndex);
