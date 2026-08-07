@@ -614,6 +614,7 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
     // per-spawn input — `run::SpawnRequest::repo`, resolved from the caller's own node entry.
     let env = crate::run::Env {
         project_dir: project.clone(),
+        state: launch.state_dir.clone(),
         // The binary this process is, not a name looked up on a `$PATH` a detached process does not
         // have. Same fallback `main::spawn_env` takes, and for the same reason.
         bridge: std::env::current_exe().unwrap_or_else(|_| launch.program.clone()),

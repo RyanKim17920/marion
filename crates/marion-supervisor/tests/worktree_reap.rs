@@ -102,6 +102,7 @@ fn fixture(root: &Path, patch: &str) -> Fixture {
 
     let env = Env {
         project_dir: ProjectDir::new(&state, &repo),
+        state: state.clone(),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         base_url: Some(server.base_url()),
         auth: marion_harness::Auth::Canned,

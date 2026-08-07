@@ -4461,6 +4461,7 @@ mod tests {
                 live,
                 crate::run::Env {
                     project_dir: project.clone(),
+                    state: state.clone(),
                     bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
                     // Answers nothing, which is what bounds the two tests below that really launch.
                     base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -4916,6 +4917,7 @@ mod tests {
                 live,
                 crate::run::Env {
                     project_dir: project.clone(),
+                    state: state.clone(),
                     bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
                     base_url: Some("http://127.0.0.1:8099/v1".into()),
                     auth: marion_harness::Auth::Canned,

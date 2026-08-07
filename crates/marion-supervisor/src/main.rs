@@ -465,6 +465,7 @@ fn spawn_env() -> Result<(run::Env, std::path::PathBuf), ()> {
             // for `/r` and for every linked worktree of `/r`, and a worktree is made from one
             // tree's HEAD.
             project_dir: ProjectDir::new(&state, &marion_supervisor::socket::project_root(&repo)),
+            state: state.clone(),
             bridge: std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into()),
             base_url,
             auth,
