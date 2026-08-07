@@ -3322,6 +3322,45 @@ newline and never parse the final partial line — the same rule §4.3 states fo
 - **L4.5 — self-hosted TUI driver.** marion hosts marion; `TestBackend` + `insta` +
   `assert_scrollback_lines`, using DECSET 2026 brackets as the "assert now" signal. No AI in the
   loop, so it gates commits.
+
+  **BUILT, M3 I2 (2026-08-07): `crates/marion-term/tests/l45_driver.rs`, gated by
+  `.githooks/pre-commit`.** The driver replays each committed `tests/fixtures/s2` capture into
+  marion's grid and draws it through `Terminal<TestBackend>` at every completed DECSET 2026
+  bracket, snapshotting a per-frame ledger plus the last frame in full **with a style census** —
+  the half a text transcript cannot carry, and the only coverage `render`'s colour and attribute
+  mapping has.
+
+  Three things the implementation had to settle, all of them measured constraints rather than
+  taste:
+
+  - **"marion hosts marion" is the level's name, not a requirement of every test in it.** The
+    driver replays recorded bytes; it does not stand up a supervisor. Doing so would put process
+    management in the failure path of a *rendering* assertion, which is the same ambiguity this
+    section gives as the reason L7 must not gate.
+  - **The signal is the bracket and can never be a CUP.** 1 of 8 and 3 of 19 frames in the two
+    Claude captures contain no cursor movement at all (§5.3, reproduced in `replay.rs`), so a
+    CUP-keyed driver would miss frames outright. The driver renders when `Stats::frames`
+    *increments* — an edge on set→unset — and never when vte's callback fires, because vte calls
+    `unset_private_mode(SyncUpdate)` a number of times that depends on `read()` chunking (9 vs 16
+    for the same 8 brackets). `one_draw_per_sync_bracket_on_every_capture` asserts draws equal
+    brackets on all five captures.
+  - **`TestBackend` and `assert_scrollback_lines` are not interchangeable and are pinned as such.**
+    A `CSI 3J` reaching the grid destroys the transcript without changing one rendered cell; a
+    colour change repaints the buffer while leaving retained history byte-identical. Both
+    directions are exhibited in `the_two_assertions_cannot_substitute_for_each_other`, so neither
+    assertion can quietly absorb the other's concern.
+
+  **The gate is a `pre-commit` hook, not CI.** This section says L4.5 gates *commits*, and the
+  repo has no CI to extend; CI would also fire only after the bad commit already exists in
+  history. L4.5 is the one layer cheap enough for the literal reading — no processes, no network,
+  no model, ~0.3 s. Install is one step, `git config core.hooksPath .githooks`. The hook names its
+  target explicitly instead of running `cargo test`, so **no future L7 target can be swept into
+  the gate by existing**, and it reads back its own pass count and fails when the target is
+  missing or has shrunk — a gate that no-ops when its subject is absent is worse than no gate.
+  `the_gate_names_this_target_and_only_this_target` latches the other direction: the hook's
+  expected test count and target name are asserted against the file from inside the suite. When CI
+  arrives it should run this same target plus the layers a hook cannot afford; it does not replace
+  this.
 - **L5 — live smoke.** Nightly, real models, structural assertions only, never on text.
 - **L6 — agent-driven acceptance.** Against the canned provider so only the tester is stochastic.
   Cross-checks **screen against IR log** (needs `mono_ns`) and attaches artifacts as evidence.
