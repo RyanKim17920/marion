@@ -1,0 +1,52 @@
+---
+source: crates/marion-term/tests/replay.rs
+expression: "transcript(& replay(fixtures::CLAUDE_BOOT_HELP_STATUS_RESIZE, true))"
+---
+size: 120x40
+frames: 19 (16 with a CUP)
+erase-saved: 0 suppressed, 0 honoured
+history: 0 rows, 0 non-blank
+
+--- scrollback (oldest first) ---
+
+--- viewport ---
+│   Opus 5 (1M context) with medi… · Plan  ABC  ·    │ Added `sandbox.network.strictAllowlist` setting to deny non-allow
+listed                                                                                                                 h
+osts                                                                                                                   f
+or                                                                                                                     │
+│   redacted@e.invalid's Organization                │ /release-notes for more                                         │
+│               /…/scratchpad/s2/work                │                                                                 │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+───────────────────╯
+
+
+
+
+
+
+
+
+
+
+▔▔▔
+▔▔▔
+
+
+
+   Claude understands your codebase, makes edits with your permiss
+                                                                                                                       ◐
+ medium · /effort/powerup to learn the features most people miss.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ⏸ manual mode on] ?% of 1000k(1M context)                                                                            ◐
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────◐
+ medium · /effortving is off — inherited CLAUDE_CODE_CHILD_SESSION marker · restart with CLAUDE_CODE_FORCE_SESSION_PERSI
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ⏸ manual mode on                                                                                                     ◐
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────◐
+ medium · /effortving is off — inherited CLAUDE_CODE_CHILD_SESSION marker · restart with CLAUDE_CODE_FORCE_SESSION_PERSI
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker · restart with CLAUDE_CODE_FORCE_SESSION_PERSI
+  ⏸ manual mode on

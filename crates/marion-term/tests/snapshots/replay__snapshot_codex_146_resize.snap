@@ -1,0 +1,38 @@
+---
+source: crates/marion-term/tests/replay.rs
+expression: "transcript(& replay(fixtures::CODEX_146_RESIZE, true))"
+---
+size: 140x45
+frames: 50 (50 with a CUP)
+erase-saved: 2 suppressed, 0 honoured
+history: 16 rows, 9 non-blank
+
+--- scrollback (oldest first) ---
+
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                              │
+│                                                         │
+│ model:     gpt-5.6-sol   /model to change               │
+│ directory: /private/tmp/claude-501/…/scratchpad/s2/work │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+
+
+› /help
+
+  gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-4000-8000-000000000003/scratchpad/s2/wor…
+
+
+--- viewport ---
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                              │
+│                                                         │
+│ model:     gpt-5.6-sol   /model to change               │
+│ directory: /private/tmp/claude-501/…/scratchpad/s2/work │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+• Unrecognized command '/help'. Type "/" for a list of supported commands.

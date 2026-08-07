@@ -1,0 +1,172 @@
+---
+source: crates/marion-term/tests/replay.rs
+expression: "transcript(& replay(fixtures::CODEX_145_DIFF_RESIZE, true))"
+---
+size: 120x40
+frames: 52 (52 with a CUP)
+erase-saved: 2 suppressed, 0 honoured
+history: 121 rows, 82 non-blank
+
+--- scrollback (oldest first) ---
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.145.0 -> 0.146.0                                                             │
+│ Run sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh' to update. │
+│                                                                                                     │
+│ See full release notes:                                                                             │
+│ https://github.com/openai/codex/releases/latest                                                     │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.145.0)                              │
+│                                                         │
+│ model:     gpt-5.6-sol   /model to change               │
+│ directory: /private/tmp/claude-501/…/scratchpad/s2/work │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Use /personality to customize how Codex communicates.
+
+/status
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.145.0)                                                                                  │
+│                                                                                                              │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date                                                │
+│ information on rate limits and credits                                                                       │
+
+
+› Run /review on my current changes
+
+  gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-…
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.145.0 -> 0.146.0                                                          │
+│ Run sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh' to      │
+│ update.                                                                                          │
+│                                                                                                  │
+│ See full release notes:                                                                          │
+│ https://github.com/openai/codex/releases/latest                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.145.0)                              │
+│                                                         │
+│ model:     gpt-5.6-sol   /model to change               │
+│ directory: /private/tmp/claude-501/…/scratchpad/s2/work │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Use /personality to customize how Codex communicates.
+
+/status
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.145.0)                                                                      │
+│                                                                                                  │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date                                    │
+│ information on rate limits and credits                                                           │
+│                                                                                                  │
+│  Remote:                             unix:///Users/example/.codex/app-server-control/app-server- │
+│                                      control.sock (v0.145.0)                                     │
+│                                                                                                  │
+│  Model:                              gpt-5.6-sol (reasoning low, summaries auto)                 │
+│  Directory:                          /private/tmp/claude-501/…/scratchpad/s2/work                │
+│  Permissions:                        Workspace (Ask for approval)                                │
+│  Agents.md:                          <none>                                                      │
+│  Account:                            redacted@examp.invalid (Plan ABC)                           │
+│  Collaboration mode:                 Default                                                     │
+│  Session:                            00000000-0000-4000-8000-000000000006                        │
+│                                                                                                  │
+│  Weekly limit:                       [░░░░░░░░░░░░░░░░░░░░] 00% left (resets 00:00 on 1 Jan)     │
+│  Credits:                            0000 credits                                                │
+│  GPT-5.3-Codex-Spark Weekly limit:   [████████████████████] 100% left (resets 00:00 on 1 Jan)    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+• Unrecognized command '/help'. Type "/" for a list of supported commands.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-4000-8000-00000000000
+3
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.145.0 -> 0.146.0                                                             │
+│ Run sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh' to update. │
+│                                                                                                     │
+│ See full release notes:                                                                             │
+│ https://github.com/openai/codex/releases/latest                                                     │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.145.0)                              │
+│                                                         │
+│ model:     gpt-5.6-sol   /model to change               │
+│ directory: /private/tmp/claude-501/…/scratchpad/s2/work │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Use /personality to customize how Codex communicates.
+
+/status
+
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+──╮
+│  >_ OpenAI Codex (v0.145.0)
+  │
+│
+
+--- viewport ---
+  │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date
+  │
+│ information on rate limits and credits
+  │
+│
+  │
+│  Remote:                             unix:///Users/example/.codex/app-server-control/app-server-control.sock (v0.145.0
+) │
+│
+  │
+│  Model:                              gpt-5.6-sol (reasoning low, summaries auto)
+  │
+│  Directory:                          /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/…/scratchpad/s2/work
+  │
+│  Permissions:                        Workspace (Ask for approval)
+  │
+│  Agents.md:                          <none>
+  │
+│  Account:                            redacted@examp.invalid (Plan ABC)
+  │
+│  Collaboration mode:                 Default
+  │
+│  Session:                            00000000-0000-4000-8000-000000000006
+  │
+│
+  │
+│  Weekly limit:                       [░░░░░░░░░░░░░░░░░░░░] 00% left (resets 00:00 on 1 Jan)
+  │
+│  Credits:                            0000 credits
+  │
+│  GPT-5.3-Codex-Spark Weekly limit:   [████████████████████] 100% left (resets 00:00 on 1 Jan)
+  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+──╯
+
+› gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-4000-8000-00000000000
+3 gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-4000-8000-00000000000
+  gpt-5.6-sol default · /private/tmp/claude-501/-Users-example-Desktop-CODING-marion/00000000-0000-4000-8000-00000000000

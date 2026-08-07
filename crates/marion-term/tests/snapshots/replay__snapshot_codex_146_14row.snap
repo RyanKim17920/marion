@@ -1,0 +1,115 @@
+---
+source: crates/marion-term/tests/replay.rs
+expression: "transcript(& replay(fixtures::CODEX_146_14ROW, true))"
+---
+size: 100x14
+frames: 45 (45 with a CUP)
+erase-saved: 0 suppressed, 0 honoured
+history: 94 rows, 82 non-blank
+
+--- scrollback (oldest first) ---
+
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                              │
+│                                                         │
+│ model:     gpt-5.6-sol   /model to change               │
+│ directory: /private/tmp/claude-501/…/scratchpad/s2/work │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+/status
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.146.0)                                                                      │
+│                                                                                                  │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date                                    │
+│ information on rate limits and credits                                                           │
+│                                                                                                  │
+│  Remote:                             unix:///Users/example/.codex/app-server-control/app-server- │
+│                                      control.sock (v0.145.0)                                     │
+│                                                                                                  │
+│  Model:                              gpt-5.6-sol (reasoning low, summaries auto)                 │
+│  Directory:                          /private/tmp/claude-501/…/scratchpad/s2/work                │
+│  Permissions:                        Workspace (Ask for approval)                                │
+│  Agents.md:                          <none>                                                      │
+│  Account:                            redacted@examp.invalid (Plan ABC)                           │
+│  Collaboration mode:                 Default                                                     │
+│  Session:                            00000000-0000-4000-8000-000000000007                        │
+│                                                                                                  │
+│  Weekly limit:                       [░░░░░░░░░░░░░░░░░░░░] 00% left (resets 00:00 on 1 Jan)     │
+│  Credits:                            0000 credits                                                │
+│  GPT-5.3-Codex-Spark Weekly limit:   [████████████████████] 100% left (resets 00:00 on 1 Jan)    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+/mcp
+
+🔌  MCP Tools
+
+  • codex_apps
+    • Auth: Bearer token
+    • Tools: codex_document_control.execute_document_command,
+    codex_document_control.get_document_tool_schemas, codex_document_control.list_document_sessions,
+    hotline.get_local_hotline, plugin_management.get_app_permissions,
+    plugin_management.get_plugin_dependencies, plugin_management.uninstall_app,
+    plugin_management.update_app_permissions, sites.add_custom_domain, sites.create_site,
+    sites.create_source_repository_write_credential, sites.deploy_private_site_version,
+    sites.deploy_site_version, sites.generate_siwc_bypass_token, sites.get_deployment_status,
+    sites.get_environment, sites.get_environment_variables, sites.get_project, sites.get_site,
+    sites.get_site_analytics_overview, sites.get_site_version, sites.get_site_worker_logs,
+    sites.list_custom_domains, sites.list_projects, sites.list_site_analytics_events,
+    sites.list_site_versions, sites.list_sites, sites.query_site_analytics_event,
+    sites.refresh_custom_domain_status, sites.remove_custom_domain, sites.save_site_version,
+    sites.update_access, sites.update_environment, sites.update_environment_variables,
+    sites.update_site_access, sites.update_site_metadata
+
+
+/status
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.146.0)                                                                      │
+│                                                                                                  │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date                                    │
+│ information on rate limits and credits                                                           │
+│                                                                                                  │
+│  Remote:                             unix:///Users/example/.codex/app-server-control/app-server- │
+│                                      control.sock (v0.145.0)                                     │
+│                                                                                                  │
+│  Model:                              gpt-5.6-sol (reasoning low, summaries auto)                 │
+│  Directory:                          /private/tmp/claude-501/…/scratchpad/s2/work                │
+│  Permissions:                        Workspace (Ask for approval)                                │
+│  Agents.md:                          <none>                                                      │
+│  Account:                            redacted@examp.invalid (Plan ABC)                           │
+│  Collaboration mode:                 Default                                                     │
+│  Session:                            00000000-0000-4000-8000-000000000007                        │
+│                                                                                                  │
+│  Weekly limit:                       [░░░░░░░░░░░░░░░░░░░░] 00% left (resets 00:00 on 1 Jan)     │
+│  Credits:                            0000 credits                                                │
+│  GPT-5.3-Codex-Spark Weekly limit:   [████████████████████] 100% left (resets 00:00 on 1 Jan)    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+/status
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.146.0)                                                                      │
+│                                                                                                  │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date                                    │
+│ information on rate limits and credits                                                           │
+│                                                                                                  │
+│  Remote:                             unix:///Users/example/.codex/app-server-control/app-server- │
+│                                      control.sock (v0.145.0)                                     │
+│                                                                                                  │
+│  Model:                              gpt-5.6-sol (reasoning low, summaries auto)                 │
+│  Directory:                          /private/tmp/claude-501/…/scratchpad/s2/work                │
+│  Permissions:                        Workspace (Ask for approval)                                │
+
+--- viewport ---
+│  Agents.md:                          <none>                                                      │
+│  Account:                            redacted@examp.invalid (Plan ABC)                           │
+│  Collaboration mode:                 Default                                                     │
+│  Session:                            00000000-0000-4000-8000-000000000007                        │
+│                                                                                                  │
+│  Weekly limit:                       [░░░░░░░░░░░░░░░░░░░░] 00% left (resets 00:00 on 1 Jan)     │
+│  Credits:                            0000 credits                                                │
+│  GPT-5.3-Codex-Spark Weekly limit:   [████████████████████] 100% left (resets 00:00 on 1 Jan)    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

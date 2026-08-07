@@ -1,0 +1,12 @@
+---
+source: crates/marion-term/tests/replay.rs
+expression: "transcript(& replay(fixtures::CLAUDE_BOOT_EXIT, true))"
+---
+size: 120x40
+frames: 8 (7 with a CUP)
+erase-saved: 0 suppressed, 0 honoured
+history: 0 rows, 0 non-blank
+
+--- scrollback (oldest first) ---
+
+--- viewport ---
