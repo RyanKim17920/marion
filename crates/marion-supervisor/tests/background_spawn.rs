@@ -515,8 +515,27 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
+    /// A bridge started the way the node's harness starts one: the declaration marion wrote, over
+    /// the `PATH` that harness was launched with.
+    ///
+    /// **The `PATH` decides nothing here, and carrying it is the point.** A bridge starts no
+    /// process since §11 item 28 step 5, so the shim being reachable from it changes no passing
+    /// run. It is carried because a real bridge inherits its harness's environment, and because a
+    /// mutation that restores an in-process `run_spawn` must then fail on *what it broke* — the
+    /// node outliving the bridge — rather than on not finding a harness binary. A test whose kill
+    /// depends on an accident of `PATH` is not measuring what it claims to.
     fn bridge(&self) -> Bridge {
-        Bridge::start(&self.declaration, &[])
+        Bridge::start(
+            &self.declaration,
+            &[(
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    self.shim_dir.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )],
+        )
     }
 
     /// A bridge whose declaration carries a token the supervisor never minted.
@@ -1049,7 +1068,12 @@ fn a_spawn_presenting_a_forged_node_token_is_refused_and_journals_nothing() {
     let before = fx.journal_text().lines().count();
     let mut bridge = fx.bridge_with_a_forged_token();
 
-    let reply = bridge.tool("spawn", spawn_args(false));
+    // **`background: true`, so a served spawn is a *fast* failure rather than a slow one.** A
+    // refusal comes back in the same frame either way, but if this mutation-checks green — a
+    // supervisor that stopped comparing tokens — a synchronous call would be *served*, and the test
+    // would then hang on a gated child until the deadlock bound and fail on the clock instead of on
+    // the claim. A test that can only fail by timing out is not a test.
+    let reply = bridge.tool("spawn", spawn_args(true));
     assert!(
         is_error(&reply),
         "a caller that cannot prove who it is may not spawn: {reply}"
