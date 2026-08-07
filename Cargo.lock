@@ -492,6 +492,7 @@ dependencies = [
  "marion-proto",
  "marion-provider",
  "marion-testsupport",
+ "marion-tui",
  "serde",
  "serde_json",
  "thiserror",

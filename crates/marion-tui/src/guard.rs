@@ -95,10 +95,21 @@ pub fn window_size(fd: RawFd) -> Option<(u16, u16)> {
     // SAFETY: `TIOCGWINSZ` writes exactly one `struct winsize` through the pointer, and `ws` is a
     // live, correctly laid out one. A non-tty `fd` answers `ENOTTY` and writes nothing.
     let rc = unsafe { ioctl(fd, TIOCGWINSZ, &mut ws as *mut WinSizeRaw) };
-    if rc != 0 || ws.ws_col == 0 || ws.ws_row == 0 {
+    geometry(rc, ws.ws_col, ws.ws_row)
+}
+
+/// The policy half of [`window_size`], split out so it can be tested.
+///
+/// **This is a seam and not a decomposition for its own sake.** The two answers that matter are
+/// `ENOTTY` and a successful call that reports zeroes, and the second cannot be produced from a
+/// test without building a pty and declining to size it — three more libc declarations in a crate
+/// whose whole libc surface is four. What is worth asserting is the *rule*, and the rule is here
+/// with nothing untestable in it.
+const fn geometry(rc: std::ffi::c_int, cols: u16, rows: u16) -> Option<(u16, u16)> {
+    if rc != 0 || cols == 0 || rows == 0 {
         return None;
     }
-    Some((ws.ws_col, ws.ws_row))
+    Some((cols, rows))
 }
 
 /// `TCSAFLUSH` — apply once the output queue has drained and discard pending input.
@@ -402,15 +413,28 @@ mod tests {
     use std::os::fd::AsRawFd;
     use std::sync::{Mutex as StdMutex, MutexGuard};
 
-    /// A pipe has no geometry, and `None` is the answer rather than `(0, 0)`.
-    ///
-    /// The distinction is the whole reason this returns an `Option`: a client that read `(0, 0)`
-    /// off a redirected stdout and forwarded it would resize the node's pty to zero columns, which
-    /// every full-screen application divides by.
+    /// A descriptor that is not a terminal has no geometry, and the ioctl says so with `ENOTTY`.
     #[test]
-    fn a_descriptor_with_no_geometry_reports_none_rather_than_zero() {
+    fn a_descriptor_that_is_not_a_terminal_has_no_size() {
         let f = std::fs::File::open("/dev/null").expect("/dev/null opens");
         assert_eq!(window_size(f.as_raw_fd()), None);
+    }
+
+    /// **A successful `TIOCGWINSZ` reporting zeroes is still `None`.**
+    ///
+    /// This is the branch the `/dev/null` test above never reaches — that one returns on `rc`, so
+    /// deleting the zero checks leaves it passing. A pty nobody has sized answers `0x0` with
+    /// `rc == 0`, and a client that forwarded that would resize the node's pty to zero columns,
+    /// which is not a small terminal: it is a terminal every full-screen application divides by.
+    /// Either axis alone is enough, because a pane one column wide and no rows tall is as
+    /// undividable as a pane of neither.
+    #[test]
+    fn a_terminal_reporting_zero_in_either_axis_has_no_size_either() {
+        assert_eq!(geometry(0, 140, 40), Some((140, 40)));
+        assert_eq!(geometry(0, 0, 40), None, "zero columns");
+        assert_eq!(geometry(0, 140, 0), None, "zero rows");
+        assert_eq!(geometry(0, 0, 0), None, "an unsized pty");
+        assert_eq!(geometry(-1, 140, 40), None, "a failed ioctl wrote nothing");
     }
 
     /// `std::panic::set_hook` is process-global, so the tests that install one must not overlap.
