@@ -339,30 +339,42 @@ fn caught<T, E>(
 /// at a time.
 #[cfg(test)]
 mod panic_after_claim {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    static ARMED: AtomicBool = AtomicBool::new(false);
+    /// **Armed for one tree, not globally**, and that distinction is the whole of this type.
+    ///
+    /// A bare on/off switch was wrong in a way a mutex cannot fix: serializing the *armings* stops
+    /// two injecting tests from overlapping, but does nothing about the other tests in this binary
+    /// that spawn a real child at the same time — one of them picked up the injected panic and
+    /// failed on a spawn it had every right to expect to work. The switch now carries the repo the
+    /// arming test owns, which is its own `scratch` directory and therefore unique to it, so the
+    /// panic can only fire inside that test's own node.
+    static ARMED: Mutex<Option<PathBuf>> = Mutex::new(None);
     static ONE_AT_A_TIME: OnceLock<Mutex<()>> = OnceLock::new();
 
-    pub(super) fn armed() -> bool {
-        ARMED.load(Ordering::SeqCst)
+    pub(super) fn armed_for(repo: &Path) -> bool {
+        ARMED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            .is_some_and(|armed| armed == repo)
     }
 
     pub(super) struct Armed(#[allow(dead_code)] MutexGuard<'static, ()>);
 
     impl Drop for Armed {
         fn drop(&mut self) {
-            ARMED.store(false, Ordering::SeqCst);
+            *ARMED.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
 
-    pub(super) fn arm() -> Armed {
+    pub(super) fn arm(repo: &Path) -> Armed {
         let g = ONE_AT_A_TIME
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        ARMED.store(true, Ordering::SeqCst);
+        *ARMED.lock().unwrap_or_else(|e| e.into_inner()) = Some(repo.to_path_buf());
         Armed(g)
     }
 }
@@ -535,7 +547,7 @@ impl crate::run::SpawnObserver for NodeOwner {
         // its id and its refusal comes from the thread's epilogue rather than from `LAUNCH_BOUND`.
         // `cfg(test)`, so no production build carries a branch that panics on purpose.
         #[cfg(test)]
-        if panic_after_claim::armed() {
+        if panic_after_claim::armed_for(&self.repo) {
             panic!("injected: a node thread panicking after its claim");
         }
         (!token.is_empty()).then_some(token)
@@ -5329,7 +5341,7 @@ mod tests {
         fn a_node_thread_that_panics_after_its_claim_still_reaches_a_terminal_outcome() {
             let fx = owning("owns-panic", vec![]);
             {
-                let _armed = panic_after_claim::arm();
+                let _armed = panic_after_claim::arm(&fx.repo);
                 // A real agent type, so the frame reaches `prepare_watched` and the claim inside
                 // it. The panic then fires before `prepare_watched`'s first side effect.
                 spawn(&fx, root_params(&fx.repo, 1))
@@ -5387,7 +5399,7 @@ mod tests {
                 fx.repo.clone(),
             );
             {
-                let _armed = panic_after_claim::arm();
+                let _armed = panic_after_claim::arm(&fx.repo);
                 spawn(
                     &fx,
                     params(
