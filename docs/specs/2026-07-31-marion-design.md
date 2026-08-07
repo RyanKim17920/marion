@@ -1112,11 +1112,19 @@ deferred.
 >    `pre_exec` returns an error, and the spawn fails outright — for the one preset that has both a
 >    typed control plane and a display plane. The ioctl is issued on whichever fd is actually the
 >    slave: 0 under `TerminalInput`, 1 otherwise.
-> 3. **On macOS, `setsid()` alone claims the controlling terminal when the slave is on fd 0.** A
->    three-way probe: no `setsid` → `tcgetsid(master)` is `ENOTTY`; `setsid` only → `tcgetsid ==
->    pid`; `setsid` + `TIOCSCTTY` → the same. So the ioctl is redundant in that topology on this
->    platform (it is not on Linux) and is *observable* only in the piped-stdin one, which is where
->    the test that pins it lives.
+> 3. **`TIOCSCTTY` is what claims the controlling terminal, on macOS as much as on Linux.**
+>    ~~On macOS, `setsid()` alone claims it when the slave is on fd 0, so the ioctl is redundant in
+>    that topology and observable only in the piped-stdin one.~~ **Struck: measured false (S19.)**
+>    The three-way probe behind that sentence was run through a shell, and macOS's `/bin/sh` claims
+>    the terminal *itself* when it starts as a session leader without one and its stdin is a tty —
+>    so what the probe measured was `sh`, not `setsid`. S19 re-ran it over nine cells with no shell
+>    in the child ({slave on fd 0, pipe on fd 0} × {bare, `setsid`, `setsid` + ioctl} × {child opens
+>    the slave, parent opens it}) and `setsid()` alone leaves `tcgetsid(master)` at `ENOTTY` in
+>    **every** cell. The ioctl is load-bearing in both topologies. It is pinned by
+>    `pty/tests.rs::tiocsctty_and_not_setsid_is_what_claims_the_terminal`, whose child is `/bin/sleep`
+>    execed directly — the shell-free topology is the whole point of that test, and the
+>    already-existing `the_child_is_a_session_leader_…` survives the deletion precisely because its
+>    child is `sh`.
 >
 > **`EIO` on the master is EOF, not an error** — Linux reports the last slave closing that way,
 > macOS returns 0 — and a reader that treats it as a fault logs a read failure for every normal
@@ -5546,6 +5554,7 @@ different provenance from either. No row is renumbered and no spike is invented 
 | `Tier` enum on every event | **REPLACED** by `Provenance` — "derived" wrongly implied a transcript is less true than a live stream. |
 | Four spawn modes as a flat enum | **DEMOTED** to presets over `ExecutionSurfaces`. |
 | fsync per IR record | **REPLACED** by group-commit with barriers on lifecycle records only. |
+| On macOS `setsid()` alone claims the controlling terminal when the slave is on fd 0, so `TIOCSCTTY` is redundant there and its deletion is unobservable | **RETRACTED (S19, 2026-08-07, `tests/fixtures/s19/README.md`, `spikes/s19/ctty_probe.c`, darwin 25.5.0 / xnu-12377.121.6~2 / arm64).** The probe behind the claim ran its child through a shell, and macOS's `/bin/sh` claims the terminal **itself** when it starts as a session leader without one and its stdin is a tty — so the cell labelled *"`setsid` only"* was measuring `sh`. Re-run over nine cells with no shell anywhere ({slave on fd 0, pipe on fd 0} × {bare, `setsid`, `setsid` + ioctl} × {child opens the slave, parent opens it}), `setsid()` alone leaves `tcgetsid(master)` at `ENOTTY` in **every** one; only the explicit ioctl claims it, on both topologies. macOS does not differ from Linux here. **The shipped code was always right** — it issues the ioctl — so nothing changed but the reason, and the reason was the dangerous part: three doc comments and a §5.3 passage told the next reader that the deletion mutation had no possible witness, which is how a live assertion gets deleted by someone tidying up. The confound also reached the tests: every pty test drives its child through `sh`, so `the_child_is_a_session_leader_…` asserts the right `tcgetsid` and **survives the deletion**. Pinned now by `tiocsctty_and_not_setsid_is_what_claims_the_terminal`, whose child is `/bin/sleep` execed directly. |
 | Both harnesses emit DA1, XTVERSION and CPR | **CORRECTED.** They emit different sets: Claude Code sends DA1 + XTVERSION and never CPR; Codex sends DA1 + CPR + OSC 10/11 and never XTVERSION. marion answers all of them, so no code changes — but the earlier text had it backwards in both directions. |
 | `additionalContext` emits **no stream event** on Claude Code | **CORRECTED (round 5).** Refuted by our own fixture: `s4/claude-code/stream-additionalContext.jsonl` carries the two `assistant` frames the injected turn produced. The true property is narrower — no frame is *attributable* to the injection and `num_turns` stays 1. The prohibition stands; the stated reason was wrong. |
 | The `s2` DECSTBM histogram was verified unchanged after redaction | **RETRACTED (round 5).** The redaction regex ran unanchored over raw bytes and spliced *inside* CSI sequences at 9 sites, turning `ESC[38;2;153;153;153m` and `ESC[22m` into DECSTBM — forging scroll-region commands in the L2 seed corpus. The claim was also self-refuting, since `analyze.py` cannot read `.raw.bin` at all. Repaired length-preservingly; the derived figures correct to 22/24 and 26/26 (were 25/27 and 29/29). |
