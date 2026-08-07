@@ -1070,6 +1070,21 @@ impl PtyHost {
             .push(out);
     }
 
+    /// Drop a connection's listener.
+    ///
+    /// The fan-out already self-prunes — [`Shared::emit`] retains only listeners whose `notify`
+    /// succeeded — so this is not what keeps a *dead* client off the list. It is what keeps a
+    /// **live** one off it: a client that detached from this node and is still connected for
+    /// another would otherwise go on being sent bytes for a pane it is no longer drawing, and the
+    /// self-pruning cannot see the difference because those sends succeed.
+    pub fn unlisten(&self, conn: ConnId) {
+        self.shared
+            .listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|l| l.conn() != conn);
+    }
+
     pub fn listeners(&self) -> usize {
         self.shared
             .listeners

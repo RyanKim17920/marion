@@ -34,10 +34,48 @@ pub struct NodeGetResult {
 }
 
 /// `node/attach`. The mode is §7.3.3's per-node answer; see [`AttachMode`].
+///
+/// `pane` is the **display plane's** half of the same attach, and it is `Option` because most
+/// nodes have none: §3.4 implements `DisplayPlane` iff `display == NativePty`, and a headless node
+/// attached to over this method is answered with a replay and nothing else. `None` is therefore a
+/// fact about the node, not a failure of the attach.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeAttachResult {
     pub node: NodeSummary,
     pub mode: AttachMode,
+    /// `#[serde(default)]` for the reason the module doc gives for every result field: a client one
+    /// version older must keep parsing, and a client that does not know about panes reading `None`
+    /// is exactly right — it was never going to render one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<PaneAttach>,
+}
+
+/// What a client attaching to a node **with** a display plane got.
+///
+/// # Why the write half is answered here and nowhere else
+///
+/// §5.3 gives one node one writer: two clients typing into one pty interleave at whatever
+/// granularity their reads happen to have, and the pty echoes the mess back to both operators
+/// identically, so neither can tell it from a harness misbehaving. The supervisor therefore leases
+/// the write half, and **`node/attach`'s response is the one place a client can be told whether it
+/// got it** — the inbound keystroke channel is a notification with no answer, so a refusal
+/// delivered there would be a refusal nobody is listening for, repeated once per key held down.
+///
+/// `held_by` names the connection that has it rather than reporting a bare "busy", because §5.3's
+/// refusal is required to be a sentence: a client told only that it may not type cannot tell a
+/// colleague in the same node from a lease its own crashed predecessor never released.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneAttach {
+    /// The pty's size **now**, as the supervisor set it before the child existed. A client uses it
+    /// to decide whether its first act is a `node/resize`, and a client that renders without
+    /// asking is rendering the geometry some earlier attacher chose.
+    pub cols: u16,
+    pub rows: u16,
+    /// Whether this client may send `node/pty-write` and `node/resize` for this node.
+    pub writable: bool,
+    /// The connection holding the write half, when it is not this one. `None` when `writable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_by: Option<u64>,
 }
 
 /// `node/detach` — returns the node's state, which is the *evidence* that detaching did nothing.

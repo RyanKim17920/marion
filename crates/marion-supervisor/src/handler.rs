@@ -193,6 +193,43 @@ struct Attachment {
     out: Outbound,
 }
 
+/// **Every node this supervisor holds a pty for, and who is typing into each.**
+///
+/// Separate from [`Shared`] rather than a field of it, for the reason [`RegistryHandle::nodes`]
+/// gives: `shared` is taken and released inside one call, and writing a keystroke is a `write(2)`
+/// on a pty master. Folding them together would put an operator's keyboard inside the lock every
+/// `tree/subscribe` waits on — and a node whose harness has stopped reading its stdin would then
+/// block the whole supervisor rather than one attach.
+#[derive(Default)]
+struct Panes {
+    /// `Arc` because a keystroke is delivered outside the map's lock: the host is cloned out, the
+    /// lock is released, and only then is the byte written. A `&PtyHost` would hold the map for
+    /// the duration of the write.
+    hosts: HashMap<AgentId, Arc<crate::pty::PtyHost>>,
+    /// Write leases, **keyed by the connection**, which is what makes §7.3.1 automatic here.
+    /// `WriteLease` releases the node's writer slot on `Drop`, so a client that was SIGKILLed hands
+    /// its keyboard back when `gone` removes this entry — nobody has to write the cleanup, and a
+    /// node whose one writer died is not permanently read-only.
+    /// `Arc` so a keystroke can be written **outside** this map's lock. `PtyMaster::write_all`
+    /// spins on `EAGAIN` — a full tty input buffer is backpressure from a harness that has not read
+    /// yet, not a failure — so a write can take arbitrarily long, and holding the map across it
+    /// would let one unread node stall every other client's attach. The lease still releases the
+    /// node's writer slot when the last `Arc` drops, which is the entry leaving this map.
+    leases: HashMap<ConnId, Vec<(AgentId, Arc<crate::pty::WriteLease>)>>,
+}
+
+impl Panes {
+    /// `conn`'s lease on `id`, if it holds one. The lease **is** the permission — there is no
+    /// separate boolean to disagree with it — so a caller that gets `None` here has been refused.
+    fn lease(&self, conn: ConnId, id: &AgentId) -> Option<Arc<crate::pty::WriteLease>> {
+        self.leases
+            .get(&conn)?
+            .iter()
+            .find(|(a, _)| a == id)
+            .map(|(_, l)| Arc::clone(l))
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     subs: Vec<Outbound>,
@@ -749,6 +786,8 @@ pub struct RegistryHandle {
     /// launch. Folding them together would put a spawning node's `getpgid` inside the lock a
     /// client's `tree/subscribe` waits on.
     nodes: Mutex<HashMap<AgentId, NodeHandle>>,
+    /// §3.4's display plane, per node. See [`Panes`] for why this is not in `shared`.
+    panes: Mutex<Panes>,
     /// **What `agent/spawn` runs a node in**, or `None` for a supervisor that cannot spawn.
     ///
     /// **Production fills this.** `detach.rs`'s stage 3 builds [`RegistryHandle::owning`] from what
@@ -824,6 +863,7 @@ impl RegistryHandle {
             runtime,
             nodes: Mutex::new(HashMap::new()),
             spawn_env,
+            panes: Mutex::new(Panes::default()),
             spawn_decision: Mutex::new(()),
             quit: Mutex::new(()),
             quit_waived_grace: AtomicBool::new(false),
@@ -999,7 +1039,135 @@ impl RegistryHandle {
         Ok(NodeAttachResult {
             node: summary,
             mode,
+            pane: self.attach_pane(id, out),
         })
+    }
+
+    /// The **display plane's** half of `node/attach` (§5.3), or `None` for a node with no pty.
+    ///
+    /// Three things happen here and they are deliberately one step, in this order:
+    ///
+    /// 1. **Listen first.** Registering the byte fan-out before claiming the keyboard means the
+    ///    client that *is* refused the write half still sees the node — a read-only attach is the
+    ///    point of the refusal, not a consolation for it. Doing it the other way round would leave
+    ///    a window in which this client could type and not yet see the echo.
+    /// 2. **Claim the write half, once.** `lease_writer` refuses the second caller by name; the
+    ///    lease is parked under this connection so it is released by `gone` dropping it, which is
+    ///    what makes a crashed client's node writable again with no cleanup code anywhere.
+    /// 3. **Report the pty's current size**, because it is not the client's: the master was sized
+    ///    before the child existed, by a supervisor that could not know what terminal would
+    ///    eventually attach. A client that rendered without asking would render somebody else's
+    ///    geometry.
+    ///
+    /// **Re-attaching from the same connection does not re-lease.** `lease_writer` refuses a
+    /// connection that already holds the slot rather than issuing a second lease, so the answer to
+    /// a second `node/attach` from a writer is `writable: true` with the lease it already had —
+    /// two live leases for one connection would each clear the slot on drop, and the first drop
+    /// would silently open the node to a third client.
+    fn attach_pane(
+        &self,
+        id: &AgentId,
+        out: &Outbound,
+    ) -> Option<marion_proto::result::PaneAttach> {
+        let mut panes = lock(&self.panes);
+        let host = Arc::clone(panes.hosts.get(id)?);
+        host.unlisten(out.conn());
+        host.listen(out.clone());
+        // The size the master really has, not the size it was asked for: `PtyMaster::size` reads
+        // `TIOCGWINSZ` back, so a client is told what the child will see rather than what marion
+        // intended it to see.
+        let size = host
+            .master()
+            .size()
+            .unwrap_or_else(|_| host.master().intended_size());
+        let (writable, held_by) = if panes.lease(out.conn(), id).is_some() {
+            (true, None)
+        } else {
+            match host.lease_writer(out.conn()) {
+                Ok(lease) => {
+                    panes
+                        .leases
+                        .entry(out.conn())
+                        .or_default()
+                        .push((id.clone(), Arc::new(lease)));
+                    (true, None)
+                }
+                Err(crate::pty::WriterBusy::HeldBy(owner)) => (false, Some(owner.0)),
+            }
+        };
+        Some(marion_proto::result::PaneAttach {
+            cols: size.cols,
+            rows: size.rows,
+            writable,
+            held_by,
+        })
+    }
+
+    /// Register a node's pty with this supervisor, so `node/attach` can find it.
+    ///
+    /// The one route in. A `PtyHost` that is never registered is a recording nobody can watch, and
+    /// a pane registered for a node the journal does not know about is unattachable — `node_attach`
+    /// resolves the node from the registry *before* it looks here, so the journal stays the
+    /// authority on what exists.
+    pub fn register_pane(&self, id: &AgentId, host: Arc<crate::pty::PtyHost>) {
+        lock(&self.panes).hosts.insert(id.clone(), host);
+    }
+
+    /// Forget a node's pty. Called when the node ends: the host is dropped by its owner, and
+    /// leaving a dangling entry here would answer a later `node/attach` with a pane onto a master
+    /// that has already been closed.
+    pub fn forget_pane(&self, id: &AgentId) {
+        let mut panes = lock(&self.panes);
+        panes.hosts.remove(id);
+        for leases in panes.leases.values_mut() {
+            leases.retain(|(a, _)| a != id);
+        }
+    }
+
+    /// How many nodes this supervisor holds a pty for. Diagnostic, and the assertion surface for
+    /// `register_pane`/`forget_pane`.
+    pub fn panes(&self) -> usize {
+        lock(&self.panes).hosts.len()
+    }
+
+    /// §2's inbound notifications, delivered.
+    ///
+    /// **Both are gated on the write lease, including the resize**, and that is not over-caution.
+    /// A resize is not a private view setting: it is `TIOCSWINSZ` on the one master, so a
+    /// read-only attacher that could resize would reflow the pane of the operator who *is* typing,
+    /// from under them, with no way for either to tell where it came from. §5.3 gives a node one
+    /// writer; the geometry is part of what that means.
+    ///
+    /// A refusal here is silent, and `input.rs` argues why: there is no frame to put it in, and
+    /// the client was already told at `node/attach` that it may not type. What is *not* silent is
+    /// a write that fails at the fd — that is a node whose pty has gone, and it is reported to the
+    /// supervisor's own stderr rather than to a client that cannot act on it.
+    fn deliver_input(&self, conn: ConnId, input: &marion_proto::Input) {
+        let id = input.agent_id();
+        // Both taken out from under the lock in one look, and the lock released before the write:
+        // see `Panes::leases`. A harness that has stopped reading its stdin must stall one attach,
+        // never the supervisor.
+        let (host, lease) = {
+            let panes = lock(&self.panes);
+            let Some(lease) = panes.lease(conn, id) else {
+                return;
+            };
+            match panes.hosts.get(id) {
+                Some(h) => (Arc::clone(h), lease),
+                None => return,
+            }
+        };
+        let outcome = match input {
+            marion_proto::Input::NodePtyWrite { bytes, .. } => {
+                host.write_input(&lease, bytes.as_bytes())
+            }
+            marion_proto::Input::NodeResize { cols, rows, .. } => {
+                host.resize(crate::pty::WinSize::new(*cols, *rows))
+            }
+        };
+        if let Err(e) = outcome {
+            eprintln!("marion: {} on node {}: {e}", input.method(), id.0);
+        }
     }
 
     /// How many node streams this supervisor is following on behalf of a client.
@@ -2255,6 +2423,24 @@ impl Handle for RegistryHandle {
         // replay rather than a hole.
         g.attached.retain(|a| a.conn != conn);
         g.clients.remove(&conn);
+        drop(g);
+        // The display plane's half of the same invariant, and it is the half §7.3.1 is really
+        // about: a client that was SIGKILLed while holding a node's keyboard must not leave that
+        // node permanently read-only. Dropping the leases releases the writer slots — `WriteLease`
+        // does it on `Drop`, so there is no cleanup here to forget — and `unlisten` stops the byte
+        // fan-out to a channel nobody is drawing. **The node is not touched**: its process, its
+        // pty, its recording and its size are exactly as they were.
+        let mut panes = lock(&self.panes);
+        panes.leases.remove(&conn);
+        for host in panes.hosts.values() {
+            host.unlisten(conn);
+        }
+    }
+
+    /// §2's inbound table. See [`Self::deliver_input`] — everything about it, including why a
+    /// refusal here is silent, is argued there.
+    fn input(&self, conn: ConnId, input: &marion_proto::Input) {
+        self.deliver_input(conn, input);
     }
 
     /// §2's notifications, driven by the accept loop's heartbeat — see [`Handle::tick`] for why
@@ -4726,6 +4912,356 @@ mod tests {
             marion_proto::Outcome::Error(e) => e,
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // §5.3's display plane, end to end over the socket
+    // -----------------------------------------------------------------------------------------
+
+    /// A real pty running `script`, registered as `agent`'s pane.
+    ///
+    /// A **real child on a real pty**, not a fake: everything these tests are about — that a
+    /// keystroke reaches the process, that a resize reaches it as a `SIGWINCH`, that detaching
+    /// leaves it running — is a claim about a process, and a stub would let all four pass while
+    /// none of them was true.
+    fn pane(w: &Wired, agent: &str, script: &str) -> Arc<crate::pty::PtyHost> {
+        use crate::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
+        let size = WinSize::new(80, 24);
+        let master = PtyMaster::open(size).expect("a pty");
+        let cast = w.dir.join(format!("{agent}.cast"));
+        let mut host = PtyHost::start(
+            id(agent),
+            master,
+            &cast,
+            size,
+            "xterm-256color",
+            std::time::Instant::now(),
+        )
+        .expect("a recording");
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(script);
+        cmd.env("TERM", "xterm-256color");
+        let child = spawn_pty(
+            marion_harness::ExecutionSurfaces::opaque()
+                .display_plane()
+                .expect("`opaque` owns a pty"),
+            &mut cmd,
+            host.master(),
+            StdinPlan::TerminalSlave,
+            None,
+        )
+        .expect("the child starts");
+        host.adopt(child);
+        let host = Arc::new(host);
+        w.fx.handle.register_pane(&id(agent), Arc::clone(&host));
+        host
+    }
+
+    fn write_keys(s: &mut std::os::unix::net::UnixStream, agent: &str, bytes: &str) {
+        let f = Frame::Input(marion_proto::ClientNotification::new(
+            marion_proto::Input::NodePtyWrite {
+                agent_id: id(agent),
+                bytes: bytes.into(),
+            },
+        ));
+        s.write_all(f.to_line().as_bytes()).unwrap();
+        s.flush().unwrap();
+    }
+
+    fn send_resize(s: &mut std::os::unix::net::UnixStream, agent: &str, cols: u16, rows: u16) {
+        let f = Frame::Input(marion_proto::ClientNotification::new(
+            marion_proto::Input::NodeResize {
+                agent_id: id(agent),
+                cols,
+                rows,
+            },
+        ));
+        s.write_all(f.to_line().as_bytes()).unwrap();
+        s.flush().unwrap();
+    }
+
+    /// Read `node/pty` notifications until `want` appears in the accumulated bytes.
+    ///
+    /// Returns `None` on timeout rather than hanging, so a test that proves a *negative* — a
+    /// read-only client's keystrokes never landing — is a test that can fail rather than one that
+    /// can only time out.
+    fn pty_until(
+        r: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+        want: &str,
+        bound: std::time::Duration,
+    ) -> Option<String> {
+        use std::io::BufRead;
+        let deadline = std::time::Instant::now() + bound;
+        let mut seen = String::new();
+        while std::time::Instant::now() < deadline {
+            let mut line = String::new();
+            // **The socket's own read timeout is not this bound**, and reading through
+            // `next_frame` would make it so — its `unwrap` turns a quiet second into a panic. A
+            // quiet second is exactly what the negative case (a read-only client's keystrokes
+            // never landing) *is*, so it has to be an ordinary outcome here rather than a failure.
+            match r.read_line(&mut line) {
+                Ok(0) => return None,
+                Ok(_) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    continue;
+                }
+                Err(e) => panic!("reading the attach socket: {e}"),
+            }
+            match Frame::from_line(&line).expect("well-formed") {
+                Frame::Notification(n) => {
+                    if let Event::NodePty { bytes, .. } = n.event {
+                        seen.push_str(&bytes);
+                        if seen.contains(want) {
+                            return Some(seen);
+                        }
+                    }
+                }
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
+        None
+    }
+
+    fn alive(pid: i32) -> bool {
+        unsafe extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        // SAFETY: signal 0 performs the existence check and delivers nothing.
+        unsafe { kill(pid, 0) == 0 }
+    }
+
+    /// **The whole inbound path in one test**: attach, be given the write half, type, and see the
+    /// *child* answer.
+    ///
+    /// The echo the line discipline produces would not prove this — a mutation that wrote to the
+    /// master and never reached the child would still echo. `got:ping` can only be written by the
+    /// shell that read the keystroke, so this dies if `node/pty-write` stops reaching the pty.
+    #[test]
+    fn an_attached_client_is_given_the_write_half_and_its_keystrokes_reach_the_child() {
+        let w = Wired::new("handler-pane-write");
+        let _host = pane(&w, "root", "while read line; do echo \"got:$line\"; done");
+
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (_, outcome) = attach(&mut c, &mut r, "root", 1);
+        let got = attached_ok(outcome);
+
+        let p = got
+            .pane
+            .expect("a node with a registered pty answers with a pane");
+        assert!(p.writable, "the first attacher gets the write half");
+        assert_eq!(p.held_by, None);
+        assert_eq!(
+            (p.cols, p.rows),
+            (80, 24),
+            "the size is the master's, read back from the kernel"
+        );
+
+        write_keys(&mut c, "root", "ping\r");
+        assert!(
+            pty_until(&mut r, "got:ping", std::time::Duration::from_secs(10)).is_some(),
+            "the keystroke never reached the child"
+        );
+    }
+
+    /// §5.3's one-writer rule, over the socket and **by name**.
+    ///
+    /// Two halves, and the second is the one that matters: the refusal is not merely reported, it
+    /// is enforced. A supervisor that answered `writable: false` and then wrote the bytes anyway
+    /// would pass a test that only read the response.
+    #[test]
+    fn a_second_attacher_is_refused_the_write_half_by_name_and_cannot_type() {
+        let w = Wired::new("handler-pane-second");
+        let _host = pane(&w, "root", "while read line; do echo \"got:$line\"; done");
+
+        let mut first = w.dial();
+        let mut fr = std::io::BufReader::new(first.try_clone().unwrap());
+        let (_, outcome) = attach(&mut first, &mut fr, "root", 1);
+        let a = attached_ok(outcome).pane.expect("a pane");
+        assert!(a.writable);
+
+        let mut second = w.dial();
+        let mut sr = std::io::BufReader::new(second.try_clone().unwrap());
+        let (_, outcome) = attach(&mut second, &mut sr, "root", 1);
+        let b = attached_ok(outcome).pane.expect("a pane");
+        assert!(
+            !b.writable,
+            "two writers on one pty interleave into nonsense"
+        );
+        assert!(
+            b.held_by.is_some(),
+            "a client told only `busy` cannot tell a colleague from a lease nobody released"
+        );
+
+        // The refusal is enforced, not merely announced.
+        write_keys(&mut second, "root", "sneak\r");
+        assert!(
+            pty_until(&mut sr, "got:sneak", std::time::Duration::from_secs(2)).is_none(),
+            "a read-only client typed into the node anyway"
+        );
+        // And the writer still works, so the block is about the lease and not about the socket.
+        write_keys(&mut first, "root", "ping\r");
+        assert!(
+            pty_until(&mut fr, "got:ping", std::time::Duration::from_secs(10)).is_some(),
+            "refusing the second client broke the first"
+        );
+    }
+
+    /// **A resize reaches the pty and the child sees it as a `SIGWINCH`.**
+    ///
+    /// The `stty size` the trap prints is read by the shell *through its controlling terminal*, so
+    /// it is the kernel's answer and not marion's: this dies if `node/resize` stops reaching
+    /// `TIOCSWINSZ`, and it dies if the explicit `killpg(SIGWINCH)` stops being sent to a child
+    /// that would otherwise never look.
+    #[test]
+    fn a_resize_reaches_the_pty_and_the_child_is_told() {
+        let w = Wired::new("handler-pane-resize");
+        let host = pane(
+            &w,
+            "root",
+            // **`ready` is printed after the trap is installed**, and the test waits for it. A
+            // signal delivered to a shell that has not reached its `trap` yet is simply lost, so
+            // without this the test races the child's startup and fails under load — a flake that
+            // says nothing about whether resize works.
+            "stty -echo; trap 'stty size' WINCH; echo ready; while :; do sleep 0.05; done",
+        );
+
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let (_, outcome) = attach(&mut c, &mut r, "root", 1);
+        assert!(attached_ok(outcome).pane.expect("a pane").writable);
+        assert!(
+            pty_until(&mut r, "ready", std::time::Duration::from_secs(10)).is_some(),
+            "the child never installed its WINCH trap"
+        );
+
+        send_resize(&mut c, "root", 140, 40);
+        // `stty size` prints "rows cols".
+        assert!(
+            pty_until(&mut r, "40 140", std::time::Duration::from_secs(10)).is_some(),
+            "the child was never told the new size"
+        );
+        let size = host.master().size().expect("TIOCGWINSZ");
+        assert_eq!((size.cols, size.rows), (140, 40), "the master itself moved");
+    }
+
+    /// A read-only attacher must not resize either. The geometry is the *shared* master's, so a
+    /// second client reflowing it would repaint the writer's pane from under them with nothing
+    /// anywhere naming the cause — the same invisibility §5.3 gives for interleaved keystrokes.
+    #[test]
+    fn a_read_only_attacher_cannot_resize_the_node() {
+        let w = Wired::new("handler-pane-resize-ro");
+        let host = pane(&w, "root", "sleep 30");
+
+        let mut first = w.dial();
+        let mut fr = std::io::BufReader::new(first.try_clone().unwrap());
+        attached_ok(attach(&mut first, &mut fr, "root", 1).1);
+
+        let mut second = w.dial();
+        let mut sr = std::io::BufReader::new(second.try_clone().unwrap());
+        assert!(
+            !attached_ok(attach(&mut second, &mut sr, "root", 1).1)
+                .pane
+                .expect("a pane")
+                .writable
+        );
+
+        send_resize(&mut second, "root", 200, 60);
+        // Nothing to wait *for*, so wait for the supervisor to have processed something later on
+        // the same connection instead of sleeping on a hope.
+        call(
+            &mut second,
+            Call::NodeGet(marion_proto::params::NodeGetParams {
+                agent_id: id("root"),
+            }),
+            9,
+        );
+        assert!(matches!(next_frame(&mut sr), Frame::Response(_)));
+        let size = host.master().size().expect("TIOCGWINSZ");
+        assert_eq!(
+            (size.cols, size.rows),
+            (80, 24),
+            "a read-only client reflowed the writer's pane"
+        );
+    }
+
+    /// **Detach leaves the node running and hands the keyboard back.**
+    ///
+    /// This is M2's property at the surface M3 adds, and both halves are asserted because they
+    /// fail independently: a supervisor that killed the node on departure would pass the lease
+    /// half, and one that never released the lease would leave the node permanently read-only
+    /// while the process ran on.
+    #[test]
+    fn a_client_departing_leaves_the_node_running_and_releases_its_keyboard() {
+        let w = Wired::new("handler-pane-detach");
+        let host = pane(&w, "root", "while read line; do echo \"got:$line\"; done");
+        let pid = host.child_pid().expect("a child");
+
+        let mut first = w.dial();
+        let mut fr = std::io::BufReader::new(first.try_clone().unwrap());
+        assert!(
+            attached_ok(attach(&mut first, &mut fr, "root", 1).1)
+                .pane
+                .expect("a pane")
+                .writable
+        );
+
+        // The client goes away without saying anything — §7.3.1's crash case, which is also what
+        // `^] d` looks like from here once the attach process exits.
+        drop(fr);
+        drop(first);
+        assert!(
+            until(|| w.fx.handle.attachments() == 0),
+            "the supervisor never noticed the departure"
+        );
+
+        assert!(alive(pid), "the node was killed by a client going away");
+        let mut second = w.dial();
+        let mut sr = std::io::BufReader::new(second.try_clone().unwrap());
+        let p = attached_ok(attach(&mut second, &mut sr, "root", 1).1)
+            .pane
+            .expect("a pane");
+        assert!(
+            p.writable,
+            "the departed client's lease was never released: {:?}",
+            p.held_by
+        );
+        write_keys(&mut second, "root", "ping\r");
+        assert!(
+            pty_until(&mut sr, "got:ping", std::time::Duration::from_secs(10)).is_some(),
+            "the node survived but nobody can type into it"
+        );
+        assert!(alive(pid), "the node is still the same process");
+    }
+
+    /// A node with no display plane answers `pane: None`, and that is a fact about the node rather
+    /// than a failure of the attach — every other node in this file is one, and none of them
+    /// regressed.
+    #[test]
+    fn a_node_with_no_pty_attaches_with_no_pane() {
+        let w = Wired::new("handler-pane-none");
+        let stream = events_of(&w.fx, "root");
+        say(&stream, "root", &["one"]);
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let got = attached_ok(attach(&mut c, &mut r, "root", 1).1);
+        assert_eq!(got.pane, None);
+        assert_eq!(w.fx.handle.panes(), 0);
+        // And a keystroke aimed at it is dropped rather than answered, crashing nothing.
+        write_keys(&mut c, "root", "x");
+        call(
+            &mut c,
+            Call::NodeGet(marion_proto::params::NodeGetParams {
+                agent_id: id("root"),
+            }),
+            2,
+        );
+        assert!(matches!(next_frame(&mut r), Frame::Response(_)));
     }
 
     /// **The whole of §7.3.3, on one connection**: everything written while nobody was listening

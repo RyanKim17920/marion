@@ -335,6 +335,15 @@ mod tests {
                         records: 9,
                         src_seq: Some(marion_core::ir::SrcSeq::Ordinal(3)),
                     }),
+                    // The representative attach is to a node **with** a pane and one this client
+                    // did not get the write half of, because that is the answer with the most
+                    // structure in it — the `None` case is a shorter string of the same shape.
+                    pane: Some(crate::result::PaneAttach {
+                        cols: 140,
+                        rows: 40,
+                        writable: false,
+                        held_by: Some(3),
+                    }),
                 }),
             ),
             (
