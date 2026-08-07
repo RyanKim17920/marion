@@ -1199,17 +1199,46 @@ fn leasing_the_write_half_does_not_make_reading_exclusive() {
 /// that yields a witness while still speaking a typed protocol over pipes, and the case
 /// [`stdin_plan`]'s exhaustive match was written for — is constructed nowhere outside tests.
 ///
-/// So the change that makes this module reachable is a **one-line edit in an adapter**:
-/// `ClaudeCodeAdapter::surfaces` returning `ExecutionSurfaces::shared(TypedKind::StreamJson)`
-/// instead of `headless`. Everything downstream already exists and is tested here — the witness
-/// would flow, `stdin_plan` would answer `Piped` (a `shared` node still speaks stream-json over a
-/// pipe, which is exactly why the two axes are separate), and `PtyHost` would have a master.
+/// **This paragraph used to say the change was a one-line edit in an adapter, and that is false.**
+/// It is recorded here rather than deleted because it has now misdirected three readers.
 ///
-/// That edit is deliberately **not** made in this increment. It changes how the root node marion
-/// runs today is launched, on the one path M1 and M2's criteria are measured through, and it is a
-/// product decision rather than plumbing. What is not acceptable is for the gap to be rediscovered
-/// a third time, so it is recorded here as a failing-when-fixed assertion: the day an adapter
-/// declares `NativePty`, this test fails and points at the wiring that must accompany it.
+/// The one line is real: `ClaudeCodeAdapter::surfaces` returning
+/// `ExecutionSurfaces::shared(TypedKind::StreamJson)` instead of `headless` does mint the witness,
+/// and `stdin_plan` does then answer `Piped` (a `shared` node still speaks stream-json over a pipe,
+/// which is exactly why the two axes are separate). What the paragraph got wrong is *"everything
+/// downstream already exists"*. Three things do not:
+///
+/// 1. **Nothing constructs a `PtyHost` on a launch path.** The supervisor now has somewhere to put
+///    one — `RegistryHandle::register_pane`, and `node/attach` leases the keyboard and fans the
+///    bytes out — but `root::launch_duplex` and `run::launch_only_child` still spawn with three
+///    pipes, so the map is filled by nobody.
+/// 2. **`shared` puts the *protocol* stream on the pty.** `spawn_pty` under `StdinPlan::Piped`
+///    hands the slave to fd 1 *and* fd 2, which is the topology `shared` means. `duplex::run_duplex`
+///    reads stream-json off `child.stdout` as a pipe with a `BufReader::lines`, and under a pty
+///    that fd is the slave — read by `PtyHost`'s own thread, which is the single reader of the
+///    master. Two readers on one stream split frames, so the protocol driver would have to be fed
+///    from the pty instead. That is a real change to the most-measured file in this repo.
+/// 3. **stderr merges into the frame stream.** This is the part that makes it a hazard rather than
+///    a refactor. On the pipe topology `duplex` drains stderr separately; on the pty topology both
+///    land on one file description, so a diagnostic written mid-line lands *inside* a JSON frame
+///    M1's reader must parse. `DuplexOutcome.stderr` would also always be empty.
+///
+/// The protocol itself survives the pty, which was the open question and is now measured rather
+/// than assumed: **claude 2.1.224 with `--print --output-format stream-json --input-format
+/// stream-json` and its stdout on a pty slave still emits stream-json** (28 580 bytes over one
+/// turn, `system` frames first), with every `\n` post-processed to `\r\n` by ONLCR — 22 line
+/// terminators, 22 of them CRLF. `\r` is JSON whitespace, so a line-oriented parser survives it.
+/// So the objection to flipping the surface is not "it stops working"; it is item 3.
+///
+/// The edit is therefore still **not** made, and now for a stated reason rather than a deferral:
+/// it changes how the root node is launched on the one path M1 and M2's criteria are measured
+/// through, in a way that puts an unmeasured stderr-interleaving hazard inside M1's protocol
+/// reader. When it is made it should be **per run** — a node gets a pane because a client asked
+/// for one, not because every `claude` node everywhere now launches differently — so that M1's
+/// measured path stays byte-identical for a run that wants no pane.
+///
+/// This stays a failing-when-fixed assertion: the day an adapter declares `NativePty`, this test
+/// fails and points at the wiring that must accompany it.
 #[test]
 fn no_built_in_adapter_yet_declares_the_display_plane_this_module_needs() {
     use marion_core::harness::Harness;
@@ -1221,16 +1250,22 @@ fn no_built_in_adapter_yet_declares_the_display_plane_this_module_needs() {
             surfaces.display_plane().is_none(),
             "{h:?} now declares a display plane. PtyHost is reachable from production for the \
              first time, so `run_spawn`/`root` must construct one (PtyMaster::open -> \
-             PtyHost::start -> spawn_pty with the witness, stdin from `stdin_plan`), and \
-             `node/attach` must register the client as a listener and lease it the write half. \
-             Update this test in the same commit that does so."
+             PtyHost::start -> spawn_pty with the witness, stdin from `stdin_plan`) and hand it \
+             to `RegistryHandle::register_pane`, which is where `node/attach` looks. The attach \
+             half is built; the launch half is not. If this is a `Typed(_)` surface, read the \
+             doc above first: the protocol stream moves onto the pty with the display, and \
+             stderr moves onto it too. Update this test in the same commit that does so."
         );
     }
 }
 
-/// The corollary, stated separately because it is the fact a reader actually needs: the pty path
-/// is unreachable, so `Event::NodePty` cannot occur in production yet however many clients attach.
-/// A client written against it is correct and idle, which is a very different thing from broken.
+/// The corollary, and it is now narrower than it was: the *launch* path is unreachable, so
+/// `Event::NodePty` cannot occur in production yet however many clients attach. Everything between
+/// a `PtyHost` and an operator's terminal is wired — `register_pane`, `node/attach`'s pane answer,
+/// the write lease, `node/pty-write`, `node/resize`, `marion attach` — and exercised against real
+/// children on real ptys in `handler.rs`. What is missing is the one step that gives a *node* a
+/// master. A client written against this is correct and idle, which is a very different thing from
+/// broken.
 #[test]
 fn a_terminal_control_transport_is_reachable_from_no_built_in_agent_type() {
     use marion_core::harness::Harness;
