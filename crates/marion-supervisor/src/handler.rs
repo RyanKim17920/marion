@@ -4748,13 +4748,27 @@ mod tests {
             );
         }
 
+        /// A root spawn that states a repository, which is the well-formed shape for the case.
+        fn root_params(repo: &Path, secs: u64) -> AgentSpawnParams {
+            AgentSpawnParams {
+                repo: Some(repo.to_path_buf()),
+                ..params(None, secs)
+            }
+        }
+
         /// A client creating a **root** is step 6, and this build says so rather than serving it as a
         /// child of nobody. `run_spawn` writes `parent_id: Some(caller)` unconditionally, so serving
         /// this would put a node in the tree whose parent is a fabrication.
+        ///
+        /// The frame is the *well-formed* root shape — a stated `repo` — deliberately. A root spawn
+        /// that omits it is refused one step earlier and for a different reason, and a test that
+        /// sent the malformed shape here would go on passing after step 6 landed while asserting
+        /// nothing about it.
         #[test]
         fn a_client_creating_a_root_over_the_socket_is_refused_naming_the_step_that_serves_it() {
             let fx = owning("owns-root", vec![]);
-            let e = spawn(&fx, params(None, 1)).expect_err("a root spawn is not served yet");
+            let e =
+                spawn(&fx, root_params(&fx.repo, 1)).expect_err("a root spawn is not served yet");
             assert_eq!(e.kind(), Some(FailureKind::Unimplemented));
             assert!(
                 e.message.contains("step 6"),
@@ -4764,18 +4778,280 @@ mod tests {
             assert_eq!(journal_len(&fx), 0, "and nothing was created");
         }
 
-        /// A supervisor with no spawn environment refuses in its **own voice**, naming the build rather
-        /// than failing further in on a directory. See `RegistryHandle::spawn_env`.
+        /// **A caller does not get to say which tree its child branches from.**
+        ///
+        /// Same argument as `SpawnCaller` carrying no `agent_type` and no `depth`: every gated fact
+        /// about a caller is derived from what the supervisor minted. A node that could name its own
+        /// repository could branch its children off a tree its parent never entitled it to touch —
+        /// and, since one supervisor serves a repository *and every linked worktree of it*, the
+        /// trees within reach of a forged value are exactly the ones an operator is working in.
+        ///
+        /// Refused rather than ignored, for §11 item 23's rule: a caller that states a repository,
+        /// receives no error and is quietly given a different one has been told nothing.
+        #[test]
+        fn a_caller_that_states_its_own_repository_is_refused_by_name() {
+            let fx = owning("owns-stated-repo", vec![intent("root", None, "claude", 0)]);
+            let token = fx.handle.claim(
+                &id("root"),
+                marion_core::contract::TaskId("t".into()),
+                fx.repo.clone(),
+            );
+            let before = journal_len(&fx);
+            let e = spawn(
+                &fx,
+                AgentSpawnParams {
+                    // The *real* tree, not an implausible one: the refusal must not depend on the
+                    // value being wrong. Stating it at all is the error.
+                    repo: Some(fx.repo.clone()),
+                    ..params(
+                        Some(SpawnCaller {
+                            agent_id: id("root"),
+                            node_token: token,
+                        }),
+                        1,
+                    )
+                },
+            )
+            .expect_err("a caller may not state its own repository");
+            assert_eq!(e.kind(), Some(FailureKind::Refused));
+            assert!(
+                e.message.contains("must not state a `repo`"),
+                "the refusal must name the field and the pairing: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), before, "and nothing was created");
+        }
+
+        /// **The other half of the pairing: a root spawn must say which tree it is of.**
+        ///
+        /// There is no derivation available. §2 keys this supervisor on `git rev-parse
+        /// --git-common-dir`, so `<state>/<project-hash>` names a repository and every linked
+        /// worktree of it at once, and defaulting to the project root would branch a feature
+        /// worktree's children off the main tree's HEAD.
+        ///
+        /// Asserted through the `Refused` **kind** as well as the sentence, because the neighbouring
+        /// root refusal is `Unimplemented`: a build that answered "step 6" to a malformed frame
+        /// would be hiding a client's mistake behind marion's own.
+        #[test]
+        fn a_root_spawn_that_states_no_repository_is_refused_by_name() {
+            let fx = owning("owns-no-repo", vec![]);
+            let e = spawn(&fx, params(None, 1))
+                .expect_err("a root spawn with no repository cannot be served");
+            assert_eq!(
+                e.kind(),
+                Some(FailureKind::Refused),
+                "not `Unimplemented`: this is the client's frame being wrong, not marion's build \
+                 being incomplete — {e:?}"
+            );
+            assert!(
+                e.message.contains("only the client knows which tree"),
+                "the refusal must say why nothing here could supply it: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), 0, "and nothing was created");
+        }
+
+        /// **The load-bearing one: two roots in two linked worktrees of one repository, whose
+        /// children branch from different HEADs.**
+        ///
+        /// This is the whole reason the repository left `run::Env`. §2 keys a supervisor on `git
+        /// rev-parse --git-common-dir`, so both trees below resolve to **one** project, one journal
+        /// and one supervisor — that is asserted here rather than assumed, because if it were false
+        /// the rest of the test would be measuring two supervisors and proving nothing. And
+        /// `spawn::make_worktree` runs `git -C <repo> rev-parse HEAD`, so the tree each child
+        /// branches from is a property of *its own* root, not of the supervisor they share.
+        ///
+        /// The assertion is on the branch `make_worktree` created, read back with `rev-parse` after
+        /// the run: refs live in the common dir, so both branches are visible from either tree and
+        /// the test cannot accidentally be asserting on "which repository has the ref". What
+        /// separates a correct implementation from the one this design replaced is only **what
+        /// commit** each branch points at.
+        ///
+        /// A supervisor-wide repository — of any spelling, including `launch.project_root` — makes
+        /// both children branch from one commit and fails the inequality below. That failure is the
+        /// bug this whole change exists to prevent, and it is silent in production: a real branch,
+        /// off real commits, with a real worktree, and nothing anywhere reporting a problem.
+        #[test]
+        fn two_roots_in_different_worktrees_of_one_repository_branch_their_children_from_their_own_heads()
+         {
+            let dir = scratch("owns-two-worktrees");
+            let main = fixture_repo(&dir);
+            // Two linked worktrees, each carrying a commit the other does not have, so "branched
+            // from the wrong tree" is visible as an oid and not merely as a path.
+            let (side_a, head_a) = linked_worktree(&main, "a");
+            let (side_b, head_b) = linked_worktree(&main, "b");
+            assert_ne!(head_a, head_b, "the two trees must really differ");
+
+            // **One supervisor, keyed the way production keys it.** Not `ProjectDir::new(&state,
+            // &side_a)`: that is the mistake §2's rule exists to prevent, and it would give this
+            // test two projects and no shared supervisor to prove anything about.
+            let state = dir.join("state");
+            let project = ProjectDir::new(&state, &crate::socket::project_root(&side_a));
+            assert_eq!(
+                project.path(),
+                ProjectDir::new(&state, &crate::socket::project_root(&side_b)).path(),
+                "§2 keys on the git common dir, so both worktrees are one project — one \
+                 supervisor, one journal. If this fails the rest of the test proves nothing."
+            );
+            std::fs::create_dir_all(project.path()).unwrap();
+
+            let live = Arc::new(crate::registry::LiveRegistry::follow(
+                Registry::boot_path(&project.journal()).unwrap(),
+                std::time::Duration::from_millis(2),
+            ));
+            for (seq, kind) in [
+                intent("root-a", None, "claude", 0),
+                intent("root-b", None, "claude", 0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                append(
+                    &project.journal(),
+                    &line(seq as u64, 1_000 + seq as u64, kind),
+                );
+            }
+            live.refresh();
+            let handle = RegistryHandle::owning(
+                live,
+                crate::run::Env {
+                    project_dir: project.clone(),
+                    bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
+                    base_url: Some("http://127.0.0.1:8099/v1".into()),
+                    auth: marion_harness::Auth::Canned,
+                },
+            );
+            let fx = Owning {
+                handle,
+                project,
+                // Never read by this test: each root states its own tree below. Present because the
+                // fixture type is shared.
+                repo: main.clone(),
+                _dir: dir,
+            };
+
+            let child_of = |root: &str, tree: &Path| -> AgentId {
+                let token = fx.handle.claim(
+                    &id(root),
+                    marion_core::contract::TaskId(format!("t-{root}")),
+                    tree.to_path_buf(),
+                );
+                let child = spawn(
+                    &fx,
+                    params(
+                        Some(SpawnCaller {
+                            agent_id: id(root),
+                            node_token: token,
+                        }),
+                        5,
+                    ),
+                )
+                .unwrap_or_else(|e| panic!("{root}'s child must launch: {e:?}"))
+                .agent_id;
+                settle(&fx, &child);
+                child
+            };
+            let child_a = child_of("root-a", &side_a);
+            let child_b = child_of("root-b", &side_b);
+
+            let base_of = |child: &AgentId| -> String {
+                let task = fx
+                    .handle
+                    .owned_task_id(child)
+                    .expect("the supervisor owns this node and knows its contract");
+                // Read out of the **main** repository: refs are shared across every worktree of one
+                // repository, so this cannot be reading "the tree it was made in".
+                let out = std::process::Command::new("git")
+                    .current_dir(&main)
+                    .args(["rev-parse", &format!("marion/{}", task.0)])
+                    .output()
+                    .expect("git runs");
+                assert!(
+                    out.status.success(),
+                    "`make_worktree` must have created marion/{}: {out:?}",
+                    task.0
+                );
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            };
+
+            assert_eq!(
+                base_of(&child_a),
+                head_a,
+                "a child of the root in worktree `a` branches from **worktree a's** HEAD"
+            );
+            assert_eq!(
+                base_of(&child_b),
+                head_b,
+                "and a child of the root in worktree `b` branches from worktree b's"
+            );
+            assert_ne!(
+                base_of(&child_a),
+                base_of(&child_b),
+                "one supervisor, two trees, two bases. A supervisor-wide repository makes these \
+                 equal — which is a child silently branched off a tree its root is not in."
+            );
+        }
+
+        /// A linked worktree of `main` carrying one commit of its own, and its HEAD oid.
+        fn linked_worktree(main: &Path, tag: &str) -> (PathBuf, String) {
+            let path = main.parent().expect("the repo has a parent").join(tag);
+            let git = |dir: &Path, args: &[&str]| {
+                let out = std::process::Command::new("git")
+                    .current_dir(dir)
+                    .args(args)
+                    .output()
+                    .expect("git runs");
+                assert!(out.status.success(), "git {args:?}: {out:?}");
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            };
+            git(
+                main,
+                &["worktree", "add", "-q", "-b", tag, &path.to_string_lossy()],
+            );
+            std::fs::write(path.join(format!("{tag}.txt")), format!("{tag}\n")).unwrap();
+            git(&path, &["add", "-A"]);
+            git(
+                &path,
+                &[
+                    "-c",
+                    "user.email=marion@example.invalid",
+                    "-c",
+                    "user.name=marion",
+                    "commit",
+                    "-qm",
+                    tag,
+                ],
+            );
+            let head = git(&path, &["rev-parse", "HEAD"]);
+            (path, head)
+        }
+
+        /// A supervisor with no spawn environment refuses in its **own voice**, naming the
+        /// constructor rather than failing further in on a directory. See
+        /// `RegistryHandle::spawn_env`.
+        ///
+        /// `None` no longer means "production": stage 3 builds `owning`. It means this handle was
+        /// built by `new`, which is a describing fixture, and the sentence says so.
         #[test]
         fn a_supervisor_that_cannot_spawn_refuses_by_naming_the_build_not_a_missing_directory() {
             let fx = fx("owns-no-env");
             let out = crate::serve::sink(ConnId(4));
             let e = fx
                 .handle
-                .call(ConnId(4), &Call::AgentSpawn(params(None, 1)), &out)
+                .call(
+                    ConnId(4),
+                    // Well-formed, so the pairing check ahead of it passes and this really is the
+                    // refusal being asserted.
+                    &Call::AgentSpawn(root_params(Path::new("/r"), 1)),
+                    &out,
+                )
                 .expect_err("a handle built by `new` owns nothing");
             assert_eq!(e.kind(), Some(FailureKind::Unimplemented));
-            assert!(e.message.contains("spawn environment"), "{}", e.message);
+            assert!(
+                e.message.contains("RegistryHandle::new"),
+                "the refusal names the constructor, which is the whole of what is missing: {}",
+                e.message
+            );
         }
 
         // ------------------------------------------------------------------------------------
