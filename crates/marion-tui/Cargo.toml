@@ -1,0 +1,12 @@
+[package]
+name = "marion-tui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+marion-term = { path = "../marion-term" }
+# The render path is `impl Widget for &Term`, which is marion-term's. This dependency is here for
+# `view`, which sizes and clips that widget; nothing in this crate draws a cell itself.
+ratatui = { version = "0.30", default-features = false }
+serde_json.workspace = true
