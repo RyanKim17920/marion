@@ -6,6 +6,7 @@ members = [
     "crates/marion-provider",
     "crates/marion-supervisor",
     "crates/marion-harness",
+    "crates/marion-term",
     "crates/marion-testsupport",
 ]
 
