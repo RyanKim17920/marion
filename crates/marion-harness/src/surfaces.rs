@@ -59,6 +59,42 @@ pub enum ObservationSource {
     TerminalBytes,
 }
 
+/// **Proof that a node's surfaces declare a display plane** — §11 item 1's MUST, in the type
+/// system rather than in a comment.
+///
+/// S11 measured the failure this prevents: `claude -p` given a pty stdin exits **1** with *"Input
+/// must be provided either through stdin or as a prompt argument when using --print"*, after
+/// emitting only its `SessionStart` hook frames. The refusal is `isatty(0)`-driven — it reproduces
+/// on `pty-in` (pty stdin, pipe stdout) as well as `pty-all`, and the error names the *prompt*, not
+/// the fd, so a reader of the failure has nothing pointing at the cause. §5.2:786, §6.4:2028-2036
+/// and §11 item 1 all record the rule; this makes it unbreakable.
+///
+/// The field is a **private unit**, so the only way to hold one is
+/// [`ExecutionSurfaces::display_plane`]. §5.1:616 is the hole it closes: `compile()` lives on
+/// `HarnessAdapter` rather than `ControlPlane` precisely because `opaque` needs an `Invocation`
+/// without having a `ControlPlane` — which left an `Invocation` alone sufficient to call the pty
+/// launcher, for any node at all.
+///
+/// ```
+/// # use marion_harness::{ExecutionSurfaces, TypedKind};
+/// // The only route in, and it is closed for a headless node.
+/// assert!(ExecutionSurfaces::opaque().display_plane().is_some());
+/// assert!(ExecutionSurfaces::headless(TypedKind::StreamJson).display_plane().is_none());
+/// ```
+///
+/// ```compile_fail
+/// # use marion_harness::PtyWitness;
+/// // The field is private, so this is not a witness anybody can mint.
+/// let forged = PtyWitness(());
+/// ```
+///
+/// **A witness is not sufficient on its own**, and the `shared` preset is why: it is
+/// `Typed(StreamJson)` *and* `NativePty`, so it yields a witness and must still speak stream-json
+/// over pipes. `marion_supervisor::pty::stdin_plan` is the second half, and it is a total match on
+/// the control axis.
+#[derive(Debug, Clone, Copy)]
+pub struct PtyWitness(());
+
 /// The three axes, independent. §3.4's four presets are the constructors below.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionSurfaces {
@@ -138,6 +174,15 @@ impl ExecutionSurfaces {
     /// §3.4: `DisplayPlane` is implemented iff `display == NativePty`.
     pub fn has_display_plane(&self) -> bool {
         self.display == DisplaySurface::NativePty
+    }
+
+    /// [`PtyWitness`] iff this node has a display plane — **the only way to obtain one.**
+    ///
+    /// `has_display_plane` answers the same question and cannot be passed to
+    /// `marion_supervisor::pty::spawn_pty`, which is the difference: a `bool` proves nothing at the
+    /// call site, because a caller who forgot to check has the same `true` as one who did.
+    pub fn display_plane(&self) -> Option<PtyWitness> {
+        self.has_display_plane().then_some(PtyWitness(()))
     }
 
     /// §3.4: a *typed* `ControlPlane` — the full trait — iff `control == Typed(_)`.
@@ -245,6 +290,51 @@ mod tests {
         let headless = ExecutionSurfaces::headless(TypedKind::StreamJson);
         assert!(headless.has_typed_control_plane());
         assert!(!headless.has_display_plane(), "headless runs over pipes");
+    }
+
+    /// §11 item 1's MUST, made unbreakable. A headless node has no route to the pty launcher,
+    /// because the argument that launcher requires is one its surfaces will not produce.
+    ///
+    /// The other half — that `PtyWitness(())` cannot be written outside this module — is the
+    /// `compile_fail` doctest on the type, which `cargo test` runs. It is stated there rather than
+    /// here because a `compile_fail` block is the only assertion form that can express it.
+    #[test]
+    fn a_headless_node_cannot_be_given_a_pty() {
+        assert!(
+            ExecutionSurfaces::headless(TypedKind::StreamJson)
+                .display_plane()
+                .is_none(),
+            "§6.4: `claude -p` exits 1 on a pty stdin, so a headless node must not reach the pty \
+             launcher at all"
+        );
+        assert!(
+            ExecutionSurfaces::launch_only_with_protocol_events()
+                .display_plane()
+                .is_none(),
+            "`DisplaySurface::None` is not a display plane either"
+        );
+        // And the positive half, so this cannot pass by returning `None` unconditionally.
+        for s in [
+            ExecutionSurfaces::shared(TypedKind::StreamJson),
+            ExecutionSurfaces::interactive(),
+            ExecutionSurfaces::opaque(),
+        ] {
+            assert!(s.display_plane().is_some(), "{s:?} declares NativePty");
+        }
+    }
+
+    /// The witness tracks the predicate rather than being a second, drifting answer to it.
+    #[test]
+    fn a_witness_exists_exactly_where_has_display_plane_says_it_does() {
+        for s in [
+            ExecutionSurfaces::shared(TypedKind::StreamJson),
+            ExecutionSurfaces::headless(TypedKind::StreamJson),
+            ExecutionSurfaces::interactive(),
+            ExecutionSurfaces::opaque(),
+            ExecutionSurfaces::launch_only_with_protocol_events(),
+        ] {
+            assert_eq!(s.has_display_plane(), s.display_plane().is_some(), "{s:?}");
+        }
     }
 
     #[test]

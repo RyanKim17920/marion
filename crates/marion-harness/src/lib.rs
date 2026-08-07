@@ -33,5 +33,5 @@ pub use codex::{ExecSpec, compile_exec, config_toml};
 pub use invocation::Invocation;
 pub use stream::{CallOutcome, ChildExit, FrameSplitter, MarionCall, StreamOutcome, json_frames};
 pub use surfaces::{
-    ControlTransport, DisplaySurface, ExecutionSurfaces, ObservationSource, TypedKind,
+    ControlTransport, DisplaySurface, ExecutionSurfaces, ObservationSource, PtyWitness, TypedKind,
 };
