@@ -5,22 +5,40 @@
 //! values in. That keeps §8's L1 tests pure *and* makes the precedence rule testable without
 //! mutating process-global environment state, which is a data race in a threaded test binary.
 //!
-//! The layout mirrored here is normative (§4.3):
+//! The layout mirrored here is normative (§4.3), and three of its leaves are **declared and not
+//! produced** — marked below, because a diagram that does not distinguish them tells a reader every
+//! path here resolves to something:
 //!
 //! ```text
 //! <state>/<project-hash>/
 //!   supervisor.sock
 //!   journal.jsonl
-//!   snapshot.json
+//!   snapshot.json                    # declared; no build writes it (opportunistic compaction)
 //!   agents/<agent_id>/
-//!     meta.json
+//!     meta.json                      # declared; no build writes it — and no accessor, see below
 //!     contracts/<task_id>.json
 //!     events.jsonl
 //!     pty.cast
-//!     hook-token
+//!     hook-token                     # declared; no build writes it (§5.4's Stop-hook token)
 //!     config/
 //!     worktree
 //! ```
+//!
+//! # `meta.json` has no accessor, and that is the point
+//!
+//! §4.3 gives it *"compiled spec, caps, harness ref, binary path + version"*, and §7.7 names the one
+//! thing that would ever read it: a node **resumed** under a harness version that moved underneath
+//! it, flagged, with its cached caps invalidated. Neither the writer nor the resume exists.
+//!
+//! An `AgentDir::meta()` did exist, and it was worse than nothing. It returned a perfectly
+//! well-formed `PathBuf` whose only possible answer is `ENOENT` — which a caller reads as *"this
+//! node has no meta"*, a fact about the node, rather than *"marion has never written one"*, a fact
+//! about marion. Three shipped doc comments already lean on this file to justify **omitting** data
+//! (`journal::SpawnIntent` drops `isolation`/`caps`/`surfaces`; `event::Payload::Opened` carries
+//! nothing; `root::spawned_record` writes `harness_version: "unknown"`), so the dead end was one
+//! `.meta()` call from being taken for a real one. It comes back as one line with the milestone
+//! that writes the file. `snapshot()` and `hook_token()` are in the same state and keep theirs;
+//! nothing reasons from *their* existence, which is the whole difference.
 
 use std::path::{Path, PathBuf};
 
@@ -128,10 +146,7 @@ impl AgentDir {
         &self.0
     }
 
-    /// Compiled spec, caps, harness ref, binary path + version.
-    pub fn meta(&self) -> PathBuf {
-        self.0.join("meta.json")
-    }
+    // No `meta()`. §4.3 declares `meta.json` and nothing writes it; see the module doc.
 
     pub fn contracts_dir(&self) -> PathBuf {
         self.0.join("contracts")
@@ -267,7 +282,6 @@ mod tests {
         let a = dir.agent(&AgentId("0197f3aa-1c2d-7e00-8000-0102030405f0".into()));
         let base = p("/s/0123456789ab/agents/0197f3aa-1c2d-7e00-8000-0102030405f0");
         assert_eq!(a.path(), base);
-        assert_eq!(a.meta(), base.join("meta.json"));
         assert_eq!(a.contracts_dir(), base.join("contracts"));
         assert_eq!(a.events(), base.join("events.jsonl"));
         assert_eq!(a.pty_cast(), base.join("pty.cast"));
