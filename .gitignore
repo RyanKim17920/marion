@@ -1,3 +1,9 @@
 /target
 tasks/
 .claude/
+
+# `insta` writes these beside the accepted snapshot on any snapshot failure, and deletes
+# neither on a later pass — three mutation runs each left five untracked files behind. They are
+# review artefacts for `cargo insta review`, never commits.
+*.snap.new
+*.pending-snap
