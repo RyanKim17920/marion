@@ -172,7 +172,10 @@ fn marion_run(dir: &Path, model: &str, lingers: bool) -> Run {
 fn spawned_pids(state: &Path) -> Vec<Option<i64>> {
     let mut out = Vec::new();
     let mut found_journal = false;
-    for project in std::fs::read_dir(state).expect("the state dir exists").flatten() {
+    for project in std::fs::read_dir(state)
+        .expect("the state dir exists")
+        .flatten()
+    {
         let journal = project.path().join("journal.jsonl");
         let Ok(text) = std::fs::read_to_string(&journal) else {
             continue;
@@ -199,7 +202,10 @@ fn spawned_pids(state: &Path) -> Vec<Option<i64>> {
 /// Whether the journal recorded the root's *intent* — the record written and fsynced before
 /// anything is spawned, and the one that must survive for `SpawnIntent`-alone to mean anything.
 fn has_spawn_intent(state: &Path) -> bool {
-    for project in std::fs::read_dir(state).expect("the state dir exists").flatten() {
+    for project in std::fs::read_dir(state)
+        .expect("the state dir exists")
+        .flatten()
+    {
         let Ok(text) = std::fs::read_to_string(project.path().join("journal.jsonl")) else {
             continue;
         };

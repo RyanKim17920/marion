@@ -7,6 +7,7 @@
 
 use super::*;
 use marion_harness::{ControlTransport, ExecutionSurfaces, TypedKind};
+use std::io::Read;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------------------------
@@ -216,13 +217,21 @@ fn the_master_is_close_on_exec_and_its_size_round_trips() {
 /// **Mutation:** drop `setsid` — `TIOCSCTTY` then fails (only a session leader may claim a
 /// controlling terminal), `pre_exec` returns the error, and the spawn is refused.
 ///
-/// **`TIOCSCTTY` is *not* observable from this topology on macOS, and that is a measurement rather
-/// than a gap in the test.** With the slave on fd 0, Darwin 25.5.0 makes the pty the child's
-/// controlling terminal on `setsid()` alone: a three-way C probe (no `setsid` → `tcgetsid` is
-/// `ENOTTY`; `setsid` only → `tcgetsid == pid`; `setsid` + ioctl → `tcgetsid == pid`) says the
-/// ioctl changes nothing here. It is kept because Linux does require it, and it is pinned by
-/// `a_piped_stdin_node_still_gets_the_pty_as_its_controlling_terminal`, which uses the one topology
-/// where macOS can tell the difference.
+/// **This test does not witness `TIOCSCTTY`, and the reason is a confound rather than a platform
+/// fact.** It used to say the opposite — that Darwin claims the controlling terminal on `setsid()`
+/// alone whenever the slave is on fd 0, so the ioctl was redundant here and its deletion
+/// unobservable. That is measured false (S19, `tests/fixtures/s19/README.md`): `setsid()` alone
+/// leaves `tcgetsid(master)` at `ENOTTY` in all nine cells.
+///
+/// What actually happens is that **this test's child is a shell**, and macOS's `/bin/sh` claims the
+/// controlling terminal itself when it starts as a session leader without one and its stdin is a
+/// tty. So the `tcgetsid` assertion below is satisfied by `sh` and survives deleting the ioctl —
+/// which is exactly how a real assertion comes to look vacuous. Every test in this file drives its
+/// child through [`sh`], so all of them inherit it.
+///
+/// The ioctl is pinned by [`tiocsctty_and_not_setsid_is_what_claims_the_terminal`], whose child is
+/// `/bin/sleep` execed directly. **Do not "simplify" that test to use [`sh`]** — the absence of a
+/// shell is the entire measurement.
 #[test]
 fn the_child_is_a_session_leader_with_the_master_as_its_controlling_terminal() {
     let dir = marion_testsupport::scratch("pty-sid");
@@ -301,14 +310,16 @@ fn the_child_is_a_session_leader_with_the_master_as_its_controlling_terminal() {
 /// ioctl answers `ENOTTY`, `pre_exec` returns an error and the spawn fails outright — for the one
 /// preset that has both a typed control plane and a display plane.
 ///
-/// It is also the **only** topology on macOS in which `TIOCSCTTY` is observable at all. Measured on
-/// Darwin 25.5.0 with a three-way C probe: with the slave on fd 0, `setsid()` alone already makes
-/// the pty the controlling terminal and the ioctl changes nothing; with stdin a pipe,
-/// `setsid()` alone leaves `tcgetsid(master)` at `ENOTTY`, and only `ioctl(1, TIOCSCTTY, 0)` claims
-/// it. So this test is where the "drop `TIOCSCTTY`" mutation goes red on this platform.
+/// This used to claim it was the **only** topology on macOS in which `TIOCSCTTY` is observable,
+/// because the fd-0 case supposedly got its controlling terminal from `setsid()` alone. Measured
+/// false — S19, `tests/fixtures/s19/README.md`: the ioctl is what claims the terminal in *both*
+/// topologies, and the earlier probe's `setsid`-only cell was measuring a shell. This test is still
+/// where the **wrong-descriptor** mutation goes red, which is the distinct thing it is for.
 ///
-/// **Mutation:** delete the `TIOCSCTTY` ioctl; or issue it on fd 0 regardless of the stdin plan,
-/// which is the shape §5.3 specifies.
+/// **Mutation:** issue the ioctl on fd 0 regardless of the stdin plan, which is the shape §5.3
+/// specifies — the spawn then fails outright with `ENOTTY`. (Deleting the ioctl altogether is also
+/// caught here, and by [`tiocsctty_and_not_setsid_is_what_claims_the_terminal`], which is the one
+/// that isolates it from the descriptor question.)
 #[test]
 fn a_piped_stdin_node_still_gets_the_pty_as_its_controlling_terminal() {
     let shared = ExecutionSurfaces::shared(TypedKind::StreamJson);
@@ -680,62 +691,171 @@ fn the_cast_records_i_and_r_not_only_o() {
     );
 }
 
-/// **A resize record precedes the output it explains**, which inverts `s2/ptyhost.py` on purpose.
+/// **Every `o` record replays at the geometry the node actually emitted it at.**
 ///
-/// The interleaving is *forced*, not hoped for: the yield hook runs between the `r` record and
-/// `TIOCSWINSZ`, and it makes the child speak. Under the shipped order the `r` is already on disk
-/// when that happens; under the mutation the ioctl has already run and the hook's output lands
-/// first. A test that depended on winning a race would be a test that passes by luck.
+/// This is the property `r` records exist for, and it is strictly stronger than the one this test
+/// used to assert. The old version forced an interleaving and then checked only `r < o` — so it
+/// passed while the labelling was wrong, which is the worst state a test can be in: the defect it
+/// was written for was live underneath it, and its green was the reason nobody looked.
 ///
-/// **Mutation:** swap the body of `PtyHost::resize` to ioctl-then-record.
+/// What was wrong: `PtyHost::resize` wrote the `r`, **fsynced it**, released the cast lock, and
+/// only then issued `TIOCSWINSZ`. For the whole of that window the terminal was still `120x40`, so
+/// anything the child wrote in it was recorded after a record claiming `100x24`. Replay then
+/// applies the new geometry to bytes painted at the old one and every absolute cursor address after
+/// it lands in the wrong place.
+///
+/// # How the geometry becomes observable
+///
+/// The marker carries what the **slave** says about itself. The hook asks `TIOCGWINSZ` on the slave
+/// fd and writes `MARK<COLSxROWS>` with the answer, so each `o` record states the size the node was
+/// at when it produced it, and the assertion is a comparison rather than an inference. Three
+/// markers, at the three positions that can exist: before the resize is asked for, inside the
+/// window while it is in flight, and after `resize` has returned.
+///
+/// The check is then total — *every* marker against the last `r` before it, with the header's size
+/// standing in when there is none — so it does not depend on which side of the boundary the middle
+/// marker lands on. Whichever it is, it has to be labelled consistently, and that is what makes
+/// this deterministic rather than a race the test has to win.
+///
+/// **Mutations, each of which this kills and the old test did not:**
+/// * restore caller-side `record` → `fsync` → `TIOCSWINSZ` (the original defect): the middle marker
+///   reads `120x40` and lands after the `100x24` record;
+/// * swap `apply_pending_resize` to record-then-ioctl without the cast lock held across both: the
+///   child's `SIGWINCH` repaint is recorded ahead of the record explaining it;
+/// * drop the `r` record entirely: the markers after the resize have no matching record at all.
 #[test]
-fn a_resize_record_precedes_the_output_it_explains() {
-    let mut lb = Loopback::new("pty-resize-order", WinSize::new(120, 40));
-    // The hook runs on the caller's thread, between the two steps. It writes from the slave side
-    // and waits until the host has recorded it, so the two records are ordered by observation
-    // rather than by scheduling luck.
+fn every_output_record_replays_at_the_geometry_it_was_emitted_at() {
+    const BEFORE: WinSize = WinSize {
+        cols: 120,
+        rows: 40,
+    };
+    const AFTER: WinSize = WinSize {
+        cols: 100,
+        rows: 24,
+    };
+
+    let mut lb = Loopback::new("pty-resize-geometry", BEFORE);
     let slave = lb.slave.take().expect("attached");
-    let bytes_before = lb.host.bytes_read();
+    let slave_fd = slave.as_raw_fd();
     let counter = lb.host.bytes_counter();
-    let seen = Arc::new(AtomicU64::new(0));
-    {
-        let seen = Arc::clone(&seen);
-        let slave = Mutex::new(slave);
-        lb.host.set_resize_hook(Box::new(move || {
-            let _ = slave
+    let slave = Arc::new(Mutex::new(slave));
+
+    // Write a marker stamped with the size the slave itself reports. **No waiting inside it**: the
+    // hook below runs *on the reader thread*, so a wait for the recorder there would be a wait for
+    // the thread doing the waiting. Ordering comes from where each call site sits instead.
+    let mark = {
+        let slave = Arc::clone(&slave);
+        move || {
+            let size = slave_size(slave_fd);
+            let text = format!("MARK<{}x{}>", size.cols, size.rows);
+            slave
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .write_all(b"AFTER");
-            // **Wait for the recorder before returning.** Without this the hook only *starts* the
-            // output, and whether the `o` record lands before or after the `r` is down to thread
-            // scheduling — which is the race this test exists to remove, not to run.
-            assert!(
-                until(|| counter.load(Ordering::SeqCst) >= bytes_before + 5),
-                "the hook's bytes never reached the recorder"
-            );
-            seen.store(1, Ordering::SeqCst);
+                .write_all(text.as_bytes())
+                .expect("the slave accepts a write");
+            text.len() as u64
+        }
+    };
+    // On the test's own thread the wait is both possible and needed, so the marker is in the file
+    // before the next step rather than in the pty buffer.
+    let mark_and_wait = |mark: &dyn Fn() -> u64| {
+        let before = counter.load(Ordering::SeqCst);
+        let n = mark();
+        assert!(
+            until(|| counter.load(Ordering::SeqCst) >= before + n),
+            "the marker never reached the recorder"
+        );
+    };
+
+    mark_and_wait(&mark);
+
+    // The hook runs inside `apply_pending_resize`'s drain, before the `TIOCSWINSZ`: the node speaks
+    // at the *old* geometry with a resize to a new one already in flight. That is the window the
+    // old caller-side order left open between its `r` record and its ioctl, so a mutation that
+    // reintroduces it lands here.
+    {
+        let mark = mark.clone();
+        lb.host.set_resize_hook(Box::new(move || {
+            mark();
         }));
     }
-    lb.host.resize(WinSize::new(100, 24)).unwrap();
-    assert_eq!(seen.load(Ordering::SeqCst), 1, "the hook ran");
+    lb.host.resize(AFTER).unwrap();
     lb.host.clear_resize_hook();
+
+    assert_eq!(
+        lb.host.master().size().unwrap(),
+        AFTER,
+        "the kernel really was resized, so the record is not a lie"
+    );
+    mark_and_wait(&mark);
+
+    drop(slave);
     lb.hang_up();
     lb.host.shutdown().unwrap();
 
-    let (_, records) = read_cast(&lb.cast);
-    let r_at = records
-        .iter()
-        .position(|(_, c, _)| c == "r")
-        .expect("a resize record");
-    let o_at = records
-        .iter()
-        .position(|(_, c, d)| c == "o" && d.contains("AFTER"))
-        .expect("the output the hook produced");
-    assert!(
-        r_at < o_at,
-        "output at a size nothing recorded is unreplayable: r at {r_at}, output at {o_at} in \
-         {records:?}"
+    // Replay: walk the records in order, tracking the geometry a replayer would be at, and require
+    // every marker to agree with it.
+    let (header, records) = read_cast(&lb.cast);
+    let mut at = format!(
+        "{}x{}",
+        header["term"]["cols"].as_u64().expect("a header width"),
+        header["term"]["rows"].as_u64().expect("a header height")
     );
+    let mut checked = 0;
+    for (i, (_, code, data)) in records.iter().enumerate() {
+        match code.as_str() {
+            "r" => at = data.clone(),
+            "o" => {
+                for observed in markers(data) {
+                    checked += 1;
+                    assert_eq!(
+                        observed, at,
+                        "record {i} was emitted at {observed} but replays at {at} — output painted \
+                         at one geometry and labelled with another is exactly what an `r` record \
+                         exists to prevent.\n{records:#?}"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        checked, 3,
+        "all three markers must be in the cast, or the walk above proved nothing: {records:#?}"
+    );
+    assert!(
+        records.iter().any(|(_, c, d)| c == "r" && d == "100x24"),
+        "the resize itself must be recorded: {records:#?}"
+    );
+}
+
+/// Every `MARK<COLSxROWS>` in one `o` record's payload, as `"COLSxROWS"`.
+///
+/// A record can carry more than one — the recorder writes whatever a single `read` returned, and
+/// two markers can share a chunk — so this yields all of them rather than the first.
+fn markers(data: &str) -> Vec<String> {
+    data.split("MARK<")
+        .skip(1)
+        .filter_map(|rest| rest.split_once('>').map(|(size, _)| size.to_string()))
+        .collect()
+}
+
+/// What the **slave** says its own geometry is, which is what the node sees.
+///
+/// Asked of the slave rather than of `PtyMaster::size` deliberately: the two are the same object to
+/// the kernel, but the claim under test is about what the *node* was painting at, and reading it
+/// through the master would be marion checking its own bookkeeping.
+fn slave_size(fd: RawFd) -> WinSize {
+    let mut ws = RawWinSize::default();
+    // SAFETY: `fd` is an open pts and `&mut ws` is a live, correctly-shaped `struct winsize`.
+    let rc = unsafe { ioctl(fd, sys::TIOCGWINSZ, &raw mut ws) };
+    assert_eq!(
+        rc,
+        0,
+        "TIOCGWINSZ on the slave: {}",
+        io::Error::last_os_error()
+    );
+    WinSize::new(ws.col, ws.row)
 }
 
 /// **One epoch for `events.jsonl` and `pty.cast`.**
@@ -1368,4 +1488,263 @@ fn the_pane_shape_of_every_harness_that_has_one_asks_for_the_slave_on_stdin() {
         assert_eq!(stdin_plan(s.control), StdinPlan::TerminalSlave, "{h:?}");
     }
     assert!(seen > 0, "no harness declares a pane shape at all");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The window between `spawn()` and somebody taking responsibility
+// ---------------------------------------------------------------------------------------------
+
+/// **A panicking `on_started` hook must not leave a live, un-reaped child.**
+///
+/// `spawn_pty` announces the pid before the caller can do anything with the handle — topology point
+/// 7, and it has to be that early, because `run.rs` reads the process's start identity there while
+/// marion still holds the `Child` and that read is only race-free while it does. The hook is
+/// therefore arbitrary caller code running at the one instant nothing else owns the process.
+///
+/// It used to run *before* the `Child` was wrapped, and `std::process::Child`'s own `Drop`
+/// **neither kills nor reaps**. So an unwind through the hook dropped the only handle to a live
+/// process on a pty nothing was reading: no `PtyHost` had adopted it, no `wait` could ever be
+/// issued for it, and its pid had already been announced to an owner that was about to be told the
+/// spawn failed. That is §11 item 30's untracked live process reached by a panic rather than by a
+/// crash — and unlike a crash, `catch_unwind` means the process goes on running afterwards.
+///
+/// `!alive(pid)` is the reaped assertion and not merely the dead one: `kill(pid, 0)` succeeds
+/// against a **zombie**, so an `ESRCH` here means the wait really happened and the entry is gone.
+///
+/// **Mutation:** move the `PtyChild` construction back below the `on_started` call in `spawn_pty`,
+/// or delete `impl Drop for PtyChild`. Either leaves `sleep 30` running and this red in about a
+/// second.
+#[test]
+fn a_panicking_on_started_hook_leaves_no_live_child() {
+    let master = PtyMaster::open(WinSize::new(80, 24)).expect("a pty");
+    let seen = Arc::new(AtomicU64::new(0));
+
+    let hook = {
+        let seen = Arc::clone(&seen);
+        move |pid: i32| {
+            // Recorded *before* the panic, so the test can name the process it is asserting about
+            // — which is the whole difficulty: after the unwind there is no handle left to ask.
+            seen.store(pid as u64, Ordering::SeqCst);
+            panic!("the owner's `started` hook failed");
+        }
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        spawn_pty(
+            witness(),
+            &mut sh("sleep 30"),
+            &master,
+            StdinPlan::TerminalSlave,
+            Some(&hook),
+        )
+    }));
+    assert!(outcome.is_err(), "the hook's panic must reach the caller");
+
+    let pid = seen.load(Ordering::SeqCst) as i32;
+    assert!(pid > 0, "the hook ran and saw a pid");
+    assert!(
+        until(|| !alive(pid)),
+        "pid {pid} survived the unwind. Nothing holds its handle, so nothing will ever reap it: \
+         this is the untracked live process §9's criterion 3 forbids, arrived at by a panic."
+    );
+}
+
+/// **The same hole, reached by returning instead of by panicking.**
+///
+/// `spawn_pty` hands back a `PtyChild` and `PtyHost::adopt` takes it, and between those two the
+/// caller is free to do anything — including give up. `PtyHost` has had a `Drop` net for a while
+/// and it covers only what has already been adopted, so a caller that dropped the handle in the gap
+/// leaked exactly as the panicking one did, quietly and without an unwind to notice.
+///
+/// **Mutation:** delete `impl Drop for PtyChild`.
+#[test]
+fn a_child_dropped_before_adoption_is_killed_and_reaped() {
+    let master = PtyMaster::open(WinSize::new(80, 24)).expect("a pty");
+    let child = spawn_pty(
+        witness(),
+        &mut sh("sleep 30"),
+        &master,
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .expect("the child spawns");
+    let pid = child.pid();
+    assert!(alive(pid), "it really is running before the drop");
+    drop(child);
+    assert!(
+        until(|| !alive(pid)),
+        "pid {pid} outlived the handle that was the only way to reap it"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The cast records what the node received
+// ---------------------------------------------------------------------------------------------
+
+/// **`write_input` records the bytes it writes, or it writes nothing.**
+///
+/// It used to record `String::from_utf8_lossy(bytes)` and then write the original slice, so `0xff`
+/// reached the node and U+FFFD reached the cast. The `i` records are the *only* evidence of what
+/// was typed — C1's mouse-through leaves no `o` trace at all — so a recording that differs from
+/// what happened is worse than no recording, because nothing downstream can tell.
+///
+/// asciicast's `data` is a JSON string and has no byte-exact spelling for a byte that is not part
+/// of valid UTF-8, so the choice is a private encoding nothing else reads or a refusal. It refuses,
+/// **before** the write, which is what makes the two halves below assertable as one property: what
+/// the node received and what the cast says are the same on every path, including this one, where
+/// both are nothing.
+///
+/// The multibyte control leg matters as much as the refusal: without it a `write_input` that
+/// refused everything non-ASCII would pass.
+///
+/// **Mutation:** restore `String::from_utf8_lossy(bytes)` and the unconditional
+/// `self.master.write_all(bytes)`. The refusal stops being one, `0xff` reaches the slave ahead of
+/// the sentinel, and the cast grows an `i` record saying U+FFFD.
+#[test]
+fn input_the_cast_cannot_carry_is_refused_before_the_node_receives_it() {
+    let mut lb = Loopback::new("pty-input-bytes", WinSize::new(80, 24));
+    let slave = lb.slave.take().expect("attached");
+    nonblocking(slave.as_raw_fd());
+    let mut slave = slave;
+    let lease = lb
+        .host
+        .lease_writer(crate::serve::ConnId(1))
+        .expect("a fresh host has no writer");
+
+    // Control: a multibyte keystroke goes through untouched, so the refusal below is about the
+    // bytes and not about "anything past ASCII".
+    lb.host.write_input(&lease, "é\r".as_bytes()).unwrap();
+
+    // The defect's own input. Refused, by kind, with a sentence that says why.
+    let refused = lb
+        .host
+        .write_input(&lease, &[0xff])
+        .expect_err("a lone 0xff has no faithful spelling in a JSON string");
+    assert_eq!(refused.kind(), io::ErrorKind::InvalidData, "{refused}");
+    assert!(
+        refused.to_string().contains("not valid UTF-8"),
+        "the refusal must say what it refused: {refused}"
+    );
+
+    // A sentinel behind it. If `0xff` had been written, it would be in the stream *before* this —
+    // so reading the slave and finding the sentinel with no `0xff` ahead of it is a positive
+    // statement about what the node received, not an inference from an absence.
+    lb.host.write_input(&lease, "Z\r".as_bytes()).unwrap();
+
+    let mut got: Vec<u8> = Vec::new();
+    assert!(
+        until(|| {
+            let mut buf = [0u8; 256];
+            match slave.read(&mut buf) {
+                Ok(0) => {}
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(_) => {}
+            }
+            got.contains(&b'Z')
+        }),
+        "the sentinel never reached the node: {got:?}"
+    );
+    assert!(
+        !got.contains(&0xff),
+        "the node received a byte the cast does not record: {got:?}"
+    );
+    assert!(
+        got.starts_with("é".as_bytes()),
+        "the control keystroke must have arrived byte-for-byte: {got:?}"
+    );
+
+    drop(slave);
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+
+    // And the record agrees, in both directions: the two accepted keystrokes are there verbatim,
+    // and the refused one left nothing behind — no `i`, and no U+FFFD anywhere.
+    let (_, records) = read_cast(&lb.cast);
+    let typed: Vec<&str> = records
+        .iter()
+        .filter(|(_, c, _)| c == "i")
+        .map(|(_, _, d)| d.as_str())
+        .collect();
+    assert_eq!(
+        typed,
+        vec!["é\r", "Z\r"],
+        "the cast must be exactly what the node received: {records:#?}"
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|(_, c, d)| c == "i" && d.contains('\u{fffd}')),
+        "a substitute character in an `i` record is the defect itself: {records:#?}"
+    );
+}
+
+/// Put `fd` in non-blocking mode, so a test can poll the slave without risking a hang whose red
+/// state is "the suite stopped".
+fn nonblocking(fd: RawFd) {
+    // SAFETY: `fd` is open; `F_GETFL` reads and `F_SETFL` writes only the descriptor's flags.
+    let flags = unsafe { fcntl(fd, F_GETFL) };
+    assert!(flags >= 0, "F_GETFL: {}", io::Error::last_os_error());
+    // SAFETY: as above.
+    let rc = unsafe { fcntl(fd, F_SETFL, flags | sys::O_NONBLOCK) };
+    assert_eq!(rc, 0, "F_SETFL: {}", io::Error::last_os_error());
+}
+
+/// **`TIOCSCTTY` is load-bearing on macOS too, and the child here is deliberately not a shell.**
+///
+/// This is the test the repo spent three doc comments and a §5.3 passage saying was impossible. The
+/// claim was that on Darwin, with the slave on fd 0, `setsid()` **alone** already makes the pty the
+/// controlling terminal — so deleting the ioctl was an unobservable "platform fact" in this
+/// topology, and only `a_piped_stdin_node_still_gets_the_pty_as_its_controlling_terminal` could
+/// witness it. Both halves are false, and the second one mattered more than the first.
+///
+/// Measured directly (`spikes/s19/ctty_probe.c`, `tests/fixtures/s19/README.md`; Darwin 25.5.0,
+/// xnu-12377.121.6~2, arm64), nine cells over {slave on fd 0, pipe on fd 0} x {bare, `setsid`,
+/// `setsid` + ioctl} x {child opens the slave, parent opens it}: **`setsid()` alone leaves
+/// `tcgetsid(master)` at `ENOTTY` in every cell.** The ioctl is what claims the terminal, on both
+/// topologies. macOS does not differ from Linux here; the original reading had it backwards.
+///
+/// # Why the existing tests did not catch that, which is the actual defect
+///
+/// `the_child_is_a_session_leader_with_the_master_as_its_controlling_terminal` asserts exactly this
+/// `tcgetsid` and **survives the deletion**, so it looked like confirmation of the platform claim.
+/// It is not: its child is `/bin/sh`, and macOS's `sh` claims the controlling terminal *itself*
+/// when it starts as a session leader without one and its stdin is a tty. Swapping that child for
+/// `/bin/sleep` under the deletion turns `tcgetsid` from the child's pid straight to `-1`/`ENOTTY`,
+/// which is how this was found. Every pty test in this file drives its child through `sh`, so every
+/// one of them inherited the confound — the assertion was there, and the shell was quietly
+/// satisfying it.
+///
+/// So the child here is **`/bin/sleep`, execed directly, with no shell anywhere in the topology**.
+/// That is the whole point of the test and the one thing about it that must not be "tidied".
+///
+/// **Mutation:** delete the `ioctl(ctty_fd, TIOCSCTTY, 0)` from `spawn_pty`'s `pre_exec`. This goes
+/// red in about a second; nothing else in the suite does.
+#[test]
+fn tiocsctty_and_not_setsid_is_what_claims_the_terminal() {
+    let master = PtyMaster::open(WinSize::new(80, 24)).expect("a pty");
+    let master_fd = master.as_raw();
+    let mut command = Command::new("/bin/sleep");
+    command.arg("5");
+    let child = spawn_pty(
+        witness(),
+        &mut command,
+        &master,
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .expect("the child spawns");
+    let pid = child.pid();
+
+    assert!(
+        until(|| (unsafe { tcgetsid(master_fd) }) == pid),
+        "the pty is nobody's controlling terminal: tcgetsid says {} (errno {:?}). With no shell in \
+         the child to claim it, `setsid()` alone does not — only the explicit TIOCSCTTY does, on \
+         this platform as much as on Linux.",
+        unsafe { tcgetsid(master_fd) },
+        io::Error::last_os_error().raw_os_error()
+    );
+
+    // `PtyChild::drop` kills and reaps; asserted rather than assumed, since this test never builds
+    // a `PtyHost` and so has none of the usual teardown.
+    drop(child);
+    assert!(until(|| !alive(pid)), "pid {pid} outlived its handle");
 }
