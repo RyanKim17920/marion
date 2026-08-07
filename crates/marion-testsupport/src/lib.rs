@@ -312,7 +312,71 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // probe, not about claude.
         //
         // **Nothing was re-recorded.** Every capture was compared, not refreshed.
-        accepted: &["2.1.220", "2.1.222", "2.1.223"],
+        //
+        // 2.1.224: observed green on darwin 25.5.0, 2026-08-07, the day after 2.1.223 and one day
+        // after codex's own second bump. The whole workspace passed against it, which covers every
+        // gated test that drives a real `claude`: `m1_hop`, `permission_round_trip` (6),
+        // `journal_wiring` (17), `cross_product` (17), `harness_matrix` (4), `depth_gate` (4), none
+        // `#[ignore]`d.
+        //
+        // **The same four spikes `9b0a06d` re-probed were re-probed here** — s10, s11, s14 and s16,
+        // every one against a canned local provider, total spend **$0.00** — so this entry does not
+        // rest on a thinner basis than the one above it. s14 and s16 were additionally re-run
+        // against 2.1.223, which is still on disk under
+        // `~/.local/share/claude/versions/`, so the readings that carry a *number* were taken on
+        // both versions on this machine within the same hour, one axis at a time.
+        //
+        // * **s14** — `probe-claude.sh` re-run on 2.1.223 **and** 2.1.224; all eight cells match
+        //   `declarations.json` field for field, `body_tools`, `system_init_tools`, exit and stderr
+        //   alike. `--tools NotATool` still declares `[]` at exit 0 with the *good* runs' stderr,
+        //   `Read,NotATool` still keeps `Read` and drops the bad name, lowercase `read` still
+        //   declares nothing, and `--tools` absent and `--tools default` still declare the same
+        //   eleven built-ins. **An unknown tool name is still silently ignored.**
+        // * **s10** — the probe re-run in all three modes: 14-key `SubagentStop` and 11-key `Stop`,
+        //   both key sets identical to the fixture's; `agent_id` still 17 lowercase hex and still
+        //   equal to the stream's `task_id`; `session_id` and `transcript_path` still the
+        //   *parent's* with `agent_transcript_path` at `<session_id>/subagents/agent-<agent_id>`;
+        //   `decision: block` still re-prompts (2 `SubagentStop` fires against 1) with
+        //   `parent_tool_use_id` on the injected `user` frame; `num_turns` still 2 in every mode;
+        //   the bad-shape control still fires **zero** times.
+        // * **s11** — `compare.json`'s whole `comparisons` block is **byte-identical** to the
+        //   committed one: `collapsed_sequence_identical: true` for `pipes` against both `pty-out`
+        //   and `pty-out-raw`, `first_divergence: null`, 38 kinds each. The pty ceiling holds —
+        //   `read_size_max` 1,024 on every pty transport against 46,692 on a pipe, **zero** reads
+        //   at or above 4,096 on a pty against 5 on a pipe, 94 of 231 reads (41%) carrying no
+        //   frame boundary against zero on pipes. Every pty line is still `\r\n` and every
+        //   `OPOST`-cleared line still bare `\n`. `claude -p` still refuses a pty *stdin* with
+        //   exit 1 and a byte-identical `Error: Input must be provided …`. 2.1.223's one-off
+        //   `collapsed_sequence_identical: false` did **not** recur, which is the confirmation the
+        //   entry above predicted: it was the operator's own `SessionStart` hook, not claude.
+        // * **s16** — every discriminating *shape* holds across all four runs: no `stdin_eof` in
+        //   any harness run and one in the control, SIGINT then SIGTERM then a third signal nothing
+        //   can catch, `server_signal_handlers_installed` 29 with none refused,
+        //   `server_voluntary_exit` / `server_orderly_shutdown` / `server_crashed` all false, all
+        //   pid-targeted (the own-process-group run is identical), and the grandchild still
+        //   unsignalled, reparented to pid 1 and beating 58–59 times after the harness is gone.
+        //
+        // **The 100 ms timer got noisier, and that is the one reading that moved.** SIGINT→SIGTERM
+        // came back **98.9, 101.7, 102.5, 103.2 ms** on 2.1.224 against **100.0–101.0 ms** on
+        // 2.1.223 re-run the same hour, and 100.0–100.5 ms in the committed 2.1.222 captures. The
+        // nominal timer is unmoved and no reading is near a different value; what changed is that
+        // the spread went from ±1 ms to ±3 ms, and one run landed *below* 100 ms for the first
+        // time. It is recorded because §11's reading of that gap as "a fixed timer rather than a
+        // race" rested on the tightness, and the tightness is now weaker evidence than it was. A
+        // bridge that treats 100 ms as an exact deadline rather than a nominal one is newly wrong.
+        //
+        // **And 2.1.223's widened SIGKILL grace does not reproduce.** Re-running the same probe
+        // today gives SIGTERM→server-gone **347–549 ms on 2.1.223** and **363–458 ms on 2.1.224** —
+        // 2.1.223's own range now straddles the 477–539 ms the entry above recorded for it and the
+        // 418–429 ms it recorded for 2.1.222. So that widening was **machine load, not a version
+        // property**, and the entry above over-attributed it. The honest reading of the grace is
+        // that it is noisy on the order of ±100 ms and `background.rs`'s "~450 ms" is a *nominal*
+        // figure with no floor under it: 347 ms was observed today. Nothing depends on a floor —
+        // marion's bridge must survive SIGKILL at any moment, not at a deadline — which is why this
+        // is a correction to the record rather than a blocker.
+        //
+        // **Nothing was re-recorded.** Every capture was compared, not refreshed.
+        accepted: &["2.1.220", "2.1.222", "2.1.223", "2.1.224"],
     },
     PinnedHarness {
         program: "codex",
