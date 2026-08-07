@@ -548,33 +548,36 @@ fn drive(node: &Node) -> Evidence {
             ..chain_params(None, DEFAULT_MAX_DEPTH)
         },
     );
-    // Answered at `Spawned`, so the run is still going: wait for the node's own terminal record and
-    // for the contract that record is about. The journal and the contract file are the seams every
-    // process here shares, and both conditions are *facts about them* — never an elapsed time,
-    // which is what §6.1 step 8 forbids substituting for an observation.
+    // Answered at `Spawned`, so the run is still going: wait for the node's own terminal record.
+    // The journal is a seam every process here shares and the condition is a *fact about it* —
+    // never an elapsed time, which is what §6.1 step 8 forbids substituting for an observation.
     //
-    // **Both, because they are two moments and the second is the one this file reads.** `run_spawn`
-    // journals `Exited` before it writes the contract, so a walk taken on the terminal record alone
-    // races one `write(2)` — measured, on gemini, as a run with zero contracts where one was about
-    // to exist.
+    // **This used to wait for the contract as well, and no longer does.** `run_spawn` journalled
+    // `Exited` *before* it wrote the contract, so a walk taken on the terminal record alone raced
+    // one `write(2)` — measured here, on gemini, as a run with zero contracts where one was about
+    // to exist. `run::persist_contract_then_record_exit` now writes the file first, so the terminal
+    // record means the contract is on disk, and waiting for both would be waiting around a rule
+    // that holds. Asserted instead of polled, deliberately: a test that polls past a race it could
+    // assert is a test that will not notice the race coming back.
     if let Ok(under_test) = &spawn_result {
         let deadline = std::time::Instant::now() + BOUND;
-        loop {
-            let terminal = is_terminal(&project.journal(), &under_test.agent_id);
-            let written = persisted_contracts(&state)
-                .map(|c| !c.is_empty())
-                .unwrap_or(false);
-            if terminal && written {
-                break;
-            }
+        while !is_terminal(&project.journal(), &under_test.agent_id) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "{}: the node at max_depth never both reached a terminal record and left a \
-                 contract (terminal: {terminal}, contract: {written})",
+                "{}: the node at max_depth never reached a terminal record",
                 node.harness
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+        assert!(
+            persisted_contracts(&state)
+                .map(|c| !c.is_empty())
+                .unwrap_or(false),
+            "{}: the journal says the node at max_depth is over, so its contract is already on \
+             disk — the terminal record is written after the file precisely so a reader can act \
+             on it",
+            node.harness
+        );
     }
     let spawn_result = spawn_result.map(|_| ()).map_err(|e| e.to_string());
 

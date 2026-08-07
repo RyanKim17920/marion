@@ -656,13 +656,92 @@ pub fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// **The node is over: its contract to disk, then the journal's terminal record.**
+///
+/// One function because the two are one rule, and a rule spread over two statements in the middle of
+/// a five-hundred-line launcher is a rule that gets reordered by someone fixing something else — which
+/// is how it came to be the wrong way round. Named, it can also be tested, which the inline version
+/// could not be: the difference between the right order and the wrong one is purely temporal, so the
+/// only way to see it is from inside the window (see [`at_contract_write`]).
+fn persist_contract_then_record_exit(
+    project_dir: &ProjectDir,
+    agent_dir: &AgentDir,
+    agent_id: &AgentId,
+    contract: &TaskContract,
+) -> Result<TaskContract, SpawnError> {
+    let persisted = persist_then_cap(agent_dir, contract);
+    if let Some(completion) = contract.completion.as_ref() {
+        crate::journal::record(
+            project_dir,
+            RecordKind::Exited(Exited {
+                agent_id: agent_id.clone(),
+                status: completion.status,
+                exit: completion.exit.clone(),
+            }),
+        );
+    }
+    persisted
+}
+
 fn persist_then_cap(agent: &AgentDir, contract: &TaskContract) -> Result<TaskContract, SpawnError> {
+    // **The one instant the ordering rule is about.** See [`at_contract_write`]: the test that
+    // guards `Exited`-after-the-contract reads the journal from here, because the window is far
+    // too narrow to sample from outside.
+    #[cfg(test)]
+    at_contract_write::fire();
     std::fs::create_dir_all(agent.contracts_dir())?;
     let path = agent.contract(&contract.task_id);
     let mut file = std::fs::File::create(path)?;
     serde_json::to_writer_pretty(&mut file, contract)?;
     file.write_all(b"\n")?;
     Ok(cap_for_return(contract.clone()))
+}
+
+/// **The instant the contract is about to be written**, so the ordering around it can be *observed*
+/// rather than raced for.
+///
+/// The rule [`persist_contract_then_record_exit`] enforces is temporal: the journal's terminal
+/// record must not exist yet at this point. In production the window is one `create` plus one
+/// `write`, far too narrow to sample from outside — a test that polled would pass against the
+/// broken order most of the time, and a test that usually passes against the defect is worse than
+/// no test. So the seam offers the one instant that matters and the test looks at the journal from
+/// inside it.
+///
+/// A guard with a mutex rather than a bare `static`, for the reason `handler.rs`'s injected panic
+/// gives: the lib tests share one process and run in parallel, so a hook that outlived its test
+/// would fire inside an unrelated spawn. It clears on drop, including on an unwind.
+#[cfg(test)]
+pub(crate) mod at_contract_write {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    type Hook = Box<dyn Fn() + Send + 'static>;
+
+    static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+    static ONE_AT_A_TIME: OnceLock<Mutex<()>> = OnceLock::new();
+
+    pub(crate) fn fire() {
+        let hook = HOOK.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = hook.as_ref() {
+            f();
+        }
+    }
+
+    pub(crate) struct Installed(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    impl Drop for Installed {
+        fn drop(&mut self) {
+            *HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
+    pub(crate) fn install(f: impl Fn() + Send + 'static) -> Installed {
+        let g = ONE_AT_A_TIME
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
+        Installed(g)
+    }
 }
 
 /// Which model a spawn runs on: **the request, else the agent type's default, else none**.
@@ -1426,21 +1505,6 @@ pub fn run_spawn_watched(
     // refused first — and it is propagated rather than swallowed because an audit record that
     // silently guesses is worse than a spawn that stops.
     contract.allowed_tools = adapter.compiled_permissions(&launch)?;
-    // The node's terminal transition, carrying the status and the `ProcessExit` §6.7 derived — so
-    // replay reconstructs the outcome **without reading the contract file**, which is the property
-    // that lets replay stay a pure function over the journal's bytes. Read off the contract rather
-    // than re-derived beside it: two derivations of one status are two chances to disagree about
-    // the same run.
-    if let Some(completion) = contract.completion.as_ref() {
-        crate::journal::record(
-            &env.project_dir,
-            RecordKind::Exited(Exited {
-                agent_id: agent_id.clone(),
-                status: completion.status,
-                exit: completion.exit.clone(),
-            }),
-        );
-    }
     // **The contract reaches disk before the stream says the node is over**, and since §11 item 28
     // step 5 that ordering is load-bearing rather than incidental.
     //
@@ -1452,7 +1516,9 @@ pub fn run_spawn_watched(
     // from its own side: it cannot distinguish "not written yet" from "never written", which is the
     // absence-versus-silence distinction §4.1 exists to keep. Writing the file first makes the
     // bookend mean what a reader needs it to mean — *everything about this node is now on disk*.
-    let returned = match persist_then_cap(&agent_dir, &contract) {
+    let persisted =
+        persist_contract_then_record_exit(&env.project_dir, &agent_dir, &agent_id, &contract);
+    let returned = match persisted {
         Ok(returned) => returned,
         Err(e) => {
             // **And the failing half must close the stream too**, or the invariant above holds only
@@ -1525,6 +1591,110 @@ mod tests {
     use marion_core::harness::Harness;
     use marion_testsupport::{Scratch, scratch};
     use std::sync::Mutex;
+
+    /// **The journal's terminal record is never durable before the contract it is about.**
+    ///
+    /// `0827fc8` made the *stream's* closing bookend mean *"everything about this node is on
+    /// disk"* by writing the contract before it, and said in as many words that the ordering is
+    /// load-bearing. The **journal's** terminal record — `RecordKind::Exited`, which is what
+    /// `Replay` folds into `NodeState::Exited`, and so what every reader of the journal takes to
+    /// mean the node is over — was still written first, leaving exactly the same window one
+    /// `write(2)` wide on the other surface. It was not hypothetical: `depth_gate.rs` measured it
+    /// on gemini as a run with zero contracts where one was about to exist, and worked around it by
+    /// polling for both conditions instead of asserting the rule.
+    ///
+    /// **Observed from inside the window, not sampled from outside it.** The difference between the
+    /// right order and the wrong one is purely temporal — both orders end with the same records and
+    /// the same file — so there is no after-the-fact reading that can tell them apart. A poll from
+    /// another thread would have to catch one `create` plus one `write`, and would pass against the
+    /// broken order almost every time; a test that usually passes against the defect is worse than
+    /// none. So the seam offers the one instant that matters ([`at_contract_write`]) and this reads
+    /// the journal from within it.
+    #[test]
+    fn the_terminal_record_is_not_journaled_until_the_contract_is_on_disk() {
+        use marion_core::contract::*;
+        use marion_core::encoding::{Duration as EncDuration, SystemTime as EncSystemTime};
+
+        let dir = scratch("run-exit-order");
+        let project = marion_core::paths::ProjectDir::new(&dir, std::path::Path::new("/repo/.git"));
+        std::fs::create_dir_all(project.path()).expect("the project dir");
+        let agent_id = AgentId("019fbf94-0000-7000-8000-0000000000aa".into());
+        let agent_dir = project.agent(&agent_id);
+
+        let contract = crate::spawn::build_contract(
+            TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
+            AgentId("019fbf94-0000-7000-8000-000000000001".into()),
+            RepoIdentity {
+                git_common_dir: "/repo/.git".into(),
+                head_branch: Some("main".into()),
+            },
+            Oid("a".repeat(40)),
+            Workspace::Worktree {
+                path: "/tmp/wt".into(),
+                branch: "marion/t1".into(),
+            },
+            "add a flag",
+            &["tests pass".to_string()],
+            &[Glob("**".into())],
+            &[Glob("src/**".into())],
+            EncDuration::from_secs(900),
+            EncSystemTime::from_unix_millis(1_785_625_628_619),
+            &ChildOutcome {
+                narrative: Some("done".into()),
+                exit_code: Some(0),
+                ..Default::default()
+            },
+            vec![],
+            None,
+            vec![],
+        );
+        assert!(
+            contract.completion.is_some(),
+            "the premise: only a contract with a completion produces an `Exited` record at all, so \
+             a fixture without one would make every assertion below vacuous"
+        );
+
+        // Read from inside the window. `terminal` is what the journal said at the instant the
+        // contract file was about to be created.
+        let terminal_at_write = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let journal_path = project.journal();
+        let seen = std::sync::Arc::clone(&terminal_at_write);
+        let watched = agent_id.clone();
+        let _hook = at_contract_write::install(move || {
+            let bytes = std::fs::read(&journal_path).unwrap_or_default();
+            let exited = marion_core::registry::replay(&bytes)
+                .nodes()
+                .iter()
+                .any(|n| n.agent_id == watched && n.state.is_exited());
+            seen.store(exited, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        persist_contract_then_record_exit(&project, &agent_dir, &agent_id, &contract)
+            .expect("the contract is written to a directory this test owns");
+
+        assert!(
+            !terminal_at_write.load(std::sync::atomic::Ordering::SeqCst),
+            "**the rule.** At the instant the contract was about to be created the journal already \
+             said this node had exited, so a reader acting on the terminal record — which is what a \
+             terminal record is for — would have found no contract, and could not tell `not written \
+             yet` from `never written` (§4.1)"
+        );
+
+        // And both halves really happened, so the assertion above is not satisfied by a run that
+        // did nothing.
+        assert!(
+            agent_dir.contract(&contract.task_id).is_file(),
+            "the contract reached disk"
+        );
+        let bytes = std::fs::read(project.journal()).expect("the journal was written");
+        assert!(
+            marion_core::registry::replay(&bytes)
+                .nodes()
+                .iter()
+                .any(|n| n.agent_id == agent_id && n.state.is_exited()),
+            "and the terminal record followed it"
+        );
+    }
 
     /// **`run_bounded` survives a duration no clock can hold, having already started a process.**
     ///
