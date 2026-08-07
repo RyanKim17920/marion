@@ -29,6 +29,7 @@ use serde_json::Value;
 fn usage_text() -> String {
     format!(
         "usage: marion                                (interactive: pick harness, model, prompt)\n\
+         \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
          \x20                 [--canned [--base-url <url>]]\n\
@@ -107,7 +108,88 @@ struct Args {
     canned: bool,
 }
 
-/// Hand-rolled, because the whole surface is one subcommand and six flags.
+/// `marion attach <agent-id> [--repo <path>] [--state-dir <path>]`.
+///
+/// **A second parser rather than a generalised one**, and that is the whole of the refactor this
+/// verb needed. `parse_args` is `run`'s: it takes an agent *type*, six run-shaping flags and a
+/// prompt, none of which an attach has. Widening it into a table would have meant making every
+/// one of those flags optional-per-verb, which is how a flag ends up accepted by a verb that
+/// ignores it — the accept-and-ignore shape §11 item 23 is about, with marion on the producing
+/// end. Two small parsers cannot do that to each other.
+///
+/// The two flags it *does* share are the two that answer "which supervisor": §2 keys one on the
+/// git common dir, so an attach has to resolve the same project the run did or it will ask a
+/// different supervisor about a node it has never heard of.
+struct AttachArgs {
+    agent_id: String,
+    repo: Option<PathBuf>,
+    state_dir: Option<String>,
+}
+
+fn parse_attach(argv: &[String]) -> Option<AttachArgs> {
+    let agent_id = argv.get(1)?.clone();
+    if agent_id.starts_with('-') {
+        return None;
+    }
+    let mut args = AttachArgs {
+        agent_id,
+        repo: None,
+        state_dir: None,
+    };
+    let mut rest = argv[2..].iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--repo" => args.repo = Some(PathBuf::from(rest.next()?)),
+            "--state-dir" => args.state_dir = Some(rest.next()?.clone()),
+            // An unknown flag is a refusal here for the same reason it is in `parse_args`: a
+            // mistyped `--state-dir` that fell through would dial a supervisor under `$HOME` and
+            // report the operator's node as missing.
+            _ => return None,
+        }
+    }
+    Some(args)
+}
+
+/// The whole of `marion attach`, from argv to exit code.
+///
+/// Kept out of `main` deliberately. `main` is three thousand lines of one verb's lifecycle, and
+/// the smallest dispatch that admits a second verb is one that hands the second verb its own
+/// function rather than threading a mode through all of it.
+fn attach_main(argv: &[String]) -> ExitCode {
+    let Some(args) = parse_attach(argv) else {
+        usage()
+    };
+    let repo = args.repo.unwrap_or_else(|| {
+        default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    });
+    let repo = match repo.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(state) = state_dir(
+        args.state_dir.as_deref(),
+        std::env::var("XDG_STATE_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    ) else {
+        eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+        return ExitCode::FAILURE;
+    };
+    match marion_supervisor::attach::run(&args.agent_id, &repo, &state) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            // After the `Screen` guard has restored the terminal — `Session::drop` runs before
+            // this returns — so the sentence lands on the operator's real screen rather than on
+            // an alternate one that is about to disappear.
+            eprintln!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Hand-rolled, because `run`'s whole surface is one subcommand and six flags.
 ///
 /// **An unknown flag is a refusal, never a silent ignore.** A mistyped `--state-dir` that fell
 /// through would write the run's state under `$HOME` and leave the operator hunting for a
@@ -1253,6 +1335,12 @@ fn main() -> ExitCode {
         println!("{}", usage_text());
         return ExitCode::SUCCESS;
     }
+    // **The whole of the second verb's dispatch.** A `match` on argv[0] would read better and
+    // would mean restructuring the bare-picker branch below, which is `run`'s and has its own
+    // stdin-is-a-terminal rule; this adds a verb without touching what `run` does.
+    if argv.first().map(String::as_str) == Some("attach") {
+        return attach_main(&argv);
+    }
     let args = if argv.is_empty() {
         // **Only** with a terminal on the other end. A picker that read from a pipe would block
         // forever on input nothing is going to send, which is a hang, not a prompt.
@@ -1855,6 +1943,69 @@ fn root_denials(journal: &Path, root_id: &marion_core::contract::AgentId) -> Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// **The second verb exists and is not `run`.**
+    ///
+    /// `parse_args` returns `None` for anything whose first word is not `run`, and before this
+    /// there was nothing else to try — every other argv fell through to `usage()`. This is the
+    /// dispatch's whole contract, from both sides: `attach` parses here and does not parse as a
+    /// run, and `run` still does not parse as an attach.
+    #[test]
+    fn attach_is_a_verb_of_its_own_and_run_is_not_it() {
+        let argv: Vec<String> = ["attach", "a-1"].iter().map(|s| s.to_string()).collect();
+        let got = parse_attach(&argv).expect("`marion attach a-1` parses");
+        assert_eq!(got.agent_id, "a-1");
+        assert_eq!(got.repo, None);
+        assert!(
+            parse_args(&argv).is_none(),
+            "an attach must not be readable as a run: it has no agent type and no prompt"
+        );
+
+        let run: Vec<String> = ["run", "claude", "--prompt", "go"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(parse_args(&run).is_some(), "`run` still parses");
+    }
+
+    /// The two flags an attach shares with a run, and they are the two that answer *which
+    /// supervisor* — §2 keys one on the git common dir, so an attach that resolved a different
+    /// project would ask a supervisor that has never heard of the node.
+    #[test]
+    fn attach_takes_the_two_flags_that_choose_a_supervisor() {
+        let argv: Vec<String> = ["attach", "a-1", "--repo", "/r", "--state-dir", "/s"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got = parse_attach(&argv).expect("both flags parse");
+        assert_eq!(got.repo.as_deref(), Some(std::path::Path::new("/r")));
+        assert_eq!(got.state_dir.as_deref(), Some("/s"));
+    }
+
+    /// An unknown flag is a refusal, never a silent ignore — the same rule `parse_args` states,
+    /// and it matters more here: a mistyped `--state-dir` that fell through would dial a
+    /// supervisor under `$HOME` and report the operator's live node as missing.
+    #[test]
+    fn an_attach_flag_marion_does_not_know_is_refused_rather_than_ignored() {
+        for bad in [
+            vec!["attach"],
+            vec!["attach", "--repo", "/r"],
+            vec!["attach", "a-1", "--prompt", "go"],
+            vec!["attach", "a-1", "--repo"],
+            vec!["attach", "a-1", "--canned"],
+        ] {
+            let argv: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
+            assert!(parse_attach(&argv).is_none(), "{bad:?} was accepted");
+        }
+    }
+
+    /// The usage text names the verb. A subcommand nobody can discover is a subcommand that does
+    /// not exist for the operator who needs it.
+    #[test]
+    fn the_usage_text_names_attach() {
+        let text = usage_text();
+        assert!(text.contains("marion attach <agent-id>"), "{text}");
+    }
     use super::*;
 
     // The shared self-removing scratch dir, rather than the tenth hand-rolled copy of one.

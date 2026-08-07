@@ -53,6 +53,52 @@ unsafe extern "C" {
     ) -> std::ffi::c_int;
     fn cfmakeraw(termios_p: *mut Termios);
     fn isatty(fd: std::ffi::c_int) -> std::ffi::c_int;
+    fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
+}
+
+/// `TIOCGWINSZ`, measured on Darwin 25.5.0 as `0x40087468`; Linux spells it `0x5413`.
+///
+/// Hand-declared for the reason the whole of this section is: `marion-supervisor::pty` already
+/// does exactly this for `TIOCSWINSZ`, and a `libc` dependency bought for one constant on two
+/// platforms is a dependency this workspace has consistently declined.
+#[cfg(target_os = "macos")]
+const TIOCGWINSZ: std::ffi::c_ulong = 0x4008_7468;
+#[cfg(not(target_os = "macos"))]
+const TIOCGWINSZ: std::ffi::c_ulong = 0x5413;
+
+/// The kernel's `struct winsize`. Rows first — that is the struct's order, and it is the opposite
+/// of the `cols, rows` order every marion API uses, which is why the conversion happens here once
+/// rather than at each call site.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct WinSizeRaw {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+}
+
+/// **marion's own terminal size**, as `(cols, rows)`.
+///
+/// This is the client's half of the resize seam and it belongs here rather than in the supervisor:
+/// `marion-supervisor::pty` reads the size of a pty *master it owns*, and this reads the size of a
+/// terminal marion is merely attached to. `None` when `fd` is not a terminal, or when it is one
+/// whose size the kernel does not know — a pipe, and a pty nobody has sized. Neither is an error a
+/// client can act on, and both mean the same thing: do not claim a geometry.
+///
+/// A zero in either axis is reported as `None` rather than as `0`. `TIOCGWINSZ` answers zeroes for
+/// a terminal that has never been sized, and a client that forwarded them would set the node's pty
+/// to 0x0 — which is not a small terminal, it is a terminal every full-screen application divides
+/// by.
+pub fn window_size(fd: RawFd) -> Option<(u16, u16)> {
+    let mut ws = WinSizeRaw::default();
+    // SAFETY: `TIOCGWINSZ` writes exactly one `struct winsize` through the pointer, and `ws` is a
+    // live, correctly laid out one. A non-tty `fd` answers `ENOTTY` and writes nothing.
+    let rc = unsafe { ioctl(fd, TIOCGWINSZ, &mut ws as *mut WinSizeRaw) };
+    if rc != 0 || ws.ws_col == 0 || ws.ws_row == 0 {
+        return None;
+    }
+    Some((ws.ws_col, ws.ws_row))
 }
 
 /// `TCSAFLUSH` — apply once the output queue has drained and discard pending input.
@@ -353,7 +399,19 @@ impl Drop for Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::AsRawFd;
     use std::sync::{Mutex as StdMutex, MutexGuard};
+
+    /// A pipe has no geometry, and `None` is the answer rather than `(0, 0)`.
+    ///
+    /// The distinction is the whole reason this returns an `Option`: a client that read `(0, 0)`
+    /// off a redirected stdout and forwarded it would resize the node's pty to zero columns, which
+    /// every full-screen application divides by.
+    #[test]
+    fn a_descriptor_with_no_geometry_reports_none_rather_than_zero() {
+        let f = std::fs::File::open("/dev/null").expect("/dev/null opens");
+        assert_eq!(window_size(f.as_raw_fd()), None);
+    }
 
     /// `std::panic::set_hook` is process-global, so the tests that install one must not overlap.
     static HOOK: StdMutex<()> = StdMutex::new(());

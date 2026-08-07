@@ -14,6 +14,9 @@
 
 /// §5.4's `background`, honoured: the handles this bridge has handed out, and which node each one
 /// is about. Since §11 item 28 step 5 it owns no child and runs no thread.
+/// `marion attach <agent-id>`: the client process that holds `marion-tui`'s pieces together and
+/// gives that crate its first reverse dependency.
+pub mod attach;
 pub mod background;
 pub mod bridge;
 /// §11 item 28 step 5: the per-child MCP bridge as a **socket client**. It dials §2's socket,
