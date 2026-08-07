@@ -72,7 +72,7 @@ use marion_harness::{
 use serde_json::Value;
 
 use crate::duplex::{self, DuplexError, DuplexSpec};
-use crate::run::{entropy, run_bounded, unix_millis};
+use crate::run::{entropy, run_bounded_watched, unix_millis};
 use crate::spawn::SpawnError;
 
 /// The typed-control-plane protocol, which a root shares with a child (`crate::duplex`).
@@ -481,9 +481,62 @@ pub enum RootError {
     },
 }
 
+/// How long the root may take to have marion's tool list before the run is refused (§6.1 step 8).
+///
+/// Generous — the measured connect is ~70 ms — because the alternative to waiting is a run that
+/// ends in plain text with no error anywhere. It lives here rather than in `bin/marion.rs` for the
+/// same reason [`blocked_bound_secs`] does: since §11 item 28 step 6 the supervisor is what launches
+/// a root, so this is the bound the launch is actually made under.
+pub const MCP_READY_TIMEOUT: StdDuration = StdDuration::from_secs(30);
+
+/// **The root's node-level bound (§9), resolved from the flag and the agent type.**
+///
+/// Lives here rather than in `bin/marion.rs` because since §11 item 28 step 6 the value is decided
+/// by the **supervisor** — `marion run` states `--timeout` on the wire as an `Option<u64>` and the
+/// bound is resolved where the root is built. One function, so the number an operator typed and the
+/// number the node runs under cannot be two resolutions of the same rule.
+///
+/// Zero from either source means *unset*, not *instant*: an agent type with `timeout: 0` and a
+/// `--timeout 0` are both a bound nobody chose, and §3.1's default is what a node gets then.
+pub fn blocked_bound_secs(explicit: Option<u64>, agent_type_secs: u64) -> u64 {
+    match explicit.filter(|s| *s > 0) {
+        Some(s) => s,
+        None if agent_type_secs > 0 => agent_type_secs,
+        None => marion_core::agent_type::DEFAULT_TIMEOUT_SECS,
+    }
+}
+
 /// Mint the root's identity, write its configuration, and compile its argv.
+///
+/// For a caller that owns the node's lifecycle, see [`prepare_watched`].
 pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
+    prepare_watched(spec, &crate::run::Unwatched)
+}
+
+/// [`prepare`], with the node's **owner** told the moment the root has an identity.
+///
+/// The hook is [`crate::run::SpawnObserver::identified`], the same one `run_spawn` calls for a
+/// child, and it is called at the same place in the same sense: the instant the node has an
+/// `AgentId` and **before any side effect** — before the agent directory exists, before the working
+/// tree is snapshotted, before a configuration document is written. That position is what makes the
+/// token it returns reach the one file that carries it: the MCP declaration compiled below.
+///
+/// **It differs from a child's in one respect, and the difference is stated rather than smoothed
+/// over.** For a child the `SpawnIntent` is already durable when `identified` fires; a root's is
+/// journaled at the *end* of this function, where it has always been, because that is the last
+/// instant at which everything immutable about the node is known and no process exists yet. So a
+/// `prepare` that fails between the two leaves the supervisor holding a claimed node with no record
+/// in the journal — which is why the supervisor's root thread files an outcome on **every** exit
+/// path (`handler::spawn_root`), rather than only on the ones that got as far as a process. Moving
+/// the intent earlier would trade that for an *unresolved* intent on the same failure, which is
+/// strictly worse: §7.2 reads one of those as a node marion may have lost.
+pub fn prepare_watched(
+    spec: &RootSpec,
+    observer: &dyn crate::run::SpawnObserver,
+) -> Result<RootNode, RootError> {
     let agent_id = new_agent_id(unix_millis(), entropy()?);
+    // **Before `create_dir_all`, which is this function's first side effect.** See the doc above.
+    let node_token = observer.identified(&agent_id);
     // §2: *"both the supervisor and its state are keyed on the project root (git common-dir,
     // falling back to cwd)"*. `spec.repo` is the root's cwd and the base of §6.6's worktrees, which
     // is a different question — keying the journal on it gave a linked worktree its own tree while
@@ -608,13 +661,18 @@ pub fn prepare(spec: &RootSpec) -> Result<RootNode, RootError> {
         // this is the value that makes the whole chain measurable — without it every node in the
         // tree would look like a root to its own bridge.
         depth: ROOT_DEPTH,
-        // **`None`, and it is a gap rather than a decision about roots.** §5.4's capability token is
-        // minted by whoever owns the node's lifecycle, and this root's owner is `marion run` itself
-        // — a process that blocks for the whole turn and then exits, so a token it minted would be
-        // a credential with nothing behind it and no map to check it against. A root whose owner is
-        // the supervisor gets one; that is §11 item 28 step 6, and until it lands a `marion run`
-        // root's bridge states no capability and the socket's `agent/spawn` refuses it by name.
-        node_token: None,
+        // **§5.4's per-node capability, minted by whoever owns this node's lifecycle** — which
+        // since §11 item 28 step 6 is the supervisor, for every root a person can start. It arrives
+        // through [`crate::run::SpawnObserver::identified`] and is written into exactly one place:
+        // the declaration compiled a few lines below, which is the only channel the root's own
+        // bridge reads. That is what will let the root's bridge present a `SpawnCaller` the
+        // supervisor can check, rather than a name any process on this socket could assert.
+        //
+        // `None` is still reachable and still means the same thing it always did: nobody owns this
+        // node's lifecycle beyond the call that started it ([`crate::run::Unwatched`], which is
+        // every in-process `prepare` in the tests and every caller outside the supervisor). A token
+        // minted by a process that is about to exit would be a credential with nothing behind it.
+        node_token,
         ready_file: ready_file.clone(),
         repo: spec.repo.clone(),
         state_dir: spec.state.clone(),
@@ -823,6 +881,56 @@ pub fn launch_watched(
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
 ) -> Result<RootOutcome, RootError> {
+    launch_owned(node, bound, mcp_ready_timeout, watcher, None)
+}
+
+/// [`launch_watched`], with the node's **owner** told the instant a process exists.
+///
+/// `on_started` is the second half of [`crate::run::SpawnObserver`] for a root — see
+/// [`prepare_watched`] for the first. It is `Option` because ownership is: a caller that holds this
+/// blocking call for the root's whole turn already knows everything the hook announces, while a
+/// supervisor that answers `agent/spawn` from another thread does not, and its answer is a claim
+/// about a process that must not be made before one exists.
+///
+/// **The journal does not depend on it.** `Spawned { pid: Some(_) }` is written from the same
+/// instant whether or not anybody is listening — see [`launch_inner`] — so the record is a property
+/// of the run rather than of who asked for it.
+pub fn launch_owned(
+    node: &RootNode,
+    bound: StdDuration,
+    mcp_ready_timeout: StdDuration,
+    watcher: Option<duplex::StreamSink<'_>>,
+    on_started: Option<&dyn Fn(i32)>,
+) -> Result<RootOutcome, RootError> {
+    launch_inner(node, bound, mcp_ready_timeout, watcher, on_started)
+}
+
+fn launch_inner(
+    node: &RootNode,
+    bound: StdDuration,
+    mcp_ready_timeout: StdDuration,
+    watcher: Option<duplex::StreamSink<'_>>,
+    on_started: Option<&dyn Fn(i32)>,
+) -> Result<RootOutcome, RootError> {
+    // **§6.1 step 7's confirmation, at the instant the process exists** — §11 item 28 step 1's rule,
+    // applied to the node it had left out. Written here rather than after the run returns, and
+    // carrying the pid rather than an absence, because both halves are what a *second* process needs
+    // to act on this node at all: `SpawnIntent` alone now means "no process exists, full stop", and
+    // a `Spawned` with a pid is a signal target §6.7's kill can reach.
+    //
+    // The window this opens is the one §6.1 step 7 is written to have: one `write(2)` plus one
+    // fsync between the process existing and the journal saying so. Today's equivalent window was
+    // the root's entire turn.
+    let spawned = std::cell::Cell::new(false);
+    let started = |pid: i32| {
+        crate::journal::record(&node.project, spawned_record(node, Some(pid)));
+        spawned.set(true);
+        // The owner is told **after** the record is durable-ordered, so a supervisor that answers
+        // its caller on this hook is making a claim the journal already backs.
+        if let Some(hook) = on_started {
+            hook(pid);
+        }
+    };
     // **§7.3.3's replay leg for a root**, alongside the journal's record of the same run and for the
     // complementary reason: the journal says a root existed and how it ended, this says what it
     // said. `None` on an open failure — a viewer may never fail a run (`events::EventSink::open`).
@@ -854,16 +962,16 @@ pub fn launch_watched(
                 }
                 None => watcher,
             };
-            launch_duplex(node, bound, mcp_ready_timeout, sink)
+            launch_duplex(node, bound, mcp_ready_timeout, sink, &started)
         }
         // No live seam at all on this path — `run_bounded` drains the pipe whole — so the stream is
         // recovered from the capture inside `launch_only`, where the raw stdout still exists.
         // Recovering it from `RootOutcome::transcript` out here would silently drop every non-JSON
         // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
         // prevent.
-        RootPath::LaunchOnly => launch_only(node, bound, events.as_mut()),
+        RootPath::LaunchOnly => launch_only(node, bound, events.as_mut(), &started),
     };
-    journal_the_roots_outcome(node, &result);
+    journal_the_roots_outcome(node, &result, spawned.get());
     // The closing bookend, from the same reading the journal's `Exited` record is written from.
     if let Some(es) = &events {
         es.lifecycle(roots_terminal_lifecycle(&result));
@@ -940,6 +1048,26 @@ fn roots_exit(outcome: &RootOutcome) -> (ExitStatus, ProcessExit) {
     )
 }
 
+/// The `ProcessExit` both records of a [`RootError::BridgeNeverReached`] carry.
+///
+/// **The description is marion's own sentence, not a summary of it** — and since §11 item 28 step 6
+/// that is load-bearing rather than tidy. The refusal names the harness, how many frames the root
+/// emitted, the exit code it claimed and whatever the stream said about the failure; a `marion run`
+/// that drove the root in-process printed all of it from the `RootError` in its hand, and a client
+/// watching over the socket has only this field. A fixed string here is the difference between
+/// *"opencode: the root never reached marion's bridge … child exit Some(1)"* and a run that failed
+/// for no stated reason — which is the same silence §6.1 step 8 exists to refuse.
+///
+/// One function, so the journal's `Exited` and `events.jsonl`'s closing bookend cannot come to
+/// describe one refusal two ways.
+fn bridge_never_reached_exit(exit: Option<i32>, e: &RootError) -> ProcessExit {
+    ProcessExit {
+        code: exit,
+        signal: None,
+        description: e.to_string(),
+    }
+}
+
 /// The closing bookend for `events.jsonl`, mirroring [`journal_the_roots_outcome`]'s three arms so
 /// the two records of one run never disagree about which of them happened.
 fn roots_terminal_lifecycle(
@@ -954,15 +1082,9 @@ fn roots_terminal_lifecycle(
         // The run happened and marion refused the *result*, so this is an exit — the same reading
         // the journal takes of this one variant, and the reason it is the only error arm that is
         // not an abort.
-        Err(RootError::BridgeNeverReached { exit, .. }) => Lifecycle::Exited {
+        Err(e @ RootError::BridgeNeverReached { exit, .. }) => Lifecycle::Exited {
             status: ExitStatus::Failed,
-            exit: ProcessExit {
-                code: *exit,
-                signal: None,
-                description: "the root never reached marion's bridge, so its turn went out \
-                              without marion's tools (§6.1 step 8)"
-                    .into(),
-            },
+            exit: bridge_never_reached_exit(*exit, e),
         },
         Err(e) => Lifecycle::Aborted {
             reason: e.to_string(),
@@ -970,7 +1092,26 @@ fn roots_terminal_lifecycle(
     }
 }
 
-fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootError>) {
+/// `spawned` is whether [`launch_inner`]'s hook already journaled the confirmation. See
+/// [`spawned_record`]: after §11 item 28 step 6 that is the ordinary path and this function writes
+/// no `Spawned` at all, which is the whole point — the record now names the instant the process
+/// existed rather than the instant it stopped existing.
+fn journal_the_roots_outcome(
+    node: &RootNode,
+    result: &Result<RootOutcome, RootError>,
+    spawned: bool,
+) {
+    // A confirmation for a process whose existence this function is only *inferring*, and only when
+    // nothing observed it directly. Unreachable through either driver today — both call the hook
+    // between `spawn()` and the first byte — and kept as an absence rather than an `unreachable!()`
+    // because the thing it would be asserting is exactly the thing that must not fail silently: a
+    // run that reached a terminal reading with no `Spawned` behind it would replay as a node whose
+    // intent was never resolved (§7.2), which is the reading reserved for a node marion *lost*.
+    let confirm = |node: &RootNode| {
+        if !spawned {
+            crate::journal::record(&node.project, spawned_record(node, None));
+        }
+    };
     // **First, and before the match on `result`** — §9's change record is written on every path
     // that reaches this function, which is every path `launch_watched` returns on. (A crash inside
     // the run reaches nothing here; see this function's doc comment for what covers that instead.)
@@ -987,21 +1128,14 @@ fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootE
         Ok(o) => o,
         // The run happened, the process exited, and marion refused the *result* — so this is an
         // exit, not an abandonment. It is the only error variant that can say so.
-        Err(RootError::BridgeNeverReached { exit, .. }) => {
-            crate::journal::record(&node.project, spawned_record(node));
+        Err(e @ RootError::BridgeNeverReached { exit, .. }) => {
+            confirm(node);
             crate::journal::record(
                 &node.project,
                 RecordKind::Exited(Exited {
                     agent_id: node.agent_id.clone(),
                     status: ExitStatus::Failed,
-                    exit: ProcessExit {
-                        code: *exit,
-                        signal: None,
-                        description:
-                            "the root never reached marion's bridge, so its turn went out \
-                                      without marion's tools (§6.1 step 8)"
-                                .into(),
-                    },
+                    exit: bridge_never_reached_exit(*exit, e),
                 }),
             );
             return;
@@ -1019,7 +1153,7 @@ fn journal_the_roots_outcome(node: &RootNode, result: &Result<RootOutcome, RootE
             return;
         }
     };
-    crate::journal::record(&node.project, spawned_record(node));
+    confirm(node);
     // §6.7's status derivation, read onto a node that has no contract to record it in.
     // `Unreported` is deliberately absent: it means *no `report` arrived*, and §9 says a root
     // **cannot `report`** at all — spending that status on a root would make every root look like
@@ -1232,8 +1366,19 @@ fn judge_scope(scope: &RootScope, changed: &[PathBuf]) -> (RootScope, Vec<PathBu
 }
 
 /// §6.1 step 7's confirmation for a root. `harness_version` and `model` are resolved by *launching*
-/// (§3.2), which is why they are here and not on the intent; `pid` is `None` because marion drives
-/// the root through a helper that owns the child and does not surface one — an absence, not a zero.
+/// (§3.2), which is why they are here and not on the intent.
+///
+/// **`pid` is `Some` on every path a process took**, since §11 item 28 step 6. It used to be `None`
+/// with the reason *"marion drives the root through a helper that owns the child and does not
+/// surface one"* — true when `marion run` held the whole turn in one blocking call, and false the
+/// moment the supervisor started owning roots: there is now a second process that can act on this
+/// number, and §6.7's kill needs a signal target. It is still not an *identity* — a bare pid does
+/// not distinguish a survivor from a recycled number, which is `restart.rs`'s standing reason for
+/// refusing §7.2's probe branch, and step 6 does not change that.
+///
+/// `None` is left constructible for the one case where it is the honest answer: a terminal reading
+/// reached without the launch hook ever firing, i.e. a process whose existence is inferred rather
+/// than observed. See [`journal_the_roots_outcome`].
 ///
 /// **`harness_version` is `"unknown"` on a root, and that is a refusal to invent a side effect.**
 /// A child's version is measured because `run_spawn` already runs `<program> --version` for
@@ -1244,14 +1389,14 @@ fn judge_scope(scope: &RootScope, changed: &[PathBuf]) -> (RootScope, Vec<PathBu
 /// with and a stub that never exits would turn the extra call into a hang. §4.3 puts the binary's
 /// path and version in `meta.json`; when marion writes that file the value comes from there,
 /// measured once, and this reads it rather than re-deriving it.
-fn spawned_record(node: &RootNode) -> RecordKind {
+fn spawned_record(node: &RootNode, pid: Option<i32>) -> RecordKind {
     RecordKind::Spawned(Spawned {
         agent_id: node.agent_id.clone(),
         harness_version: "unknown".into(),
         // The **compiled** invocation's model, for §6.7's reason: what went on the wire, not what
         // was asked for. `None` on codex, whose `exec` surface takes no model argument at all.
         model: node.invocation.model.clone(),
-        pid: None,
+        pid,
     })
 }
 
@@ -1271,6 +1416,7 @@ fn launch_only(
     node: &RootNode,
     bound: StdDuration,
     mut events: Option<&mut crate::events::EventSink>,
+    on_started: &dyn Fn(i32),
 ) -> Result<RootOutcome, RootError> {
     let inv = &node.invocation;
     let mut cmd = SysCommand::new(&inv.program);
@@ -1287,7 +1433,7 @@ fn launch_only(
         // put a placeholder credential beside the operator's real login.
         cmd.env("MARION_DUMMY_KEY", &node.token);
     }
-    let out = run_bounded(&mut cmd, bound)?;
+    let out = run_bounded_watched(&mut cmd, bound, on_started)?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     // Recorded **here**, because this is the last place the raw stdout exists: `RootOutcome`'s
@@ -1438,6 +1584,7 @@ fn launch_duplex(
     blocked_bound: StdDuration,
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
+    on_started: &dyn Fn(i32),
 ) -> Result<RootOutcome, RootError> {
     let ready_file = node
         .ready_file
@@ -1462,13 +1609,13 @@ fn launch_duplex(
             // A root's frames are the only ones with a human on the other end; a child's stream is
             // never streamed anywhere, see `duplex::DuplexSpec::sink`.
             sink: watcher,
-            // **`None`, and that is the root's remaining half of §11 item 28.** A child's
-            // `Spawned` now goes out at the instant its process exists and carries its pid
-            // (`run_spawn`); a root's is still written after the run returns, with `pid: None`,
-            // because `marion run` owns the whole turn in one blocking call and nothing outside
-            // this process could act on the pid if it had it. See `spawned_record` for the record
-            // itself and item 28's step 6 for what changes it.
-            on_started: None,
+            // **The root's half of §11 item 28, closed by step 6.** A child's `Spawned` goes out
+            // at the instant its process exists and carries its pid (`run_spawn`); a root's now
+            // does too. The old absence was justified by `marion run` owning the whole turn in one
+            // blocking call, so that *"nothing outside this process could act on the pid if it had
+            // it"* — and the supervisor owning the root is precisely something outside that can.
+            // See `launch_inner` for the hook and `spawned_record` for the record.
+            on_started: Some(on_started),
         },
     )
     .map_err(|e| root_error(e, mcp_ready_timeout))?;
@@ -2075,6 +2222,67 @@ mod tests {
                 doc.contains(&format!("\"{}\"", builtin(name).unwrap().name)),
                 "{name}: its canonical agent type name must reach the bridge, or §6.1 step 2's \
                  gates have no max_depth to read:\n{doc}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **§5.4's per-node capability reaches the root's own bridge — and only when somebody owns
+    /// the node.**
+    ///
+    /// The token is minted by whoever owns the node's lifecycle, which since §11 item 28 step 6 is
+    /// the supervisor, and [`prepare_watched`] writes it into exactly one place: the declaration
+    /// this root's bridge reads. Asserted off the bytes the bridge actually gets, for the reason
+    /// `every_root_declares_itself_at_depth_zero_and_names_its_own_type` gives — a `SpawnCtx` field
+    /// that never reaches a file is a credential nothing can present.
+    ///
+    /// **The `Unwatched` half is not symmetry for its own sake.** `node_token: None` is the
+    /// pre-step-6 record and it is still constructible, so a build that quietly went back to it
+    /// would pass every other test in this file: a root would prepare, launch, run and exit
+    /// normally, and the only symptom would be that its bridge could present no `SpawnCaller` and
+    /// the socket's `agent/spawn` refused it by name. Both rows are here so that the difference
+    /// between "nobody minted one" and "one was minted and dropped" is a test rather than a
+    /// reading.
+    #[test]
+    fn a_watched_roots_declaration_carries_the_token_its_owner_minted() {
+        struct Owner(String);
+        impl crate::run::SpawnObserver for Owner {
+            fn identified(&self, _: &AgentId) -> Option<String> {
+                Some(self.0.clone())
+            }
+            fn started(&self, _: &AgentId, _: i32) {}
+        }
+        /// Everywhere a harness can be told something: the declaration document, the compiled argv
+        /// (codex's `-c mcp_servers.marion.env.…` route), and the invocation's environment. Asked
+        /// as one question because *which* of the three a harness uses is `McpRoute`'s business,
+        /// and a test that picked one would silently stop measuring a harness that moved.
+        fn declared_anywhere(node: &RootNode, needle: &str) -> bool {
+            let doc = node
+                .mcp_config
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .unwrap_or_default();
+            doc.contains(needle)
+                || node.invocation.args.iter().any(|a| a.contains(needle))
+                || node.invocation.env.iter().any(|(_, v)| v.contains(needle))
+        }
+
+        // Distinctive enough that it cannot collide with an id, a path or a model name.
+        const TOKEN: &str = "root-node-token-8f1c-4a20-b7de";
+        let dir = temp("node-token");
+        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+            let owned = prepare_watched(&root_spec(&dir, name), &Owner(TOKEN.into()))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(
+                declared_anywhere(&owned, TOKEN),
+                "{name}: the token its owner minted must reach the bridge, or this root cannot \
+                 delegate at all (§5.4)"
+            );
+            let unowned = prepare(&root_spec(&dir, name)).unwrap();
+            assert!(
+                !declared_anywhere(&unowned, TOKEN),
+                "{name}: `Unwatched` mints nothing, so nothing may appear — a token that showed \
+                 up here would have come from somewhere other than the owner"
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
