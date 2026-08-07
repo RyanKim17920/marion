@@ -388,7 +388,9 @@ struct Event {
     item_id: Option<ItemId>,
     ts: SystemTime,               // RFC3339 UTC with a literal Z, 3 fractional digits (§6.7);
                                   //   display only
-    mono_ns: u64,                 // monotonic since supervisor start; aligns with pty.cast
+    mono_ns: u64,                 // monotonic since *this writer* started, not since supervisor
+                                  //   start: per writer, not comparable across them. Exists only
+                                  //   to align with pty.cast (see below)
     provenance: Provenance,
     payload: Payload,
 }
