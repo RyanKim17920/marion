@@ -1457,6 +1457,39 @@ attacker already running as the user.
 **Isolation that must survive a hostile child requires a different uid or a sandbox, which marion
 does not yet do; until then `allow_peers` and the star topology are policy, not containment.**
 
+**The token's promise above is delivered, and an independent system shows what its absence costs —
+REPORTED 2026-08-06.** Provenance, in this document's own register: this is neither *measured* here
+nor *argued* from marion's code. It is a code-verified audit of a third-party agent harness,
+performed outside this checkout and reported to this project; the repository is not present here and
+nothing below was re-verified locally. The auditor marked the reachability claim an **inference from
+an absent check**, not a demonstrated exploit. **Delivered side first:** the promise at the head of
+this section — a per-node capability token bound to an `AgentId` — is implemented as §11 item 28
+step 4's `SpawnCaller { agent_id, node_token }`, minted by the supervisor at spawn
+(`crates/marion-supervisor/src/run.rs:1038`), written into that node's own MCP declaration `env`
+block, and checked before anything else is said about the node
+(`crates/marion-supervisor/src/handler.rs:889-916`). **The other system:** a detached supervisor
+owning a unix socket at `<tmpdir>/<name>-<uid>/daemon.sock`, dir `0700`, socket `0600`, JSONL
+frames — marion's arrangement, independently arrived at — with *real authorization code*, not prompt
+convention: a reach predicate computing parent/child/sibling from persisted parent-edge records,
+called at roughly a dozen sites, beside genuine quotas (16,384-char message cap, 20 pending per
+session, token bucket capacity 3 refilling at 1/s, self-send rejected). Every one of those
+assertions is gated on the call's origin being an agent — **and origin is a field the client asserts
+on the wire.** A CLI-origin call is not reach-checked at all, by design, so that a human can address
+any session; and the audit found no client authentication token on that socket's hello or on its
+inbound commands. Since that design also runs model-authored code in a persistent kernel **as the
+same OS user**, any such process can connect, declare itself CLI, and reach any session in the
+fleet — grandchild, cousin, unrelated root. Notably their *supervisor↔worker* channel **does** carry
+per-worker tokens fenced to a supervisor generation; only the public socket lacks one, which puts
+the omission exactly on the surface an untrusted party can reach. The auditor's summary — *"the
+policy constrains a cooperative agent, not a hostile one"* — is the sentence this section's
+paragraph above already concedes about same-uid siblings, arrived at from the other direction. **The
+load-bearing difference is not care.** Both systems have careful policy code and both are explicit
+that process isolation is not a sandbox. It is that one of them derives the caller's identity from a
+secret the caller cannot choose, so `depth_gate`'s refusals are enforcement rather than advice,
+while the other reads it out of a field the caller writes. This is evidence for the token's shape,
+not a claim that marion is safe against a hostile same-uid process — the paragraph above stands
+unchanged.
+
 **The `Stop` hook is a fourth process class and needs its own wiring.** §7.6 step 2 branches the
 hook's `reason` on the live subtree, so the hook must reach the supervisor at fire time — but a
 hook command is a child of the *harness*, not of the bridge, so it inherits no `MARION_TOKEN`, and
@@ -5000,6 +5033,28 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     becomes a pure client, which needs §11 item 23's backgrounding to exist. Until (a)–(c),
     **`marion run` is a driver wearing a client's clothes** and no amount of supervisor-side testing
     can assert §7.3.1.
+
+    **Step (d) makes the socket's *unauthenticated root spawn* live, and that deferral is no longer
+    a hunch — REPORTED 2026-08-06.** The plan's open question 3
+    (`tasks/design-item-28-supervisor-owns-nodes.md`) records `getpeereid` as *"probably should
+    be"*, deferred. A code-verified audit of a third-party agent harness, performed outside this
+    checkout and reported to this project — **not measured here and not argued from marion's code**,
+    and its reachability claim is the auditor's inference from an absent check rather than a
+    demonstrated exploit — shows the same shape shipped: a `0700`/`0600` unix socket whose real
+    authorization code keys entirely on an **origin field the client asserts on the wire**, with no
+    client authentication on the socket at all, in a system that runs model-authored code as the
+    same OS user. Any such process reaches any session by claiming to be the human. §5.4 records the
+    mechanism in full. **Where marion stands:** the child-spawn path is closed, because step 4's
+    `SpawnCaller { agent_id, node_token }` makes the caller prove which node it is
+    (`crates/marion-supervisor/src/handler.rs:889-916`); the **root**-spawn path is not, since
+    `caller: None` is the client case and carries nothing. That is harmless while socket access
+    means "can read", and becomes the reported failure mode at **step 6**, when socket access means
+    "can start work". **And `getpeereid` alone would not have saved the audited system either** —
+    the hostile process runs as the same user, so peer credentials match. That is the sharper point
+    and the one that decides what to build: **peer credentials answer *which user*, the token
+    answers *which node*, and §5.4 needs the second.** A peer-credential check is worth having as a
+    cheap outer fence against a different uid; it is not a substitute for extending §5.4's binding
+    to whatever authenticates a root.
 
     **What this blocks.** §9's fourth M2 criterion — *"a clean quit-and-return, which the three
     criteria above cannot distinguish from a replay"* — is **unmeetable today**, and for its own
