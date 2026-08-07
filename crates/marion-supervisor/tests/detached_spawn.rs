@@ -52,27 +52,60 @@ const GRACE: Duration = Duration::from_millis(300);
 struct Bed {
     state: PathBuf,
     root: PathBuf,
+    /// **The project key, resolved the way production resolves it.**
+    ///
+    /// [`Launch::project_root`] is documented as *"already resolved by
+    /// `crate::socket::project_root`"*, and `marion.rs` honours that — it keys the socket, the
+    /// `Launch` and the `ProjectDir` off one `socket::project_root(&repo)`. This bed used to pass
+    /// [`Self::root`] raw, which differs from the resolved key by exactly a `canonicalize`: on
+    /// macOS `/tmp` is a symlink to `/private/tmp`, so the two hash differently and the supervisor
+    /// came up keyed on a path no client would ever name. Nothing noticed while no code compared
+    /// the two; `handler::spawn_root`'s repository check does, and it is right to.
+    key: PathBuf,
     paths: SocketPaths,
 }
 
 impl Bed {
     fn new(tag: &str) -> Bed {
+        Bed::build(tag, false)
+    }
+
+    /// A bed whose project root is a **real repository**, for the one test that needs a linked
+    /// worktree — which is the case §2's keying exists for and the case the repository check must
+    /// not break.
+    fn new_repo(tag: &str) -> Bed {
+        Bed::build(tag, true)
+    }
+
+    fn build(tag: &str, repo: bool) -> Bed {
         let state = PathBuf::from(format!("/tmp/mspawn-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
         std::fs::create_dir_all(&state).expect("scratch state dir");
         let root = state.join("proj");
         std::fs::create_dir_all(&root).expect("project root");
+        if repo {
+            init_repo(&root);
+        }
+        // **After the `git init`, deliberately.** The key of a directory changes the moment it
+        // becomes a repository — `project_root` starts answering the common dir — so resolving it
+        // first would key the supervisor on something no client could name.
+        let key = marion_supervisor::socket::project_root(&root);
         // SAFETY: reads the calling process's real uid and cannot fail.
-        let paths = socket_paths(&state, &root, unsafe { getuid() });
+        let paths = socket_paths(&state, &key, unsafe { getuid() });
         assert!(paths.socket().as_os_str().len() <= 103);
-        Bed { state, root, paths }
+        Bed {
+            state,
+            root,
+            key,
+            paths,
+        }
     }
 
     fn launch(&self) -> Launch {
         Launch {
             program: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
             state_dir: self.state.clone(),
-            project_root: self.root.clone(),
+            project_root: self.key.clone(),
             idle_grace: GRACE,
             auth: marion_harness::Auth::Canned,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -127,6 +160,34 @@ impl Drop for Bed {
         }
         let _ = std::fs::remove_dir_all(&self.state);
     }
+}
+
+/// `git`, run in `dir`, insisting it worked — a silent `git` failure here would turn a worktree
+/// test into a two-plain-directories test that passes for the wrong reason.
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} in {}: {e}", dir.display()));
+    assert!(
+        out.status.success(),
+        "git {args:?} in {} failed: {}",
+        dir.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A one-commit repository, with the identity and default branch pinned so the test does not
+/// depend on the machine's `git config`.
+fn init_repo(dir: &Path) {
+    git(dir, &["init", "--initial-branch=main"]);
+    git(dir, &["config", "user.email", "bed@marion.test"]);
+    git(dir, &["config", "user.name", "bed"]);
+    std::fs::write(dir.join("README"), b"bed\n").expect("a file to commit");
+    git(dir, &["add", "README"]);
+    git(dir, &["commit", "-m", "bed"]);
 }
 
 /// Send one `agent/spawn` to a running supervisor and hand back what it answered.
@@ -265,6 +326,133 @@ fn the_caller_and_repo_pairing_is_refused_by_name_over_the_socket() {
         e.message
     );
 
+    drop(ensured);
+    bed.goes_on_its_own();
+}
+
+/// The nodes a project's journal records, and the agent directories it has on disk — the two
+/// places a root that was accepted would show up.
+fn footprint(state: &Path, key: &Path) -> (usize, Vec<String>) {
+    let project = marion_core::paths::ProjectDir::new(state, key);
+    let bytes = std::fs::read(project.journal()).unwrap_or_default();
+    let nodes = marion_core::registry::replay(&bytes).nodes().len();
+    let dirs = std::fs::read_dir(project.agents_dir())
+        .map(|es| {
+            es.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    (nodes, dirs)
+}
+
+/// **A root is created only in the repository the socket serves** — and a linked worktree of that
+/// repository still counts as it.
+///
+/// # The hole
+///
+/// [`root_spawn_authorized`] answers *who is calling* — a same-uid peer — and deliberately nothing
+/// about *what they named*. Nothing else compared `p.repo` to the supervisor's own project key, so
+/// a same-uid process could dial repository A's socket, send `agent/spawn` with `caller: None` and
+/// `repo: B`, and be obeyed: `root::prepare_watched` keys the agent directory and the `SpawnIntent`
+/// on `ProjectDir::new(state, project_root(&spec.repo))`, so the node landed in **B's** journal
+/// while the supervisor that answered went on following **A's**. marion replied "spawned" for a
+/// root that no `tree/subscribe` on that socket could ever list. That is an authorization failure
+/// and a broken contract at once, which is why the refusal is checked before `NodeOwner::claim` and
+/// before any side effect.
+///
+/// # Why the second half is not optional
+///
+/// §2 keys on the git **common dir**, so one supervisor serves a repository *and every linked
+/// worktree of it* — W1's whole "repo is a property of the tree" result depends on a worktree root
+/// being accepted. A check written on the path rather than the key would pass the first half of
+/// this test and silently break that, so the worktree is spawned here too and must get **past** the
+/// repository check. It is proved to have got past by the refusal it does come back with: an
+/// unknown agent type, which is resolved strictly after. Nothing launches either way, so this file
+/// still needs no harness.
+#[test]
+fn a_root_for_another_repository_is_refused_on_the_socket_that_does_not_serve_it() {
+    let bed = Bed::new_repo("wrong-repo");
+    let other = bed.state.join("other-repo");
+    std::fs::create_dir_all(&other).expect("a second repository");
+    init_repo(&other);
+    let other_key = marion_supervisor::socket::project_root(&other);
+    assert_ne!(
+        other_key, bed.key,
+        "the premise: two repositories, two keys — otherwise this test is about nothing"
+    );
+
+    let ensured = ensure_supervisor(&bed.paths, &bed.launch()).expect("a supervisor starts");
+
+    // **A real agent type**, so that with the check removed this frame does not stop at a lookup:
+    // it reaches `root::prepare_watched`, which creates the agent directory and journals the
+    // intent under `other` before any harness binary is needed. That is what makes the footprint
+    // assertions below a measurement rather than a restatement of the refusal.
+    let e = agent_spawn(&bed.paths, root_spawn(Some(&other)))
+        .expect_err("this socket does not serve that repository");
+    assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
+    // **Both projects, by key, and the repository by path.** The supervisor cannot name A's
+    // checkout — `RegistryHandle` deliberately holds no repository, because one serves a repository
+    // and all its worktrees — so the two things it can honestly name are the key it serves and the
+    // key the named repository resolves to. An operator with two checkouts open needs all three to
+    // see which socket they reached.
+    let mine = marion_core::paths::ProjectDir::new(&bed.state, &bed.key);
+    let theirs = marion_core::paths::ProjectDir::new(&bed.state, &other_key);
+    for needle in [
+        mine.path().display().to_string(),
+        theirs.path().display().to_string(),
+        other.display().to_string(),
+    ] {
+        assert!(
+            e.message.contains(&needle),
+            "the refusal must name {needle}, so the operator can tell which socket they reached: \
+             {}",
+            e.message
+        );
+    }
+
+    // **Nothing anywhere.** Refused before the claim, so neither project gained a record or a
+    // directory — the failure this guards is a node journaled under `other` and invisible here.
+    assert_eq!(
+        footprint(&bed.state, &other_key),
+        (0, vec![]),
+        "the repository that was named must be untouched: a journal record or an agent directory \
+         under it is precisely the node marion would have reported and never been able to show"
+    );
+    assert_eq!(
+        footprint(&bed.state, &bed.key),
+        (0, vec![]),
+        "and the project this socket does serve gained nothing either — the refusal is not a \
+         mis-filing, it is a refusal"
+    );
+
+    // **A linked worktree of this repository is a different matter**: same common dir, same key,
+    // so it must be served. It gets as far as the agent-type lookup, which is after the check.
+    let wt = bed.state.join("wt");
+    git(&bed.root, &["worktree", "add", "-b", "feature", "../wt"]);
+    assert_eq!(
+        marion_supervisor::socket::project_root(&wt),
+        bed.key,
+        "§2 keys on the git common dir, so a linked worktree of this repository keys to it"
+    );
+    let e = agent_spawn(
+        &bed.paths,
+        AgentSpawnParams {
+            agent_type: "no-such-agent-type".into(),
+            ..root_spawn(Some(&wt))
+        },
+    )
+    .expect_err("no build has that agent type");
+    assert!(
+        e.message
+            .contains("the agent type is not one this build has"),
+        "a linked worktree root must reach its own merits — a repository refusal here is the \
+         check written on the path instead of the key, which would undo W1: {}",
+        e.message
+    );
+
+    // §5.7, and the sharpest process assertion available: a supervisor holding a claimed node
+    // cannot leave, so this also says neither frame left one behind.
     drop(ensured);
     bed.goes_on_its_own();
 }

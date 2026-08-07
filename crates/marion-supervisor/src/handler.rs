@@ -1390,6 +1390,44 @@ impl RegistryHandle {
                  refuses by name",
             )
         })?;
+        // **The repository must be one this socket serves** — before `NodeOwner::claim` and before
+        // any side effect, because everything after this point writes somewhere.
+        //
+        // `root_spawn_authorized` answers *who* is calling and nothing about *what they named*. A
+        // same-uid process that dials this project's socket and states another project's `repo`
+        // would otherwise be obeyed: `root::prepare_watched` keys the agent directory and the
+        // `SpawnIntent` on `ProjectDir::new(state, project_root(&spec.repo))`, so the node would be
+        // journaled under the *named* project while this supervisor's `LiveRegistry` went on
+        // following its own. marion would answer "spawned" for a root that never appears in
+        // `tree/subscribe`, `session/quit` or any other tree operation on the socket that started
+        // it — an authorization hole and a broken contract in one.
+        //
+        // The comparison is on the **project key**, not on the path, and that is what keeps §2's
+        // worktree rule intact: `project_root` resolves to the git common dir, so every linked
+        // worktree of one repository hashes to the same `<project-hash>` and a legitimate worktree
+        // root is accepted. What it rejects is a `repo` in a *different* repository, which is the
+        // only case that could put a record in another project's journal.
+        let named =
+            marion_core::paths::ProjectDir::new(&env.state, &crate::socket::project_root(&repo));
+        if named != env.project_dir {
+            return Err(RpcError::refused(
+                "repo",
+                format!(
+                    "this supervisor serves the project keyed at {}, and {} keys to {}. §2 keys a \
+                     supervisor and its state on the project root — the git common dir — so one \
+                     socket serves one repository and every linked worktree of it, and no other. A \
+                     root created here would be journaled under the project it named while this \
+                     supervisor kept following its own, so marion would report a node that no \
+                     `tree/subscribe` on this socket could ever show. Dial the supervisor for that \
+                     repository instead; refused before the node is claimed, so nothing was written \
+                     under either project.",
+                    env.project_dir.path().display(),
+                    repo.display(),
+                    named.path().display(),
+                ),
+                "§2, §5.4",
+            ));
+        }
         // Resolved here so an unknown type is refused **in the frame that asked for it** rather
         // than arriving as a node that was never going to start. `root::prepare` refuses it again
         // one layer down; two call sites of one lookup, never two rules.
@@ -4766,7 +4804,13 @@ mod tests {
             let dir = scratch(tag);
             let repo = fixture_repo(&dir);
             let state = dir.join("state");
-            let project = ProjectDir::new(&state, &repo);
+            // **Keyed the way production keys it** — `marion.rs` builds every one of the socket, the
+            // `Launch` and the `ProjectDir` from a single `socket::project_root(&repo)`, which for a
+            // repository is its git common dir and not its working tree. Keying on `repo` here gave
+            // the fixture a supervisor whose project no client could name, which nothing noticed
+            // until `spawn_root` began comparing the two (the sibling worktree fixture below always
+            // keyed correctly, which is why it alone kept passing).
+            let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
             std::fs::create_dir_all(project.path()).unwrap();
             let journal = project.journal();
             // Booted before the records are written, which is the production order — `tests::fx_with`
