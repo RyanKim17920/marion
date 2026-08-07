@@ -34,6 +34,7 @@
 //! [`view::Pane`] is a newtype over that widget, and
 //! `a_pane_is_the_marion_term_widget_and_not_a_second_renderer` is what keeps it one.
 
+pub mod backend;
 pub mod cast;
 pub mod guard;
 pub mod keys;
@@ -43,6 +44,7 @@ pub mod replay;
 pub mod sticky;
 pub mod view;
 
+pub use backend::ScreenBackend;
 pub use cast::{Cast, CastError, Payload, Record};
 pub use guard::Screen;
 pub use keys::{Action, Keys};
