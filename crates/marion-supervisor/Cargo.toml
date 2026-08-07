@@ -33,6 +33,17 @@ marion-harness = { path = "../marion-harness" }
 # answer yet (`NodeSummary`, `AttachMode`) and why each would require fabricating a fact the journal
 # does not carry.
 marion-tui = { path = "../marion-tui" }
+# The grid `marion attach` renders into (§9's M3 criterion C2). Not a widening of what the
+# supervisor parses: `attach.rs` is the *client* half of this crate, the same binary by linkage for
+# the same reason `marion run` and the bridge share `run_spawn`, and nothing on the supervisor side
+# constructs a `Term` — the supervisor ships bytes (§5.3), and the emulator lives on the viewer's
+# side of that seam.
+marion-term = { path = "../marion-term" }
+# For `marion_tui::ScreenBackend` alone — a `Terminal` has to be constructed somewhere, and this is
+# the crate with the loop that draws. `default-features = false` for the same reason `marion-tui`
+# and `marion-term` take it that way: none of the four shipped backends is wanted, and the one
+# marion uses is its own.
+ratatui = { version = "0.30", default-features = false }
 marion-proto = { path = "../marion-proto" }
 
 # A **dev**-dependency, not a dependency: only the end-to-end test starts a provider. Linking the

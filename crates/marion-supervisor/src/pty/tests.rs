@@ -1237,10 +1237,25 @@ fn leasing_the_write_half_does_not_make_reading_exclusive() {
 /// for one, not because every `claude` node everywhere now launches differently — so that M1's
 /// measured path stays byte-identical for a run that wants no pane.
 ///
-/// This stays a failing-when-fixed assertion: the day an adapter declares `NativePty`, this test
-/// fails and points at the wiring that must accompany it.
+/// **RESOLVED, and this test survives the resolution as the guard it should always have been.**
+///
+/// The prediction in the paragraph above — that flipping `ClaudeCodeAdapter::surfaces` to `shared`
+/// is what mints the witness — was the fourth reading of this seam and is also wrong, for a reason
+/// §9's own M3 criteria state: *"a real `claude` TUI runs in a marion pane"* and *"a real `codex`
+/// TUI runs in a pane with scrollback retained across at least one resize"*. **M3 is not about the
+/// headless node at all.** It is about a node marion drives by keystrokes — §3.4's `opaque` — which
+/// has **no frame parser**, so hazards 2 and 3 above are absent by construction rather than
+/// mitigated. `shared` was never the shape to reach for.
+///
+/// So the pane is `HarnessAdapter::pane_surfaces`, a *second* surfaces/compile pair asked for per
+/// run, and `surfaces()` keeps declaring no display plane. **This assertion is therefore still
+/// true, and it is now the test for the thing it should always have been testing: a node that did
+/// not ask for a pane must not get one.** A run with no pane request is launched byte-identically
+/// to how it was before any of this existed, which is what keeps M1's measured path measured.
+///
+/// Mutation: make `ClaudeCodeAdapter::surfaces` return `pane_surfaces().unwrap()`. This fails.
 #[test]
-fn no_built_in_adapter_yet_declares_the_display_plane_this_module_needs() {
+fn a_node_that_did_not_ask_for_a_pane_is_not_given_one() {
     use marion_core::harness::Harness;
     use marion_harness::adapter_for;
 
@@ -1259,15 +1274,20 @@ fn no_built_in_adapter_yet_declares_the_display_plane_this_module_needs() {
     }
 }
 
-/// The corollary, and it is now narrower than it was: the *launch* path is unreachable, so
-/// `Event::NodePty` cannot occur in production yet however many clients attach. Everything between
-/// a `PtyHost` and an operator's terminal is wired — `register_pane`, `node/attach`'s pane answer,
-/// the write lease, `node/pty-write`, `node/resize`, `marion attach` — and exercised against real
-/// children on real ptys in `handler.rs`. What is missing is the one step that gives a *node* a
-/// master. A client written against this is correct and idle, which is a very different thing from
-/// broken.
+/// The same rule on the control axis, and it is the S11 MUST #2 guard.
+///
+/// `stdin_plan` is a total match on `ControlTransport`, so **whichever axis a node's surfaces
+/// declare decides its stdin and there is no third answer**: `Typed(_)` is `Piped`, and S11
+/// measured `claude -p` exiting 1 with *"Input must be provided…"* when it is not. A default
+/// surface that drifted to `TerminalInput` would hand a headless harness the slave on fd 0.
+///
+/// `duplex::launch_path` now has the third arm this used to predict (`LaunchPath::Terminal`), and
+/// it is reached only from `pane_surfaces()`. This asserts the *default* shapes still are not.
+///
+/// Mutation: make any adapter's `surfaces()` return `ExecutionSurfaces::opaque()`. This fails,
+/// and so does `the_typed_control_axis_keeps_its_piped_stdin` below.
 #[test]
-fn a_terminal_control_transport_is_reachable_from_no_built_in_agent_type() {
+fn no_built_in_agent_types_default_shape_is_driven_by_keystrokes() {
     use marion_core::harness::Harness;
     use marion_harness::{ControlTransport, adapter_for};
 
@@ -1283,7 +1303,69 @@ fn a_terminal_control_transport_is_reachable_from_no_built_in_agent_type() {
         .collect();
     assert!(
         terminal.is_empty(),
-        "{terminal:?} declare TerminalInput, so `launch_path` now refuses a reachable node \
-         rather than a hypothetical one — it needs a third arm, and that arm needs this module"
+        "{terminal:?} declare TerminalInput as their *default* shape, so every node of that \
+         harness — including M1's — would be given the pty slave on fd 0 by `stdin_plan`, which \
+         S11 measured `claude -p` exiting 1 over. A pane is asked for per run through \
+         `HarnessAdapter::pane_surfaces`, never declared for every run here"
     );
+}
+
+/// **S11 MUST #2, asserted through the total match rather than around it.**
+///
+/// `PtyWitness` alone does not keep a typed node off a pty stdin — the `shared` preset is the
+/// counterexample, and it is exactly the preset a reader flipping an adapter would reach for. This
+/// is the second half: whatever the display axis says, a `Typed(_)` control axis is `Piped`.
+///
+/// Mutation: add a `Typed(_) => StdinPlan::TerminalSlave` arm, or widen the match with a `_` that
+/// answers `TerminalSlave`. This fails.
+#[test]
+fn the_typed_control_axis_keeps_its_piped_stdin_whatever_the_display_axis_says() {
+    use marion_harness::{ControlTransport, DisplaySurface, ExecutionSurfaces, TypedKind};
+
+    for kind in [TypedKind::StreamJson, TypedKind::AppServer, TypedKind::Acp] {
+        // Both points of the display axis a typed node can sit at, including the one that yields
+        // a witness. The witness is what makes this worth asserting: a caller holding one has
+        // everything `spawn_pty` needs *except* the right stdin.
+        for display in [DisplaySurface::NativePty, DisplaySurface::StructuredUi] {
+            let s = ExecutionSurfaces::new(ControlTransport::Typed(kind), display, []);
+            assert_eq!(
+                stdin_plan(s.control),
+                StdinPlan::Piped,
+                "{s:?}: S11 measured `claude -p` exiting 1 on an isatty(0) stdin"
+            );
+        }
+    }
+    // And the two that are not typed, so this cannot pass by answering `Piped` unconditionally.
+    assert_eq!(
+        stdin_plan(marion_harness::ControlTransport::TerminalInput),
+        StdinPlan::TerminalSlave
+    );
+    assert_eq!(
+        stdin_plan(marion_harness::ControlTransport::LaunchOnly),
+        StdinPlan::Null
+    );
+}
+
+/// **The pane shape's stdin is the slave, and its surfaces are what say so.**
+///
+/// The pairing is the whole of why a pane is safe: `TerminalInput` selects `TerminalSlave`, which
+/// is the one plan under which `spawn_pty` hands fd 0 the slave *and* issues `TIOCSCTTY` on fd 0.
+#[test]
+fn the_pane_shape_of_every_harness_that_has_one_asks_for_the_slave_on_stdin() {
+    use marion_core::harness::Harness;
+    use marion_harness::adapter_for;
+
+    let mut seen = 0;
+    for h in Harness::ALL {
+        let Some(s) = adapter_for(h).expect("a built-in adapter").pane_surfaces() else {
+            continue;
+        };
+        seen += 1;
+        assert!(
+            s.display_plane().is_some(),
+            "{h:?}: a pane shape must mint the witness `spawn_pty` requires"
+        );
+        assert_eq!(stdin_plan(s.control), StdinPlan::TerminalSlave, "{h:?}");
+    }
+    assert!(seen > 0, "no harness declares a pane shape at all");
 }

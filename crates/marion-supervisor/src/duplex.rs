@@ -57,18 +57,32 @@ pub enum LaunchPath {
     /// The prompt rides argv and there is no channel afterwards. `codex exec --json` is this, and
     /// so are gemini and opencode.
     LaunchOnly,
+    /// **A pty marion owns, and nothing parses it.** The node is a TUI: the prompt is seeded into
+    /// argv, everything after it is keystrokes, and the only observation is
+    /// [`marion_harness::ObservationSource::TerminalBytes`].
+    ///
+    /// This is the arm `pty/tests.rs` predicted, and it is reached only where a run asked for a
+    /// pane — `HarnessAdapter::pane_surfaces`, never `surfaces()`. That is what keeps M1's
+    /// `stream-json` path byte-identical for the runs that did not ask.
+    ///
+    /// **No frame reader runs on this path, and that is the whole safety argument.** The two
+    /// hazards that kept the pane out of the tree — `PtyHost`'s reader thread and
+    /// [`run_duplex`]'s `BufReader::lines` being two readers of one stream, and stderr merging
+    /// into the frames because both fds are one file description — are properties of putting a
+    /// *protocol* on a pty. A TUI has no protocol to put there.
+    Terminal,
 }
 
 /// The path a node with these surfaces takes.
 ///
-/// A `TerminalInput` node has no answer here and is refused rather than forced down one of the
-/// two: marion **MUST NOT** give a headless node a pty on stdin (§5.2), and typing a prompt into a
-/// pty is a third path nobody has written.
+/// Total on the control axis, and deliberately still an `Option`: the `None` is gone but the
+/// signature is the seam three call sites read, and widening it to a bare `LaunchPath` would put
+/// an unrelated edit in `root.rs` and `run.rs` on the same commit as this one.
 pub fn launch_path(surfaces: &ExecutionSurfaces) -> Option<LaunchPath> {
     match surfaces.control {
         ControlTransport::Typed(_) => Some(LaunchPath::Duplex),
         ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
-        ControlTransport::TerminalInput => None,
+        ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
     }
 }
 
@@ -639,7 +653,7 @@ mod tests {
             let expected = match surfaces.control {
                 ControlTransport::Typed(_) => Some(LaunchPath::Duplex),
                 ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
-                ControlTransport::TerminalInput => None,
+                ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
             };
             assert_eq!(launch_path(&surfaces), expected, "{h}");
             // And the derivation agrees with §3.4's plane table it has to agree with: a duplex node
@@ -1088,13 +1102,24 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
         assert!(out.stdout.contains("not json at all"));
     }
 
-    /// A pty-only surface has no launch path on either axis, and §5.2 forbids inventing one by
-    /// handing a headless node a pty on stdin. `TerminalInput` is unreachable from today's four
-    /// adapters, so this is asserted at the derivation rather than through one.
+    /// A pty-only surface takes the **third** path, and is not pushed down one of the other two.
+    ///
+    /// This used to assert `None` on both, on the reading that `TerminalInput` was unreachable. It
+    /// is reachable now — `HarnessAdapter::pane_surfaces` returns exactly this shape for a run that
+    /// asked for a pane — and the arm it reaches must be the one with no frame reader in it. The
+    /// two negatives are the load-bearing half: pushing a keystroke-driven node down `Duplex` would
+    /// give a headless harness a pty on stdin, which §5.2 forbids and S11 measured `claude -p`
+    /// exiting 1 over.
     #[test]
-    fn a_terminal_input_surface_is_refused_rather_than_pushed_down_one_of_the_two_paths() {
-        assert_eq!(launch_path(&ExecutionSurfaces::opaque()), None);
-        assert_eq!(launch_path(&ExecutionSurfaces::interactive()), None);
+    fn a_terminal_input_surface_takes_the_third_path_and_neither_of_the_other_two() {
+        for s in [
+            ExecutionSurfaces::opaque(),
+            ExecutionSurfaces::interactive(),
+        ] {
+            assert_eq!(launch_path(&s), Some(LaunchPath::Terminal), "{s:?}");
+            assert_ne!(launch_path(&s), Some(LaunchPath::Duplex));
+            assert_ne!(launch_path(&s), Some(LaunchPath::LaunchOnly));
+        }
     }
 
     #[test]

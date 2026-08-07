@@ -1,26 +1,47 @@
 //! `marion attach <agent-id>` — one node's terminal, in this one (§5.3, §9's M3).
 //!
-//! # What this is, and the one thing it deliberately is not
+//! # What this is: the grid, in the loop
 //!
 //! `marion-tui` builds the pieces of a client: the screen guard, the sticky-mode preamble, the
-//! keystroke filter with `^]` reserved, the asciicast reader, the replay plan, the redraw edge and
-//! the pane. This module is the **process** that holds them together, and it uses four of them.
+//! keystroke filter with `^]` reserved, the asciicast reader, the replay plan, the redraw edge, the
+//! pane and — since the increment that made a node own a pty — the `ratatui` backend. This module
+//! is the **process** that holds them together.
 //!
-//! The one it does not use is [`marion_tui::Pane`], and the reason is worth stating rather than
-//! leaving as a gap a reader has to notice. `Pane` renders a `marion_term::Term` — a grid marion
-//! keeps, with `suppress_erase_saved` on, which is what M3 criterion C2's *retention across a
-//! resize* is about — through `ratatui`. Driving it needs a `ratatui` backend that writes to
-//! [`marion_tui::Screen`], and `marion-tui` depends on `ratatui` with `default-features = false`,
-//! so there is no such backend in the tree. Writing one is the next increment's work.
+//! The node's bytes are fed to a [`marion_term::Term`] built with [`marion_tui::grid_options`],
+//! [`marion_tui::Redraw`] decides when a frame is complete, and [`marion_tui::Pane`] paints it
+//! through [`marion_tui::ScreenBackend`]. That is what makes the two decisions marion has already
+//! taken about a pane actually hold:
 //!
-//! What this does instead is **pass through**: the node's bytes go to the operator's terminal
-//! unaltered, and the operator's terminal is the emulator. That is not a stub — it is how `tmux
-//! attach` and `ssh` behave, it is correct for every escape sequence including the ones marion has
-//! no opinion about, and it makes the mouse work with no encoder at all, because the terminal's own
-//! SGR-1006 reports are already the bytes the node expects. What it does not give is a grid marion
-//! owns, so the scrollback bound and the `CSI 3J` interception `marion_tui::MAX_SCROLLBACK` and
-//! `grid_options` exist for are **not** in effect on this path. That is the honest cost, and it is
-//! the difference between "attach works" and "M3 criterion C2 is met".
+//! * [`marion_tui::MAX_SCROLLBACK`] bounds what one pane costs, whatever the node emits.
+//! * **`CSI 3J` is intercepted** by `marion_term`'s `Suppressor` instead of reaching the operator's
+//!   real scrollback — §9's M3 criterion C2, and unreachable without a parser in the path.
+//!
+//! # What this used to be, and what routing through the grid actually cost
+//!
+//! This module rendered **pass-through**: the node's bytes straight to the operator's terminal,
+//! which was then the emulator. Its stated blocker — *"`marion-tui` depends on `ratatui` with
+//! `default-features = false`, so there is no such backend in the tree"* — was **half wrong**, and
+//! the wrong half was the one that mattered: the four *implementations* are behind cargo features,
+//! but the `Backend` **trait** is in `ratatui-core` and is unconditional. No dependency changed.
+//!
+//! Pass-through was not a stub and the ledger is not one-sided:
+//!
+//! * **Kept.** The mouse still works with no encoder. Mouse reports are *input*: the operator's
+//!   terminal is put into SGR-1006 by [`Sticky`]'s mirrored preamble, and its reports go through
+//!   [`Keys`] to `node/pty-write` untouched by anything on the render side. M3's C1 is unaffected
+//!   by this change in either direction.
+//! * **Lost.** Anything `alacritty_terminal` does not model no longer reaches the operator at all,
+//!   where pass-through delivered it verbatim: OSC 8 hyperlinks, OSC 52 clipboard writes, and inline
+//!   image protocols (sixel, kitty). A pane is now exactly as expressive as marion's VT, which is
+//!   the price of marion having an opinion about what crosses it.
+//! * **Paid.** A full parse and a viewport repaint per frame instead of one `write(2)`.
+//!   `marion-tui`'s `a_frame_is_one_write_and_not_one_per_cell` holds the repaint to a single
+//!   `write` regardless of cell count, and `Redraw` holds it to one repaint per DECSET 2026 frame
+//!   rather than one per `read`, which is the bound that matters for a harness that paints in
+//!   bursts.
+//!
+//! A pane is not a transparent pipe any more. It is a terminal marion owns, which is what §5.3
+//! says it is.
 //!
 //! # Attaching must never start a supervisor
 //!
@@ -45,7 +66,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use marion_core::contract::AgentId;
 use marion_proto::{Call, ClientNotification, Event, Frame, Input, MethodResult, RequestId};
-use marion_tui::{Action, Keys, Screen, Sticky};
+use marion_term::Term;
+use marion_tui::{Action, Keys, Pane, Redraw, Screen, ScreenBackend, Sticky};
+use ratatui::Terminal;
 
 /// How long a socket read may block before the loop looks at the flags again.
 ///
@@ -128,12 +151,89 @@ struct Session {
     stream: UnixStream,
     lines: BufReader<UnixStream>,
     id: AgentId,
-    screen: Option<Screen>,
+    /// The grid, the backend and the guard, in one value. `None` until `node/attach` has answered
+    /// with a pane — the refusals above it must leave the operator's shell exactly as it was.
+    view: Option<View>,
     /// Whether this client holds the node's write half. A read-only attach still renders; it just
     /// sends nothing, and the operator was told which connection has the keyboard.
     writable: bool,
     /// Set by the stdin thread when the operator types `^] d`.
     leaving: Arc<AtomicBool>,
+}
+
+/// One pane's emulator and its painter.
+///
+/// The three travel together and always will: a byte fed to `term` is a frame `redraw` may declare
+/// complete, which is a repaint `terminal` performs. Keeping them in one struct is what lets
+/// [`Session`] hold a single `Option` for *"the terminal has been entered"* rather than three that
+/// could disagree.
+struct View {
+    /// **The grid marion owns.** Built with [`marion_tui::grid_options`], which is where
+    /// `suppress_erase_saved` and [`marion_tui::MAX_SCROLLBACK`] come from — the two decisions that
+    /// were inert while this client rendered pass-through.
+    term: Term,
+    redraw: Redraw,
+    terminal: Terminal<ScreenBackend>,
+}
+
+impl View {
+    fn enter(screen: Screen, cols: u16, rows: u16) -> Result<Self, Refusal> {
+        let term = Term::with_options(
+            marion_term::Size::new(cols.max(1) as usize, rows.max(1) as usize),
+            marion_tui::grid_options(),
+        );
+        let terminal = Terminal::new(ScreenBackend::new(screen, cols, rows))
+            .map_err(|e| format!("starting the pane's renderer: {e}"))?;
+        Ok(Self {
+            term,
+            redraw: Redraw::new(),
+            terminal,
+        })
+    }
+
+    /// Feed the node's bytes to the grid, and paint iff a frame closed.
+    ///
+    /// [`Redraw`] is what makes that "iff" real: a harness that brackets its output with DECSET
+    /// 2026 paints once per frame however many `read`s it took, and one that does not is caught by
+    /// [`Self::idle`] instead. Painting per `read` would repaint a half-drawn screen, which is the
+    /// tearing pass-through did not have and a naive grid would introduce.
+    fn feed(&mut self, bytes: &[u8]) {
+        self.term.advance(bytes);
+        if self.redraw.on_feed(&self.term, bytes.len()) {
+            self.paint();
+        }
+    }
+
+    /// The unsynchronized straggler: a node that wrote something and opened no frame bracket.
+    fn idle(&mut self) {
+        if self.redraw.on_idle(&self.term) {
+            self.paint();
+        }
+    }
+
+    fn paint(&mut self) {
+        // A paint that fails is a terminal that has gone — reported by the loop noticing the socket
+        // or the node, never by this returning an error nobody can act on with the screen already
+        // half-written.
+        let term = &self.term;
+        let _ = self
+            .terminal
+            .draw(|f| f.render_widget(Pane(term), f.area()));
+    }
+
+    /// The operator's window changed. **The grid is resized as well as the backend**, and both
+    /// before the repaint: a `Terminal` whose backend reports a size its buffer does not have
+    /// draws the old geometry into the new one, and `Pane` clips rather than scaling, so the
+    /// mismatch shows as a pane that has stopped filling its window.
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.term.resize(marion_term::Size::new(
+            cols.max(1) as usize,
+            rows.max(1) as usize,
+        ));
+        self.terminal.backend_mut().set_size(cols, rows);
+        let _ = self.terminal.autoresize();
+        self.paint();
+    }
 }
 
 impl Session {
@@ -147,7 +247,7 @@ impl Session {
             stream,
             lines,
             id,
-            screen: None,
+            view: None,
             writable: false,
             leaving: Arc::new(AtomicBool::new(false)),
         };
@@ -226,7 +326,7 @@ impl Session {
                 .as_bytes(),
             );
         }
-        self.screen = Some(screen);
+        self.view = Some(View::enter(screen, cols, rows)?);
 
         if self.writable {
             // SAFETY: installing a handler whose whole body is one atomic store. Done after the
@@ -325,10 +425,8 @@ impl Session {
                     Event::NodePty {
                         agent_id, bytes, ..
                     } if agent_id == self.id => {
-                        if let Some(s) = &self.screen
-                            && s.write(bytes.as_bytes()).is_err()
-                        {
-                            return Ok(());
+                        if let Some(v) = &mut self.view {
+                            v.feed(bytes.as_bytes());
                         }
                     }
                     // The node reached a terminal state. Leaving is the honest response: there is
@@ -340,7 +438,15 @@ impl Session {
                     }
                     _ => {}
                 },
-                Ok(_) => {}
+                // A read timeout, or a frame for some other node. Either way it is the one moment
+                // the loop knows the stream is quiet, which is exactly when an unbracketed
+                // straggler must be painted — a node that wrote and opened no DECSET 2026 frame
+                // would otherwise sit unpainted until its next byte.
+                Ok(_) => {
+                    if let Some(v) = &mut self.view {
+                        v.idle();
+                    }
+                }
                 // The supervisor going away ends the attach and is not a failure of it: the node
                 // was never this client's to keep.
                 Err(_) => return Ok(()),
@@ -361,6 +467,13 @@ impl Session {
         let Some((cols, rows)) = marion_tui::guard::window_size(0) else {
             return;
         };
+        // **This client's own grid first, and the node second.** The two are independent: the
+        // supervisor's `TIOCSWINSZ` decides what the *node* paints at, and the grid here decides
+        // what this operator sees. Resizing only the node would leave the pane rendering the new
+        // output into the old geometry until something else happened to repaint.
+        if let Some(v) = &mut self.view {
+            v.resize(cols, rows);
+        }
         let f = Frame::Input(ClientNotification::new(Input::NodeResize {
             agent_id: self.id.clone(),
             cols,
@@ -379,8 +492,8 @@ impl Drop for Session {
         // Explicit, though `Screen`'s own `Drop` would do it: the order matters on the way out.
         // The terminal must be restored before this process's last words are printed, or an error
         // message lands on the alternate screen and disappears with it.
-        if let Some(s) = &self.screen {
-            s.leave();
+        if let Some(v) = &self.view {
+            v.terminal.backend().screen().leave();
         }
     }
 }
