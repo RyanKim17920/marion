@@ -193,6 +193,68 @@ pub fn compile_headless(spec: &HeadlessSpec) -> Invocation {
     }
 }
 
+/// argv for the **pane** shape: Claude Code's own TUI, on a pty marion owns.
+///
+/// # Why this is a second compile and not a flag on the first
+///
+/// The two shapes have almost nothing in common that a branch inside [`compile_headless`] would
+/// share. `-p --output-format stream-json --input-format stream-json --verbose` is the *whole* of
+/// what makes a headless node a protocol peer, and every one of those flags is wrong for a TUI;
+/// `--permission-prompt-tool stdio` is wrong for it too, because a pane has an operator in it and
+/// §9's M3 criterion is that *"the permission prompt is correct"* — the harness's own, answered by
+/// the human, not a `can_use_tool` frame sent to a marion that has no answerer. What the two do
+/// share is the isolation and the two §3.1 axes, and those are the fields of [`HeadlessSpec`],
+/// which is why this takes one rather than a struct of its own.
+///
+/// **The prompt rides argv here, and that is not a contradiction of [`compile_headless`]'s
+/// refusal.** That refusal is measured and specific: a *`--print`* run given an argv prompt takes
+/// turn one before an `--mcp-config` server is ready, with `tools: []`. A TUI takes no turn until
+/// the operator presses return, so there is no race to lose — the text is seeded into the composer
+/// and the human sends it. An empty prompt compiles no positional argument at all, which is a TUI
+/// opened at its prompt.
+pub fn compile_pane(spec: &HeadlessSpec, prompt: &str) -> Invocation {
+    let mut args: Vec<String> = vec![
+        // Both §3.1 axes, exactly as the headless shape compiles them. A pane does not widen what
+        // a node may do: the operator watching it is a witness, not an authorization.
+        "--tools".into(),
+        spec.tools.join(","),
+        "--allowedTools".into(),
+        spec.allowed_tools.join(","),
+        // Only the MCP servers marion declared; never the user's.
+        "--strict-mcp-config".into(),
+        "--mcp-config".into(),
+        spec.mcp_config.to_string_lossy().into_owned(),
+        // No user settings, plugins or hooks leak into a pane either. §9 measured what dropping
+        // this costs: 13 plugins and nine `SessionStart` hooks, one injecting ~2 KB.
+        "--setting-sources".into(),
+        "".into(),
+    ];
+    if let Some(m) = &spec.model {
+        args.push("--model".into());
+        args.push(m.clone());
+    }
+    if !prompt.is_empty() {
+        args.push(prompt.to_string());
+    }
+
+    let mut env = Vec::new();
+    if let Some(u) = &spec.base_url {
+        env.push(("ANTHROPIC_BASE_URL".to_string(), u.clone()));
+    }
+    if let Some(k) = &spec.api_key {
+        env.push(("ANTHROPIC_AUTH_TOKEN".to_string(), k.clone()));
+        env.push(("ANTHROPIC_API_KEY".to_string(), String::new()));
+    }
+
+    Invocation {
+        program: "claude".into(),
+        args,
+        env,
+        cwd: spec.cwd.clone(),
+        model: spec.model.clone(),
+    }
+}
+
 /// Parse a `--output-format stream-json` stream.
 ///
 /// The frame shapes are the ones `tests/fixtures/s1/` and `tests/fixtures/s9/` recorded off a real

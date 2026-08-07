@@ -257,6 +257,17 @@ pub enum HarnessError {
     /// quotes what was actually written.
     #[error("{harness}: no mapping for marion tool `{tool}`; this harness's adapter provides none")]
     UnsupportedTool { harness: Harness, tool: String },
+    /// A run asked for a pane and this harness has no interactive shape marion can drive.
+    ///
+    /// **Refused, never silently downgraded to the headless shape.** A caller that asked for a
+    /// pane is a caller that is about to run `marion attach`, and a node launched headlessly
+    /// instead would answer that attach with *"no display plane"* — a true sentence about a node
+    /// marion made headless after being told not to.
+    #[error(
+        "{0}: marion has no pane shape for this harness, so it cannot be run in a terminal marion \
+         owns. Spawn it without a pane and watch its structured events instead"
+    )]
+    NoPaneSurface(Harness),
 }
 
 /// One harness's translation of marion's vocabulary into that harness's own.
@@ -277,6 +288,43 @@ pub trait HarnessAdapter {
     /// §6.1 step 5: argv + env. Runs on every spawn without exception, including surfaces that
     /// have no `ControlPlane` to open.
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError>;
+
+    /// The surfaces this harness runs under **when a run asks for a pane**, or `None` where marion
+    /// has no interactive shape for it (§3.4, §9's M3).
+    ///
+    /// # Why a second surfaces method rather than a flag inside [`Self::surfaces`]
+    ///
+    /// A pane is asked for **per run**, by a client, and [`Self::surfaces`] takes no arguments
+    /// because it is a fact about the harness rather than about a run. Threading the request into
+    /// it would change how *every* node of that harness is launched to serve a feature most runs
+    /// do not use — and on Claude Code that means moving M1's measured `stream-json` path onto a
+    /// pty for runs that never attach to one.
+    ///
+    /// # Why the answer is §3.4's `opaque` and not `shared`
+    ///
+    /// `shared` — `Typed(_)` control *and* `NativePty` — is the preset a reader reaches for, and it
+    /// is the wrong one, for a reason that is structural rather than aesthetic. It puts the
+    /// **protocol stream on the pty**: `stdout` and `stderr` both become the slave, so the single
+    /// reader of the master (`marion_supervisor::pty::PtyHost`) and the frame reader
+    /// (`marion_supervisor::duplex`) are two readers of one stream, and a diagnostic written
+    /// mid-line lands *inside* a JSON frame. §9's M3 criteria are not about that node anyway: they
+    /// read *"a real `claude` TUI runs in a marion pane"* and *"a real `codex` TUI runs in a pane
+    /// with scrollback retained across at least one resize"*. A TUI has **no frame parser at all**,
+    /// so both hazards are absent by construction rather than mitigated — which is why the pane
+    /// shape is a different node, not the same node with an extra fd.
+    fn pane_surfaces(&self) -> Option<ExecutionSurfaces> {
+        None
+    }
+
+    /// argv + env for [`Self::pane_surfaces`]'s shape. Called **only** where that is `Some`.
+    ///
+    /// Defaulted to the refusal rather than to [`Self::compile`], so a fifth harness that declares
+    /// a pane surface and forgets this one gets a named error instead of a TUI request answered
+    /// with a headless launch.
+    fn compile_pane(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        let _ = (spec, ctx);
+        Err(HarnessError::NoPaneSurface(self.harness()))
+    }
 
     /// The configuration files this harness needs, as `(absolute path, contents)`. The caller
     /// writes them; the adapter decides what and where, because "what and where" is the part that
@@ -566,6 +614,39 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             base_url,
             api_key,
         }))
+    }
+
+    /// §3.4's `opaque`: a pty and nothing else. **Not `interactive`** — that preset also claims
+    /// `TranscriptRecords`, and marion reads no transcript this harness writes; claiming an
+    /// observation source nothing consumes would put a false row in §3.4's derivation table.
+    fn pane_surfaces(&self) -> Option<ExecutionSurfaces> {
+        Some(ExecutionSurfaces::opaque())
+    }
+
+    /// The TUI, with the same isolation and the same two axes the headless shape gets. See
+    /// [`claude_code::compile_pane`] for why the prompt may ride argv here and may not there.
+    fn compile_pane(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        let (base_url, api_key) = match spec.auth {
+            Auth::Canned => (
+                spec.base_url
+                    .as_deref()
+                    .map(claude_code::anthropic_base_url),
+                spec.api_key.clone(),
+            ),
+            Auth::Inherited => (None, None),
+        };
+        Ok(claude_code::compile_pane(
+            &HeadlessSpec {
+                cwd: spec.cwd.clone(),
+                model: spec.model.clone(),
+                tools: self.native_tools(spec)?,
+                allowed_tools: Self::permission_axis(self, spec)?,
+                mcp_config: Self::mcp_config_path(spec),
+                base_url,
+                api_key,
+            },
+            &spec.prompt,
+        ))
     }
 
     fn config_files(
@@ -3310,6 +3391,155 @@ mod tests {
                 "{h}: §9's fallback branch is not the same fact as a missing declaration"
             );
         }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // The pane shape (§9's M3): asked for per run, never the default
+    // ------------------------------------------------------------------------------------------
+
+    /// **A node that did not ask for a pane must not get one**, and this is the assertion that
+    /// says so at the layer the decision is made.
+    ///
+    /// `surfaces()` is the shape every spawn compiles unless a client asked otherwise, so a
+    /// display plane appearing here would move *every* node of that harness onto a pty — which on
+    /// Claude Code is M1's measured `stream-json` path, with `stdout` and `stderr` collapsed onto
+    /// one file description and a diagnostic able to land inside a frame. The pane shape lives on
+    /// [`HarnessAdapter::pane_surfaces`] precisely so that this stays true.
+    ///
+    /// Mutation: make `ClaudeCodeAdapter::surfaces` return `pane_surfaces().unwrap()`, or
+    /// `ExecutionSurfaces::shared(TypedKind::StreamJson)`. This fails.
+    #[test]
+    fn the_default_shape_of_every_harness_declares_no_display_plane() {
+        for h in Harness::ALL {
+            let a = adapter_for(h).unwrap();
+            assert!(
+                a.surfaces().display_plane().is_none(),
+                "{h}: a run that asked for no pane would now be launched under a pty"
+            );
+            assert_ne!(
+                a.surfaces().control,
+                ControlTransport::TerminalInput,
+                "{h}: the default shape is not a shape marion types keystrokes into"
+            );
+        }
+    }
+
+    /// The positive half, so the test above cannot pass by there being no pane shape at all.
+    #[test]
+    fn the_pane_shape_is_a_pty_marion_types_into_and_parses_nothing_from() {
+        let panes: Vec<Harness> = Harness::ALL
+            .into_iter()
+            .filter(|h| adapter_for(*h).unwrap().pane_surfaces().is_some())
+            .collect();
+        assert!(
+            !panes.is_empty(),
+            "no harness has a pane shape, so `marion attach` has nothing to reach"
+        );
+        for h in panes {
+            let s = adapter_for(h).unwrap().pane_surfaces().unwrap();
+            assert!(s.display_plane().is_some(), "{h}: a pane needs a pty");
+            assert_eq!(
+                s.control,
+                ControlTransport::TerminalInput,
+                "{h}: a pane is driven by keystrokes"
+            );
+            // **The load-bearing half.** A pane surface that also claimed `ProtocolEvents` would
+            // be asserting that marion parses frames off the pty — two readers of one stream, and
+            // stderr interleaved into them. `TerminalBytes` alone is what makes the hazard absent
+            // rather than mitigated.
+            assert_eq!(
+                s.observations,
+                std::collections::BTreeSet::from([crate::ObservationSource::TerminalBytes]),
+                "{h}: nothing parses a frame off a pane, and the surfaces must say so"
+            );
+        }
+    }
+
+    /// A harness with no pane shape refuses by name rather than compiling the headless one.
+    ///
+    /// Mutation: default `compile_pane` to `self.compile(spec, ctx)`. This fails.
+    #[test]
+    fn a_harness_with_no_pane_shape_refuses_rather_than_launching_the_headless_one() {
+        for h in Harness::ALL {
+            let a = adapter_for(h).unwrap();
+            if a.pane_surfaces().is_some() {
+                continue;
+            }
+            let err = a
+                .compile_pane(&spec_for(h), &ctx())
+                .expect_err("compiled a pane for a harness that declares none");
+            assert!(
+                matches!(err, HarnessError::NoPaneSurface(got) if got == h),
+                "{h}: {err}"
+            );
+        }
+    }
+
+    /// The pane argv is a TUI's, and the isolation is the headless shape's.
+    ///
+    /// Mutation: leave `-p` in `compile_pane`, or drop `--setting-sources ""`. Either fails.
+    #[test]
+    fn the_pane_argv_is_a_tui_with_the_headless_shape_isolation() {
+        let inv = ClaudeCodeAdapter
+            .compile_pane(&claude_spec(), &ctx())
+            .expect("claude has a pane shape");
+        for forbidden in [
+            "-p",
+            "--print",
+            "--output-format",
+            "--input-format",
+            "--verbose",
+            // A pane has an operator in it: §9's M3 asks for the *harness's* permission prompt,
+            // and `stdio` would send `can_use_tool` to a marion with no answerer instead.
+            "--permission-prompt-tool",
+        ] {
+            assert!(
+                !inv.args.iter().any(|a| a == forbidden),
+                "the pane argv carries {forbidden}, which is the headless shape's: {:?}",
+                inv.args
+            );
+        }
+        for required in ["--strict-mcp-config", "--mcp-config", "--setting-sources"] {
+            assert!(
+                inv.args.iter().any(|a| a == required),
+                "the pane argv dropped {required}, so a pane inherits what §9 measured out: {:?}",
+                inv.args
+            );
+        }
+        // Both §3.1 axes, so a pane is not a widening.
+        assert!(inv.args.iter().any(|a| a == "--tools"));
+        assert!(inv.args.iter().any(|a| a == "--allowedTools"));
+    }
+
+    /// The prompt rides argv on the pane shape and is refused on the headless one — the same
+    /// `LaunchSpec`, two answers, which is the whole reason these are two compiles.
+    #[test]
+    fn a_prompt_is_a_positional_on_the_pane_shape_and_a_refusal_on_the_headless_one() {
+        let spec = LaunchSpec {
+            prompt: "fix the test".into(),
+            ..claude_spec()
+        };
+        assert!(
+            ClaudeCodeAdapter.compile(&spec, &ctx()).is_err(),
+            "an argv prompt on --print takes turn one with tools: []"
+        );
+        let inv = ClaudeCodeAdapter.compile_pane(&spec, &ctx()).unwrap();
+        assert_eq!(
+            inv.args.last().map(String::as_str),
+            Some("fix the test"),
+            "a TUI takes no turn until the operator presses return: {:?}",
+            inv.args
+        );
+        // And an empty prompt is a TUI opened at its prompt, not an empty positional.
+        let bare = ClaudeCodeAdapter
+            .compile_pane(&claude_spec(), &ctx())
+            .unwrap();
+        assert!(
+            !bare.args.iter().any(String::is_empty)
+                || bare.args.iter().filter(|a| a.is_empty()).count() == 2,
+            "only --tools and --setting-sources carry an empty string: {:?}",
+            bare.args
+        );
     }
 
     #[test]
