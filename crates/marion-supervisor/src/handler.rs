@@ -278,6 +278,121 @@ enum NodeOutcome {
     Root(Result<(), String>),
 }
 
+/// **Run a node's body so that a panic in it is still an outcome.**
+///
+/// Neither node thread had this, and the hole it left is the worst shape §5.7 has: a panic after
+/// `SpawnObserver::identified` has claimed the node, but before `mark_finished`, left
+/// [`NodeHandle::outcome`] `None` **for ever**. `None` means *still running*, so
+/// [`RegistryHandle::running_nodes`] counted the node, [`RegistryHandle::idle_exit_eligible`]
+/// refused, [`RegistryHandle::join_finished_nodes`] never reaped the thread, and the supervisor
+/// could not exit for the rest of its life. Not a lost result — a permanent phantom.
+///
+/// **A panicking node is `Exited`-with-a-reason, not a new disposition.** `SpawnError::Panicked`
+/// already existed for exactly this, with a carefully written sentence, and was **constructed
+/// nowhere** — a documented variant describing a mechanism that did not run. `handler.rs`'s own
+/// comment at [`RegistryHandle::join_finished_nodes`] asserted that a panic *"already reached the
+/// caller as `SpawnError::Panicked`"*, which was false. Making that true is better than deleting
+/// the claim and much better than adding a third `NodeOutcome` arm: the two arms exist to keep a
+/// root's and a child's *vocabularies* apart (§9 gives them different results), and a panic is a
+/// failure **within** each vocabulary, not a third kind of node. A third arm would force every
+/// reader — [`RegistryHandle::owned_failure`], [`NodeHandle::running`] — to grow a case for
+/// something both can already say.
+///
+/// **The payload is printed rather than folded into the sentence.** `SpawnError::Panicked`'s
+/// message is about the *kind* of node and points the reader at the journal, and a panic message is
+/// neither; a supervisor that swallowed its own defect's text entirely would make the one record
+/// that says what went wrong unavailable anywhere.
+///
+/// The journal is left to the run's own unwind. `run.rs`'s `AbortOnDrop` is armed across the whole
+/// child run and `Drop` runs on an unwind, so a `SpawnAborted` is already there — which is what the
+/// variant's own doc says, and is why this does not write a record of its own over a node whose
+/// process may still be alive.
+/// `panicked` spells the panic in the caller's own error vocabulary — [`spawn_panicked`] for a
+/// child, [`root_panicked`] for a root — rather than this function choosing one for both. The two
+/// arms of [`NodeOutcome`] exist precisely because those vocabularies differ, and a shared helper
+/// that picked one would put a `SpawnError` on a node that has no spawn result or a bare sentence
+/// on one that does.
+fn caught<T, E>(
+    what: &str,
+    panicked: impl FnOnce(&str) -> E,
+    body: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(outcome) => outcome,
+        Err(payload) => {
+            eprintln!(
+                "marion-supervisor: the thread running the {what} node panicked, which is a defect \
+                 in marion: {}. The node is resolved as a failed run so this supervisor can still \
+                 exit (§5.7); its journal records end with the abort the unwind wrote.",
+                panic_text(&payload)
+            );
+            Err(panicked(what))
+        }
+    }
+}
+
+/// The tests' arming switch for the injected panic in [`NodeOwner::identified`].
+///
+/// A module with a guard rather than a bare `static`, because the lib tests share one process and
+/// run in parallel: an arming that outlived its test would panic an unrelated spawn. The guard
+/// disarms on drop, including on an unwind, and the mutex means only one test is inside the window
+/// at a time.
+#[cfg(test)]
+mod panic_after_claim {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static ONE_AT_A_TIME: OnceLock<Mutex<()>> = OnceLock::new();
+
+    pub(super) fn armed() -> bool {
+        ARMED.load(Ordering::SeqCst)
+    }
+
+    pub(super) struct Armed(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    impl Drop for Armed {
+        fn drop(&mut self) {
+            ARMED.store(false, Ordering::SeqCst);
+        }
+    }
+
+    pub(super) fn arm() -> Armed {
+        let g = ONE_AT_A_TIME
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        ARMED.store(true, Ordering::SeqCst);
+        Armed(g)
+    }
+}
+
+/// A child's panic, in `run_spawn`'s vocabulary.
+fn spawn_panicked(agent_type: &str) -> crate::spawn::SpawnError {
+    crate::spawn::SpawnError::Panicked(agent_type.to_string())
+}
+
+/// A root's panic, in marion's own — §9 gives a root no `TaskContract`, so there is no
+/// `SpawnError` to be had and [`NodeOutcome::Root`] carries a sentence.
+fn root_panicked(agent_type: &str) -> String {
+    format!(
+        "marion's own thread running the {agent_type} root panicked, so there is no reading of \
+         what the root did. This is a defect in marion, not in the request; the root's process may \
+         have been left running, and the journal resolves the node with whatever the unwind wrote \
+         rather than with a record of what it did."
+    )
+}
+
+/// The best sentence available for a panic payload, which is a `&str` or a `String` for every panic
+/// `panic!` produces and opaque otherwise.
+fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic payload of an unprintable type".to_string())
+}
+
 impl NodeHandle {
     /// Whether this node is still running, as *this table* sees it.
     ///
@@ -413,6 +528,16 @@ impl crate::run::SpawnObserver for NodeOwner {
         // already given up on it, and the node goes on running either way. Panicking here would
         // unwind through `AbortOnDrop` and journal `SpawnAborted` over a node that is fine.
         let _ = self.tx.send(Progress::Identified(agent_id.clone()));
+        // **The one place the tests can make a node's thread panic in the window that matters.**
+        // Here and not at the top of the thread body, because the defect is specifically a panic
+        // *after* the node is claimed and *before* `mark_finished` — a panic before the claim has
+        // no node to strand. Placed after the `Progress::Identified` send so the calling frame gets
+        // its id and its refusal comes from the thread's epilogue rather than from `LAUNCH_BOUND`.
+        // `cfg(test)`, so no production build carries a branch that panics on purpose.
+        #[cfg(test)]
+        if panic_after_claim::armed() {
+            panic!("injected: a node thread panicking after its claim");
+        }
         (!token.is_empty()).then_some(token)
     }
 
@@ -1024,7 +1149,9 @@ impl RegistryHandle {
             .collect();
         for j in joins {
             // A panicking node's thread is not this supervisor's failure to report at exit — the
-            // panic already reached the caller as `SpawnError::Panicked` through the outcome.
+            // panic already became this node's outcome, and so its terminal state, in `caught`.
+            // That claim was false until `caught` existed: nothing constructed `SpawnError::Panicked`
+            // anywhere, and a panicking thread left `outcome: None` for ever.
             let _ = j.join();
         }
     }
@@ -1285,7 +1412,12 @@ impl RegistryHandle {
         // outlives the JSON-RPC frame that asked for it, so it cannot borrow from this stack frame.
         let owner = me.clone();
         let join = std::thread::spawn(move || {
-            let outcome = crate::run::run_spawn_watched(&env, &req, &task_id, &caller, &observer);
+            let agent_type = req.agent_type.clone();
+            // **A panic here must still resolve the node.** See [`caught`]: without this the
+            // outcome stays `None` for ever and the supervisor can never exit.
+            let outcome = caught(&agent_type, spawn_panicked, || {
+                crate::run::run_spawn_watched(&env, &req, &task_id, &caller, &observer)
+            });
             // The agent id is known only if `identified` fired. A spawn refused above it — an
             // unknown agent type, a scope outside the ceiling — never minted a node, so there is
             // nothing to file the outcome under and nothing holding the supervisor open.
@@ -1468,7 +1600,12 @@ impl RegistryHandle {
                 tx,
                 identified: Mutex::new(None),
             };
-            let outcome = (|| -> Result<(), String> {
+            // **Wrapped for [`caught`]'s reason**, in the root's own vocabulary: `NodeOutcome::Root`
+            // carries marion's sentence rather than a `SpawnError`, so the panic becomes that
+            // sentence. The alternative — leaving the root path uncaught because only the child path
+            // has an `AbortOnDrop` — would keep the whole defect alive on the one node that holds
+            // the supervisor open on its own.
+            let outcome = caught(&spec.agent_type, root_panicked, || -> Result<(), String> {
                 let node = crate::root::prepare_watched(&spec, &observer)
                     .map_err(|e| format!("marion could not prepare the root node: {e}"))?;
                 // The trait's second hook, called by the launcher at `command.spawn()`. In
@@ -1488,7 +1625,7 @@ impl RegistryHandle {
                 )
                 .map(|_| ())
                 .map_err(|e| e.to_string())
-            })();
+            });
             // **Filed whenever there is a node to file it under**, which after `identified` there
             // always is. See this function's doc for why a missing outcome would be a supervisor
             // that can never exit.
@@ -5166,6 +5303,168 @@ mod tests {
             );
             assert_eq!(journal_len(&fx), 0, "and nothing was created");
             assert_eq!(fx.handle.owned_nodes(), 0, "…and no node was claimed");
+        }
+
+        /// **A node thread that panics after its claim still reaches a terminal outcome, and the
+        /// supervisor can still exit.**
+        ///
+        /// Neither thread body had a `catch_unwind`. A panic after `SpawnObserver::identified`
+        /// claimed the node and before `mark_finished` left `NodeHandle::outcome` `None` **for
+        /// ever**, and `None` means *still running*: `running_nodes` counted it, so
+        /// `idle_exit_eligible` refused, so `join_finished_nodes` never reaped the thread, and the
+        /// supervisor could not exit for the rest of its life. A permanent phantom node, from one
+        /// unwind.
+        ///
+        /// The panic is **real and injected in the window that matters** — inside `identified`,
+        /// after the claim — rather than simulated by writing an outcome by hand, because what is
+        /// being measured is the unwind path itself.
+        ///
+        /// **Bounded without a timeout.** Nothing here polls or sleeps: the thread sends
+        /// `Progress::Finished` strictly after `mark_finished`, and `spawn_root` returns on
+        /// receiving it, so the outcome is filed before this call returns. With the `catch_unwind`
+        /// removed the thread dies instead, dropping its sender, and the receive fails as
+        /// *disconnected* rather than waiting out `LAUNCH_BOUND` — so the mutation fails this test
+        /// in milliseconds, on the assertion, which is what a mutation has to do to count.
+        #[test]
+        fn a_node_thread_that_panics_after_its_claim_still_reaches_a_terminal_outcome() {
+            let fx = owning("owns-panic", vec![]);
+            {
+                let _armed = panic_after_claim::arm();
+                // A real agent type, so the frame reaches `prepare_watched` and the claim inside
+                // it. The panic then fires before `prepare_watched`'s first side effect.
+                spawn(&fx, root_params(&fx.repo, 1))
+                    .expect_err("the node's thread panicked, so no process ever existed");
+            }
+
+            let claimed: Vec<AgentId> = lock(&fx.handle.nodes).keys().cloned().collect();
+            assert_eq!(
+                claimed.len(),
+                1,
+                "the premise: the panic came *after* the claim, so there is a node to strand"
+            );
+            let agent_id = &claimed[0];
+
+            assert_eq!(
+                fx.handle.running_nodes(),
+                0,
+                "**terminal.** A node whose thread panicked is not running, and an `outcome` left \
+                 `None` here is the phantom: nothing in this process ever sets it afterwards"
+            );
+            let why = fx
+                .handle
+                .owned_failure(agent_id)
+                .expect("a panicked node has a failure to report");
+            assert!(
+                why.contains("panicked"),
+                "and the journal-facing sentence says what happened rather than inventing a \
+                 clean exit: {why}"
+            );
+
+            assert!(
+                fx.handle.idle_exit_eligible(),
+                "**§5.7.** With no clients and no running node the supervisor is eligible to \
+                 leave; this is the predicate the phantom held false for ever"
+            );
+            assert!(
+                fx.handle.begin_idle_exit(),
+                "and it really exits — `begin_idle_exit` joins the finished threads first, which \
+                 is the step `join_finished_nodes` could never reach for an unreaped panic"
+            );
+        }
+
+        /// **The same, on the child thread**, so the other `caught` call site is measured and not
+        /// merely compiled.
+        ///
+        /// A child needs a caller holding a real token, and that caller is itself a claimed node
+        /// this fixture never finishes — so the assertions here are about *this* node rather than
+        /// about `running_nodes` or `idle_exit_eligible`, which the root test above owns.
+        #[test]
+        fn a_child_threads_panic_is_that_childs_own_terminal_outcome() {
+            let fx = owning("owns-panic-child", vec![intent("root", None, "claude", 0)]);
+            let token = fx.handle.claim(
+                &id("root"),
+                Some(marion_core::contract::TaskId("t".into())),
+                fx.repo.clone(),
+            );
+            {
+                let _armed = panic_after_claim::arm();
+                spawn(
+                    &fx,
+                    params(
+                        Some(SpawnCaller {
+                            agent_id: id("root"),
+                            node_token: token,
+                        }),
+                        1,
+                    ),
+                )
+                .expect_err("the child's thread panicked, so no process ever existed");
+            }
+
+            let child = lock(&fx.handle.nodes)
+                .keys()
+                .find(|k| **k != id("root"))
+                .cloned()
+                .expect("the panic came after the claim, so the child is in the table");
+            assert_eq!(
+                fx.handle.owned_running(&child),
+                Some(false),
+                "**terminal.** Without the `catch_unwind` this stays `Some(true)` for the life of \
+                 the supervisor, and §5.7 never lets it exit"
+            );
+            let why = fx
+                .handle
+                .owned_failure(&child)
+                .expect("a panicked child has a failure to report");
+            assert!(
+                why.contains("panicked") && why.contains("no contract"),
+                "and it is `SpawnError::Panicked`'s written sentence, which says there is no \
+                 contract rather than leaving a caller to wait for one: {why}"
+            );
+        }
+
+        /// The child half of the same mechanism, without a launch.
+        ///
+        /// The injection above exercises `caught` through the **root** arm, because a root needs no
+        /// caller and so needs no token, no worktree and no harness. This pins the other
+        /// vocabulary directly: §9 gives a root and a child different results, and `caught` takes
+        /// the spelling from its caller precisely so neither gets the other's.
+        #[test]
+        fn a_panic_becomes_each_kind_of_nodes_own_way_of_saying_it_failed() {
+            let child = caught("claude", spawn_panicked, || -> Result<(), _> {
+                panic!("inside the child's thread")
+            })
+            .expect_err("a panic is not a success");
+            assert!(
+                matches!(child, crate::spawn::SpawnError::Panicked(ref t) if t == "claude"),
+                "a child's panic is `SpawnError::Panicked` — the variant that was documented for \
+                 exactly this and constructed nowhere until now: {child:?}"
+            );
+            assert!(
+                child.to_string().contains("no contract"),
+                "and it carries the written sentence, which points at the journal: {child}"
+            );
+
+            let root = caught("codex", root_panicked, || -> Result<(), _> {
+                panic!("inside the root's thread")
+            })
+            .expect_err("a panic is not a success");
+            assert!(
+                root.contains("codex") && root.contains("panicked"),
+                "a root has no `TaskContract` and so no `SpawnError`; its outcome is marion's own \
+                 sentence: {root}"
+            );
+
+            assert_eq!(
+                caught(
+                    "claude",
+                    spawn_panicked,
+                    || Ok::<_, crate::spawn::SpawnError>(7)
+                )
+                .ok(),
+                Some(7),
+                "and a body that does not panic is passed through untouched"
+            );
         }
 
         /// **The `no_change_record` half of the root-only pairing.**
