@@ -944,12 +944,27 @@ fn a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let journal = fx.journal_text();
-    assert!(
-        journal.contains("ContractPersisted"),
-        "the node ran to a contract with nobody holding its handle — the supervisor owns the \
-         lifecycle, so the answer being undeliverable does not make the work stop: {journal}"
-    );
+    // **Waited for, because it is a later record than the one above.** `finished_children` counts
+    // markers the child shim writes as *it* exits; `ContractPersisted` is marion's, written after
+    // the reap, the contract build, the file and the closing bookend. Reading the journal the
+    // instant the child's marker appeared asserted a record the supervisor had not reached yet, and
+    // failed roughly one run in ten. Nothing is being raced past here — the record genuinely
+    // arrives later, and there is no ordering rule this could assert instead; the defect was
+    // waiting for one thing and asserting another.
+    // Its own, much shorter budget. The record follows the child's exit by a reap and three
+    // writes — milliseconds — so `DEADLOCK_BOUND` here would turn a record that is never coming
+    // into a minute of waiting before saying so. Fifteen seconds is still two orders of magnitude
+    // of headroom, and the failure prints the journal rather than merely reporting elapsed time.
+    let contract_deadline = Instant::now() + Duration::from_secs(15);
+    while !fx.journal_text().contains("ContractPersisted") {
+        assert!(
+            Instant::now() < contract_deadline,
+            "the node ran to a contract with nobody holding its handle — the supervisor owns the \
+             lifecycle, so the answer being undeliverable does not make the work stop: {}",
+            fx.journal_text()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// **A bridge that leaves at EOF leaves its children running** — the same property through the
