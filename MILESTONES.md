@@ -459,6 +459,30 @@ how much code exists.
   side. §11 item 28 states the gap in full and names the four changes that would close it. Anyone
   quoting the existence of a detached supervisor as progress toward M2's crash criterion is quoting
   the wrong half of it.
+
+  **Updated 2026-08-07 — the paragraph above is now history, and criteria 1 and 4 are measured.**
+  §11 item 28 **step 6** landed: `marion run` is a socket client. It sends `agent/spawn` with
+  `caller: None`, the supervisor owns the root's thread, `Child`, pipe and pid, and the client
+  attaches and renders over `node/attach`. The three sentences that made both criteria unmeetable
+  are each false now — the supervisor *is* an owner, a root's `Spawned` carries a real pid written
+  at `command.spawn()` rather than after the turn, and there *is* a live channel, because
+  `node/attach`'s subscribe leg pushes from `events.jsonl` on the same cursor as its replay.
+  - **Criterion 1** — `crates/marion-supervisor/tests/client_run.rs::a_killed_client_leaves_its_agents_running_and_a_new_client_sees_the_whole_tree`.
+    SIGKILL the client mid-run; the root's pid stays `Liveness::Alive` (S15's three-valued
+    `procid`, never `kill(pid,0)`), the supervisor is the same process by pid **and** `ps`
+    start time, a second client's `tree/subscribe` renders both nodes, and the root's
+    `events.jsonl` is **longer after the kill than at it** — which is what stops a zombie
+    satisfying the criterion.
+  - **Criterion 4's load-bearing half** — the same test. The new client's replay is contiguous
+    from ordinal 0, its live leg is contiguous from the replay's read point (no gap, no repeat at
+    the seam), and the event it asserts on is caused by a provider request the root made *after*
+    the attach: the node's closing turn is held at the canned provider until the attach has
+    happened, and the ordering is read out of the provider's own request log rather than out of a
+    sleep (§6.1 step 8 binds a test as hard as it binds a launcher).
+  - **What is still open in M2**: criterion 3's *"no untracked live process"* on the
+    supervisor-death side (§11 item 30, one half only), criterion 2's structural replay identity,
+    and step 5 — the per-child MCP bridge still spawns children in-process rather than over the
+    socket, so a *child's* owner is still the bridge. M2 stays **[open]**.
 - **M3 [open]** — tree UI + embedded terminal.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
