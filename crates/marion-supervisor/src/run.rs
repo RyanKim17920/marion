@@ -1440,19 +1440,50 @@ pub fn run_spawn_watched(
                 exit: completion.exit.clone(),
             }),
         );
-        // The closing bookend, off the **same** `completion` the journal record is read from, for
-        // that comment's reason applied once more: two derivations of one status are two chances to
-        // disagree about the same run. Without it a replayed stream cannot tell a node that
-        // finished from one whose stream stopped mid-turn, which is the single question §7.3.3's
-        // replay leg exists to answer about a node the client never saw.
-        if let Some(es) = &events {
-            es.lifecycle(marion_core::event::Lifecycle::Exited {
-                status: completion.status,
-                exit: completion.exit.clone(),
-            });
-        }
     }
-    let returned = persist_then_cap(&agent_dir, &contract)?;
+    // **The contract reaches disk before the stream says the node is over**, and since §11 item 28
+    // step 5 that ordering is load-bearing rather than incidental.
+    //
+    // The bridge's synchronous `spawn` is now a composition over this stream: `agent/spawn`,
+    // `node/attach`, read until the closing bookend, then read `contracts/<task_id>.json`. With the
+    // bookend written first there is a window — one `create` plus one `write` wide — in which a
+    // reader that did exactly what the stream told it to would open a file that does not exist yet
+    // and report a finished child as one that produced nothing. That is a race no reader can close
+    // from its own side: it cannot distinguish "not written yet" from "never written", which is the
+    // absence-versus-silence distinction §4.1 exists to keep. Writing the file first makes the
+    // bookend mean what a reader needs it to mean — *everything about this node is now on disk*.
+    let returned = match persist_then_cap(&agent_dir, &contract) {
+        Ok(returned) => returned,
+        Err(e) => {
+            // **And the failing half must close the stream too**, or the invariant above holds only
+            // when nothing goes wrong. Before this, a contract marion could not write still got an
+            // `Exited` bookend, so the stream asserted a finished node whose contract was never
+            // there — the false-success shape, arriving in the one place a reader trusts. The abort
+            // says what actually happened; `AbortOnDrop` writes the matching `SpawnAborted` on the
+            // way out, so the journal and the stream agree.
+            if let Some(es) = &events {
+                es.lifecycle(marion_core::event::Lifecycle::Aborted {
+                    reason: format!(
+                        "the {} node ran to a terminal state and marion could not persist its task \
+                         contract: {e}",
+                        req.agent_type
+                    ),
+                });
+            }
+            return Err(e);
+        }
+    };
+    // The closing bookend, off the **same** `completion` the journal record above is read from: two
+    // derivations of one status are two chances to disagree about the same run. Without it a
+    // replayed stream cannot tell a node that finished from one whose stream stopped mid-turn,
+    // which is the single question §7.3.3's replay leg exists to answer about a node the client
+    // never saw.
+    if let (Some(completion), Some(es)) = (contract.completion.as_ref(), events.as_ref()) {
+        es.lifecycle(marion_core::event::Lifecycle::Exited {
+            status: completion.status,
+            exit: completion.exit.clone(),
+        });
+    }
     // §4.3: the journal records **that a contract exists and how it ended**, never its contents —
     // the file is the contract (§6.7), and copying it here would be a second source of truth.
     // Written after `persist_then_cap` returns, so the record cannot claim a file that was never
