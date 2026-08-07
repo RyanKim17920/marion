@@ -260,7 +260,59 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // shape and the `can_use_tool` frame were both re-asserted against 2.1.222 rather than
         // assumed to have survived the bump. **That is the evidence an entry here needs**, and the
         // reason it is entry one and not a replacement for the pin.
-        accepted: &["2.1.220", "2.1.222"],
+        //
+        // 2.1.223: observed green on darwin 25.5.0, 2026-08-06, after the **second** harness
+        // auto-update of that one day — codex moved in the morning, claude in the evening. The
+        // whole workspace passed against it, which covers every gated test that drives a real
+        // `claude`: `m1_hop`, `permission_round_trip` (6), `journal_wiring` (17), `cross_product`
+        // (17), `harness_matrix` (4), `depth_gate` (4), none `#[ignore]`d.
+        //
+        // `permission_round_trip` reads `tests/fixtures/s9` off disk, so a green suite genuinely
+        // re-asserts the `can_use_tool` frame. **Nothing else about claude is re-asserted that
+        // way**: `s10`, `s11`, `s14` and `s16` live in the workspace as prose rather than as
+        // fixture reads, and `child_stream`, `child_events` and `node_attach` drive a real
+        // `claude` without ever calling [`on_path`], so the pin does not reach them at all. Those
+        // four spikes were re-probed rather than assumed, every one against a canned local
+        // provider, total spend **$0.00**:
+        //
+        // * **s14** — `probe-claude.sh` re-run; all eight cells match `declarations.json` field
+        //   for field and seq for seq. `--tools NotATool` still declares `[]` at exit 0 with the
+        //   same stderr the *good* runs print, `Read,NotATool` still keeps `Read` and drops the
+        //   bad name, marion's own lowercase `read` still declares nothing, and `--tools` absent
+        //   and `--tools default` still declare the same eleven built-ins. **An unknown tool name
+        //   is still silently ignored**, which is the negative this fixture exists for.
+        // * **s10** — the probe re-run in all three modes: 14-key `SubagentStop`, 11-key `Stop`,
+        //   key set identical fire for fire; `agent_id` still 17 lowercase hex and still equal to
+        //   `task_started.task_id`, `task_notification.task_id` and the `tool_result`'s `agentId`;
+        //   `session_id` and `transcript_path` still the *parent's*; `decision: block` still
+        //   re-prompts with `parent_tool_use_id` on the injected `user` frame; `num_turns` still 2
+        //   in every mode; the bad-shape control still fires **zero** times.
+        // * **s11** — the pty ceiling holds: `read_size_max` 1,024 on a pty against 46,692 on a
+        //   pipe, zero reads at or above 4,096, 94 of 231 reads (41%) carrying no frame boundary
+        //   against zero on pipes, every pty line still `\r\n` and every `OPOST`-cleared line
+        //   still bare `\n`, and `claude -p` still refuses a pty *stdin* with exit 1 and a
+        //   byte-identical `Error: Input must be provided …`.
+        // * **s16** — the kill shape holds exactly: no `stdin_eof` in any harness run and one in
+        //   the control, SIGINT then SIGTERM at 100.2–101.1 ms across four runs, a third signal
+        //   nothing can catch, all pid-targeted (the own-process-group run is identical), and the
+        //   grandchild still unsignalled, reparented to pid 1 and beating 59–60 times after the
+        //   harness is gone.
+        //
+        // **Two readings moved, and neither is a shape.** SIGTERM→server-gone widened from
+        // 418–429 ms to 477–539 ms, measured one axis at a time — 2.1.222 is still on disk beside
+        // 2.1.223, so both were run on this machine within the same minute, and the ranges do not
+        // overlap. The grace a bridge would have to work inside got *larger*, so nothing that
+        // depends on it breaks; but `background.rs`'s "~450 ms" is a 2.1.222 number and is a
+        // *floor* for 2.1.223. And s11's `collapsed_sequence_identical` came back `false` on a
+        // `system/hook_progress` frame — **not** a 2.1.223 finding: that frame carries the
+        // *operator's* own `SessionStart:startup` hook output, because `S1_ARGV_TAIL` carries no
+        // `--setting-sources ""` the way the s14 probe does. It appeared once in eighteen runs and
+        // the `hook_started`/`hook_response` counts are 9/9 on both versions. s11's probe is
+        // environment-dependent in a way its fixture does not say; that is a finding about the
+        // probe, not about claude.
+        //
+        // **Nothing was re-recorded.** Every capture was compared, not refreshed.
+        accepted: &["2.1.220", "2.1.222", "2.1.223"],
     },
     PinnedHarness {
         program: "codex",

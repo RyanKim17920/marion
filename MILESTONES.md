@@ -83,17 +83,33 @@ and the alt-screen/`/diff` capture, 0.146.0 for S5**. (The 0.146.0 captures cont
 all; the alt-screen evidence is the 0.145.0 file.) Qwen Code and Amp claims are **unstamped and unverified locally**.
 
 **A version here names the binary a behaviour was measured on, not the binary that will run.** The
-installed `claude` on this machine is **2.1.222**, not the 2.1.220 stamped above and throughout this
+installed `claude` on this machine is **2.1.223**, not the 2.1.220 stamped above and throughout this
 file. `5792140` replaced the exact pin with a **set** — `marion_testsupport::PINNED_HARNESSES`, the
 one table every version check in the workspace reads — whose **entry zero never moves**, because
 entry zero is what the prose claims, and whose tail carries versions since observed green with the
-evidence beside each. claude's set is `["2.1.220", "2.1.222"]` and codex's is
-`["0.146.0", "0.146.1"]` — codex auto-updated mid-session on 2026-08-06, §7.7's hazard arriving
-live, and 0.146.1 was admitted only after the `s14` codex probe was re-run and its declaration
-matched the committed 0.146.0 capture field for field; gemini and opencode each pin exactly one. So
+evidence beside each. claude's set is `["2.1.220", "2.1.222", "2.1.223"]` and codex's is
+`["0.146.0", "0.146.1"]` — both auto-updated mid-session on 2026-08-06, §7.7's hazard arriving
+live, and each new version was admitted only after its probes were re-run and compared against the
+committed captures field for field; gemini and opencode each pin exactly one. So
 read "2.1.220" as *"the version the turn-one `\"tools\":[]` shape and the
 `tests/fixtures/s9` `can_use_tool` frame were captured from"*, and read a green suite as *"and
-2.1.222 was checked against them too."*
+2.1.222 and 2.1.223 were checked against them too."*
+
+**How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
+of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in
+the morning, claude 2.1.222 → 2.1.223 in the evening — and in the four days of S1–S17 the four
+binaries moved seven times between them. **Assume a pinned version has days of life, not months**,
+and read a red pin as the ordinary weather rather than as an incident. The maintainer's move is
+fixed and is not "widen the set": re-run the probes that a green suite would *not* re-run, compare
+against the committed captures, and add the version with what was compared beside it. The gap that
+makes this necessary is that only `tests/fixtures/s9` and codex's `s6`/`s7` shapes are asserted by
+a test at all — `s10`, `s11`, `s14` and `s16` are prose, and `child_stream`, `child_events` and
+`node_attach` drive real harnesses without going through the gate — so a green suite is always the
+weaker half of the evidence. Two conveniences make the re-measurement cheap and are worth
+preserving: every spike keeps a runnable probe under `spikes/`, and both CLIs keep old releases
+side by side under a repointed symlink, so **the previous version is still on disk and one axis can
+be varied at a time**. That is how 2.1.223's widened SIGKILL grace was told apart from machine load
+and how s11's `system/hook_progress` divergence was told apart from a protocol change.
 
 **Session ownership.** Neither Codex nor Claude Code locks a session. Two concurrent `codex resume`
 processes on one id both start and neither is refused; writes are `O_APPEND` so records survive,
