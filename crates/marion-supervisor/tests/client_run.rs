@@ -1252,3 +1252,181 @@ fn a_new_clients_tree_is_the_journal_the_supervisor_read_including_the_window_no
     drop(run);
     drop(server);
 }
+
+// ------------------------------------------------------------------------------------------
+// T-crit3 — M2 acceptance criterion 3's second half, "and no untracked live process"
+// ------------------------------------------------------------------------------------------
+
+/// The supervisor's own pid, **read out of the journal it wrote**.
+///
+/// `journal.rs` mints a `WriterId` as `<pid>-<uuid>`, so a journal names the process that wrote it.
+/// Taken from there rather than from `ps`, because it is the supervisor that *wrote these records*
+/// that criterion 3 is about — a `ps` match on a command line could name a supervisor for another
+/// project, or two of them, and this cannot.
+fn supervisor_pid(state: &Path, repo: &Path) -> i32 {
+    let bytes = journal_bytes(state, repo);
+    let line = String::from_utf8_lossy(&bytes);
+    let first = line.lines().next().expect("the journal has a record");
+    let v: serde_json::Value = serde_json::from_str(first).expect("a record");
+    v["writer"]
+        .as_str()
+        .and_then(|w| w.split('-').next())
+        .and_then(|p| p.parse().ok())
+        .expect("a writer id is `<pid>-<uuid>`")
+}
+
+/// **M2 acceptance criterion 3, second half: after a supervisor SIGKILL, marion can say of every
+/// process on the record whether it is still running — and none of them is untracked.**
+///
+/// # What "untracked" is, and what it is not
+///
+/// Not *"no live process"*. §7.2 says an `Orphaned` node's process *"may be gone **or still running
+/// with marion no longer attached**"*, and a SIGKILLed supervisor leaves its children running on
+/// purpose — that is criterion 1, measured two tests up. Reading the criterion as *"nothing is
+/// alive"* would make it unsatisfiable by the very scenario it is stated about.
+///
+/// §11 item 30 says what it does mean: a process *"reparented to pid 1, its wall clock unenforced"*
+/// — one **nothing will ever attend to**. So a running orphan is fine, because it is on the record
+/// and a restart offers it for resolution; the leak is a live process marion recorded as *finished*,
+/// which no timeout, no reaper and no restart will ever look at again. `procid::Claim` is the
+/// three-valued reading of that, and this is it end to end.
+///
+/// # Why the node has to be alive for this to measure anything
+///
+/// The child's second turn is held at the provider, so at the SIGKILL both nodes are parked with
+/// real, live processes. That is what makes the answer interesting: with the supervisor gone,
+/// nothing is attached to either of them, and marion has to decide from the journal plus the kernel
+/// whether the processes the journal names are still the processes wearing those pids. Were they
+/// dead, every resolution would be `Gone` and the test would pass without the start identity ever
+/// being consulted — which is exactly the vacuous pass the assertions at the end rule out.
+///
+/// # Bounded, and it fails by assertion
+///
+/// Every wait is on a fact: the gate parking, the journal reaching two nodes, the supervisor's pid
+/// reading `Gone`. The audit itself is a pure function of the journal and four `sysctl` calls, so
+/// there is nothing to wait for at the point the claim is made.
+#[test]
+fn after_a_supervisor_sigkill_every_process_on_the_record_is_accounted_for() {
+    let dir = scratch("client-run-crit3");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+
+    let gate = TurnGate::holding_from(CHILD_WIRE, 2);
+    let server = CannedServer::start_gated(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: dir.join("provider-requests.jsonl"),
+            script: script(),
+        },
+        Some(Arc::clone(&gate)),
+    )
+    .expect("the canned provider binds");
+
+    let mut run = start_run(&dir, &repo, &state, &server.base_url(), &gate);
+    assert!(
+        until(|| gate.parked() == 1),
+        "the child's second turn is held, so both nodes are parked with live processes"
+    );
+    assert!(
+        until(|| journal_nodes(&state, &repo).len() == 2),
+        "both nodes are in the journal before the supervisor dies"
+    );
+
+    let before = journal_nodes(&state, &repo);
+    let pids: Vec<i32> = before.iter().filter_map(|n| n.pid).collect();
+    assert_eq!(
+        pids.len(),
+        2,
+        "**the premise: every node here has a real process on the record.** Both `run.rs`'s \
+         `announce_started` and `root.rs`'s `launch_inner` write `Spawned` at `command.spawn()` \
+         with a pid, so the root counts too — a fact two module docs denied until this test \
+         measured it. A tree with fewer pids than nodes would make the audit below cover less than \
+         it appears to: {before:?}"
+    );
+    assert!(
+        before.iter().all(|n| !n.state.is_exited()),
+        "neither node is terminal, so nothing here is `Gone` for the boring reason: {:?}",
+        before.iter().map(|n| n.state).collect::<Vec<_>>()
+    );
+
+    // ---- the supervisor dies uncatchably, and its nodes do not ---------------------------------
+    let sup = supervisor_pid(&state, &repo);
+    // SAFETY: `kill` with a pid read from the journal this test's own supervisor wrote.
+    unsafe { kill(sup, 9) };
+    assert!(
+        until(|| liveness(sup) == Liveness::Gone),
+        "the supervisor must really be gone before anything below is attributed to its absence"
+    );
+    assert!(
+        pids.iter().all(|p| liveness(*p) == Liveness::Alive),
+        "and its nodes are still running — a SIGKILLed supervisor does not take its fleet with it, \
+         which is what makes the question below a real one: {pids:?}"
+    );
+
+    // ---- replay, §7.2's marking, then the process audit ----------------------------------------
+    let bytes = journal_bytes(&state, &repo);
+    let mut tree = marion_core::registry::replay(&bytes);
+    let marks = marion_supervisor::restart::apply(&mut tree);
+    assert!(
+        marks
+            .iter()
+            .any(|m| m.marking == marion_supervisor::restart::Marking::Orphaned),
+        "§7.2's first half: `Live` → `Orphaned`, which is what makes these nodes ones marion says \
+         it is *not attached to*: {marks:?}"
+    );
+
+    let audit = marion_supervisor::procid::audit(&tree);
+    assert_eq!(
+        audit.resolved.len(),
+        pids.len(),
+        "every node with a process on the record is accounted for, and no others: {:?}",
+        audit.resolved
+    );
+    assert!(
+        audit.cannot_tell().is_empty(),
+        "**the whole point of the recorded start identity.** Before `Spawned` carried one, a live \
+         pid could only ever be `cannot-tell`, and §9's claim was unprovable for any fleet that had \
+         one: {:?}",
+        audit.cannot_tell()
+    );
+    assert_eq!(
+        audit.alive().len(),
+        pids.len(),
+        "each is positively identified as still being marion's own process — not merely `something \
+         is wearing that number`: {:?}",
+        audit.resolved
+    );
+    assert!(
+        audit.untracked_and_live().is_empty(),
+        "and none of them is untracked: they are orphans, on the record, offered for resolution: \
+         {:?}",
+        audit.untracked_and_live()
+    );
+    assert_eq!(
+        audit.claim(),
+        marion_supervisor::procid::Claim::Holds,
+        "§9 criterion 3, second half: **no untracked live process**"
+    );
+
+    // ---- and the same tree once the processes really are gone ----------------------------------
+    //
+    // The pass above is about live processes being identified; this is the other half of the same
+    // claim, and it is what stops `Holds` from being a verdict this test can only ever reach one
+    // way.
+    gate.release();
+    let _ = &mut run;
+    drop(run);
+    drop(server);
+    assert!(
+        until(|| pids.iter().all(|p| liveness(*p) == Liveness::Gone)),
+        "the fixture's sweep ends them: {pids:?}"
+    );
+    let audit = marion_supervisor::procid::audit(&tree);
+    assert!(
+        audit.alive().is_empty() && audit.cannot_tell().is_empty(),
+        "nothing wears those pids now, and that is definite: {:?}",
+        audit.resolved
+    );
+    assert_eq!(audit.claim(), marion_supervisor::procid::Claim::Holds);
+}

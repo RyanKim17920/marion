@@ -62,6 +62,11 @@ pub struct ReplayedNode {
     pub harness_version: Option<String>,
     pub model: Option<String>,
     pub pid: Option<i32>,
+    /// The process start identity `Spawned` carried, if it carried one — what turns [`Self::pid`]
+    /// from a signal target into an identity. `None` for a journal written before the field
+    /// existed and for a platform that cannot read one; both mean the same thing to a reader, which
+    /// is that a live pid proves nothing about this node.
+    pub start_id: Option<crate::node::StartId>,
     /// `Some` iff the intent was resolved by an abort rather than a confirmation.
     pub spawn_aborted: Option<String>,
     pub state: NodeState,
@@ -117,6 +122,7 @@ impl ReplayedNode {
             harness_version: None,
             model: None,
             pid: None,
+            start_id: None,
             spawn_aborted: None,
             // Before any state record, a node is `Spawning` — §3.2's first state, and the only one
             // an intent alone justifies.
@@ -391,6 +397,7 @@ impl Replay {
                 node.harness_version = Some(s.harness_version);
                 node.model = s.model;
                 node.pid = s.pid;
+                node.start_id = s.start_id;
             }
             RecordKind::SpawnAborted(a) => node.spawn_aborted = Some(a.reason),
             RecordKind::StateChanged(s) => {
@@ -617,6 +624,7 @@ mod tests {
                 harness_version: "2.1.220".into(),
                 model: None,
                 pid: Some(11),
+                start_id: None,
             })),
             next(RecordKind::SpawnIntent(SpawnIntent {
                 agent_id: id("child"),
@@ -631,6 +639,7 @@ mod tests {
                 harness_version: "0.9.0".into(),
                 model: None,
                 pid: Some(12),
+                start_id: None,
             })),
             next(RecordKind::StateChanged(StateChanged {
                 agent_id: id("child"),
@@ -1024,6 +1033,7 @@ mod tests {
                     harness_version: "0.9.0".into(),
                     model: None,
                     pid: Some(1),
+                    start_id: None,
                 }),
             ),
             at(
@@ -1099,6 +1109,7 @@ mod tests {
                 harness_version: "1".into(),
                 model: None,
                 pid: None,
+                start_id: None,
             }),
         )];
         let r = replay(&bytes(&j));

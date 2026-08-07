@@ -251,6 +251,23 @@ pub struct Spawned {
     /// `None` where marion drove the process through a helper that does not surface one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<i32>,
+    /// **What makes [`Self::pid`] identify a process rather than merely address one.**
+    ///
+    /// A pid is a signal target; it is not an identity. After a crash of unknown duration the
+    /// kernel may have handed the number to something else, so §7.2's probe branch — *"resolved by
+    /// checking for the process"* — could not be answered from `pid` alone, and `restart.rs`
+    /// refuses to guess. With this beside it the answer becomes definite in both directions: the
+    /// same identity means the node survived, a different one means the pid was recycled and the
+    /// node is gone. See [`crate::node::StartId`] for why it is opaque and equality-only, and
+    /// `marion-supervisor`'s `procid` for what reads it.
+    ///
+    /// **Additive**, per this enum's own rule: `#[serde(default)]` so every journal written before
+    /// it still replays, and `skip_serializing_if` so a record without one is byte-identical to
+    /// what the previous build wrote. `None` therefore means two things that need no distinguishing
+    /// — an older journal, or a platform where marion cannot read one — and both resolve to
+    /// *cannot-tell*, which is correct for each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_id: Option<crate::node::StartId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -445,6 +462,7 @@ mod tests {
                 harness_version: "2.1.220".into(),
                 model: Some("gpt-5.4".into()),
                 pid: Some(4242),
+                start_id: None,
             }),
             RecordKind::SpawnAborted(SpawnAborted {
                 agent_id: AgentId("a-1".into()),
@@ -580,9 +598,54 @@ mod tests {
                 assert_eq!(s.harness_version, "2.1.220");
                 assert_eq!(s.model, None);
                 assert_eq!(s.pid, None);
+                assert_eq!(s.start_id, None);
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// **`start_id` is additive in both directions, which is what lets it be added at all.**
+    ///
+    /// This enum's rule is that an existing variant may only gain `#[serde(default)]` fields, and
+    /// the reason is stated as *"an older record must still deserialize"* — the property the
+    /// journal's whole value rests on. The half that rule does not say out loud, and that matters
+    /// just as much here, is the **forward** direction: a build that has the field but nothing to
+    /// put in it must keep writing exactly what the previous build wrote. Otherwise every existing
+    /// journal gains a `"start_id":null` at the first append, every byte-comparison fixture moves,
+    /// and the change stops being additive in practice however additive it is in principle.
+    #[test]
+    fn a_spawned_without_a_start_id_is_byte_identical_to_what_the_previous_build_wrote() {
+        let without = Spawned {
+            agent_id: AgentId("a-1".into()),
+            harness_version: "2.1.220".into(),
+            model: None,
+            pid: Some(4242),
+            start_id: None,
+        };
+        let line = serde_json::to_string(&RecordKind::Spawned(without)).unwrap();
+        assert_eq!(
+            line, r#"{"Spawned":{"agent_id":"a-1","harness_version":"2.1.220","pid":4242}}"#,
+            "`skip_serializing_if` is what keeps this true — without it the field would appear as \
+             `null` on every record marion has ever written"
+        );
+
+        let with = Spawned {
+            agent_id: AgentId("a-1".into()),
+            harness_version: "2.1.220".into(),
+            model: None,
+            pid: Some(4242),
+            start_id: Some(crate::node::StartId("darwin-p_starttime:ab".into())),
+        };
+        let line = serde_json::to_string(&RecordKind::Spawned(with.clone())).unwrap();
+        assert!(
+            line.contains(r#""start_id":"darwin-p_starttime:ab""#),
+            "and when there is one it is a plain string, not a wrapper object: {line}"
+        );
+        assert_eq!(
+            serde_json::from_str::<RecordKind>(&line).unwrap(),
+            RecordKind::Spawned(with),
+            "round-trips, so a replay reads back the identity a spawn recorded"
+        );
     }
 
     /// **NC — the supervisor exit is not assigned to a convenient node.** A fabricated id would

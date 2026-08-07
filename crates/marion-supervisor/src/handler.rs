@@ -1900,9 +1900,11 @@ impl RegistryHandle {
     /// this predicate got stricter in the safe direction as a result. `run_spawn` now appends
     /// `Spawned { pid: Some(_) }` between `command.spawn()` and the child's first byte of stdin,
     /// so the two middle clauses have teeth on a child: any failure *after* the process exists
-    /// leaves a record marion cannot mistake for a spawn that never happened. It is still
-    /// aspirational for a **root**, whose record is written after the run with `pid: None`
-    /// (`root.rs`'s `spawned_record`) — item 28's step 6.
+    /// leaves a record marion cannot mistake for a spawn that never happened. **It is true of a
+    /// root too**, and this sentence used to say it was not: item 28's step 6 gave `root.rs`'s
+    /// `launch_inner` an `on_started` hook, so a root's `Spawned` is written at `command.spawn()`
+    /// with a real pid exactly like a child's. The `pid: None` arm survives only for a launch that
+    /// never reached a process.
     ///
     /// The b600d82 case — `SpawnIntent` then `SpawnAborted`, nothing else, which is exactly what a
     /// `marion run` whose root failed to launch journals — still satisfies all four, and now does
@@ -2618,6 +2620,7 @@ mod tests {
                     harness_version: "0.9.0".into(),
                     model: None,
                     pid: Some(3),
+                    start_id: None,
                 }),
             )],
             "no-intent",
@@ -2735,6 +2738,7 @@ mod tests {
             harness_version: "test".into(),
             model: None,
             pid: Some(pid),
+            start_id: None,
         })
     }
 
@@ -3009,6 +3013,7 @@ mod tests {
                     harness_version: "0.9.0".into(),
                     model: None,
                     pid: Some(9),
+                    start_id: None,
                 }),
             ),
         );

@@ -538,6 +538,7 @@ mod tests {
             harness_version: "0.9.0".into(),
             model: None,
             pid: Some(7),
+            start_id: None,
         })
     }
 

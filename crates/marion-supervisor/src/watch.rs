@@ -345,6 +345,7 @@ mod tests {
                     harness_version: "0.146.0".into(),
                     model: None,
                     pid: Some(4242),
+                    start_id: None,
                 }),
             ),
         );

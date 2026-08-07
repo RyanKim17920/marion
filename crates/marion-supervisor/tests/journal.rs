@@ -34,6 +34,7 @@ fn a_tree() -> Vec<RecordKind> {
             harness_version: "2.1.220".into(),
             model: None,
             pid: Some(101),
+            start_id: None,
         }),
     ];
     for i in 0..3 {
@@ -51,6 +52,7 @@ fn a_tree() -> Vec<RecordKind> {
             harness_version: "0.9.0".into(),
             model: None,
             pid: Some(200 + i),
+            start_id: None,
         }));
         kinds.push(RecordKind::StateChanged(StateChanged {
             agent_id: child.clone(),

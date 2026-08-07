@@ -29,9 +29,11 @@
 //! named a process marion had already observed dead. §11 item 28's step 1 moved that record to the
 //! instant the process exists (`run.rs`'s `announce_started`, called between `command.spawn()` and
 //! the first byte written to the child's stdin), and it carries a real pid. A child's `Spawned`
-//! now names a process that was running when the record was written. Only a child's: a **root**'s
-//! record is still written after `launch` returns with `pid: None` (`root.rs`'s `spawned_record`),
-//! because `marion run` owns the whole turn in one blocking call — item 28's step 6.
+//! now names a process that was running when the record was written — **and so does a root's**.
+//! This paragraph used to say the root was the exception, on the grounds that `marion run` owned
+//! the whole turn in one blocking call; item 28's step 6 ended that, and `root.rs`'s `launch_inner`
+//! has had an `on_started` hook writing a real pid ever since. The `pid: None` arm is now only a
+//! launch that never reached a process.
 //!
 //! **And [`Marking::ReapIntentUnresolved`] still refuses §7.2's probe branch, unchanged.** The
 //! reason survives the premise it used to be attached to, because it was never really about
@@ -42,18 +44,28 @@
 //! `kill_tree` needs to know *where to send a signal now*, and a pid recorded moments ago by a
 //! supervisor that is still running answers that. §7.2's probe needs to know *whether the process
 //! this journal is about is the one wearing that pid today*, and a bare pid cannot answer it:
-//! marion records no pid-plus-start-time and no command line, so on a restart — the exact moment
-//! this module runs, and by construction after a crash of unknown duration — nothing distinguishes
-//! a surviving node from an unrelated process that was handed a recycled pid. Probing would turn
-//! that ambiguity into a `ReapConfirmed` (*"the process was observed dead"*) or into marion killing
-//! a stranger. Both are fabrications; the refusal is not.
+//! a bare pid cannot answer it, because on a restart — the exact moment this module runs, and by
+//! construction after a crash of unknown duration — nothing in the number itself distinguishes a
+//! surviving node from an unrelated process handed a recycled pid. Probing on a pid alone would
+//! turn that ambiguity into a `ReapConfirmed` (*"the process was observed dead"*) or into marion
+//! killing a stranger. Both are fabrications; the refusal is not.
+//!
+//! **The substrate that was missing now exists, and the refusal below is therefore a deferral
+//! rather than an impossibility.** `Spawned` carries a [`marion_core::node::StartId`] beside its
+//! pid, and [`crate::procid`] compares it, so *"is the process this journal is about still
+//! running"* has a definite answer on a platform where the identity can be read. What has **not**
+//! been designed is the other half of §7.2's sentence — *"still alive means the supervisor died
+//! before the kill landed, so marion kills it now"* — which is marion signalling a process on the
+//! strength of a replayed record, at start-up, with no client watching. That wants its own
+//! argument, so this module still reports the intent unresolved and `procid` reports the process
+//! honestly, which together say strictly more than a fabricated confirmation would.
 //!
 //! What the pid *does* change here is what a `SpawnIntent` with nothing after it means. It used to
 //! cover both "no process was ever started" and "a process is running and marion cannot name it".
 //! It now means the first, full stop — §11 item 30's shapes 1 and 2 stop being indistinguishable —
 //! and the [`Marking::Orphaned`] arm below is correspondingly narrower and more truthful. The
-//! substrate for closing the identity half is `spikes/s15/procid.py`'s start-time comparison; it is
-//! deliberately not reached for here.
+//! identity half is closed by [`crate::procid`], whose start-time comparison follows
+//! `spikes/s15/procid.py`; this module still does not reach for it, for the reason above.
 //!
 //! # Derived, not journaled
 //!
@@ -157,7 +169,7 @@ pub fn mark(tree: &Replay) -> Vec<Marked> {
 /// A node whose fate is on the record needs no verdict from restart at all, which is what the
 /// early return says.
 fn classify(node: &ReplayedNode) -> Option<Marked> {
-    if node.state.is_exited() || node.reap_state == ReapState::ReapedIdle {
+    if fate_decided(node) {
         return None;
     }
     let marking = if node.reap_intent.is_some() {
@@ -173,6 +185,21 @@ fn classify(node: &ReplayedNode) -> Option<Marked> {
         agent_id: node.agent_id.clone(),
         marking,
     })
+}
+
+/// **Whether the journal shows marion deciding this node's fate** — [`classify`]'s early return,
+/// as a predicate other modules can ask.
+///
+/// Exposed rather than restated, for the reason this module gives about its own partition: a second
+/// copy of a clause is how the two drift apart. [`crate::procid`] needs exactly this question and
+/// asked it the wrong way first — by re-running [`mark`] and treating "no marking" as "decided",
+/// which is true before [`apply`] and false after it, because `apply` moves a node to `Orphaned`
+/// and `is_unresolved` then stops firing. That made every orphan read as decided the moment the
+/// standard restart pass had run, which would have reported a fleet of healthy orphans as leaks.
+///
+/// This is stable across `apply`: `Orphaned` is precisely marion saying it did **not** decide.
+pub fn fate_decided(node: &ReplayedNode) -> bool {
+    node.state.is_exited() || node.reap_state == ReapState::ReapedIdle
 }
 
 /// Run the pass and **write its `Orphaned` verdicts into the tree**, answering everything it
@@ -259,6 +286,7 @@ mod tests {
                 harness_version: "2.1.220".into(),
                 model: None,
                 pid,
+                start_id: None,
             }))
         }
 

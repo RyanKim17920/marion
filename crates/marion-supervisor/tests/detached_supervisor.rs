@@ -794,6 +794,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
             harness_version: "0.146.0".into(),
             model: None,
             pid: Some(pid),
+            start_id: None,
         }),
     );
     seed(

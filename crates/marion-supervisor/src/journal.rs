@@ -369,6 +369,7 @@ mod tests {
                 harness_version: pinned_version("claude").into(),
                 model: None,
                 pid: Some(1),
+                start_id: None,
             }))
             .unwrap();
             j.append(intent("child", Some("root"))).unwrap();

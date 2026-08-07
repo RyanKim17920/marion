@@ -1373,10 +1373,31 @@ pub fn run_spawn_watched(
                 // The **compiled** value, for §6.7's reason: what went on the wire, never what was
                 // asked for. `None` on codex, whose `exec` surface carries no model argument.
                 model: inv.model.clone(),
-                // A real signal target, for the first time. Not an identity: marion records no
-                // pid-plus-start-time and no command line, so this proves where to send a signal
-                // now, not who a pid was later (see `restart.rs`).
+                // A real signal target: where to send a signal *now*.
                 pid: Some(pid),
+                // **And what makes it an identity, read here and nowhere else.**
+                //
+                // This closure is the only instant at which the read is race-free by
+                // construction: marion holds the `Child`, so the pid cannot be reaped and cannot
+                // be recycled between `command.spawn()` returning it and this line. Reading it
+                // later — at the exit, on a restart, from any other thread — would be reading a
+                // number that may already belong to someone else, which is the very confusion the
+                // field exists to end. Measured: a zombie still resolves, but a *reaped* pid does
+                // not, so anywhere after the reap is too late.
+                //
+                // `None` on a platform that cannot read one. That is not a failure of the spawn
+                // and must not be treated as one: it resolves to *cannot-tell* later, which is the
+                // honest answer, and refusing to launch over it would take marion off every
+                // platform whose start-time read has not been measured yet.
+                start_id: match crate::procid::read(pid) {
+                    crate::procid::Read::Id(id) => Some(id),
+                    // The process was spawned moments ago and marion is holding it, so neither of
+                    // these should be reachable here — but a `Spawned` record is not the place to
+                    // assert that, and a wrong identity would be far worse than a missing one.
+                    crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => {
+                        None
+                    }
+                },
             }),
         );
         // **After the append, never before.** The owner's whole reason for wanting this instant is

@@ -1397,6 +1397,24 @@ fn spawned_record(node: &RootNode, pid: Option<i32>) -> RecordKind {
         // was asked for. `None` on codex, whose `exec` surface takes no model argument at all.
         model: node.invocation.model.clone(),
         pid,
+        // **Derived from `pid` here rather than passed in, so the two cannot disagree.**
+        //
+        // Both call sites are covered by construction: `launch_inner`'s `on_started` hook passes a
+        // real pid and gets an identity, and the no-process fallback passes `None` and gets `None`.
+        // Deriving it at the one place the pid is turned into a record is what stops a future third
+        // call site from recording a signal target with no identity beside it — which is exactly
+        // what this path did until the criterion-3 measurement caught it.
+        //
+        // The read is only sound at `on_started`, while marion still holds the `Child`: a pid read
+        // later may already belong to someone else, and a reaped pid stops resolving at all
+        // (measured). That is where the hook fires, so that is where this runs.
+        start_id: pid.and_then(|p| match crate::procid::read(p) {
+            crate::procid::Read::Id(id) => Some(id),
+            // The process was spawned moments ago and marion holds it, so neither should be
+            // reachable — and a wrong identity would be far worse than a missing one, which
+            // resolves to an honest `cannot-tell`.
+            crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
+        }),
     })
 }
 
