@@ -305,6 +305,25 @@ pub struct AgentSpawnParams {
     /// harness needs a model and in what spelling.
     #[serde(default)]
     pub model: Option<String>,
+    /// **§9's change record, declined** — `marion run --no-change-record`, and a root-only field on
+    /// [`Self::repo`]'s pairing rule: permitted with `caller: None`, refused with `caller: Some(_)`.
+    ///
+    /// It is here because a root runs in the operator's **own checkout** rather than in a worktree
+    /// marion made, so marion snapshots that tree at launch and at exit and the delta is the only
+    /// record of what the run did (§9). Only the operator can say that snapshot must not be taken —
+    /// of a directory too large to walk, or one they would rather marion did not read — and once the
+    /// supervisor drives the root there is no other channel for them to say it on. A child has no
+    /// such record at all: its writes are judged against its worktree, so the field would be an
+    /// accept-and-ignore there, which §11 item 23 refuses.
+    ///
+    /// `Option<bool>`, not `bool`, so that "stated" and "unstated" are distinguishable on the wire
+    /// and the pairing can be refused by name — a plain `false` from a caller and a `false` serde
+    /// invented are the same bytes, and the refusal would then fire on the operator's default.
+    /// Absent, for a root, is `false`: marion looks. That is the direction that produces a record
+    /// rather than a silence, and §9's whole argument for the record is that its absence is
+    /// indistinguishable from a write that escaped.
+    #[serde(default)]
+    pub no_change_record: Option<bool>,
 }
 
 /// `doctor/run`. §8's two modes, plus an optional single-harness filter — which *is* performed:
@@ -385,6 +404,7 @@ mod tests {
             writable_scope: vec![],
             timeout_secs: None,
             model: None,
+            no_change_record: Some(true),
         });
         rt!(AgentSpawnParams {
             agent_type: "codex-impl".into(),
@@ -398,6 +418,7 @@ mod tests {
             writable_scope: vec!["src/**".into()],
             timeout_secs: Some(120),
             model: Some("sonnet".into()),
+            no_change_record: None,
         });
         rt!(DoctorRunParams {
             mode: ProbeMode::Adapter,
@@ -460,9 +481,10 @@ mod tests {
                 writable_scope: vec![],
                 timeout_secs: None,
                 model: None,
+                no_change_record: None,
             })
             .unwrap(),
-            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null}"#
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null}"#
         );
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
@@ -477,9 +499,10 @@ mod tests {
                 writable_scope: vec!["src/**".into()],
                 timeout_secs: Some(60),
                 model: Some("sonnet".into()),
+                no_change_record: None,
             })
             .unwrap(),
-            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet"}"#
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet","no_change_record":null}"#
         );
     }
 
@@ -505,6 +528,11 @@ mod tests {
              here would be a second source of truth for it"
         );
         assert_eq!(p.model, None);
+        assert_eq!(
+            p.no_change_record, None,
+            "unstated is unstated: the supervisor reads absence as `false` for a root, and the \
+             pairing rule refuses a stated value from a caller by name"
+        );
     }
 
     /// **The F2 shape, at the deserializer.** A caller states who it is and proves it. It does not

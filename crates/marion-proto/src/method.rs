@@ -422,6 +422,7 @@ mod tests {
                 // is the one carrying the most structure — a `SpawnCaller` nested inside an
                 // `Option` inside the params.
                 Call::AgentSpawn(AgentSpawnParams {
+                    no_change_record: None,
                     agent_type: "codex-impl".into(),
                     prompt: "implement §6.3".into(),
                     caller: Some(crate::params::SpawnCaller {

@@ -158,6 +158,7 @@ fn root_spawn(repo: Option<&Path>) -> AgentSpawnParams {
         writable_scope: vec![],
         timeout_secs: Some(1),
         model: None,
+        no_change_record: None,
     }
 }
 

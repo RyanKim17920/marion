@@ -4481,6 +4481,9 @@ mod tests {
                 agent_type: "claude".into(),
                 prompt: "do the task".into(),
                 caller,
+                // Root-only, and every caller in this helper's `Some` half would be refused by
+                // name for stating it — see `a_caller_that_states_no_change_record_is_refused`.
+                no_change_record: None,
                 // Every caller in this module is a `Some`, and a `Some` that states a repository
                 // is refused by name — see `a_caller_that_states_its_own_repository_is_refused`.
                 repo: None,
