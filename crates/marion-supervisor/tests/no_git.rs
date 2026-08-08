@@ -255,8 +255,7 @@ fn a_worktree_child_outside_a_repository_is_refused_in_marions_voice() {
     let fx = fixture(&root, cwd.clone());
 
     let msg = spawn(&fx, "wt-1", Isolation::Worktree)
-        .err()
-        .expect("a worktree child cannot run where there is no repository to add one to");
+        .expect_err("a worktree child cannot run where there is no repository to add one to");
 
     assert!(
         msg.contains(&cwd.display().to_string()),
@@ -321,8 +320,7 @@ fn a_second_write_capable_child_in_one_cwd_is_refused_naming_the_holder() {
     let claim = CwdClaim::claim(&cwd, &holder).expect("an empty cwd is free");
 
     let msg = spawn(&fx, "occupied-1", Isolation::SharedCwd)
-        .err()
-        .expect("a second write-capable node in one cwd is refused (§6.6)");
+        .expect_err("a second write-capable node in one cwd is refused (§6.6)");
 
     assert!(
         msg.contains("impl-auth-7f21"),
