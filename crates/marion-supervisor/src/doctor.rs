@@ -62,8 +62,8 @@ use std::time::{Duration, Instant};
 use marion_core::encoding::Millis;
 use marion_core::harness::Harness;
 use marion_harness::{
-    Auth, Capabilities, ExecutionSurfaces, Extras, HarnessAdapter, Invocation, LaunchSpec,
-    McpDeclaration, SpawnCtx, adapter_for, static_caps,
+    AgentHandshake, Auth, Capabilities, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
+    LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for, static_caps,
 };
 use marion_proto::{HarnessReport, ProbeMode};
 
@@ -184,9 +184,30 @@ pub fn run(opts: &Options) -> Vec<Row> {
         .collect()
 }
 
+/// One harness, one call — except `acp`, which is **one adapter over many agents** (§5.2) and so
+/// contributes one row set per agent it knows.
+///
+/// This is where M5's second clause becomes reachable. `Harness::ALL` gaining an `Acp` member would
+/// otherwise have produced a *single* ACP row, and *"`marion doctor` reporting their differing
+/// capabilities"* needs one row per agent to have anything to differ between. The agents are not
+/// marion choosing anything (§6.4): the list is `acp::AGENTS`, a table of what marion has
+/// measured, and a probe enumerating what is installed is the opposite of a probe picking one.
 fn probe(h: Harness, opts: &Options) -> Vec<Row> {
+    match h {
+        Harness::Acp => acp::AGENTS
+            .iter()
+            .flat_map(|a| probe_one(h, opts, Some(*a)))
+            .collect(),
+        _ => probe_one(h, opts, None),
+    }
+}
+
+fn probe_one(h: Harness, opts: &Options, agent: Option<acp::Agent>) -> Vec<Row> {
     let started = Instant::now();
     let mut notes = Vec::new();
+    if let Some(a) = agent {
+        notes.push(format!("acp agent: `{}` — {}", a.id, a.note));
+    }
 
     let adapter = match adapter_for(h) {
         Ok(a) => a,
@@ -215,7 +236,7 @@ fn probe(h: Harness, opts: &Options) -> Vec<Row> {
              for the steps that launch nothing. No process is ever started from it."
         ));
     }
-    let program = probe_spec(opts.model.clone(), McpDeclaration::None)
+    let program = probe_spec(opts.model.clone(), McpDeclaration::None, agent)
         .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok())
         .map(|inv| inv.program);
     let resolved = match &program {
@@ -239,9 +260,28 @@ fn probe(h: Harness, opts: &Options) -> Vec<Row> {
         }
     };
 
-    let version = resolved
-        .as_deref()
-        .and_then(|p| read_version(p, &mut notes));
+    // **For ACP the handshake *is* the version read**, and there is no second source for it. §3.3
+    // keys `(harness, harness_version, surfaces)`, and this is the row where the middle component
+    // arrives from the agent rather than from a table: `opencode --version` answers `1.17.3` about
+    // a *binary*, while `initialize` answers `OpenCode 1.17.3` about the **agent behind the
+    // protocol**, which is what the capability column is keyed on. Running both would put two
+    // versions on one row with nothing saying which the capabilities came from.
+    let handshake = match agent {
+        Some(_) => resolved
+            .as_deref()
+            .zip(
+                probe_spec(opts.model.clone(), McpDeclaration::None, agent)
+                    .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok()),
+            )
+            .and_then(|(p, inv)| acp_handshake(p, &inv, &mut notes)),
+        None => None,
+    };
+    let version = match agent {
+        Some(_) => handshake.as_ref().map(AgentHandshake::key),
+        None => resolved
+            .as_deref()
+            .and_then(|p| read_version(p, &mut notes)),
+    };
 
     let adapter_check = match opts.mode {
         ProbeMode::Capabilities => None,
@@ -249,6 +289,7 @@ fn probe(h: Harness, opts: &Options) -> Vec<Row> {
             &*adapter,
             resolved.as_deref(),
             opts,
+            agent,
             &mut notes,
         )),
     };
@@ -271,8 +312,26 @@ fn probe(h: Harness, opts: &Options) -> Vec<Row> {
                 s.display,
                 s.observations
             ));
-            // §3.3's middle third.
-            let capabilities = static_caps(h, keyed_version(version.as_deref()), &s);
+            // §3.3's two stages. For four harnesses stage one is the whole answer; for ACP the
+            // static set is *refined* by the handshake, which is the only reason two agents behind
+            // one adapter can publish different rows. A handshake that did not happen refines
+            // nothing and narrows nothing — the row then publishes the protocol's own unnarrowed
+            // set, which the note below says in as many words.
+            let stage_one = static_caps(h, keyed_version(version.as_deref()), &s);
+            let capabilities = match &handshake {
+                Some(hs) => hs.refine(stage_one),
+                None => stage_one,
+            };
+            if agent.is_some() {
+                notes.push(match &handshake {
+                    Some(hs) => format!(
+                        "capabilities: refined by this agent's own `initialize` (§3.3 stage two): loadSession={}, sessionCapabilities={:?}",
+                        hs.load_session, hs.session_capabilities
+                    ),
+                    None => "capabilities: NOT refined — no `initialize` answer, so this row is the protocol's static set with nothing narrowed off it"
+                        .to_string(),
+                });
+            }
             notes.push(format!(
                 "capabilities on these surfaces: {}",
                 match capabilities.granted().as_slice() {
@@ -328,6 +387,7 @@ fn micro_contract(
     adapter: &dyn HarnessAdapter,
     program: Option<&Path>,
     opts: &Options,
+    agent: Option<acp::Agent>,
     notes: &mut Vec<String>,
 ) -> bool {
     let mut ok = true;
@@ -355,7 +415,7 @@ fn micro_contract(
     // Step: the declaration route the adapter promises is actually taken. No process, no model
     // call, and it catches §6.1 step 8's failure class — an adapter that forgets its declaration
     // and launches a node with no bridge at all.
-    match probe_spec(opts.model.clone(), McpDeclaration::Marion) {
+    match probe_spec(opts.model.clone(), McpDeclaration::Marion, agent) {
         None => notes.push("declaration: NOT RUN — no spec could be built".into()),
         Some(spec) => {
             let ctx = probe_ctx();
@@ -366,7 +426,29 @@ fn micro_contract(
                 Err(e) => step(false, format!("declaration: FAILED — compile: {e}"), notes),
                 Ok((files, inv)) => {
                     let written: Vec<PathBuf> = files.into_iter().map(|(p, _)| p).collect();
-                    match adapter.mcp_route(&spec).verify(&written, &inv) {
+                    // **Reported under its own name, not folded into the route check.** An adapter
+                    // that *refuses* to declare marion's bridge to this agent has said something
+                    // specific — today, that it has never measured what the agent calls a tool —
+                    // and collapsing that into "the route was not taken" would print a fact about
+                    // the agent as a fact about marion's plumbing. §8: the probe says *why*.
+                    let session = match adapter.session_declaration(&spec, &ctx) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            step(
+                                false,
+                                format!(
+                                    "declaration: REFUSED — this adapter will not put marion's \
+                                     verbs in front of this agent: {e}"
+                                ),
+                                notes,
+                            );
+                            return ok;
+                        }
+                    };
+                    match adapter
+                        .mcp_route(&spec)
+                        .verify(&written, &inv, session.as_ref())
+                    {
                         Ok(_) => step(
                             true,
                             format!(
@@ -391,8 +473,36 @@ fn micro_contract(
         }
     }
 
-    // Step: the live turn. Only where the prompt rides argv — see this module's header for why a
-    // typed plane's post-launch prompt frame is `duplex`'s protocol and not a probe's.
+    // Step: the live turn. **ACP is the one typed plane a probe can drive**, and the reason is
+    // that its post-launch protocol is a published one rather than marion's own: `initialize`,
+    // `session/new`, `session/prompt` are the agent's contract, so driving them here tests the
+    // agent and not marion's idea of a handshake. That is exactly the objection that keeps
+    // claude-code's `stream-json` turn out of this probe, and it does not apply.
+    if let Some(a) = agent {
+        let Some(spec) = probe_spec(opts.model.clone(), McpDeclaration::None, agent) else {
+            notes.push("live turn: NOT RUN — no spec could be built".into());
+            return ok;
+        };
+        let inv = match adapter.compile(&spec, &probe_ctx()) {
+            Ok(i) => i,
+            Err(e) => {
+                step(false, format!("live turn: FAILED — compile: {e}"), notes);
+                return ok;
+            }
+        };
+        let turn = acp_live_turn(a, program, &inv, notes);
+        step(turn.spawned, turn.spawn_line, notes);
+        if let Some(l) = turn.shape_line {
+            step(turn.shape_ok, l, notes);
+        }
+        for l in turn.trailing {
+            notes.push(l);
+        }
+        step(turn.no_leak, turn.leak_line, notes);
+        return ok;
+    }
+    // Only where the prompt rides argv — see this module's header for why a typed plane's
+    // post-launch prompt frame is `duplex`'s protocol and not a probe's.
     if adapter.surfaces().has_typed_control_plane() {
         notes.push(format!(
             "live turn: NOT RUN — {} runs on a typed control plane, where §6.1 step 8 writes the \
@@ -624,6 +734,376 @@ fn shape_finding(
     )
 }
 
+/// A spawned ACP agent, with its stdout drained by a thread so a request can be answered while
+/// frames are still arriving.
+///
+/// **Every exit from this struct kills the child.** An ACP agent is a long-lived stdio server that
+/// never closes stdout on its own — it is precisely the shape §8's leak check names — so a probe
+/// that returned early on a parse error would leave one running for the life of the machine.
+/// [`Drop`] is what makes that true on the error paths as well as the happy one; `finish` is the
+/// happy one, and reports what the kill took.
+struct AcpChild {
+    child: std::process::Child,
+    pid: i32,
+    stdin: Option<std::process::ChildStdin>,
+    frames: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl AcpChild {
+    fn spawn(program: &Path, inv: &Invocation) -> std::io::Result<Self> {
+        let mut cmd = Command::new(program);
+        cmd.args(&inv.args)
+            .current_dir(&inv.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        for (k, v) in &inv.env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn()?;
+        let pid = child.id() as i32;
+        let stdin = child.stdin.take();
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        if let Some(out) = child.stdout.take() {
+            let sink = std::sync::Arc::clone(&frames);
+            // Detached: the reader ends when the pipe closes, which the kill in `Drop` guarantees.
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                    sink.lock().expect("frame sink").push(line);
+                }
+            });
+        }
+        Ok(Self {
+            child,
+            pid,
+            stdin,
+            frames,
+        })
+    }
+
+    fn send(&mut self, frame: &serde_json::Value) -> bool {
+        use std::io::Write;
+        let Some(w) = self.stdin.as_mut() else {
+            return false;
+        };
+        // One line, no embedded newline: the transport is newline-delimited.
+        writeln!(w, "{frame}").and_then(|()| w.flush()).is_ok()
+    }
+
+    /// The response frame carrying `id`, or `None` if the budget elapsed first.
+    ///
+    /// It matches on the **id**, not on arrival order: S21 measured `session/update` notifications
+    /// interleaved with, and arriving before, the response they belong to, so "the next line" is
+    /// not the answer to anything.
+    fn response(&self, id: u64, budget: Duration) -> Option<String> {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            let seen = self.frames.lock().expect("frame sink").clone();
+            for line in &seen {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                    continue;
+                };
+                if v.get("id").and_then(serde_json::Value::as_u64) == Some(id)
+                    && (v.get("result").is_some() || v.get("error").is_some())
+                {
+                    return Some(line.clone());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+
+    fn stdout(&self) -> String {
+        self.frames.lock().expect("frame sink").join("\n")
+    }
+
+    /// SIGINT, then SIGKILL. Returns whether the agent went away on the interrupt alone — §8's
+    /// *"assert clean termination"*, which for a stdio server means it honoured the signal.
+    fn finish(&mut self) -> bool {
+        self.stdin.take();
+        unsafe { kill(self.pid, SIGINT) };
+        if wait_bounded(&mut self.child, INTERRUPT_GRACE).is_some() {
+            return true;
+        }
+        unsafe { kill(self.pid, SIGKILL) };
+        let _ = self.child.wait();
+        false
+    }
+}
+
+impl Drop for AcpChild {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            unsafe { kill(self.pid, SIGKILL) };
+            let _ = self.child.wait();
+        }
+    }
+}
+
+/// How long an ACP agent is given to answer `initialize`. It is a process start plus one frame.
+const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
+/// How long `session/new` is given. Longer than the handshake because S20 measured it reaching a
+/// vendor over the network before answering — including to say no.
+const SESSION_BUDGET: Duration = Duration::from_secs(60);
+
+/// §3.3's stage two, live: spawn the agent, ask `initialize`, take its answer, kill it.
+///
+/// This is the ACP row's **version read** as well as its capability read, which is why it runs in
+/// `--capabilities` mode too. §8 calls that mode *"what a harness advertises"*, and for an agent
+/// that supplies its own identity in a handshake, advertising is what this is. It costs a process
+/// start and one frame; no session, no model call.
+fn acp_handshake(
+    program: &Path,
+    inv: &Invocation,
+    notes: &mut Vec<String>,
+) -> Option<AgentHandshake> {
+    let started = Instant::now();
+    let mut agent = match AcpChild::spawn(program, inv) {
+        Ok(c) => c,
+        Err(e) => {
+            notes.push(format!("initialize: FAILED — spawn: {e}"));
+            return None;
+        }
+    };
+    if !agent.send(&acp::initialize_request(0)) {
+        notes.push("initialize: FAILED — could not write to the agent's stdin".into());
+        return None;
+    }
+    let frame = agent.response(0, HANDSHAKE_BUDGET);
+    let clean = agent.finish();
+    let Some(frame) = frame else {
+        notes.push(format!(
+            "initialize: FAILED — no answer within {HANDSHAKE_BUDGET:?}"
+        ));
+        return None;
+    };
+    match AgentHandshake::parse(&frame) {
+        Ok(h) => {
+            notes.push(format!(
+                "initialize: {} in {} ms{}",
+                h.key(),
+                started.elapsed().as_millis(),
+                if clean {
+                    ""
+                } else {
+                    " (and had to be SIGKILLed after SIGINT)"
+                }
+            ));
+            if !h.auth_methods.is_empty() {
+                // §6.4: marion may name these and may never choose one. S20's `gemini --acp`
+                // blocker is unblocked by one of them, so a probe that dropped them would report
+                // an impasse with no exit.
+                notes.push(format!(
+                    "auth methods offered: {}",
+                    h.auth_methods.join(", ")
+                ));
+            }
+            Some(h)
+        }
+        Err(e) => {
+            notes.push(format!("initialize: FAILED — {e}"));
+            None
+        }
+    }
+}
+
+/// §8's micro-contract over a real ACP session: spawn → `initialize` → `session/new` → prompt →
+/// response shape → interrupt → clean termination → leak check.
+///
+/// The declaration is deliberately **not** marion's bridge here: `probe_spec` asks for
+/// [`McpDeclaration::None`], so `session/new` carries an empty `mcpServers` and no
+/// `marion-supervisor mcp` process is started. §8's mode is a contract test against the installed
+/// binary, and starting marion's own bridge would put marion on both ends of the assertion. That
+/// the declaration *route* is real is checked separately and without a process, by the declaration
+/// step above.
+fn acp_live_turn(
+    agent_spec: acp::Agent,
+    program: &Path,
+    inv: &Invocation,
+    notes: &mut Vec<String>,
+) -> TurnOutcome {
+    notes.push(format!(
+        "live turn: {} {} (acp agent `{}`)",
+        program.display(),
+        inv.args.join(" "),
+        agent_spec.id
+    ));
+    let mut agent = match AcpChild::spawn(program, inv) {
+        Ok(c) => c,
+        Err(e) => {
+            return TurnOutcome {
+                spawned: false,
+                spawn_line: format!("spawn: FAILED — {e}"),
+                shape_ok: false,
+                shape_line: None,
+                trailing: vec![],
+                no_leak: true,
+                leak_line: "leak check: nothing was started".into(),
+            };
+        }
+    };
+    let pid = agent.pid;
+    let mut trailing = Vec::new();
+    let mut shape: Option<(bool, String)> = None;
+
+    // `initialize`, then `session/new`, then the prompt. Each step reports itself and stops the
+    // sequence, because a step that could not run is not a step that failed a *later* one.
+    agent.send(&acp::initialize_request(0));
+    let handshake = agent
+        .response(0, HANDSHAKE_BUDGET)
+        .map(|f| marion_harness::AgentHandshake::parse(&f));
+    match &handshake {
+        Some(Ok(h)) => trailing.push(format!("initialize: ok — {}", h.key())),
+        Some(Err(e)) => shape = Some((false, format!("initialize: FAILED — {e}"))),
+        None => {
+            shape = Some((
+                false,
+                format!("initialize: FAILED — no answer within {HANDSHAKE_BUDGET:?}"),
+            ))
+        }
+    }
+
+    let mut session = None;
+    if shape.is_none() {
+        agent.send(&acp::session_new_request(
+            marion_harness::adapter::SESSION_NEW_ID,
+            &inv.cwd,
+            &[],
+        ));
+        match agent.response(marion_harness::adapter::SESSION_NEW_ID, SESSION_BUDGET) {
+            None => {
+                shape = Some((
+                    false,
+                    format!("session/new: FAILED — no answer within {SESSION_BUDGET:?}"),
+                ))
+            }
+            Some(f) => match acp::session_id(&f) {
+                Ok(id) => {
+                    trailing.push("session/new: ok — the agent opened a session".into());
+                    session = Some(id);
+                }
+                // **The S20 blocker, reported as the vendor's own sentence.** It is not an adapter
+                // fault and no adapter can route around it, so it must not read as marion failing
+                // to understand the answer.
+                Err(e) => shape = Some((false, format!("session/new: REFUSED by the agent — {e}"))),
+            },
+        }
+    }
+
+    let mut timed_out = false;
+    if let Some(sid) = &session {
+        agent.send(&acp::prompt_request(2, sid, MICRO_PROMPT));
+        match agent.response(2, TURN_BUDGET) {
+            Some(f) => trailing.push(format!(
+                "session/prompt: answered — stopReason {}",
+                serde_json::from_str::<serde_json::Value>(&f)
+                    .ok()
+                    .and_then(|v| v
+                        .pointer("/result/stopReason")?
+                        .as_str()
+                        .map(str::to_string))
+                    .unwrap_or_else(|| "absent".into())
+            )),
+            None => {
+                timed_out = true;
+                // §8's interrupt step, in ACP's own vocabulary. `session/cancel` is a
+                // notification: the pending `session/prompt` answers it with
+                // `stopReason: "cancelled"`, which is a cleaner interrupt than a signal and is the
+                // one this protocol documents.
+                agent.send(&acp::cancel_notification(sid));
+                trailing.push(format!(
+                    "interrupt: session/cancel sent after the {TURN_BUDGET:?} turn budget"
+                ));
+            }
+        }
+    }
+
+    let stdout = agent.stdout();
+    let shape = shape.unwrap_or_else(|| acp_shape_finding(&stdout, timed_out));
+    let clean = agent.finish();
+    trailing.push(if clean {
+        "termination: the agent exited on SIGINT".into()
+    } else {
+        format!("termination: FAILED — pid {pid} did not exit within {INTERRUPT_GRACE:?} of SIGINT")
+    });
+    TurnOutcome {
+        spawned: true,
+        spawn_line: format!("spawn: ok — pid {pid}"),
+        shape_ok: shape.0,
+        shape_line: Some(shape.1),
+        trailing,
+        // An ACP agent is a stdio server that never exits on its own, so `finish` is the only thing
+        // standing between this probe and a process that outlives the machine's next reboot.
+        no_leak: clean,
+        leak_line: if clean {
+            "leak check: no process outlived the probe".into()
+        } else {
+            format!(
+                "leak check: FAILED — pid {pid} survived SIGINT and had to be SIGKILLed. §8: a \
+                 binary that hangs on interrupt and a version too old are the same boolean and \
+                 different problems; this is the former."
+            )
+        },
+    }
+}
+
+/// §8's *"assert response shape"* for an ACP transcript — **structural, never on text** (§8's L5).
+///
+/// Three things, and the third is the one that would catch drift: the agent wrote frames, one of
+/// them is the `session/prompt` response carrying a `stopReason`, and marion's own ACP reader does
+/// not find a failure in the transcript.
+fn acp_shape_finding(stdout: &str, timed_out: bool) -> (bool, String) {
+    let frames = marion_harness::json_frames(stdout);
+    if frames.is_empty() {
+        return (
+            false,
+            format!(
+                "response shape: FAILED — {} bytes and not one JSON frame in them; this is the \
+                 format drift §8 says this mode exists to catch",
+                stdout.len()
+            ),
+        );
+    }
+    let stop = frames
+        .iter()
+        .find_map(|f| f.pointer("/result/stopReason")?.as_str());
+    let outcome = acp::parse_stream(
+        stdout,
+        marion_harness::ChildExit::default(),
+        &marion_harness::AcpAdapter.marion_tool_name("report"),
+    );
+    match (stop, &outcome.failure) {
+        (_, Some(f)) => (
+            false,
+            format!("response shape: FAILED — the agent's own transcript reports a failure: {f}"),
+        ),
+        (Some(r), None) => (
+            true,
+            format!(
+                "response shape: ok — {} frames, stopReason `{r}`",
+                frames.len()
+            ),
+        ),
+        (None, None) if timed_out => (
+            true,
+            format!(
+                "response shape: ok — {} frames, and the turn was cancelled before it answered, \
+                 so no stopReason is owed",
+                frames.len()
+            ),
+        ),
+        (None, None) => (
+            false,
+            format!(
+                "response shape: FAILED — {} frames and no `session/prompt` response among them",
+                frames.len()
+            ),
+        ),
+    }
+}
+
 /// Read a child's stdout to EOF, or until `budget`. `true` means the budget elapsed first.
 fn read_bounded(child: &mut std::process::Child, budget: Duration) -> (String, bool) {
     use std::io::Read;
@@ -767,7 +1247,11 @@ const PLACEHOLDER_MODEL: &str = "marion-doctor/no-model-chosen";
 
 /// A spec that compiles but launches nothing — for reading a program name and checking a
 /// declaration route.
-fn probe_spec(model: Option<String>, mcp: McpDeclaration) -> Option<LaunchSpec> {
+fn probe_spec(
+    model: Option<String>,
+    mcp: McpDeclaration,
+    agent: Option<acp::Agent>,
+) -> Option<LaunchSpec> {
     Some(LaunchSpec {
         cwd: std::env::temp_dir(),
         model: Some(model.unwrap_or_else(|| PLACEHOLDER_MODEL.to_string())),
@@ -781,7 +1265,15 @@ fn probe_spec(model: Option<String>, mcp: McpDeclaration) -> Option<LaunchSpec> 
         // test against *the installed binary as installed*.
         auth: Auth::Inherited,
         config_dir: std::env::temp_dir().join("marion-doctor"),
-        extra: Extras::default(),
+        extra: Extras {
+            // `None` for the other four, and `Some` only for the row that is *about* this agent.
+            // The adapter refuses an unnamed agent by name (§6.4), so a probe that left this empty
+            // would print marion's own omission as a finding about the operator's binary — the
+            // failure `the_probes_own_spec_is_complete_enough_for_every_adapter_to_compile` exists
+            // to catch, one harness later.
+            acp_agent: agent.map(|a| a.id.to_string()),
+            ..Extras::default()
+        },
     })
 }
 
@@ -790,7 +1282,7 @@ fn probe_spec(model: Option<String>, mcp: McpDeclaration) -> Option<LaunchSpec> 
 /// instead of as a `HarnessError` an operator has to interpret.
 fn probe_spec_with_prompt(model: Option<String>) -> Option<LaunchSpec> {
     // Deliberately **not** `PLACEHOLDER_MODEL`: this is the one spec a process is started from.
-    let mut spec = probe_spec(Some(model?), McpDeclaration::None)?;
+    let mut spec = probe_spec(Some(model?), McpDeclaration::None, None)?;
     spec.prompt = MICRO_PROMPT.into();
     Some(spec)
 }
@@ -945,6 +1437,139 @@ mod tests {
         assert!(
             all.len() > one.len(),
             "filtering to one harness must probe strictly fewer keys than probing all four"
+        );
+    }
+
+    /// **The leak guard, against a process that ignores SIGINT.**
+    ///
+    /// §8 names this shape exactly — *"a binary that hangs on interrupt and a version too old are
+    /// the same boolean and different problems"* — and an ACP agent is the shape: a stdio server
+    /// that never closes stdout and never exits on its own. So there are **two** exits from
+    /// `AcpChild` and both are checked: `finish`, which is the happy path, and `Drop`, which is
+    /// every early return the handshake's error paths take. A probe that leaked one of these would
+    /// leave it running for the life of the machine.
+    ///
+    /// Driven against `sh -c "trap '' INT; sleep 60"` rather than a real agent: the subject is
+    /// marion's kill ladder, and a real agent that happened to honour SIGINT would make this pass
+    /// without exercising the escalation at all.
+    #[test]
+    fn an_agent_that_ignores_the_interrupt_is_killed_by_both_exits() {
+        fn alive(pid: i32) -> bool {
+            unsafe { kill(pid, 0) == 0 }
+        }
+        let inv = Invocation {
+            program: "/bin/sh".into(),
+            // It prints once the trap is installed, and the test waits for that line — without
+            // it the SIGINT races the shell's own startup and lands on a process still running
+            // under the default disposition, which is a test of nothing.
+            args: vec!["-c".into(), "trap '' INT; echo ready; sleep 60".into()],
+            env: vec![],
+            cwd: std::env::temp_dir(),
+            model: None,
+        };
+        // `finish` reports the escalation rather than swallowing it, and the process is gone.
+        fn ready(c: &AcpChild) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                if !c.frames.lock().expect("frames").is_empty() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("the shell never announced its trap");
+        }
+
+        let mut child = AcpChild::spawn(Path::new("/bin/sh"), &inv).expect("sh");
+        let pid = child.pid;
+        ready(&child);
+        assert!(alive(pid), "the premise: it started");
+        assert!(
+            !child.finish(),
+            "a process that ignored SIGINT must not be reported as a clean termination"
+        );
+        assert!(!alive(pid), "pid {pid} outlived `finish`");
+
+        // And the path that never reaches `finish` at all.
+        let dropped = AcpChild::spawn(Path::new("/bin/sh"), &inv).expect("sh");
+        let pid = dropped.pid;
+        ready(&dropped);
+        assert!(alive(pid));
+        drop(dropped);
+        assert!(!alive(pid), "pid {pid} outlived the early return");
+    }
+
+    /// **§9's M5 second clause, in the thing an operator reads:** *"`marion doctor` reporting their
+    /// differing capabilities"*.
+    ///
+    /// `Harness::ALL` gaining one `Acp` member would have produced one ACP row, and one row has
+    /// nothing to differ from. So the ACP probe enumerates `acp::AGENTS`, and each row's capability
+    /// column comes from **that agent's own live `initialize`** rather than from a table keyed on a
+    /// harness name — which is the whole of §3.3's stage two.
+    ///
+    /// This spawns the installed agents. The capability half is therefore conditional on both
+    /// answering, and the condition is asserted rather than assumed: a machine with neither agent
+    /// installed fails here instead of passing quietly.
+    #[test]
+    fn the_acp_agents_get_a_row_each_and_their_capabilities_differ() {
+        let rows = caps_rows(Some(Harness::Acp));
+        assert_eq!(
+            rows.len(),
+            acp::AGENTS.len(),
+            "one row per agent — a single `acp` row cannot report *differing* capabilities"
+        );
+        for (row, agent) in rows.iter().zip(acp::AGENTS) {
+            assert!(
+                row.report
+                    .notes
+                    .iter()
+                    .any(|n| n.starts_with(&format!("acp agent: `{}`", agent.id))),
+                "an ACP row must name which agent it is about: {:?}",
+                row.report.notes
+            );
+            assert_eq!(row.surfaces, marion_harness::acp::surfaces());
+        }
+
+        let answered: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.report.harness_version.is_some())
+            .collect();
+        assert!(
+            !answered.is_empty(),
+            "no installed ACP agent answered `initialize`, so this proved nothing: {}",
+            render(&rows)
+        );
+        // The version on an ACP row is the **agent's** identity, not a binary's `--version`: that
+        // is the middle third of §3.3's key arriving from the handshake.
+        for r in &answered {
+            let v = r.report.harness_version.as_deref().unwrap();
+            assert!(
+                v.contains(' '),
+                "an ACP row keys on `<agentInfo.name> <version>`, not on a bare token: {v:?}"
+            );
+        }
+        if answered.len() < acp::AGENTS.len() {
+            return;
+        }
+        // **The named difference, not two sets.** S20 measured it as exactly `fork` and `resume`;
+        // comparing `a.capabilities != b.capabilities` would survive the two rows being swapped,
+        // and comparing the two `granted()` sets would survive it too.
+        let (a, b) = (answered[0], answered[1]);
+        let differing: Vec<&str> = Capabilities::FIELDS
+            .iter()
+            .copied()
+            .filter(|f| {
+                a.capabilities.granted().contains(f) != b.capabilities.granted().contains(f)
+            })
+            .collect();
+        assert_eq!(differing, vec!["fork", "resume"], "{}", render(&rows));
+        assert!(
+            a.capabilities.fork && a.capabilities.resume,
+            "`opencode acp` advertises sessionCapabilities {{close, fork, list, resume}}, and it \
+             is the first row, so the difference is attributed and not merely present"
+        );
+        assert!(
+            !b.capabilities.fork && !b.capabilities.resume,
+            "`gemini --acp` advertises no `sessionCapabilities` object at all"
         );
     }
 
@@ -1122,7 +1747,7 @@ mod tests {
         // The placeholder is confined to the specs that launch nothing, and it is not mistakable
         // for a model id any provider would route.
         assert_eq!(
-            probe_spec(None, McpDeclaration::None)
+            probe_spec(None, McpDeclaration::None, None)
                 .unwrap()
                 .model
                 .as_deref(),
@@ -1168,15 +1793,27 @@ mod tests {
         let rows = caps_rows(None);
         let out = render(&rows);
         for r in &rows {
-            assert_eq!(
-                r.capabilities,
-                static_caps(
-                    r.report.harness,
-                    r.report.harness_version.as_deref().unwrap_or(""),
-                    &r.surfaces
-                ),
-                "doctor must publish `static_caps` on its own key, not a parallel table"
+            let stage_one = static_caps(
+                r.report.harness,
+                r.report.harness_version.as_deref().unwrap_or(""),
+                &r.surfaces,
             );
+            match r.report.harness {
+                // §3.3 has two stages, and ACP is the row where the second one runs: a live
+                // `initialize` narrows the protocol's static set to the agent that answered. So
+                // what doctor publishes is *at or below* stage one, never beside it — a parallel
+                // table would be the thing that could sit above it.
+                Harness::Acp => assert!(
+                    r.capabilities.is_at_or_below(&stage_one),
+                    "acp published {:?}, which is not a narrowing of stage one {:?}",
+                    r.capabilities.granted(),
+                    stage_one.granted()
+                ),
+                _ => assert_eq!(
+                    r.capabilities, stage_one,
+                    "doctor must publish `static_caps` on its own key, not a parallel table"
+                ),
+            }
             assert!(
                 r.report
                     .notes
@@ -1208,24 +1845,48 @@ mod tests {
     #[test]
     fn the_probes_own_spec_is_complete_enough_for_every_adapter_to_compile() {
         let ctx = probe_ctx();
-        let spec = probe_spec(None, McpDeclaration::Marion).expect("a spec");
         for h in Harness::ALL {
-            let a = adapter_for(h).unwrap();
-            let inv = a.compile(&spec, &ctx).unwrap_or_else(|e| {
-                panic!(
-                    "{h}: the probe handed the adapter a spec no real spawn would build — this \
+            // `acp` is the one harness whose spec needs a *row-specific* field: which agent. The
+            // probe fills it per row (`probe`), so the sweep does too — a shared spec here would
+            // assert about a launch the probe never builds.
+            for agent in match h {
+                Harness::Acp => acp::AGENTS.map(Some).to_vec(),
+                _ => vec![None],
+            } {
+                let spec = probe_spec(None, McpDeclaration::Marion, agent).expect("a spec");
+                let a = adapter_for(h).unwrap();
+                let inv = a.compile(&spec, &ctx).unwrap_or_else(|e| {
+                    panic!(
+                        "{h}: the probe handed the adapter a spec no real spawn would build — this \
                      would print as a finding about the installed binary: {e}"
-                )
-            });
-            let files = a
-                .config_files(&spec, &ctx)
-                .unwrap_or_else(|e| panic!("{h}: {e}"));
-            let written: Vec<PathBuf> = files.into_iter().map(|(p, _)| p).collect();
-            assert!(
-                a.mcp_route(&spec).verify(&written, &inv).is_ok(),
-                "{h}: the declaration route the adapter promises must be taken by what the probe \
+                    )
+                });
+                let files = a
+                    .config_files(&spec, &ctx)
+                    .unwrap_or_else(|e| panic!("{h}: {e}"));
+                let written: Vec<PathBuf> = files.into_iter().map(|(p, _)| p).collect();
+                // A refusal that names the **agent** is not the probe's spec being incomplete — it
+                // is the answer, and `marion doctor` prints it as one. Only that shape is
+                // tolerated here; anything else still fails the sweep.
+                let session = match a.session_declaration(&spec, &ctx) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        assert!(
+                            matches!(e, marion_harness::HarnessError::AcpAgent(_))
+                                && agent.is_some_and(|ag| e.to_string().contains(ag.id)),
+                            "{h}: {e}"
+                        );
+                        continue;
+                    }
+                };
+                assert!(
+                    a.mcp_route(&spec)
+                        .verify(&written, &inv, session.as_ref())
+                        .is_ok(),
+                    "{h}: the declaration route the adapter promises must be taken by what the probe \
                  compiles, or the probe reports its own gap as a missing bridge"
-            );
+                );
+            }
         }
     }
 

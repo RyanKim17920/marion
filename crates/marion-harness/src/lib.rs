@@ -19,10 +19,10 @@ pub mod opencode;
 pub mod stream;
 pub mod surfaces;
 
-pub use acp::AgentHandshake;
+pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
-    Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter, HarnessError,
-    LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx, adapter_for,
+    AcpAdapter, Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter,
+    HarnessError, LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx, adapter_for,
 };
 pub use caps::{Capabilities, advertised, static_caps};
 pub use claude_code::{

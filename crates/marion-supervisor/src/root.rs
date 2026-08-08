@@ -791,9 +791,13 @@ pub fn prepare_watched(
     // of a file. The check itself is `McpRoute::verify`, beside the enum whose promise it is
     // checking, because `marion doctor --adapter` reports the same finding and a second copy here
     // is exactly where the two would drift.
+    // The post-launch half is compiled here, before the check, for the same reason the files above
+    // are written before it: the check must see the values this launch will actually use, not a
+    // second derivation of them.
+    let session = adapter.session_declaration(&launch, &ctx)?;
     let mcp_config = adapter
         .mcp_route(&launch)
-        .verify(&written, &invocation)
+        .verify(&written, &invocation, session.as_ref())
         .map_err(|route| RootError::NoMcpDeclaration { harness, route })?;
     // **`Inherited` skips this too, and that is the whole of live mode on this path.** The adapter
     // already withheld the three env vars it compiles; a push here would put two of them straight

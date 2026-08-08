@@ -209,6 +209,12 @@ fn script(root: &Node, child: &Node) -> Script {
                 args: json!({ "filePath": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
             });
         }
+        // **Not a cell of this matrix, and that is a refusal rather than an omission.** Every cell
+        // here drives a node through marion's *canned* provider, and an ACP node has no canned
+        // mode at all: `AcpAdapter::compile` refuses `Auth::Canned` by name, because ACP has no
+        // protocol-level way to point an agent at an endpoint. There is nothing to script, so this
+        // says so rather than scripting something that would not be an ACP run.
+        Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s
 }

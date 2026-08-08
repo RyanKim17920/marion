@@ -17,6 +17,7 @@ use marion_core::agent_type;
 use marion_core::contract::AgentId;
 use marion_core::harness::Harness;
 
+use crate::acp;
 use crate::claude_code::{self, HeadlessSpec, McpEnv, compile_headless};
 use crate::codex::{self, ExecSpec, compile_exec};
 use crate::gemini;
@@ -66,6 +67,17 @@ pub enum McpRoute {
     /// the supervisor's verification pass on a node that has no bridge at all, which is §6.1 step
     /// 8's failure class; spelling it `Environment` would have marion check a variable nobody set.
     Argv(&'static str),
+    /// The adapter's **post-launch** `session/new` request carries it, and the payload is the
+    /// param key that must hold it (`mcpServers`). ACP, and only ACP.
+    ///
+    /// `89b822d` argued a fifth variant would be one *"with nothing behind it to check"*, and S21
+    /// measured that clause false: `session/new`'s `mcpServers` block is compiled by
+    /// [`HarnessAdapter::session_declaration`] **before** anything is sent, so it is checkable at
+    /// exactly the moment argv is, and the transcript in `tests/fixtures/s21/opencode-acp-mcp.jsonl`
+    /// is a real `opencode acp` starting that server and calling `tools/call {"name":"report"}` on
+    /// it. What is genuinely different is only *where the bytes go* — a pipe instead of a file or
+    /// an environ — and that is the axis this enum exists to name.
+    Session(&'static str),
     /// No declaration was asked for — [`McpDeclaration::None`], §9's fallback branch. **Not** the
     /// same as an adapter that was asked for one and produced none, which is the refusal above.
     None,
@@ -84,7 +96,16 @@ impl McpRoute {
     /// doctor --adapter` reports it as a finding. An adapter that forgets its declaration is §12's
     /// silent-failure family — a node with no bridge, taking a turn with no marion tools, exiting
     /// 0 having called nothing — so the one thing this check must never be is two checks.
-    pub fn verify(self, written: &[PathBuf], inv: &Invocation) -> Result<Option<PathBuf>, String> {
+    /// `session` is [`HarnessAdapter::session_declaration`]'s answer — the post-launch request the
+    /// adapter compiled, where it compiles one. It is a parameter rather than something looked up
+    /// here for the reason `written` and `inv` are: this function checks values, it does not
+    /// produce them, and the values must be the ones the launch will actually use.
+    pub fn verify(
+        self,
+        written: &[PathBuf],
+        inv: &Invocation,
+        session: Option<&serde_json::Value>,
+    ) -> Result<Option<PathBuf>, String> {
         match self {
             McpRoute::Document => written
                 .first()
@@ -108,6 +129,28 @@ impl McpRoute {
                 .any(|a| a.contains(key))
                 .then_some(None)
                 .ok_or_else(|| format!("`-c {key}.…` on its own command line")),
+            // Checked against the request the adapter built, and specifically against an entry
+            // that **names marion's own server**. A non-empty array alone would pass on a
+            // declaration built for somebody else's MCP server, which is a node with no marion
+            // bridge wearing a green check.
+            McpRoute::Session(key) => session
+                .and_then(|s| s.pointer("/params")?.get(key)?.as_array())
+                .is_some_and(|servers| {
+                    servers.iter().any(|s| {
+                        s.get("name").and_then(serde_json::Value::as_str)
+                            == Some(crate::acp::MCP_SERVER_NAME)
+                            && s.get("command")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|c| !c.trim().is_empty())
+                    })
+                })
+                .then_some(None)
+                .ok_or_else(|| {
+                    format!(
+                        "a `{key}` entry named `{}` in its own `session/new` request",
+                        crate::acp::MCP_SERVER_NAME
+                    )
+                }),
             McpRoute::None => Err("no route at all".to_string()),
         }
     }
@@ -172,6 +215,14 @@ pub struct Extras {
     pub output_schema: Option<PathBuf>,
     /// Codex `--output-last-message`.
     pub output_last_message: Option<PathBuf>,
+    /// **Which ACP agent**, by [`crate::acp::Agent::id`]. Read only by [`AcpAdapter`].
+    ///
+    /// It is a launch input rather than a property of the adapter because §5.2's `acp` row is *one
+    /// adapter serving many agents*, and §6.4 forbids marion choosing one for the operator. `None`
+    /// is a refusal at `compile`, by name, listing the ids marion knows — never a default, because
+    /// a default here would run some other vendor's agent than the one an agent type asked for,
+    /// which is the exact bug the `HarnessAdapter` seam was introduced to end.
+    pub acp_agent: Option<String>,
 }
 
 /// What the agent type asked for, in marion's vocabulary. Nothing here is harness-native.
@@ -310,6 +361,15 @@ pub enum HarnessError {
          owns. Spawn it without a pane and watch its structured events instead"
     )]
     NoPaneSurface(Harness),
+    /// The ACP agent this launch named is one marion cannot launch — either it has never heard of
+    /// it, or it has heard of it and has never measured what it calls a tool.
+    ///
+    /// A `String` because both messages have to quote something that came from outside marion's
+    /// source: the id an operator wrote, or the agent's own recorded note. And a refusal rather
+    /// than a fallback to the one agent that *is* measured, which would run somebody else's agent
+    /// under the name an agent type asked for.
+    #[error("acp: {0}")]
+    AcpAgent(String),
 }
 
 /// One harness's translation of marion's vocabulary into that harness's own.
@@ -383,6 +443,26 @@ pub trait HarnessAdapter {
     /// inherited silently by a fifth harness whose declaration is not a document, which is the
     /// same class of mistake as the fallback [`adapter_for`] refuses to make.
     fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute;
+
+    /// The **post-launch** request that carries this launch's declaration, where the harness has
+    /// one — today only ACP's `session/new`.
+    ///
+    /// Defaulted to `None` rather than required, because it is genuinely absent on four of the
+    /// five: their declaration is complete the moment `compile` returns. That is the opposite
+    /// direction from [`Self::mcp_route`], which is required precisely because every harness has
+    /// *some* route and a default would let one be inherited unexamined.
+    ///
+    /// It is compiled here, beside argv, rather than assembled by whoever drives the session, so
+    /// that [`McpRoute::verify`] can check it before a byte is sent — the same guarantee the other
+    /// four get from their route being a file or an environ.
+    fn session_declaration(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Option<serde_json::Value>, HarnessError> {
+        let _ = (spec, ctx);
+        Ok(None)
+    }
 
     /// Read this harness's own output stream (§6.1 step 9).
     ///
@@ -1439,6 +1519,274 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
 }
 
+/// §5.2's `acp` row: **one adapter, many agents** (§9's M5).
+///
+/// # What the surfaces are, and why
+///
+/// [`crate::acp::surfaces`] — `Typed(Acp)` control, `StructuredUi` display, `ProtocolEvents`
+/// observation — and each axis is a separate decision:
+///
+/// * **Control is `Typed(Acp)`.** ACP is a bidirectional JSON-RPC session with `session/prompt`,
+///   `session/cancel` and `session/load`, so marion can address a turn rather than merely write
+///   bytes at one. That is §3.4's own definition of `Typed`, and it is what separates this from
+///   opencode's `LaunchOnly` row: the same vendor's binary, one surface up, and the reason §3.3
+///   keys on surfaces at all. S21 exercised the plane in both directions on a live agent — marion
+///   sent three requests and *answered* the agent's own MCP traffic mid-turn.
+/// * **Display is `StructuredUi`, not `NativePty`.** marion owns no terminal for an ACP agent: the
+///   output arrives as `session/update` frames, which is something marion renders, not something a
+///   VT grid receives. `NativePty` would mint the node a [`crate::PtyWitness`] and put it one call
+///   from `spawn_pty` (§11 item 1), for a process that has no terminal at all. So
+///   [`Self::pane_surfaces`] is `None` too, and a pane request is refused by name.
+/// * **Observation is `ProtocolEvents` alone.** The frames are the record. There is no transcript
+///   file marion knows how to find — that is per-agent, and this adapter is per-protocol — and
+///   there are no terminal bytes.
+///
+/// # What the ceiling then permits, and what is actually claimed
+///
+/// Typed + `ProtocolEvents` is the most permissive point in §3.4's cross-product: its
+/// [`Capabilities::ceiling`](crate::Capabilities::ceiling) is all ten. That makes the ceiling
+/// **useless as a limit here**, which is precisely why ACP is the one row where §3.3's stage two
+/// does the work: [`crate::advertised`] claims only what has been measured of the protocol, and
+/// [`crate::AgentHandshake::refine`] narrows that to the agent that actually answered. Nothing in
+/// this adapter publishes a capability; see `caps.rs`'s `Harness::Acp` arm for the five that are
+/// claimed and the five that are not.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AcpAdapter;
+
+impl AcpAdapter {
+    /// The agent this launch names, or the refusal. **The one place the id is resolved**, so
+    /// `compile` and `session_declaration` cannot disagree about which agent is being launched.
+    fn agent(spec: &LaunchSpec) -> Result<acp::Agent, HarnessError> {
+        let id = spec
+            .extra
+            .acp_agent
+            .as_deref()
+            .ok_or(HarnessError::MissingInput {
+                harness: Harness::Acp,
+                what: "`acp` is a protocol, not a program: one adapter serves many agents and \
+                       marion may not choose one for the operator (§6.4). Name it in the agent \
+                       type's `acp_agent`",
+            })?;
+        let agent = acp::agent(id).ok_or_else(|| {
+            HarnessError::AcpAgent(format!(
+                "no agent named `{id}`; marion knows {}",
+                acp::AGENTS
+                    .iter()
+                    .map(|a| a.id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        Ok(agent)
+    }
+
+    /// The agent, **and marion's verbs may be put in front of it**.
+    ///
+    /// # Why this is a second gate and not part of [`Self::agent`]
+    ///
+    /// Naming an agent's argv and handing that agent marion's tools are different acts, and only
+    /// the second needs a measured spelling. `initialize` needs neither — it is how marion *finds
+    /// out* what an agent is, and `marion doctor`'s ACP rows exist precisely to report on agents
+    /// marion cannot yet bridge. Folding this into `agent` made `compile` refuse `gemini --acp`
+    /// outright, which deleted its doctor row and with it the measured capability difference S20
+    /// exists to record.
+    ///
+    /// # The s14 gate
+    ///
+    /// claude, gemini and opencode all **silently ignore** an unknown tool name. So an agent whose
+    /// spelling nobody has watched would take a turn with `marion_report` compiled into its
+    /// prompt, have no such tool, finish, and exit 0 having called nothing — a run that looks
+    /// healthy and delegated nothing (§6.1 step 8's failure class). Refused by name instead,
+    /// quoting what *is* known about the agent.
+    fn bridgeable_agent(spec: &LaunchSpec) -> Result<acp::Agent, HarnessError> {
+        let agent = Self::agent(spec)?;
+        if agent.tools.is_none() {
+            return Err(HarnessError::AcpAgent(format!(
+                "`{}` is known but unmeasured: marion has never seen it call a tool, so it has no \
+                 spelling for marion's verbs, and a guess would be silently ignored rather than \
+                 rejected (s14). {}",
+                agent.id, agent.note
+            )));
+        }
+        Ok(agent)
+    }
+}
+
+impl HarnessAdapter for AcpAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Acp
+    }
+
+    fn surfaces(&self) -> ExecutionSurfaces {
+        acp::surfaces()
+    }
+
+    /// argv is the agent's own, verbatim as S20 launched it, and **nothing else is compiled into
+    /// it**.
+    ///
+    /// * *No prompt.* It rides `session/prompt` after the handshake, so `spec.prompt` reaches argv
+    ///   on no ACP agent — the claude-code situation, one protocol over.
+    /// * *No model.* S21's `session/new` result carries a `configOptions` `model` **select**: the
+    ///   model is chosen inside the session, and marion has measured no argv that sets it. So the
+    ///   compiled [`Invocation::model`] is `None` however loudly a caller asked, exactly as codex
+    ///   does, rather than a value the launch did not carry appearing in the audit record.
+    /// * *No credential.* Under [`Auth::Canned`] marion would have to point the agent at its own
+    ///   endpoint, and there is no ACP-level way to do that — it is per-agent config, and this
+    ///   adapter is per-protocol. Refused by name rather than launched at the operator's real
+    ///   provider while the contract records a canned one.
+    fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        let agent = Self::agent(spec)?;
+        // For the refusal only: ACP has no availability axis — see `Self::tool_name`.
+        let _refusal_only = self.native_tools(spec)?;
+        if spec.auth == Auth::Canned {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Acp,
+                what: "ACP has no protocol-level way to point an agent at a provider — that is \
+                       per-agent configuration, and this adapter is per-protocol. Run an ACP node \
+                       against the operator's own login (`--live`), or add a per-agent adapter",
+            });
+        }
+        Ok(Invocation {
+            program: agent.argv[0].to_string(),
+            args: agent.argv[1..].iter().map(|s| s.to_string()).collect(),
+            env: Vec::new(),
+            cwd: spec.cwd.clone(),
+            model: None,
+        })
+    }
+
+    /// **No document, on any ACP agent.** Where the other four write a config file under
+    /// `spec.config_dir`, ACP's only declaration channel is `session/new`
+    /// ([`Self::session_declaration`]), and an empty vec here is what [`McpRoute::Session`] exists
+    /// to keep from reading as *"this node got no bridge"*.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        Self::agent(spec)?;
+        Ok(Vec::new())
+    }
+
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        match spec.mcp {
+            McpDeclaration::None => McpRoute::None,
+            McpDeclaration::Marion => McpRoute::Session(acp::MCP_SERVERS_KEY),
+        }
+    }
+
+    /// The `session/new` request, with marion's bridge declared as a stdio MCP server.
+    ///
+    /// The env block is the **same key set** the other adapters put in their own declarations
+    /// ([`claude_code::AGENT_ID_ENV`] and its neighbours), because the process on the other end is
+    /// the same `marion-supervisor mcp` bridge reading the same variables. A second spelling here
+    /// would be a second thing to keep true.
+    fn session_declaration(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Option<serde_json::Value>, HarnessError> {
+        if spec.mcp == McpDeclaration::None {
+            Self::agent(spec)?;
+            return Ok(None);
+        }
+        // The one call site of the s14 gate: this method *is* marion putting its verbs in front of
+        // the agent, and there is no other route by which they get there.
+        Self::bridgeable_agent(spec)?;
+        let mut env = vec![
+            (
+                "MARION_REPO".into(),
+                ctx.repo.to_string_lossy().into_owned(),
+            ),
+            (
+                "MARION_STATE_DIR".into(),
+                ctx.state_dir.to_string_lossy().into_owned(),
+            ),
+            (claude_code::AUTH_ENV.into(), spec.auth.as_wire().into()),
+            (claude_code::AGENT_ID_ENV.into(), ctx.agent_id.0.clone()),
+            (claude_code::AGENT_TYPE_ENV.into(), ctx.agent_type.clone()),
+            (claude_code::DEPTH_ENV.into(), ctx.depth.to_string()),
+        ];
+        // Present or absent, never empty — `claude_code::NODE_TOKEN_ENV`'s rule, and the same for
+        // the other two optionals.
+        if let Some(u) = &spec.base_url {
+            env.push((claude_code::BASE_URL_ENV.into(), u.clone()));
+        }
+        if let Some(t) = &ctx.node_token {
+            env.push((claude_code::NODE_TOKEN_ENV.into(), t.clone()));
+        }
+        if let Some(r) = &ctx.ready_file {
+            env.push((
+                claude_code::READY_FILE_ENV.into(),
+                r.to_string_lossy().into_owned(),
+            ));
+        }
+        Ok(Some(acp::session_new_request(
+            SESSION_NEW_ID,
+            &spec.cwd,
+            &[acp::McpServerDecl {
+                name: acp::MCP_SERVER_NAME.into(),
+                command: ctx.bridge.clone(),
+                args: ctx.bridge_args.clone(),
+                env,
+            }],
+        )))
+    }
+
+    fn parse_stream(&self, stdout: &str, exit: ChildExit) -> StreamOutcome {
+        acp::parse_stream(stdout, exit, &self.marion_tool_name("report"))
+    }
+
+    /// **`marion_report`** — `<server>_<tool>`, measured on a live `opencode acp` in S21: marion
+    /// declared a server named `marion` offering `report`, and the `session/update` `tool_call`
+    /// frame the model produced carried `"title": "marion_report"`.
+    ///
+    /// One spelling for an adapter that serves many agents is only sound because of the gate in
+    /// [`Self::agent`]: an agent whose spelling has not been measured is refused at `compile`, so
+    /// this string is never compiled into a prompt for an agent it was not measured on.
+    /// `every_launchable_agent_spells_marions_verbs_the_way_this_adapter_says` is that invariant
+    /// as an assertion, and it fails the moment a second spelling enters the registry.
+    fn marion_tool_name(&self, tool: &str) -> String {
+        acp::ToolSpelling::ServerUnderscoreTool.spell(tool)
+    }
+
+    /// **Every marion verb is refused, by name.** ACP has no availability axis at all.
+    ///
+    /// The other four answer this with a harness-native name, either a real allowlist entry
+    /// (claude-code) or *"the harness's coarsest equivalent"* — a tool the harness already grants
+    /// (codex's `shell`, opencode's `write`). ACP has neither to offer: nothing in `initialize` or
+    /// `session/new` names, grants or withholds a tool of the agent's own, and the agent's tool
+    /// list is a fact about a vendor this adapter is deliberately blind to. Answering `write` here
+    /// would claim a mapping onto a name marion has never seen this protocol use.
+    ///
+    /// So a `tools:` declaration on an `acp` agent type is [`HarnessError::UnsupportedTool`] and
+    /// the launch stops — which is the honest half of §11 item 24: better a caller who is told no
+    /// than a node that silently has no such tool. It costs nothing today (no built-in agent type
+    /// declares a tool) and it is the difference between an unimplemented axis and a broken one.
+    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
+        Err(HarnessError::UnsupportedTool {
+            harness: Harness::Acp,
+            tool: tool.to_string(),
+        })
+    }
+
+    /// §6.7's record: **marion compiled no tool constraint**, for the same reason `tool_name`
+    /// refuses — see [`acp::NO_TOOL_AVAILABILITY_SURFACE`], which carries the S21 measurement.
+    /// Not `[]`, which would read as *"no tool was allowed"* about a node that could run `bash`.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        self.native_tools(spec)?;
+        Ok(vec![acp::NO_TOOL_AVAILABILITY_SURFACE.into()])
+    }
+
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
+        acp::marion_calls(stdout, &self.marion_tool_name(""))
+    }
+}
+
+/// The JSON-RPC id [`AcpAdapter::session_declaration`] stamps on its request. A constant so the
+/// value a driver must correlate its answer against is stated once, in the module that builds it.
+pub const SESSION_NEW_ID: u64 = 1;
+
 /// The adapter registry: the one place a [`Harness`] becomes behaviour.
 ///
 /// Naming a harness in §3.1's enum and having an adapter for it are different things, and the
@@ -1451,6 +1799,7 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
         Harness::Codex => Ok(Box::new(CodexAdapter)),
         Harness::Gemini => Ok(Box::new(GeminiAdapter)),
         Harness::OpenCode => Ok(Box::new(OpenCodeAdapter)),
+        Harness::Acp => Ok(Box::new(AcpAdapter)),
     }
 }
 
@@ -1478,11 +1827,11 @@ mod tests {
 
         // Document: the first written file, or a refusal naming the document.
         assert_eq!(
-            McpRoute::Document.verify(std::slice::from_ref(&doc), &blank),
+            McpRoute::Document.verify(std::slice::from_ref(&doc), &blank, None),
             Ok(Some(doc.clone()))
         );
         assert_eq!(
-            McpRoute::Document.verify(&[], &blank),
+            McpRoute::Document.verify(&[], &blank, None),
             Err("a configuration document".into())
         );
 
@@ -1492,7 +1841,7 @@ mod tests {
             ..blank.clone()
         };
         assert_eq!(
-            McpRoute::Environment("OPENCODE_CONFIG_CONTENT").verify(&[], &with_env),
+            McpRoute::Environment("OPENCODE_CONFIG_CONTENT").verify(&[], &with_env, None),
             Ok(None)
         );
         let blanked = Invocation {
@@ -1500,18 +1849,18 @@ mod tests {
             ..blank.clone()
         };
         assert_eq!(
-            McpRoute::Environment("OPENCODE_CONFIG_CONTENT").verify(&[], &blanked),
+            McpRoute::Environment("OPENCODE_CONFIG_CONTENT").verify(&[], &blanked, None),
             Err("$OPENCODE_CONFIG_CONTENT".into())
         );
         // A *document* on disk does not satisfy an env route, and vice versa — the two must not be
         // interchangeable or the check would pass on an adapter that took the other route.
         assert!(
             McpRoute::Environment("OPENCODE_CONFIG_CONTENT")
-                .verify(std::slice::from_ref(&doc), &blank)
+                .verify(std::slice::from_ref(&doc), &blank, None)
                 .is_err()
         );
         assert_eq!(
-            McpRoute::Document.verify(&[], &with_env),
+            McpRoute::Document.verify(&[], &with_env, None),
             Err("a configuration document".into())
         );
 
@@ -1521,11 +1870,11 @@ mod tests {
             ..blank.clone()
         };
         assert_eq!(
-            McpRoute::Argv("mcp_servers").verify(&[], &with_argv),
+            McpRoute::Argv("mcp_servers").verify(&[], &with_argv, None),
             Ok(None)
         );
         assert_eq!(
-            McpRoute::Argv("mcp_servers").verify(&[], &blank),
+            McpRoute::Argv("mcp_servers").verify(&[], &blank, None),
             Err("`-c mcp_servers.…` on its own command line".into())
         );
         // A **non-empty** argv that does not carry the key. Without this row the check could be
@@ -1536,15 +1885,63 @@ mod tests {
             ..blank.clone()
         };
         assert_eq!(
-            McpRoute::Argv("mcp_servers").verify(&[], &wrong_argv),
+            McpRoute::Argv("mcp_servers").verify(&[], &wrong_argv, None),
             Err("`-c mcp_servers.…` on its own command line".into()),
             "flags that are not the declaration are not the declaration"
+        );
+
+        // Session: the `mcpServers` entry naming **marion's own** server, in the request the
+        // adapter compiled. This is the branch `89b822d` said would have nothing behind it.
+        let session = AcpAdapter
+            .session_declaration(&acp_spec(), &ctx())
+            .unwrap()
+            .expect("a Marion declaration compiles a session/new request");
+        assert_eq!(
+            McpRoute::Session(acp::MCP_SERVERS_KEY).verify(&[], &blank, Some(&session)),
+            Ok(None)
+        );
+        let refusal = Err(format!(
+            "a `mcpServers` entry named `{}` in its own `session/new` request",
+            acp::MCP_SERVER_NAME
+        ));
+        assert_eq!(
+            McpRoute::Session(acp::MCP_SERVERS_KEY).verify(&[], &blank, None),
+            refusal,
+            "no request at all is not a declaration"
+        );
+        // **A declaration for somebody else's server is not marion's**, and neither is one with no
+        // command. Without these two rows the check could be "the array is non-empty" and every
+        // other case here would still pass — which is a node with no marion bridge wearing a green
+        // check, §6.1 step 8's exact failure class.
+        for wrong in [
+            serde_json::json!({"params": {"mcpServers": [{"name": "somebody-else", "command": "/bin/x"}]}}),
+            serde_json::json!({"params": {"mcpServers": [{"name": "marion", "command": "  "}]}}),
+            serde_json::json!({"params": {"mcpServers": []}}),
+            serde_json::json!({"params": {}}),
+        ] {
+            assert_eq!(
+                McpRoute::Session(acp::MCP_SERVERS_KEY).verify(&[], &blank, Some(&wrong)),
+                refusal,
+                "{wrong}"
+            );
+        }
+        // And the routes stay non-interchangeable in both directions: a session request does not
+        // satisfy a document route, and a written document does not satisfy a session route.
+        assert!(
+            McpRoute::Document
+                .verify(&[], &blank, Some(&session))
+                .is_err()
+        );
+        assert!(
+            McpRoute::Session(acp::MCP_SERVERS_KEY)
+                .verify(std::slice::from_ref(&doc), &with_env, None)
+                .is_err()
         );
 
         // And an adapter that stated no route at all is a refusal, never a pass. §6.1 step 8's
         // failure class is a node that launches with no bridge, so this branch may not be lenient.
         assert_eq!(
-            McpRoute::None.verify(std::slice::from_ref(&doc), &with_env),
+            McpRoute::None.verify(std::slice::from_ref(&doc), &with_env, Some(&session)),
             Err("no route at all".into())
         );
     }
@@ -1607,6 +2004,21 @@ mod tests {
         LaunchSpec {
             model: Some("canned/canned-1".into()),
             api_key: Some("sk-fake".into()),
+            ..codex_spec()
+        }
+    }
+
+    /// The two things an ACP launch needs that no other harness does: an agent named by the
+    /// operator, and the operator's own login — see `AcpAdapter::compile`, which refuses both by
+    /// name rather than defaulting either.
+    fn acp_spec() -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            extra: Extras {
+                acp_agent: Some(acp::OPENCODE.id.into()),
+                ..Extras::default()
+            },
             ..codex_spec()
         }
     }
@@ -2611,6 +3023,7 @@ mod tests {
             Harness::Codex => codex_spec(),
             Harness::Gemini => gemini_spec(),
             Harness::OpenCode => opencode_spec(),
+            Harness::Acp => acp_spec(),
         }
     }
 
@@ -2675,6 +3088,48 @@ mod tests {
                 // Whichever route this adapter took, it took *a* route, and the route it named is
                 // the one it actually used.
                 match adapter.mcp_route(&spec) {
+                    // ACP writes no file and sets no variable: its declaration is a request, and
+                    // the check that it names marion's own server is `McpRoute::verify`'s Session
+                    // branch, driven directly above.
+                    McpRoute::Session(k) => {
+                        assert!(
+                            files.is_empty(),
+                            "{h} under {auth:?}: a session route that also writes files has two \
+                             declarations and no single authority"
+                        );
+                        // **The refusal is recorded, not skipped.** ACP has no canned mode — there
+                        // is no protocol-level way to point an agent at marion's endpoint — and
+                        // `continue`ing past it here would drop this harness out of the named
+                        // minimum below, which is the vacuity that minimum exists to prevent.
+                        match adapter.compile(&spec, &ctx()) {
+                            Err(e) => assert!(
+                                auth == Auth::Canned
+                                    && matches!(
+                                        e,
+                                        HarnessError::MissingInput {
+                                            harness: Harness::Acp,
+                                            ..
+                                        }
+                                    ),
+                                "{h} under {auth:?}: {e}"
+                            ),
+                            Ok(inv) => {
+                                let session = adapter
+                                    .session_declaration(&spec, &ctx())
+                                    .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"))
+                                    .unwrap_or_else(|| {
+                                        panic!("{h} under {auth:?}: no session/new request")
+                                    });
+                                assert!(
+                                    McpRoute::Session(k)
+                                        .verify(&[], &inv, Some(&session))
+                                        .is_ok(),
+                                    "{h} under {auth:?}: the request carries no marion \
+                                     declaration: {session}"
+                                );
+                            }
+                        }
+                    }
                     McpRoute::Document => assert!(
                         !files.is_empty(),
                         "{h} under {auth:?}: names a document route and wrote none"
@@ -2843,15 +3298,23 @@ mod tests {
                 auth: Auth::Canned,
                 ..spec_for(h)
             };
+            // The unnamed side is `Auth::default()` rather than whatever `spec_for` chose, which
+            // is the claim's actual subject: *naming the default changes nothing*. On four
+            // harnesses these are the same spec; on `acp`, whose spec names `Inherited` because it
+            // has no canned mode at all, they are the same **refusal**, which is equally the claim.
+            let implicit = LaunchSpec {
+                auth: Auth::default(),
+                ..spec_for(h)
+            };
             let a = adapter_for(h).unwrap();
             assert_eq!(
                 a.compile(&explicit, &ctx()).ok(),
-                a.compile(&spec_for(h), &ctx()).ok(),
+                a.compile(&implicit, &ctx()).ok(),
                 "{h}: naming the default must not change the compile"
             );
             assert_eq!(
                 a.config_files(&explicit, &ctx()).ok(),
-                a.config_files(&spec_for(h), &ctx()).ok(),
+                a.config_files(&implicit, &ctx()).ok(),
                 "{h}: naming the default must not change the configuration"
             );
         }
@@ -2934,14 +3397,7 @@ mod tests {
                 agent_type: "codex-impl".into(),
                 ..ctx()
             };
-            let files = adapter_for(h)
-                .unwrap()
-                .config_files(&spec_for(h), &ctx)
-                .unwrap_or_else(|e| panic!("{h}: {e}"));
-            let doc = files
-                .first()
-                .map(|(_, c)| c.clone())
-                .unwrap_or_else(|| panic!("{h}: emitted no configuration document"));
+            let doc = declaration_bytes(h, &spec_for(h), &ctx);
             for key in [AGENT_TYPE_ENV, DEPTH_ENV] {
                 assert!(
                     doc.contains(key),
@@ -2957,6 +3413,46 @@ mod tests {
                 "{h}: §6.1 step 2's gates read the caller's agent type, so its name must \
                  reach the bridge:\n{doc}"
             );
+        }
+    }
+
+    /// **The bytes this adapter's MCP declaration actually travels in, whichever channel carries
+    /// them.**
+    ///
+    /// The three sweeps below assert on *content* — that a node's depth, agent type and capability
+    /// token reach its bridge — and they used to read `config_files[0]`. That is the same reader
+    /// for four harnesses and **no reader at all** for the fifth: ACP writes no document, so every
+    /// one of those assertions would have been silently exempt on it. Which is precisely the shape
+    /// `a_nodes_depth_and_agent_type_reach_its_bridge_on_every_harness` was written after finding,
+    /// one harness earlier. So the sweeps ask the route.
+    fn declaration_bytes(h: Harness, spec: &LaunchSpec, ctx: &SpawnCtx) -> String {
+        let a = adapter_for(h).unwrap();
+        match a.mcp_route(spec) {
+            McpRoute::Document => a
+                .config_files(spec, ctx)
+                .unwrap_or_else(|e| panic!("{h}: {e}"))
+                .first()
+                .map(|(_, c)| c.clone())
+                .unwrap_or_else(|| panic!("{h}: claims a document route and emitted none")),
+            McpRoute::Environment(k) => a
+                .compile(spec, ctx)
+                .unwrap_or_else(|e| panic!("{h}: {e}"))
+                .env
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("{h}: claims ${k} and did not set it")),
+            McpRoute::Argv(_) => a
+                .compile(spec, ctx)
+                .unwrap_or_else(|e| panic!("{h}: {e}"))
+                .args
+                .join(" "),
+            McpRoute::Session(_) => a
+                .session_declaration(spec, ctx)
+                .unwrap_or_else(|e| panic!("{h}: {e}"))
+                .unwrap_or_else(|| panic!("{h}: claims a session route and compiled no request"))
+                .to_string(),
+            McpRoute::None => panic!("{h}: asked for marion's bridge and routed nowhere"),
         }
     }
 
@@ -2980,14 +3476,7 @@ mod tests {
                 node_token: Some("MARION-TOKEN-VALUE-4e1b".into()),
                 ..ctx()
             };
-            let files = adapter_for(h)
-                .unwrap()
-                .config_files(&spec_for(h), &ctx)
-                .unwrap_or_else(|e| panic!("{h}: {e}"));
-            let doc = files
-                .first()
-                .map(|(_, c)| c.clone())
-                .unwrap_or_else(|| panic!("{h}: emitted no configuration document"));
+            let doc = declaration_bytes(h, &spec_for(h), &ctx);
             assert!(
                 doc.contains(claude_code::NODE_TOKEN_ENV),
                 "{h}: {} is not in its bridge env:\n{doc}",
@@ -3014,12 +3503,7 @@ mod tests {
                 node_token: None,
                 ..ctx()
             };
-            let doc = adapter_for(h)
-                .unwrap()
-                .config_files(&spec_for(h), &ctx)
-                .unwrap_or_else(|e| panic!("{h}: {e}"))[0]
-                .1
-                .clone();
+            let doc = declaration_bytes(h, &spec_for(h), &ctx);
             assert!(
                 !doc.contains(claude_code::NODE_TOKEN_ENV),
                 "{h}: a node with no token must declare no token key, not an empty one:\n{doc}"
@@ -3537,6 +4021,16 @@ mod tests {
             let a = adapter_for(h).unwrap();
             let spec = spec_for(h);
             match a.mcp_route(&spec) {
+                McpRoute::Session(k) => assert!(
+                    McpRoute::Session(k)
+                        .verify(
+                            &[],
+                            &a.compile(&spec, &ctx()).unwrap(),
+                            a.session_declaration(&spec, &ctx()).unwrap().as_ref()
+                        )
+                        .is_ok(),
+                    "{h}: claims a session/new declaration and compiled none"
+                ),
                 McpRoute::Document => assert!(
                     !a.config_files(&spec, &ctx()).unwrap().is_empty(),
                     "{h}: claims a document and emitted none"
@@ -4123,6 +4617,18 @@ mod tests {
                 Harness::OpenCode => format!(
                     r#"{{"type":"tool_use","part":{{"type":"tool","tool":"{tool}","state":{{"status":"completed","input":{args}}}}}}}"#
                 ),
+                // Two frames, because ACP is the one wire where the verb and the arguments never
+                // arrive together: S21's opening `tool_call` carries the title and an empty
+                // `rawInput`, and the closing update carries the arguments and an empty title.
+                Harness::Acp => format!(
+                    "{}\n{}",
+                    format_args!(
+                        r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"tool_call","toolCallId":"c1","title":"{tool}","status":"pending","rawInput":{{}}}}}}}}"#
+                    ),
+                    format_args!(
+                        r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"tool_call_update","toolCallId":"c1","title":"","status":"completed","rawInput":{args}}}}}}}"#
+                    ),
+                ),
             };
             let out = adapter.parse_stream(&stream, ChildExit::default());
             assert_eq!(
@@ -4546,7 +5052,7 @@ mod tests {
     #[test]
     fn the_harnesses_that_write_without_a_grant_are_the_ones_that_compile_no_constraint() {
         use Evidence::*;
-        let cases: [(Harness, Evidence, bool); 4] = [
+        let cases: [(Harness, Evidence, bool); 5] = [
             // A per-tool allowlist with `write` not in it: the mutating tool is simply absent.
             (Harness::ClaudeCode, Withholds("Write"), false),
             // One coarse knob, and it is set to the writing value on every node marion configures.
@@ -4558,6 +5064,13 @@ mod tests {
             (
                 Harness::OpenCode,
                 Names(crate::opencode::NO_COMPILED_TOOL_CONSTRAINT),
+                true,
+            ),
+            // The protocol has no tool-availability surface at all, so marion compiles nothing
+            // here either — and, unlike opencode, could not have compiled anything if it wanted to.
+            (
+                Harness::Acp,
+                Names(crate::acp::NO_TOOL_AVAILABILITY_SURFACE),
                 true,
             ),
         ];
@@ -4589,5 +5102,183 @@ mod tests {
                  have come apart, which is §6.6's guard going wrong about which nodes write"
             );
         }
+    }
+    /// **Every marion verb is refused by name on ACP, and the refusal names both halves.**
+    ///
+    /// The alternative — answering `write` because two other harnesses do — would claim a mapping
+    /// onto a name marion has never seen this protocol use, and §11 item 24's whole subject is what
+    /// a launch that quietly has no such tool costs.
+    #[test]
+    fn acp_refuses_every_marion_verb_by_name_because_the_protocol_has_no_such_axis() {
+        for tool in [agent_type::TOOL_READ, agent_type::TOOL_WRITE, "invented"] {
+            let e = AcpAdapter.tool_name(tool).unwrap_err();
+            assert_eq!(
+                e,
+                HarnessError::UnsupportedTool {
+                    harness: Harness::Acp,
+                    tool: tool.to_string(),
+                }
+            );
+            assert!(
+                e.to_string().contains(tool) && e.to_string().contains("acp"),
+                "the refusal must name the tool and the harness: {e}"
+            );
+            // And it aborts the launch rather than being dropped: a declared tool reaches
+            // `compile` through `native_tools`, which is the only reason that call is there.
+            let spec = LaunchSpec {
+                tools: vec![tool.to_string()],
+                ..acp_spec()
+            };
+            assert!(AcpAdapter.compile(&spec, &ctx()).is_err(), "{tool}");
+            assert!(AcpAdapter.compiled_permissions(&spec).is_err(), "{tool}");
+        }
+        // The empty declaration every node marion spawns today still compiles, or the refusal above
+        // would be a refusal of everything.
+        assert!(AcpAdapter.compile(&acp_spec(), &ctx()).is_ok());
+    }
+
+    /// The three things an ACP launch is refused for, each by name and each distinct — because
+    /// "you did not say which agent", "marion has never heard of that agent" and "that agent has
+    /// never been watched calling a tool" are three different things for an operator to do about.
+    #[test]
+    fn each_way_an_acp_launch_can_be_refused_is_named_separately() {
+        // 1. No agent named. §6.4: marion may not pick one.
+        let unnamed = LaunchSpec {
+            extra: Extras::default(),
+            ..acp_spec()
+        };
+        assert!(matches!(
+            AcpAdapter.compile(&unnamed, &ctx()),
+            Err(HarnessError::MissingInput {
+                harness: Harness::Acp,
+                ..
+            })
+        ));
+        // **And it is not silently served by the one agent that is measured**, which is the
+        // fallback this seam exists to end.
+        assert_ne!(
+            AcpAdapter.compile(&unnamed, &ctx()).ok(),
+            AcpAdapter.compile(&acp_spec(), &ctx()).ok()
+        );
+
+        // 2. An agent marion has never heard of, with the known ids listed.
+        let unknown = LaunchSpec {
+            extra: Extras {
+                acp_agent: Some("zed".into()),
+                ..Extras::default()
+            },
+            ..acp_spec()
+        };
+        let e = AcpAdapter.compile(&unknown, &ctx()).unwrap_err();
+        assert!(
+            matches!(&e, HarnessError::AcpAgent(m) if m.contains("zed") && m.contains("opencode")),
+            "got {e}"
+        );
+
+        // 3. A known agent whose tool spelling has never been measured. It **compiles** — argv is
+        // knowable and `marion doctor` must be able to probe it — and it is refused the moment
+        // marion would put its own verbs in front of it.
+        let unmeasured = LaunchSpec {
+            extra: Extras {
+                acp_agent: Some(acp::GEMINI.id.into()),
+                ..Extras::default()
+            },
+            ..acp_spec()
+        };
+        assert!(
+            acp::GEMINI.tools.is_none(),
+            "the premise: this agent is the unmeasured one"
+        );
+        let inv = AcpAdapter
+            .compile(&unmeasured, &ctx())
+            .expect("argv is knowable without a tool spelling");
+        assert_eq!(inv.program, "gemini");
+        let e = AcpAdapter
+            .session_declaration(&unmeasured, &ctx())
+            .unwrap_err();
+        assert!(
+            matches!(&e, HarnessError::AcpAgent(m) if m.contains("gemini") && m.contains("s14")),
+            "got {e}"
+        );
+        // And the measured agent is not refused, or the gate would be refusing everything.
+        assert!(
+            AcpAdapter
+                .session_declaration(&acp_spec(), &ctx())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// **ACP has no canned mode, and says so** rather than launching at the operator's real
+    /// provider while the contract records a canned one.
+    #[test]
+    fn an_acp_node_is_refused_a_canned_provider_rather_than_pointed_at_a_real_one() {
+        let canned = LaunchSpec {
+            auth: Auth::Canned,
+            ..acp_spec()
+        };
+        assert!(matches!(
+            AcpAdapter.compile(&canned, &ctx()),
+            Err(HarnessError::MissingInput {
+                harness: Harness::Acp,
+                ..
+            })
+        ));
+        assert!(
+            AcpAdapter.compile(&acp_spec(), &ctx()).is_ok(),
+            "and live mode is not refused"
+        );
+    }
+
+    /// The compiled launch is the agent's own argv and **nothing else** — no prompt, no model, no
+    /// credential. Each absence is a decision `AcpAdapter::compile` argues, and each would be
+    /// invisible without a row here.
+    #[test]
+    fn an_acp_launch_carries_the_agents_argv_and_nothing_marion_added() {
+        let spec = LaunchSpec {
+            prompt: "do the task".into(),
+            model: Some("anthropic/claude-opus-5".into()),
+            api_key: Some("sk-fake".into()),
+            ..acp_spec()
+        };
+        let inv = AcpAdapter.compile(&spec, &ctx()).unwrap();
+        assert_eq!(inv.program, "opencode");
+        assert_eq!(inv.args, vec!["acp"]);
+        assert_eq!(
+            inv.model, None,
+            "ACP chooses its model inside the session, so the audit record must not name one the \
+             launch did not carry"
+        );
+        assert!(
+            inv.env.is_empty(),
+            "no credential and no overlay: {:?}",
+            inv.env
+        );
+        assert!(
+            !inv.args.iter().any(|a| a.contains("do the task")),
+            "the prompt rides `session/prompt`, not argv"
+        );
+        assert_eq!(inv.cwd, spec.cwd);
+        assert!(
+            AcpAdapter.config_files(&spec, &ctx()).unwrap().is_empty(),
+            "ACP writes no document on any agent"
+        );
+    }
+
+    /// §3.4's axes for the ACP row, and the one that is a safety property: a node with no terminal
+    /// must not be one call from the pty launcher (§11 item 1).
+    #[test]
+    fn the_acp_surfaces_are_typed_over_pipes_with_no_pane_shape() {
+        let s = AcpAdapter.surfaces();
+        assert_eq!(s.control, ControlTransport::Typed(TypedKind::Acp));
+        assert_eq!(s.display, DisplaySurface::StructuredUi);
+        assert!(s.display_plane().is_none(), "no pty, so no witness");
+        assert!(s.has_typed_control_plane());
+        assert!(AcpAdapter.pane_surfaces().is_none());
+        // Refused by name, never downgraded to the headless shape.
+        assert_eq!(
+            AcpAdapter.compile_pane(&acp_spec(), &ctx()),
+            Err(HarnessError::NoPaneSurface(Harness::Acp))
+        );
     }
 }

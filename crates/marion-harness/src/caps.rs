@@ -260,6 +260,38 @@ pub fn advertised(harness: Harness, version: &str) -> Capabilities {
         // precisely so one cannot be read as the other. See `crate::acp` for where S20's answer is
         // actually consumed.
         Harness::OpenCode => Capabilities::NONE,
+        // **The one row where `advertised` describes a protocol rather than a program**, because
+        // §5.2's `acp` adapter serves many agents and the version here is not even readable until
+        // one of them has answered `initialize`. So `version` is deliberately unused: it keys the
+        // *agent*, and the agent is stage two's business.
+        //
+        // Five of the ten, and the five splits are three different arguments:
+        //
+        // * `token_deltas`, `usage` — **measured, S21.** A real `opencode acp` turn streamed
+        //   `agent_message_chunk` frames one token at a time (`"The"`, `" user"`, `" wants"`) and
+        //   emitted a `usage_update` with `used`/`size`/`cost`, and its `session/prompt` response
+        //   carried a `usage` object. Both are in `tests/fixtures/s21/`.
+        // * `fork`, `resume`, `view` — **the protocol has them and the handshake decides.** ACP v1
+        //   defines `session/load` and advertises `sessionCapabilities`, and §3.3 makes ACP the
+        //   worked example of a static set *refined* at session open. A `false` here would be
+        //   final: [`Capabilities::meet`] cannot widen, so `opencode acp`'s advertised `fork` could
+        //   never be published and M5's *"differing capabilities"* would have nothing to differ on.
+        //   That is the one place this table states a protocol's shape rather than a measurement,
+        //   and it is stated only because the very next stage narrows it per agent.
+        // * `steer`, `interrupt`, `permissions`, `elicitation`, `set_model` — **not measured.** ACP
+        //   defines all five (`session/prompt` mid-turn, `session/cancel`,
+        //   `session/request_permission`, `session/request_input`, the `model` `configOption` S21
+        //   saw in a `session/new` result), and marion has driven none of them against a live
+        //   agent. §3.3's *degrade visibly*: a `false` here is "marion has not measured it", and
+        //   the honest cost is an understated tool rather than a greyed-in action that then fails.
+        Harness::Acp => Capabilities {
+            fork: true,
+            resume: true,
+            view: true,
+            token_deltas: true,
+            usage: true,
+            ..Capabilities::NONE
+        },
     }
 }
 
@@ -340,6 +372,43 @@ mod tests {
             static_caps(Harness::Codex, v, &app_server).resume,
             "a typed plane can carry `continue_`, so the same binary publishes it there"
         );
+    }
+
+    /// **The ACP row of `advertised`, field by field, with the reason each `true` is a `true`.**
+    ///
+    /// Five entries and three different justifications, and they must not be collapsed. Asserting
+    /// the whole struct in one `assert_eq!` would pass equally well for a row that had them right
+    /// for the wrong reasons, so each is named — and the five `false`s are named too, because
+    /// §3.3's *degrade visibly* makes an unmeasured capability's `false` a claim in its own right.
+    #[test]
+    fn the_acp_row_claims_only_what_the_protocol_has_or_s21_measured() {
+        let a = advertised(Harness::Acp, "irrelevant");
+        // Measured live in S21 (`tests/fixtures/s21/`): per-token `agent_message_chunk` frames, and
+        // a `usage_update` frame plus a `usage` object on the `session/prompt` response.
+        assert!(a.token_deltas && a.usage);
+        // Stated as the protocol's shape **so stage two can narrow them**. A `false` here would be
+        // final — a meet cannot widen — and `opencode acp`'s advertised `fork` could then never be
+        // published, which is M5's second clause with nothing to report.
+        assert!(a.fork && a.resume && a.view);
+        // Defined by ACP, driven against no live agent, therefore not claimed.
+        for (name, on) in [
+            ("steer", a.steer),
+            ("interrupt", a.interrupt),
+            ("permissions", a.permissions),
+            ("elicitation", a.elicitation),
+            ("set_model", a.set_model),
+        ] {
+            assert!(!on, "`{name}` has not been driven against a live ACP agent");
+        }
+        assert_eq!(
+            a.granted(),
+            vec!["fork", "resume", "view", "token_deltas", "usage"]
+        );
+        // The version is genuinely not part of this key: for ACP the agent supplies its own
+        // identity in the handshake, so `advertised` cannot look one up and must not pretend to.
+        for v in ["", "0.0.1", "9.9.9", "OpenCode 1.17.3"] {
+            assert_eq!(advertised(Harness::Acp, v), a, "{v:?}");
+        }
     }
 
     /// The version is the middle third of §3.3's key. If it were decoration, both rows below would
