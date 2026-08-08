@@ -67,7 +67,7 @@ use marion_core::root_change::{
 };
 use marion_harness::{
     Auth, CallOutcome, ChildExit, Extras, Invocation, LaunchSpec, MarionCall, McpDeclaration,
-    McpRoute, SpawnCtx, adapter_for, json_frames,
+    SpawnCtx, adapter_for, json_frames,
 };
 use serde_json::Value;
 
@@ -787,54 +787,14 @@ pub fn prepare_watched(
     // of a file. Every branch here is a refusal except the two that positively found the
     // declaration, which is what keeps "this harness declares MCP some other way" from becoming
     // "this node silently got no bridge".
-    let mcp_config = match adapter.mcp_route(&launch) {
-        McpRoute::Document => {
-            Some(
-                written
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| RootError::NoMcpDeclaration {
-                        harness,
-                        route: "a configuration document".into(),
-                    })?,
-            )
-        }
-        McpRoute::Environment(key) => {
-            if !invocation
-                .env
-                .iter()
-                .any(|(k, v)| k == key && !v.trim().is_empty())
-            {
-                return Err(RootError::NoMcpDeclaration {
-                    harness,
-                    route: format!("${key}"),
-                });
-            }
-            None
-        }
-        // Checked against the compiled argv rather than waved through, because "declared on the
-        // command line" is exactly as forgettable as "written to a file". The needle is the config
-        // key the adapter named, so this fails if the overrides were dropped, if they were built
-        // for a different server name, or if `compile` and `mcp_route` disagreed about the mode.
-        McpRoute::Argv(key) => {
-            if !invocation.args.iter().any(|a| a.contains(key)) {
-                return Err(RootError::NoMcpDeclaration {
-                    harness,
-                    route: format!("`-c {key}.…` on its own command line"),
-                });
-            }
-            None
-        }
-        // The root always asks for `McpDeclaration::Marion` (above), so this is unreachable today
-        // — and it is a refusal rather than an `unreachable!()` because the thing it would be
-        // asserting is precisely the thing that must never fail silently.
-        McpRoute::None => {
-            return Err(RootError::NoMcpDeclaration {
-                harness,
-                route: "no route at all".into(),
-            });
-        }
-    };
+    // §6.1 step 8, checked against the route the adapter *stated* rather than against the presence
+    // of a file. The check itself is `McpRoute::verify`, beside the enum whose promise it is
+    // checking, because `marion doctor --adapter` reports the same finding and a second copy here
+    // is exactly where the two would drift.
+    let mcp_config = adapter
+        .mcp_route(&launch)
+        .verify(&written, &invocation)
+        .map_err(|route| RootError::NoMcpDeclaration { harness, route })?;
     // **`Inherited` skips this too, and that is the whole of live mode on this path.** The adapter
     // already withheld the three env vars it compiles; a push here would put two of them straight
     // back, and `ANTHROPIC_API_KEY=""` in particular would blank the operator's own key on a node

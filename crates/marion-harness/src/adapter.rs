@@ -71,6 +71,48 @@ pub enum McpRoute {
     None,
 }
 
+impl McpRoute {
+    /// **Was the route actually taken?** §6.1 step 8, checked against the route the adapter
+    /// *stated* rather than against the presence of a file.
+    ///
+    /// `written` is the paths [`HarnessAdapter::config_files`] produced, `inv` the compiled
+    /// [`Invocation`]. `Ok(Some(path))` is a declaration found in a document, `Ok(None)` one found
+    /// inline; `Err` names the route that was promised and not taken.
+    ///
+    /// It lives on the route rather than at either call site because there are now two, and they
+    /// must not drift: `marion_supervisor::root` refuses a launch on this answer, and `marion
+    /// doctor --adapter` reports it as a finding. An adapter that forgets its declaration is §12's
+    /// silent-failure family — a node with no bridge, taking a turn with no marion tools, exiting
+    /// 0 having called nothing — so the one thing this check must never be is two checks.
+    pub fn verify(self, written: &[PathBuf], inv: &Invocation) -> Result<Option<PathBuf>, String> {
+        match self {
+            McpRoute::Document => written
+                .first()
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| "a configuration document".to_string()),
+            McpRoute::Environment(key) => inv
+                .env
+                .iter()
+                .any(|(k, v)| k == key && !v.trim().is_empty())
+                .then_some(None)
+                .ok_or_else(|| format!("${key}")),
+            // Checked against the compiled argv rather than waved through, because "declared on
+            // the command line" is exactly as forgettable as "written to a file". The needle is the
+            // config key the adapter named, so this fails if the overrides were dropped, if they
+            // were built for a different server name, or if `compile` and `mcp_route` disagreed
+            // about the mode.
+            McpRoute::Argv(key) => inv
+                .args
+                .iter()
+                .any(|a| a.contains(key))
+                .then_some(None)
+                .ok_or_else(|| format!("`-c {key}.…` on its own command line")),
+            McpRoute::None => Err("no route at all".to_string()),
+        }
+    }
+}
+
 /// Where the node's provider credential comes from, and therefore which endpoint it talks to.
 ///
 /// An enum rather than a bool because an adapter reads *intent*, not a flag: the two modes differ in
@@ -1419,6 +1461,93 @@ mod tests {
     use crate::codex::config_toml;
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface};
+
+    /// [`McpRoute::verify`]'s four branches, directly. The supervisor's launch path and `marion
+    /// doctor --adapter` both hang off this one answer, so each branch is pinned here rather than
+    /// only through whichever caller happens to exercise it.
+    #[test]
+    fn each_declaration_route_is_verified_against_the_thing_it_promised() {
+        let blank = Invocation {
+            program: "x".into(),
+            args: vec![],
+            env: vec![],
+            cwd: "/wt".into(),
+            model: None,
+        };
+        let doc: PathBuf = "/state/x/mcp.json".into();
+
+        // Document: the first written file, or a refusal naming the document.
+        assert_eq!(
+            McpRoute::Document.verify(std::slice::from_ref(&doc), &blank),
+            Ok(Some(doc.clone()))
+        );
+        assert_eq!(
+            McpRoute::Document.verify(&[], &blank),
+            Err("a configuration document".into())
+        );
+
+        // Environment: present **and** non-blank. A key set to whitespace is not a declaration.
+        let with_env = Invocation {
+            env: vec![("OPENCODE_CONFIG_CONTENT".into(), "{}".into())],
+            ..blank.clone()
+        };
+        assert_eq!(
+            McpRoute::Environment("OPENCODE_CONFIG_CONTENT").verify(&[], &with_env),
+            Ok(None)
+        );
+        let blanked = Invocation {
+            env: vec![("OPENCODE_CONFIG_CONTENT".into(), "  ".into())],
+            ..blank.clone()
+        };
+        assert_eq!(
+            McpRoute::Environment("OPENCODE_CONFIG_CONTENT").verify(&[], &blanked),
+            Err("$OPENCODE_CONFIG_CONTENT".into())
+        );
+        // A *document* on disk does not satisfy an env route, and vice versa — the two must not be
+        // interchangeable or the check would pass on an adapter that took the other route.
+        assert!(
+            McpRoute::Environment("OPENCODE_CONFIG_CONTENT")
+                .verify(std::slice::from_ref(&doc), &blank)
+                .is_err()
+        );
+        assert_eq!(
+            McpRoute::Document.verify(&[], &with_env),
+            Err("a configuration document".into())
+        );
+
+        // Argv: the adapter's own config key, somewhere in the compiled command line.
+        let with_argv = Invocation {
+            args: vec!["-c".into(), "mcp_servers.marion.command=\"x\"".into()],
+            ..blank.clone()
+        };
+        assert_eq!(
+            McpRoute::Argv("mcp_servers").verify(&[], &with_argv),
+            Ok(None)
+        );
+        assert_eq!(
+            McpRoute::Argv("mcp_servers").verify(&[], &blank),
+            Err("`-c mcp_servers.…` on its own command line".into())
+        );
+        // A **non-empty** argv that does not carry the key. Without this row the check could be
+        // `args.iter().any(|_| true)` and nothing here or in `root.rs` would notice, because every
+        // other negative case has an empty argv.
+        let wrong_argv = Invocation {
+            args: vec!["-c".into(), "sandbox_mode=\"danger-full-access\"".into()],
+            ..blank.clone()
+        };
+        assert_eq!(
+            McpRoute::Argv("mcp_servers").verify(&[], &wrong_argv),
+            Err("`-c mcp_servers.…` on its own command line".into()),
+            "flags that are not the declaration are not the declaration"
+        );
+
+        // And an adapter that stated no route at all is a refusal, never a pass. §6.1 step 8's
+        // failure class is a node that launches with no bridge, so this branch may not be lenient.
+        assert_eq!(
+            McpRoute::None.verify(std::slice::from_ref(&doc), &with_env),
+            Err("no route at all".into())
+        );
+    }
 
     fn ctx() -> SpawnCtx {
         SpawnCtx {
