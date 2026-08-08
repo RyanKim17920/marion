@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 2, "result": {"stopReason": "end_turn", "usage": {"inputTokens": 113, "outputTokens": 4, "totalTokens": 14581, "cachedReadTokens": 14464}, "_meta": {}}}

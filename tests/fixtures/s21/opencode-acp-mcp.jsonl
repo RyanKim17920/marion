@@ -1,0 +1,8 @@
+{"dir": "in", "frame": {"method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "opencode", "version": "1.17.3"}}, "jsonrpc": "2.0", "id": 0}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "marion", "version": "0.0.0"}}}}
+{"dir": "in", "frame": {"method": "notifications/initialized", "jsonrpc": "2.0"}}
+{"dir": "in", "frame": {"method": "tools/list", "jsonrpc": "2.0", "id": 1}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 1, "result": {"tools": [{"name": "report", "description": "Report the outcome of this task back to marion.", "inputSchema": {"type": "object", "properties": {"narrative": {"type": "string"}, "result_commits": {"type": "array", "items": {"type": "string"}}}, "required": ["narrative"]}}]}}}
+{"dir": "in", "frame": {"method": "tools/call", "params": {"name": "report", "arguments": {"narrative": "hello from acp"}}, "jsonrpc": "2.0", "id": 2}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "recorded"}], "isError": false}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 2, "reason": "AbortError: The operation was aborted."}}}
