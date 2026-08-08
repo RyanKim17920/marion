@@ -4895,17 +4895,35 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       close, so **L1 is no longer vacuously true** — it was, while a child was always terminal
       before its parent regained control, and it is not now. Item 30 records that together with
       the runaway-process consequence s16 measured, and the two must be closed together.
-    - **`isolation`** (declared `bridge.rs:127`, enum `worktree | shared-cwd | remote`). `run_spawn`
-      calls `make_worktree` unconditionally (`run.rs:751`) and builds `Workspace::Worktree`;
-      `Workspace::SharedCwd` is constructed **nowhere** outside its own definition in
-      `marion-core/src/contract.rs:70`, there is **no `Remote` variant at all**, and `AgentType`
-      (`marion-core/src/agent_type.rs:48-71`) carries no `isolation` key for a `spawn` to override.
-      The two dropped values fail in opposite directions and neither is harmless: `shared-cwd →
-      worktree` silently *adds* containment, putting the child's writes in a tree the caller never
-      named — and §6.6 says marion "never auto-merges" — while also skipping the §6.6 write-conflict
-      refusal that was supposed to name the holder; `remote → worktree` is a request to run
-      elsewhere, served by running on the operator's own machine. `worktree` and absence are **not**
-      refused, because that is what marion does.
+    - **~~`isolation`~~ — CLOSED IN PART 2026-08-08 for `shared-cwd`; `remote` stays refused.**
+      The original finding: `run_spawn` called `make_worktree` unconditionally and built
+      `Workspace::Worktree`; `Workspace::SharedCwd` was constructed **nowhere** outside its own
+      definition; there is **no `Remote` variant at all**. So marion **refused §3.1's own default**
+      and served only the value that hard-requires git — which also made a `spawn` in a directory
+      with no repository die several steps in on git's own stderr, naming neither the command nor
+      the directory.
+
+      `shared-cwd` is now built. `contract::Isolation` carries the two workspaces marion serves,
+      `run_spawn` selects between them, and the non-git `worktree` case is refused before the first
+      irreversible step with a sentence naming the command, the directory, and both ways out
+      (`SpawnError::NotAGitRepo`). Pinned end to end by `tests/no_git.rs`, including `marion run`
+      with no git anywhere in the run.
+
+      **Absence resolves to `worktree`, not to §3.1's stated `shared-cwd` default, and the
+      divergence is deliberate.** The two substitutions are not mirror images. `shared-cwd →
+      worktree` silently *adds* containment; resolving *silence* to `shared-cwd` silently *removes*
+      it, putting the writes of every caller that named nothing into the operator's live checkout.
+      That is the strictly worse direction, so absence keeps the behaviour every existing caller
+      already has, and a caller that wants the user's tree says so.
+
+      **`remote` remains refused, and not merely because it is unfinished.** It is the dangerous
+      direction of the two this entry originally separated: a request to run *elsewhere*, served by
+      running on the operator's own machine. There is no transport, no host and no auth story
+      anywhere in the design, and §1 puts remote hosting out of scope in as many words. It is
+      deliberately **not** an `Isolation` variant — a value the type system can hold is a value some
+      later call site can quietly default to — so the socket deserializer rejects it naming the two
+      values that are served, and the MCP edge refuses it in marion's voice before the environment
+      is consulted.
     - **`verification`** (declared `bridge.rs:124`) — **the worst of the five, because the lie is
       durable.** `build_contract` hardcodes `verification: vec![]`
       (`crates/marion-supervisor/src/spawn.rs:263`), so a caller that asked for `cargo test` and one
@@ -4956,6 +4974,28 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
       genuinely could not be answered until backgrounding forced it, because only then can a caller
       have a live sibling at all. It comes out together with `isolation` when §6.6's holder
       registry lands.
+
+      **UPDATED 2026-08-08 — the holder registry landed, and this parameter is no longer refused
+      outright.** §6.6's rule is now code: `spawn::CwdClaim` is a process-wide table of which cwd
+      holds a live write-capable node, check-and-claim in one locked step, released by RAII so a
+      `?` return cannot leak it, and a second write-capable child into an occupied cwd is refused
+      by `SpawnError::CwdOccupied` **naming the holder's agent id**. `allow_concurrent_writes: true`
+      is the caller's documented way past it and is the only thing that suppresses it. What is
+      still refused is asking for it under `isolation: "worktree"`, where marion gives the child
+      its own tree and there is therefore no sibling to share with and no guard to lift — refused
+      rather than accepted-and-dropped because a granted `true` would confirm a capability marion
+      did not grant. `false` and absence are refused in neither mode: `false` is what marion does.
+
+      **Which node counts as write-capable was the subtle part, and getting it from `tools:` alone
+      is wrong.** §3.1's `tools:` is a *grant* list — what marion must positively enable that the
+      harness would not do on its own — and two of the four harnesses need no such grant: codex
+      runs under `sandbox_mode = "workspace-write"` on every node marion configures, and opencode
+      under `harness-default:unconstrained`. `codex-impl`, marion's canonical implementer and the
+      type every worked example spawns, declares **no tools at all** and writes freely. A
+      `tools:`-only predicate therefore called it read-only, which would have left this guard
+      protecting nothing in exactly the case it exists for. `Harness::writes_without_a_declaration`
+      carries the per-harness measurement, `adapter.rs` pins it against what each adapter actually
+      compiles, and the predicate is the disjunction of the two.
 
     **What is deliberately *not* claimed here.** This is a read of the request path only. Whether
     the six implemented parameters are honoured *correctly* is a separate question this item does
@@ -5506,6 +5546,18 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     the cross-process half:** a file lock beside the repository, held across `make_worktree` and
     `cleanup`, which §5.7 does not contain and which would also have to admit the operator's own
     `git` is outside it regardless.
+
+    **This item stays OPEN, and 2026-08-08's `shared-cwd` work added a second guard with exactly
+    the same seam rather than closing it.** §6.6's occupancy table (`spawn::CwdClaim`) is a
+    `Mutex<HashMap<PathBuf, AgentId>>`, so every write-capable `shared-cwd` node *this supervisor
+    owns* is in it for its whole life and a second one is refused naming the first. A **second
+    `marion` process**, or the operator's own editor, holds no entry there and is not consulted —
+    the same boundary this item measured against `repo_write_guard`, and the number it measured
+    (four concurrent processes failing in **every** repetition) is unmoved: nothing in that change
+    touched the cross-process case, and the closure named above — a file lock beside the repository
+    — would be needed for the occupancy table too. The in-process half is closed and tested
+    (`tests/no_git.rs`, `spawn.rs`'s `CwdClaim` unit tests); the cross-process half is not, and
+    `CwdClaim`'s doc comment says which half it is so the guard is not read as more than it is.
 
     **What is argued and not measured, stated so it is not read as evidence.** That marion in
     practice reaches (c)'s exposure — two roots each spawning children could, and the threshold is
