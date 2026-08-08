@@ -806,6 +806,57 @@ impl HarnessAdapter for CodexAdapter {
         }))
     }
 
+    /// §3.4's `opaque`, the same shape Claude Code's pane declares and for the same reason: a pty
+    /// and nothing else, because nothing parses a frame off a TUI.
+    ///
+    /// **This is §9's M3 criterion C2, and it is the half that was missing.** `marion_term`'s
+    /// `Suppressor` has intercepted `CSI 3J` since before this method existed, and
+    /// `marion-term/tests/replay.rs::scrollback_survives_codex_resize` pinned the retention over a
+    /// committed capture — but C2 reads *"a real `codex` TUI runs **in a pane**"*, and with this
+    /// returning `None` a codex pane could not be launched at all: `root::prepare_watched` refused
+    /// `--pane` with [`HarnessError::NoPaneSurface`] before anything opened a pty. codex is the
+    /// harness the criterion names for a measured reason (§5.3) — it writes its session to the
+    /// **main** screen and emits `ESC[3J` on every resize, so it is the only one of the four with
+    /// scrollback to lose.
+    fn pane_surfaces(&self) -> Option<ExecutionSurfaces> {
+        Some(ExecutionSurfaces::opaque())
+    }
+
+    /// The TUI, with the same isolation, the same configuration route and the same sandbox the
+    /// `exec` shape gets. See [`codex::compile_tui`] for why the two argv grammars do not share a
+    /// branch, and for what is deliberately left off this one.
+    fn compile_pane(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        // The refusal is owed on this path exactly as on `compile`'s: a pane does not widen what a
+        // node may do, so an unmappable `tools:` entry aborts the launch here too rather than
+        // opening a terminal for a node whose declaration marion could not honour.
+        let _already_granted = self.native_tools(spec)?;
+        let config_overrides = match spec.auth {
+            Auth::Canned => Vec::new(),
+            Auth::Inherited => Self::bridge_env(spec, ctx)
+                .as_ref()
+                .map(codex::live_config_overrides)
+                .unwrap_or_default(),
+        };
+        Ok(codex::compile_tui(&ExecSpec {
+            cwd: spec.cwd.clone(),
+            codex_home: match spec.auth {
+                Auth::Canned => Some(spec.config_dir.clone()),
+                Auth::Inherited => None,
+            },
+            model: match spec.auth {
+                Auth::Canned => None,
+                Auth::Inherited => spec.model.clone(),
+            },
+            prompt: spec.prompt.clone(),
+            // Stated rather than forwarded: both are `codex exec` flags with no interactive
+            // counterpart, and `compile_tui` would ignore them anyway. Naming them `None` here is
+            // what makes that ignoring a decision rather than a gap.
+            output_schema: None,
+            output_last_message: None,
+            config_overrides,
+        }))
+    }
+
     fn config_files(
         &self,
         spec: &LaunchSpec,
@@ -3453,6 +3504,65 @@ mod tests {
                 "{h}: nothing parses a frame off a pane, and the surfaces must say so"
             );
         }
+    }
+
+    /// **Which harnesses declare a pane is a measured list, not a count.**
+    ///
+    /// The test above only asks that *some* harness has a pane shape, so it stays green with codex
+    /// back at the trait default — and §9's M3 criterion C2 is specifically *"a real **codex** TUI
+    /// runs in a pane"*. Claude Code cannot stand in for it: it enters its own alternate screen
+    /// seconds after boot, and an alternate screen has no scrollback to retain, so a `CSI 3J`
+    /// assertion made against claude would pass because there was nothing to lose.
+    ///
+    /// gemini and opencode are `None` for a reason of the same kind, in the other direction:
+    /// neither has a TUI shape marion has measured, and a `Some` here would put a run that asked
+    /// for a pane onto a pty with an unmeasured harness on it rather than refusing by name.
+    ///
+    /// Mutation: revert `CodexAdapter::pane_surfaces` to the trait default. This fails, and so does
+    /// `marion-supervisor`'s `a_real_codex_tui_keeps_its_scrollback_across_a_resize_in_a_marion_pane`.
+    #[test]
+    fn codex_declares_a_pane_because_c2_names_that_harness_and_no_other_can_stand_in() {
+        let with_panes: Vec<Harness> = Harness::ALL
+            .into_iter()
+            .filter(|h| adapter_for(*h).unwrap().pane_surfaces().is_some())
+            .collect();
+        assert_eq!(
+            with_panes,
+            vec![Harness::ClaudeCode, Harness::Codex],
+            "the set of harnesses marion can pane moved. Adding one is a measurement (§5.3); \
+             losing codex is losing C2, since it is the only harness of the four that keeps its \
+             session on the main screen and therefore the only one with scrollback to retain"
+        );
+    }
+
+    /// The codex pane is the **interactive** command, isolated exactly as the `exec` shape is.
+    ///
+    /// Mutation: point `CodexAdapter::compile_pane` at `codex::compile_exec`. This fails on `exec`.
+    #[test]
+    fn the_codex_pane_argv_is_the_tui_and_carries_the_exec_shapes_isolation() {
+        let spec = LaunchSpec {
+            prompt: "look at this".into(),
+            ..spec_for(Harness::Codex)
+        };
+        let inv = CodexAdapter
+            .compile_pane(&spec, &ctx())
+            .expect("codex has a pane shape");
+        assert_eq!(inv.program, "codex");
+        for forbidden in ["exec", "--json", "--skip-git-repo-check"] {
+            assert!(
+                !inv.args.iter().any(|a| a == forbidden),
+                "the codex pane carries {forbidden}, which is the exec shape's: {:?}",
+                inv.args
+            );
+        }
+        assert_eq!(inv.args.last().map(String::as_str), Some("look at this"));
+        assert!(
+            inv.env
+                .iter()
+                .any(|(k, v)| k == "CODEX_HOME" && std::path::Path::new(v) == spec.config_dir),
+            "a paned codex without CODEX_HOME reads and writes the operator's own ~/.codex: {:?}",
+            inv.env
+        );
     }
 
     /// A harness with no pane shape refuses by name rather than compiling the headless one.

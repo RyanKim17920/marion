@@ -1,7 +1,14 @@
-//! The Codex adapter — `exec` surface only, which is what M1's child uses (design §9).
+//! The Codex adapter — two surfaces, `exec` and the TUI (design §9).
 //!
 //! `codex exec` is **launch-only with protocol events**: marion writes its configuration, starts
-//! it, and reads its JSONL stream. There is no control channel to steer it mid-turn.
+//! it, and reads its JSONL stream. There is no control channel to steer it mid-turn. That is M1's
+//! child ([`compile_exec`]) and it is the shape every codex node runs under unless a run asked
+//! otherwise.
+//!
+//! The interactive `codex` is **opaque**: a pty and nothing else, driven by keystrokes and parsed
+//! from nothing ([`compile_tui`]). It exists for §9's M3 criterion C2, and it is a *per-run*
+//! request rather than a second harness — the two share this file's configuration, its isolation
+//! and its sandbox, and differ only in the argv grammar the binary's two commands accept.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -104,6 +111,83 @@ pub fn compile_exec(spec: &ExecSpec) -> Invocation {
         // on the wire and nothing else, so a canned launch — which compiles no `-m` — still records
         // `None` however loudly a caller asked for a model, and a contract naming a model that never
         // reached argv remains the lie `child.harness` was moved behind the adapter to stop telling.
+        model: spec.model.clone(),
+    }
+}
+
+/// argv for the **pane** shape: codex's own TUI, on a pty marion owns (§9's M3 criterion C2).
+///
+/// # Why this is a second compile and not a flag on [`compile_exec`]
+///
+/// `codex exec` and `codex` are two subcommands of one binary with two argv grammars, and the
+/// difference is not a switch. `exec`'s `--json`, `--skip-git-repo-check`, `--output-schema` and
+/// `--output-last-message` are the whole of what makes a headless codex a protocol peer, and
+/// **none of the four exists on the interactive command** — `codex --help` on 0.147.0 lists them
+/// nowhere, so passing any of them is an argv the binary rejects before it draws anything. What
+/// the two shapes *do* share is the isolation ([`ExecSpec::codex_home`]) and the configuration
+/// route ([`ExecSpec::config_overrides`]), which is why this takes the same struct rather than one
+/// of its own.
+///
+/// `output_schema` and `output_last_message` are therefore ignored here rather than compiled. They
+/// are always `None` on this path — `crate::adapter::CodexAdapter::compile_pane` sets them so
+/// explicitly, and `marion_supervisor::root` builds a pane's `LaunchSpec` with
+/// `Extras::default()` — and the ignoring is asserted below so a future caller that sets one gets
+/// a red test rather than a flag silently dropped.
+///
+/// # The prompt rides argv, and it is **submitted** rather than seeded
+///
+/// Measured on 0.147.0 against an isolated `CODEX_HOME`: `codex "<prompt>"` opens the TUI with the
+/// text already sent — the composer shows it above a running spinner, with no keystroke from
+/// anybody. That is the one place the two panes genuinely differ, because Claude Code's TUI seeds
+/// its composer and waits (`crate::claude_code::compile_pane`). It is recorded here rather than
+/// smoothed over: an operator who runs `marion run codex --pane --prompt …` has taken a turn by
+/// the time they attach, and a reader of the pane's first screen is looking at a turn in flight.
+/// An empty prompt compiles no positional at all, which is a TUI opened at its composer.
+///
+/// # What is deliberately **not** passed
+///
+/// **`--no-alt-screen`.** 0.147.0 documents it as *"Disable alternate screen mode … preserving
+/// terminal scrollback history"*, which reads like exactly what C2 wants — and passing it would
+/// make marion's scrollback claim a property of a flag marion chose rather than of the harness
+/// marion has to survive. Measured on 0.147.0, the default is already inline: a full boot, a
+/// submitted turn, two slash commands and a resize emit **zero** `ESC[?1049h`, which is §5.3's
+/// reading of 0.146.0 unchanged. §5.3 also warns against treating "no alt screen" as a static
+/// per-harness property — codex enters one transiently for `/diff` — so the emulator must handle
+/// the switch either way, and a flag here would only hide whether it does.
+///
+/// **`-s/--sandbox` and `-a/--ask-for-approval`.** Both are already set, by the same
+/// [`config_toml`] the headless shape is configured with (`sandbox_mode`, `approval_policy`), and
+/// a second spelling on argv is the drift [`SANDBOX_MODE`] exists to prevent.
+pub fn compile_tui(spec: &ExecSpec) -> Invocation {
+    let mut args: Vec<String> = Vec::new();
+    for (k, v) in &spec.config_overrides {
+        args.push("-c".into());
+        args.push(format!("{k}={v}"));
+    }
+    if let Some(m) = &spec.model {
+        args.push("-m".into());
+        args.push(m.clone());
+    }
+    // `-C/--cd` rather than relying on `Invocation.cwd` alone: codex names this *"the directory the
+    // agent uses as its working root"*, which is what its sandbox is scoped to, and leaving it to
+    // the process cwd would make the workspace a fact about who launched marion.
+    args.push("-C".into());
+    args.push(spec.cwd.to_string_lossy().into_owned());
+    if !spec.prompt.is_empty() {
+        args.push(spec.prompt.clone());
+    }
+
+    Invocation {
+        program: "codex".into(),
+        args,
+        // Same rule as [`compile_exec`]: set where marion owns the config surface, **omitted** —
+        // never blanked — under [`Auth::Inherited`].
+        env: spec
+            .codex_home
+            .iter()
+            .map(|h| ("CODEX_HOME".to_string(), h.to_string_lossy().into_owned()))
+            .collect(),
+        cwd: spec.cwd.clone(),
         model: spec.model.clone(),
     }
 }
@@ -468,6 +552,128 @@ mod tests {
                 .any(|(k, v)| k == "CODEX_HOME" && v == "/tmp/ch")
         );
         assert!(!inv.args.iter().any(|a| a.contains("CODEX_HOME")));
+    }
+
+    /// **The interactive command is not `exec` with a flag off.** Every name below is an `exec`
+    /// flag that `codex --help` on 0.147.0 does not list, so compiling one here is an argv the
+    /// binary rejects before it draws a cell — a pane that fails at launch rather than a pane that
+    /// renders wrong, which is the harder failure to attribute.
+    ///
+    /// Mutation: make `compile_tui` delegate to `compile_exec`. This fails on `exec` itself.
+    #[test]
+    fn the_tui_carries_none_of_the_exec_shapes_protocol_argv() {
+        let inv = compile_tui(&spec());
+        for forbidden in [
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--output-schema",
+            "--output-last-message",
+        ] {
+            assert!(
+                !inv.args.iter().any(|a| a == forbidden),
+                "the TUI argv carries {forbidden}, which the interactive command does not accept: \
+                 {:?}",
+                inv.args
+            );
+        }
+        assert_eq!(inv.program, "codex");
+    }
+
+    /// The two `exec`-only outputs are **ignored rather than compiled**, and a caller that sets one
+    /// finds out here rather than by watching a flag vanish.
+    #[test]
+    fn the_execs_output_files_are_ignored_on_the_tui_rather_than_silently_dropped_into_argv() {
+        let inv = compile_tui(&ExecSpec {
+            output_schema: Some("/tmp/schema.json".into()),
+            output_last_message: Some("/tmp/last.txt".into()),
+            ..spec()
+        });
+        assert!(
+            !inv.args
+                .iter()
+                .any(|a| a.contains("schema") || a.contains("last")),
+            "an exec-only output path reached the interactive argv: {:?}",
+            inv.args
+        );
+    }
+
+    /// The prompt is a positional and an empty one compiles none — a TUI opened at its composer.
+    ///
+    /// **It is submitted, not seeded**, which is where this harness differs from Claude Code's
+    /// pane; see [`compile_tui`].
+    #[test]
+    fn the_tui_prompt_is_the_last_positional_and_an_empty_one_is_no_positional() {
+        let inv = compile_tui(&spec());
+        assert_eq!(inv.args.last().map(String::as_str), Some("do the task"));
+        let bare = compile_tui(&ExecSpec {
+            prompt: String::new(),
+            ..spec()
+        });
+        assert!(
+            !bare.args.iter().any(String::is_empty),
+            "an empty prompt compiled an empty positional: {:?}",
+            bare.args
+        );
+        assert_eq!(bare.args.last().map(String::as_str), Some("/tmp/wt"));
+    }
+
+    /// The workspace is stated on argv as well as being the process cwd: `-C` is what codex scopes
+    /// its sandbox to, and leaving it out would make the agent's working root a fact about whoever
+    /// launched the supervisor.
+    #[test]
+    fn the_tui_names_its_working_root_rather_than_inheriting_it() {
+        let inv = compile_tui(&spec());
+        let i = inv.args.iter().position(|a| a == "-C").expect("-C");
+        assert_eq!(inv.args[i + 1], "/tmp/wt");
+        assert_eq!(inv.cwd, PathBuf::from("/tmp/wt"));
+    }
+
+    /// Isolation is the `exec` shape's, exactly — present under canned, **absent** rather than
+    /// empty under inherited, for [`ExecSpec::codex_home`]'s reason.
+    #[test]
+    fn the_tui_is_isolated_by_codex_home_and_a_live_one_is_not_isolated_at_all() {
+        let inv = compile_tui(&spec());
+        assert!(
+            inv.env
+                .iter()
+                .any(|(k, v)| k == "CODEX_HOME" && v == "/tmp/ch"),
+            "a paned codex would read and write the operator's own ~/.codex"
+        );
+        let live = compile_tui(&ExecSpec {
+            codex_home: None,
+            ..spec()
+        });
+        assert!(!live.env.iter().any(|(k, _)| k == "CODEX_HOME"));
+    }
+
+    /// The live route's `-c` overrides ride the TUI's argv in the same order and the same spelling
+    /// they ride `exec`'s, because there is one builder behind both.
+    #[test]
+    fn the_tui_carries_the_same_config_overrides_the_exec_shape_does() {
+        let overrides = live_config_overrides(&BridgeEnv {
+            auth: Auth::Inherited,
+            ..bridge_env()
+        });
+        let tui = compile_tui(&ExecSpec {
+            codex_home: None,
+            config_overrides: overrides.clone(),
+            ..spec()
+        });
+        let exec = compile_exec(&ExecSpec {
+            codex_home: None,
+            config_overrides: overrides,
+            ..spec()
+        });
+        let pairs = |inv: &Invocation| -> Vec<String> {
+            inv.args
+                .windows(2)
+                .filter(|w| w[0] == "-c")
+                .map(|w| w[1].clone())
+                .collect()
+        };
+        assert!(!pairs(&tui).is_empty(), "a live TUI carries no declaration");
+        assert_eq!(pairs(&tui), pairs(&exec));
     }
 
     fn bridge_env() -> BridgeEnv {
