@@ -4132,6 +4132,15 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
   rendered on the main screen, resize clean, mouse through, permission prompt correct, over a
   recorded 10-minute manual session. (Probes are answered, but since our fixtures show both
   harnesses proceeding unanswered, this is not the pass criterion.)
+  - *"Permission prompt correct"*, clarified 2026-08-08 — naming the dialog's owner and its
+    precondition, which the original wording assumed: **the harness's own permission dialog renders
+    in the pane, is answerable from the keyboard, and the answer takes effect** — provoked by a
+    root whose type declares a tool it must ask about; marion is deliberately not in this loop on a
+    pane (§11 item 22). Not a weakening: it rules out reading the clause as marion's
+    `permission/request` queue, which on a pane would be a queue entry awaiting a UI that does not
+    exist. What it exposes is that the precondition is not currently reachable — §3.1's two axes
+    are compiled from one declaration, so a tool marion makes available is a tool marion has
+    already allowed. See `MILESTONES.md`'s M3 C1 entry.
 - A real `codex` TUI runs in a pane with scrollback retained across at least one resize, proving
   `CSI 3J` interception.
 - L4.5 snapshot tests pass and gate commits.

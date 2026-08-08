@@ -620,8 +620,46 @@ how much code exists.
     | alt-screen switch handled | yes, split | live: marion's grid must be on whichever screen the node's own bytes put it on, taking the switch when told and inventing none when not. Positive direction: `marion-term/tests/replay.rs::the_alt_screen_switch_is_handled_including_the_restore_that_never_arrives`, over the committed 2.1.220 captures that switch at bytes 67 and 1900 — one restores at 5866, the other **never does**, which is the absent-restore case. Both directions asserted, plus marion's own restore firing when the node's never comes |
     | resize clean | yes | same live test, and it was already there: the node's cast carries an `r` record with the operator's geometry, at least two geometries exist so a pane born at the operator's size cannot pass, and the operator's screen still renders the node at the **new** width afterwards |
     | mouse through | yes, split | live: an SGR-1006 press **and** release written to the operator's pty master arrive intact in the node's `i` record. The enabling leg — putting the operator's terminal into the modes the node asked for — is `attach.rs::the_nodes_mouse_modes_are_mirrored_onto_the_operators_terminal`, over the mode sequences the 2.1.220 capture carries at bytes 98–122 |
-    | permission prompt correct | **no**, and the reading is stated | this is the *harness's own* in-TUI dialog, not marion's `permission/request` queue — §11 item 22's queue is the duplex `can_use_tool` path, and `compile_pane` deliberately omits `--permission-prompt-tool stdio` so the ask stays in the pane. That omission is asserted (`marion-harness::the_pane_argv_is_a_tui_with_the_headless_shape_isolation`). The dialog itself needs a paned node **granted a tool it must ask about**, and a pane compiles `--tools ""` today, so claude has nothing to ask about. Widening that is a decision about what marion mediates, not a test |
+    | permission prompt correct | **no**, and the reading is stated — *corrected 2026-08-08, see below* | this is the *harness's own* in-TUI dialog, not marion's `permission/request` queue — §11 item 22's queue is the duplex `can_use_tool` path, and `compile_pane` deliberately omits `--permission-prompt-tool stdio` so the ask stays in the pane. That omission is asserted (`marion-harness::the_pane_argv_is_a_tui_with_the_headless_shape_isolation`, and now also `…::a_paned_node_compiles_its_grant_on_both_axes_and_names_no_permission_prompt_tool`). The dialog itself needs a paned node **granted a tool it must ask about**, and marion cannot compile one — not because a pane withholds tools, but because it grants them on **both** axes at once |
     | over a recorded 10-minute manual session | **no** | nothing can stand in for it |
+
+    **Correction, 2026-08-08: "a pane compiles `--tools \"\"`" was false, and it was load-bearing.**
+    It stood in this table, in `pane_attach.rs`'s header and in the runbook's step 5, each time as
+    a property of *panes*. `claude_code::compile_pane` passes `spec.tools` straight through
+    (`crates/marion-harness/src/claude_code.rs:215-231`) and the axis is computed by
+    `root::availability_axis` **before** the `spec.pane` branch is reached
+    (`root.rs:684`, `root.rs:781-784`). The empty axis those readings recorded belongs to the
+    **`claude` agent type**, which declares no tool; `claude-impl` declares `[read, write]`, and
+    `--pane` is parsed independently of the type name, so
+    `marion run claude-impl --pane --repo <a git worktree>` compiles a real grant into a TUI.
+
+    **But that does not hand C1 its dialog, and the reason is sharper than the old one.** §3.1's
+    two axes come from **one** declaration — `ClaudeCodeAdapter::permission_axis` unions the same
+    native names into `--allowedTools`, deliberately, because opening availability alone is §11
+    item 24's measured dead end. `--allowedTools` is *"tool names to allow"* (2.1.226 `--help`),
+    i.e. pre-approval. So the paned `claude-impl` above compiles
+    `--tools Read,Write --allowedTools mcp__marion__…,Read,Write`: every tool it has is one it is
+    already allowed to use, and **the state a permission dialog needs — available and not
+    already allowed — is one no `marion run` can reach today.** Pinned, so that a later edit that
+    changes it announces itself:
+    `marion-harness::a_paned_node_compiles_its_grant_on_both_axes_and_names_no_permission_prompt_tool`.
+    That test also fails if someone "fixes" the pane by adding `--permission-prompt-tool stdio`,
+    which would convert an answerable question into an item 22 queue entry awaiting a UI that does
+    not exist.
+
+    So the clause is **provokable by the human doing the session, not met on its own**, and the
+    runbook below now says what to try and what to record if nothing asks. What it is *not* is
+    blocked on the grant decision: `1c82946` read it that way, and `root::availability_axis`
+    settled that question in the other direction for every root — containment was overruled by the
+    operator, and the surviving rule is *no audit, no grant*.
+
+    **The honest cost of the pane, recorded rather than discovered later.** Because the dialog is
+    the harness's own, **marion has no record of which permission decisions were made.**
+    `PermissionDenied` never fires on this path and `permission_denials` is empty for every paned
+    node; §6.7's change record shows what was *written*, never what was asked or what was refused.
+    An operator reading a paned root's contract cannot tell a run that was never asked anything
+    from one that was asked and said no. That is the price of §11 item 22's absence here, and it is
+    the right price only as long as the alternative is a queue with no answerer.
 
     **A finding that came out of closing this, and it matters beyond M3: §5.3's Claude Code
     terminal readings are stale.** Probed 2026-08-08 against **2.1.225**, in a marion pane and
@@ -638,7 +676,11 @@ how much code exists.
     under `~/.local/share/claude/versions/` — through a `PATH` shim. 2.1.226 has **not** been
     admitted: that is the ritual `9b0a06d` performs, and doing it as a side effect of this work
     would be exactly the silent pass the table exists to prevent. Until someone runs it, a bare
-    `cargo test --workspace` on this machine is red at the version gate.
+    `cargo test --workspace` on this machine is red at the version gate. *(`6813810` has since run
+    that ritual: 2.1.226 is admitted, and a bare `cargo test --workspace` is green again. The
+    paragraph stands as the reading it was — and as the reason the runbook says to check the
+    version before starting, since this is the **third** time §5.3's Claude readings have gone
+    stale under a session that did not ask.)*
   - **Criterion 2 (a real `codex` TUI in a pane, scrollback across a resize) — MET**, by
     `crates/marion-supervisor/tests/pane_attach.rs::a_real_codex_tui_keeps_its_scrollback_across_a_resize_in_a_marion_pane`.
 
@@ -687,9 +729,13 @@ how much code exists.
 C1 is asserted by a test; §9 ends the criterion with *"over a recorded 10-minute manual session"*,
 and no automation can perform it. Written down so whoever sits down does not have to re-derive it.
 
-**Before starting.** `git config core.hooksPath .githooks` if this is a fresh clone. Put the pinned
-`claude` first on `PATH` — `PINNED_HARNESSES`'s entry zero is what the prose claims, and an
-unpinned binary makes the recording unattributable. Have `asciinema` on `PATH`.
+**Before starting.** `git config core.hooksPath .githooks` if this is a fresh clone. Run
+`claude --version` and check it against `PINNED_HARNESSES` **first**: if the installed binary is
+not admitted, either put an admitted one first on `PATH` (they stay on disk under
+`~/.local/share/claude/versions/`, so a one-line shim is enough) or run the admission ritual
+`9b0a06d` performs before recording anything. An unpinned binary makes the recording
+unattributable, and §5.3's Claude readings have already gone stale twice under sessions that
+skipped this. Have `asciinema` on `PATH`.
 
 **Start the recording, then the pane, then attach.** Three terminals is easiest; one is enough.
 
@@ -721,13 +767,42 @@ either in the recording's companion file.
    tracking mode, the correct behaviour is the operator's own terminal selection** — marion
    mirrors what the node asked for and invents nothing, so "the mouse does nothing in the TUI" is a
    pass on 2.1.225 and a fail on a version that asks for `?1000h`.
-5. **Permission prompt.** Ask for something the harness must ask about — a file write outside what
-   it already has, or a command. The dialog must render **in the pane**, be answerable from the
-   keyboard, and the answer must take effect. This is the harness's own dialog, not marion's
-   `permission/request` queue (§11 item 22); marion is deliberately not in this loop on a pane.
-   **Note that a pane compiles `--tools ""` today**, so a stock `marion run claude --pane` may
-   have nothing to ask about — if so, record that fact rather than a dialog, and it becomes the
-   argument for the grant decision the criterion is really waiting on.
+5. **Permission prompt.** Run this clause under a **granted** type, which is a different command
+   from the one above — `marion run claude` declares no tool at all and can only ever record an
+   absence:
+
+   ```sh
+   marion run claude-impl --pane --repo <a git worktree> --prompt "" --timeout 900
+   ```
+
+   `--repo` must be under git and `--no-change-record` must **not** be passed: `no audit, no
+   grant` is a gate, and a bare directory is refused by name. Before typing anything, confirm the
+   launched argv carries `--tools Read,Write` — `ps -o args= -p <the node's pid>`, or the
+   `Spawned` record in the journal. If it carries `--tools ""` you are on the orchestrator type
+   and this clause cannot be exercised.
+
+   Then, in order, and record what happens for **each** — the absence of a dialog is a reading, not
+   a failure to perform the step:
+
+   a. **Ask for a file write inside the worktree.** Read `--allowedTools` off the same argv first:
+      it carries `Read,Write` beside marion's verbs, because §3.1's two axes come from one
+      declaration. `--allowedTools` is pre-approval, so the expected reading here is **no dialog**.
+   b. **Ask for a write to a path outside the worktree** (`$HOME/marion-c1-probe.txt` will do).
+      Whether the harness treats "allowed tool, disallowed location" as a fresh question is
+      **unmeasured** — that is what this probe is for. Delete the file afterwards if it appears.
+
+   If a dialog renders in either case, the clause's own words are what to check: it must render
+   **in the pane**, be answerable from the keyboard, and the answer must **take effect** (the file
+   appears on approve, and does not on deny — check with `ls`, not with what the model says it
+   did). Note also that marion records none of this: no `PermissionDenied`, no `permission_denials`
+   entry, and the change record shows only what was written. This is the harness's own dialog, not
+   marion's `permission/request` queue (§11 item 22); marion is deliberately not in this loop on a
+   pane, and routing it through item 22 would replace an answerable question with a queue entry
+   nothing can answer.
+
+   If **neither** probe produces a dialog, record that — it is the finding, and it means the clause
+   cannot be met through `marion run` as it stands, since no built-in type can put a tool in
+   `--tools` without also putting it in `--allowedTools`.
 6. **Detach and re-attach.** `^] d`, confirm the shell comes back on the **main** screen with its
    scrollback and its cursor, then `marion attach <agent-id>` again and confirm the node is where
    it was left.
