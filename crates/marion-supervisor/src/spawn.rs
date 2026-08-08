@@ -243,6 +243,16 @@ pub enum SpawnError {
     /// §12 silent-failure shape, indistinguishable from a run that simply had nothing to say.
     #[error("driving the child over its control plane: {0}")]
     Duplex(#[from] crate::duplex::DuplexError),
+    /// The same failure class on the **other** typed control plane, kept as its own variant rather
+    /// than folded into [`Self::Duplex`].
+    ///
+    /// Its variants say things `DuplexError` has no way to say and a parent has to be able to act
+    /// on: the agent never answered `initialize`, or the *vendor* refused to open a session at all
+    /// (S20's `-32000`, which no marion change reaches). Flattening them into "driving the child
+    /// over its control plane" would turn a vendor's own refusal into a marion-shaped error, which
+    /// is the misattribution §8 spends a whole mode preventing.
+    #[error("driving the ACP child: {0}")]
+    Acp(#[from] crate::acp_child::AcpChildError),
     /// §3.4's third control transport, which is not a launch path on either axis.
     #[error(
         "{0} drives its node through a terminal, and marion MUST NOT give a headless node a pty \

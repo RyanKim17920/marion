@@ -977,7 +977,11 @@ mod tests {
     #[test]
     fn each_shim_is_read_in_its_own_spelling_and_in_no_others() {
         for (session, spelling, id) in [
-            (s22("claude-agent-acp"), ToolSpelling::McpDoubleUnderscore, "claude-acp"),
+            (
+                s22("claude-agent-acp"),
+                ToolSpelling::McpDoubleUnderscore,
+                "claude-acp",
+            ),
             (s22("codex-acp"), ToolSpelling::McpDotted, "codex-acp"),
         ] {
             let calls = marion_calls(&session, spelling);
@@ -1035,7 +1039,8 @@ mod tests {
     /// title matches — and it reports an empty report.
     #[test]
     fn the_codex_shims_arguments_are_nested_and_are_read_where_they_are() {
-        let raw = json!({"server":"marion","tool":"report","arguments":{"narrative":"hello from acp"}});
+        let raw =
+            json!({"server":"marion","tool":"report","arguments":{"narrative":"hello from acp"}});
         assert_eq!(
             ToolSpelling::McpDotted.arguments(&raw),
             Some(&raw["arguments"]),
@@ -1060,7 +1065,10 @@ mod tests {
             None
         );
         assert_eq!(ToolSpelling::McpDotted.arguments(&json!({})), None);
-        assert_eq!(ToolSpelling::ServerUnderscoreTool.arguments(&json!({})), None);
+        assert_eq!(
+            ToolSpelling::ServerUnderscoreTool.arguments(&json!({})),
+            None
+        );
     }
 
     /// **The phantom `mcp__marion__startup` frame, which is neither marion's nor a real failure.**

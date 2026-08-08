@@ -1577,9 +1577,7 @@ impl AcpAdapter {
 
     /// The adapter for one named ACP agent.
     pub fn for_agent(agent: acp::Agent) -> Self {
-        Self {
-            agent: Some(agent),
-        }
+        Self { agent: Some(agent) }
     }
 
     /// Resolve an operator's id into a bound adapter, or refuse by name listing what marion knows.
@@ -1709,10 +1707,7 @@ impl HarnessAdapter for AcpAdapter {
                 // Placement, not isolation: `cwd` alone does not place an opencode node, and S13
                 // measured a child re-entering `$PWD` whatever it was `chdir`'d to. Stated for the
                 // same reason `opencode::compile_run` states it, over the same binary.
-                env.push((
-                    "PWD".to_string(),
-                    spec.cwd.to_string_lossy().into_owned(),
-                ));
+                env.push(("PWD".to_string(), spec.cwd.to_string_lossy().into_owned()));
                 env
             }
             // **Refused by name, per agent.** The protocol has no provider channel and two of the
@@ -4666,9 +4661,12 @@ mod tests {
             }
             acp += 1;
             let id = t.acp_agent.as_deref().expect("checked in marion-core");
-            let agent = acp::agent(id)
-                .unwrap_or_else(|| panic!("`{name}` names ACP agent `{id}`, which is not in the \
-                                           registry — the type and the registry have drifted"));
+            let agent = acp::agent(id).unwrap_or_else(|| {
+                panic!(
+                    "`{name}` names ACP agent `{id}`, which is not in the \
+                                           registry — the type and the registry have drifted"
+                )
+            });
             assert!(
                 agent.tools.is_some(),
                 "`{name}` names `{id}`, which marion has never watched call a tool: a node of this \
@@ -4681,7 +4679,10 @@ mod tests {
                 "`{name}`"
             );
         }
-        assert!(acp > 0, "no built-in reaches the ACP row, so this asserts nothing");
+        assert!(
+            acp > 0,
+            "no built-in reaches the ACP row, so this asserts nothing"
+        );
     }
 
     /// The refusal itself, exercised at the type rather than through the registry: it names the
@@ -5557,7 +5558,13 @@ mod tests {
                 .compile(&spec, &ctx())
                 .unwrap_err();
             assert!(
-                matches!(&e, HarnessError::MissingInput { harness: Harness::Acp, .. }),
+                matches!(
+                    &e,
+                    HarnessError::MissingInput {
+                        harness: Harness::Acp,
+                        ..
+                    }
+                ),
                 "`{}`: got {e}",
                 agent.id
             );
@@ -5604,7 +5611,13 @@ mod tests {
         ] {
             let e = acp_adapter().config_files(&spec, &ctx()).unwrap_err();
             assert!(
-                matches!(&e, HarnessError::MissingInput { harness: Harness::Acp, .. }),
+                matches!(
+                    &e,
+                    HarnessError::MissingInput {
+                        harness: Harness::Acp,
+                        ..
+                    }
+                ),
                 "missing {what}: got {e}"
             );
         }
@@ -5646,7 +5659,10 @@ mod tests {
         );
         assert_eq!(inv.cwd, spec.cwd);
         assert!(
-            acp_adapter().config_files(&spec, &ctx()).unwrap().is_empty(),
+            acp_adapter()
+                .config_files(&spec, &ctx())
+                .unwrap()
+                .is_empty(),
             "ACP declares marion's bridge in `session/new`, so a live node writes no document"
         );
     }
@@ -5703,7 +5719,13 @@ mod tests {
             unbound.config_files(&acp_spec(), &ctx()).unwrap_err(),
         ] {
             assert!(
-                matches!(&e, HarnessError::MissingInput { harness: Harness::Acp, .. }),
+                matches!(
+                    &e,
+                    HarnessError::MissingInput {
+                        harness: Harness::Acp,
+                        ..
+                    }
+                ),
                 "got {e}"
             );
         }
