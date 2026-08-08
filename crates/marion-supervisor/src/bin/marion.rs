@@ -2279,7 +2279,10 @@ mod tests {
     fn the_tree_screen_is_reachable_from_this_binary() {
         // 1. Discoverable: a subcommand nobody can find does not exist for the operator who needs it.
         let text = usage_text();
-        assert!(text.contains("marion tree ["), "usage does not name `tree`:\n{text}");
+        assert!(
+            text.contains("marion tree ["),
+            "usage does not name `tree`:\n{text}"
+        );
 
         // 2. Dispatched: `main` routes the verb, and routes it *before* the run parser for the
         //    reason `mcp` is routed early — a fall-through would print usage instead of a screen.

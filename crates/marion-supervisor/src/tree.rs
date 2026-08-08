@@ -49,8 +49,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use marion_core::node::{NodeState, ReapState};
 use marion_core::harness::Harness;
+use marion_core::node::{NodeState, ReapState};
 use marion_harness::{Capabilities, ExecutionSurfaces};
 use marion_proto::{Call, Event, Frame, MethodResult, NodeSummary, RequestId};
 use marion_tui::tree::{self, Action, Focus, Nav, Tree};

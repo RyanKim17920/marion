@@ -63,7 +63,7 @@ use marion_core::encoding::Millis;
 use marion_core::harness::Harness;
 use marion_harness::{
     AgentHandshake, Auth, Capabilities, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
-    LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for_type, static_caps,
+    LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for, adapter_for_type, static_caps,
 };
 use marion_proto::{HarnessReport, ProbeMode};
 
