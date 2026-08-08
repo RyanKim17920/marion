@@ -1696,6 +1696,28 @@ fn main() -> ExitCode {
         project.agent(&root_id).path().display()
     );
 
+    // **A paned root is started and then attached to, and this client does neither of the two
+    // things `watch_the_root` exists to do.**
+    //
+    // There is nothing here to render: a TUI emits bytes, not frames, so a paned node's
+    // `events.jsonl` holds the two lifecycle bookends and nothing between them. Blocking for the
+    // node's whole life to print "it started" and "it ended" would be merely useless.
+    //
+    // What makes it *harmful* is the keyboard. `node/attach` leases the node's write half to the
+    // first client that asks (§5.3: one writer, and the refusal names the holder), so this
+    // process — which has no terminal and cannot type — would hold it for the run's entire life,
+    // and the `marion attach` the operator is about to run would be told, correctly and
+    // uselessly, that connection 1 is typing into this node. It was.
+    //
+    // So the run returns the moment the node exists, which is exactly what the supervisor owning
+    // the node's lifecycle means (§11 item 28 step 6): the node outlives this call.
+    if args.pane {
+        stop.store(true, Ordering::Relaxed);
+        let _ = poller.join();
+        eprintln!("marion: attach with `marion attach {}`", root_id.0);
+        return ExitCode::SUCCESS;
+    }
+
     // **§7.3.3's attach, and it is the whole of how this client sees the run.** One cursor over the
     // node's `events.jsonl`: the replay leg arrives as notifications *before* the answer, and the
     // live leg continues on the same connection with the same ordinals, so there is no seam to get
