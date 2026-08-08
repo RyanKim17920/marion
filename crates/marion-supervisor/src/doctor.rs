@@ -63,7 +63,7 @@ use marion_core::encoding::Millis;
 use marion_core::harness::Harness;
 use marion_harness::{
     AgentHandshake, Auth, Capabilities, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
-    LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for, static_caps,
+    LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for_type, static_caps,
 };
 use marion_proto::{HarnessReport, ProbeMode};
 
@@ -209,7 +209,11 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<acp::Agent>) -> Vec<Row> 
         notes.push(format!("acp agent: `{}` — {}", a.id, a.note));
     }
 
-    let adapter = match adapter_for(h) {
+    // Bound to the row's agent, not to the harness name. `adapter_for` answers `acp` with the
+    // protocol row, which is unlaunchable by construction, so every ACP row would have reported
+    // marion's own omission — "this adapter refused to compile an invocation at all" — in the
+    // column an operator reads as a finding about their installed binary.
+    let adapter = match adapter_for_type(h, agent.map(|a| a.id)) {
         Ok(a) => a,
         Err(e) => {
             return vec![Row {
@@ -1859,7 +1863,9 @@ mod tests {
                 _ => vec![None],
             } {
                 let spec = probe_spec(None, McpDeclaration::Marion, agent).expect("a spec");
-                let a = adapter_for(h).unwrap();
+                // Bound the way `probe_one` binds it: the spec names an agent, so the adapter must
+                // too, or this sweep asserts about a pairing no probe ever builds.
+                let a = adapter_for_type(h, agent.map(|x| x.id)).unwrap();
                 let inv = a.compile(&spec, &ctx).unwrap_or_else(|e| {
                     panic!(
                         "{h}: the probe handed the adapter a spec no real spawn would build — this \
