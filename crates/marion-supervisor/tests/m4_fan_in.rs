@@ -519,6 +519,46 @@ fn a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_bot
         .collect();
     changed.sort();
     assert_eq!(changed, vec![A_FILE, B_FILE]);
+    // **And the two must agree inside one contract.** The two assertions above are each over a
+    // *set*, and a marion that handed each child's report to the other satisfies both of them:
+    // both narratives are present once, both paths are present once, and only the pairing is
+    // wrong. That was run as a mutation — each child's `report` written into its sibling's
+    // contract — and the test passed. `changed_paths` is the one field no report can influence
+    // (§6.7 sources it from a git diff of that child's own worktree), so it is what says which
+    // node a contract is about, and the narrative is checked against it rather than beside it.
+    let mut paired: Vec<(String, String)> = persisted
+        .iter()
+        .map(|c| {
+            let comp = c.completion.as_ref().unwrap();
+            let paths: Vec<String> = comp
+                .changed_paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            assert_eq!(
+                paths.len(),
+                1,
+                "each child writes exactly one file, so its contract names one changed path"
+            );
+            (
+                paths[0].clone(),
+                comp.narrative
+                    .as_ref()
+                    .map(|n| n.value.to_string())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    paired.sort();
+    assert_eq!(
+        paired,
+        vec![
+            (A_FILE.to_string(), A_NARRATIVE.to_string()),
+            (B_FILE.to_string(), B_NARRATIVE.to_string()),
+        ],
+        "a contract's narrative must be the report of the child whose worktree that diff came \
+         from — crossed pairs are two reports that reached the wrong nodes"
+    );
 
     // ---- clause 5: the root received both contracts, asserted on the request side. -------------
     let last = requests
