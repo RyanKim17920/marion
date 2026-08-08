@@ -33,7 +33,7 @@
 //! alternate screen must be left while the terminal can still be written to sensibly, and cooked
 //! mode is restored last so that a failure anywhere earlier still ends with a usable shell.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,7 +54,17 @@ unsafe extern "C" {
     fn cfmakeraw(termios_p: *mut Termios);
     fn isatty(fd: std::ffi::c_int) -> std::ffi::c_int;
     fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
+    fn fcntl(fd: std::ffi::c_int, cmd: std::ffi::c_int, ...) -> std::ffi::c_int;
 }
+
+/// `F_GETFL` / `F_SETFL` / `O_NONBLOCK`. The first two are 3 and 4 on every Unix; `O_NONBLOCK` is
+/// `0x4` on Darwin and `0o4000` on Linux, which is the one that has to be spelled per platform.
+const F_GETFL: std::ffi::c_int = 3;
+const F_SETFL: std::ffi::c_int = 4;
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: std::ffi::c_int = 0x0004;
+#[cfg(not(target_os = "macos"))]
+const O_NONBLOCK: std::ffi::c_int = 0o4000;
 
 /// `TIOCGWINSZ`, measured on Darwin 25.5.0 as `0x40087468`; Linux spells it `0x5413`.
 ///
@@ -316,6 +326,74 @@ impl Restore {
             raw.restore();
         }
         true
+    }
+}
+
+/// `O_NONBLOCK` on one descriptor, restored on drop.
+///
+/// # Why a screen that polls needs this, and an attach does not
+///
+/// `marion attach` reads stdin on a dedicated thread and forwards every byte, so a blocking read is
+/// exactly right there. [`crate::tree`]'s screen has two inputs — the supervisor's socket and the
+/// keyboard — and only one thread, because the thread is what makes handing stdin to an attach
+/// dangerous: a reader blocked in `read(2)` on fd 0 would consume the operator's first keystroke
+/// into the pane it just opened. One thread that polls both needs the keyboard read to return
+/// rather than block, and that is this.
+///
+/// **Restored on drop, including on a panic**, by the same argument [`Screen`] makes: a shell left
+/// with `O_NONBLOCK` on its stdin sees spurious `EAGAIN` from every later program that reads it,
+/// which is a broken terminal with no visible cause.
+#[derive(Debug)]
+pub struct NonBlocking {
+    fd: RawFd,
+    /// The flags as they were. `None` when the fd could not be queried — a closed or invalid
+    /// descriptor — in which case nothing was changed and nothing is restored.
+    original: Option<std::ffi::c_int>,
+}
+
+impl NonBlocking {
+    /// Set `O_NONBLOCK` on `fd`, remembering the previous flags.
+    pub fn set(fd: RawFd) -> Self {
+        // SAFETY: `F_GETFL` and `F_SETFL` take and return an int; neither reads through a pointer.
+        let original = unsafe {
+            let flags = fcntl(fd, F_GETFL);
+            if flags < 0 {
+                None
+            } else {
+                (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0).then_some(flags)
+            }
+        };
+        Self { fd, original }
+    }
+
+    /// Whether the flag was actually set — `false` for a descriptor `fcntl` refused, which a caller
+    /// polling in a loop wants to know about because its reads will block instead.
+    pub fn engaged(&self) -> bool {
+        self.original.is_some()
+    }
+}
+
+impl Read for NonBlocking {
+    /// Reads the descriptor directly rather than through `std::io::Stdin`, whose `BufRead` layer
+    /// would hold bytes this loop needs to see as soon as they arrive.
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::os::fd::{BorrowedFd, FromRawFd, IntoRawFd};
+        // SAFETY: `self.fd` is owned by the caller for this guard's lifetime; the `File` is
+        // immediately defused with `into_raw_fd` so it never closes a descriptor it did not open.
+        let mut f = unsafe { std::fs::File::from_raw_fd(self.fd) };
+        let r = f.read(buf);
+        let _ = f.into_raw_fd();
+        let _ = unsafe { BorrowedFd::borrow_raw(self.fd) };
+        r
+    }
+}
+
+impl Drop for NonBlocking {
+    fn drop(&mut self) {
+        if let Some(flags) = self.original {
+            // SAFETY: as above; restoring exactly the flags this guard read.
+            unsafe { fcntl(self.fd, F_SETFL, flags) };
+        }
     }
 }
 

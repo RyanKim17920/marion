@@ -12,7 +12,7 @@
 //! That is the structural answer to the failure the increment brief names: *"a UI that greys from
 //! its own copy will drift from doctor's"*. It cannot have a copy. The place the decision is
 //! actually made is `marion_supervisor::doctor::capabilities_at`, which doctor's own rows are built
-//! from, and `the_trees_greying_is_doctors_own_table_row_for_row` is what holds the two together.
+//! from, and `the_trees_greying_is_doctors_own_answer_at_every_key` is what holds the two together.
 //!
 //! # Ordering, and why a node is never dropped
 //!
@@ -267,7 +267,11 @@ pub fn nav(bytes: &[u8]) -> Vec<Nav> {
 /// Fixed rather than proportional. A tree pane that grew with the window would resize the *content*
 /// pane on every drag, and the content pane is a node's pty — §5.3 gives it one `TIOCSWINSZ` per
 /// change and a harness repaints its whole screen for each.
-pub const TREE_COLUMN: u16 = 30;
+/// 36, which is what `codex-unversioned [spawning]` needs at depth 2 — the widest row §6.1's
+/// default `max_depth` of 3 can produce from marion's own state words. An `AgentId` is a UUID and
+/// does not fit at any width worth spending on a sidebar; the tree is navigated with the cursor,
+/// not by reading ids back, and `Enter` never asks the operator to type one.
+pub const TREE_COLUMN: u16 = 36;
 
 /// The tree screen's three regions.
 ///
