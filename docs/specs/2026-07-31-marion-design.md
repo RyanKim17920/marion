@@ -3904,6 +3904,13 @@ VT emulator, no model proxy, no event log beyond the task audit trail.
     > the four-verb list is what the root will need the moment `status`/`wait`/`list` are declared.
     > Recorded so a later reader does not diagnose `ntools=2` on the wire as a tool-compilation
     > failure.
+    >
+    > **UPDATED 2026-08-08: the moment this note anticipated has arrived, and the number is stale.**
+    > The bridge now declares **five** verbs — `spawn`, `wait`, `status`, `list`, `report`
+    > (`bridge.rs`) — so a root's turns no longer carry `ntools=2`. The reading above stays correct
+    > as a *measurement of 2026-08-02* and is kept for that reason; what must not survive it is the
+    > figure being quoted as marion's current surface. `MILESTONES.md` was doing exactly that until
+    > this date, which is how a dated measurement becomes a standing claim.
 
     `--settings`,
     **`--setting-sources ""`**, **`--permission-prompt-tool stdio`** (below),

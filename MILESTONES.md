@@ -602,7 +602,45 @@ how much code exists.
     with a start identity that is real and belongs to another live process. A build whose fingerprint
     degenerated to a pid, or in which `procid::resolve` stopped treating a mismatch as evidence,
     fails there in 0.4 s.
-- **M3 [open]** — tree UI + embedded terminal.
+- **M3 [partial]** — tree UI + embedded terminal. **Audited against the code 2026-08-08, not
+  against a summary.** One of §9's three criteria is met; the other two are not, and what is
+  missing from each is named here rather than left to be rediscovered. It moves off `[open]`
+  because "not started" stopped being true — there is a pane host, a real `claude` runs in it, and
+  the commit gate exists — and it does **not** move to `[done]`, because two criteria are open and
+  one of them is blocked on code that does not exist.
+  - **Criterion 1 (a real `claude` TUI in a marion pane) — NOT MET.** `tests/pane_attach.rs` is
+    real and load-bearing: a real `claude`, a real pty, two real `marion attach` clients, and it
+    hard-fails rather than skipping when the binary is absent. It asserts the pre-alt-screen trust
+    dialog on the main screen, a clean resize (the node's cast carries the `r` record, and the
+    operator's screen still renders at the new width), no `ESC[3J` at the operator's terminal, a
+    detach, a second attach, and §7.3.1's survival. **What the criterion also names and nothing
+    asserts:** *mouse through*, *permission prompt correct*, and the *recorded 10-minute manual
+    session* — all three the test's own header declines explicitly and honestly, deferring them to
+    a manual session that does not exist. **And one the header does not name:** *alt-screen switch
+    handled* is nowhere asserted. The run survives the switch incidentally, so a regression that
+    mishandled `?1049h`/`?1049l` while still painting cells would pass. That is the gap most worth
+    closing first, because it is the only one a test could close cheaply.
+  - **Criterion 2 (a real `codex` TUI in a pane, scrollback across a resize) — NOT MET, and it is
+    the subject of the sentence that is missing rather than the mechanism.** The `CSI 3J`
+    interception is well tested offline: `marion-term/tests/replay.rs::scrollback_survives_codex_resize`
+    replays a committed codex asciicast and pins 16 history rows with suppression on against 1 with
+    it off. But that is `marion_term::Term` fed a recording — no process, no pty, no pane. **A
+    codex pane cannot be launched at all:** only `ClaudeCodeAdapter` overrides `pane_surfaces`
+    (`crates/marion-harness/src/adapter.rs:622`); `CodexAdapter` takes the trait defaults, so
+    `pane_surfaces()` is `None` and `compile_pane()` is `Err(NoPaneSurface)`. `pane_attach.rs`
+    declines this criterion in as many words and says why. Closing it needs
+    `CodexAdapter::pane_surfaces`, not another test.
+  - **Criterion 3 (L4.5 snapshot tests pass and gate commits) — MET.** `.githooks/pre-commit` runs
+    `cargo test -p marion-term --test l45_driver` unconditionally: no opt-out, no staged-file
+    filter, and it reads the pass count back and blocks if it is under `MIN_TESTS`, so a filter
+    that matched nothing or a renamed target cannot no-op the gate. `core.hooksPath` is
+    `.githooks`. It is latched from inside the target by
+    `the_gate_names_this_target_and_only_this_target`, which asserts the hook exists, is
+    executable, names this target and no other, and that `MIN_TESTS` equals the count of tests in
+    the file. Soft edges, stated because they are not visible from the green: the hook is
+    per-clone (`git config core.hooksPath .githooks` must be run once), `--no-verify` bypasses it
+    as it bypasses any pre-commit hook, and it does not pin `INSTA_UPDATE`, so an environment that
+    rewrites snapshots would let the gate pass on rewritten ones.
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
 
@@ -650,8 +688,11 @@ to this one.
 **Read this before treating M1 [done] as a statement about marion.** M1 was built disposably on
 purpose (design doc §9), so a working hop — and a met acceptance criterion — rests on very little.
 None of the below is covered by any M1 criterion. **Re-checked line by line against the tree on
-2026-08-04**; each entry now says whether it moved, and all but one did not. Where an entry says
-"unchanged", that is a verified claim rather than an unrevised one.
+2026-08-08**; each entry says whether it moved. Where an entry says "unchanged", that is a verified
+claim rather than an unrevised one — but note that the 2026-08-04 pass said the same thing about
+lines that had *already* gone false, so the phrase is only as good as its date. On this pass, three
+of the entries below moved: the verb list, `isolation`/`allow_concurrent_writes`, and the crate
+grouping.
 
 - **The journal (design §4.3) — REVISED 2026-08-04, revised again 2026-08-05.**
   The journal is **written**: `SpawnIntent`, `Spawned`, `Exited` and `ContractPersisted`, plus
@@ -681,40 +722,59 @@ None of the below is covered by any M1 criterion. **Re-checked line by line agai
   and dropped — the commands still never run, but a caller can no longer be told they did.
   Design §11 item 23.
 - The `Stop` hook path. Unchanged — no production code references it.
-- `marion doctor --adapter`, `marion-term`, `marion-tui`, `marion-proto`. Unchanged; `doctor` is
-  still the stub that prints "no adapters registered yet".
-- `status` / `wait` / `list` appear in `--allowedTools` but are **not implemented** — the bridge
-  declares only `spawn` and `report`. An allowlist entry for an undeclared tool is inert.
-  Unchanged, and deliberate: design §9 records the resulting `ntools=2` so a reader does not
-  misdiagnose it as a tool-compilation failure.
-- **`isolation` and `background`, added to this list 2026-08-04.** Neither was ever implemented —
-  `run_spawn` creates a worktree unconditionally and `spawn` blocks — and both were previously
-  *accepted and ignored*. Both are now refused by name (`77557e3`); `name` and
-  `allow_concurrent_writes` remain accepted-and-dropped, deliberately, for the reasons design §11
-  item 23 gives.
+- `marion doctor --adapter`. Unchanged; `doctor` is still the stub that prints "no adapters
+  registered yet" (`crates/marion-supervisor/src/main.rs:35`). **`marion-term`, `marion-tui` and
+  `marion-proto` came off this line 2026-08-08** — all three are workspace members and all three
+  have tests; grouping them with `doctor` had them inheriting a verdict that was only ever
+  `doctor`'s.
+- ~~`status` / `wait` / `list` appear in `--allowedTools` but are **not implemented**~~ —
+  **CORRECTED 2026-08-08, and this entry was wrong in two different ways.** The bridge declares
+  **five** tools, not two: `spawn`, `wait`, `status`, `list`, `report`
+  (`crates/marion-supervisor/src/bridge.rs:254-395`). `wait` was **never** in this position — it
+  landed with backgrounding, because a handle with no primitive to resolve it is the anti-pattern
+  marion exists to delete — so the entry was already false when it said "unchanged". `status` and
+  `list` landed this session. Design §9's `ntools=2` is a **measurement of a past run**, not a
+  standing claim, and reading it as one is what kept this bullet alive: the count to quote now is
+  five, and the inert-allowlist-entry argument no longer applies to any of the three.
+- ~~**`isolation` and `background`**~~ — **CORRECTED 2026-08-08.** `background` is implemented, and
+  `isolation` is now implemented for both values marion serves: `worktree` and §3.1's own default
+  `shared-cwd`, the latter constructing `Workspace::SharedCwd` for the first time. `remote` stays
+  refused by name and deliberately is not representable in `contract::Isolation`.
+  `allow_concurrent_writes` is likewise no longer accepted-and-dropped — §6.6's occupancy table
+  exists (`spawn::CwdClaim`), a second write-capable child in one cwd is refused naming the holder,
+  and this parameter is what lifts that. `name` remains accepted-and-dropped, deliberately, for the
+  reason design §11 item 23 gives. **What is still open** is the *cross-process* half of the
+  occupancy guard, which is design §11 item 31's seam, not a new one.
 
-### What is not built — checked at HEAD `08b4fde`, 2026-08-05
+### What is not built — RE-CHECKED against the tree 2026-08-08; four of six lines had gone false
 
-The list above says what is not *done*. This says what does not *exist*, because the two read
-differently and only the second explains why M2 cannot move. Each line is an absence verified in the
-tree on this date, not an unrevised one.
+The list below says what does not *exist*, as against the list above, which says what is not
+*done*. It was last verified at HEAD `08b4fde` on 2026-08-05, and **the section had rotted into the
+document's least trustworthy passage**: four of its six absences have been built since, three of
+them by M2's own work, and a reader taking it at face value would have concluded that M2 could not
+have moved — while M2 has been `[done]` since 2026-08-07. An absence list is only worth its
+re-check date, so each line now carries its own.
 
-- **No unix socket, anywhere.** Zero occurrences of `UnixListener` or `UnixStream` in the workspace.
-  A supervisor a client could attach to is not partially built; it is absent.
-- **`events.jsonl` is never written.** `crates/marion-core/src/paths.rs:147` is a path accessor and
-  `paths.rs:259` is the test that it returns that name. No other caller, no writer, no reader.
-- **No `marion-tui`, `marion-term` or `marion-proto` crate.** The workspace is five members —
-  `marion-core`, `marion-provider`, `marion-supervisor`, `marion-harness`, `marion-testsupport`
-  (`Cargo.toml`).
-- **`marion doctor --adapter` does not exist.** The `marion` binary refuses any argv[0] but `run`
-  (`bin/marion.rs:107`); `marion-supervisor doctor` is a `println!` of "no adapters registered yet"
-  (`src/main.rs:23-25`).
-- **`verification` execution is unimplemented, so `evidence` is always empty** — and since `77557e3`
-  a `spawn` carrying it is refused rather than accepted and dropped.
-- **`pid` capture is unimplemented.** The field exists on `Spawned` and `registry::replay`
-  propagates it (`registry.rs:228`), but **every production writer sets `None`**: `run.rs:925`
-  ("marion drove the process through a helper that owns the child and surfaces no pid — an absence,
-  recorded as one") and `root.rs:678`. Every non-`None` value in the tree is in a test.
+- ~~**No unix socket, anywhere.**~~ **FALSE since M2.** `crates/marion-supervisor/src/socket.rs`
+  holds §2's `UnixListener` in production code, and a detached supervisor serves it.
+- ~~**`events.jsonl` is never written.**~~ **FALSE.** `crates/marion-supervisor/src/events.rs` is
+  the writer, and `handler.rs`, `run.rs` and `mcp.rs` all reach it.
+- ~~**No `marion-tui`, `marion-term` or `marion-proto` crate.**~~ **FALSE.** The workspace is eight
+  members, all three among them (`Cargo.toml:3-12`).
+- **`marion doctor --adapter` does not exist.** *Still true, re-checked 2026-08-08.*
+  `marion-supervisor doctor` is a `println!` of "no adapters registered yet"
+  (`crates/marion-supervisor/src/main.rs:34-35`).
+- **`verification` execution is unimplemented, so `evidence` is always empty.** *Still true,
+  re-checked 2026-08-08.* Since `77557e3` a `spawn` carrying it is refused rather than accepted and
+  dropped, so a caller can no longer be told it ran.
+- ~~**`pid` capture is unimplemented.**~~ **FALSE.** `run.rs:1472` journals `Spawned { pid:
+  Some(pid) }` from the owner that has the child, and `root.rs` does the same for a root. The
+  sentence "every production writer sets `None`" no longer describes any writer.
+
+**Descendant gating (§7.6) is the absence that did not move**, and it is the one principle 11 calls
+non-negotiable: `spawn.rs:1048` still writes `live_descendants_at_report: vec![]`, so the field a
+gate would read is a hardcoded empty list. It is listed above under "not done" and repeated here
+because it is the item most likely to be lost among five corrections.
 
 What does exist: `marion run <agent-type> --prompt …` launches the root; contracts persist uncapped
 to `<agent-dir>/contracts/<task_id>.json` with the capped copy returned; timeouts are enforced with
