@@ -8,6 +8,7 @@
 //! per-harness free functions below remain the implementations behind it, and stay public because
 //! their tests are the measurements.
 
+pub mod acp;
 pub mod adapter;
 pub mod caps;
 pub mod claude_code;
@@ -18,6 +19,7 @@ pub mod opencode;
 pub mod stream;
 pub mod surfaces;
 
+pub use acp::AgentHandshake;
 pub use adapter::{
     Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter, HarnessError,
     LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx, adapter_for,
