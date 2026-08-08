@@ -919,7 +919,54 @@ says a clause failed.
   `marion`, `codex` or `claude` process outlived the run, `git worktree list` holds only the
   checkout, and the run's scratch tree is gone; the two directories left under `/tmp/mn-501` are
   another test's, from 03:05, and predate this work.
-- **M5 [open]** — ACP breadth, degrading per resolved capabilities.
+- **M5 [partial]** — ACP breadth, degrading per resolved capabilities. **Ruled 2026-08-08**, after
+  S20 measured what this machine can actually run and `marion doctor` shipped.
+
+  **Read the marker precisely: zero of §9's three clauses are met.** `[partial]` names machinery
+  that landed, not criteria that passed. The three clauses are blocked for three *different*
+  reasons, and only one of them is code marion has not written.
+
+  | §9's clause | status | why |
+  | --- | --- | --- |
+  | *"at least two ACP agents beyond the day-one set run as children through the single ACP adapter"* | **NOT MET** — and it is two gaps, not one | **(a)** Only one of the two installed agents can open a session here at all (the vendor block below). **(b)** There is no ACP `HarnessAdapter` and no `Harness::Acp` variant, so even the agent that *is* live cannot be spawned as a child. `89b822d` refused both by name rather than stubbing them: `parse_stream(stdout, exit)` reads a finished stream and `McpRoute` names a pre-launch declaration, while ACP declares MCP over a live channel after `session/new` — forcing it through that trait adds a fifth `McpRoute` variant with nothing behind it |
+  | *"with `marion doctor` reporting their differing capabilities"* | **NOT MET** — the reporting half is built and proven; the rows it would print do not exist | `marion doctor` now ships on the real subcommand (`c7cd5b5`) and **does** report differing capabilities keyed on §3.3's full `(harness, version, surfaces)`. But `Harness::ALL` has four members and none is ACP, so no row is an ACP row. The ACP capability difference is parsed and narrowed in `marion-harness::acp` against S20's captured frames, and has no route into a doctor row |
+  | *"and the UI greying out what they cannot do"* | **NOT MET** — out of reach by a standing decision, not half-built | It needs a tree UI, and `marion-tui` is deliberately a single full-screen pane: *"No layout engine, no splits, no focus model, no tree list"* (`marion-tui/src/lib.rs`). §2's diagram and §5.6 do describe a tree with panes and queues; that is real work, and it is M3/I6's, not something to sketch here to move a marker |
+
+  **What is now built**, and none of it is a stand-in for an agent:
+  - §3.3's capability model with the surface as a **structural** ceiling (`9f61939`) —
+    `static_caps` is `advertised(harness, version)` *met* with `ceiling(surfaces)`, so an
+    over-claiming table entry is clipped rather than believed.
+  - ACP's `initialize` handshake, client half, against S20's two verbatim captures (`89b822d`).
+    `refine` is spelled as a meet, so §3.3's *narrowing, never widening* is a property of the
+    operation rather than a rule a refiner is trusted to follow.
+  - `marion doctor`, both of §8's modes, wired to `marion-supervisor doctor` and verified end to
+    end against the four installed binaries (`c7cd5b5`) — not only in tests. It is what M5's
+    second clause would report *through*, once there are ACP rows to report.
+
+  **The blocker, named.** `gemini --acp` completes `initialize` and then **cannot open a session**:
+  `session/new` answers `-32000`, *"This client is no longer supported for Gemini Code Assist for
+  individuals."* S20 reproduced it with no marion involved, and it is the same vendor-side block
+  this file already records for bare `gemini -p` (`IneligibleTierError`, `UNSUPPORTED_CLIENT`, exit
+  55) reaching the ACP surface too. `opencode acp` goes all the way through — a real `sessionId`
+  and an immediate `session/update`. So **the count of ACP agents beyond the day-one set that can
+  run as children here is one, not two.** M5 asks for two.
+
+  **What would unblock it:** a second ACP agent that can open a session — either a credential that
+  makes `gemini --acp` eligible (a `gemini-api-key`, a Vertex credential, or a gateway, none of
+  which marion may choose for the operator, §6.4), or a third ACP agent installed. It is an
+  operator/vendor input, not a marion defect, and no adapter can route around it. Simulating the
+  second agent with a shim would make the marker move and the criterion false: §9's word is
+  *"real"*, and S20 exists precisely because assuming an installed agent works is the shape that
+  produced §12's retractions.
+
+  **Verified.** `cargo test --workspace`: **1 228 passed, 0 failed, 0 ignored** across 61 suites.
+  The base was **measured, not restated**: `618ea16` checked out into a separate worktree with its
+  own `CARGO_TARGET_DIR` gives **1 212 passed, 0 failed** across the same 61 suites, so the diff is
+  +16 and every one of them is a `doctor` test.
+  `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` clean. No
+  `claude`, `codex`, `gemini` or `opencode` process outlived the run and `/tmp` gained nothing —
+  checked explicitly, because `--adapter` spawns real binaries and ACP agents are long-lived stdio
+  processes.
 
 Post-M5: ModelProxy translation. Acceptance criteria for each: design doc §9.
 
