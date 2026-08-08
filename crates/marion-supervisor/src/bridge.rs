@@ -16,15 +16,109 @@ use serde_json::{Value, json};
 
 use crate::spawn::SpawnError;
 
-/// Protocol version we answer `initialize` with. Codex 0.146.0 offers `2025-06-18`; MCP requires
-/// the server to reply with a version it supports, not to echo the client's.
-pub const PROTOCOL_VERSION: &str = "2024-11-05";
+/// Every MCP revision marion will answer `initialize` with, **oldest first**.
+///
+/// # What claiming a version means here, and why marion can claim all four
+///
+/// marion's server surface is `initialize`, `tools/list`, `tools/call`, and text content blocks
+/// with an `isError` flag. That subset is byte-identical across all four revisions listed below:
+/// nothing marion sends or reads was added, removed or reshaped between `2024-11-05` and
+/// `2025-11-25`. The revisions did change plenty — `2025-03-26` added audio content and tool
+/// annotations, `2025-06-18` added `structuredContent`, `outputSchema` and elicitation and removed
+/// JSON-RPC batching, `2025-11-25` continued on top — but marion emits none of it. Claiming a
+/// version is a promise not to send a frame that revision cannot parse, and marion's frames are in
+/// the intersection, so the promise holds for every entry here.
+///
+/// This is why the list is not "the newest one". Bumping a single constant would trade one wrong
+/// answer for another: it would tell a `2024-11-05` client that marion speaks a revision that
+/// client has never heard of, when in fact marion's frames would have been fine for it.
+///
+/// # The one thing `2024-11-05` claims that marion does not implement
+///
+/// Batching. `2024-11-05` and `2025-03-26` permit a client to send a JSON array of requests;
+/// `2025-06-18` removed it. marion reads one frame per line and would answer an array with
+/// [`invalid_request`] rather than a batch of results. This is recorded rather than fixed: no
+/// measured client has ever sent one (s6, s13 and s16 are all one-frame-per-line), the two
+/// revisions that allow batching only ever *permitted* it, and implementing a code path nothing
+/// exercises would be a second untested surface rather than a fix. If a client ever does batch, it
+/// gets a named error and not silence, which is the property that actually matters.
+///
+/// # Review trigger — adding a version
+///
+/// Before adding an entry, diff the new revision against the newest one already listed and confirm
+/// each of these, because each is something marion actually puts on the wire:
+///
+/// 1. the `initialize` **result** shape — `protocolVersion`, `capabilities`, `serverInfo`;
+/// 2. the `tools/list` **tool** shape — `name`, `description`, `inputSchema`;
+/// 3. the `tools/call` **result** shape — the `content` array, the `text` block, and `isError`;
+/// 4. whether id-less frames are still notifications and still forbidden a reply;
+/// 5. whether the JSON-RPC error codes marion emits ([`method_not_found`], [`parse_error`],
+///    [`invalid_request`], [`not_initialized`]) still mean what they mean here.
+///
+/// If any of those moved, the version does **not** go in this list until the code moves with it.
+/// Then add a fixture under `tests/fixtures/protocol/` — one file per claimed version, named for
+/// it — and it will be picked up automatically by `tests/mcp_conformance.rs`'s
+/// `every_claimed_protocol_version_has_a_fixture_and_is_echoed`, which fails if a claimed version
+/// has no fixture or a fixture names no claimed version.
+///
+/// # The coming break
+///
+/// `2026-07-28` is deliberately not here and cannot be added by listing it: it removes the
+/// `initialize` handshake this constant is consulted from. See §11 item 31 of the design document.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+
+/// The revision marion answers a client that offered nothing marion can place.
+///
+/// The **oldest** claimed version, not the newest. A client whose offer marion cannot place is
+/// either older than anything here or too broken to state one, and `2024-11-05` is the only
+/// revision in this list a real harness has been *measured* accepting after offering something
+/// else — codex 0.146.0 offered `2025-06-18` and took `2024-11-05` five times over in
+/// `tests/fixtures/s6/mcp-server-frames.jsonl`.
+pub const PROTOCOL_VERSION_FLOOR: &str = SUPPORTED_PROTOCOL_VERSIONS[0];
+
+/// The revision marion answers `initialize` with, given what the client offered.
+///
+/// **One rule: the newest version marion supports that is not newer than the client's offer.**
+/// MCP requires the server to echo the client's version when it supports it and otherwise to
+/// answer one it does support; a single downgrade-to-nearest covers both, and two more cases
+/// besides:
+///
+/// | the client offers | it gets | because |
+/// |---|---|---|
+/// | `2025-06-18` (claimed) | `2025-06-18` | it is in the list, so the rule returns it — this *is* the echo |
+/// | `2025-04-01` (between) | `2025-03-26` | the newest marion has that the client, being newer, can still read |
+/// | `2026-07-28` (newer than all) | `2025-11-25` | marion's ceiling; a newer client can speak down |
+/// | `2019-01-01`, absent, malformed | `2024-11-05` | nothing is `<=` it, so [`PROTOCOL_VERSION_FLOOR`] |
+///
+/// Comparison is lexicographic, which is exactly date order for `YYYY-MM-DD` — the only shape MCP
+/// revisions have ever taken. A revision that broke that shape would sort somewhere arbitrary, so
+/// the review trigger on [`SUPPORTED_PROTOCOL_VERSIONS`] is where that gets caught, not here.
+///
+/// Note what this function does **not** do: consult a default. There is no answer that ignores the
+/// client's offer, which is the whole defect it exists to close.
+pub fn negotiate_protocol_version(offer: Option<&str>) -> &'static str {
+    let Some(offer) = offer else {
+        return PROTOCOL_VERSION_FLOOR;
+    };
+    SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .rev()
+        .find(|v| **v <= offer)
+        .copied()
+        .unwrap_or(PROTOCOL_VERSION_FLOOR)
+}
 
 /// A decoded inbound request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Initialize {
         id: Value,
+        /// Exactly what the client put in `params.protocolVersion`, un-normalised — `None` when it
+        /// sent no version at all, or sent one that was not a string.
+        /// [`negotiate_protocol_version`] is the only thing that interprets it, so the two cases it
+        /// cannot tell apart are the two cases it answers identically.
+        offered_version: Option<String>,
     },
     ToolsList {
         id: Value,
@@ -44,12 +138,61 @@ pub enum Request {
     },
 }
 
-pub fn parse(line: &str) -> Option<Request> {
-    let v: Value = serde_json::from_str(line).ok()?;
-    let method = v.get("method").and_then(Value::as_str)?;
+/// Why a line could not be decoded into a [`Request`].
+///
+/// All three used to be the same `None`, and that `None` was dropped with a bare `continue` — so a
+/// client that sent marion a broken frame got **silence**, and could wait on it forever. These
+/// exist so each reachable way of being undecodable gets the JSON-RPC code that names it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Undecodable {
+    /// Not JSON. JSON-RPC `-32700`, answered with a `null` id, because there is no parsed frame to
+    /// take an id *from* — that is precisely the case `-32700` exists for.
+    NotJson,
+    /// JSON, but not a frame marion can route: no usable `method`. JSON-RPC `-32600`.
+    NotAFrame { id: Value },
+    /// A `result`/`error` frame: an *answer*, and marion asks the client nothing, so there is
+    /// nothing this could be an answer to. Dropped without a reply, because replying to a reply is
+    /// how two peers loop forever. This is the one silent drop left, and it is silent by rule.
+    StrayResponse,
+}
+
+/// Decode one line of the stdio stream.
+///
+/// # Why there is no `starts_with("notifications/")` here any more
+///
+/// There was, and it was wrong in the way [`marion_proto::envelope`]'s own comment describes for
+/// its own protocol: *"a prefix or `starts_with` test would route `node/pty-write` into the
+/// outbound table"*. The same codebase was rigorous on one surface and loose on the other.
+///
+/// It was also **unnecessary**, which is why the fix is a deletion rather than a table. JSON-RPC
+/// already decides this: a frame with no `id` is a notification and MUST NOT be answered, whatever
+/// it is called; a frame *with* an `id` is a request, and an unrecognised one is `-32601`. The
+/// prefix arm only ever changed the answer for a frame named `notifications/…` that carried an id
+/// — a client bug, which the arm silently swallowed instead of naming. Dropping the arm gives that
+/// case `-32601` and leaves every id-less frame exactly where it was, which is what keeps s6's
+/// `notifications/initialized` unanswered.
+pub fn parse(line: &str) -> Result<Request, Undecodable> {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return Err(Undecodable::NotJson);
+    };
     let id = v.get("id").cloned();
-    Some(match (method, id) {
-        ("initialize", Some(id)) => Request::Initialize { id },
+    let Some(method) = v.get("method").and_then(Value::as_str) else {
+        // An answer to nothing, versus a frame that is neither call nor answer.
+        if v.get("result").is_some() || v.get("error").is_some() {
+            return Err(Undecodable::StrayResponse);
+        }
+        return Err(Undecodable::NotAFrame {
+            id: id.unwrap_or(Value::Null),
+        });
+    };
+    Ok(match (method, id) {
+        ("initialize", Some(id)) => Request::Initialize {
+            id,
+            offered_version: v
+                .pointer("/params/protocolVersion")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
         ("tools/list", Some(id)) => Request::ToolsList { id },
         ("tools/call", Some(id)) => Request::ToolsCall {
             id,
@@ -63,7 +206,6 @@ pub fn parse(line: &str) -> Option<Request> {
                 .cloned()
                 .unwrap_or_else(|| json!({})),
         },
-        (m, _) if m.starts_with("notifications/") => Request::Notification,
         (m, Some(id)) => Request::Unknown {
             id,
             method: m.to_string(),
@@ -298,9 +440,14 @@ pub fn authorization_refusal(depth: u32, verb: &str) -> Option<&'static str> {
     (verb == REPORT && depth == crate::root::ROOT_DEPTH).then_some(REPORT_ON_A_ROOT)
 }
 
-pub fn initialize_result(id: &Value) -> Value {
+/// Answer `initialize`, **with a version chosen from what the client offered**.
+///
+/// `offered` is the client's `params.protocolVersion`. It is a parameter and not a default because
+/// the defect this replaced was exactly that: the reply was a constant, and the offer was never
+/// read. See [`negotiate_protocol_version`] for the rule.
+pub fn initialize_result(id: &Value, offered: Option<&str>) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": {
-        "protocolVersion": PROTOCOL_VERSION,
+        "protocolVersion": negotiate_protocol_version(offered),
         "capabilities": {"tools": {}},
         "serverInfo": {"name": "marion", "version": env!("CARGO_PKG_VERSION")}}})
 }
@@ -764,6 +911,39 @@ pub fn method_not_found(id: &Value, method: &str) -> Value {
            "error": {"code": -32601, "message": format!("no method {method}")}})
 }
 
+/// JSON-RPC `-32700`, for a line that was not JSON.
+///
+/// The id is `null` and cannot be anything else: the frame did not parse, so it has no id to
+/// quote. This is the reply that used to be a `continue` — the client got nothing and, if it was
+/// waiting on an id it believes it sent, waited forever.
+pub fn parse_error(detail: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": Value::Null,
+           "error": {"code": -32700,
+                     "message": format!("marion could not parse that line: {detail}")}})
+}
+
+/// JSON-RPC `-32600`, for JSON that is not a request marion can route.
+pub fn invalid_request(id: &Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id,
+           "error": {"code": -32600, "message":
+               "a frame carries a `method`; this one carries none, so it is not a request"}})
+}
+
+/// The `initialize`-before-anything-else rule, refused by name.
+///
+/// `-32002` rather than a `-326xx` code: the JSON-RPC range is for frames that are malformed or
+/// unroutable, and this frame is neither — it is well-formed, names a real method, and is merely
+/// *early*. `-32002` is the server-defined code LSP and the MCP implementations converged on for
+/// exactly this state, so a client that recognises anything will recognise this.
+///
+/// **This is a rule about `tools/*`, never about `initialize`.** See [`crate::mcp::serve_stdio`]
+/// for why a repeated `initialize` must stay legal.
+pub fn not_initialized(id: &Value, method: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id,
+           "error": {"code": -32002, "message": format!(
+               "marion has not been initialized: send `initialize` before `{method}`")}})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,14 +1027,14 @@ mod tests {
     fn parses_the_frames_a_real_codex_sends() {
         // Verbatim from tests/fixtures/s6/mcp-server-frames.jsonl.
         let init = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"elicitation":{"form":{},"url":{}}},"clientInfo":{"name":"codex-mcp-client","title":"Codex","version":"0.146.0"}}}"#;
-        assert!(matches!(parse(init), Some(Request::Initialize { .. })));
+        assert!(matches!(parse(init), Ok(Request::Initialize { .. })));
 
         let listed = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"progressToken":0}}}"#;
-        assert!(matches!(parse(listed), Some(Request::ToolsList { .. })));
+        assert!(matches!(parse(listed), Ok(Request::ToolsList { .. })));
 
         let called = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"report","arguments":{"narrative":"s6 probe"}}}"#;
         match parse(called) {
-            Some(Request::ToolsCall {
+            Ok(Request::ToolsCall {
                 name, arguments, ..
             }) => {
                 assert_eq!(name, "report");
@@ -864,7 +1044,7 @@ mod tests {
         }
 
         let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
-        assert_eq!(parse(note), Some(Request::Notification));
+        assert_eq!(parse(note), Ok(Request::Notification));
     }
 
     /// **A `wait` that gave up blocking must not read as a result, and must not read as a
@@ -959,7 +1139,7 @@ mod tests {
     fn an_unknown_method_with_an_id_is_answered_not_ignored() {
         let f = r#"{"jsonrpc":"2.0","id":9,"method":"resources/list"}"#;
         match parse(f) {
-            Some(Request::Unknown { method, .. }) => assert_eq!(method, "resources/list"),
+            Ok(Request::Unknown { method, .. }) => assert_eq!(method, "resources/list"),
             other => panic!("expected Unknown, got {other:?}"),
         }
     }
@@ -1009,11 +1189,102 @@ mod tests {
         );
     }
 
+    /// **The answer is a function of the offer, and no constant satisfies this table.**
+    ///
+    /// The test this replaced read `assert_eq!(v["result"]["protocolVersion"], PROTOCOL_VERSION)`
+    /// against the same constant the code returned. It passed for four spec revisions while marion
+    /// never once read the client's `protocolVersion` — it could not have failed, because both
+    /// sides of the comparison were the same symbol. That is the vacuous shape this file keeps
+    /// finding: an assertion satisfied by something other than the code under test.
+    ///
+    /// Every row below disagrees with every other row's answer, so **no fixed string passes more
+    /// than one of them**. That is the property that makes this a test.
     #[test]
-    fn initialize_answers_with_a_version_we_support() {
-        let v = initialize_result(&json!(0));
-        assert_eq!(v["result"]["protocolVersion"], PROTOCOL_VERSION);
-        assert_eq!(v["result"]["serverInfo"]["name"], "marion");
+    fn initialize_answers_the_version_the_client_offered_when_it_can() {
+        let table = [
+            (
+                Some("2025-06-18"),
+                "2025-06-18",
+                "codex 0.146.0's offer, echoed because marion claims it (s6)",
+            ),
+            (
+                Some("2025-11-25"),
+                "2025-11-25",
+                "opencode 1.17.3's negotiated version, echoed (s13)",
+            ),
+            (
+                Some("2024-11-05"),
+                "2024-11-05",
+                "the floor, echoed rather than upgraded",
+            ),
+            (
+                Some("2025-03-26"),
+                "2025-03-26",
+                "the interior entry nothing else would return",
+            ),
+            (
+                Some("2026-07-28"),
+                "2025-11-25",
+                "newer than marion's ceiling: clamped down, never echoed blind",
+            ),
+            (
+                Some("2025-04-01"),
+                "2025-03-26",
+                "between two claimed versions: the newest marion has that is not newer",
+            ),
+            (
+                Some("2019-01-01"),
+                "2024-11-05",
+                "older than anything marion claims: the floor",
+            ),
+            (None, "2024-11-05", "no offer at all is not an offer"),
+            (
+                Some("garbage"),
+                "2025-11-25",
+                "unparseable sorts above the ceiling and clamps to it",
+            ),
+        ];
+        for (offered, expected, why) in table {
+            let v = initialize_result(&json!(0), offered);
+            assert_eq!(
+                v["result"]["protocolVersion"], expected,
+                "offered {offered:?}: {why}"
+            );
+            assert!(
+                SUPPORTED_PROTOCOL_VERSIONS
+                    .contains(&v["result"]["protocolVersion"].as_str().unwrap()),
+                "and whatever it answered is a version marion actually claims"
+            );
+        }
+        assert_eq!(
+            initialize_result(&json!(0), None)["result"]["serverInfo"]["name"],
+            "marion"
+        );
+    }
+
+    /// **The five `2024-11-05` answers in s6 were what marion said, not what codex required.**
+    ///
+    /// s6 captured codex 0.146.0 offering `2025-06-18` and accepting `2024-11-05` five times over.
+    /// That is evidence about *codex's* backward compatibility, and it is the reason `2024-11-05`
+    /// is the floor rather than something dropped. It is **not** evidence that marion must keep
+    /// answering it — after negotiation the same offer gets `2025-06-18`, which is what the client
+    /// asked for in the first place.
+    ///
+    /// This test pins that reading so nobody restores the constant to "keep s6 green": the s6
+    /// out-frames are a historical capture, and `tests/fixtures/s6/README.md` now says so.
+    #[test]
+    fn the_floor_is_the_version_a_real_codex_was_measured_accepting() {
+        assert_eq!(PROTOCOL_VERSION_FLOOR, "2024-11-05");
+        assert_eq!(
+            negotiate_protocol_version(None),
+            "2024-11-05",
+            "the floor is what an unplaceable offer gets"
+        );
+        assert_eq!(
+            negotiate_protocol_version(Some("2025-06-18")),
+            "2025-06-18",
+            "but codex's actual offer is now echoed, not answered with the floor"
+        );
     }
 
     // ---- §6.1/§7.6: a child's failure is as legible as marion's own -------------------------
@@ -1250,8 +1521,8 @@ mod tests {
     #[test]
     fn handling_is_idempotent_across_repeated_startup() {
         // S6: codex issues two full initialize + tools/list sequences per exec run.
-        let a = initialize_result(&json!(0));
-        let b = initialize_result(&json!(0));
+        let a = initialize_result(&json!(0), Some("2025-06-18"));
+        let b = initialize_result(&json!(0), Some("2025-06-18"));
         assert_eq!(a, b);
         assert_eq!(tools_list_result(&json!(1)), tools_list_result(&json!(1)));
     }
