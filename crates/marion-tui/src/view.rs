@@ -11,8 +11,12 @@
 //!
 //! # What sizing means when there is no layout engine
 //!
-//! M3's §9 mentions a pane three times and a tree zero times, so `marion attach` gives the node
-//! the entire terminal. That makes the geometry a single decision rather than a layout: the node's
+//! `marion attach` gives the node the entire terminal — no criterion *bullet* in §9's M3 names a
+//! tree, and the count this comment used to cite for that (*"a pane three times and a tree zero
+//! times"*) was wrong in both figures: it is **pane 5×, tree 1×**, the one being M3's title. The
+//! decision stands on the bullets; the arithmetic under it did not.
+//!
+//! That makes an attach's geometry a single decision rather than a layout: the node's
 //! pty is set to marion's own terminal size, and the grid that comes back is exactly that size.
 //! [`fits`] is the guard for the window between a `SIGWINCH` and the resize taking effect, during
 //! which the grid marion holds is still the old size and something must decide what to do with the
@@ -51,8 +55,11 @@ impl Widget for Pane<'_> {
 ///
 /// The identity function, written down because it is a **decision** and not an absence of one: the
 /// whole terminal is one node, so there is no chrome to subtract, no border, no status line and no
-/// tree column. When I6 adds a tree this is the single place that stops being an identity, and a
-/// caller that had done its own arithmetic inline would be the thing that had to be found.
+/// tree column. **It stays an identity now that [`crate::tree`] exists**, because the tree is a
+/// separate screen rather than a column subtracted from an attach: `marion tree` and `marion
+/// attach` are two verbs, and the second still hands the node everything. [`crate::tree::split`] is
+/// where the tree screen's own arithmetic lives, and it is the one place a caller should reach for
+/// it — a caller doing it inline would be the thing that had to be found.
 ///
 /// Zero is passed through rather than clamped. A zero-sized terminal is a real state — a window
 /// dragged to nothing, or a `TIOCGWINSZ` on a pipe — and inventing an 80x24 here would set the

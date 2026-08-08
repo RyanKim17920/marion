@@ -1,12 +1,23 @@
 //! `marion-tui` — attaching a terminal to one node (§5.3, §10).
 //!
-//! # One pane, deliberately
+//! # A pane, and — since M5's third clause — a tree beside it
 //!
-//! M3's acceptance criteria (§9) mention a *pane* three times and a tree zero times. This crate
-//! therefore builds exactly one thing: `marion attach <agent-id>`, where the whole terminal is one
-//! node's grid. **No layout engine, no splits, no focus model, no tree list.** §2's diagram and
-//! §5.6 do describe a tree with panes and queues, and that is real work — it is just work that
-//! moves no M3 criterion, so it is deferred rather than half-built here.
+//! **The count this crate used to cite was wrong, and the correction is why [`tree`] exists.** It
+//! read *"M3's acceptance criteria (§9) mention a pane three times and a tree zero times"*.
+//! Re-counted against §9's M3 block: **pane 5×, tree 1×**. No criterion *bullet* names a tree — so
+//! deferring one was defensible and the deferral is not being retro-fitted into a mistake — but
+//! M3's own **title** is *"tree UI + embedded terminal"*, and a crate quoting a zero for it was
+//! quoting a number that was never there.
+//!
+//! What actually forced the work is M5's third clause, which is not about M3 at all: §9 asks for
+//! *"`marion doctor` reporting their differing capabilities **and the UI greying out what they
+//! cannot do**"*. Greying needs something to grey, and the thing is a node list.
+//!
+//! So this crate now builds two things and stops there: `marion attach <agent-id>`, where the whole
+//! terminal is one node's grid, and [`tree`], which is §5.6's *"tree pane, content pane"* and
+//! nothing further. **Still no permission queue and no elicitation queue**, which §5.6 also lists;
+//! those have no criterion behind them yet and are deferred rather than half-built, exactly as the
+//! tree was.
 //!
 //! # The pieces, and the seam each one sits on
 //!
@@ -25,6 +36,10 @@
 //! * [`guard`] — marion's **own** terminal: raw mode, the alternate screen, and getting out of
 //!   both on a panic as well as on a drop.
 //! * [`view`] — the full-area pane, which is a delegation and deliberately nothing more.
+//! * [`tree`] — the node list, the focus model and **M5 clause 3's greying**. It has no capability
+//!   table: an action arrives with its `available` bit already decided by
+//!   `marion_supervisor::doctor`, which is the only thing that keeps the greying and `marion
+//!   doctor` from being two answers to one question.
 //!
 //! # What renders
 //!
@@ -42,6 +57,7 @@ pub mod mouse;
 pub mod redraw;
 pub mod replay;
 pub mod sticky;
+pub mod tree;
 pub mod view;
 
 pub use backend::ScreenBackend;
@@ -52,6 +68,7 @@ pub use mouse::{Button, Kind as MouseKind, Mods, MouseEvent};
 pub use redraw::Redraw;
 pub use replay::{Plan, Policy, Step};
 pub use sticky::Sticky;
+pub use tree::{ActionBar, Focus, Nav, Tree, TreeView};
 pub use view::Pane;
 
 /// The widest terminal this client budgets memory for.
