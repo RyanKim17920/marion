@@ -1,0 +1,1 @@
+{"model":"canned/canned-1","provider":{"canned":{"models":{"canned-1":{"name":"canned-1","tool_call":true}},"name":"canned","npm":"@ai-sdk/openai-compatible","options":{"apiKey":"sk-marion-s23-canned","baseURL":"http://127.0.0.1:8123/v1","headerTimeout":30000,"timeout":120000}}},"small_model":"canned/canned-1"}
