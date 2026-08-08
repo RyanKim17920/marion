@@ -2283,9 +2283,18 @@ mod tests {
 
         // 2. Dispatched: `main` routes the verb, and routes it *before* the run parser for the
         //    reason `mcp` is routed early — a fall-through would print usage instead of a screen.
+        //
+        //    **Only the production half of the file is searched.** `include_str!` pulls in this
+        //    test too, and the needles below appear here as literals — so searching the whole file
+        //    would make the assertion satisfy itself and pass with the arm deleted. It did, before
+        //    a mutation said so.
         let src = include_str!("marion.rs");
+        let (production, _tests) = src
+            .split_once("\n#[cfg(test)]\n")
+            .expect("this file has a test module, and the split is what keeps this honest");
         assert!(
-            src.contains(r#"== Some("tree") {"#) && src.contains("return tree_main(&argv);"),
+            production.contains(r#"== Some("tree") {"#)
+                && production.contains("return tree_main(&argv);"),
             "`main` no longer dispatches `tree`, so the screen is unreachable"
         );
 
