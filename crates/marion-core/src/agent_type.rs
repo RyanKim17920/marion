@@ -120,6 +120,19 @@ pub struct AgentType {
     /// `auto` router hung against a canned endpoint, and opencode has no `OPENCODE_MODEL` env var
     /// — so their built-ins state one and their adapters refuse when none arrives.
     pub model: Option<String>,
+    /// **Which ACP agent**, on the one harness where naming the harness is not naming a program.
+    ///
+    /// `Harness::Acp` is a *protocol*: one adapter serves many agents, they run different argv, and
+    /// they spell marion's own verbs three different ways (S21: `marion_report`; S22:
+    /// `mcp__marion__report` and `mcp.marion.report`). So `harness` alone cannot select behaviour
+    /// there the way it does on the other four, and this is the field that finishes the selection.
+    ///
+    /// `None` on every non-ACP type, and **`None` on an ACP type is a refusal rather than a
+    /// default** (§6.4: marion may not choose an agent for the operator). s14 measured what a
+    /// default would buy: an unknown tool name is silently ignored, so an ACP node launched at the
+    /// wrong agent's spelling ends `end_turn` having called nothing, and marion records a healthy
+    /// run that delegated nothing.
+    pub acp_agent: Option<String>,
     /// §3.1's `tools` key: the **built-in** tools this type's nodes may use, in *marion's*
     /// vocabulary ([`TOOL_WRITE`]), which each adapter maps to its harness's own spelling.
     /// An **allowlist, never a denylist** (§3.1), and never a route to marion's own MCP verbs —
@@ -206,6 +219,8 @@ impl AgentType {
             // Stated by the types that need one; see the field's doc comment for why the default
             // is an absence rather than a guess.
             model: None,
+            // Stated only by the `acp` types, and meaningless on the other four. See the field.
+            acp_agent: None,
             // §3.1's documented default, and the one value that keeps every built-in compiling the
             // bytes it compiled before this field existed. See the field's doc comment.
             tools: Vec::new(),
@@ -310,6 +325,25 @@ pub fn builtin(name: &str) -> Option<AgentType> {
                 Harness::OpenCode,
             )
         }),
+        // **One built-in per ACP agent, and no built-in named `acp`.** The other four harnesses
+        // get a type named after the harness because there the harness *is* the program. Here it
+        // is not: a type named `acp` would have to pick an agent, and §6.4 says marion may not.
+        //
+        // `opencode acp` is the one agent that is both measured to a tool call (S21) and has a
+        // recipe for marion's canned provider, which is what lets an ACP node run in the default
+        // suite at $0.00. The two ACP Registry shims are measured too (S22) but reach a provider
+        // only through the operator's own vendor login, so a built-in for either would be a type
+        // that cannot run without real spend; they stay reachable through `acp::AGENTS` — the
+        // doctor probes them — and earn a built-in when a canned recipe for them is measured.
+        "acp-opencode" => Some(AgentType {
+            model: Some(OPENCODE_DEFAULT_MODEL.into()),
+            acp_agent: Some("opencode".into()),
+            ..AgentType::defaults(
+                "acp-opencode",
+                "Implements a well-specified change on opencode over the Agent Client Protocol.",
+                Harness::Acp,
+            )
+        }),
         _ => None,
     }
 }
@@ -317,6 +351,7 @@ pub fn builtin(name: &str) -> Option<AgentType> {
 /// Every built-in name, aliases included — what `marion doctor` would list.
 pub fn builtin_names() -> &'static [&'static str] {
     &[
+        "acp-opencode",
         "claude",
         "claude-impl",
         "codex",
@@ -412,6 +447,7 @@ mod tests {
     #[test]
     fn each_builtin_names_its_own_harness_and_no_name_is_a_second_definition() {
         for (name, h) in [
+            ("acp-opencode", Harness::Acp),
             ("claude", Harness::ClaudeCode),
             ("claude-impl", Harness::ClaudeCode),
             ("codex", Harness::Codex),
@@ -425,9 +461,43 @@ mod tests {
         }
         assert_eq!(
             builtin_names().len(),
-            7,
+            8,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
+    }
+
+    /// **A type on the ACP row names its agent, and a type on any other row names none.**
+    ///
+    /// `harness` selects an adapter on four of the five rows and does not finish the job on the
+    /// fifth: `acp` is a protocol whose agents run different argv and spell marion's verbs three
+    /// different ways. A built-in that named `Harness::Acp` and left `acp_agent` empty would be
+    /// refused at launch — which is the correct behaviour and a useless type — and one that
+    /// carried an agent id on a non-ACP row would be carrying a value nothing reads, i.e. a
+    /// setting an operator could change with no effect.
+    ///
+    /// Stated over `builtin_names()` rather than over today's list, so a type added later has to
+    /// land on one side or the other. The id itself is checked against
+    /// `marion_harness::acp::AGENTS` one crate up, because this crate is below the registry.
+    #[test]
+    fn exactly_the_acp_builtins_name_an_acp_agent() {
+        let mut acp = 0;
+        for name in builtin_names() {
+            let t = builtin(name).unwrap_or_else(|| panic!("{name} is listed and must resolve"));
+            match t.harness {
+                Harness::Acp => {
+                    assert!(
+                        t.acp_agent.is_some(),
+                        "{name} names the ACP protocol and no agent, so it can never launch"
+                    );
+                    acp += 1;
+                }
+                other => assert_eq!(
+                    t.acp_agent, None,
+                    "{name} is on the {other} row, where an ACP agent id is read by nothing"
+                ),
+            }
+        }
+        assert!(acp > 0, "both sides of this must be exercised");
     }
 
     /// The two harnesses whose adapters refuse without a model must carry one, and the two that

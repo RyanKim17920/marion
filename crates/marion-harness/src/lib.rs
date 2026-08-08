@@ -23,6 +23,7 @@ pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
     AcpAdapter, Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter,
     HarnessError, LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx, adapter_for,
+    adapter_for_type,
 };
 pub use caps::{Capabilities, advertised, static_caps};
 pub use claude_code::{

@@ -32,7 +32,7 @@ use marion_core::journal::{
 use marion_core::paths::{AgentDir, ProjectDir};
 use marion_core::scope::check_spawn_scope;
 use marion_harness::{
-    Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for,
+    Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for_type,
 };
 
 use crate::duplex::{self, DuplexSpec, LaunchPath, launch_path};
@@ -1246,7 +1246,13 @@ pub fn run_spawn_watched(
     // `HarnessError::Unimplemented` naming it. There is deliberately no fallback: silently running
     // some other harness is the failure mode §12's correction rows keep recording, and a loud
     // refusal is always the cheaper one to diagnose.
-    let adapter = adapter_for(agent_type.harness)?;
+    // **`adapter_for_type`, not `adapter_for`**, because on the fifth harness a name is not a
+    // program: `acp` is a protocol, one adapter serves many agents, and they spell marion's verbs
+    // three different ways (S21/S22). The second half of the selection is the agent type's
+    // `acp_agent`, and this is the seam where it becomes behaviour. `adapter_for` would hand back
+    // the protocol row, which refuses to compile anything at all — an ACP type that resolved,
+    // dispatched, and then failed at `compile`, which is the shape of the dispatch bug above.
+    let adapter = adapter_for_type(agent_type.harness, agent_type.acp_agent.as_deref())?;
     // §3.4, the same derivation `marion run` uses for a root: **branch on the surfaces, never on a
     // harness name.** Until this branch existed `run_spawn` drove every child as `LaunchOnly` —
     // correct for the three harnesses that declare it, and the reason a `claude` child took turn
@@ -1261,6 +1267,18 @@ pub fn run_spawn_watched(
             let _ = std::fs::remove_file(&f);
             Some(f)
         }
+        // **The ACP gate is `session/new`'s own response, and it is the agent's rather than
+        // marion's.** marion does not start this bridge: the agent does, off the `mcpServers` block
+        // in the declaration, and it answers `session/new` when the session — its declared MCP
+        // servers included — is open. That answer is what `run_acp_child` waits on before a prompt
+        // goes out, so the frame *is* withheld behind a gate; the gate is just not a file marion
+        // touches. S21 and S23 both measured the tool call landing after it, on two different
+        // providers, which is the evidence a marker would otherwise be standing in for.
+        //
+        // A marker would also be a second gate with nothing behind it: the bridge writes it, and on
+        // this path marion has no way to tell whether the agent even intends to start the bridge
+        // before it has answered.
+        LaunchPath::Acp => None,
         // §9 gives a child a `TaskContract`, and a pane node takes no turn until a human presses
         // return — so there is no readiness gate to hold, and see the launch arm below for why a
         // contracted child does not get one at all.
@@ -1276,7 +1294,11 @@ pub fn run_spawn_watched(
         // readiness gate, so nothing is compiled into argv and the adapter is told so by the empty
         // string — the neutral vocabulary's own signal for "written after launch".
         prompt: match path {
-            LaunchPath::Duplex => String::new(),
+            // ACP for the same reason, one protocol over: the prompt is a `session/prompt` frame
+            // and reaches argv on no ACP agent. `AcpAdapter::compile` ignores this field entirely,
+            // and passing `req.prompt` here would put the task text in the audit record's argv
+            // where the launch never put it.
+            LaunchPath::Duplex | LaunchPath::Acp => String::new(),
             LaunchPath::LaunchOnly | LaunchPath::Terminal => req.prompt.clone(),
         },
         // The **availability** axis (§3.1), straight off the resolved agent type and still in
@@ -1325,7 +1347,19 @@ pub fn run_spawn_watched(
         },
         auth: env.auth,
         config_dir: ch.clone(),
-        extra: Extras::default(),
+        // **The agent type's own `acp_agent`, and the reason it is stated twice.** The adapter was
+        // bound from this same value above, and `AcpAdapter::agent` refuses a launch where the two
+        // disagree rather than letting one win. That is not redundancy: they are two routes to one
+        // answer, and a launch that compiled agent A's argv while reading agent B's tool spelling
+        // out of the transcript is precisely the bug the `HarnessAdapter` seam exists to end. One
+        // assignment here keeps them the same value by construction, and the adapter's check is
+        // what catches a second assignment appearing later.
+        //
+        // `None` on the other four, where nothing reads it.
+        extra: Extras {
+            acp_agent: agent_type.acp_agent.clone(),
+            ..Extras::default()
+        },
     };
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
@@ -1522,6 +1556,36 @@ pub fn run_spawn_watched(
             return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
         }
         LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound, &announce_started),
+        // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
+        // children through the single ACP adapter*, and until this arm existed the only thing that
+        // had ever driven one was `marion doctor --adapter` — a probe, which has no worktree, no
+        // contract, no journal and no bridge, so it could not answer the clause however green it
+        // was. That is the sixth "fully tested in isolation and unreachable from any binary" of
+        // the day, and this arm is the fix.
+        //
+        // The declaration is asked of the adapter here rather than rebuilt in the driver, so the
+        // frame marion sends and the frame `McpRoute::Session` verified are the same object.
+        LaunchPath::Acp => crate::acp_child::run_acp_child(crate::acp_child::AcpChildSpec {
+            inv: &inv,
+            session_declaration: adapter.session_declaration(&launch, &ctx)?,
+            prompt: &req.prompt,
+            bound,
+            on_started: &announce_started,
+        })
+        .map(|r| ChildRun {
+            stdout: r.stdout,
+            stderr: r.stderr,
+            exit: r.exit,
+            capture_truncated: r.capture_truncated,
+            // ACP has a permission surface (`session/request_permission`) and marion answers it
+            // permissively in the driver, so nothing is denied on this path yet. An empty vector
+            // here is therefore "marion refused nothing", which is true, and **not** the
+            // `LaunchOnly` arm's "no ask could reach marion at all". When a policy lands, this is
+            // the field it fills; §11 item 24's two axes are why the distinction is written down
+            // rather than left to look identical.
+            denied_permissions: vec![],
+        })
+        .map_err(SpawnError::from),
         LaunchPath::Duplex => duplex_child(
             &inv,
             env.auth,
@@ -1559,7 +1623,11 @@ pub fn run_spawn_watched(
     // fact, and every event it produces is honestly `observed_live: false`. Never both: the duplex
     // path already recorded these frames live, and recording them again here would be the duplicate
     // §7.3.3's seam is stated in ordinals to prevent.
-    if matches!(path, LaunchPath::LaunchOnly)
+    // ACP is here and not on the live side: the driver owns the frame loop for the whole turn and
+    // hands the transcript back at the end, so every event recovered from it is honestly
+    // `observed_live: false`. It is a *typed* plane whose events are nonetheless after the fact,
+    // which is why this branches on where the frames came from rather than on `has_typed_control_plane`.
+    if matches!(path, LaunchPath::LaunchOnly | LaunchPath::Acp)
         && let Some(es) = events.as_mut()
     {
         es.record_capture(&run.stdout);
@@ -1755,6 +1823,7 @@ mod tests {
     use super::*;
     use crate::spawn::ChildOutcome;
     use marion_core::harness::Harness;
+    use marion_harness::adapter_for;
     use marion_testsupport::{Scratch, scratch};
     use std::sync::Mutex;
 

@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration as StdDuration, Instant};
 
-use marion_harness::{ControlTransport, ExecutionSurfaces};
+use marion_harness::{ControlTransport, ExecutionSurfaces, surfaces::TypedKind};
 use serde_json::{Value, json};
 
 use crate::run::{DRAIN_GRACE, Drain, kill_process_tree};
@@ -71,6 +71,19 @@ pub enum LaunchPath {
     /// into the frames because both fds are one file description — are properties of putting a
     /// *protocol* on a pty. A TUI has no protocol to put there.
     Terminal,
+    /// **The other typed protocol, and it needs its own path rather than a branch inside
+    /// [`run_duplex`].**
+    ///
+    /// ACP is typed for the same reason `stream-json` is — marion can address a turn — and nothing
+    /// else about the two is shared. The frames are JSON-RPC rather than claude-code's envelopes,
+    /// there is a three-step handshake before a prompt may be sent at all, the id on each request
+    /// is what correlates an answer, and the agent sends *marion* requests mid-turn that stop the
+    /// turn dead if nobody answers. A `Typed(Acp)` node sent down [`LaunchPath::Duplex`] would have
+    /// marion writing `stream-json` `user` frames at a JSON-RPC server, which is the "named but not
+    /// runnable" shape §12's correction rows keep recording.
+    ///
+    /// Driven by [`crate::acp_child::run_acp_child`].
+    Acp,
 }
 
 /// The path a node with these surfaces takes.
@@ -80,7 +93,15 @@ pub enum LaunchPath {
 /// an unrelated edit in `root.rs` and `run.rs` on the same commit as this one.
 pub fn launch_path(surfaces: &ExecutionSurfaces) -> Option<LaunchPath> {
     match surfaces.control {
-        ControlTransport::Typed(_) => Some(LaunchPath::Duplex),
+        // **Named, not a wildcard's leftover.** `Typed(_)` used to mean `stream-json` because it
+        // was the only typed protocol shipped; ACP is the second, and it speaks JSON-RPC over the
+        // same pipes with an entirely different conversation. Matching it explicitly is what makes
+        // a *third* typed protocol a compile error here rather than a node driven with the wrong
+        // frames — `AppServer` (M4) is the one that will hit it.
+        ControlTransport::Typed(TypedKind::Acp) => Some(LaunchPath::Acp),
+        ControlTransport::Typed(TypedKind::StreamJson | TypedKind::AppServer) => {
+            Some(LaunchPath::Duplex)
+        }
         ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
         ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
     }
@@ -651,43 +672,61 @@ mod tests {
         for h in Harness::ALL {
             let surfaces = adapter_for(h).unwrap().surfaces();
             let expected = match surfaces.control {
+                ControlTransport::Typed(TypedKind::Acp) => Some(LaunchPath::Acp),
                 ControlTransport::Typed(_) => Some(LaunchPath::Duplex),
                 ControlTransport::LaunchOnly => Some(LaunchPath::LaunchOnly),
                 ControlTransport::TerminalInput => Some(LaunchPath::Terminal),
             };
             assert_eq!(launch_path(&surfaces), expected, "{h}");
-            // And the derivation agrees with §3.4's plane table it has to agree with: a duplex node
-            // is exactly a node with a typed control plane.
+            // And the derivation agrees with §3.4's plane table it has to agree with: a typed
+            // control plane is exactly a node on one of the **two** driven paths.
+            //
+            // This used to read `== Duplex`, which was the same claim only while `stream-json` was
+            // the one typed protocol. Widening it to the set is not a weakening: `LaunchOnly` and
+            // `Terminal` are still required to be *outside* it, which is the direction the
+            // assertion was written to catch — a node with a control plane driven as if it had
+            // none is the toolless first turn that put this test here.
             assert_eq!(
-                launch_path(&surfaces) == Some(LaunchPath::Duplex),
+                matches!(
+                    launch_path(&surfaces),
+                    Some(LaunchPath::Duplex | LaunchPath::Acp)
+                ),
                 surfaces.has_typed_control_plane(),
                 "{h}: the launch path and the plane derivation must read the same axis"
             );
         }
     }
 
-    /// The four built-ins, each landing where its harness's measured surface puts it — stated for
+    /// Every built-in, landing where its harness's measured surface puts it — stated for
     /// **children**, which is the axis that was wrong: `run_spawn` drove all four as `LaunchOnly`,
     /// and claude-code is not one, so its turn went out toolless and it exited 0 having called
     /// nothing. Separate from the rule above because *which* built-in is on which path is a fact
     /// about today's harnesses, and a regression that flipped one would otherwise be invisible.
+    ///
+    /// Driven off `builtin_names()` rather than a list written here, so a type added later cannot
+    /// be omitted from the sweep — it lands in the vector below and has to be ruled on. The path
+    /// is asked of `adapter_for`, deliberately: it is a question about *surfaces*, which the ACP
+    /// protocol row answers without being bound to an agent.
     #[test]
     fn the_builtin_agent_types_land_on_the_paths_their_harnesses_afford() {
-        let got: Vec<(&str, Option<LaunchPath>)> =
-            ["claude", "codex", "codex-impl", "gemini", "opencode"]
-                .into_iter()
-                .map(|n| {
-                    let h = builtin(n).expect("built-in resolves").harness;
-                    (n, launch_path(&adapter_for(h).unwrap().surfaces()))
-                })
-                .collect();
+        let got: Vec<(&str, Option<LaunchPath>)> = marion_core::agent_type::builtin_names()
+            .iter()
+            .map(|n| {
+                let h = builtin(n).expect("built-in resolves").harness;
+                (*n, launch_path(&adapter_for(h).unwrap().surfaces()))
+            })
+            .collect();
         assert_eq!(
             got,
             vec![
+                // The one built-in on the second typed path, and the reason that path exists.
+                ("acp-opencode", Some(LaunchPath::Acp)),
                 ("claude", Some(LaunchPath::Duplex)),
+                ("claude-impl", Some(LaunchPath::Duplex)),
                 ("codex", Some(LaunchPath::LaunchOnly)),
                 ("codex-impl", Some(LaunchPath::LaunchOnly)),
                 ("gemini", Some(LaunchPath::LaunchOnly)),
+                ("gemini-impl", Some(LaunchPath::LaunchOnly)),
                 ("opencode", Some(LaunchPath::LaunchOnly)),
             ]
         );

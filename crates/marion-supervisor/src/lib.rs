@@ -16,6 +16,7 @@
 /// is about. Since §11 item 28 step 5 it owns no child and runs no thread.
 /// `marion attach <agent-id>`: the client process that holds `marion-tui`'s pieces together and
 /// gives that crate its first reverse dependency.
+pub mod acp_child;
 pub mod attach;
 pub mod background;
 pub mod bridge;

@@ -1550,13 +1550,60 @@ impl HarnessAdapter for OpenCodeAdapter {
 /// [`crate::AgentHandshake::refine`] narrows that to the agent that actually answered. Nothing in
 /// this adapter publishes a capability; see `caps.rs`'s `Harness::Acp` arm for the five that are
 /// claimed and the five that are not.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AcpAdapter;
+/// # Why this struct has a field, and what it costs when it does not
+///
+/// [`HarnessAdapter::marion_tool_name`] takes no [`LaunchSpec`], so an adapter that resolved its
+/// agent only from a spec could not answer *"what does this node's model call marion's report"* —
+/// and that question has **three different answers** on this one protocol row (S21, S22:
+/// `marion_report`, `mcp__marion__report`, `mcp.marion.report`). A unit struct could therefore only
+/// ever compile one of the three, for all of them.
+///
+/// So the agent rides the adapter. [`Self::unbound`] is the protocol-level adapter — what
+/// [`adapter_for`] hands back from a [`Harness`] alone, which is enough for the surface questions
+/// (`surfaces`, `mcp_route`) that have no per-agent answer — and it **cannot be launched**: every
+/// method that would put marion's verbs in front of a model refuses it by name. [`adapter_for_type`]
+/// is the seam that binds one.
+#[derive(Debug, Clone, Copy)]
+pub struct AcpAdapter {
+    /// `None` on the protocol-level adapter; see the type's doc comment.
+    agent: Option<acp::Agent>,
+}
 
 impl AcpAdapter {
+    /// The adapter for the ACP **protocol**, bound to no agent. Unlaunchable by construction.
+    pub fn unbound() -> Self {
+        Self { agent: None }
+    }
+
+    /// The adapter for one named ACP agent.
+    pub fn for_agent(agent: acp::Agent) -> Self {
+        Self { agent: Some(agent) }
+    }
+
+    /// Resolve an operator's id into a bound adapter, or refuse by name listing what marion knows.
+    pub fn resolve(id: &str) -> Result<Self, HarnessError> {
+        acp::agent(id).map(Self::for_agent).ok_or_else(|| {
+            HarnessError::AcpAgent(format!(
+                "no agent named `{id}`; marion knows {}",
+                acp::AGENTS
+                    .iter()
+                    .map(|a| a.id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+    }
+
     /// The agent this launch names, or the refusal. **The one place the id is resolved**, so
     /// `compile` and `session_declaration` cannot disagree about which agent is being launched.
-    fn agent(spec: &LaunchSpec) -> Result<acp::Agent, HarnessError> {
+    ///
+    /// The spec's `acp_agent` and the adapter's own agent must be the **same** agent. They are two
+    /// routes to one answer — an agent type names an id, and the supervisor binds an adapter from
+    /// it — and a launch in which they disagree is one where marion would compile agent A's argv
+    /// and read agent B's spelling out of the transcript. That is exactly the class of bug the
+    /// `HarnessAdapter` seam was introduced to end, so it is a refusal rather than a precedence
+    /// rule.
+    fn agent(&self, spec: &LaunchSpec) -> Result<acp::Agent, HarnessError> {
         let id = spec
             .extra
             .acp_agent
@@ -1567,17 +1614,32 @@ impl AcpAdapter {
                        marion may not choose one for the operator (§6.4). Name it in the agent \
                        type's `acp_agent`",
             })?;
-        let agent = acp::agent(id).ok_or_else(|| {
-            HarnessError::AcpAgent(format!(
-                "no agent named `{id}`; marion knows {}",
-                acp::AGENTS
-                    .iter()
-                    .map(|a| a.id)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        })?;
-        Ok(agent)
+        let named = Self::resolve(id)?;
+        match self.agent {
+            None => Err(HarnessError::MissingInput {
+                harness: Harness::Acp,
+                what: "this adapter was built from the harness name alone, so it carries no ACP \
+                       agent and no spelling for marion's verbs — the model would be handed one \
+                       of the three measured names for an agent that may use another (s14: an \
+                       unknown tool name is silently ignored). Bind it with `adapter_for_type`",
+            }),
+            Some(bound) if bound.id != id => Err(HarnessError::AcpAgent(format!(
+                "this adapter is bound to `{}` and the launch names `{id}`; marion will not \
+                 compile one agent's argv and read another's tool spelling",
+                bound.id
+            ))),
+            Some(_) => Ok(named.agent.expect("resolve binds an agent")),
+        }
+    }
+
+    /// The measured spelling of this adapter's agent, where it has one.
+    ///
+    /// `None` on the unbound adapter and on an agent nobody has watched call a tool. The readers
+    /// below fall back to no calls found rather than to somebody else's spelling — and that
+    /// fallback is unreachable from a launch, because [`Self::bridgeable_agent`] refuses both cases
+    /// before any prompt is compiled.
+    fn spelling(&self) -> Option<acp::ToolSpelling> {
+        self.agent?.tools
     }
 
     /// The agent, **and marion's verbs may be put in front of it**.
@@ -1598,8 +1660,8 @@ impl AcpAdapter {
     /// prompt, have no such tool, finish, and exit 0 having called nothing — a run that looks
     /// healthy and delegated nothing (§6.1 step 8's failure class). Refused by name instead,
     /// quoting what *is* known about the agent.
-    fn bridgeable_agent(spec: &LaunchSpec) -> Result<acp::Agent, HarnessError> {
-        let agent = Self::agent(spec)?;
+    fn bridgeable_agent(&self, spec: &LaunchSpec) -> Result<acp::Agent, HarnessError> {
+        let agent = self.agent(spec)?;
         if agent.tools.is_none() {
             return Err(HarnessError::AcpAgent(format!(
                 "`{}` is known but unmeasured: marion has never seen it call a tool, so it has no \
@@ -1635,37 +1697,106 @@ impl HarnessAdapter for AcpAdapter {
     ///   adapter is per-protocol. Refused by name rather than launched at the operator's real
     ///   provider while the contract records a canned one.
     fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        let agent = Self::agent(spec)?;
+        let agent = self.agent(spec)?;
         // For the refusal only: ACP has no availability axis — see `Self::tool_name`.
         let _refusal_only = self.native_tools(spec)?;
-        if spec.auth == Auth::Canned {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::Acp,
-                what: "ACP has no protocol-level way to point an agent at a provider — that is \
-                       per-agent configuration, and this adapter is per-protocol. Run an ACP node \
-                       against the operator's own login (`--live`), or add a per-agent adapter",
-            });
-        }
+        let env = match (spec.auth, agent.canned) {
+            (Auth::Inherited, _) => Vec::new(),
+            (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
+                let mut env = opencode::isolation_env(&spec.config_dir, Auth::Canned);
+                // Placement, not isolation: `cwd` alone does not place an opencode node, and S13
+                // measured a child re-entering `$PWD` whatever it was `chdir`'d to. Stated for the
+                // same reason `opencode::compile_run` states it, over the same binary.
+                env.push(("PWD".to_string(), spec.cwd.to_string_lossy().into_owned()));
+                env
+            }
+            // **Refused by name, per agent.** The protocol has no provider channel and two of the
+            // four agents marion knows have no measured one either. Launching them anyway would
+            // point the operator's real credential at a vendor while the contract records a canned
+            // run — §6.7's audit record asserting something that never happened.
+            (Auth::Canned, None) => {
+                return Err(HarnessError::MissingInput {
+                    harness: Harness::Acp,
+                    what: "ACP names no provider, base URL or credential at any point in its \
+                           handshake, and marion has never measured a way to point this \
+                           particular agent at one. Run it against the operator's own login \
+                           (`--live`), or pick an agent whose canned recipe is measured",
+                });
+            }
+        };
         Ok(Invocation {
             program: agent.argv[0].to_string(),
             args: agent.argv[1..].iter().map(|s| s.to_string()).collect(),
-            env: Vec::new(),
+            env,
             cwd: spec.cwd.clone(),
-            model: None,
+            // S21's `session/new` result carries a `configOptions` `model` **select**: the model is
+            // chosen inside the session, and marion has measured no argv that sets it. Under the
+            // canned recipe it is the config document's `model` key that carries it, which is
+            // recorded here because it is what the launch actually compiled.
+            model: match (spec.auth, agent.canned) {
+                (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
+                    spec.model.clone()
+                }
+                _ => None,
+            },
         })
     }
 
-    /// **No document, on any ACP agent.** Where the other four write a config file under
-    /// `spec.config_dir`, ACP's only declaration channel is `session/new`
-    /// ([`Self::session_declaration`]), and an empty vec here is what [`McpRoute::Session`] exists
-    /// to keep from reading as *"this node got no bridge"*.
+    /// **No declaration document, on any ACP agent** — and, under a canned provider, one document
+    /// that declares nothing.
+    ///
+    /// Where the other four write marion's *bridge* into a config file under `spec.config_dir`,
+    /// ACP's only declaration channel is `session/new` ([`Self::session_declaration`]), and an
+    /// empty `mcp` block here is what [`McpRoute::Session`] exists to keep from reading as *"this
+    /// node got no bridge"*. That is still true of every byte below: the document this writes
+    /// under [`acp::CannedRecipe::OpencodeConfigDocument`] carries a **provider**, and no `mcp`
+    /// key at all, because the bridge rides the session and the endpoint cannot.
     fn config_files(
         &self,
         spec: &LaunchSpec,
         _ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
-        Self::agent(spec)?;
-        Ok(Vec::new())
+        let agent = self.agent(spec)?;
+        if spec.auth != Auth::Canned {
+            return Ok(Vec::new());
+        }
+        match agent.canned {
+            None => Ok(Vec::new()),
+            Some(acp::CannedRecipe::OpencodeConfigDocument) => {
+                let model = spec
+                    .model
+                    .as_deref()
+                    .and_then(opencode::ModelRef::parse)
+                    .ok_or(HarnessError::MissingInput {
+                        harness: Harness::Acp,
+                        what: "this agent's canned recipe is opencode's config document, whose \
+                               `model` key is the only channel that reaches an ACP session — ACP \
+                               chooses the model inside the session and marion has measured no \
+                               argv that sets it. Name a `provider/model` pair",
+                    })?;
+                let base_url = spec.base_url.clone().ok_or(HarnessError::MissingInput {
+                    harness: Harness::Acp,
+                    what: "a canned run points the agent at marion's own endpoint, and no base \
+                           URL was given",
+                })?;
+                Ok(vec![(
+                    opencode::config_path(&spec.config_dir),
+                    format!(
+                        "{:#}\n",
+                        opencode::config_json(
+                            &opencode::ConfigSpec {
+                                model,
+                                base_url,
+                                api_key: spec.api_key.clone(),
+                            },
+                            // **No `mcp` block.** marion's bridge is declared in `session/new`, and
+                            // declaring it here as well would start a second copy of it.
+                            None,
+                        )
+                    ),
+                )])
+            }
+        }
     }
 
     fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
@@ -1687,12 +1818,12 @@ impl HarnessAdapter for AcpAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Option<serde_json::Value>, HarnessError> {
         if spec.mcp == McpDeclaration::None {
-            Self::agent(spec)?;
+            self.agent(spec)?;
             return Ok(None);
         }
         // The one call site of the s14 gate: this method *is* marion putting its verbs in front of
         // the agent, and there is no other route by which they get there.
-        Self::bridgeable_agent(spec)?;
+        self.bridgeable_agent(spec)?;
         let mut env = vec![
             (
                 "MARION_REPO".into(),
@@ -1734,20 +1865,35 @@ impl HarnessAdapter for AcpAdapter {
     }
 
     fn parse_stream(&self, stdout: &str, exit: ChildExit) -> StreamOutcome {
-        acp::parse_stream(stdout, exit, &self.marion_tool_name("report"))
+        match self.spelling() {
+            Some(s) => acp::parse_stream(stdout, exit, s),
+            None => StreamOutcome::default(),
+        }
     }
 
-    /// **`marion_report`** — `<server>_<tool>`, measured on a live `opencode acp` in S21: marion
-    /// declared a server named `marion` offering `report`, and the `session/update` `tool_call`
-    /// frame the model produced carried `"title": "marion_report"`.
+    /// **This agent's** spelling, measured on this agent — one of three, on one protocol row.
     ///
-    /// One spelling for an adapter that serves many agents is only sound because of the gate in
-    /// [`Self::agent`]: an agent whose spelling has not been measured is refused at `compile`, so
-    /// this string is never compiled into a prompt for an agent it was not measured on.
-    /// `every_launchable_agent_spells_marions_verbs_the_way_this_adapter_says` is that invariant
-    /// as an assertion, and it fails the moment a second spelling enters the registry.
+    /// | agent | this returns |
+    /// |---|---|
+    /// | `opencode acp` 1.17.3 | `marion_report` |
+    /// | `claude-agent-acp` 0.66.0 | `mcp__marion__report` |
+    /// | `codex-acp` 1.1.14 | `mcp.marion.report` |
+    ///
+    /// The one thing this must never do is answer for an agent it was not measured on. s14: an
+    /// unknown tool name is *silently ignored*, so a guess buys a turn that ends `end_turn` having
+    /// called nothing — and S22 is the proof that the guess would have been wrong twice, since a
+    /// generalisation of the first row is a name neither of the other two has.
+    ///
+    /// So an unbound adapter, and an agent whose spelling nobody has watched, get
+    /// [`acp::UNBOUND_TOOL_NAME`] — a string that is not a tool name in any spelling and matches
+    /// nothing in any transcript. It is unreachable from a launch: `compile` refuses an unbound
+    /// adapter and `session_declaration` refuses an unmeasured agent, both by name, before
+    /// anything is put in front of a model.
     fn marion_tool_name(&self, tool: &str) -> String {
-        acp::ToolSpelling::ServerUnderscoreTool.spell(tool)
+        match self.spelling() {
+            Some(s) => s.spell(tool),
+            None => format!("{}{tool}", acp::UNBOUND_TOOL_NAME),
+        }
     }
 
     /// **Every marion verb is refused, by name.** ACP has no availability axis at all.
@@ -1779,7 +1925,9 @@ impl HarnessAdapter for AcpAdapter {
     }
 
     fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
-        acp::marion_calls(stdout, &self.marion_tool_name(""))
+        self.spelling()
+            .map(|s| acp::marion_calls(stdout, s))
+            .unwrap_or_default()
     }
 }
 
@@ -1799,7 +1947,35 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
         Harness::Codex => Ok(Box::new(CodexAdapter)),
         Harness::Gemini => Ok(Box::new(GeminiAdapter)),
         Harness::OpenCode => Ok(Box::new(OpenCodeAdapter)),
-        Harness::Acp => Ok(Box::new(AcpAdapter)),
+        // The **protocol** row, bound to no agent. Enough for every question a harness name can
+        // answer — the surfaces, the declaration route, the ceiling — and unlaunchable, because a
+        // harness name is not enough to say what a model will call marion's verbs. See
+        // [`AcpAdapter`] and [`adapter_for_type`].
+        Harness::Acp => Ok(Box::new(AcpAdapter::unbound())),
+    }
+}
+
+/// The adapter for a resolved **agent type**, which is what a launch actually has.
+///
+/// Four of the five harnesses ignore the second argument entirely: their adapter is a property of
+/// the harness. ACP's is not — §5.2's `acp` row is one adapter over many agents, each with its own
+/// argv and its own name for marion's verbs — so this is the seam where an agent type's
+/// `acp_agent` becomes behaviour, and where naming `acp` without naming an agent is refused rather
+/// than defaulted. A default here would run some other vendor's agent than the one the type asked
+/// for, which is the bug the whole `HarnessAdapter` seam exists to end.
+pub fn adapter_for_type(
+    h: Harness,
+    acp_agent: Option<&str>,
+) -> Result<Box<dyn HarnessAdapter + Send + Sync>, HarnessError> {
+    match (h, acp_agent) {
+        (Harness::Acp, Some(id)) => Ok(Box::new(AcpAdapter::resolve(id)?)),
+        (Harness::Acp, None) => Err(HarnessError::MissingInput {
+            harness: Harness::Acp,
+            what: "`acp` is a protocol, not a program: one adapter serves many agents and marion \
+                   may not choose one for the operator (§6.4). Name it in the agent type's \
+                   `acp_agent`",
+        }),
+        _ => adapter_for(h),
     }
 }
 
@@ -1892,7 +2068,7 @@ mod tests {
 
         // Session: the `mcpServers` entry naming **marion's own** server, in the request the
         // adapter compiled. This is the branch `89b822d` said would have nothing behind it.
-        let session = AcpAdapter
+        let session = acp_adapter()
             .session_declaration(&acp_spec(), &ctx())
             .unwrap()
             .expect("a Marion declaration compiles a session/new request");
@@ -2014,7 +2190,12 @@ mod tests {
     fn acp_spec() -> LaunchSpec {
         LaunchSpec {
             auth: Auth::Inherited,
-            base_url: None,
+            // Present under both modes, because this spec is swept through both and the canned
+            // recipe needs an endpoint and a `provider/model` pair to compile a document at all.
+            // Under `Inherited` the adapter reads neither, which is what the argv test asserts.
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            api_key: Some("marion-placeholder".into()),
+            model: Some("marion/canned-1".into()),
             extra: Extras {
                 acp_agent: Some(acp::OPENCODE.id.into()),
                 ..Extras::default()
@@ -2022,6 +2203,19 @@ mod tests {
             ..codex_spec()
         }
     }
+
+    /// The adapter [`acp_spec`] is launched through — bound to the same agent the spec names,
+    /// which is the pairing `AcpAdapter::agent` refuses to let come apart.
+    fn acp_adapter() -> AcpAdapter {
+        AcpAdapter::for_agent(acp::OPENCODE)
+    }
+
+    /// S21's verbatim `opencode acp` transcript — a real stream, so "this reader found nothing" is
+    /// a claim about the reader rather than about an empty input.
+    const ACP_OPENCODE_SESSION: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/s21/opencode-acp-session.jsonl"
+    ));
 
     /// The refactor's whole claim, stated as a test: routing through the adapter changes nothing
     /// about what gets spawned. If this drifts, the "pure refactor" claim is false.
@@ -2406,7 +2600,7 @@ mod tests {
     fn every_builtin_declares_only_tools_its_own_harness_can_provide() {
         for name in agent_type::builtin_names() {
             let t = agent_type::builtin(name).unwrap();
-            let adapter = adapter_for(t.harness).unwrap();
+            let adapter = launch_adapter(t.harness).unwrap();
             for tool in &t.tools {
                 adapter.tool_name(tool).unwrap_or_else(|e| {
                     panic!("built-in `{name}` declares a tool its harness cannot provide: {e}")
@@ -3027,6 +3221,23 @@ mod tests {
         }
     }
 
+    /// **The adapter a launch actually gets**, which is the one every sweep below must exercise.
+    ///
+    /// [`adapter_for`] answers from a harness name alone, and on `acp` that is deliberately
+    /// unlaunchable: one protocol row serves many agents and they spell marion's verbs three
+    /// different ways, so a harness name cannot say what the model will type. A sweep over
+    /// [`Harness::ALL`] built on it would assert over an adapter no node is ever spawned with —
+    /// and, worse, the fifth harness would answer every content question below with the
+    /// [`acp::UNBOUND_TOOL_NAME`] sentinel or a refusal, i.e. be *silently exempt* from exactly the
+    /// assertions these sweeps exist to make. So they bind the agent their own spec names, through
+    /// [`adapter_for_type`] — the same seam the supervisor uses.
+    ///
+    /// Signature deliberately matches `adapter_for`'s, so a sweep reads the same either way and the
+    /// only difference is which of the two is being claimed about.
+    fn launch_adapter(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, HarnessError> {
+        adapter_for_type(h, spec_for(h).extra.acp_agent.as_deref())
+    }
+
     /// **§6.4's central MUST, as a sweep: marion never writes outside the node's own agent dir.**
     ///
     /// > *"marion never mutates the user's real harness config."*
@@ -3081,7 +3292,7 @@ mod tests {
                     },
                     ..spec_for(h)
                 };
-                let adapter = adapter_for(h).unwrap();
+                let adapter = launch_adapter(h).unwrap();
                 let Ok(files) = adapter.config_files(&spec, &ctx()) else {
                     continue;
                 };
@@ -3093,14 +3304,14 @@ mod tests {
                     // branch, driven directly above.
                     McpRoute::Session(k) => {
                         assert!(
-                            files.is_empty(),
-                            "{h} under {auth:?}: a session route that also writes files has two \
-                             declarations and no single authority"
+                            !files.iter().any(|(_, body)| body.contains("\"mcp\"")),
+                            "{h} under {auth:?}: a session route whose document also declares \
+                             marion's bridge has two declarations and no single authority"
                         );
-                        // **The refusal is recorded, not skipped.** ACP has no canned mode — there
-                        // is no protocol-level way to point an agent at marion's endpoint — and
-                        // `continue`ing past it here would drop this harness out of the named
-                        // minimum below, which is the vacuity that minimum exists to prevent.
+                        // **The refusal is recorded, not skipped.** Where an agent has no measured
+                        // way to reach marion's endpoint, `continue`ing past it here would drop
+                        // this harness out of the named minimum below, which is the vacuity that
+                        // minimum exists to prevent.
                         match adapter.compile(&spec, &ctx()) {
                             Err(e) => assert!(
                                 auth == Auth::Canned
@@ -3306,7 +3517,7 @@ mod tests {
                 auth: Auth::default(),
                 ..spec_for(h)
             };
-            let a = adapter_for(h).unwrap();
+            let a = launch_adapter(h).unwrap();
             assert_eq!(
                 a.compile(&explicit, &ctx()).ok(),
                 a.compile(&implicit, &ctx()).ok(),
@@ -3426,7 +3637,7 @@ mod tests {
     /// `a_nodes_depth_and_agent_type_reach_its_bridge_on_every_harness` was written after finding,
     /// one harness earlier. So the sweeps ask the route.
     fn declaration_bytes(h: Harness, spec: &LaunchSpec, ctx: &SpawnCtx) -> String {
-        let a = adapter_for(h).unwrap();
+        let a = launch_adapter(h).unwrap();
         match a.mcp_route(spec) {
             McpRoute::Document => a
                 .config_files(spec, ctx)
@@ -4018,7 +4229,7 @@ mod tests {
     #[test]
     fn every_adapter_states_the_route_its_mcp_declaration_travels_on() {
         for h in Harness::ALL {
-            let a = adapter_for(h).unwrap();
+            let a = launch_adapter(h).unwrap();
             let spec = spec_for(h);
             match a.mcp_route(&spec) {
                 McpRoute::Session(k) => assert!(
@@ -4085,7 +4296,7 @@ mod tests {
     #[test]
     fn the_default_shape_of_every_harness_declares_no_display_plane() {
         for h in Harness::ALL {
-            let a = adapter_for(h).unwrap();
+            let a = launch_adapter(h).unwrap();
             assert!(
                 a.surfaces().display_plane().is_none(),
                 "{h}: a run that asked for no pane would now be launched under a pty"
@@ -4103,14 +4314,14 @@ mod tests {
     fn the_pane_shape_is_a_pty_marion_types_into_and_parses_nothing_from() {
         let panes: Vec<Harness> = Harness::ALL
             .into_iter()
-            .filter(|h| adapter_for(*h).unwrap().pane_surfaces().is_some())
+            .filter(|h| launch_adapter(*h).unwrap().pane_surfaces().is_some())
             .collect();
         assert!(
             !panes.is_empty(),
             "no harness has a pane shape, so `marion attach` has nothing to reach"
         );
         for h in panes {
-            let s = adapter_for(h).unwrap().pane_surfaces().unwrap();
+            let s = launch_adapter(h).unwrap().pane_surfaces().unwrap();
             assert!(s.display_plane().is_some(), "{h}: a pane needs a pty");
             assert_eq!(
                 s.control,
@@ -4147,7 +4358,7 @@ mod tests {
     fn codex_declares_a_pane_because_c2_names_that_harness_and_no_other_can_stand_in() {
         let with_panes: Vec<Harness> = Harness::ALL
             .into_iter()
-            .filter(|h| adapter_for(*h).unwrap().pane_surfaces().is_some())
+            .filter(|h| launch_adapter(*h).unwrap().pane_surfaces().is_some())
             .collect();
         assert_eq!(
             with_panes,
@@ -4194,7 +4405,7 @@ mod tests {
     #[test]
     fn a_harness_with_no_pane_shape_refuses_rather_than_launching_the_headless_one() {
         for h in Harness::ALL {
-            let a = adapter_for(h).unwrap();
+            let a = launch_adapter(h).unwrap();
             if a.pane_surfaces().is_some() {
                 continue;
             }
@@ -4389,7 +4600,7 @@ mod tests {
             Harness::OpenCode,
         ]
         .into_iter()
-        .map(|h| adapter_for(h).unwrap().marion_tool_name("report"))
+        .map(|h| launch_adapter(h).unwrap().marion_tool_name("report"))
         .collect();
         assert_eq!(
             names,
@@ -4422,6 +4633,56 @@ mod tests {
                 h
             );
         }
+    }
+
+    /// **Every built-in agent type resolves to a launchable adapter, ACP included.**
+    ///
+    /// This is the seam `adapter_for` cannot answer and the one a binary actually crosses:
+    /// `run_spawn` and `root::prepare` have an [`agent_type::AgentType`], not a [`Harness`], and on
+    /// the ACP row the type carries the second half of the selection. A built-in naming
+    /// `Harness::Acp` whose `acp_agent` were absent, misspelt, or pointed at an agent nobody has
+    /// watched call a tool would compile here and refuse at launch — and the symptom would be a
+    /// harness that simply never worked from any binary, which is the condition this row exists to
+    /// end.
+    ///
+    /// So each built-in is bound the way a launch binds it, and the ACP ones are additionally
+    /// required to have a *measured* spelling: `agent::tools` is `None` on `gemini --acp`, and a
+    /// built-in pointed there would be s14 with marion holding the wrong end.
+    #[test]
+    fn every_builtin_agent_type_binds_an_adapter_a_launch_could_use() {
+        let mut acp = 0;
+        for name in agent_type::builtin_names() {
+            let t = agent_type::builtin(name).unwrap_or_else(|| panic!("{name} must resolve"));
+            let a = adapter_for_type(t.harness, t.acp_agent.as_deref())
+                .unwrap_or_else(|e| panic!("`{name}` names no adapter a launch could use: {e}"));
+            assert_eq!(a.harness(), t.harness, "{name}");
+            if t.harness != Harness::Acp {
+                continue;
+            }
+            acp += 1;
+            let id = t.acp_agent.as_deref().expect("checked in marion-core");
+            let agent = acp::agent(id).unwrap_or_else(|| {
+                panic!(
+                    "`{name}` names ACP agent `{id}`, which is not in the \
+                                           registry — the type and the registry have drifted"
+                )
+            });
+            assert!(
+                agent.tools.is_some(),
+                "`{name}` names `{id}`, which marion has never watched call a tool: a node of this \
+                 type would be handed a guessed spelling, which s14 measured as silently ignored"
+            );
+            // And the adapter it bound compiles *that* agent's spelling, not a neighbour's.
+            assert_eq!(
+                a.marion_tool_name("report"),
+                agent.tools.unwrap().spell("report"),
+                "`{name}`"
+            );
+        }
+        assert!(
+            acp > 0,
+            "no built-in reaches the ACP row, so this asserts nothing"
+        );
     }
 
     /// The refusal itself, exercised at the type rather than through the registry: it names the
@@ -4599,7 +4860,7 @@ mod tests {
         const A: &str = "1111111111111111111111111111111111111111";
         const B: &str = "2222222222222222222222222222222222222222";
         for h in Harness::ALL {
-            let adapter = adapter_for(h).unwrap();
+            let adapter = launch_adapter(h).unwrap();
             let tool = adapter.marion_tool_name("report");
             let args = format!(r#"{{"narrative":"did the work","result_commits":["{A}","{B}"]}}"#);
             // Codex dispatches on the bare verb beside `server: "marion"`, not on the flat
@@ -4679,7 +4940,7 @@ mod tests {
         ];
         for (owner, stream) in streams {
             for h in Harness::ALL {
-                let got = adapter_for(h)
+                let got = launch_adapter(h)
                     .unwrap()
                     .parse_stream(stream, ChildExit::default())
                     .narrative;
@@ -4718,7 +4979,7 @@ mod tests {
     #[test]
     fn a_stream_of_noise_is_an_empty_outcome_on_every_harness_rather_than_a_panic() {
         for h in Harness::ALL {
-            let out = adapter_for(h).unwrap().parse_stream(
+            let out = launch_adapter(h).unwrap().parse_stream(
                 "Warning: Basic terminal detected...\n[STARTUP] Phase 1\n\r\n{not json\n",
                 ChildExit::default(),
             );
@@ -4784,7 +5045,7 @@ mod tests {
         );
         for (owner, stream) in streams {
             for h in Harness::ALL {
-                let got = adapter_for(h).unwrap().marion_tool_calls(stream);
+                let got = launch_adapter(h).unwrap().marion_tool_calls(stream);
                 assert_eq!(
                     got,
                     if h == owner {
@@ -4804,7 +5065,7 @@ mod tests {
     #[test]
     fn a_stream_with_no_marion_call_reports_none_on_every_harness() {
         for h in Harness::ALL {
-            let a = adapter_for(h).unwrap();
+            let a = launch_adapter(h).unwrap();
             assert!(a.marion_tool_calls("").is_empty(), "{h}: empty stream");
             assert!(
                 a.marion_tool_calls(
@@ -4936,7 +5197,7 @@ mod tests {
         ];
         for (h, label, stream, want) in cases {
             assert_eq!(
-                adapter_for(h).unwrap().marion_calls(stream),
+                launch_adapter(h).unwrap().marion_calls(stream),
                 vec![want],
                 "{h}: {label}"
             );
@@ -4966,7 +5227,7 @@ mod tests {
             ),
         ];
         for (h, stream) in unanswered {
-            let got = adapter_for(h).unwrap().marion_calls(stream);
+            let got = launch_adapter(h).unwrap().marion_calls(stream);
             assert_eq!(
                 got,
                 vec![MarionCall {
@@ -5015,7 +5276,7 @@ mod tests {
         // The bounds §5.2 calls load-bearing, exercised rather than asserted.
         let adapters: Vec<Box<dyn HarnessAdapter + Send + Sync>> = Harness::ALL
             .into_iter()
-            .map(|h| adapter_for(h).unwrap())
+            .map(|h| launch_adapter(h).unwrap())
             .collect();
         let names: Vec<Harness> = std::thread::scope(|s| {
             s.spawn(|| adapters.iter().map(|a| a.harness()).collect())
@@ -5076,7 +5337,7 @@ mod tests {
         ];
         for (harness, evidence, writes) in cases {
             let adapter =
-                adapter_for(harness).unwrap_or_else(|e| panic!("{harness} has an adapter: {e}"));
+                launch_adapter(harness).unwrap_or_else(|e| panic!("{harness} has an adapter: {e}"));
             let mut spec = spec_for(harness);
             spec.tools = vec![];
             let compiled = adapter
@@ -5111,7 +5372,7 @@ mod tests {
     #[test]
     fn acp_refuses_every_marion_verb_by_name_because_the_protocol_has_no_such_axis() {
         for tool in [agent_type::TOOL_READ, agent_type::TOOL_WRITE, "invented"] {
-            let e = AcpAdapter.tool_name(tool).unwrap_err();
+            let e = acp_adapter().tool_name(tool).unwrap_err();
             assert_eq!(
                 e,
                 HarnessError::UnsupportedTool {
@@ -5129,12 +5390,12 @@ mod tests {
                 tools: vec![tool.to_string()],
                 ..acp_spec()
             };
-            assert!(AcpAdapter.compile(&spec, &ctx()).is_err(), "{tool}");
-            assert!(AcpAdapter.compiled_permissions(&spec).is_err(), "{tool}");
+            assert!(acp_adapter().compile(&spec, &ctx()).is_err(), "{tool}");
+            assert!(acp_adapter().compiled_permissions(&spec).is_err(), "{tool}");
         }
         // The empty declaration every node marion spawns today still compiles, or the refusal above
         // would be a refusal of everything.
-        assert!(AcpAdapter.compile(&acp_spec(), &ctx()).is_ok());
+        assert!(acp_adapter().compile(&acp_spec(), &ctx()).is_ok());
     }
 
     /// The three things an ACP launch is refused for, each by name and each distinct — because
@@ -5148,7 +5409,7 @@ mod tests {
             ..acp_spec()
         };
         assert!(matches!(
-            AcpAdapter.compile(&unnamed, &ctx()),
+            acp_adapter().compile(&unnamed, &ctx()),
             Err(HarnessError::MissingInput {
                 harness: Harness::Acp,
                 ..
@@ -5157,8 +5418,8 @@ mod tests {
         // **And it is not silently served by the one agent that is measured**, which is the
         // fallback this seam exists to end.
         assert_ne!(
-            AcpAdapter.compile(&unnamed, &ctx()).ok(),
-            AcpAdapter.compile(&acp_spec(), &ctx()).ok()
+            acp_adapter().compile(&unnamed, &ctx()).ok(),
+            acp_adapter().compile(&acp_spec(), &ctx()).ok()
         );
 
         // 2. An agent marion has never heard of, with the known ids listed.
@@ -5169,7 +5430,7 @@ mod tests {
             },
             ..acp_spec()
         };
-        let e = AcpAdapter.compile(&unknown, &ctx()).unwrap_err();
+        let e = acp_adapter().compile(&unknown, &ctx()).unwrap_err();
         assert!(
             matches!(&e, HarnessError::AcpAgent(m) if m.contains("zed") && m.contains("opencode")),
             "got {e}"
@@ -5189,44 +5450,182 @@ mod tests {
             acp::GEMINI.tools.is_none(),
             "the premise: this agent is the unmeasured one"
         );
-        let inv = AcpAdapter
+        let gemini = AcpAdapter::for_agent(acp::GEMINI);
+        let inv = gemini
             .compile(&unmeasured, &ctx())
             .expect("argv is knowable without a tool spelling");
         assert_eq!(inv.program, "gemini");
-        let e = AcpAdapter
-            .session_declaration(&unmeasured, &ctx())
-            .unwrap_err();
+        let e = gemini.session_declaration(&unmeasured, &ctx()).unwrap_err();
         assert!(
             matches!(&e, HarnessError::AcpAgent(m) if m.contains("gemini") && m.contains("s14")),
             "got {e}"
         );
         // And the measured agent is not refused, or the gate would be refusing everything.
         assert!(
-            AcpAdapter
+            acp_adapter()
                 .session_declaration(&acp_spec(), &ctx())
                 .unwrap()
                 .is_some()
         );
     }
 
-    /// **ACP has no canned mode, and says so** rather than launching at the operator's real
-    /// provider while the contract records a canned one.
-    #[test]
-    fn an_acp_node_is_refused_a_canned_provider_rather_than_pointed_at_a_real_one() {
-        let canned = LaunchSpec {
+    /// A canned ACP spec: an isolated config dir, marion's endpoint, and a `provider/model` pair
+    /// for the document's `model` key — the shape S13 measured for `opencode run`, which is where
+    /// this recipe is inferred from.
+    fn canned_acp_spec() -> LaunchSpec {
+        LaunchSpec {
             auth: Auth::Canned,
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            api_key: Some("marion-placeholder".into()),
+            model: Some("marion/canned-1".into()),
+            config_dir: "/state/agent".into(),
             ..acp_spec()
-        };
-        assert!(matches!(
-            AcpAdapter.compile(&canned, &ctx()),
-            Err(HarnessError::MissingInput {
-                harness: Harness::Acp,
-                ..
-            })
-        ));
+        }
+    }
+
+    /// **A canned provider is reached per agent, and refused per agent** — the distinction the
+    /// blanket refusal used to flatten.
+    ///
+    /// ACP itself names no provider, base URL or credential anywhere in its handshake, and that
+    /// fact has not changed. What changed is the conclusion drawn from it: the *agent* behind the
+    /// protocol may have a channel marion already compiles, and `opencode acp` is the same binary
+    /// as `opencode run`, reading the same config document under the same `$XDG_CONFIG_HOME` that
+    /// S13 measured taking a whole turn against marion's canned provider at $0.00.
+    ///
+    /// **That last step is an inference, and it is the only one in the row.** S13's capture is of
+    /// the `run` subcommand; no capture yet exists of the `acp` subcommand under this document. The
+    /// recipe is therefore one inference deep — opencode's config loading being
+    /// subcommand-independent — and what this test pins is the *shape* marion compiles, not that a
+    /// live `opencode acp` accepted it. An agent with no recipe at all is still refused, by name.
+    #[test]
+    fn a_canned_provider_is_reached_only_by_an_agent_with_a_recipe_for_reaching_one() {
+        // The measured one: a launch, an isolated home, and the document that points it at marion.
+        let inv = acp_adapter().compile(&canned_acp_spec(), &ctx()).unwrap();
+        assert_eq!(inv.program, "opencode");
+        assert_eq!(inv.args, vec!["acp"], "still the agent's own argv");
+        let env: std::collections::BTreeMap<&str, &str> = inv
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            env.get("XDG_CONFIG_HOME").copied(),
+            Some(
+                opencode::xdg_config_home(std::path::Path::new("/state/agent"))
+                    .to_string_lossy()
+                    .as_ref()
+            ),
+            "the document is only read if the agent is pointed at it: {env:?}"
+        );
+        assert_eq!(env.get("HOME").copied(), Some("/state/agent"));
+        assert_eq!(
+            env.get("PWD").copied(),
+            Some(canned_acp_spec().cwd.to_string_lossy().as_ref()),
+            "S13: `cwd` alone does not place an opencode node"
+        );
+
+        let files = acp_adapter()
+            .config_files(&canned_acp_spec(), &ctx())
+            .unwrap();
+        assert_eq!(files.len(), 1, "one document, and it is not a declaration");
+        assert_eq!(
+            files[0].0,
+            opencode::config_path(std::path::Path::new("/state/agent"))
+        );
+        let doc: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+        assert_eq!(doc["model"], "marion/canned-1");
+        assert_eq!(
+            doc["provider"]["marion"]["options"]["baseURL"],
+            "http://127.0.0.1:8099/v1"
+        );
         assert!(
-            AcpAdapter.compile(&acp_spec(), &ctx()).is_ok(),
-            "and live mode is not refused"
+            doc.get("mcp").is_none(),
+            "marion's bridge rides `session/new`; a second copy here would start a second process"
+        );
+
+        // The unmeasured ones: refused by name, not launched at a real vendor while the contract
+        // records a canned run.
+        for agent in [acp::CLAUDE_ACP, acp::CODEX_ACP] {
+            assert!(agent.canned.is_none(), "the premise for `{}`", agent.id);
+            let spec = LaunchSpec {
+                extra: Extras {
+                    acp_agent: Some(agent.id.into()),
+                    ..Extras::default()
+                },
+                ..canned_acp_spec()
+            };
+            let e = AcpAdapter::for_agent(agent)
+                .compile(&spec, &ctx())
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &e,
+                    HarnessError::MissingInput {
+                        harness: Harness::Acp,
+                        ..
+                    }
+                ),
+                "`{}`: got {e}",
+                agent.id
+            );
+            // And live mode is not refused for the same agent, or this would be a refusal of the
+            // agent rather than of the mode.
+            let live = LaunchSpec {
+                auth: Auth::Inherited,
+                ..spec
+            };
+            assert!(AcpAdapter::for_agent(agent).compile(&live, &ctx()).is_ok());
+        }
+    }
+
+    /// The canned document's `model` key is **the only channel that reaches an ACP session**, so a
+    /// canned launch without one is refused rather than run at whatever the agent defaults to.
+    ///
+    /// Without this the recipe would silently produce a document with a `null` model and the
+    /// session would pick the operator's own default — a run marion recorded as canned, against a
+    /// model marion did not choose and possibly at a vendor marion is not paying.
+    #[test]
+    fn a_canned_acp_launch_without_a_model_or_an_endpoint_is_refused_by_name() {
+        for (what, spec) in [
+            (
+                "model",
+                LaunchSpec {
+                    model: None,
+                    ..canned_acp_spec()
+                },
+            ),
+            (
+                "base url",
+                LaunchSpec {
+                    base_url: None,
+                    ..canned_acp_spec()
+                },
+            ),
+            (
+                "a `provider/model` pair rather than a bare id",
+                LaunchSpec {
+                    model: Some("canned-1".into()),
+                    ..canned_acp_spec()
+                },
+            ),
+        ] {
+            let e = acp_adapter().config_files(&spec, &ctx()).unwrap_err();
+            assert!(
+                matches!(
+                    &e,
+                    HarnessError::MissingInput {
+                        harness: Harness::Acp,
+                        ..
+                    }
+                ),
+                "missing {what}: got {e}"
+            );
+        }
+        assert!(
+            acp_adapter()
+                .config_files(&canned_acp_spec(), &ctx())
+                .is_ok(),
+            "the complete spec still compiles, or the rows above refuse everything"
         );
     }
 
@@ -5241,7 +5640,7 @@ mod tests {
             api_key: Some("sk-fake".into()),
             ..acp_spec()
         };
-        let inv = AcpAdapter.compile(&spec, &ctx()).unwrap();
+        let inv = acp_adapter().compile(&spec, &ctx()).unwrap();
         assert_eq!(inv.program, "opencode");
         assert_eq!(inv.args, vec!["acp"]);
         assert_eq!(
@@ -5260,8 +5659,94 @@ mod tests {
         );
         assert_eq!(inv.cwd, spec.cwd);
         assert!(
-            AcpAdapter.config_files(&spec, &ctx()).unwrap().is_empty(),
-            "ACP writes no document on any agent"
+            acp_adapter()
+                .config_files(&spec, &ctx())
+                .unwrap()
+                .is_empty(),
+            "ACP declares marion's bridge in `session/new`, so a live node writes no document"
+        );
+    }
+
+    /// **An adapter bound to one agent will not launch another's spec.**
+    ///
+    /// There are two routes to "which ACP agent is this" — the agent type's id, and the adapter the
+    /// supervisor bound from it — and they meet here. If they were allowed to disagree, marion
+    /// would compile one agent's argv and read the other's tool spelling out of the transcript: a
+    /// node that ran, called `report`, and was recorded as having called nothing (s14's shape, with
+    /// marion on the producing end). A precedence rule would pick a winner silently; this refuses.
+    #[test]
+    fn an_adapter_bound_to_one_agent_refuses_another_agents_launch() {
+        let spec = LaunchSpec {
+            extra: Extras {
+                acp_agent: Some(acp::CODEX_ACP.id.into()),
+                ..Extras::default()
+            },
+            ..acp_spec()
+        };
+        let e = acp_adapter().compile(&spec, &ctx()).unwrap_err();
+        assert!(
+            matches!(&e, HarnessError::AcpAgent(m) if m.contains("opencode") && m.contains("codex-acp")),
+            "the refusal must name both agents: {e}"
+        );
+        // The two spellings this would have crossed are genuinely different, or the refusal would
+        // be guarding nothing.
+        assert_ne!(
+            acp_adapter().marion_tool_name("report"),
+            AcpAdapter::for_agent(acp::CODEX_ACP).marion_tool_name("report")
+        );
+        assert!(
+            AcpAdapter::for_agent(acp::CODEX_ACP)
+                .compile(&spec, &ctx())
+                .is_ok(),
+            "the matching pair launches"
+        );
+    }
+
+    /// **The unbound adapter cannot be launched, and its spelling is not a tool name.**
+    ///
+    /// `adapter_for` answers from a [`Harness`] alone, which is enough for the surface questions
+    /// and not enough to say what a model will type. So the protocol-level adapter refuses every
+    /// route by which marion's verbs reach a model, and the sentinel it answers `marion_tool_name`
+    /// with is unreachable rather than merely unlikely.
+    #[test]
+    fn the_unbound_acp_adapter_refuses_every_route_to_a_model() {
+        let unbound = AcpAdapter::unbound();
+        for e in [
+            unbound.compile(&acp_spec(), &ctx()).unwrap_err(),
+            unbound
+                .session_declaration(&acp_spec(), &ctx())
+                .unwrap_err(),
+            unbound.config_files(&acp_spec(), &ctx()).unwrap_err(),
+        ] {
+            assert!(
+                matches!(
+                    &e,
+                    HarnessError::MissingInput {
+                        harness: Harness::Acp,
+                        ..
+                    }
+                ),
+                "got {e}"
+            );
+        }
+        // The surface questions still answer, which is the whole reason the unbound adapter exists.
+        assert_eq!(unbound.harness(), Harness::Acp);
+        assert_eq!(unbound.surfaces(), acp::surfaces());
+
+        // And the sentinel is not a tool name: no MCP tool name may carry a colon, so it can match
+        // nothing the three measured agents ever emit.
+        let sentinel = unbound.marion_tool_name("report");
+        assert!(sentinel.starts_with(acp::UNBOUND_TOOL_NAME) && sentinel.contains(':'));
+        for a in acp::AGENTS.iter().filter_map(|a| a.tools) {
+            assert_ne!(a.spell("report"), sentinel);
+        }
+        // A reader with no spelling reports no calls rather than somebody else's.
+        assert!(unbound.marion_calls(ACP_OPENCODE_SESSION).is_empty());
+        assert_eq!(
+            unbound
+                .parse_stream(ACP_OPENCODE_SESSION, ChildExit::default())
+                .narrative,
+            None
         );
     }
 
@@ -5269,15 +5754,15 @@ mod tests {
     /// must not be one call from the pty launcher (§11 item 1).
     #[test]
     fn the_acp_surfaces_are_typed_over_pipes_with_no_pane_shape() {
-        let s = AcpAdapter.surfaces();
+        let s = acp_adapter().surfaces();
         assert_eq!(s.control, ControlTransport::Typed(TypedKind::Acp));
         assert_eq!(s.display, DisplaySurface::StructuredUi);
         assert!(s.display_plane().is_none(), "no pty, so no witness");
         assert!(s.has_typed_control_plane());
-        assert!(AcpAdapter.pane_surfaces().is_none());
+        assert!(acp_adapter().pane_surfaces().is_none());
         // Refused by name, never downgraded to the headless shape.
         assert_eq!(
-            AcpAdapter.compile_pane(&acp_spec(), &ctx()),
+            acp_adapter().compile_pane(&acp_spec(), &ctx()),
             Err(HarnessError::NoPaneSurface(Harness::Acp))
         );
     }

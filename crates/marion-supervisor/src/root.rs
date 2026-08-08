@@ -434,6 +434,27 @@ pub enum RootError {
          rather than pushed down one that does not fit it."
     )]
     UnsupportedRootSurface(Harness),
+    /// **`acp` runs as a child and not yet as a root, and the difference is a watcher.**
+    ///
+    /// Not a gap in the adapter: `crate::acp_child` drives an ACP turn end to end and `run_spawn`
+    /// spawns one. What a root has that a child does not is a person looking at it — the frames are
+    /// teed to a `watcher` as they arrive, `attach` re-subscribes to them, and `launch_terminal`
+    /// renders them. `run_acp_child` owns its frame loop for the whole turn and hands the transcript
+    /// back at the end, so a root on this path would sit silent until it finished and then print
+    /// everything at once, and `marion attach` would find nothing to attach to.
+    ///
+    /// Refused by name rather than run that way, per §6.4's rule about marion choosing for the
+    /// operator: "your root produced no output for four minutes" is not a thing an operator can
+    /// diagnose, and it is what accept-and-degrade would deliver here.
+    #[error(
+        "`{0}` is an ACP agent, and marion runs ACP nodes as **children** — `marion spawn` with an \
+         `acp` agent type — not as roots. A root's frames are teed to a watcher as they arrive and \
+         re-subscribed to by `marion attach`; the ACP driver owns its frame loop for the whole turn \
+         and yields the transcript at the end, so a root here would be silent until it finished. \
+         Spawn it from a root on another harness, or use `marion doctor --harness acp` to exercise \
+         the agent directly."
+    )]
+    AcpIsNotARootHarness(String),
     #[error("running the root: {0}")]
     Run(#[from] SpawnError),
     /// **Relaxed in shape, not in strength.** It used to read an empty `config_files` as the
@@ -610,11 +631,22 @@ pub fn prepare_watched(
             .ok_or(marion_harness::HarnessError::NoPaneSurface(harness))?,
     };
     let path = root_path(&surfaces).ok_or(RootError::UnsupportedRootSurface(harness))?;
+    // **Here, and not further down.** Nothing has been created yet — no worktree, no config
+    // document, no process — so the refusal leaves the filesystem as it found it. The same
+    // reasoning as the pane refusal above, and see the variant for why it is a refusal at all.
+    if path == RootPath::Acp {
+        return Err(RootError::AcpIsNotARootHarness(agent_type.name.clone()));
+    }
 
     // Not one of §4.3's normative files: this is marion's own start-up handshake with a process it
     // did not spawn, so it lives beside the node's state rather than in the layout. Only the duplex
     // path has a frame to withhold, so only it has a marker to wait on (§6.1 step 8).
     let ready_file = match path {
+        // **Dead, and kept honest rather than wildcarded.** `prepare` refused this path by name
+        // before anything was created (`RootError::AcpIsNotARootHarness`), so control never reaches
+        // here. Spelling the arm out means the day ACP becomes a root harness, the compiler asks
+        // this question again instead of a `_` answering it silently.
+        RootPath::Acp => None,
         // **The marker is minted on the pane path too, and it is deliberately not a gate there.**
         //
         // Two different things have been collapsed under one name: the *file*, which the bridge
@@ -692,8 +724,10 @@ pub fn prepare_watched(
         cwd: spec.repo.clone(),
         model: spec.model.clone(),
         prompt: match path {
-            // Written after launch, not compiled into argv (§6.1 step 8).
-            RootPath::Duplex => String::new(),
+            // Written after launch, not compiled into argv (§6.1 step 8). `Acp` is dead here —
+            // refused in `prepare` — and would be the same answer: the prompt is a
+            // `session/prompt` frame and reaches argv on no ACP agent.
+            RootPath::Duplex | RootPath::Acp => String::new(),
             // A positional, and what the harness then does with it **differs by harness** —
             // stated rather than generalised, because marion compiles the same field twice and
             // gets two behaviours. Claude Code seeds its composer and waits for a return
@@ -725,7 +759,10 @@ pub fn prepare_watched(
         // to present the login the operator already has, and a placeholder beside it would be a
         // second credential competing with the real one.
         api_key: match (spec.auth, path) {
-            (Auth::Inherited, _) | (Auth::Canned, RootPath::Duplex) => None,
+            // `Acp` is dead here — refused in `prepare`. Under a canned provider the credential
+            // travels in the agent's own config document (S23), never in this field, so `None` is
+            // also the answer it would have if the refusal were lifted.
+            (Auth::Inherited, _) | (Auth::Canned, RootPath::Duplex | RootPath::Acp) => None,
             // The pane shape compiles the credential itself, exactly as the `LaunchOnly` adapters
             // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
             // — so there is nothing for the post-`compile` push below to do.
@@ -1047,6 +1084,12 @@ fn launch_inner(
         es.lifecycle(marion_core::event::Lifecycle::Opened);
     }
     let result = match node.path {
+        // Unreachable by `prepare`'s refusal, and stated as the refusal rather than as a panic: a
+        // `Node` reaching here on this path would mean the guard had been removed, and an operator
+        // deserves the sentence that explains why over a supervisor abort.
+        RootPath::Acp => {
+            return Err(RootError::AcpIsNotARootHarness(node.harness.to_string()));
+        }
         // The root's frames go to **two** places now, and they are different kinds of destination:
         // `watcher` renders them for a human as they arrive and keeps nothing, `events` keeps them
         // and renders nothing. Teeing rather than choosing, because a run watched by a person must
@@ -2480,10 +2523,39 @@ mod tests {
     /// `<config_dir>/config/opencode/opencode.json`, a layout `$XDG_CONFIG_HOME` gives the harness
     /// and marion does not create, so writing it failed the launch with a bare
     /// `No such file or directory` naming neither the path nor the harness.
+    ///
+    /// Driven off `builtin_names()` rather than a list kept here, because a list kept here is a
+    /// list a new built-in is silently absent from — which is exactly what happened when
+    /// `acp-opencode` landed: it is the one type that is *not* a root, and a hardcoded sweep of the
+    /// other five would have called that fact proven without ever asking. Its refusal is asserted
+    /// by name below, so "ACP is not a root harness" is a measured claim rather than an omission.
     #[test]
     fn every_builtin_agent_type_prepares_as_a_root_with_its_config_actually_on_disk() {
         let dir = temp("prepare");
-        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+        // A **git** repository, not the bare directory `temp` makes. Driving the sweep off
+        // `builtin_names()` surfaced `claude-impl` and `gemini-impl`, which declare tools — and
+        // §6.1's rule is "no audit, no grant", so `prepare` refuses a tool-declaring root outright
+        // where no change record can be taken. That refusal is correct; the fixture was wrong, and
+        // a bare directory silently tested only the types that ask for nothing.
+        marion_testsupport::fixture_repo(&dir);
+        let mut refused = 0;
+        for name in marion_core::agent_type::builtin_names() {
+            if builtin(name).unwrap().harness == Harness::Acp {
+                let e = prepare(&root_spec(&dir, name))
+                    .expect_err("`acp` runs as a child, not as a root");
+                assert!(
+                    matches!(e, RootError::AcpIsNotARootHarness(_)),
+                    "{name}: expected the named refusal, got {e}"
+                );
+                // Nothing was created before the refusal: a root that will not run must not leave a
+                // config document, a worktree or a state directory behind it.
+                assert!(
+                    !dir.join("state").join("agents").exists(),
+                    "{name}: the refusal came after something was written"
+                );
+                refused += 1;
+                continue;
+            }
             let node = prepare(&root_spec(&dir, name))
                 .unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
             // Canned: every harness declares marion's bridge in a document here.
@@ -2520,9 +2592,16 @@ mod tests {
                     "{name}: a built-in agent type reached the pane path without a run asking \
                      for one"
                 ),
+                // `prepare` refuses this path before a node exists, so a node holding it means the
+                // refusal was removed and the branch above was skipped.
+                RootPath::Acp => panic!("{name}: an ACP type prepared as a root"),
             }
             assert_eq!(node.prompt, "delegate it", "{name}");
         }
+        assert!(
+            refused > 0,
+            "no built-in exercises the refusal, so this test asserts only the happy side"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

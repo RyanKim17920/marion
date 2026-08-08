@@ -63,7 +63,7 @@ use marion_core::encoding::Millis;
 use marion_core::harness::Harness;
 use marion_harness::{
     AgentHandshake, Auth, Capabilities, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
-    LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for, static_caps,
+    LaunchSpec, McpDeclaration, SpawnCtx, acp, adapter_for_type, static_caps,
 };
 use marion_proto::{HarnessReport, ProbeMode};
 
@@ -253,7 +253,11 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<acp::Agent>) -> Vec<Row> 
         notes.push(format!("acp agent: `{}` — {}", a.id, a.note));
     }
 
-    let adapter = match adapter_for(h) {
+    // Bound to the row's agent, not to the harness name. `adapter_for` answers `acp` with the
+    // protocol row, which is unlaunchable by construction, so every ACP row would have reported
+    // marion's own omission — "this adapter refused to compile an invocation at all" — in the
+    // column an operator reads as a finding about their installed binary.
+    let adapter = match adapter_for_type(h, agent.map(|a| a.id)) {
         Ok(a) => a,
         Err(e) => {
             return vec![Row {
@@ -1065,7 +1069,7 @@ fn acp_live_turn(
     }
 
     let stdout = agent.stdout();
-    let shape = shape.unwrap_or_else(|| acp_shape_finding(&stdout, timed_out));
+    let shape = shape.unwrap_or_else(|| acp_shape_finding(agent_spec, &stdout, timed_out));
     let clean = agent.finish();
     trailing.push(if clean {
         "termination: the agent exited on SIGINT".into()
@@ -1098,7 +1102,7 @@ fn acp_live_turn(
 /// Three things, and the third is the one that would catch drift: the agent wrote frames, one of
 /// them is the `session/prompt` response carrying a `stopReason`, and marion's own ACP reader does
 /// not find a failure in the transcript.
-fn acp_shape_finding(stdout: &str, timed_out: bool) -> (bool, String) {
+fn acp_shape_finding(agent_spec: acp::Agent, stdout: &str, timed_out: bool) -> (bool, String) {
     let frames = marion_harness::json_frames(stdout);
     if frames.is_empty() {
         return (
@@ -1113,11 +1117,16 @@ fn acp_shape_finding(stdout: &str, timed_out: bool) -> (bool, String) {
     let stop = frames
         .iter()
         .find_map(|f| f.pointer("/result/stopReason")?.as_str());
-    let outcome = acp::parse_stream(
-        stdout,
-        marion_harness::ChildExit::default(),
-        &marion_harness::AcpAdapter.marion_tool_name("report"),
-    );
+    // **This agent's spelling, not the one agent marion measured first.** The doctor probes every
+    // row in `acp::AGENTS`, and the three measured ones spell marion's verbs three different ways
+    // (S21, S22). Reading them all in opencode's is the s14 trap with marion on the reading end: a
+    // transcript in which the model called `mcp.marion.report` and a reader that reports no call.
+    // An agent with no measured spelling gets no reader at all rather than a neighbour's, which is
+    // the same refusal `AcpAdapter` makes.
+    let outcome = match agent_spec.tools {
+        Some(spelling) => acp::parse_stream(stdout, marion_harness::ChildExit::default(), spelling),
+        None => marion_harness::StreamOutcome::default(),
+    };
     match (stop, &outcome.failure) {
         (_, Some(f)) => (
             false,
@@ -1898,7 +1907,9 @@ mod tests {
                 _ => vec![None],
             } {
                 let spec = probe_spec(None, McpDeclaration::Marion, agent).expect("a spec");
-                let a = adapter_for(h).unwrap();
+                // Bound the way `probe_one` binds it: the spec names an agent, so the adapter must
+                // too, or this sweep asserts about a pairing no probe ever builds.
+                let a = adapter_for_type(h, agent.map(|x| x.id)).unwrap();
                 let inv = a.compile(&spec, &ctx).unwrap_or_else(|e| {
                     panic!(
                         "{h}: the probe handed the adapter a spec no real spawn would build — this \
