@@ -4929,7 +4929,7 @@ mod tests {
         let size = WinSize::new(80, 24);
         let master = PtyMaster::open(size).expect("a pty");
         let cast = w.dir.join(format!("{agent}.cast"));
-        let mut host = PtyHost::start(
+        let host = PtyHost::start(
             id(agent),
             master,
             &cast,

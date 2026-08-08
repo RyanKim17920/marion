@@ -238,7 +238,7 @@ fn the_child_is_a_session_leader_with_the_master_as_its_controlling_terminal() {
     let master = PtyMaster::open(WinSize::new(80, 24)).expect("a pty");
     let slave_path = master.slave_path().to_path_buf();
     let master_fd = master.as_raw();
-    let mut host = PtyHost::start(
+    let host = PtyHost::start(
         AgentId("sid".into()),
         master,
         &dir.join("pty.cast"),
@@ -400,7 +400,7 @@ fn the_parent_closes_its_own_slave_copies() {
 fn the_master_reaches_eof_once_the_child_exits() {
     let dir = marion_testsupport::scratch("pty-eof");
     let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
-    let mut host = PtyHost::start(
+    let host = PtyHost::start(
         AgentId("eof".into()),
         master,
         &dir.join("pty.cast"),
@@ -515,7 +515,7 @@ fn closing_the_master_hangs_up_the_child() {
 fn the_supervisor_and_not_the_client_holds_the_master() {
     let dir = marion_testsupport::scratch("pty-m2");
     let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
-    let mut host = PtyHost::start(
+    let host = PtyHost::start(
         AgentId("m2".into()),
         master,
         &dir.join("pty.cast"),
@@ -1019,7 +1019,7 @@ fn no_pty_byte_reaches_events_jsonl() {
 
     let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
     let master_slave = master.open_slave().unwrap();
-    let mut host = PtyHost::start(
+    let host = PtyHost::start(
         AgentId("split".into()),
         master,
         &dir.join("pty.cast"),
@@ -1112,7 +1112,7 @@ fn shutdown_kills_and_reaps_before_closing_the_master() {
 
     let dir = marion_testsupport::scratch("pty-shutdown");
     let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
-    let mut host = PtyHost::start(
+    let host = PtyHost::start(
         AgentId("shutdown".into()),
         master,
         &dir.join("pty.cast"),
@@ -1154,13 +1154,99 @@ fn shutdown_kills_and_reaps_before_closing_the_master() {
     );
 }
 
+/// **A registered host is still a reapable one, and this is the assertion the launch path rests
+/// on.**
+///
+/// The blocker that kept `root::launch_terminal` unwritten for four readings of this seam was
+/// stated as an impossibility: `RegistryHandle::register_pane` needs `Arc<PtyHost>`, `shutdown`
+/// needed `&mut PtyHost`, and *"it cannot be both"*. It can — the two owners are the launcher that
+/// must reap and the registry that must serve, and what they actually need is interior mutability
+/// on two fields, not exclusive access to the host. Nothing about the ordering `shutdown` promises
+/// changes; what changes is who may ask for it.
+///
+/// The second clone is held **across** the shutdown on purpose: that is the registry's entry, still
+/// answering `node/attach` while the launcher reaps, and it is the exact configuration a `&mut`
+/// signature made unrepresentable.
+///
+/// `/bin/sleep` and not `sh -c 'sleep 30'`: this asserts marion killed the process, and a shell
+/// standing between marion and the thing being signalled is how a whole mutation went invisible
+/// here once already.
+///
+/// **Mutation:** take `self.child` by reference in `shutdown` instead of `take()`-ing it, then have
+/// the second owner call `resize` from another thread while the child is being waited on — the
+/// resize parks behind the reap. Asserted below by doing exactly that.
+#[test]
+fn a_host_two_owners_hold_is_still_reaped_and_still_serves_its_second_owner() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let dir = marion_testsupport::scratch("pty-arc-shutdown");
+    let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
+    let host = Arc::new(
+        PtyHost::start(
+            AgentId("arc".into()),
+            master,
+            &dir.join("pty.cast"),
+            WinSize::new(80, 24),
+            "xterm-256color",
+            Instant::now(),
+        )
+        .unwrap(),
+    );
+    let child = spawn_pty(
+        witness(),
+        Command::new("/bin/sleep").arg("30"),
+        host.master(),
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap();
+    let pid = child.pid();
+    // Adoption through a shared reference: this is `launch_terminal`'s call, and it does not own
+    // the host exclusively either.
+    host.adopt(child);
+
+    // The registry's copy, taken before the reap and released after it.
+    let registered = Arc::clone(&host);
+    assert!(until(|| alive(pid)));
+
+    // A client typing and resizing through the *other* owner, concurrently with the reap. Both must
+    // return rather than deadlock against the child lock.
+    let resizer = {
+        let registered = Arc::clone(&registered);
+        std::thread::spawn(move || {
+            for i in 0..40 {
+                let _ = registered.resize(WinSize::new(80 + i % 3, 24));
+            }
+        })
+    };
+
+    let status = host.shutdown().unwrap().expect("reaped");
+    assert_eq!(
+        status.signal(),
+        Some(9),
+        "the ordering guarantee is unchanged by the ownership change: SIGKILL from marion, not \
+         SIGHUP from a master that closed first"
+    );
+    resizer
+        .join()
+        .expect("a resize from the second owner deadlocked against the reap");
+    assert!(until(|| !alive(pid)), "pid {pid} was not reaped");
+    assert_eq!(
+        registered.child_pid(),
+        None,
+        "the registry's copy still names a child marion has already reaped, so a later resize \
+         would signal a pid the kernel is free to have reissued"
+    );
+    drop(registered);
+}
+
 /// A host dropped without `shutdown` still leaves no live child. §9's M2 criterion forbids an
 /// untracked live process, and a leaked pty child is exactly one.
 #[test]
 fn dropping_a_host_leaves_no_child_behind() {
     let dir = marion_testsupport::scratch("pty-drop");
     let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
-    let mut host = PtyHost::start(
+    let host = PtyHost::start(
         AgentId("drop".into()),
         master,
         &dir.join("pty.cast"),

@@ -1058,11 +1058,21 @@ impl Shared {
 }
 
 /// One node's pty, its recording, and the thread that reads it.
+///
+/// **Every method takes `&self`, including [`Self::adopt`] and [`Self::shutdown`], and the two
+/// interior mutexes below are what buys that.** It is not a style choice. A live pane has two
+/// owners at once: the launcher that spawned the child and must reap it, and
+/// `RegistryHandle::register_pane`, which holds an `Arc<PtyHost>` so `node/attach` can lease the
+/// keyboard and fan the bytes out. `Arc` gives no `&mut`, so a `shutdown(&mut self)` made the host
+/// un-registerable and a registered host un-reapable — which is exactly the shape that kept
+/// `root::launch_terminal` unwritten. Neither lock is ever held across a call that can block on the
+/// other, and `shutdown` **takes** the child out before waiting on it, so a concurrent
+/// [`Self::resize`] from an attached client cannot queue behind a `wait`.
 pub struct PtyHost {
     master: Arc<PtyMaster>,
     shared: Arc<Shared>,
-    child: Option<PtyChild>,
-    reader: Option<std::thread::JoinHandle<()>>,
+    child: Mutex<Option<PtyChild>>,
+    reader: Mutex<Option<std::thread::JoinHandle<()>>>,
     stopped: Arc<AtomicBool>,
 }
 
@@ -1111,8 +1121,8 @@ impl PtyHost {
         Ok(Self {
             master,
             shared,
-            child: None,
-            reader: Some(reader),
+            child: Mutex::new(None),
+            reader: Mutex::new(Some(reader)),
             stopped,
         })
     }
@@ -1152,8 +1162,8 @@ impl PtyHost {
         Arc::clone(&self.shared.bytes)
     }
 
-    pub fn adopt(&mut self, child: PtyChild) {
-        self.child = Some(child);
+    pub fn adopt(&self, child: PtyChild) {
+        *self.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
     }
 
     pub fn master(&self) -> &PtyMaster {
@@ -1161,7 +1171,11 @@ impl PtyHost {
     }
 
     pub fn child_pid(&self) -> Option<i32> {
-        self.child.as_ref().map(PtyChild::pid)
+        self.child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(PtyChild::pid)
     }
 
     /// How many terminal probes this node has emitted and marion has not answered. See
@@ -1384,10 +1398,19 @@ impl PtyHost {
         }
         drop(q);
 
-        if let Some(child) = &self.child {
+        // The pgid is read out and the lock released before the signal, so this never waits on
+        // `shutdown`'s reap — and `shutdown` takes the child out first, so after it there is no
+        // group left to notify and none is invented.
+        let pgid = self
+            .child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(PtyChild::pgid);
+        if let Some(pgid) = pgid {
             // SAFETY: a signal to a process group id; no pointers. A group that has already exited
             // answers `ESRCH`, which is not an error here.
-            unsafe { killpg(child.pgid(), SIGWINCH) };
+            unsafe { killpg(pgid, SIGWINCH) };
         }
         Ok(())
     }
@@ -1403,17 +1426,24 @@ impl PtyHost {
     /// Joining the reader thread between the two is what makes "then" mean anything: the thread
     /// holds an `Arc<PtyMaster>`, so the fd cannot close until it has finished, and it finishes at
     /// the EOF the reaped child produces.
-    pub fn shutdown(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
-        let status = match self.child.as_mut() {
+    /// **Idempotent.** A second call finds no child and no reader and writes a second `x` record —
+    /// which is why the caller is `launch_terminal`'s single exit path rather than every owner of
+    /// the `Arc`.
+    pub fn shutdown(&self) -> io::Result<Option<std::process::ExitStatus>> {
+        // **Taken out, not borrowed.** Holding the lock across `wait` would park a concurrent
+        // `resize` from an attached client behind however long the child takes to die, and the
+        // client cannot know that is what it is waiting for.
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let status = match child.as_mut() {
             None => None,
             // Through `PtyChild`'s own idempotent call, so this and the `Drop` net below cannot
-            // drift — and so the `Drop` that runs moments later, when `self.child` is dropped,
-            // finds the process already reaped instead of signalling a pid the kernel may have
-            // reissued.
+            // drift — and so the `Drop` that runs when the local below goes out of scope finds the
+            // process already reaped instead of signalling a pid the kernel may have reissued.
             Some(child) => Some(child.kill_and_reap()?),
         };
         self.stopped.store(true, Ordering::SeqCst);
-        if let Some(t) = self.reader.take() {
+        let reader = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(t) = reader {
             let _ = t.join();
         }
         let mut cast = self.shared.cast.lock().unwrap_or_else(|e| e.into_inner());
@@ -1438,7 +1468,12 @@ fn exit_word(status: Option<std::process::ExitStatus>) -> String {
 impl Drop for PtyHost {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
-        if let Some(child) = self.child.as_mut() {
+        if let Some(child) = self
+            .child
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
             // A host dropped without `shutdown` still must not leave a live child behind — that is
             // §9's M2 criterion, and a leaked pty child is exactly the untracked live process it
             // forbids. This is the safety net, not the path: `shutdown` is what records why.
@@ -1449,7 +1484,12 @@ impl Drop for PtyHost {
             // is dead. Relying on the field's own `Drop` would deadlock the join.
             let _ = child.kill_and_reap();
         }
-        if let Some(t) = self.reader.take() {
+        if let Some(t) = self
+            .reader
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             let _ = t.join();
         }
     }
