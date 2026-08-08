@@ -4640,6 +4640,50 @@ mod tests {
         }
     }
 
+    /// **Every built-in agent type resolves to a launchable adapter, ACP included.**
+    ///
+    /// This is the seam `adapter_for` cannot answer and the one a binary actually crosses:
+    /// `run_spawn` and `root::prepare` have an [`agent_type::AgentType`], not a [`Harness`], and on
+    /// the ACP row the type carries the second half of the selection. A built-in naming
+    /// `Harness::Acp` whose `acp_agent` were absent, misspelt, or pointed at an agent nobody has
+    /// watched call a tool would compile here and refuse at launch — and the symptom would be a
+    /// harness that simply never worked from any binary, which is the condition this row exists to
+    /// end.
+    ///
+    /// So each built-in is bound the way a launch binds it, and the ACP ones are additionally
+    /// required to have a *measured* spelling: `agent::tools` is `None` on `gemini --acp`, and a
+    /// built-in pointed there would be s14 with marion holding the wrong end.
+    #[test]
+    fn every_builtin_agent_type_binds_an_adapter_a_launch_could_use() {
+        let mut acp = 0;
+        for name in agent_type::builtin_names() {
+            let t = agent_type::builtin(name).unwrap_or_else(|| panic!("{name} must resolve"));
+            let a = adapter_for_type(t.harness, t.acp_agent.as_deref())
+                .unwrap_or_else(|e| panic!("`{name}` names no adapter a launch could use: {e}"));
+            assert_eq!(a.harness(), t.harness, "{name}");
+            if t.harness != Harness::Acp {
+                continue;
+            }
+            acp += 1;
+            let id = t.acp_agent.as_deref().expect("checked in marion-core");
+            let agent = acp::agent(id)
+                .unwrap_or_else(|| panic!("`{name}` names ACP agent `{id}`, which is not in the \
+                                           registry — the type and the registry have drifted"));
+            assert!(
+                agent.tools.is_some(),
+                "`{name}` names `{id}`, which marion has never watched call a tool: a node of this \
+                 type would be handed a guessed spelling, which s14 measured as silently ignored"
+            );
+            // And the adapter it bound compiles *that* agent's spelling, not a neighbour's.
+            assert_eq!(
+                a.marion_tool_name("report"),
+                agent.tools.unwrap().spell("report"),
+                "`{name}`"
+            );
+        }
+        assert!(acp > 0, "no built-in reaches the ACP row, so this asserts nothing");
+    }
+
     /// The refusal itself, exercised at the type rather than through the registry: it names the
     /// harness rather than falling back onto whichever adapter happens to exist. No `Harness`
     /// produces it today, and it must stay correct for the one that eventually does.
