@@ -930,7 +930,7 @@ says a clause failed.
   | §9's clause | status | why |
   | --- | --- | --- |
   | *"at least two ACP agents beyond the day-one set run as children through the single ACP adapter"* | **NOT MET** — but now for **one** reason, not two | **(a) closed.** `Harness::Acp` and `AcpAdapter` exist; a real `opencode acp` child runs end to end from the shipped `marion-supervisor doctor --adapter --harness acp` binary — spawn, `initialize`, `session/new`, `session/prompt` (`stopReason: end_turn`), `session/cancel`, clean termination, leak check. **(b) open.** Only one of the two installed agents can open a session at all: `gemini --acp` is refused `session/new` vendor-side. One agent runs; §9 asks for two |
-  | *"with `marion doctor` reporting their differing capabilities"* | **MET** | `marion doctor --capabilities --harness acp` prints **two rows**, one per agent in `acp::AGENTS`, each keyed on `(acp, «the agent's own `agentInfo`», Typed(Acp)/StructuredUi/ProtocolEvents)` and each capability column produced by **that agent's own live `initialize`** (§3.3 stage two). `OpenCode 1.17.3` publishes `fork, resume, view, token_deltas, usage`; `gemini-cli 0.53.0` publishes `view, token_deltas, usage`. The difference is exactly `fork` and `resume`, which is what S20 measured, and it is asserted as that **named pair** rather than as "the two rows are unequal" |
+  | *"with `marion doctor` reporting their differing capabilities"* | **MET** | `marion-supervisor doctor --capabilities --harness acp` prints **two rows**, one per agent in `acp::AGENTS`, each keyed on `(acp, «the agent's own `agentInfo`», Typed(Acp)/StructuredUi/ProtocolEvents)` and each capability column produced by **that agent's own live `initialize`** (§3.3 stage two). `OpenCode 1.17.3` publishes `fork, resume, view, token_deltas, usage`; `gemini-cli 0.53.0` publishes `view, token_deltas, usage`. The difference is exactly `fork` and `resume`, which is what S20 measured, and it is asserted as that **named pair** rather than as "the two rows are unequal" |
   | *"and the UI greying out what they cannot do"* | **NOT MET** — out of reach by a standing decision, not half-built | Unchanged. It needs a tree UI, and `marion-tui` is deliberately a single full-screen pane: *"No layout engine, no splits, no focus model, no tree list"*. That is M3/I6's work |
 
   **What the adapter decided, and the argument for each.**
@@ -1109,11 +1109,12 @@ grouping.
   and dropped — the commands still never run, but a caller can no longer be told they did.
   Design §11 item 23.
 - The `Stop` hook path. Unchanged — no production code references it.
-- `marion doctor --adapter`. Unchanged; `doctor` is still the stub that prints "no adapters
-  registered yet" (`crates/marion-supervisor/src/main.rs:35`). **`marion-term`, `marion-tui` and
-  `marion-proto` came off this line 2026-08-08** — all three are workspace members and all three
-  have tests; grouping them with `doctor` had them inheriting a verdict that was only ever
-  `doctor`'s.
+- ~~`marion doctor --adapter`.~~ **Off this line 2026-08-08**, and it should have come off at
+  `c7cd5b5`: `doctor` has not been a stub since, both of §8's modes run against the installed
+  binaries, and the ACP rows added since spawn real agents. The sentence about the `main.rs` stub
+  described a line that no longer existed. **`marion-term`, `marion-tui` and `marion-proto` came
+  off this line earlier the same day** — all three are workspace members and all three have tests;
+  grouping them with `doctor` had them inheriting a verdict that was only ever `doctor`'s.
 - ~~`status` / `wait` / `list` appear in `--allowedTools` but are **not implemented**~~ —
   **CORRECTED 2026-08-08, and this entry was wrong in two different ways.** The bridge declares
   **five** tools, not two: `spawn`, `wait`, `status`, `list`, `report`
