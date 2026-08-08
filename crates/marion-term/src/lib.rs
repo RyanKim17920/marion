@@ -215,6 +215,21 @@ impl Term {
         self.inner.grid().history_size()
     }
 
+    /// Whether the grid is currently on the **alternate screen** (`?1049h`).
+    ///
+    /// §9's M3 criterion C1 asks that the alt-screen switch be *handled*, and until this existed
+    /// there was no way to ask: a caller could read the cells and see that they had changed, which
+    /// a repaint on the main screen produces too. This is the distinction itself.
+    ///
+    /// It is also the fact behind §5.3's reading that C2's subject must be codex — an alternate
+    /// screen has no scrollback, so a `CSI 3J` assertion against a harness that is on one passes
+    /// because there was nothing to lose.
+    pub fn on_alt_screen(&self) -> bool {
+        self.inner
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
+    }
+
     /// Non-blank retained history lines. The figure §5.3's scrollback claim is about.
     pub fn scrollback_len(&self) -> usize {
         self.scrollback_lines()

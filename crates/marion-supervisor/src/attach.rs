@@ -26,10 +26,15 @@
 //!
 //! Pass-through was not a stub and the ledger is not one-sided:
 //!
-//! * **Kept.** The mouse still works with no encoder. Mouse reports are *input*: the operator's
-//!   terminal is put into SGR-1006 by [`Sticky`]'s mirrored preamble, and its reports go through
-//!   [`Keys`] to `node/pty-write` untouched by anything on the render side. M3's C1 is unaffected
-//!   by this change in either direction.
+//! * **Kept — but this bullet was wrong until [`View::mirror_modes`] existed, and the correction
+//!   is the interesting part.** It read *"the mouse still works with no encoder … the operator's
+//!   terminal is put into SGR-1006 by `Sticky`'s mirrored preamble"*, and the first half is true:
+//!   a mouse report is input, [`Keys`] forwards it verbatim, and nothing on the render side
+//!   touches it. The second half was not. The preamble is written from `Sticky::initial(…)`, whose
+//!   every mouse mode is **off**, and nothing afterwards updated it — the node's `?1000h` reaches
+//!   the emulator in this process, which is not the operator's screen. So no terminal was ever put
+//!   into any tracking mode, no report was ever produced, and a click in a pane did nothing.
+//!   `mirror_modes` is the missing line, and it is the delta this bullet always described.
 //! * **Lost.** Anything `alacritty_terminal` does not model no longer reaches the operator at all,
 //!   where pass-through delivered it verbatim: OSC 8 hyperlinks, OSC 52 clipboard writes, and inline
 //!   image protocols (sixel, kitty). A pane is now exactly as expressive as marion's VT, which is
@@ -174,6 +179,24 @@ struct View {
     term: Term,
     redraw: Redraw,
     terminal: Terminal<ScreenBackend>,
+    /// The node's private modes as this client has seen them, and **the whole of how the mouse
+    /// gets through** (§9's M3 criterion C1).
+    ///
+    /// A mouse report is *input*: the operator's own terminal produces it, [`Keys`] forwards it to
+    /// `node/pty-write` untouched, and no encoder is involved anywhere on marion's side. But a
+    /// terminal only produces one if something enabled tracking on it, and the only thing that
+    /// could is this client — the node's `?1000h` goes into [`Self::term`], which is an emulator in
+    /// this process and not the operator's screen.
+    ///
+    /// So the node's modes are tracked here and mirrored out as a delta
+    /// ([`marion_tui::guard::mirror_delta`]). **Mirrored, never invented**: a pane showing a codex
+    /// session, which enables no tracking at all, leaves the operator's own text selection working.
+    ///
+    /// Before this field existed the preamble was `Sticky::initial(…)` — every mouse mode off —
+    /// and nothing updated it afterwards, so the operator's terminal was never put into any
+    /// tracking mode and a click in a pane did nothing at all. This module's own header claimed
+    /// otherwise.
+    modes: Sticky,
 }
 
 impl View {
@@ -188,6 +211,10 @@ impl View {
             term,
             redraw: Redraw::new(),
             terminal,
+            // The same value the preamble was just written from, so the first delta is measured
+            // against what the operator's terminal was actually put into rather than against a
+            // second guess at it.
+            modes: Sticky::initial(cols, rows),
         })
     }
 
@@ -197,10 +224,36 @@ impl View {
     /// 2026 paints once per frame however many `read`s it took, and one that does not is caught by
     /// [`Self::idle`] instead. Painting per `read` would repaint a half-drawn screen, which is the
     /// tearing pass-through did not have and a naive grid would introduce.
-    fn feed(&mut self, bytes: &[u8]) {
-        self.term.advance(bytes);
-        if self.redraw.on_feed(&self.term, bytes.len()) {
+    ///
+    /// **The mirror runs before the grid**, and the order is not arbitrary: a node that enables
+    /// tracking and immediately paints something the operator would click on should have its
+    /// terminal already reporting when that paint lands. Nothing downstream depends on it, so this
+    /// is a preference rather than a correctness argument — stated so a later reader does not
+    /// reorder it wondering whether it mattered.
+    fn feed(&mut self, text: &str) {
+        self.mirror_modes(text);
+        self.term.advance(text.as_bytes());
+        if self.redraw.on_feed(&self.term, text.len()) {
             self.paint();
+        }
+    }
+
+    /// Put the operator's terminal into whatever tracking modes the node has asked for.
+    ///
+    /// A failed write is dropped for [`Self::paint`]'s reason: the operator's terminal going away
+    /// is reported by the loop noticing the socket or the node, not by an error raised from inside
+    /// a byte feed with a half-painted screen.
+    ///
+    /// **The chunk-boundary caveat is [`Sticky::absorb`]'s and is inherited rather than repaired.**
+    /// A `?1000h` split across two `node/pty` notifications is not seen. `marion-tui`'s
+    /// `no_tracked_sequence_straddles_a_record_boundary_in_any_capture` measures that no committed
+    /// capture splits one; the failure if a future one does is a mouse that does not work, which is
+    /// the same failure this whole method exists to fix and not a new class of it.
+    fn mirror_modes(&mut self, text: &str) {
+        let was = self.modes;
+        self.modes.absorb(text);
+        if was != self.modes {
+            let _ = self.terminal.backend().screen().mirror(&was, &self.modes);
         }
     }
 
@@ -426,7 +479,7 @@ impl Session {
                         agent_id, bytes, ..
                     } if agent_id == self.id => {
                         if let Some(v) = &mut self.view {
-                            v.feed(bytes.as_bytes());
+                            v.feed(&bytes);
                         }
                     }
                     // The node reached a terminal state. Leaving is the honest response: there is
@@ -495,5 +548,106 @@ impl Drop for Session {
         if let Some(v) = &self.view {
             v.terminal.backend().screen().leave();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A sink that records what marion wrote to the operator's terminal, so the assertions are
+    /// about bytes rather than about a mock's expectations.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A `View` over a sink, with the guard's terminal side inert: `Screen::enter` on a non-tty fd
+    /// installs no raw mode, which is exactly the state a test wants. The preamble is discarded so
+    /// each assertion is about this view's own later writes.
+    fn view(cols: u16, rows: u16) -> (View, Sink) {
+        let sink = Sink::default();
+        let screen = Screen::enter(sink.clone(), -1, &Sticky::initial(cols, rows))
+            .expect("a sink is always enterable");
+        let v = View::enter(screen, cols, rows).expect("a view over a sink");
+        sink.0.lock().unwrap().clear();
+        (v, sink)
+    }
+
+    fn written(sink: &Sink) -> String {
+        String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned()
+    }
+
+    /// **§9's M3 criterion C1, the mouse clause's first leg: a terminal that reports at all.**
+    ///
+    /// The sequences below are the ones `tests/fixtures/s2/claude-2.1.220-boot-exit.raw.bin`
+    /// carries at bytes 98–122, in that order. They are pinned here rather than against a live
+    /// harness because **no harness marion can pane sends them today**: 2.1.225 enables no mouse
+    /// mode at all (probed 2026-08-08) and codex never has (§5.3). The mirror is not thereby
+    /// speculative — it is the whole reason a click worked on 2.1.220 and the reason one will work
+    /// on the next harness that asks — but a live assertion would be pinning a version.
+    ///
+    /// Mutation: drop the `screen().mirror(...)` call in `View::mirror_modes`, or return early
+    /// from it. This fails, and so does nothing else in the workspace.
+    #[test]
+    fn the_nodes_mouse_modes_are_mirrored_onto_the_operators_terminal() {
+        let (mut v, sink) = view(80, 24);
+        v.feed("\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1006h");
+        let out = written(&sink);
+        for m in ["?1000h", "?1002h", "?1003h", "?1006h"] {
+            assert!(
+                out.contains(m),
+                "the node asked for {m} and the operator's terminal was never told, so it would \
+                 emit no report for `Keys` to forward: {out:?}"
+            );
+        }
+        // **`?1049` is marion's own and is deliberately not mirrored.** The client entered the
+        // alternate screen in its preamble and leaves it in `leave_bytes`; echoing the node's
+        // switch would double-enter one buffer and, on the node's restore, drop marion out of a
+        // screen it is still painting into.
+        assert!(
+            !out.contains("?1049"),
+            "the node's alternate-screen switch was forwarded to the operator's terminal, which \
+             is marion's own to hold: {out:?}"
+        );
+    }
+
+    /// A delta, not a re-assertion: a mode already mirrored is not sent again, and one turned off
+    /// is turned off.
+    #[test]
+    fn the_mirror_sends_only_what_changed() {
+        let (mut v, sink) = view(80, 24);
+        v.feed("\u{1b}[?1006h");
+        sink.0.lock().unwrap().clear();
+
+        v.feed("some ordinary output with no private modes in it");
+        assert_eq!(
+            written(&sink),
+            "",
+            "a plain paint put mode sequences on the operator's terminal"
+        );
+
+        v.feed("\u{1b}[?1006h");
+        assert_eq!(
+            written(&sink),
+            "",
+            "a mode the operator's terminal is already in was re-asserted"
+        );
+
+        v.feed("\u{1b}[?1006l");
+        assert_eq!(
+            written(&sink),
+            "\u{1b}[?1006l",
+            "the node turned tracking off and the operator's terminal kept reporting"
+        );
     }
 }
