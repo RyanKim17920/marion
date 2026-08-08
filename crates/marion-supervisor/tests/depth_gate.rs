@@ -480,6 +480,10 @@ fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
         // walk the fixture repo on every node.
         no_change_record: repo.map(|_| true),
         pane: None,
+        // A root: `isolation` and `allow_concurrent_writes` are child-only and refused
+        // beside `caller: None` (§6.6, §9).
+        isolation: None,
+        allow_concurrent_writes: None,
     }
 }
 

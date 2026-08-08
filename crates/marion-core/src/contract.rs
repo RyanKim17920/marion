@@ -85,6 +85,60 @@ pub enum Workspace {
     SharedCwd { path: PathBuf },
 }
 
+/// §3.1's `isolation` key and §5.4's `spawn` parameter: **which of §6.6's workspaces a node gets**.
+///
+/// Two variants and not three. §3.1's table lists `worktree | shared-cwd | remote`, but `remote` has
+/// no [`Workspace`] to select, no transport, no host and no auth story anywhere in the design — §1
+/// puts *"remote hosting"* out of scope in as many words, and §9's only mention of it is forward-
+/// looking. A `Remote` variant here would be a name marion could parse and could not serve, and the
+/// value of this enum is precisely that **every value it can hold is a workspace marion builds**.
+/// `remote` is still refused by name at the request edge, where the refusal can say why; it is not
+/// admitted into the type system to be refused again further in.
+///
+/// **This type does not carry §3.1's default.** §3.1 gives the agent-type key a default of
+/// `shared-cwd`; marion resolves an *absent* `spawn` parameter to [`Self::Worktree`] instead, and
+/// that divergence is deliberate and recorded rather than accidental. §11 item 23 argues the
+/// `shared-cwd → worktree` substitution is harmful because it silently *adds* containment; the
+/// substitution in the other direction — resolving silence to `shared-cwd` — silently *removes* it,
+/// putting the writes of every caller that named nothing into the operator's own live checkout. That
+/// is the strictly worse of the two, so absence keeps the behaviour every existing caller already
+/// has, and a caller that wants the user's tree says so. Making `shared-cwd` the default is a
+/// behaviour change for every node marion has ever run and belongs to a decision that states itself.
+///
+/// **Serialized in §5.4's own spelling** (`kebab-case`), not serde's variant names, so the string a
+/// caller writes in a `spawn` tool call, the string that crosses `agent/spawn` on the socket and the
+/// string [`Self::as_wire`] prints are one spelling. Two spellings for one value is how a refusal
+/// ends up naming something the caller never typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Isolation {
+    Worktree,
+    SharedCwd,
+}
+
+impl Isolation {
+    /// §5.4's wire spelling, which is hyphenated where the variant is not.
+    ///
+    /// `None` for every other string, including `"remote"`: this function answers *"is this a
+    /// workspace marion builds?"*, and the caller turns a `None` into a refusal that can name the
+    /// value. Folding `remote` in here as a recognised-but-unserved value would put the
+    /// accept-and-ignore shape inside the parser.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "worktree" => Some(Self::Worktree),
+            "shared-cwd" => Some(Self::SharedCwd),
+            _ => None,
+        }
+    }
+
+    pub fn as_wire(&self) -> &'static str {
+        match self {
+            Self::Worktree => "worktree",
+            Self::SharedCwd => "shared-cwd",
+        }
+    }
+}
+
 impl Workspace {
     pub fn path(&self) -> &PathBuf {
         match self {
@@ -223,7 +277,19 @@ pub struct TaskContract {
     pub requester: AgentId,
     pub child: ChildRef,
     pub repo: RepoIdentity,
-    pub base_commit: Oid,
+    /// **`None` when there was no commit to branch from**, which [`Workspace::SharedCwd`] outside a
+    /// repository makes reachable for the first time.
+    ///
+    /// A [`Workspace::Worktree`] always has one — marion creates the worktree *at* it — so this is
+    /// `Some` on every path that existed before `shared-cwd` did. `RootChanged::base_commit` has
+    /// been `Option` for the same reason since roots landed (*"there was no HEAD to read"*), and a
+    /// contract has no better claim to a commit than a change record does.
+    ///
+    /// Not a zero oid and not an empty string. §6.7 makes this an audit record and §9's whole
+    /// argument is that *"no check performed"* must not serialize as a clean result; a synthetic
+    /// 40-hex value is a commit id a reader can look up, fail to find, and mistake for a pruned
+    /// object rather than for an absence.
+    pub base_commit: Option<Oid>,
     pub workspace: Workspace,
     pub instructions: Capped<String>,
     pub acceptance_criteria: Vec<Capped<String>>,

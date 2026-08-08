@@ -462,6 +462,10 @@ fn fixture(tag: &str) -> Fixture {
             // own checkout on every fixture in this file, and nothing here asserts on it.
             no_change_record: Some(true),
             pane: None,
+            // A root: `isolation` and `allow_concurrent_writes` are child-only and refused
+            // beside `caller: None` (§6.6, §9).
+            isolation: None,
+            allow_concurrent_writes: None,
         }))
         .expect("the root is created over the socket");
     let MethodResult::AgentSpawn(root) = Method::AgentSpawn

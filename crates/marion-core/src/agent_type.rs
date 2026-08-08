@@ -159,6 +159,24 @@ pub struct AgentType {
 }
 
 impl AgentType {
+    /// **Does a node of this type have write tools?** — §6.6's *"at most one node with write tools
+    /// per cwd"*, made a question the code can ask.
+    ///
+    /// Read off `tools:` and not off `scope_ceiling`, and the two are genuinely different
+    /// questions. A scope is a *ceiling on where* a write would be allowed to land; every type has
+    /// one, and an orchestrator's default `["**"]` does not make it able to write anything — its
+    /// `tools:` list is empty, so it has no verb that writes. Keying occupancy on the scope would
+    /// put every read-only node in §6.6's table and refuse a second reader from a directory no
+    /// writer is in, which is a refusal §6.6 does not ask for.
+    ///
+    /// [`TOOL_WRITE`] is the whole of the write vocabulary today. `edit` and `bash` are refused by
+    /// every adapter and are not in this list because they are not mappable yet (§11 item 24); when
+    /// either is added it must be added here too, and that is a property of this being one
+    /// predicate rather than a `contains` spelled out at the call site.
+    pub fn writes_files(&self) -> bool {
+        self.tools.iter().any(|t| t == TOOL_WRITE)
+    }
+
     /// A type carrying every §3.1 default, so a built-in only states what it changes.
     fn defaults(name: &str, description: &str, harness: Harness) -> Self {
         Self {

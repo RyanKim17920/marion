@@ -70,7 +70,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use marion_core::agent_type;
-use marion_core::contract::{AgentId, ProcessExit, TaskContract, TaskId};
+use marion_core::contract::{AgentId, Isolation, ProcessExit, TaskContract, TaskId};
 use marion_core::journal::{
     KillConfirmed, KillIntent, ReapConfirmed, ReapIntent, RecordKind, SupervisorExited,
 };
@@ -1510,6 +1510,41 @@ impl RegistryHandle {
         // operator's own checkout. A child's writes are judged against the worktree marion made it,
         // so a caller that asked marion not to snapshot and was told nothing would have been given
         // a wrong answer that looks like a right one.
+        // **The mirror of the two below**: `isolation` is a *child's* field, and stating it for a
+        // root is a request marion cannot serve in either direction. A root **is** the operator's
+        // checkout — the tree they named with `--repo` — and §9's change record is built on exactly
+        // that; accepting `shared-cwd` and doing what marion already does would be an
+        // accept-and-ignore, and honouring `worktree` would branch the operator's own run into a
+        // directory they never asked marion to make.
+        if p.caller.is_none()
+            && let Some(iso) = p.isolation
+        {
+            return Err(RpcError::refused(
+                "isolation",
+                format!(
+                    "a spawn without a `caller` creates a **root**, and a root's workspace is not a \
+                     choice: it is the operator's own checkout at the `repo` this call names, which \
+                     is what §9's change record measures. `isolation: {:?}` is therefore either a \
+                     description of what marion already does or a request to run the operator's own \
+                     run somewhere else. Refused rather than dropped, because a parameter that is \
+                     accepted and not acted on tells the caller their choice was honoured (§11 item \
+                     23). `isolation` belongs on a child spawn, where the parent really is choosing \
+                     between §6.6's two workspaces.",
+                    iso.as_wire()
+                ),
+                "§6.6, §9, §11 item 23",
+            ));
+        }
+        if p.caller.is_none() && p.allow_concurrent_writes.is_some() {
+            return Err(RpcError::refused(
+                "allow_concurrent_writes",
+                "a spawn without a `caller` creates a root, and §6.6's write-conflict rule is about \
+                 a *child* sharing a caller's cwd. A root has no parent to share with, so there is \
+                 no guard here to lift and nothing for this field to permit. Refused rather than \
+                 dropped (§11 item 23).",
+                "§6.6, §11 item 23",
+            ));
+        }
         if p.caller.is_some() && p.no_change_record.is_some() {
             return Err(RpcError::refused(
                 "no_change_record",
@@ -1613,6 +1648,13 @@ impl RegistryHandle {
             // `effective_timeout` clamps it exactly as it clamps a stated one.
             timeout_secs: p.timeout_secs.unwrap_or(DEFAULT_SPAWN_TIMEOUT_SECS),
             model: p.model.clone(),
+            // **Absence resolved here, once.** §3.1's agent-type key defaults to `shared-cwd`;
+            // marion resolves an absent *`spawn` parameter* to `Worktree` instead, and
+            // `contract::Isolation` carries the argument: silence must not silently *remove*
+            // containment from every caller that names nothing.
+            isolation: p.isolation.unwrap_or(Isolation::Worktree),
+            // Absent is `false` — marion holds §6.6's guard. See `AgentSpawnParams`.
+            allow_concurrent_writes: p.allow_concurrent_writes.unwrap_or(false),
         };
 
         // Kept out of the thread's move, because the answer names it: the composing client reads
@@ -5688,6 +5730,8 @@ mod tests {
                 // name for stating it — see `a_caller_that_states_no_change_record_is_refused`.
                 no_change_record: None,
                 pane: None,
+                isolation: None,
+                allow_concurrent_writes: None,
                 // Every caller in this module is a `Some`, and a `Some` that states a repository
                 // is refused by name — see `a_caller_that_states_its_own_repository_is_refused`.
                 repo: None,
@@ -6189,6 +6233,8 @@ mod tests {
                     // the interesting value would pass against a build that only refused `true`.
                     no_change_record: Some(false),
                     pane: None,
+                    isolation: None,
+                    allow_concurrent_writes: None,
                     ..params(
                         Some(SpawnCaller {
                             agent_id: id("root"),

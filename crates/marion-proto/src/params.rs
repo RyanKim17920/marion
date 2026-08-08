@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, Isolation};
 use marion_core::harness::Harness;
 use serde::{Deserialize, Serialize};
 
@@ -341,6 +341,34 @@ pub struct AgentSpawnParams {
     /// to give.
     #[serde(default)]
     pub pane: Option<bool>,
+    /// **§5.4's `isolation`, and the mirror of [`Self::no_change_record`]'s pairing**: permitted
+    /// with `caller: Some(_)`, refused with `caller: None`.
+    ///
+    /// A child's workspace is a choice its parent makes — §6.6's own worktree, or the caller's
+    /// directory shared with it. A **root** has no such choice: it *is* the operator's checkout, in
+    /// the tree they named with `--repo`, and §9's change record is built on exactly that. Accepting
+    /// the key there and running in the checkout anyway would be the accept-and-ignore §11 item 23
+    /// refuses; accepting `worktree` and honouring it would branch a root off HEAD into a directory
+    /// the operator never asked marion to make.
+    ///
+    /// `Option`, so absent and stated are distinguishable and the pairing can be refused by name.
+    /// Absent, for a child, resolves to [`Isolation::Worktree`] — see that type for why the
+    /// resolution diverges from §3.1's stated default rather than silently removing containment
+    /// from every caller that names nothing.
+    ///
+    /// `remote` is not representable: it is refused at the request edge with a sentence naming it,
+    /// and is deliberately not an [`Isolation`] variant.
+    #[serde(default)]
+    pub isolation: Option<Isolation>,
+    /// **§6.6's escape hatch**: may this child share a cwd with a live write-capable sibling?
+    ///
+    /// Only meaningful beside `isolation: SharedCwd`; the request edge refuses `true` under
+    /// `worktree`, where marion gives the child its own tree and there is no guard to lift.
+    ///
+    /// `Option<bool>` for [`Self::no_change_record`]'s reason — absent and an explicit `false` must
+    /// be distinguishable, because `false` is what marion does and must never be refused.
+    #[serde(default)]
+    pub allow_concurrent_writes: Option<bool>,
 }
 
 /// `doctor/run`. §8's two modes, plus an optional single-harness filter — which *is* performed:
@@ -423,6 +451,8 @@ mod tests {
             model: None,
             no_change_record: Some(true),
             pane: None,
+            isolation: None,
+            allow_concurrent_writes: None,
         });
         rt!(AgentSpawnParams {
             agent_type: "codex-impl".into(),
@@ -438,6 +468,8 @@ mod tests {
             model: Some("sonnet".into()),
             no_change_record: None,
             pane: None,
+            isolation: None,
+            allow_concurrent_writes: None,
         });
         rt!(DoctorRunParams {
             mode: ProbeMode::Adapter,
@@ -502,9 +534,11 @@ mod tests {
                 model: None,
                 no_change_record: None,
                 pane: None,
+                isolation: None,
+                allow_concurrent_writes: None,
             })
             .unwrap(),
-            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null,"pane":null}"#
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}"#
         );
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
@@ -521,9 +555,11 @@ mod tests {
                 model: Some("sonnet".into()),
                 no_change_record: None,
                 pane: None,
+                isolation: None,
+                allow_concurrent_writes: None,
             })
             .unwrap(),
-            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet","no_change_record":null,"pane":null}"#
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet","no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}"#
         );
     }
 
@@ -597,8 +633,12 @@ mod tests {
                 "verification",
             ),
             (
-                r#"{"agent_type":"codex-impl","prompt":"go","isolation":"shared-cwd"}"#,
-                "isolation",
+                // `isolation` used to sit here, as a key the MCP schema declared and the socket did
+                // not carry. It carries it now, so the slot needs a key that is *still* only in the
+                // schema — otherwise this test would keep asserting a gap that has closed, which is
+                // the same staleness §11 item 23 is about.
+                r#"{"agent_type":"codex-impl","prompt":"go","name":"impl-auth"}"#,
+                "name",
             ),
         ];
         for (json, field) in cases {
@@ -608,6 +648,24 @@ mod tests {
                 "rejection must name the field: {e}"
             );
         }
+    }
+
+    /// **`remote` is not representable, and the deserializer is where that becomes a fact.**
+    ///
+    /// [`Isolation`] holds only workspaces marion builds, so a socket client cannot get `remote`
+    /// into a `SpawnRequest` even by bypassing the MCP edge — where the refusal is a sentence in
+    /// marion's voice ([`SpawnError::IsolationUnimplemented`]). Here it is a parse failure, and the
+    /// assertion is that it names the two values that *are* served rather than merely saying no:
+    /// the caller has to be able to fix the call.
+    #[test]
+    fn isolation_remote_is_not_a_value_this_type_can_hold() {
+        let e = serde_json::from_str::<AgentSpawnParams>(
+            r#"{"agent_type":"codex-impl","prompt":"go","isolation":"remote"}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("remote"), "names the value it rejected: {e}");
+        assert!(e.contains("worktree") && e.contains("shared-cwd"), "{e}");
     }
 
     #[test]

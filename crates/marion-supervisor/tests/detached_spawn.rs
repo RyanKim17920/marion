@@ -224,6 +224,10 @@ fn root_spawn(repo: Option<&Path>) -> AgentSpawnParams {
         model: None,
         no_change_record: None,
         pane: None,
+        // A root: `isolation` and `allow_concurrent_writes` are child-only and refused
+        // beside `caller: None` (§6.6, §9).
+        isolation: None,
+        allow_concurrent_writes: None,
     }
 }
 

@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use marion_core::contract::Isolation;
 use marion_core::contract::{TaskContract, TaskId, Workspace};
 use marion_core::journal::{RecordKind, decode};
 use marion_core::paths::ProjectDir;
@@ -124,6 +125,8 @@ fn spawn_one(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
         model: None,
+        isolation: Isolation::Worktree,
+        allow_concurrent_writes: false,
     };
     // A root caller: depth 0, the same thing `marion run` hands the bridge.
     let caller = Caller::root(
@@ -351,7 +354,11 @@ fn the_reap_leaves_an_empty_branch_behind_at_the_base_commit() {
         .unwrap_or_else(|e| panic!("the branch is expected to survive the reap, and did not: {e}"));
     assert_eq!(
         head.trim(),
-        contract.base_commit.0,
+        contract
+            .base_commit
+            .clone()
+            .expect("a worktree child always has a base commit")
+            .0,
         "CURRENT BEHAVIOUR, NOT DESIRED: `{branch}` survives the reap pointing at the base commit \
          — it advanced nowhere, because the child committed nothing and marion commits nothing on \
          its behalf"

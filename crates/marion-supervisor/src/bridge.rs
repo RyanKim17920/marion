@@ -1030,7 +1030,7 @@ mod tests {
                 git_common_dir: Some("/repo/.git".into()),
                 head_branch: Some("main".into()),
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/tmp/wt".into(),
                 branch: "marion/t1".into(),
@@ -1042,7 +1042,7 @@ mod tests {
             Duration::from_secs(900),
             SystemTime::from_unix_millis(1_785_625_628_619),
             &outcome,
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         )

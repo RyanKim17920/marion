@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use marion_core::contract::Isolation;
 use marion_core::contract::{AgentId, ExitStatus, TaskContract, TaskId};
 use marion_core::harness::Harness;
 use marion_core::journal::{RecordKind, decode};
@@ -944,6 +945,8 @@ fn a_childs_denied_permission_is_journaled_and_replays_back_against_the_child() 
             writable_scope: vec!["src/**".into()],
             timeout_secs: 60,
             model: None,
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
         },
         &TaskId("denial-1".into()),
         &Caller::root(

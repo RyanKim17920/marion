@@ -500,6 +500,8 @@ mod tests {
                 model: None,
                 no_change_record: None,
                 pane: None,
+                isolation: None,
+                allow_concurrent_writes: None,
             },
         )
         .expect_err("nothing is listening there");

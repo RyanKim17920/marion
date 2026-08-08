@@ -16,7 +16,7 @@
 use std::io::{BufRead, Write};
 use std::time::Duration;
 
-use marion_core::contract::{AgentId, TaskId};
+use marion_core::contract::{AgentId, Isolation, TaskId};
 use marion_core::paths::{ProjectDir, state_dir};
 use marion_harness::claude_code::NODE_TOKEN_ENV;
 
@@ -339,6 +339,12 @@ fn handle_tool_call(
                 // client is not sitting in front of a terminal marion could hand it. A pane belongs
                 // to a run somebody is watching, which is `marion run`'s case and not this one.
                 pane: None,
+                // **Sent as the caller stated it**, `None` and all: the supervisor performs the one
+                // resolution of absence, exactly as it does for `timeout_secs`. `remote` and every
+                // other unrecognised value never reach here — `unimplemented_parameter` above
+                // refused them before the environment was consulted.
+                isolation: args["isolation"].as_str().and_then(Isolation::from_wire),
+                allow_concurrent_writes: args["allow_concurrent_writes"].as_bool(),
             };
             // **The dial. There is no other branch.** A supervisor that does not answer is a
             // refusal in marion's own voice — see [`SpawnError::SupervisorUnreachable`] and
@@ -745,12 +751,21 @@ fn caller_depth(depth: Option<String>) -> Result<u32, UnreadableDepth> {
 ///
 /// Pure, and separate from [`handle_tool_call`], so the table above is testable as a table.
 fn unimplemented_parameter(args: &serde_json::Value) -> Option<spawn::SpawnError> {
-    if args["allow_concurrent_writes"].as_bool() == Some(true) {
-        return Some(spawn::SpawnError::ConcurrentWritesUnimplemented);
-    }
-    match args["isolation"].as_str() {
-        None | Some("worktree") => {}
-        Some(other) => return Some(spawn::SpawnError::IsolationUnimplemented(other.into())),
+    // **`isolation` first, because `allow_concurrent_writes`' answer depends on it.** Absence is
+    // `worktree` here for the same reason `handler` resolves it that way: see
+    // [`marion_core::contract::Isolation`] for why silence must not remove containment.
+    let isolation = match args["isolation"].as_str() {
+        None => Isolation::Worktree,
+        Some(s) => match Isolation::from_wire(s) {
+            Some(i) => i,
+            None => return Some(spawn::SpawnError::IsolationUnimplemented(s.into())),
+        },
+    };
+    if args["allow_concurrent_writes"].as_bool() == Some(true) && isolation != Isolation::SharedCwd
+    {
+        return Some(spawn::SpawnError::ConcurrentWritesUnimplemented {
+            isolation: isolation.as_wire(),
+        });
     }
     if args["verification"]
         .as_array()
@@ -1095,25 +1110,24 @@ mod tests {
 
     /// **The whole refusing half of the table, matched on the typed variant rather than on prose.**
     ///
-    /// One case per parameter that made marion perform a different verb quietly. `isolation` gets
-    /// both of its unimplemented values, because they fail in opposite directions and a refusal
-    /// that caught only one would leave the worse one standing: `shared-cwd` silently *added*
-    /// containment the caller did not ask for, while `remote` silently ran on the operator's own
-    /// machine. Each case also asserts the message **names the parameter**, since a caller that
-    /// cannot tell which of its eleven keys was rejected has been told almost nothing.
+    /// One case per parameter that made marion perform a different verb quietly. `isolation` keeps
+    /// only `remote`: `shared-cwd` is built now, and it moved to the accepting table below rather
+    /// than being reworded here — the two directions were never symmetrical, and the one left is
+    /// the dangerous one, a request to run *elsewhere* that marion would otherwise serve by running
+    /// on the operator's own machine. Each case also asserts the message **names the parameter**,
+    /// since a caller that cannot tell which of its eleven keys was rejected has been told almost
+    /// nothing.
     #[test]
     fn every_unimplemented_spawn_parameter_is_refused_by_name() {
         use spawn::SpawnError::*;
         for (label, args, needle) in [
             (
-                "allow_concurrent_writes",
+                // Under `worktree` — the resolution of an absent `isolation` — there is no sibling
+                // to share a tree with, so the flag has nothing to permit. Beside `shared-cwd` it
+                // is implemented, which the accepting table below is what asserts.
+                "allow_concurrent_writes without shared-cwd",
                 serde_json::json!({"allow_concurrent_writes": true}),
                 "allow_concurrent_writes",
-            ),
-            (
-                "isolation: shared-cwd",
-                serde_json::json!({"isolation": "shared-cwd"}),
-                "shared-cwd",
             ),
             (
                 "isolation: remote",
@@ -1137,19 +1151,33 @@ mod tests {
                 msg.contains(needle),
                 "{label}: the refusal must name what was rejected, got: {msg}"
             );
+            // Was `contains("not implemented")`, which stopped being true of two of these three
+            // once the thing they described got built: `allow_concurrent_writes` *is* implemented
+            // beside `shared-cwd` and is refused here only because `worktree` gives it nothing to
+            // permit. The property that survives the feature landing is the one the old needle was
+            // reaching for — a decision, not a failure, so the caller can tell "marion will not"
+            // from "marion could not" and does not retry.
             assert!(
-                msg.contains("not implemented"),
-                "{label}: and say it is unimplemented, so the caller can tell \"marion will not\" \
-                 from \"marion could not\", got: {msg}"
+                msg.starts_with("spawn refused"),
+                "{label}: and say it is a refusal rather than a failure, so the caller can tell \
+                 \"marion will not\" from \"marion could not\", got: {msg}"
             );
         }
         // The variants themselves, so a refusal cannot be renamed into a different meaning without
         // this failing: `isolation` carries the value it rejected, which is what lets a caller fix
         // the call rather than guess.
-        assert!(matches!(
-            unimplemented_parameter(&serde_json::json!({"allow_concurrent_writes": true})),
-            Some(ConcurrentWritesUnimplemented)
-        ));
+        // Destructured rather than matched as a unit variant: `ConcurrentWritesUnimplemented` now
+        // carries the isolation it had nothing to permit under, and a bare binding pattern would
+        // have matched *any* variant while looking like it checked one. That is not hypothetical —
+        // it is what this line silently became when the field was added.
+        match unimplemented_parameter(&serde_json::json!({"allow_concurrent_writes": true})) {
+            Some(ConcurrentWritesUnimplemented { isolation }) => assert_eq!(
+                isolation, "worktree",
+                "the refusal names the mode that gave the flag nothing to permit, which is the \
+                 resolution of the absent `isolation` here"
+            ),
+            other => panic!("expected ConcurrentWritesUnimplemented, got {other:?}"),
+        }
         assert!(matches!(
             unimplemented_parameter(&serde_json::json!({"verification": ["x"]})),
             Some(VerificationUnimplemented)
@@ -1197,12 +1225,25 @@ mod tests {
                 serde_json::json!({"background": true}),
             ),
             (
-                // `false` is §6.6's default and marion honours it structurally: every child gets
-                // its own worktree, so there is never a second writer in an occupied cwd. It is
-                // here, not in the refusing table, and the difference between the two values is
-                // the whole of §11 item 23's correction.
+                // `false` is §6.6's default and is never refused in either mode: it is exactly
+                // what marion does. It is here, not in the refusing table, and the difference
+                // between the two values is the whole of §11 item 23's correction.
                 "allow_concurrent_writes: false",
                 serde_json::json!({"allow_concurrent_writes": false}),
+            ),
+            (
+                // §3.1's own default, which marion refused by name until this landed — it accepted
+                // only the value that hard-requires git. Its presence in *this* list is the
+                // assertion that `Workspace::SharedCwd` is built rather than that the refusal was
+                // reworded.
+                "isolation: shared-cwd, now that it is built",
+                serde_json::json!({"isolation": "shared-cwd"}),
+            ),
+            (
+                // §6.6's escape hatch beside the one mode that has a guard to lift. Refusing this
+                // pair would leave the write-conflict rule with no way past it.
+                "allow_concurrent_writes: true beside shared-cwd",
+                serde_json::json!({"isolation": "shared-cwd", "allow_concurrent_writes": true}),
             ),
             (
                 "the dropped-but-harmless key",

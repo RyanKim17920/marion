@@ -1800,6 +1800,12 @@ fn main() -> ExitCode {
                 // `false` must stay distinguishable on the wire, or the supervisor's root-only
                 // pairing refusal would fire on every operator who never mentioned a pane.
                 pane: args.pane.then_some(true),
+                // **Child-only, and the supervisor refuses either of them beside `caller: None`.**
+                // A root's workspace is not a choice: it is the operator's own checkout at `repo`,
+                // which is what §9's change record measures. `marion run` therefore has no
+                // `--isolation` flag to forward and states neither field.
+                isolation: None,
+                allow_concurrent_writes: None,
             },
         ))?;
         // Nothing can be notified before the first attach, so the sink here is unreachable — and it

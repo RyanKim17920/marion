@@ -342,6 +342,10 @@ impl Client {
             model: None,
             no_change_record: None,
             pane: None,
+            // A root: `isolation` and `allow_concurrent_writes` are child-only and refused
+            // beside `caller: None` (§6.6, §9).
+            isolation: None,
+            allow_concurrent_writes: None,
         }));
         let (_, outcome) = self.read_to_response(id);
         let Outcome::Result(body) = outcome else {

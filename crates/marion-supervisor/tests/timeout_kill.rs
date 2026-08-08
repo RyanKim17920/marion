@@ -30,6 +30,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use marion_core::contract::Isolation;
 use marion_core::contract::{ExitStatus, TaskId};
 use marion_core::paths::ProjectDir;
 use marion_provider::{CannedServer, Config, Script};
@@ -148,6 +149,8 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         // None, exactly as before this field existed: `codex exec` takes no model argument, so
         // this criterion's invocation is byte-identical to the one it has always measured.
         model: None,
+        isolation: Isolation::Worktree,
+        allow_concurrent_writes: false,
     };
     let started = Instant::now();
     // A root caller (§6.1 step 2): depth 0, the same top-level `spawn` `marion run` produces.

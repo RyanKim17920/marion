@@ -433,6 +433,8 @@ mod tests {
                 Call::AgentSpawn(AgentSpawnParams {
                     no_change_record: None,
                     pane: None,
+                    isolation: None,
+                    allow_concurrent_writes: None,
                     agent_type: "codex-impl".into(),
                     prompt: "implement §6.3".into(),
                     caller: Some(crate::params::SpawnCaller {

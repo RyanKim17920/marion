@@ -127,6 +127,22 @@ pub struct SpawnRequest {
     /// The model to run the child on, in marion's request vocabulary. **Optional, with the agent
     /// type's own `model` key as the default** (§3.1) — see [`resolve_model`].
     pub model: Option<String>,
+    /// §5.4's `isolation`: **which of §6.6's two workspaces this child gets** (see
+    /// [`marion_core::contract::Isolation`]).
+    ///
+    /// Resolved, not optional. The wire carries an `Option` because absence and a stated value are
+    /// different requests, but by the time a spawn is a `SpawnRequest` the question is settled — the
+    /// same discipline `timeout_secs` follows one field up, and for the same reason: two call sites
+    /// that each turn absence into a value are two places for the default to disagree. `run_spawn`
+    /// reads this field and nothing else to decide where the child runs.
+    pub isolation: Isolation,
+    /// §5.4/§6.6's escape hatch: may this child share a cwd with a live write-capable sibling?
+    ///
+    /// Only ever `true` under [`Isolation::SharedCwd`] — the request edge refuses the combination
+    /// with `worktree`, where there is no sibling to share with. It suppresses the §6.6 occupancy
+    /// claim and nothing else; it does not widen scope, and a child that takes it is still judged
+    /// against `writable_scope`.
+    pub allow_concurrent_writes: bool,
 }
 
 /// The node whose `spawn` this is — §6.1 step 2's gates read the **caller's** agent type, never
@@ -1156,12 +1172,70 @@ pub fn run_spawn_watched(
         armed: true,
     };
     let agent_dir = env.project_dir.agent(&agent_id);
-    let wt = agent_dir.worktree();
     let ch = agent_dir.config_dir();
     std::fs::create_dir_all(&ch)?;
-    std::fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
-    let branch = format!("marion/{}", task_id.0);
-    let base = make_worktree(&req.repo, &wt, &branch)?;
+    // **§6.6's two workspaces, selected by §5.4's `isolation` and by nothing else.**
+    //
+    // `make_worktree` used to run here unconditionally, which is what made git a *precondition* for
+    // running marion at all rather than one strategy for containing a child: §2 keys a project on
+    // *"the git common-dir, falling back to cwd"* and is explicit that the alternative was
+    // "refusing to run outside git", but a `spawn` in a directory with no repository died on git's
+    // own stderr several steps further in. The two arms below are the whole of that fix.
+    //
+    // The order matters. Everything that can be refused is refused before `make_worktree`, because
+    // a worktree is the first *irreversible* thing a spawn does — a failed spawn that already added
+    // one leaves a directory, a `.git/worktrees/` entry and a branch behind.
+    let (workspace, base, cwd_claim) = match req.isolation {
+        Isolation::Worktree => {
+            // **Asked before it is attempted**, so the answer is marion's sentence and not git's.
+            // `git_common_dir` is §2's own derivation, so "not a repository" here and "keyed on cwd"
+            // there are one determination rather than two that could drift.
+            if crate::socket::git_common_dir(&req.repo).is_none() {
+                return Err(SpawnError::NotAGitRepo {
+                    cwd: req.repo.clone(),
+                });
+            }
+            let wt = agent_dir.worktree();
+            std::fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
+            let branch = format!("marion/{}", task_id.0);
+            let base = make_worktree(&req.repo, &wt, &branch)?;
+            (
+                Workspace::Worktree { path: wt, branch },
+                Some(base),
+                crate::spawn::CwdClaim::none(),
+            )
+        }
+        Isolation::SharedCwd => {
+            // **The caller's own directory, untouched.** No worktree, no branch, and deliberately
+            // no `git init`: §6.6 says marion never auto-merges, and creating a repository in
+            // someone's directory is a larger uninvited act than merging into one.
+            //
+            // `base_commit` is HEAD *if there is a HEAD* — a `shared-cwd` child in a repository
+            // still affords §6.7's diff. Outside a repository there is no commit, and `None` is the
+            // honest value; `head_commit` returns it rather than inventing a zero oid, and
+            // everything downstream that needs a base is `Option`-typed for exactly this case.
+            let base = crate::spawn::head_commit(&req.repo);
+            // §6.6: at most one write-capable node per cwd. Taken *before* the child exists and
+            // released when this claim drops, which is every exit from this function.
+            let claim = if agent_type.writes_files() && !req.allow_concurrent_writes {
+                crate::spawn::CwdClaim::claim(&req.repo, &agent_id)?
+            } else {
+                crate::spawn::CwdClaim::none()
+            };
+            (
+                Workspace::SharedCwd {
+                    path: req.repo.clone(),
+                },
+                base,
+                claim,
+            )
+        }
+    };
+    // Held for the child's whole run. Named rather than `_`, because `let _ = ..` drops immediately
+    // and would release §6.6's claim before the child it is protecting had started — the guard would
+    // still compile, still be tested by a single-spawn test, and protect nothing.
+    let _cwd_claim = cwd_claim;
+    let wt = workspace.path().clone();
 
     // §6.1 step 5, through the seam, **dispatched on the agent type's harness**. This was a
     // constant until now, which meant a `claude` agent type wrote a Codex config, exec'd `codex`,
@@ -1515,8 +1589,26 @@ pub fn run_spawn_watched(
         run.stderr.clone(),
     );
 
-    let changed = changed_paths(&wt, &base).unwrap_or_default();
-    let diff = diff_text(&wt, &base).ok().filter(|d| !d.is_empty());
+    // **§6.7's honest degradation, and the `Option` is the whole of it.**
+    //
+    // Both routes need a `base_commit` to diff against, so with no commit there is no route — which
+    // is precisely the case §6.7 reserves `scope_enforced: false` for: the flag records whether the
+    // check *ran*, not whether it passed. `None` propagates that into `build_contract`, which is the
+    // only thing that can turn it into the flag.
+    //
+    // `changed_paths(..)` used to be `.unwrap_or_default()`, which collapsed *failed* into *empty*
+    // and left the flag `true` — a clean bill of health issued by a check that never ran. Failure
+    // and absence now travel the same honest path, because a git call that errored told marion
+    // nothing about what changed either.
+    //
+    // No `changed_paths` is fabricated for the no-git case, and there is deliberately no filesystem
+    // fallback (mtimes, a directory walk): git is §6.7's one authority for this field, so a second
+    // source would be a different measurement wearing the same field name.
+    let changed = base.as_ref().and_then(|b| changed_paths(&wt, b).ok());
+    let diff = base
+        .as_ref()
+        .and_then(|b| diff_text(&wt, b).ok())
+        .filter(|d| !d.is_empty());
     let mut contract = build_contract(
         task_id.clone(),
         AgentId(caller.agent_id.clone()),
@@ -1525,10 +1617,7 @@ pub fn run_spawn_watched(
             head_branch: None,
         },
         base,
-        Workspace::Worktree {
-            path: wt.clone(),
-            branch,
-        },
+        workspace,
         &req.prompt,
         &req.acceptance_criteria,
         &agent_type.scope_ceiling,
@@ -1705,7 +1794,7 @@ mod tests {
                 git_common_dir: Some("/repo/.git".into()),
                 head_branch: Some("main".into()),
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/tmp/wt".into(),
                 branch: "marion/t1".into(),
@@ -1721,7 +1810,7 @@ mod tests {
                 exit_code: Some(0),
                 ..Default::default()
             },
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         );
@@ -1820,7 +1909,7 @@ mod tests {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/wt".into(),
                 branch: "b".into(),
@@ -1836,7 +1925,7 @@ mod tests {
                 signal: out.signal,
                 ..ChildOutcome::default()
             },
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         );
@@ -2167,7 +2256,7 @@ mod tests {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/wt".into(),
                 branch: "b".into(),
@@ -2182,7 +2271,7 @@ mod tests {
                 narrative: Some(large),
                 ..ChildOutcome::default()
             },
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         );
@@ -2301,6 +2390,8 @@ mod tests {
             // and a regression re-running `codex` for real is a fast failure rather than a wait.
             timeout_secs: 1,
             model: None,
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
         };
 
         let result = run_spawn(
@@ -2425,6 +2516,8 @@ mod tests {
             writable_scope: vec!["src/**".into()],
             timeout_secs: 1,
             model: None,
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
         };
         let observer = Recorder {
             project: env.project_dir.clone(),
@@ -2702,6 +2795,8 @@ mod tests {
             writable_scope: vec![],
             timeout_secs: 1,
             model: model.map(str::to_string),
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
         }
     }
 

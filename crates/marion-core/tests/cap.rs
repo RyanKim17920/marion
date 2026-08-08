@@ -44,7 +44,7 @@ fn contract(comp: Completion) -> TaskContract {
             git_common_dir: Some("/repo/.git".into()),
             head_branch: Some("main".into()),
         },
-        base_commit: Oid("a".repeat(40)),
+        base_commit: Some(Oid("a".repeat(40))),
         workspace: Workspace::Worktree {
             path: "/tmp/wt".into(),
             branch: "marion/t1".into(),

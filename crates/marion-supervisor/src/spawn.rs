@@ -79,16 +79,64 @@ pub enum SpawnError {
     /// is safe for a reason item 23 did not have in view, and that `true` is the half needing a
     /// sentence — but the answer had to be *reached*, not inherited.
     ///
-    /// It comes out together with `isolation` when §6.6's holder registry lands.
+    /// **§6.6's escape hatch, asked for in a mode that cannot share a cwd.**
+    ///
+    /// The doc above is the history; this is what the variant now means, and the two differ because
+    /// the holder registry landed. `allow_concurrent_writes: true` is **no longer refused outright**
+    /// — under `isolation: "shared-cwd"` it is implemented, and it is the one thing that suppresses
+    /// [`Self::CwdOccupied`]. What is refused is asking for it under `worktree`, where it has
+    /// nothing to permit: marion creates a private tree for that child, so no sibling can be in it
+    /// and no guard is being disabled.
+    ///
+    /// Refused rather than accepted-and-dropped even though the outcome looks harmless, because the
+    /// two readings of a granted `true` are not the same promise. A caller passing it believes it
+    /// may share a tree with a live writer; under `worktree` it may not, and marion answering
+    /// `isError: false` would confirm a capability it did not grant.
+    ///
+    /// `false` and absence are not refused in either mode: `false` is exactly what marion does.
     #[error(
-        "spawn refused: `allow_concurrent_writes: true` is declared in marion's tool schema but \
-         not implemented, and has nothing to permit — it is §6.6's escape hatch from the \
-         shared-cwd write-conflict \
-         rule, and marion creates a git worktree for every child, so no two children ever share a \
-         cwd. `isolation: \"shared-cwd\"` is itself refused. Omit the field or pass `false`: with \
-         a worktree per child, \"no second writer in my tree\" is what marion already guarantees."
+        "spawn refused: `allow_concurrent_writes: true` has nothing to permit under `isolation: \
+         {isolation:?}`. It is §6.6's escape hatch from the shared-cwd write-conflict rule — it \
+         lets a child share a directory with a live write-capable sibling — and marion gives a \
+         `worktree` child its own tree, so it has no sibling to share with and no guard to lift. \
+         Pass `isolation: \"shared-cwd\"` if you meant the child to run in the caller's own \
+         directory, or omit this field."
     )]
-    ConcurrentWritesUnimplemented,
+    ConcurrentWritesUnimplemented { isolation: &'static str },
+    /// **§6.6's write-conflict rule: at most one write-capable node per cwd.**
+    ///
+    /// *"A second write-capable spawn into an occupied cwd is refused, naming the holder"* — and it
+    /// names the holder because that is the only part of the sentence a caller can act on. "This
+    /// directory is busy" leaves them guessing at which of their own children to wait for; an agent
+    /// id is a node they can `wait` on.
+    ///
+    /// Unreachable until now: every child got its own worktree, so no cwd was ever occupied twice
+    /// and §11 item 23 recorded the rule as a refusal that is not in code. `shared-cwd` is what
+    /// makes it reachable, which is why the guard lands in the same change as the workspace and not
+    /// after it.
+    ///
+    /// **Two children writing one tree is worse than two humans doing it** (§6.6): each harness
+    /// keeps its own checkpoint state, so a checkpoint restore in one child silently reverts the
+    /// other's work. `ToolCall.locations` would say afterwards who touched what, but attribution is
+    /// forensics — this is prevention.
+    ///
+    /// `allow_concurrent_writes: true` is the caller's way past it, per §5.4, and is the only thing
+    /// that suppresses this check.
+    #[error(
+        "spawn refused (§6.6): {cwd} already has a live write-capable node in it — agent {holder} — \
+         and at most one node with write tools may share a cwd. Nothing was started. Two agents \
+         writing one tree is lost-update, and worse than two people doing it: each harness keeps \
+         its own checkpoint state, so a checkpoint restore in one child silently reverts the \
+         other's work. Wait for {holder} to finish, or pass `isolation: \"worktree\"` to give this \
+         child its own tree, or pass `allow_concurrent_writes: true` to take that risk \
+         deliberately.",
+        cwd = cwd.display(),
+        holder = holder.0
+    )]
+    CwdOccupied {
+        cwd: PathBuf,
+        holder: marion_core::contract::AgentId,
+    },
     /// A **backgrounded** child's thread unwound.
     ///
     /// It exists because `Background::wait` must answer with something. Re-raising the panic into
@@ -109,32 +157,62 @@ pub enum SpawnError {
          `SpawnAborted` written by the unwind rather than with a record of what it did."
     )]
     Panicked(String),
-    /// §5.4's `isolation`, for every value but the one marion performs.
+    /// §5.4's `isolation`, for the **one** value that is still a name without a workspace.
     ///
-    /// **`run_spawn` calls `make_worktree` unconditionally** and builds `Workspace::Worktree`;
-    /// `Workspace::SharedCwd` is constructed nowhere outside `marion_core`'s own definition, there
-    /// is no `Remote` variant at all, and `AgentType` carries no `isolation` key for a `spawn` to
-    /// override. So the field selected nothing: `shared-cwd` and `remote` both got a worktree.
+    /// This variant used to cover `shared-cwd` as well, and covering it was the whole of §11 item
+    /// 23's `isolation` bullet: `run_spawn` called `make_worktree` unconditionally,
+    /// `Workspace::SharedCwd` was constructed nowhere, and marion therefore refused §3.1's own
+    /// default and accepted only the value that hard-requires git. `shared-cwd` is now built, so it
+    /// is no longer named here — a refusal kept past the gap it described is just a refusal.
     ///
-    /// Refused rather than ignored because **the two directions are not symmetrical and neither is
-    /// harmless**. `shared-cwd → worktree` is *more* containment than was asked for, but it puts
-    /// the child's writes in a tree the caller never named and §6.6 says marion "never auto-merges"
-    /// — so the caller's edits are not where it expects them, and the §6.6 write-conflict refusal
-    /// it was relying on to name a holder never runs. `remote → worktree` is the dangerous one: a
-    /// request to run somewhere else, silently served by running on the operator's own machine.
-    /// The contract does say `Worktree`, so a caller reading it carefully could tell — but "the
-    /// artifact contradicts your request and nothing points at the contradiction" is the §12 shape,
-    /// not an excuse for it.
+    /// **`remote` stays, and not merely because it is unfinished.** It is the dangerous direction
+    /// of the two item 23 separated: a request to run somewhere *else*, served by running on the
+    /// operator's own machine. There is no `Workspace::Remote`, no transport, no host and no auth
+    /// story anywhere in the design, and §1 puts *"remote hosting"* out of scope in as many words.
+    /// So it is refused at the edge and is deliberately not a [`marion_core::contract::Isolation`]
+    /// variant: a value the type system can hold is a value some later call site may quietly
+    /// default, and the point of that enum is that everything in it is a workspace marion builds.
     ///
-    /// `worktree` and absence are **not** refused: that is what marion does, so accepting it is
-    /// the honest answer rather than a lucky one.
+    /// `worktree`, `shared-cwd` and absence are **not** refused: all three now name something marion
+    /// does.
     #[error(
-        "spawn refused: `isolation: {0:?}` is declared in marion's tool schema but not implemented \
-         — marion creates a git worktree for every child (§6.6), and `shared-cwd` and `remote` \
-         have no code path. Omit the field or pass `\"worktree\"`; a spawn that silently ran \
-         somewhere other than where it was asked to would be worse than this refusal."
+        "spawn refused: `isolation: {0:?}` is not a workspace marion can build. `\"worktree\"` gives \
+         the child its own git worktree branched off HEAD, and `\"shared-cwd\"` runs it in the \
+         caller's own directory (§6.6) — those two are implemented. `\"remote\"` is declared in the \
+         schema and has no transport, no host and no code path anywhere; design §1 puts remote \
+         hosting out of scope. Serving it by running on this machine would be a request to run \
+         elsewhere answered by running here, which is worse than this refusal."
     )]
     IsolationUnimplemented(String),
+    /// **`isolation: "worktree"` where there is no repository to add a worktree to.**
+    ///
+    /// The refusal that replaces a leaked `git command failed: fatal: not a git repository`. That
+    /// message came out of [`git`]'s generic stderr passthrough inside `make_worktree`, and it named
+    /// neither the command marion ran nor the directory it ran it in — so an operator saw git's
+    /// words about a directory git did not mention, from a tool they did not invoke, and had no way
+    /// to tell which of `--repo`, their cwd, or marion itself was wrong. It also arrived *after* the
+    /// node had an identity, a journal intent and an agent directory, for a condition that is
+    /// knowable before any of them.
+    ///
+    /// Checked with `socket::git_common_dir`, which is §2's own derivation, so "marion says this is
+    /// not a repository" and "marion keys this project on its cwd" can never disagree.
+    ///
+    /// **Both exits are named because both are real fixes**, and which one is right is the
+    /// operator's call, not marion's: `git init` makes the tree a repository and keeps the
+    /// containment; `isolation: "shared-cwd"` keeps the tree as it is and gives up the containment.
+    /// Guessing either — silently downgrading to `shared-cwd`, or running `git init` on someone's
+    /// directory — is a side effect nobody asked for.
+    #[error(
+        "spawn refused: `isolation: \"worktree\"` needs a git repository to add a worktree to, and \
+         {cwd} is not in one — `git -C {cwd} rev-parse --git-common-dir` reports no repository. \
+         Nothing was started. Either run `git init` in {cwd} (the child then gets its own worktree \
+         branched off HEAD, and §6.7's diff, changed_paths and scope check all work), or pass \
+         `isolation: \"shared-cwd\"` to run the child directly in that directory — with no \
+         repository there is no diff route, so its contract will honestly record \
+         `scope_enforced: false` (§6.7).",
+        cwd = cwd.display()
+    )]
+    NotAGitRepo { cwd: PathBuf },
     /// §5.4's `verification`, which is **accepted, dropped, and then contradicted in the artifact**.
     ///
     /// The worst of the family, because the lie is durable. `spawn`'s schema declares it, nothing
@@ -349,6 +427,83 @@ pub fn repo_write_guard() -> std::sync::MutexGuard<'static, ()> {
     REPO_WRITE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// §6.6's occupancy table: **which cwd currently holds a live write-capable node**.
+///
+/// Keyed on the *canonicalized* cwd, because occupancy is a fact about a directory and not about a
+/// spelling of it: `/tmp/p`, `/tmp/p/.`, and a symlink to either are one tree, and a table keyed on
+/// the literal argument would let two writers into it by arriving through two names. Canonicalizing
+/// is also what makes the key comparable to the one §2 hashes the supervisor on.
+///
+/// **What this closes, and what it explicitly does not.** It closes the in-process case: every
+/// write-capable `shared-cwd` node this supervisor owns is in this table for its whole life, so a
+/// second one is refused by [`SpawnError::CwdOccupied`] with the first one's agent id. It does
+/// **not** close the cross-process case, and that is the same open edge §11 item 31 records against
+/// [`REPO_WRITE`] one screen up — a second `marion` process, or the operator's own editor, holds no
+/// entry here and is not consulted. Item 31 measured the analogous git race failing in *every*
+/// repetition at four concurrent processes; nothing in this change moves that number, and the
+/// closure it names — a file lock beside the repository — would be needed here too. This guard is
+/// the honest half of §6.6, and saying which half is the point.
+///
+/// A `Mutex<HashMap>` and not a lock per cwd: the critical section is a hash lookup and an insert,
+/// the table is at most `max_concurrent_children` deep per node, and a striped design would buy
+/// nothing measurable while making the "check and claim" step non-atomic — which is the one property
+/// that must hold, since two spawns racing a `contains_key` would both pass it.
+static CWD_HOLDERS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, AgentId>>> =
+    std::sync::Mutex::new(None);
+
+/// A claim on a cwd, released when it drops.
+///
+/// **RAII and not a matched release call**, because every exit from `run_spawn` must release it and
+/// several of them are `?` returns — the same reason `run.rs` resolves a journal intent with
+/// `AbortOnDrop` rather than at each return. A leaked claim is worse than no guard at all: it
+/// refuses every future spawn into that directory for the life of the supervisor, naming a node that
+/// has long since exited, and an operator cannot clear it without restarting.
+///
+/// `None` in [`Self::cwd`] is the un-claimed case — a `worktree` child, a read-only `shared-cwd`
+/// child, or one that passed `allow_concurrent_writes: true`. Carrying the guard unconditionally and
+/// letting it be empty keeps the release path single, rather than making every caller remember
+/// whether it took a claim.
+#[derive(Debug)]
+pub struct CwdClaim {
+    cwd: Option<PathBuf>,
+}
+
+impl Drop for CwdClaim {
+    fn drop(&mut self) {
+        let Some(cwd) = self.cwd.take() else { return };
+        let mut t = CWD_HOLDERS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(map) = t.as_mut() {
+            map.remove(&cwd);
+        }
+    }
+}
+
+impl CwdClaim {
+    /// The claim a node that cannot occupy a cwd holds: nothing, released by dropping nothing.
+    pub fn none() -> Self {
+        Self { cwd: None }
+    }
+
+    /// **Claim `cwd` for `holder`, or refuse naming whoever has it** (§6.6).
+    ///
+    /// Check and claim are one locked step. Split into "is it free?" then "take it", two spawns
+    /// could both read free and both write, which is exactly the lost-update this exists to prevent
+    /// — one level up from the trees it is preventing it in.
+    pub fn claim(cwd: &Path, holder: &AgentId) -> Result<Self, SpawnError> {
+        let key = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let mut t = CWD_HOLDERS.lock().unwrap_or_else(|e| e.into_inner());
+        let map = t.get_or_insert_with(std::collections::HashMap::new);
+        if let Some(existing) = map.get(&key) {
+            return Err(SpawnError::CwdOccupied {
+                cwd: key.clone(),
+                holder: existing.clone(),
+            });
+        }
+        map.insert(key.clone(), holder.clone());
+        Ok(Self { cwd: Some(key) })
+    }
+}
+
 /// Create the child's worktree at `base_commit`.
 ///
 /// `rev-parse HEAD` is inside the guard as well as `worktree add`, deliberately: the two are one
@@ -372,6 +527,27 @@ pub fn make_worktree(repo: &Path, path: &Path, branch: &str) -> Result<Oid, Spaw
         ],
     )?;
     Ok(Oid(head))
+}
+
+/// **HEAD of the tree at `cwd`, or `None` because there is no commit to name.**
+///
+/// The `shared-cwd` counterpart of the `rev-parse HEAD` inside [`make_worktree`], and separate from
+/// it because the two answer to different failures. There, a missing HEAD is fatal — the worktree is
+/// created *at* it. Here it is one of three ordinary states of a directory marion did not make: no
+/// repository at all, a repository with no commits yet (`git init` and nothing since), or a normal
+/// checkout. Only the third yields a `base_commit`, and the first two are not errors — they are
+/// directories a child can perfectly well run in, with §6.7's diff route simply unavailable.
+///
+/// **Deliberately not under [`repo_write_guard`]**, which [`make_worktree`] does hold across its own
+/// `rev-parse`. That guard exists because reading HEAD and *writing* a worktree must be one
+/// operation; this reads and writes nothing, so serializing it would add contention to the path that
+/// touches the repository least.
+pub fn head_commit(cwd: &Path) -> Option<Oid> {
+    git(cwd, &["rev-parse", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(Oid)
 }
 
 /// `changed_paths` in three independent terms, so no term's meaning depends on index state:
@@ -791,7 +967,7 @@ pub fn build_contract(
     task_id: TaskId,
     requester: AgentId,
     repo: RepoIdentity,
-    base: Oid,
+    base: Option<Oid>,
     workspace: Workspace,
     instructions: &str,
     criteria: &[String],
@@ -800,13 +976,28 @@ pub fn build_contract(
     timeout: Duration,
     spawned: SystemTime,
     outcome: &ChildOutcome,
-    changed: Vec<PathBuf>,
+    // **`None` means neither of §6.7's two routes was available**, not that nothing changed.
+    //
+    // The distinction is the entire reason `scope_enforced` exists, and it could not be made while
+    // this was a bare `Vec`: the caller wrote `changed_paths(..).unwrap_or_default()`, so a
+    // workspace that afforded no diff at all — no repository, no `base_commit` — produced
+    // `changed_paths: []`, `scope_violations: []`, `scope_enforced: true`, which §6.7 names twice
+    // as *the* false-confidence shape the two-field split exists to prevent. An `Option` makes the
+    // clean bill of health unreachable without a check having run to issue it.
+    changed: Option<Vec<PathBuf>>,
     diff: Option<String>,
     evidence: Vec<CommandOutcome>,
 ) -> TaskContract {
+    // **Both conditions, and neither is redundant.** §6.7's flag records whether the check *ran*,
+    // and a check needs two things: a workspace that can answer "what changed" (`changed`), and a
+    // pair of scope lists to judge the answer against (`scope`). Either missing means no check
+    // happened, and `false` is what says so.
     let scope = Scope::new(ceiling, requested).ok();
+    let scope_enforced = scope.is_some() && changed.is_some();
+    let changed = changed.unwrap_or_default();
     let violations = scope
         .as_ref()
+        .filter(|_| scope_enforced)
         .map(|s| s.violations(&changed))
         .unwrap_or_default();
     // A child that never reported is Unreported even if everything else looks clean — the status
@@ -866,7 +1057,7 @@ pub fn build_contract(
         changed_paths_omitted: 0,
         result_commits_omitted: 0,
         scope_violations_omitted: 0,
-        scope_enforced: scope.is_some(),
+        scope_enforced,
         scope_violations: violations,
         diff: diff.map(Capped::whole),
         evidence,
@@ -1057,7 +1248,7 @@ mod tests {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/wt".into(),
                 branch: "b".into(),
@@ -1074,7 +1265,7 @@ mod tests {
                 exit_code: Some(0),
                 ..ChildOutcome::default()
             },
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         );
@@ -1101,7 +1292,7 @@ mod tests {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/wt".into(),
                 branch: "b".into(),
@@ -1117,7 +1308,7 @@ mod tests {
                 exit_code: Some(0),
                 ..ChildOutcome::default()
             },
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         );
@@ -1156,7 +1347,7 @@ mod tests {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/wt".into(),
                 branch: "b".into(),
@@ -1173,7 +1364,7 @@ mod tests {
                 exit_code: Some(0),
                 ..ChildOutcome::default()
             },
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         );
@@ -1193,7 +1384,7 @@ mod tests {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/wt".into(),
                 branch: "b".into(),
@@ -1209,7 +1400,7 @@ mod tests {
                 timed_out: true,
                 ..ChildOutcome::default()
             },
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         );
@@ -1225,7 +1416,7 @@ mod tests {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/wt".into(),
                 branch: "b".into(),
@@ -1242,7 +1433,7 @@ mod tests {
                 exit_code: Some(0),
                 ..ChildOutcome::default()
             },
-            vec![],
+            Some(vec![]),
             None,
             vec![],
         );
@@ -1258,7 +1449,7 @@ mod tests {
                 git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
-            Oid("a".repeat(40)),
+            Some(Oid("a".repeat(40))),
             Workspace::Worktree {
                 path: "/wt".into(),
                 branch: "b".into(),
@@ -1275,7 +1466,10 @@ mod tests {
                 exit_code: Some(0),
                 ..ChildOutcome::default()
             },
-            vec![PathBuf::from("src/a.rs"), PathBuf::from("outside/b.txt")],
+            Some(vec![
+                PathBuf::from("src/a.rs"),
+                PathBuf::from("outside/b.txt"),
+            ]),
             None,
             vec![],
         );

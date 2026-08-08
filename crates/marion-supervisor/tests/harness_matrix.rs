@@ -43,6 +43,7 @@
 
 use std::path::PathBuf;
 
+use marion_core::contract::Isolation;
 use marion_core::contract::{ExitStatus, TaskContract, TaskId};
 use marion_core::harness::Harness;
 use marion_core::paths::ProjectDir;
@@ -186,6 +187,8 @@ fn drive(cell: &Cell) -> Evidence {
         writable_scope: vec!["src/**".into()],
         timeout_secs: CHILD_TIMEOUT_SECS,
         model: cell.model.map(str::to_string),
+        isolation: Isolation::Worktree,
+        allow_concurrent_writes: false,
     };
     // A root caller: depth 0, so §6.1 step 2's gates see a top-level `spawn` — the same thing
     // `marion run` hands the bridge. `claude` is marion's root type and its `max_depth` is the
