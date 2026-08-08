@@ -950,6 +950,17 @@ fn signal_ready() {
     }
 }
 
+/// Write one frame and flush it; returns whether it actually reached the harness.
+///
+/// A free function so that **every** outbound frame goes through the same two statements, and the
+/// bool is what [`signal_ready`]'s ordering hangs on. "Ready" means *the harness has been sent the
+/// tool list* — so a marker written after a write that failed is a false statement, and one
+/// written **before** the write is a statement that is not yet true. Returning the result makes
+/// the second impossible to express: there is nothing to gate on until the flush has happened.
+fn emit(stdout: &mut std::io::Stdout, frame: &serde_json::Value) -> bool {
+    writeln!(stdout, "{frame}").is_ok() && stdout.flush().is_ok()
+}
+
 /// Serve MCP over stdio until the harness closes our stdin, **and then leave**.
 ///
 /// # The hold that used to be here, and why its deletion is the point
@@ -977,18 +988,55 @@ pub fn serve_stdio(who: Principal) {
     let bg = background::Background::new();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
+    // **The whole of the initialization state, and it only ever moves one way.**
+    //
+    // MCP requires `initialize` before any other request, and marion used to answer `tools/call`
+    // from a cold start. This flag is that rule — and it is a `bool` that is only ever set, never
+    // cleared, because the *repeat* is the case that must keep working.
+    //
+    // s6 caught codex issuing two full `initialize` + `tools/list` sequences for one `exec` run,
+    // and `marion-testsupport` records 0.146.1/0.147.0 spawning the bridge once. A bridge that
+    // tolerates a second spawn is still correct; one that requires it never was. So a repeated
+    // `initialize` is answered exactly like the first — re-negotiated from that frame's own offer,
+    // with no memory of the previous answer to contradict and no state to reset underneath a
+    // `tools/list` the client may already have acted on.
+    let mut initialized = false;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let Some(req) = bridge::parse(line) else {
-            continue;
+        let req = match bridge::parse(line) {
+            Ok(req) => req,
+            // Each undecodable line is now *answered*. The one exception is a stray response,
+            // which is silent by rule rather than by omission — see [`bridge::Undecodable`].
+            Err(bridge::Undecodable::NotJson) => {
+                emit(&mut stdout, &bridge::parse_error("not valid JSON"));
+                continue;
+            }
+            Err(bridge::Undecodable::NotAFrame { id }) => {
+                emit(&mut stdout, &bridge::invalid_request(&id));
+                continue;
+            }
+            Err(bridge::Undecodable::StrayResponse) => continue,
         };
         let mut answered_tools_list = false;
         let reply = match req {
-            bridge::Request::Initialize { id } => Some(bridge::initialize_result(&id)),
+            bridge::Request::Initialize {
+                id,
+                offered_version,
+            } => {
+                initialized = true;
+                Some(bridge::initialize_result(&id, offered_version.as_deref()))
+            }
+            // The gate, on the two verbs it applies to. `initialize` is above it by construction.
+            bridge::Request::ToolsList { id } if !initialized => {
+                Some(bridge::not_initialized(&id, "tools/list"))
+            }
+            bridge::Request::ToolsCall { id, .. } if !initialized => {
+                Some(bridge::not_initialized(&id, "tools/call"))
+            }
             bridge::Request::ToolsList { id } => {
                 answered_tools_list = true;
                 Some(bridge::tools_list_result(&id))
@@ -1001,12 +1049,15 @@ pub fn serve_stdio(who: Principal) {
             bridge::Request::Notification => None,
             bridge::Request::Unknown { id, method } => Some(bridge::method_not_found(&id, &method)),
         };
-        if let Some(r) = reply {
-            let _ = writeln!(stdout, "{r}");
-            let _ = stdout.flush();
-        }
-        // After the flush, never before: the marker means "the harness has been sent the list".
-        if answered_tools_list {
+        let delivered = match reply {
+            Some(r) => emit(&mut stdout, &r),
+            None => false,
+        };
+        // **After the flush, and only if the flush worked.** The marker means "the harness has
+        // been sent the list", so it is gated on `delivered` rather than merely sequenced after
+        // the call: sequencing alone is invisible to a test, while a marker that cannot appear
+        // when the write failed is something a test can hold the bridge to.
+        if answered_tools_list && delivered {
             signal_ready();
         }
     }

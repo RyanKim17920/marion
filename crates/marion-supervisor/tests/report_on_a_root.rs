@@ -72,6 +72,23 @@ fn call_report_declared(depth: Option<&str>) -> Value {
 
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
+    let mut lines = BufReader::new(stdout).lines();
+
+    // **`initialize` first, because that is what a client does.** These tests used to open with
+    // `tools/call` against a cold bridge and be answered — which is the spec violation the bridge
+    // now refuses with `-32002`, not a shortcut the tests were entitled to. The sequence here is
+    // s6's: initialize, read the answer, then call. What each test is *about* is unchanged.
+    let init = json!({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18"},
+    });
+    writeln!(stdin, "{init}").unwrap();
+    stdin.flush().unwrap();
+    lines
+        .next()
+        .expect("the bridge answers initialize")
+        .expect("the answer is a line");
+
     let request = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -84,7 +101,6 @@ fn call_report_declared(depth: Option<&str>) -> Value {
     writeln!(stdin, "{request}").unwrap();
     stdin.flush().unwrap();
 
-    let mut lines = BufReader::new(stdout).lines();
     let reply = lines
         .next()
         .expect("the bridge answers every tools/call")

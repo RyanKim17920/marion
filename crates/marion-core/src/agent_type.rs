@@ -81,9 +81,17 @@ pub const TOOL_WRITE: &str = "write";
 /// field. A record no reader opens is a silent drop with extra steps. Refusal is also the
 /// reversible direction (§11 item 23, `77557e3`): it can be downgraded to a visible record the day
 /// a reader exists, whereas a caller taught that an empty tools axis is normal cannot be untaught.
-/// s14 is what makes that concrete rather than stylistic — **three of the four harnesses silently
-/// ignore an unknown tool name** (`--tools NotATool` → `[]`, exit 0, empty stderr), so a guessed or
-/// unsatisfiable mapping produces a run that looks completely healthy and simply has no tool.
+/// s14 is what makes that concrete rather than stylistic — **claude, gemini and opencode each
+/// silently ignore an unknown tool name**, on three *different* configuration surfaces
+/// (`--tools`, `--allowed-tools`, `OPENCODE_PERMISSION`). Claude's is the sharpest recording:
+/// `--tools NotATool` → `[]`, exit 0, empty stderr, and a `system/init` frame that agrees. So a
+/// guessed or unsatisfiable mapping produces a run that looks completely healthy and simply has no
+/// tool.
+///
+/// **Codex is not a fourth data point on that axis.** It has no per-tool flag at all — `--tools` is
+/// a hard argv error — so it errors because the flag does not exist, not because it validates
+/// names. Reading it as "one of the four rejects bad names" would suggest the axis is safe
+/// somewhere, and it is safe nowhere.
 pub const TOOL_READ: &str = "read";
 
 /// §5.4/§6.7: an omitted `writable_scope` is **stored** as `["**"]`, never absent, so the
