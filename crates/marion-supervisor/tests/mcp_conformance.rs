@@ -36,6 +36,43 @@ use serde_json::{Value, json};
 /// box cannot make it flake, and far below any watchdog.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A scratch directory that removes itself however the test leaves.
+///
+/// **Cleanup on `Drop`, not at the end of the body.** Moving the `remove_dir_all` above the final
+/// assertion is not enough: a test can fail at *any* assertion, and the readiness tests below have
+/// several before the last one. Under the "unknown method silently dropped" mutation one of them
+/// panics on its third line and left `marion-conformance-early-*` behind every run. Unwinding runs
+/// destructors, so this is the only placement that holds for a failing test as well as a passing
+/// one.
+struct Scratch {
+    path: std::path::PathBuf,
+}
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "marion-conformance-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self { path }
+    }
+
+    fn marker(&self) -> std::path::PathBuf {
+        self.path.join("ready")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// A live bridge process, its stdin, and a channel fed by a thread draining its stdout.
 struct Bridge {
     child: Child,
@@ -608,16 +645,8 @@ fn a_successful_call_carries_is_error_false_explicitly() {
 /// **The mutation this kills: readiness signalled before the `tools/list` flush.**
 #[test]
 fn readiness_is_written_only_after_the_tools_list_reply_is_flushed() {
-    let dir = std::env::temp_dir().join(format!(
-        "marion-conformance-ready-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let marker = dir.join("ready");
+    let scratch = Scratch::new("ready");
+    let marker = scratch.marker();
 
     let m = marker.clone();
     let mut b = Bridge::spawn_with(move |cmd| {
@@ -648,8 +677,6 @@ fn readiness_is_written_only_after_the_tools_list_reply_is_flushed() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     b.finish();
-    // Cleanup precedes the assertion: a failing test must not also leak a directory.
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         appeared,
         "the marker must be written once the list has gone out, or the root never starts"
@@ -679,16 +706,8 @@ fn readiness_is_written_only_after_the_tools_list_reply_is_flushed() {
 /// **The mutation this kills: readiness signalled before the `tools/list` flush.**
 #[test]
 fn readiness_is_not_written_when_the_tools_list_reply_could_not_be_delivered() {
-    let dir = std::env::temp_dir().join(format!(
-        "marion-conformance-epipe-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let marker = dir.join("ready");
+    let scratch = Scratch::new("epipe");
+    let marker = scratch.marker();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_marion-supervisor"))
         .arg("mcp")
@@ -739,7 +758,6 @@ fn readiness_is_not_written_when_the_tools_list_reply_could_not_be_delivered() {
 
     drop(stdin);
     let _ = child.wait();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
         !claimed_ready,
@@ -756,16 +774,8 @@ fn readiness_is_not_written_when_the_tools_list_reply_could_not_be_delivered() {
 /// eager marker would have appeared.
 #[test]
 fn readiness_is_not_written_before_tools_list_is_even_requested() {
-    let dir = std::env::temp_dir().join(format!(
-        "marion-conformance-early-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let marker = dir.join("ready");
+    let scratch = Scratch::new("early");
+    let marker = scratch.marker();
 
     let m = marker.clone();
     let mut b = Bridge::spawn_with(move |cmd| {
@@ -784,8 +794,6 @@ fn readiness_is_not_written_before_tools_list_is_even_requested() {
     std::thread::sleep(std::time::Duration::from_millis(250));
     let early = marker.exists();
     b.finish();
-    // Cleanup precedes the assertion: a failing test must not also leak a directory.
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         !early,
         "readiness was signalled before the tool list was ever requested: the root's first turn \
