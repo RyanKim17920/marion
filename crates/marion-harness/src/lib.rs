@@ -9,6 +9,7 @@
 //! their tests are the measurements.
 
 pub mod adapter;
+pub mod caps;
 pub mod claude_code;
 pub mod codex;
 pub mod gemini;
@@ -21,6 +22,7 @@ pub use adapter::{
     Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter, HarnessError,
     LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx, adapter_for,
 };
+pub use caps::{Capabilities, advertised, static_caps};
 pub use claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, HeadlessSpec, McpEnv, READY_FILE_ENV,
     anthropic_base_url, compile_headless, mcp_config_json,
