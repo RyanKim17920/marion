@@ -57,8 +57,18 @@
 //!   ask to marion instead (§5.2, §11 item 22), and `marion-harness`'s
 //!   `the_pane_argv_is_a_tui_with_the_headless_shape_isolation` asserts the omission. What is left
 //!   is the dialog itself, and provoking one needs a paned node **granted a tool it must ask
-//!   about** — today a pane compiles `--tools ""`, so claude has nothing to ask permission for.
-//!   Widening that is a decision about what marion mediates, not a test. It is the manual session.
+//!   about**.
+//!
+//!   This used to read *"today a pane compiles `--tools \"\"`, so claude has nothing to ask
+//!   permission for"*. That was false about panes: `claude_code::compile_pane` passes `spec.tools`
+//!   through, and `marion run claude-impl --pane` over a git repository compiles
+//!   `--tools Read,Write`. The empty axis belonged to the **`claude` agent type**, not to the pane
+//!   shape. The true obstacle is one axis further on and is asserted rather than described, in
+//!   `marion-harness`'s
+//!   `a_paned_node_compiles_its_grant_on_both_axes_and_names_no_permission_prompt_tool`: §3.1's
+//!   two axes come from one declaration, so the same names land in `--allowedTools`, which is
+//!   pre-approval — a paned node is already allowed to use every tool it has. `MILESTONES.md`'s
+//!   M3 entry carries the correction and the two probes the manual session should try.
 //! * **the recorded 10-minute manual session** C1 names. A human has to sit at a screen for it;
 //!   nothing here or anywhere else can stand in, and C1 is not met without it. `MILESTONES.md`'s
 //!   M3 entry carries the runbook.

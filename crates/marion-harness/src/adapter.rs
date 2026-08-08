@@ -3621,6 +3621,80 @@ mod tests {
         assert!(inv.args.iter().any(|a| a == "--allowedTools"));
     }
 
+    /// **A pane compiles the grant its `LaunchSpec` carries — on *both* axes — and still names no
+    /// `--permission-prompt-tool`.**
+    ///
+    /// The test above uses a spec whose `tools` is empty, so it can only see that the two flags are
+    /// *present*. That left a false premise standing in three places at once: that
+    /// `compile_pane` hardcodes `--tools ""` and a pane therefore has nothing to ask permission
+    /// for. It does not. It passes `spec.tools` through, and the empty axis those readings saw
+    /// belongs to the **`claude` agent type**, which declares no tool. `claude-impl` declares
+    /// `[read, write]`, `marion run <type> --pane` resolves any built-in by name, and
+    /// `root::availability_axis` runs *before* the pane branch — so `marion run claude-impl --pane`
+    /// over a recorded repository compiles a real grant into a TUI.
+    ///
+    /// **The second half is what corrects the C1 story rather than confirming it.**
+    /// [`Self::permission_axis`] is one derivation shared with [`Self::compile`], so the same names
+    /// land in `--allowedTools` — *"Comma or space-separated list of tool names to allow"*, i.e.
+    /// pre-approval. §3.1's two axes come from one declaration and cannot be declared apart, so
+    /// **no `marion run` can reach the state a permission dialog needs**: a tool that is available
+    /// and not already allowed. That is asserted here rather than left as prose, because it is the
+    /// precondition M3 C1's *"permission prompt correct"* clause is really waiting on.
+    ///
+    /// Mutations, each of which this catches and the test above does not: hardcode `--tools ""` in
+    /// [`claude_code::compile_pane`]; drop the native names from `permission_axis`; add
+    /// `--permission-prompt-tool stdio` to the pane (which would convert an operator's answerable
+    /// question into §11 item 22's queue entry awaiting a UI that does not exist).
+    #[test]
+    fn a_paned_node_compiles_its_grant_on_both_axes_and_names_no_permission_prompt_tool() {
+        let spec = LaunchSpec {
+            tools: vec![agent_type::TOOL_READ.into(), agent_type::TOOL_WRITE.into()],
+            ..claude_spec()
+        };
+        let value = |inv: &Invocation, flag: &str| -> String {
+            let i = inv
+                .args
+                .iter()
+                .position(|a| a == flag)
+                .unwrap_or_else(|| panic!("{flag} is always compiled: {:?}", inv.args));
+            inv.args[i + 1].clone()
+        };
+
+        let pane = ClaudeCodeAdapter
+            .compile_pane(&spec, &ctx())
+            .expect("claude has a pane shape");
+        assert_eq!(
+            value(&pane, "--tools"),
+            "Read,Write",
+            "a pane compiles the declared grant in claude's own spelling, not \"\": {:?}",
+            pane.args
+        );
+        assert_eq!(
+            value(&pane, "--allowedTools"),
+            "mcp__marion__spawn,mcp__marion__status,Read,Write",
+            "permission carries the same names beside marion's verbs, so every tool a paned node \
+             has is one it is already allowed to use — there is nothing left to ask about: {:?}",
+            pane.args
+        );
+        assert!(
+            !pane.args.iter().any(|a| a == "--permission-prompt-tool"),
+            "the ask a pane cannot make must still not be routed to a marion with no answerer: \
+             {:?}",
+            pane.args
+        );
+
+        // And a pane is not a widening: the two shapes compile the same two axes from the same
+        // declaration. A branch that opened either one further would show up here as a difference.
+        let headless = ClaudeCodeAdapter
+            .compile(&spec, &ctx())
+            .expect("the headless shape compiles the same spec");
+        assert_eq!(value(&pane, "--tools"), value(&headless, "--tools"));
+        assert_eq!(
+            value(&pane, "--allowedTools"),
+            value(&headless, "--allowedTools")
+        );
+    }
+
     /// The prompt rides argv on the pane shape and is refused on the headless one — the same
     /// `LaunchSpec`, two answers, which is the whole reason these are two compiles.
     #[test]
