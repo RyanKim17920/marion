@@ -122,6 +122,50 @@ impl SurfaceRole {
             Self::Pane => "pane",
         }
     }
+
+    /// The role a node summary describes. One bit on the wire, one enum here, and this is the
+    /// conversion between them — so a caller cannot get it backwards in a `match` of its own.
+    pub fn of(pane: bool) -> Self {
+        if pane { Self::Pane } else { Self::Node }
+    }
+}
+
+/// The surfaces one harness runs on in one role, straight off the adapter.
+///
+/// `None` for [`SurfaceRole::Pane`] on a harness with no interactive shape marion can drive —
+/// which is a fact about the harness, not a failure, and the caller must decide what to do rather
+/// than be handed the node row's surfaces under the pane row's name.
+pub fn surfaces_at(harness: Harness, role: SurfaceRole) -> Option<ExecutionSurfaces> {
+    let adapter = adapter_for(harness).ok()?;
+    match role {
+        SurfaceRole::Node => Some(adapter.surfaces()),
+        SurfaceRole::Pane => adapter.pane_surfaces(),
+    }
+}
+
+/// **§3.3 stage one at doctor's own key — the single place a capability is resolved for display.**
+///
+/// Both callers go through here on purpose. `probe_one` builds the capability column of every
+/// `marion doctor` row from it, and `crate::tree`'s greying reads the same function on the same
+/// key. The alternative — each computing `static_caps` with its own idea of how to spell a missing
+/// version — is the "second table" failure in its subtler form: not a different table, a different
+/// *key* into the same one, which agrees on every row until it does not.
+///
+/// `version` is `Option` because that is the shape both callers actually have: a probe that could
+/// not run the binary has none, and a node still `Spawning` has none. [`keyed_version`] is the one
+/// decision about what that means, and it lives here rather than at either call site.
+///
+/// Stage **two** is deliberately not here. Refinement needs an `initialize` answer from a specific
+/// ACP agent, `NodeSummary` names a harness rather than an agent, and a client cannot narrow what
+/// it cannot identify. So the tree publishes the unrefined static set and doctor publishes the
+/// refined one where it has a handshake — which is a *narrower* answer in doctor, never a wider
+/// one, and therefore never a capability offered in the UI that doctor would have greyed.
+pub fn capabilities_at(
+    harness: Harness,
+    version: Option<&str>,
+    surfaces: &ExecutionSurfaces,
+) -> Capabilities {
+    static_caps(harness, keyed_version(version), surfaces)
 }
 
 /// One `(harness, version, surfaces)` row.
@@ -317,7 +361,7 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<acp::Agent>) -> Vec<Row> 
             // one adapter can publish different rows. A handshake that did not happen refines
             // nothing and narrows nothing — the row then publishes the protocol's own unnarrowed
             // set, which the note below says in as many words.
-            let stage_one = static_caps(h, keyed_version(version.as_deref()), &s);
+            let stage_one = capabilities_at(h, version.as_deref(), &s);
             let capabilities = match &handshake {
                 Some(hs) => hs.refine(stage_one),
                 None => stage_one,
