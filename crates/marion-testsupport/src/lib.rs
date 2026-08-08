@@ -386,7 +386,85 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // argv prompt into the composer rather than submitting it. What was **not** re-measured is
         // the SIGINT/SIGTERM timing above; that probe is not part of the suite and this entry
         // makes no claim about it on 2.1.225.
-        accepted: &["2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225"],
+        //
+        // 2.1.226: observed green on darwin 25.5.0, 2026-08-08, after the third claude
+        // auto-update in five days. The whole workspace passed against it — **1,176 tests, none
+        // `#[ignore]`d** — and that same 1,176 was measured on 2.1.225 first, through a `PATH`
+        // shim to `~/.local/share/claude/versions/2.1.225`, so the base this entry moves off was
+        // taken rather than quoted.
+        //
+        // **The same four spikes `9b0a06d` and `bd7b8eb` re-probed were re-probed here** — s10,
+        // s11, s14 and s16, every one against a canned local provider, total spend **$0.00** —
+        // and s11 and s16 were additionally re-run against 2.1.225 within the same hour, one axis
+        // at a time, because those are the two that carry a number.
+        //
+        // * **s14** — `probe-claude.sh` re-run; all eight cells match `declarations.json` field
+        //   for field: `body_tools`, `system_init_tools`, exit and stderr alike. `--tools
+        //   NotATool` still declares `[]` at exit 0 with the *good* runs' stderr, `Read,NotATool`
+        //   still keeps `Read` and drops the bad name, lowercase `read` still declares nothing,
+        //   and `--tools` absent and `--tools default` still declare the same eleven built-ins in
+        //   the body against twenty-eight in `system/init`. **An unknown tool name is still
+        //   silently ignored.**
+        // * **s10** — the probe re-run in all three modes: 14-key `SubagentStop` and 11-key
+        //   `Stop`, both key sets identical to the fixture's; `agent_id` still 17 lowercase hex
+        //   and still equal to the stream's `task_id` and the `tool_result`'s `agentId`;
+        //   `session_id` and `transcript_path` still the *parent's* with `agent_transcript_path`
+        //   at `<session_id>/subagents/agent-<agent_id>`; `decision: block` still re-prompts (2
+        //   `SubagentStop` fires against 1) with `parent_tool_use_id` on the injected `user`
+        //   frame; `num_turns` still 2 in every mode; the bad-shape control still fires **zero**
+        //   times.
+        // * **s11** — the pty ceiling holds: `read_size_max` 1,024 on every pty transport against
+        //   46,728 on a pipe, **zero** reads at or above 4,096 on a pty against 5 on a pipe. Every
+        //   pty line is still `\r\n` and every `OPOST`-cleared line still bare `\n`. `claude -p`
+        //   still refuses a pty *stdin* with exit 1 and a byte-identical `Error: Input must be
+        //   provided …`.
+        // * **s16** — every discriminating *shape* holds across four harness runs plus the
+        //   own-process-group run: no `stdin_eof` in any harness run and one in the control,
+        //   SIGINT then SIGTERM then a third signal nothing can catch,
+        //   `server_signal_handlers_installed` 29 with none refused, `server_voluntary_exit` /
+        //   `server_orderly_shutdown` / `server_crashed` all false, all pid-targeted (the
+        //   own-process-group run is identical), and the grandchild still unsignalled, reparented
+        //   to pid 1 and beating 58–59 times after the harness is gone.
+        //
+        // **The 100 ms timer's widening did not continue — it reversed, and that retires the
+        // worry `bd7b8eb` raised.** SIGINT→SIGTERM came back **100.1, 100.1, 100.4, 100.3 ms**
+        // over four runs on 2.1.226 (100.5 ms on the own-process-group run) against **100.1,
+        // 100.2, 100.2, 100.2 ms** on 2.1.225 re-run the same hour. Both versions are inside
+        // ±0.2 ms today and **no run landed below 100 ms**. So 2.1.224's 98.9–103.2 ms was
+        // machine load, not a version property, in exactly the way that entry's own closing
+        // paragraph found the SIGKILL grace to be — a spread measured once separates two runs, not
+        // two versions. §11's reading of the gap as *a fixed timer rather than a race* is back on
+        // the tightness it originally rested on. That is a correction to `bd7b8eb`'s record, not a
+        // 2.1.226 finding: nothing about 2.1.226 caused it.
+        //
+        // **The SIGKILL grace stays noisy and still has no floor.** SIGTERM→server's-last-beat is
+        // **347–394 ms on 2.1.226** and **313–372 ms on 2.1.225**, same hour, same machine —
+        // overlapping ranges, and 313 ms is below the 347 ms `bd7b8eb` recorded as its own lowest.
+        // `background.rs`'s "~450 ms" remains a *nominal* figure with nothing under it, which is
+        // the reading `bd7b8eb` established and this run only reinforces.
+        //
+        // **Terminal behaviour did not move.** Re-probed on both versions at 100x30 through a
+        // boot, a submitted turn, a resize and a `^C`: **zero `?1049h` and zero mouse modes** on
+        // 2.1.226, with the private-mode sequence — `?25`, `?2004`, `?1004`, `?2031`, then
+        // `?2026` set/reset per frame — **identical in order and count (23 each) to 2.1.225**. The
+        // change §5.3 and `pane_attach.rs` record happened between 2.1.220 and 2.1.225 and has not
+        // moved again here; the split between the live and replay halves of M3's C1 is still
+        // correct for the same reason it was.
+        //
+        // **One reading needs naming rather than rounding.** s11's `compare.json` came back with
+        // `collapsed_sequence_identical: false` on a `system/hook_progress` frame — the *third*
+        // time this has appeared, and the third time it is not claude: the frame carries the
+        // operator's own `SessionStart:startup` plugin output, because `S1_ARGV_TAIL` is S1's argv
+        // verbatim and carries no `--setting-sources ""` the way the s14 probe does. It fired
+        // **once in twenty-six runs today** and zero times in eight dedicated pipes repeats split
+        // evenly across 2.1.225 and 2.1.226, so it does not separate the versions; it landed in
+        // the one run `compare.py` reads. s11's probe is environment-dependent in a way its
+        // fixture still does not say, and that remains a finding about the probe.
+        //
+        // **Nothing was re-recorded.** Every capture was compared, not refreshed.
+        accepted: &[
+            "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226",
+        ],
     },
     PinnedHarness {
         program: "codex",
