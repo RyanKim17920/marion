@@ -376,7 +376,17 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // is a correction to the record rather than a blocker.
         //
         // **Nothing was re-recorded.** Every capture was compared, not refreshed.
-        accepted: &["2.1.220", "2.1.222", "2.1.223", "2.1.224"],
+        //
+        // 2.1.225: admitted on the run that added `marion run --pane`, and admitted for the
+        // narrower reason this table asks for rather than because the suite was green. The CLI
+        // self-updated mid-session, so this was not a chosen upgrade; every test that drives a
+        // real claude was re-run against it and held, and the new pane path was measured on it
+        // directly — the trust dialog still lands on the **main** screen before the alternate
+        // screen is entered, `-p` still refuses an isatty(0) stdin, and the TUI still seeds an
+        // argv prompt into the composer rather than submitting it. What was **not** re-measured is
+        // the SIGINT/SIGTERM timing above; that probe is not part of the suite and this entry
+        // makes no claim about it on 2.1.225.
+        accepted: &["2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225"],
     },
     PinnedHarness {
         program: "codex",
