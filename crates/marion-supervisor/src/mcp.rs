@@ -1682,10 +1682,12 @@ mod tests {
                 name: None,
                 agent_type: "codex-impl".into(),
                 harness: Harness::Codex,
+                harness_version: None,
                 depth: 1,
                 state: NodeState::Running,
                 reap_state: ReapState::Live,
                 timeout: marion_core::encoding::Duration::from_secs(60),
+                pane: false,
             }
         }
         let fleet = vec![
@@ -1736,10 +1738,12 @@ mod tests {
             name: None,
             agent_type: "codex-impl".into(),
             harness: Harness::Codex,
+            harness_version: None,
             depth: 1,
             state: NodeState::Running,
             reap_state: ReapState::Live,
             timeout: marion_core::encoding::Duration::from_secs(60),
+            pane: false,
         };
         // a -> b -> a, with the caller pointing into it.
         let nodes = vec![cyclic("a", "b"), cyclic("b", "a"), cyclic("a", "me")];

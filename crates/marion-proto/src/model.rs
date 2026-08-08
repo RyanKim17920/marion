@@ -13,14 +13,19 @@ use serde::{Deserialize, Serialize};
 
 /// §3.2's `Node`, projected for a client.
 ///
-/// **What it deliberately does not carry: `caps` (§3.3).** `Capabilities` does not exist as a type
-/// anywhere in this workspace — verified, not assumed — and `ExecutionSurfaces`, its ceiling, lives
-/// in `marion-harness` beside the adapters. Declaring a `Capabilities` here would create the
-/// parallel copy §10's layout exists to prevent, and declaring a lone `steer: bool` would create
-/// half of one. So the client learns a missing capability the way §11 item 23 says a caller should
-/// learn anything marion will not do: from a refusal that says so — [`crate::FailureKind::Unsupported`]
-/// on the `node/steer` that needed it — rather than from a field that might be stale. When §3.3's
-/// `Capabilities` lands in `marion-core`, it lands here as one added field.
+/// **What it deliberately does not carry: `caps` (§3.3) — and what it carries instead.**
+/// `Capabilities` lives in `marion-harness` beside the adapters, along with `ExecutionSurfaces`,
+/// its ceiling. Declaring a `Capabilities` here would create the parallel copy §10's layout exists
+/// to prevent, and declaring a lone `steer: bool` would create half of one. So a client that wants
+/// to render a capability is given **§3.3's key** — `(harness, harness_version, surfaces)` — and
+/// resolves it through the same `static_caps` `marion doctor` calls, rather than being handed a
+/// resolved answer that could be stale by the time it is drawn. The third component is
+/// [`Self::pane`]: §3.4 gives one harness two surface shapes, and doctor prints one row per
+/// `(harness, role)` for exactly that reason.
+///
+/// A client that will not resolve the key still learns a missing capability the way §11 item 23
+/// says a caller should learn anything marion will not do: from a refusal that says so —
+/// [`crate::FailureKind::Unsupported`] on the `node/steer` that needed it.
 ///
 /// `binary_path`, `harness_session` and §7.6's evidence flags are likewise absent: they are
 /// supervisor-internal, and a tree pane that could render them would be a tree pane that could
@@ -34,6 +39,18 @@ pub struct NodeSummary {
     pub name: Option<String>,
     pub agent_type: String,
     pub harness: Harness,
+    /// The **middle third of §3.3's key**, as the journal recorded it at launch (`Spawned`).
+    ///
+    /// `Option`, and the `None` is load-bearing rather than a gap: §3.3 says a version marion
+    /// cannot read is a version marion has not measured, and `advertised` already treats an
+    /// unparseable version as unmeasured. A node whose `Spawned` record predates this field, or a
+    /// node still `Spawning`, therefore resolves to the conservative set — which is the direction
+    /// §3.3's *degrade visibly* requires an unknown to fall in.
+    ///
+    /// `#[serde(default)]` per this crate's rule for every added field: a client one version older
+    /// must keep parsing, and reading `None` is exactly right for one that never knew to ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_version: Option<String>,
     pub depth: u8,
     pub state: NodeState,
     pub reap_state: ReapState,
@@ -41,6 +58,24 @@ pub struct NodeSummary {
     /// encoding — never `Millis`, which would let a 900 s bound arrive as a measurement and be
     /// rendered as elapsed time.
     pub timeout: Duration,
+    /// **Whether this node runs on its harness's pane surfaces** — §3.3's third key component,
+    /// reduced to the one bit a client can act on.
+    ///
+    /// Not cosmetic, and not the same question as *"can I attach to it"*. §3.4 gives claude-code a
+    /// `Typed(StreamJson)` control plane on its node surfaces and §3.4's `opaque` on its pane ones,
+    /// and `Capabilities::ceiling` clips `permissions` off the second: the same binary, at two
+    /// keys, publishing two different sets. `marion doctor` prints both rows for that reason, and a
+    /// client that keyed every node on the node row would offer a pane node a permission routing it
+    /// does not have — the exact defect §9's M5 clause 3 asks the UI not to have.
+    ///
+    /// Answered from the supervisor's live pty map rather than from the journal, which is the same
+    /// source `node/attach` builds [`crate::result::PaneAttach`] from. There is no `SpawnIntent`
+    /// field for it, and inventing one would be a second record of a fact the supervisor already
+    /// holds.
+    ///
+    /// `#[serde(default)]`: `false` is what a journal-only reader and an older client both mean.
+    #[serde(default)]
+    pub pane: bool,
 }
 
 /// Which of §6.3's two verbs a node's state calls for.
@@ -640,16 +675,18 @@ mod tests {
             name: Some("impl".into()),
             agent_type: "codex-impl".into(),
             harness: Harness::Codex,
+            harness_version: Some("0.146.0".into()),
             depth: 0,
             state: NodeState::Blocked(BlockReason::Permission),
             reap_state: ReapState::Live,
             // 900_500 ms: a bound, so it must round UP to 901 and never down to 900.
             timeout: Duration(std::time::Duration::from_millis(900_500)),
+            pane: true,
         };
         let wire = serde_json::to_string(&n).unwrap();
         assert_eq!(
             wire,
-            r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001","parent_id":null,"name":"impl","agent_type":"codex-impl","harness":"codex","depth":0,"state":{"Blocked":"Permission"},"reap_state":"Live","timeout":901}"#
+            r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001","parent_id":null,"name":"impl","agent_type":"codex-impl","harness":"codex","harness_version":"0.146.0","depth":0,"state":{"Blocked":"Permission"},"reap_state":"Live","timeout":901,"pane":true}"#
         );
         let back: NodeSummary = serde_json::from_str(&wire).unwrap();
         assert_eq!(back.state, n.state);
@@ -657,6 +694,36 @@ mod tests {
         // The bound is now 901 s exactly; a round trip through the wire is lossy in the safe
         // direction only, which is what "bounds round up" buys.
         assert_eq!(back.timeout, Duration::from_secs(901));
+    }
+
+    /// **§3.3's key survives a client one version older, in both directions.**
+    ///
+    /// `harness_version` and `pane` are the two components a client needs to resolve a capability
+    /// (§3.3 keys `(harness, harness_version, surfaces)`), and both were added after the field set
+    /// was already on the wire. This crate's rule for an added field is that an older peer keeps
+    /// parsing; the halves that matter here are that the *absent* values are the conservative ones,
+    /// because §3.3's *degrade visibly* makes an optimistic default a greyed-in action that fails.
+    #[test]
+    fn a_summary_written_before_the_capability_key_existed_still_parses_conservatively() {
+        let old = r#"{"agent_id":"a","parent_id":null,"name":null,"agent_type":"codex-impl","harness":"codex","depth":0,"state":"Idle","reap_state":"Live","timeout":900}"#;
+        let n: NodeSummary = serde_json::from_str(old).expect("an older summary must still parse");
+        assert_eq!(
+            n.harness_version, None,
+            "an unstated version is unmeasured, which `advertised` already treats as claiming \
+             nothing"
+        );
+        assert!(
+            !n.pane,
+            "an unstated surface role must be the node role, never the pane one: the pane row is \
+             the *narrower* key on claude-code, so defaulting to it would understate; defaulting \
+             the other way is what a reader of an old summary can safely assume, since a build \
+             that had no panes wrote none"
+        );
+        // A summary with no version omits the field rather than writing a null, so the byte stream
+        // an older build produced and the one this build produces for the same node are identical.
+        let wire = serde_json::to_string(&n).unwrap();
+        assert!(!wire.contains("harness_version"), "{wire}");
+        assert!(wire.contains(r#""pane":false"#), "{wire}");
     }
 
     #[test]

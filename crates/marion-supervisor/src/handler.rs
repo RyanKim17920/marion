@@ -147,9 +147,16 @@ impl Unprojectable {
 
 /// §3.2's node, projected for a client — or the reason it cannot be.
 ///
-/// Pure: it reads the replayed node and this build's agent-type registry, and touches nothing else.
-/// That is what makes every arm above testable without a socket, a journal or a thread.
-pub fn summarize(node: &ReplayedNode) -> Result<NodeSummary, Unprojectable> {
+/// Pure: it reads the replayed node, this build's agent-type registry and one fact the caller
+/// supplies, and touches nothing else. That is what makes every arm above testable without a
+/// socket, a journal or a thread.
+///
+/// `pane` is a **parameter and not a field of `node`** because it is not a journal fact: the
+/// supervisor's live pty map is what knows whether a node has a display plane, and `ReplayedNode`
+/// is a fold over records. Passing it in keeps replay honest — no record is invented for it — and
+/// makes every caller state which answer it is giving, which is what stops a caller that has no
+/// pty map from quietly defaulting one.
+pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unprojectable> {
     let intent = node.intent.as_ref().ok_or(Unprojectable::NoIntent)?;
     let ty = agent_type::builtin(&intent.agent_type)
         .ok_or_else(|| Unprojectable::UnknownAgentType(intent.agent_type.clone()))?;
@@ -163,10 +170,14 @@ pub fn summarize(node: &ReplayedNode) -> Result<NodeSummary, Unprojectable> {
         name: None,
         agent_type: intent.agent_type.clone(),
         harness: intent.harness,
+        // §3.3's middle key component, straight off `Spawned`. `None` until the process exists,
+        // which is the honest answer for a node that has not launched: there is no version yet.
+        harness_version: node.harness_version.clone(),
         depth,
         state: node.state,
         reap_state: node.reap_state,
         timeout: ty.timeout,
+        pane,
     })
 }
 
@@ -915,22 +926,36 @@ impl RegistryHandle {
     /// can tell "nothing changed" from "nothing was delivered", which are the same zero from the
     /// socket's side and different problems.
     pub fn flush(&self) -> usize {
+        // **Before the shared lock, never inside it.** See [`Panes`]: the two are separate maps
+        // precisely so an operator's keystroke is not written under the lock every `tree/subscribe`
+        // waits on, and taking them in the other order here would rebuild that coupling.
+        let panes = self.pane_ids();
         let mut g = lock(&self.shared);
-        let events = self.live.read(|r| collect(r, &mut g));
+        let events = self.live.read(|r| collect(r, &mut g, &panes));
         deliver(&mut g, &events);
         events.len()
     }
 
+    /// The nodes this supervisor holds a pty for, as a snapshot.
+    ///
+    /// Cloned out under the panes lock and read afterwards, so no caller holds two locks at once.
+    /// The window that opens — a pane created between this read and the projection — resolves at
+    /// the next flush, and the alternative is the lock coupling [`Panes`] exists to avoid.
+    fn pane_ids(&self) -> HashSet<AgentId> {
+        lock(&self.panes).hosts.keys().cloned().collect()
+    }
+
     /// §2's `tree/subscribe`: the snapshot, and the point live notifications begin from.
     fn subscribe(&self, out: &Outbound) -> TreeSubscribeResult {
+        let panes = self.pane_ids();
         let mut g = lock(&self.shared);
         // **One read, three uses.** See the module doc: catching up existing subscribers, building
         // this one's snapshot, and recording what it has been told all happen against the same view,
         // under one lock, so there is no instant at which a notification could slip between the
         // snapshot and the subscription.
         let (events, nodes, read_point) = self.live.read(|r| {
-            let events = collect(r, &mut g);
-            let nodes = project(r.tree(), &mut g);
+            let events = collect(r, &mut g, &panes);
+            let nodes = project(r.tree(), &mut g, &panes);
             (events, nodes, r.read_point())
         });
         deliver(&mut g, &events);
@@ -939,6 +964,7 @@ impl RegistryHandle {
     }
 
     fn node_get(&self, id: &AgentId) -> Result<NodeGetResult, RpcError> {
+        let pane = lock(&self.panes).hosts.contains_key(id);
         self.live.read(|r| match r.tree().get(id) {
             None => Err(RpcError::not_found(
                 &id.0,
@@ -951,7 +977,7 @@ impl RegistryHandle {
                 ),
                 "§3.2",
             )),
-            Some(node) => summarize(node)
+            Some(node) => summarize(node, pane)
                 .map(|node| NodeGetResult { node })
                 .map_err(|e| e.as_error(id)),
         })
@@ -987,6 +1013,7 @@ impl RegistryHandle {
     /// would lose precisely the record that separates a node that finished from one cut mid-turn.
     /// A cursor on a file nobody will append to costs one `stat` per tick and delivers nothing.
     fn node_attach(&self, id: &AgentId, out: &Outbound) -> Result<NodeAttachResult, RpcError> {
+        let has_pane = lock(&self.panes).hosts.contains_key(id);
         let (summary, state, reap_state, project) = self.live.read(|r| {
             let Some(node) = r.tree().get(id) else {
                 return Err(RpcError::not_found(
@@ -1002,7 +1029,7 @@ impl RegistryHandle {
                     "§3.2",
                 ));
             };
-            let summary = summarize(node).map_err(|e| e.as_error(id))?;
+            let summary = summarize(node, has_pane).map_err(|e| e.as_error(id))?;
             Ok((summary, node.state, node.reap_state, r.project()))
         })?;
 
@@ -2620,11 +2647,15 @@ impl Handle for RegistryHandle {
 }
 
 /// The tree, as summaries, counting what could not be described.
-fn project(tree: &Replay, g: &mut Shared) -> Vec<NodeSummary> {
+///
+/// `panes` is the set of nodes this supervisor holds a pty for, read **before** the shared lock was
+/// taken — see [`RegistryHandle::pane_ids`] for why it is a snapshot passed in rather than a map
+/// consulted here.
+fn project(tree: &Replay, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<NodeSummary> {
     let mut out = Vec::new();
     let mut lost = 0usize;
     for n in tree.nodes() {
-        match summarize(n) {
+        match summarize(n, panes.contains(&n.agent_id)) {
             Ok(s) => out.push(s),
             Err(_) => lost += 1,
         }
@@ -2642,7 +2673,7 @@ fn project(tree: &Replay, g: &mut Shared) -> Vec<NodeSummary> {
 /// Every `ts` is the journal's, never this process's clock — see
 /// [`marion_core::registry::ReplayedNode::first_ts`] for why a follower's `now()` is the wrong
 /// answer on a field a client renders as when the thing occurred.
-fn collect(r: &Registry, g: &mut Shared) -> Vec<Event> {
+fn collect(r: &Registry, g: &mut Shared, panes: &HashSet<AgentId>) -> Vec<Event> {
     let mut events = Vec::new();
     for n in r.tree().nodes() {
         let now = Told {
@@ -2654,7 +2685,7 @@ fn collect(r: &Registry, g: &mut Shared) -> Vec<Event> {
                 // A node marion cannot describe produces no `tree/node-added` — there is no summary
                 // to put in one — but it is still recorded as told, so it is not re-examined on
                 // every flush. `project` is what counts it.
-                if let Ok(node) = summarize(n) {
+                if let Ok(node) = summarize(n, panes.contains(&n.agent_id)) {
                     events.push(Event::NodeAdded {
                         node,
                         ts: journal_ts(n.first_ts),
@@ -2848,7 +2879,7 @@ mod tests {
             &[line(0, 1, intent("child", Some("root"), "codex-impl", 1))],
             "child",
         );
-        let s = summarize(&n).expect("a fully described node projects");
+        let s = summarize(&n, false).expect("a fully described node projects");
         assert_eq!(s.agent_id, id("child"));
         assert_eq!(s.parent_id, Some(id("root")));
         assert_eq!(s.agent_type, "codex-impl");
@@ -2897,7 +2928,7 @@ mod tests {
             )],
             "no-intent",
         );
-        assert_eq!(summarize(&orphan), Err(Unprojectable::NoIntent));
+        assert_eq!(summarize(&orphan, false), Err(Unprojectable::NoIntent));
         let e = Unprojectable::NoIntent.as_error(&id("no-intent"));
         assert_eq!(e.kind(), Some(FailureKind::Internal));
         assert!(e.message.contains("SpawnIntent"), "{e}");
@@ -2905,7 +2936,7 @@ mod tests {
         // (2) an agent type this build does not have — so §3.1's bound has no source.
         let unknown = node_of(&[line(0, 1, intent("a", None, "codex-turbo", 0))], "a");
         assert_eq!(
-            summarize(&unknown),
+            summarize(&unknown, false),
             Err(Unprojectable::UnknownAgentType("codex-turbo".into()))
         );
         let e = Unprojectable::UnknownAgentType("codex-turbo".into()).as_error(&id("a"));
@@ -2919,12 +2950,15 @@ mod tests {
         // (3) a depth `NodeSummary`'s u8 cannot hold. §6.1's default max_depth is 3, so this is a
         // writer producing nonsense — and saturating it would place the node somewhere it is not.
         let deep = node_of(&[line(0, 1, intent("a", None, "codex-impl", 300))], "a");
-        assert_eq!(summarize(&deep), Err(Unprojectable::DepthOutOfRange(300)));
+        assert_eq!(
+            summarize(&deep, false),
+            Err(Unprojectable::DepthOutOfRange(300))
+        );
         assert!(
-            summarize(&node_of(
-                &[line(0, 1, intent("a", None, "codex-impl", 255))],
-                "a"
-            ))
+            summarize(
+                &node_of(&[line(0, 1, intent("a", None, "codex-impl", 255))], "a"),
+                false
+            )
             .is_ok(),
             "255 fits, so the boundary is the type's and not an arbitrary cap"
         );

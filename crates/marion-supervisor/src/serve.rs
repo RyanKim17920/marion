@@ -1192,10 +1192,12 @@ mod tests {
             name: None,
             agent_type: "codex-impl".into(),
             harness: Harness::Codex,
+            harness_version: None,
             depth: 0,
             state: NodeState::Idle,
             reap_state: ReapState::Live,
             timeout: EncDuration::from_secs(900),
+            pane: false,
         }
     }
 
