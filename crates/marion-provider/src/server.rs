@@ -19,7 +19,7 @@ use std::thread::JoinHandle;
 
 use serde_json::Value;
 
-use crate::gate::TurnGate;
+use crate::gate::{Hold, TurnGate};
 use crate::reqlog::RequestLog;
 use crate::script::{Script, Wire, classify_wire, wire_name};
 
@@ -100,6 +100,15 @@ impl CannedServer {
     /// this server, not a description of the canned behaviour, and every existing caller builds
     /// `Config` as a literal.
     pub fn start_gated(config: Config, gate: Option<Arc<TurnGate>>) -> io::Result<Self> {
+        Self::start_held(config, gate.map(|g| g as Arc<dyn Hold>))
+    }
+
+    /// The general form: any [`Hold`], consulted between the log and the answer.
+    ///
+    /// [`Self::start_gated`] is the [`TurnGate`] special case, kept because every existing caller
+    /// spells it that way and because the concrete type is the one a test releases by hand.
+    pub fn start_held(config: Config, hold: Option<Arc<dyn Hold>>) -> io::Result<Self> {
+        let gate = hold;
         let listener = TcpListener::bind(config.addr)?;
         let addr = listener.local_addr()?;
         let log = Arc::new(RequestLog::create(&config.reqlog)?);
@@ -325,7 +334,7 @@ fn serve_connection(
     stream: TcpStream,
     log: &RequestLog,
     script: &Script,
-    gate: Option<&TurnGate>,
+    gate: Option<&dyn Hold>,
 ) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
@@ -344,7 +353,7 @@ fn serve_connection(
         // that makes the ordering checkable: the held request is already on disk, so a test can
         // read the provider's own account of what it has been asked while it is still holding.
         if let Some(gate) = gate {
-            gate.wait_for(wire);
+            gate.wait_for(wire, &body);
         }
 
         let (status, content_type, payload) = handle(&req, script);

@@ -30,8 +30,24 @@
 //! being held — so it counts within **one wire**, where the requests are one node's sequential
 //! conversation and an auxiliary request on another wire cannot shift the numbering.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+
+/// What the server consults between logging a request and answering it.
+///
+/// Two implementations, and they hold on different evidence: [`TurnGate`] counts one wire's turns,
+/// [`Rendezvous`] recognises *which node* is asking. The trait exists because
+/// [`crate::CannedServer`] must be able to take either without the two growing a common enum, and
+/// because a third kind of hold is a test's business rather than this crate's.
+pub trait Hold: std::fmt::Debug + Send + Sync {
+    /// `wire` is [`crate::wire_name`]'s spelling, or `None` for a request nothing could classify;
+    /// `body` is the parsed request. A hold that returns is a request the server may now answer.
+    fn wait_for(&self, wire: Option<&str>, body: &Value);
+}
 
 /// A hold on one wire's turns. Shared with the server; a test keeps a clone to release it.
 #[derive(Debug)]
@@ -100,10 +116,143 @@ impl TurnGate {
     }
 }
 
+impl Hold for TurnGate {
+    /// The body is not evidence this gate takes: its whole subject is *"the n-th turn on a wire"*,
+    /// which is a fact about the sequence and not about the request.
+    fn wait_for(&self, wire: Option<&str>, _body: &Value) {
+        TurnGate::wait_for(self, wire)
+    }
+}
+
+/// **A rendezvous between two nodes speaking the same wire**: hold each one's requests until every
+/// named node has asked for a turn.
+///
+/// # Why counting cannot do this job
+///
+/// [`TurnGate`] counts requests *within a wire*, and its own doc says why that is deterministic:
+/// there, the requests are one node's sequential conversation. Fan-in breaks that premise — two
+/// children of one root, on one harness, speak one wire, and which of them reaches the provider
+/// first is a race. "Hold the second anthropic request" would name child A's second turn on one
+/// run and child B's first turn on the next.
+///
+/// So this holds on **identity** instead: each node's own task text carries a marker (the same
+/// discriminator [`crate::RootScript::marker`] uses, and for the same reason — every harness
+/// replays its node's task on every turn), and the hold lifts for everyone the moment the last
+/// named marker has arrived. What that buys a test is an *ordering fact*: when child A is answered,
+/// child B's process existed and had already asked the provider a question. Neither node can have
+/// finished before the other started.
+///
+/// # It is bounded, and expiry is a verdict the test must read
+///
+/// A rendezvous whose other party never comes would park for ever, and a test that can only fail by
+/// wedging the suite is not a test. So the wait is bounded, and expiry lets everything through
+/// **and records that it did** — [`Rendezvous::expired`]. A test asserting concurrency must assert
+/// `!expired()` and say what expiry means, because expiry is precisely the shape a serializing
+/// implementation produces: the second node never started, so the first waited alone.
+///
+/// The bound is not a threshold on anything the test measures. Nothing is asserted about how long
+/// the rendezvous took; the only readings are *met* or *expired*.
+#[derive(Debug)]
+pub struct Rendezvous {
+    wire: String,
+    markers: Vec<String>,
+    bound: Duration,
+    state: Mutex<Meeting>,
+    wake: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct Meeting {
+    arrived: BTreeSet<String>,
+    expired: bool,
+}
+
+impl Rendezvous {
+    /// Hold every request on `wire` that carries one of `markers`, until all of them have.
+    ///
+    /// A request on another wire, or one carrying no marker, passes through untouched — the rule
+    /// [`TurnGate::holding_from`] states, for the same reason: a hold on something it cannot name
+    /// turns a script bug into a hang.
+    pub fn on_wire<I, S>(wire: &str, markers: I, bound: Duration) -> Arc<Rendezvous>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let markers: Vec<String> = markers.into_iter().map(Into::into).collect();
+        assert!(
+            markers.len() >= 2,
+            "a rendezvous of fewer than two parties is not a rendezvous"
+        );
+        Arc::new(Rendezvous {
+            wire: wire.to_string(),
+            markers,
+            bound,
+            state: Mutex::new(Meeting::default()),
+            wake: Condvar::new(),
+        })
+    }
+
+    /// The markers seen so far, in sorted order.
+    pub fn arrived(&self) -> Vec<String> {
+        self.lock().arrived.iter().cloned().collect()
+    }
+
+    /// Did every named party arrive?
+    pub fn met(&self) -> bool {
+        self.lock().arrived.len() == self.markers.len()
+    }
+
+    /// Did some party give up waiting because the bound ran out?
+    ///
+    /// **The reading a concurrency test asserts on.** `true` means at least one node sat at the
+    /// rendezvous for the whole bound while another never appeared.
+    pub fn expired(&self) -> bool {
+        self.lock().expired
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Meeting> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Hold for Rendezvous {
+    fn wait_for(&self, wire: Option<&str>, body: &Value) {
+        if wire != Some(self.wire.as_str()) {
+            return;
+        }
+        let Some(marker) = self
+            .markers
+            .iter()
+            .find(|m| crate::script::carries(body, m))
+        else {
+            return;
+        };
+        let deadline = Instant::now() + self.bound;
+        let mut state = self.lock();
+        state.arrived.insert(marker.clone());
+        // Woken for everyone, including the arrival that completes the set: the last party must not
+        // block, and the earlier ones are waiting on exactly this.
+        self.wake.notify_all();
+        while state.arrived.len() < self.markers.len() && !state.expired {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                state.expired = true;
+                self.wake.notify_all();
+                break;
+            }
+            let (guard, _) = self
+                .wake
+                .wait_timeout(state, left)
+                .unwrap_or_else(|e| e.into_inner());
+            state = guard;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use serde_json::json;
 
     fn until(mut cond: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -150,5 +299,54 @@ mod tests {
         g.release();
         g.wait_for(Some("responses"));
         assert_eq!(g.parked(), 0);
+    }
+
+    fn turn(text: &str) -> Value {
+        json!({"messages": [{"role": "user", "content": [{"type": "text", "text": text}]}]})
+    }
+
+    /// Generous, and never measured: every assertion below is on *met* or *expired*, never on how
+    /// long anything took.
+    const AMPLE: Duration = Duration::from_secs(30);
+
+    #[test]
+    fn neither_party_is_answered_until_both_have_asked() {
+        let rz = Rendezvous::on_wire("anthropic", ["MARK-A", "MARK-B"], AMPLE);
+        let first = {
+            let rz = Arc::clone(&rz);
+            std::thread::spawn(move || rz.wait_for(Some("anthropic"), &turn("do MARK-A now")))
+        };
+        assert!(
+            until(|| rz.arrived() == vec!["MARK-A".to_string()]),
+            "the first party's arrival is visible while it is still held"
+        );
+        assert!(!first.is_finished(), "and it is genuinely held");
+        assert!(!rz.met());
+
+        Hold::wait_for(&*rz, Some("anthropic"), &turn("do MARK-B now"));
+        first.join().unwrap();
+        assert!(rz.met());
+        assert!(!rz.expired(), "both arrived, so nothing timed out");
+    }
+
+    /// The negative control for the test above: without it, `neither_party_is_answered…` would pass
+    /// against a `Rendezvous` that held nothing at all and returned immediately.
+    #[test]
+    fn a_party_that_waits_alone_expires_rather_than_parking_for_ever() {
+        let rz = Rendezvous::on_wire("anthropic", ["MARK-A", "MARK-B"], Duration::from_millis(50));
+        Hold::wait_for(&*rz, Some("anthropic"), &turn("do MARK-A now"));
+        assert!(rz.expired(), "the bound ran out and the hold says so");
+        assert!(!rz.met());
+    }
+
+    #[test]
+    fn another_wire_and_an_unmarked_body_are_neither_recorded_nor_held() {
+        // Would block for the whole bound if either were taken as an arrival.
+        let rz = Rendezvous::on_wire("anthropic", ["MARK-A", "MARK-B"], AMPLE);
+        Hold::wait_for(&*rz, Some("responses"), &turn("do MARK-A now"));
+        Hold::wait_for(&*rz, None, &turn("do MARK-A now"));
+        Hold::wait_for(&*rz, Some("anthropic"), &turn("nothing to see"));
+        assert!(rz.arrived().is_empty());
+        assert!(!rz.expired());
     }
 }

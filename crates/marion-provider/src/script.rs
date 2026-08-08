@@ -579,13 +579,204 @@ pub struct RootScript {
     pub turn: RootTurn,
 }
 
+/// The key that marks a placeholder in a [`ScriptedCall`]'s arguments.
+///
+/// `{"$marion_handle": 0}` stands for *"the `task_id` the **first** handle in this transcript
+/// named"*. It exists because fan-in's second half cannot be canned: a `wait` addresses a child by
+/// an id marion mints at spawn time, so a script authored before the run does not know it and a
+/// real model would read it out of the tool result it was just handed. This reads it from the same
+/// place, out of the request body, which keeps [`Script::respond`] a pure function of
+/// `(wire, body)` exactly as everything else here is.
+pub const HANDLE_KEY: &str = "$marion_handle";
+
+/// The sentence fragment a handle is announced in — `bridge::background_result`'s wording.
+///
+/// Anchored on `with task_id` rather than on the bare key, and that is the whole point: a
+/// *contract* also carries a `"task_id"` field, and a `wait` that resolved to the id of a child
+/// whose contract had already come back would wait on a finished node instead of the pending one.
+const HANDLE_PREAMBLE: &str = "with task_id ";
+
+/// One tool call in a node's script.
+#[derive(Debug, Clone)]
+pub struct ScriptedCall {
+    /// The tool's name in **this wire's** spelling — see [`RootTurn::tool`], which says how the
+    /// four harnesses disagree.
+    pub tool: String,
+    /// Arguments, possibly containing [`HANDLE_KEY`] placeholders.
+    pub args: Value,
+}
+
+impl ScriptedCall {
+    /// A helper for the common two-field call.
+    pub fn new(tool: impl Into<String>, args: Value) -> Self {
+        Self {
+            tool: tool.into(),
+            args,
+        }
+    }
+}
+
+/// **A node that makes more than one call**, told from the other nodes in the run by a marker.
+///
+/// [`RootScript`] is a two-step machine — one call, then a closing message — which is every shape
+/// M1 and the cross-product matrix needed. Fan-in is not that shape: a root that spawns two
+/// children in the background and then collects both makes **four** calls, and the two children
+/// under it must be distinguishable from each other or a test cannot say whose report is whose.
+///
+/// # Which node a request belongs to
+///
+/// [`Self::marker`], on exactly the terms [`RootScript::marker`] states: a string in this node's
+/// own task text, which every harness replays in full on every turn, so the answer is a property of
+/// the request rather than of arrival order.
+///
+/// **The markers are not disjoint across nodes, and the resolution is positional.** A root's
+/// transcript carries its children's prompts inside the `spawn` arguments it sent — and, once a
+/// `wait` returns, inside the contract's `instructions` too — so a root's body matches its
+/// children's markers as well as its own. [`Script::respond`] therefore takes the **first**
+/// matching entry, and a caller lists the root before its children. A child's body carries only its
+/// own task, so nothing matches a child that is not that child.
+///
+/// # Which step of the script
+///
+/// The **call ids this script authored**, quoted back. Turn `i` is emitted under
+/// [`Self::call_id`], and the next turn is the first `i` whose id is not yet anywhere in the body —
+/// which is a function of the transcript, so replaying a run's turns in any order yields the same
+/// answers. Ids are fixed-width so that no turn's id is a substring of another's.
+///
+/// Two-digit numbering caps a script at 100 turns, which is far past the point where a canned
+/// script is the wrong tool.
+///
+/// # Wires
+///
+/// Anthropic, Responses and Chat Completions, which are the three that let the *caller* choose a
+/// call id. Gemini's `functionCall` carries none, so there is nothing to recognise a repeat by;
+/// a Gemini request reaching this script is answered with a sentence saying so rather than with a
+/// turn, because a silent wrong turn on that wire is the failure mode `classify_root`'s own doc
+/// spent a paragraph on.
+#[derive(Debug, Clone)]
+pub struct NodeScript {
+    /// A string present in **this node's** task text. See the type's doc for the overlap rule.
+    pub marker: String,
+    /// The stem of every call id this node authors. Must be unique across a [`Script`]'s nodes,
+    /// and must not be a substring of another node's stem.
+    pub call_prefix: String,
+    /// The calls, in order.
+    pub turns: Vec<ScriptedCall>,
+    /// What the node says once every call's result is in its transcript.
+    pub final_text: String,
+}
+
+impl NodeScript {
+    /// The id turn `i` is emitted under.
+    pub fn call_id(&self, i: usize) -> String {
+        format!("{}_{:02}", self.call_prefix, i)
+    }
+
+    /// The first turn whose id is not yet in the transcript, or `None` once all of them are.
+    fn next_turn(&self, body: &Value) -> Option<usize> {
+        (0..self.turns.len()).find(|i| !carries(body, &self.call_id(*i)))
+    }
+
+    fn respond(&self, wire: Wire, body: &Value) -> String {
+        let Some(i) = self.next_turn(body) else {
+            return match wire {
+                Wire::Anthropic => anthropic::text_turn(&self.final_text),
+                Wire::Responses => responses::final_message(&self.final_text),
+                Wire::OpenAi => openai::text_turn(&self.final_text),
+                Wire::Gemini { streaming } => gemini::text_turn(&self.final_text, streaming),
+            };
+        };
+        let call = &self.turns[i];
+        let id = self.call_id(i);
+        let args = resolve_handles(&call.args, body);
+        match wire {
+            Wire::Anthropic => anthropic::tool_use_turn(&call.tool, &id, &args),
+            Wire::Responses => responses::mcp_call(&call.tool, &args, &id),
+            Wire::OpenAi => openai::tool_call_turn(&call.tool, &id, &args),
+            // Loud rather than plausible: see the type's doc.
+            Wire::Gemini { streaming } => gemini::text_turn(
+                &format!(
+                    "the canned provider has no multi-call script for the gemini wire, because a \
+                     function call there carries no caller-chosen id to recognise a repeat by; \
+                     node {:?} asked for turn {i}",
+                    self.marker
+                ),
+                streaming,
+            ),
+        }
+    }
+}
+
+/// Replace every `{"$marion_handle": k}` in `args` with the k-th handle this transcript announced.
+///
+/// An unresolvable placeholder becomes the string `"<no handle 2 in this transcript>"` rather than
+/// disappearing or being guessed at: marion answers a `wait` on an id it never issued with a
+/// sentence, so the run fails naming the missing handle instead of silently waiting on something
+/// else.
+fn resolve_handles(args: &Value, body: &Value) -> Value {
+    fn walk(v: &Value, handles: &[String]) -> Value {
+        match v {
+            Value::Object(o) => match o.get(HANDLE_KEY).and_then(Value::as_u64) {
+                Some(k) => match handles.get(k as usize) {
+                    Some(id) => Value::String(id.clone()),
+                    None => Value::String(format!("<no handle {k} in this transcript>")),
+                },
+                None => Value::Object(
+                    o.iter()
+                        .map(|(k, v)| (k.clone(), walk(v, handles)))
+                        .collect(),
+                ),
+            },
+            Value::Array(a) => Value::Array(a.iter().map(|v| walk(v, handles)).collect()),
+            other => other.clone(),
+        }
+    }
+    walk(args, &handles_in(body))
+}
+
+/// Every handle id announced in `body`, first mention first, without repeats.
+///
+/// A scan over the transcript's *strings* rather than over its serialized form, because the wires
+/// nest a tool result to different depths — codex wraps the MCP result in an `output` string that
+/// itself contains JSON — and one more level of escaping would defeat a scan over the encoded
+/// document. Whatever the depth, the announcement is a string somewhere.
+fn handles_in(body: &Value) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) => {
+                let mut rest = s.as_str();
+                while let Some(at) = rest.find(HANDLE_PREAMBLE) {
+                    rest = &rest[at + HANDLE_PREAMBLE.len()..];
+                    // The quotes around the id may be escaped once, twice or not at all depending
+                    // on how deep the wire nested the tool result. Skip the punctuation, take the
+                    // id.
+                    let id: String = rest
+                        .trim_start_matches(['\\', '"'])
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                        .collect();
+                    if !id.is_empty() && !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|v| walk(v, out)),
+            Value::Object(o) => o.values().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(body, &mut out);
+    out
+}
+
 /// Does any string anywhere in `body` contain `needle`?
 ///
 /// Whole-body rather than a per-wire path into "the user's first message", because the four wires
 /// put the prompt in four places (`messages[].content[].text`, `input[].content[].text`,
 /// `contents[].parts[].text`, `messages[].content`) and three of them also carry it again in a
 /// system instruction. One scan is both simpler and strictly harder to fool.
-fn carries(body: &Value, needle: &str) -> bool {
+pub(crate) fn carries(body: &Value, needle: &str) -> bool {
     match body {
         Value::String(s) => s.contains(needle),
         Value::Array(a) => a.iter().any(|v| carries(v, needle)),
@@ -669,6 +860,12 @@ pub struct Script {
     /// and the child the only Responses speaker, so the wire already separates them). It is `Some`
     /// for the cross-product matrix, where the root's harness may be the child's.
     pub root: Option<RootScript>,
+    /// **Nodes that make more than one call**, consulted before everything above.
+    ///
+    /// Empty — the default — leaves the rest of this struct's behaviour exactly as it was. A
+    /// non-empty list takes over for every request whose body carries one of its markers, in list
+    /// order; see [`NodeScript`] for why the order is load-bearing and why a root belongs first.
+    pub nodes: Vec<NodeScript>,
 }
 
 impl Default for Script {
@@ -702,6 +899,7 @@ impl Default for Script {
             openai_edit: None,
             openai_final_text: "Reported back through marion. Done.".to_string(),
             root: None,
+            nodes: Vec::new(),
         }
     }
 }
@@ -726,6 +924,12 @@ impl Script {
                 return gemini::text_turn(&self.gemini_router_verdict, streaming);
             }
             _ => {}
+        }
+        // **Before the two-step scripts**, and first-match-wins: a root's transcript carries its
+        // children's task text too, so the entries are ordered rather than assumed disjoint (see
+        // [`NodeScript`]).
+        if let Some(node) = self.nodes.iter().find(|n| carries(body, &n.marker)) {
+            return node.respond(wire, body);
         }
         if let Some(root) = &self.root
             && carries(body, &root.marker)
@@ -1877,6 +2081,169 @@ mod tests {
         assert_eq!(
             classify_openai_step(&openai_after_report(), &s.openai_report_tool),
             OpenAiStep::Report
+        );
+    }
+
+    // ---- NodeScript: the multi-call shape fan-in needs. -------------------------------------
+
+    const FAN_ROOT: &str = "MARION-TEST-ROOT-9c1e";
+    const FAN_A: &str = "MARION-TEST-A-9c1e";
+
+    fn fan_root_script() -> NodeScript {
+        NodeScript {
+            marker: FAN_ROOT.into(),
+            call_prefix: "call_test_root".into(),
+            turns: vec![
+                ScriptedCall::new("spawn", json!({"prompt": FAN_A, "background": true})),
+                ScriptedCall::new("wait", json!({"task_id": {HANDLE_KEY: 0}})),
+            ],
+            final_text: "collected".into(),
+        }
+    }
+
+    /// A `responses` transcript after `input_items` have come back.
+    fn fan_body(items: Vec<Value>) -> Value {
+        let mut input = vec![json!({"role": "user", "content": [{"text": FAN_ROOT}]})];
+        input.extend(items);
+        json!({"input": input, "tools": [{"name": "spawn"}]})
+    }
+
+    /// The exact nesting codex uses: the MCP result arrives as one `output` **string** that itself
+    /// contains the JSON block list, so the announcement's quotes are escaped one level.
+    fn codex_output_echo(call_id: &str, text: &str) -> Value {
+        let blocks = json!([{"type": "text", "text": text}]);
+        json!({
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": format!("Wall time: 1.0 seconds\nOutput:\n{blocks}"),
+        })
+    }
+
+    #[test]
+    fn a_node_script_advances_one_turn_per_id_already_in_the_transcript() {
+        let n = fan_root_script();
+        let first = fan_body(vec![]);
+        let out = n.respond(Wire::Responses, &first);
+        assert!(out.contains(&n.call_id(0)), "{out}");
+        assert!(out.contains("spawn"), "{out}");
+        assert!(!out.contains("collected"));
+
+        let second = fan_body(vec![codex_output_echo(
+            &n.call_id(0),
+            "marion: the claude-impl child is running in the background — call `wait` \
+             with task_id \"019fe083-7310-7aef-8fa9-a9e2881d0640\"",
+        )]);
+        let out = n.respond(Wire::Responses, &second);
+        assert!(out.contains(&n.call_id(1)), "{out}");
+        assert!(out.contains("wait"), "{out}");
+        assert!(
+            out.contains("019fe083-7310-7aef-8fa9-a9e2881d0640"),
+            "the placeholder must resolve to the handle the transcript announced: {out}"
+        );
+
+        let third = fan_body(vec![
+            codex_output_echo(&n.call_id(0), "call `wait` with task_id \"aaa-0\""),
+            codex_output_echo(&n.call_id(1), "{\"task_id\": \"aaa-0\"}"),
+        ]);
+        let out = n.respond(Wire::Responses, &third);
+        assert!(out.contains("collected"), "{out}");
+    }
+
+    /// The discriminator a fan-in `wait` rests on. Without it the second `wait` resolves to the id
+    /// of the child whose contract has *already* come back, and the run collects one child twice.
+    #[test]
+    fn a_handle_is_read_from_the_announcement_and_never_from_a_returned_contract() {
+        let body = fan_body(vec![
+            codex_output_echo("x", "{\"task_id\": \"contract-of-a\", \"completion\": {}}"),
+            codex_output_echo("y", "call `wait` with task_id \"handle-of-b\""),
+        ]);
+        assert_eq!(handles_in(&body), vec!["handle-of-b".to_string()]);
+    }
+
+    #[test]
+    fn handles_are_ordered_by_first_mention_and_never_repeated() {
+        let body = fan_body(vec![
+            codex_output_echo("x", "with task_id \"first\""),
+            codex_output_echo("y", "with task_id \"second\""),
+            codex_output_echo("z", "with task_id \"first\" again"),
+        ]);
+        assert_eq!(handles_in(&body), vec!["first", "second"]);
+        assert_eq!(
+            resolve_handles(&json!({"task_id": {HANDLE_KEY: 1}}), &body),
+            json!({"task_id": "second"})
+        );
+    }
+
+    /// An id the transcript never announced is named in the arguments rather than dropped, so the
+    /// run fails saying which handle was missing instead of waiting on some other child.
+    #[test]
+    fn an_unresolvable_handle_names_itself_rather_than_vanishing() {
+        let body = fan_body(vec![]);
+        assert_eq!(
+            resolve_handles(&json!({"task_id": {HANDLE_KEY: 3}}), &body),
+            json!({"task_id": "<no handle 3 in this transcript>"})
+        );
+    }
+
+    /// The overlap rule: a root's transcript carries its children's task text, so a root listed
+    /// after its children would be answered with a child's script.
+    #[test]
+    fn the_first_matching_node_wins_which_is_why_a_root_is_listed_first() {
+        let child = NodeScript {
+            marker: FAN_A.into(),
+            call_prefix: "call_test_a".into(),
+            turns: vec![ScriptedCall::new("Write", json!({}))],
+            final_text: "child done".into(),
+        };
+        let s = Script {
+            nodes: vec![fan_root_script(), child.clone()],
+            ..Script::default()
+        };
+        // The root's own first turn: its body carries FAN_A inside the spawn arguments it is about
+        // to send, and FAN_ROOT in its prompt.
+        let root_body = fan_body(vec![json!({"content": [{"text": FAN_A}]})]);
+        let out = s.respond(Wire::Responses, &root_body);
+        assert!(out.contains("call_test_root"), "{out}");
+
+        let swapped = Script {
+            nodes: vec![child, fan_root_script()],
+            ..Script::default()
+        };
+        assert!(
+            swapped
+                .respond(Wire::Responses, &root_body)
+                .contains("call_test_a"),
+            "the negative control: order is what resolves the overlap, so reversing it really does \
+             hand the root the child's script"
+        );
+    }
+
+    /// `nodes` is consulted first, but only for a body it can name.
+    #[test]
+    fn a_body_carrying_no_node_marker_still_reaches_the_two_step_scripts() {
+        let s = Script {
+            nodes: vec![fan_root_script()],
+            ..Script::default()
+        };
+        let plain_child = json!({"input": [{"content": [{"text": "no marker here"}]}]});
+        let out = s.respond(Wire::Responses, &plain_child);
+        assert!(out.contains("apply_patch"), "{out}");
+    }
+
+    /// Gemini carries no caller-chosen call id, so a multi-call script there is refused in words
+    /// rather than answered with a turn that could never be recognised as taken.
+    #[test]
+    fn the_gemini_wire_is_told_it_has_no_multi_call_script_rather_than_given_one() {
+        let n = fan_root_script();
+        let body = json!({
+            "contents": [{"role": "user", "parts": [{"text": FAN_ROOT}]}],
+            "tools": [{"functionDeclarations": [{"name": "spawn"}]}],
+        });
+        let out = n.respond(Wire::Gemini { streaming: true }, &body);
+        assert!(out.contains("no multi-call script"), "{out}");
+        assert!(
+            !out.contains("\"functionCall\""),
+            "a refusal, not a turn the wire would take: {out}"
         );
     }
 }

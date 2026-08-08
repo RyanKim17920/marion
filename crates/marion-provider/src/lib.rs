@@ -27,10 +27,10 @@ pub mod responses;
 pub mod script;
 pub mod server;
 
-pub use gate::TurnGate;
+pub use gate::{Hold, Rendezvous, TurnGate};
 pub use script::{
-    ChildStep, EditTurn, GeminiKind, GeminiStep, OpenAiStep, RootScript, RootStep, RootTurn,
-    Script, Wire, wire_name,
+    ChildStep, EditTurn, GeminiKind, GeminiStep, HANDLE_KEY, NodeScript, OpenAiStep, RootScript,
+    RootStep, RootTurn, Script, ScriptedCall, Wire, wire_name,
 };
 pub use server::{CannedServer, Config};
 
