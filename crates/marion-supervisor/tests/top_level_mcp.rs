@@ -676,6 +676,12 @@ fn a_roots_wait_returns_the_terminal_status_it_has_rather_than_a_contract_it_can
         "a `status` on a live root is answered: {early}"
     );
     let early_text = Server::text(&early);
+    assert!(
+        !early_text.contains("receive its task contract"),
+        "`status` must not tell a caller that waiting on a root will produce a contract §9 gives \
+         it none of — it is the verb a caller uses to decide whether waiting is worth it: \
+         {early_text}"
+    );
 
     until("the root's harness really launched", || {
         std::fs::read_dir(&fx.started).is_ok_and(|d| d.count() > 0)

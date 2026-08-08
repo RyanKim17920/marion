@@ -680,13 +680,24 @@ pub fn node_line(node: &marion_proto::model::NodeSummary) -> String {
 ///
 /// The `task_id` is echoed because the caller addressed the child by that and holds nothing else;
 /// an answer naming only an `AgentId` would be about a node the model has never seen a name for.
+/// **The closing clause is what a `wait` on this node would actually return**, and it is read off
+/// the node rather than assumed: `parent_id.is_none()` is a **root**, and §9 gives a root no
+/// `TaskContract`. Promising one here would be the same false receipt
+/// [`background_result`] avoids one call earlier — worse, in fact, because `status` is the verb a
+/// caller reaches for precisely when it is deciding whether waiting is worth it.
 pub fn status_result(id: &Value, task_id: &str, node: &marion_proto::model::NodeSummary) -> Value {
+    let returns = if node.parent_id.is_none() {
+        "receive the terminal status marion observed — this is a root, and §9 gives a root no task \
+         contract, so its own event stream is the record of what it did"
+    } else {
+        "receive its task contract"
+    };
     tool_result(
         id,
         &bounded(&format!(
             "marion: task_id {task_id:?} is {}. This is the state marion's supervisor holds right \
              now, not a cached one. Call `wait` with this task_id to block until it finishes and \
-             receive its task contract.",
+             {returns}.",
             node_line(node)
         )),
         false,
