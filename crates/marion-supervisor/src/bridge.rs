@@ -15,6 +15,7 @@ use marion_core::contract::{ExitStatus, TaskContract};
 use serde_json::{Value, json};
 
 use crate::spawn::SpawnError;
+use crate::tool::{ContentBlock, ToolOutcome};
 
 /// Every MCP revision marion will answer `initialize` with, **oldest first**.
 ///
@@ -459,6 +460,21 @@ pub fn tools_list_result(id: &Value) -> Value {
 pub fn tool_result(id: &Value, text: &str, is_error: bool) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": {
         "content": [{"type": "text", "text": text}], "isError": is_error}})
+}
+
+/// Wrap a [`ToolOutcome`] as the JSON-RPC response to the call with this id.
+///
+/// **The one place a tool result acquires a request id**, and the whole of what an SDK would
+/// replace on this side of the seam. See [`crate::tool`] for the boundary this belongs to and for
+/// why `handle_tool_call` does not return through it *yet*.
+pub fn tool_outcome_result(id: &Value, outcome: &ToolOutcome) -> Value {
+    let content: Vec<Value> = outcome
+        .content
+        .iter()
+        .map(|ContentBlock::Text(t)| json!({"type": "text", "text": t}))
+        .collect();
+    json!({"jsonrpc": "2.0", "id": id, "result": {
+        "content": content, "isError": outcome.is_error}})
 }
 
 /// Longest first line marion will put in front of a `spawn` result, in bytes.

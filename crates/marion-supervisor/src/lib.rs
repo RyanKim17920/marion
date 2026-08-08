@@ -60,6 +60,9 @@ pub mod serve;
 /// the same one M2's detached supervisor will bind, which is what makes the split invisible (§10).
 pub mod socket;
 pub mod spawn;
+/// The SDK-neutral dispatch seam: tool name and arguments in, content blocks and an explicit
+/// `isError` out, with everything marion means by a tool call on the far side of it.
+pub mod tool;
 /// The journal's first production reader: what a person watching a run learns about its
 /// children while it is still running.
 pub mod watch;
