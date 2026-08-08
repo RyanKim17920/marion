@@ -441,6 +441,60 @@ pub fn spawn_result(
     }
 }
 
+/// **What a root's `spawn` or `wait` comes back as** — the node ended, and §9 gives it no contract
+/// to return.
+///
+/// This is the shape [`spawn_result`] cannot take, and the reason it is a second function rather
+/// than a fourth arm there. Every one of that function's three shapes is built around a
+/// `TaskContract`: two print one and the third explains why there is none *and treats that as the
+/// failure*. A root has none and has not failed. Routing a successful root through
+/// `SpawnError::NoContract` would tell a top-level client that marion lost its answer on every run
+/// that went perfectly — the accept-and-blame shape, inverted.
+///
+/// **The exit numbers ride along and the answer does not pretend to be one.** §9 is explicit that a
+/// root has no `TaskContract`, so there is no `result` field anywhere for marion to invent; what a
+/// caller gets is the terminal status marion observed, marion's own description of it, and the path
+/// to the node's `events.jsonl`, which *is* the record of what the node did. Pointing at the file is
+/// the honest end of this sentence: it is what a person reads, it is what `marion attach` replays,
+/// and it is a place a caller can actually go — unlike a summary this function would have to make up
+/// from a stream it never read.
+///
+/// `isError` follows [`failure_line`]'s rule, for the same measured reason: `Ok` is `false`,
+/// everything else is `true`, because S9 recorded that a harness renders an error-shaped result
+/// verbatim and continues the turn. A root that timed out reported as success is the silent-failure
+/// shape §12 names.
+pub fn root_result(
+    id: &Value,
+    agent_type: &str,
+    agent_id: &marion_core::contract::AgentId,
+    status: ExitStatus,
+    exit: &marion_core::contract::ProcessExit,
+    events: &std::path::Path,
+) -> Value {
+    let head = match status {
+        ExitStatus::Ok => format!("marion: the {agent_type} root finished"),
+        ExitStatus::Unreported => {
+            format!("marion: the {agent_type} root ended without reporting an outcome")
+        }
+        ExitStatus::TimedOut => format!("marion: the {agent_type} root timed out"),
+        ExitStatus::Cancelled => format!("marion: the {agent_type} root was cancelled"),
+        ExitStatus::Killed => format!("marion: the {agent_type} root was killed"),
+        ExitStatus::Failed => format!("marion: the {agent_type} root failed"),
+    };
+    tool_result(
+        id,
+        &bounded(&format!(
+            "{head} — {desc}. It is node {node}, and it is a **root**: §9 gives a root no task \
+             contract, so there is no result document to return and marion is not withholding one. \
+             What it did is its own event stream, at {events}.",
+            desc = exit.description,
+            node = agent_id.0,
+            events = events.display(),
+        )),
+        !matches!(status, ExitStatus::Ok),
+    )
+}
+
 /// **What a backgrounded `spawn` hands back**, written as a sentence for the reason
 /// [`REPORT_ON_A_ROOT`] is: the caller is a language model, and a bare identifier teaches it
 /// nothing about what to do next.
@@ -453,15 +507,32 @@ pub fn spawn_result(
 /// that turns the handle into the contract. It never says "poll" and offers no cadence, because
 /// `wait` blocks — marion owns the lifecycle, which is the whole reason it may hand out a handle at
 /// all.
+/// **The one clause that varies is what the promised `wait` will return**, and it varies because
+/// §9 does: a child's `wait` returns a task contract and a root's cannot, since a root has none. A
+/// single sentence promising a contract to both would be a receipt written one call before the
+/// thing it receipts, for a document that is never going to exist — and a caller that believed it
+/// would read a successful root's `wait` as a marion failure. Everything else is deliberately
+/// identical, because backgrounding is the same verb later for both kinds.
 pub fn background_result(id: &Value, started: &crate::background::Started) -> Value {
+    let node = if started.has_contract {
+        "child"
+    } else {
+        "root"
+    };
+    let returns = if started.has_contract {
+        "marion will return its completed task contract"
+    } else {
+        "marion will return the terminal status it observed — a root has no task contract (§9), so \
+         there is no result document to wait for and its event stream is the record"
+    };
     tool_result(
         id,
         &format!(
-            "marion: the {agent_type} child is running in the background — this is a handle, not \
-             a result, and it carries no answer yet. Keep working; when you need what the child \
-             produced, call `wait` with task_id {task_id:?} and marion will return its completed \
-             task contract, blocking only if the child has not finished yet. You do not need to \
-             poll and there is nothing to check in the meantime.",
+            "marion: the {agent_type} {node} is running in the background — this is a handle, not \
+             a result, and it carries no answer yet. Keep working; when you need what the {node} \
+             produced, call `wait` with task_id {task_id:?} and {returns}, blocking only if the \
+             {node} has not finished yet. You do not need to poll and there is nothing to check in \
+             the meantime.",
             agent_type = started.agent_type,
             task_id = started.task_id.0,
         ),
@@ -527,6 +598,12 @@ pub fn wait_already_collected(
         crate::background::Collected::Contract => {
             "If you no longer have it, that contract was persisted before it was returned, so it \
              is on disk under that child's agent directory."
+        }
+        crate::background::Collected::Ended => {
+            "That node is a **root**, and §9 gives a root no task contract, so there was never a \
+             document to keep — the terminal status you were given the first time is the whole of \
+             the answer. Its own event stream is still on disk under that node's agent directory, \
+             and that is the record of what it did."
         }
         crate::background::Collected::NoContract => {
             "That child produced no contract — it failed before reaching a terminal state, and the \
@@ -679,6 +756,81 @@ pub fn method_not_found(id: &Value, method: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A root's answer is an error exactly when the root did not finish — never because it has no
+    /// contract.**
+    ///
+    /// §9 gives a root no `TaskContract`, so every top-level `spawn` and `wait` comes back through
+    /// [`root_result`] and the absence is the *normal* case. The failure this pins is the obvious
+    /// implementation: treating "no contract" as the thing that decides `isError`, which flags every
+    /// root — including one that exited `Ok` — as a run marion could not deliver an answer for. That
+    /// is the accept-and-blame shape inverted, and it would be invisible in an integration bed whose
+    /// harness never exits `Ok` anyway.
+    ///
+    /// The mapping is `Ok` and the other five, matching [`failure_line`]'s rule for a child, for
+    /// S9's measured reason: a harness renders an error-shaped result verbatim and continues the
+    /// turn, so `isError` is how marion says "this did not do what you asked" — which is true of a
+    /// root that timed out and false of one that finished.
+    #[test]
+    fn a_roots_result_is_an_error_only_when_the_root_did_not_finish() {
+        use marion_core::contract::{AgentId, ProcessExit};
+
+        let node = AgentId("019f-root".into());
+        let events = std::path::Path::new("/state/agents/019f-root/events.jsonl");
+        let render = |status| {
+            root_result(
+                &serde_json::json!(1),
+                "codex",
+                &node,
+                status,
+                &ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "the process exited".into(),
+                },
+                events,
+            )
+        };
+
+        let ok = render(ExitStatus::Ok);
+        assert_eq!(
+            ok["result"]["isError"],
+            serde_json::json!(false),
+            "a root that finished is not an error merely because §9 gives it no contract: {ok}"
+        );
+        let text = ok["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("019f-root") && text.contains("events.jsonl"),
+            "and it names the node and the record that does exist: {text}"
+        );
+        assert!(
+            !text.contains("could not") && !text.contains("marion cannot"),
+            "and does not describe a successful run as something marion failed to do: {text}"
+        );
+
+        for status in [
+            ExitStatus::Failed,
+            ExitStatus::TimedOut,
+            ExitStatus::Cancelled,
+            ExitStatus::Killed,
+            ExitStatus::Unreported,
+        ] {
+            let bad = render(status);
+            assert_eq!(
+                bad["result"]["isError"],
+                serde_json::json!(true),
+                "a root that ended {status:?} did not do what was asked, and reporting it as a \
+                 success is §12's silent failure: {bad}"
+            );
+            assert!(
+                bad["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("events.jsonl"),
+                "and every ending points at the record, because that is all a root leaves"
+            );
+        }
+    }
 
     #[test]
     fn parses_the_frames_a_real_codex_sends() {

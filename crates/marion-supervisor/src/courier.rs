@@ -328,6 +328,18 @@ const SPAWN_ANSWER_BOUND: Duration = Duration::from_secs(300);
 pub enum Delivered {
     /// The node reached a terminal state and its contract is this.
     Contract(Box<TaskContract>),
+    /// **The node reached a terminal state and there is no contract**, because §9 gives a *root*
+    /// none.
+    ///
+    /// Not a degraded [`Self::Contract`] and not an error: it is the complete answer for a node of
+    /// that kind, carrying the same two facts the contract's own `exit` block would have carried.
+    /// Distinguished from [`crate::spawn::SpawnError::NoContract`] — which says marion expected a
+    /// file and could not read it — because a root's absence is a property of §9 and a child's is
+    /// a fault. Collapsing them would report every successful root as a broken child.
+    Ended {
+        status: marion_core::contract::ExitStatus,
+        exit: Box<marion_core::contract::ProcessExit>,
+    },
     /// **The bound expired and the node is still going.** Not a failure of the node, not a timeout
     /// on the node, and not a terminal state: the node keeps its own wall clock and its handle
     /// stays valid. What expired is marion's willingness to hold this caller's turn — and, because
@@ -347,11 +359,17 @@ pub enum Delivered {
 /// stream; the attach delivers exactly one node's `events.jsonl` through one cursor, replay leg
 /// first, with no seam between the replay and the live legs (`events.rs`). A child that finished
 /// before this call is therefore answered out of the replay, which is the common case for a `wait`.
+///
+/// **`task_id` is an `Option` because a root has none (§9), not because a caller may omit it.** The
+/// wait is identical either way — the same attach, the same one cursor, the same bookend — and what
+/// the `Option` decides is only whether there is a file to read afterwards. Writing the root's case
+/// as a second function would duplicate the correlation loop, which is the duplication `9a6211a`
+/// removed from the three couriers and which loses a different clause each time it is copied.
 pub fn await_contract(
     socket: &Path,
     project: &ProjectDir,
     agent_id: &AgentId,
-    task_id: &TaskId,
+    task_id: Option<&TaskId>,
     bound: Duration,
 ) -> Result<Delivered, SpawnError> {
     let deadline = Instant::now() + bound;
@@ -386,8 +404,21 @@ pub fn await_contract(
     }
     match ended {
         Some(Lifecycle::Aborted { reason }) => Err(SpawnError::NodeAborted(reason)),
-        // `Opened` never ends the loop (see [`terminal_of`]), so the only remaining arm is `Exited`.
-        _ => read_contract(project, agent_id, task_id).map(|c| Delivered::Contract(Box::new(c))),
+        // A root: §9 gives it no contract, so the bookend it just read *is* the whole answer. The
+        // two fields come off the node's own stream rather than off the registry, so they are the
+        // same observation a child's contract would have recorded.
+        Some(Lifecycle::Exited { status, exit }) if task_id.is_none() => Ok(Delivered::Ended {
+            status,
+            exit: Box::new(exit),
+        }),
+        // `Opened` never ends the loop (see [`terminal_of`]), so the only remaining arm is `Exited`
+        // with a task id.
+        _ => read_contract(
+            project,
+            agent_id,
+            task_id.expect("a child names its contract"),
+        )
+        .map(|c| Delivered::Contract(Box::new(c))),
     }
 }
 
@@ -499,7 +530,7 @@ mod tests {
             std::path::Path::new("/tmp/marion-no-such-supervisor.sock"),
             &project,
             &AgentId("019f-node".into()),
-            &TaskId("task-1".into()),
+            Some(&TaskId("task-1".into())),
             Duration::from_secs(1),
         )
         .expect_err("nothing is listening there");

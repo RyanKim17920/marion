@@ -33,8 +33,15 @@ fn usage_text() -> String {
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
          \x20                 [--pane] [--canned [--base-url <url>]]\n\
+         \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
          \n\
          agent types: {}\n\
+         \n\
+         marion mcp serves marion's own MCP tools — spawn, wait, status, list — over stdio, for\n\
+         an MCP client to be configured with. Its spawn creates a root, the same call `marion run`\n\
+         makes, over the same socket: it starts no agent itself and owns none. Point a client at\n\
+         it with `command: \"marion\", args: [\"mcp\", \"--repo\", \"/path/to/repo\"]`. It is not a\n\
+         command to run at a terminal — stdout is JSON-RPC.\n\
          \n\
          marion with no arguments asks three questions — harness, model, prompt — and then runs\n\
          exactly what `marion run <answer> --prompt <answer>` would. It asks **only** when stdin\n\
@@ -386,6 +393,135 @@ fn git_root(start: &Path) -> Option<PathBuf> {
 
 fn default_repo(cwd: &Path) -> PathBuf {
     git_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
+}
+
+/// `marion mcp`'s flags — the four of `marion run`'s that say *which project and which provider*,
+/// and none of the four that describe a run.
+///
+/// There is no `--prompt`, no `--model`, no `--timeout` and no `--no-change-record`, because this
+/// command does not perform a run: it serves a tool the client's model calls, and every one of
+/// those is a field of the `spawn` call rather than of the server. Accepting them here would be a
+/// second place a run's shape is decided, silently losing to the tool call whenever the two
+/// disagreed.
+#[derive(Debug, PartialEq, Eq, Default)]
+struct McpArgs {
+    repo: Option<PathBuf>,
+    state_dir: Option<String>,
+    base_url: Option<String>,
+    canned: bool,
+}
+
+/// Same rule as [`parse_args`]: **an unknown flag is a refusal, never a silent ignore.** It matters
+/// more here than there, because these flags arrive out of an MCP client's config file where nobody
+/// is watching a terminal — a mistyped `--state-dir` that fell through would serve a different
+/// project's fleet than the one the operator wrote down, and answer every call successfully.
+fn parse_mcp_args(argv: &[String]) -> Option<McpArgs> {
+    let mut args = McpArgs::default();
+    let mut rest = argv.iter();
+    while let Some(flag) = rest.next() {
+        let mut take = || rest.next().cloned();
+        match flag.as_str() {
+            "--repo" => args.repo = Some(PathBuf::from(take()?)),
+            "--state-dir" => args.state_dir = Some(take()?),
+            "--base-url" => args.base_url = Some(take()?),
+            "--canned" => args.canned = true,
+            // Inert here for the same reason it is inert on `run`: real auth is the default it
+            // used to have to ask for, and refusing it would break configs to say nothing.
+            "--live" => {}
+            _ => return None,
+        }
+    }
+    Some(args)
+}
+
+/// **`marion mcp` — marion as an MCP server, for a client marion did not start.**
+///
+/// §10's `marion` is the user-facing command and §5.4's control MCP is how an agent addresses
+/// marion; until now the second was only ever reachable *from inside* a node marion had spawned.
+/// This is the same surface pointed the other way: an external MCP client — Claude Code's
+/// `.mcp.json`, another agent, an editor — gets `spawn`, `wait`, `status` and `list`, and its
+/// `spawn` creates a **root**.
+///
+/// **It is a socket client and it is not privileged**, which is the whole of why it may exist at
+/// all. Every frame it answers is composed out of §2's fifteen methods over the same socket
+/// `marion run` dials; it starts no process; and `mcp::Principal` is where the one difference
+/// between it and a per-child bridge is written down. See
+/// `mcp::tests::the_mcp_entry_point_has_no_spawn_path_of_its_own` for the rule and
+/// `mcp::Principal::ensure_supervisor` for the one thing the two surfaces genuinely decide
+/// differently.
+///
+/// **Everything it resolves, it resolves exactly as `marion run` does**, and from the same
+/// functions rather than from copies: `default_repo`, `state_dir`, `socket::project_root`,
+/// `socket::socket_paths`, `resolve_base_url`. A `marion mcp` and a `marion run` given the same
+/// `--repo` must reach the same supervisor over the same journal, and two derivations that agree
+/// today are two derivations that can stop agreeing.
+///
+/// **Nothing but JSON-RPC reaches stdout.** stdout is the protocol here — an MCP client parses
+/// every line of it — so each refusal below goes to stderr and ends the process, rather than
+/// printing something the client would try to read as a frame.
+fn run_mcp(args: McpArgs) -> ExitCode {
+    let repo = args.repo.unwrap_or_else(|| {
+        default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    });
+    let repo = match repo.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(state) = state_dir(
+        args.state_dir.as_deref(),
+        std::env::var("XDG_STATE_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    ) else {
+        eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+        return ExitCode::FAILURE;
+    };
+    let base_url = match resolve_base_url(
+        args.canned,
+        args.base_url.clone(),
+        std::env::var("MARION_BASE_URL").ok(),
+    ) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("marion: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let program = match std::env::current_exe().map(|p| p.with_file_name("marion-supervisor")) {
+        Ok(p) if p.exists() => p,
+        _ => PathBuf::from("marion-supervisor"),
+    };
+    // §2's key — the git common dir — for the socket and for §4.3's tree both, which is the pairing
+    // the run path documents at length. One `project_root`, spent twice.
+    let project_key = socket::project_root(&repo);
+    let sock = socket::socket_paths(&state, &project_key, uid());
+    let project = marion_core::paths::ProjectDir::new(&state, &project_key);
+    let auth = if args.canned {
+        marion_harness::Auth::Canned
+    } else {
+        marion_harness::Auth::Inherited
+    };
+    marion_supervisor::mcp::serve_stdio(marion_supervisor::mcp::Principal::TopLevel(Box::new(
+        marion_supervisor::mcp::TopLevel::new(
+            sock,
+            project,
+            repo,
+            detach::Launch {
+                program,
+                state_dir: state,
+                project_root: project_key,
+                // §5.7's own default, for the reason the run path gives: whichever client starts a
+                // supervisor fixes the grace for every later one, so this is not a number a
+                // resident MCP server gets to choose on everybody else's behalf.
+                idle_grace: RUN_IDLE_GRACE,
+                auth,
+                base_url,
+            },
+        ),
+    )));
+    ExitCode::SUCCESS
 }
 
 /// What the three questions produce. Everything else keeps its default: the picker exists to make
@@ -1353,6 +1489,15 @@ fn main() -> ExitCode {
     // stdin-is-a-terminal rule; this adds a verb without touching what `run` does.
     if argv.first().map(String::as_str) == Some("attach") {
         return attach_main(&argv);
+    }
+    // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
+    // from its first line; a mistyped flag that reached `parse_args` would print usage text onto
+    // the protocol stream and leave the client parsing prose.
+    if argv.first().map(String::as_str) == Some("mcp") {
+        return match parse_mcp_args(&argv[1..]) {
+            Some(a) => run_mcp(a),
+            None => usage(),
+        };
     }
     let args = if argv.is_empty() {
         // **Only** with a terminal on the other end. A picker that read from a pipe would block

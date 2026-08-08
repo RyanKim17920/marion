@@ -52,6 +52,17 @@ use marion_core::contract::{AgentId, TaskId};
 struct Handed {
     /// What the caller holds. `wait` addresses a child by this.
     task_id: TaskId,
+    /// **The contract file this run will be filed under, or `None` for a root.**
+    ///
+    /// Separate from [`Self::task_id`] because for a *root* the two are not the same thing. §9
+    /// gives a root no `TaskContract`, so `agent/spawn` answers it with no `task_id` at all — and a
+    /// handle still has to be *something*, or a top-level `spawn { background: true }` could hand
+    /// nothing back and its `wait` could never name what it was waiting for. So the handle is
+    /// minted from the node's own id, which the supervisor did name, and this field records the one
+    /// thing that is genuinely absent: the file. A single field would have to encode "the handle"
+    /// and "the file" in one string and would send `wait` looking for `contracts/<agent-id>.json`,
+    /// a path nothing writes.
+    contract: Option<TaskId>,
     /// **The node the id is about** — the pairing only `agent/spawn`'s answer carries, and the
     /// reason this table still exists.
     agent_id: AgentId,
@@ -79,6 +90,12 @@ pub enum Collected {
     /// really is on disk under that child's agent directory and a caller that lost it can go and
     /// read it.
     Contract,
+    /// **A root's terminal status.** §9 gives a root no `TaskContract`, so a second `wait` must not
+    /// be pointed at a contracts directory — but it must also not be told "nothing was produced",
+    /// which is [`Self::NoContract`]'s sentence and is false: the node ran, and its own
+    /// `events.jsonl` is on disk and is the record. Its own variant rather than either neighbour,
+    /// because both neighbours would be a wrong sentence about a run that went fine.
+    Ended,
     /// A refusal, an abort, a contract marion could not read. There is no file and nothing to
     /// re-read; the caller was told everything there is.
     NoContract,
@@ -96,6 +113,12 @@ pub struct Background {
 pub struct Started {
     pub task_id: TaskId,
     pub agent_type: String,
+    /// **Whether the `wait` this handle promises will return a contract.** A child's will; a root's
+    /// will return the node's terminal status instead, because §9 gives it no contract. Carried
+    /// here so [`crate::bridge::background_result`] can say which — a handle whose sentence
+    /// promises a "completed task contract" for a node that can never produce one is the
+    /// false-receipt shape, one call earlier than usual.
+    pub has_contract: bool,
 }
 
 /// What a `wait` found in this table. The blocking is [`crate::courier::await_contract`]'s.
@@ -105,6 +128,8 @@ pub enum Wait {
         agent_id: AgentId,
         agent_type: String,
         bound: Duration,
+        /// See [`Handed::contract`]: `None` is a root, whose wait ends at the node's own bookend.
+        contract: Option<TaskId>,
     },
     /// **This bridge process's table has no row with that id**, which is narrower than "you may not
     /// wait on that".
@@ -137,6 +162,7 @@ impl Background {
     pub fn hand_out(
         &self,
         task_id: TaskId,
+        contract: Option<TaskId>,
         agent_id: AgentId,
         agent_type: String,
         wait_bound: Duration,
@@ -144,9 +170,11 @@ impl Background {
         let started = Started {
             task_id: task_id.clone(),
             agent_type: agent_type.clone(),
+            has_contract: contract.is_some(),
         };
         self.lock().push(Handed {
             task_id,
+            contract,
             agent_id,
             agent_type,
             wait_bound,
@@ -167,6 +195,7 @@ impl Background {
                 agent_id: h.agent_id.clone(),
                 agent_type: h.agent_type.clone(),
                 bound: h.wait_bound,
+                contract: h.contract.clone(),
             },
         }
     }
@@ -207,6 +236,7 @@ mod tests {
     fn hand(bg: &Background, task: &str) {
         bg.hand_out(
             TaskId(task.into()),
+            Some(TaskId(task.into())),
             AgentId(format!("node-for-{task}")),
             "codex-impl".into(),
             Duration::from_secs(30),
@@ -232,6 +262,48 @@ mod tests {
         assert_eq!(
             agent_type, "codex-impl",
             "a `wait` frame carries no agent type, so the answer's name comes from here"
+        );
+    }
+
+    /// **A root's handle resolves to its node and says there is no contract file** — the one thing
+    /// that distinguishes it from a child's, and the thing a `wait` must not get wrong.
+    ///
+    /// §9 gives a root no `TaskContract`, so `agent/spawn` answers a root with no `task_id`. The
+    /// handle is minted from the node's own id instead; what is *absent* is the file, and that
+    /// absence is recorded here rather than re-derived at `wait` time. A row that carried
+    /// `Some(handle)` here would send `wait` to read `contracts/<agent-id>.json` — a path nothing
+    /// writes — and a successful root would come back as `NoContract`, which says marion lost
+    /// something.
+    #[test]
+    fn a_roots_handle_names_its_node_and_no_contract_file() {
+        let bg = Background::new();
+        let node = AgentId("019f-root".into());
+        let started = bg.hand_out(
+            TaskId(node.0.clone()),
+            None,
+            node.clone(),
+            "codex".into(),
+            Duration::from_secs(30),
+        );
+        assert!(
+            !started.has_contract,
+            "the sentence handed to the caller must not promise a contract this node cannot write"
+        );
+        let Wait::Pending {
+            agent_id, contract, ..
+        } = bg.resolve(&started.task_id.0)
+        else {
+            panic!("a root's handle resolves like any other");
+        };
+        assert_eq!(agent_id, node, "and it names the node the supervisor named");
+        assert_eq!(
+            contract, None,
+            "and reports no contract file, so `wait` ends at the node's own bookend rather than \
+             reading a path nothing writes"
+        );
+        assert!(
+            bg.node_of(&started.task_id.0).is_some(),
+            "and `status` resolves it too — a root is as readable as any other node"
         );
     }
 

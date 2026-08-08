@@ -27,6 +27,210 @@ use crate::{background, bridge, courier, run, socket, spawn};
 
 /// `spawn` asks this project's supervisor for a child and returns its completed contract — or, with
 /// `background: true`, returns a handle immediately; `wait` resolves that handle; `report` stages
+/// **§5.4's `report` rule, reached from the one direction the rule does not have a row for.**
+///
+/// `bridge::REPORT_ON_A_ROOT` is a claim about a *node* — you are the root, and a root has no
+/// contract. It cannot be reused here, and the difference is not pedantry: a top-level client is
+/// not a node at all, so there is no depth to read, nothing marion could have decided differently
+/// about its launch, and no declaration to go and fix. Telling it "you are the root" would name a
+/// position in a tree it does not occupy.
+///
+/// Declared and refused rather than withheld, on `bridge::tools`' own grounds: an absent verb
+/// carries no sentence, so a client would read the absence as "marion has no `report`" and never
+/// learn that what it wanted is a *child's* report, which arrives on its own `spawn`.
+const TOP_LEVEL_REPORT: &str = "marion: `report` is a node's return path (§5.4) and this is not a \
+     node — it is an MCP client marion did not start and holds no contract for, so there is nothing \
+     a report could be recorded against. Nothing was staged. What you are probably after is the \
+     other direction: `spawn` a child and its own `report` comes back to you as that call's result.";
+
+/// **Who this MCP server is serving, and therefore what its `spawn` creates.**
+///
+/// marion has exactly two MCP surfaces and they are **peers**: both are socket clients, neither is
+/// privileged, and neither has a launch path of its own. They differ in one field of one wire
+/// call — `agent/spawn`'s `caller` — and every other difference below is that one difference
+/// arriving somewhere else. There is deliberately no third thing here: a `Principal` that carried a
+/// capability rather than an identity would be the beginning of a privileged surface.
+///
+/// | | [`Principal::Node`] | [`Principal::TopLevel`] |
+/// |---|---|---|
+/// | who runs it | `marion-supervisor mcp`, spawned by marion for one node | `marion mcp`, spawned by whatever MCP client was configured with it |
+/// | `agent/spawn`'s `caller` | `Some`, proved by the node token marion minted (§5.4) | `None` — a **root**, authorized by the socket's peer credentials (`66c8d0e`) |
+/// | `agent/spawn`'s `repo` | forbidden: the supervisor knows which tree the node lives in | required, and checked against the socket's own project key |
+/// | which supervisor | derived from the declaration marion wrote (`MARION_REPO`) | resolved by the entry point from `--repo`, the same way `marion run` resolves it |
+/// | nothing listening | **refuse** | **start one** — see [`Principal::ensure_supervisor`] |
+/// | `report` | §5.4's rule, on this node's depth | refused: an MCP client is not a node and has no contract |
+/// | `list` | this node's own subtree, filtered | this project's whole tree, which is what peer credentials on this socket authorize |
+pub enum Principal {
+    /// **A per-child bridge**: `marion-supervisor mcp`, named in the `--mcp-config` marion writes
+    /// into one node's declaration, holding the `AgentId` and capability token marion minted for
+    /// that node.
+    Node,
+    /// **A top-level entry point**: `marion mcp`, configured into an external MCP client's server
+    /// list. It serves no node and holds no token; what authorizes it is that it is a same-uid peer
+    /// of the socket it dials.
+    /// Boxed only because `Node` carries nothing and this carries four resolved paths; the
+    /// asymmetry is the point of the type, not a thing to flatten away.
+    TopLevel(Box<TopLevel>),
+}
+
+/// Everything [`Principal::TopLevel`] needs, resolved by the entry point before the first frame is
+/// read.
+///
+/// **Resolved there and not here, deliberately.** `marion mcp` and `marion run` are the same kind
+/// of client and must land on the same supervisor for the same `--repo`, so they perform one
+/// resolution — `socket::project_root`, then `socket::socket_paths` — in `bin/marion.rs`, and this
+/// module is handed the answer. A second derivation living here is exactly how the linked-worktree
+/// split `bin/marion.rs` documents came about the first time.
+pub struct TopLevel {
+    /// §2's socket for the project this server serves.
+    pub sock: SocketPaths,
+    /// §4.3's tree for the same project, where a root's contract will be read back from.
+    pub project: ProjectDir,
+    /// The repository a root created here runs in — the root's cwd and the base of §6.6's
+    /// worktrees.
+    ///
+    /// **Sent on every `spawn`, because `caller: None` requires it.** One supervisor serves a
+    /// repository and every linked worktree of it, so only the client knows which of them was
+    /// meant; and since `66c8d0e` the supervisor refuses a `repo` that is not its own project, so
+    /// this is a statement it checks rather than one it believes.
+    pub repo: std::path::PathBuf,
+    /// What to start when nothing is listening. See [`Principal::ensure_supervisor`].
+    pub launch: crate::detach::Launch,
+    /// **The connection that makes this process a client for as long as it runs.**
+    ///
+    /// Never read from and never written to. §5.7's exit predicate is *zero clients for the whole
+    /// grace* (`serve::accept_loop`), so a server that dialed, spawned a root in the background and
+    /// hung up would leave the supervisor eligible to exit while this process was still holding
+    /// handles to that root — and the `wait` that came minutes later would find nothing listening
+    /// and start a **second** supervisor, which has never heard of the first one's nodes. Holding
+    /// the connection is the same thing `marion run` does for the length of a run, for the same
+    /// reason, and it is what makes "peers" true of lifetime and not only of privilege.
+    held: std::sync::Mutex<Option<std::os::unix::net::UnixStream>>,
+}
+
+impl TopLevel {
+    /// A top-level surface, not yet connected to anything. The dial happens on the first `spawn`.
+    pub fn new(
+        sock: SocketPaths,
+        project: ProjectDir,
+        repo: std::path::PathBuf,
+        launch: crate::detach::Launch,
+    ) -> Self {
+        Self {
+            sock,
+            project,
+            repo,
+            launch,
+            held: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl Principal {
+    /// Which supervisor to ask, and where the nodes it answers about keep their files.
+    fn paths(&self) -> Result<(SocketPaths, ProjectDir), String> {
+        match self {
+            Self::Node => supervisor_paths(),
+            Self::TopLevel(t) => Ok((t.sock.clone(), t.project.clone())),
+        }
+    }
+
+    /// **Whether this surface may start a supervisor when none is listening — and it is a different
+    /// answer for the two, on purpose.**
+    ///
+    /// §5.7 starts a supervisor *"on demand by the first client that dials the §2 socket path and
+    /// finds nothing listening"*, and both surfaces are such a client. What separates them is what
+    /// they would be holding afterwards.
+    ///
+    /// **[`Principal::Node`] refuses, and starting one there would be useless before it was
+    /// wrong.** A bridge exists because a supervisor made its node; nothing listening means *that*
+    /// supervisor is gone. A fresh one did not mint this bridge's `MARION_NODE_TOKEN`, so
+    /// `RegistryHandle::resolve_caller` would refuse the very next `agent/spawn` — the new process
+    /// buys no capability at all. And the node the bridge serves is still gone with its owner, so
+    /// what a successful start would produce is a supervisor that has never heard of this node,
+    /// answering on its behalf. A courier that starts a new owner is precisely the ownership
+    /// confusion item 28 removed. `identity_from`'s refusal already names this case in words
+    /// (*"a node whose supervisor has restarted… the token was minted in memory and died with that
+    /// supervisor"*), and refusing is what makes that sentence the one the caller gets.
+    ///
+    /// **[`Principal::TopLevel`] starts one, because it is `marion run`'s case exactly.** It
+    /// presents no token, so it has nothing that can be stale: `caller: None` is authorized by peer
+    /// credentials, which a new supervisor checks as well as an old one, and bound to a repository,
+    /// which is a property of the tree and not of a process. Refusing would also make the surface
+    /// unusable in the way it is actually deployed — an MCP client starts its stdio servers at
+    /// session start, long before anyone has run `marion`, and a model's first `spawn` would come
+    /// back "nothing is listening" with no verb anywhere that could fix it.
+    ///
+    /// **It is called from the `spawn` arm and from nowhere else, and that is the load-bearing
+    /// half.** §5.7's demand is a *client that wants something*, not a client that exists. A server
+    /// that started a supervisor at boot would leave one resident per editor window that had marion
+    /// in its config, whether or not anybody ever spawned. `list` and `status` against nothing
+    /// listening therefore answer "nothing is listening" rather than manufacturing the thing they
+    /// were asked to report on — which would be a reading that could never return an empty fleet.
+    fn ensure_supervisor(&self) -> Result<(), String> {
+        let Self::TopLevel(t) = self else {
+            return Ok(());
+        };
+        let mut held = t
+            .held
+            .lock()
+            .map_err(|_| "marion: this server's supervisor connection is poisoned".to_string())?;
+        if held.is_some() {
+            return Ok(());
+        }
+        let ensured = crate::detach::ensure_supervisor(&t.sock, &t.launch).map_err(|e| {
+            format!(
+                "marion: no supervisor is listening on {} for this project and marion could not \
+                 start one ({e}). Refusing rather than running the node here: since §11 item 28 the \
+                 supervisor owns every process, and a root started by this server would be a node \
+                 no client could attach to, kill or quit.",
+                t.sock.socket().display()
+            )
+        })?;
+        *held = Some(ensured.stream);
+        Ok(())
+    }
+}
+
+/// **One finished node, rendered once** — the answer a blocking `spawn` returns and the answer a
+/// `wait` returns, which §5.4 makes the same delivery at two different times.
+///
+/// Shared rather than written twice because the arms are exactly the trap: three of the four
+/// outcomes here read alike and the fourth, a **root's end**, is the one a second copy would get
+/// wrong by folding it into either neighbour. Folded into `Contract` there is no contract to print;
+/// folded into the error arm every root that ran perfectly is reported as a child whose answer
+/// marion lost.
+///
+/// **`None` means the bound expired and the node did not**, and it is returned rather than rendered
+/// because that is the one outcome the two callers genuinely word differently: a `spawn` says "this
+/// outlived the wait, here is the handle-shaped way to ask again", and a `wait` already holds a
+/// handle and says how long it waited. Everything they say identically is here.
+fn deliver(
+    id: &serde_json::Value,
+    agent_type: &str,
+    project: &ProjectDir,
+    agent_id: &AgentId,
+    delivered: Result<courier::Delivered, SpawnError>,
+) -> Option<serde_json::Value> {
+    Some(match delivered {
+        Ok(courier::Delivered::Contract(c)) => bridge::spawn_result(id, agent_type, Ok(*c)),
+        // §9's root, ending. See [`bridge::root_result`] for why this is not `spawn_result`'s
+        // fourth shape.
+        Ok(courier::Delivered::Ended { status, exit }) => bridge::root_result(
+            id,
+            agent_type,
+            agent_id,
+            status,
+            &exit,
+            &project.agent(agent_id).events(),
+        ),
+        Ok(courier::Delivered::StillRunning) => return None,
+        Err(e) => bridge::spawn_result(id, agent_type, Err(e)),
+    })
+}
+
+/// `spawn` asks this project's supervisor for a child and returns its completed contract — or, with
+/// `background: true`, returns a handle immediately; `wait` resolves that handle; `report` stages
 /// the child's payload, which the parent's own `spawn` then returns.
 ///
 /// **Since §11 item 28 step 5 nothing here starts a process.** The `spawn` arm dials §2's socket
@@ -40,12 +244,19 @@ use crate::{background, bridge, courier, run, socket, spawn};
 /// one test's answers depend on which other tests had run — the exact defect class this repo keeps
 /// finding, one level down.
 fn handle_tool_call(
+    who: &Principal,
     bg: &background::Background,
     id: &serde_json::Value,
     name: &str,
     args: &serde_json::Value,
 ) -> serde_json::Value {
     match name {
+        // A top-level client has no contract to report into and is not a node, so §5.4's rule
+        // cannot even be evaluated for it — there is no depth to read. Declared and refused rather
+        // than withheld, on `bridge::tools`' own grounds: an absent verb carries no sentence.
+        "report" if matches!(who, Principal::TopLevel(_)) => {
+            bridge::tool_result(id, TOP_LEVEL_REPORT, true)
+        }
         "report" => match report_refusal(std::env::var(DEPTH_ENV).ok()) {
             // §5.4, at the execution point. See [`report_refusal`].
             Some(msg) => bridge::tool_result(id, &msg, true),
@@ -71,14 +282,25 @@ fn handle_tool_call(
             // wrong rather than about the call: one cannot work out *which supervisor* to ask, the
             // other cannot say *who is asking*. Neither is a rule the caller broke, so neither
             // reads like `spawn_result`'s refusals — the fix is in the node's declaration.
-            let (sock, project) = match supervisor_paths() {
+            let (sock, project) = match who.paths() {
                 Ok(v) => v,
                 Err(e) => return bridge::tool_result(id, &e, true),
             };
-            let caller = match node_identity() {
-                Ok(c) => c,
-                Err(e) => return bridge::tool_result(id, &e, true),
+            // **The one field the two surfaces differ in**, and the reason there are two of them.
+            // A node names itself and proves it; a top-level client names nobody and names its
+            // repository instead, which is what makes the call a **root** (§5.4, `66c8d0e`).
+            let (caller, repo) = match who {
+                Principal::Node => match node_identity() {
+                    Ok(c) => (Some(c), None),
+                    Err(e) => return bridge::tool_result(id, &e, true),
+                },
+                Principal::TopLevel(t) => (None, Some(t.repo.clone())),
             };
+            // **§5.7's on-demand start, and only here.** See [`Principal::ensure_supervisor`] for
+            // why the two surfaces answer this differently and why no other arm asks.
+            if let Err(e) = who.ensure_supervisor() {
+                return bridge::tool_result(id, &e, true);
+            }
             // **Every gated fact is left to the supervisor**, and that is the shape of step 5 rather
             // than a simplification. §6.1 step 2's gates read the caller's agent type, its depth and
             // its live-children count; all three used to be read here — the first two off the
@@ -90,10 +312,13 @@ fn handle_tool_call(
             let params = marion_proto::params::AgentSpawnParams {
                 agent_type: agent_type.clone(),
                 prompt: args["prompt"].as_str().unwrap_or_default().to_string(),
-                caller: Some(caller),
+                caller,
                 // Forbidden with a caller, by name: the supervisor already knows which tree this
                 // node lives in, and a caller that states it is a caller that can lie about it.
-                repo: None,
+                // Required without one, for the mirror reason: a root's tree is the only thing the
+                // supervisor cannot derive, and since `66c8d0e` it is compared against the socket's
+                // own project key rather than obeyed.
+                repo,
                 acceptance_criteria: string_list(&args["acceptance_criteria"]),
                 writable_scope: string_list(&args["writable_scope"]),
                 // **Sent as the caller stated it, absent and all.** The wire carries an `Option` so
@@ -122,23 +347,38 @@ fn handle_tool_call(
                 Ok(s) => s,
                 Err(e) => return bridge::spawn_result(id, &agent_type, Err(e)),
             };
-            let Some(task_id) = spawned.task_id else {
-                // Unreachable through a supervisor of this version — `agent/spawn` names the
-                // contract file for every spawn that has a caller — and answered rather than
-                // panicked, because a child really was started and the parent needs to know that
-                // much even when marion cannot say where its answer will land.
-                return bridge::spawn_result(
-                    id,
-                    &agent_type,
-                    Err(SpawnError::NoContract {
-                        path: project.agent(&spawned.agent_id).contracts_dir(),
-                        why: "this project's supervisor started the child without naming the \
-                              contract file it will write (`agent/spawn` answers with a `task_id` \
-                              for every spawn that has a caller), so marion cannot tell which run \
-                              to read back"
-                            .into(),
-                    }),
-                );
+            // **No `task_id` means two entirely different things, and which one it means is the
+            // principal's.**
+            //
+            // For a **root** it is §9 arriving on the wire: a root has no `TaskContract`, so
+            // `agent/spawn` names no contract file because there is no contract file. That is the
+            // normal answer for every top-level `spawn`, not a degraded one, and treating it as the
+            // refusal below would report every root that ran perfectly as a child marion had lost
+            // the answer to. The handle is minted from the node's own id instead — the supervisor
+            // did name that — and `background::Handed::contract` records the absence.
+            //
+            // For a **child** it stays what it was: unreachable through a supervisor of this
+            // version, and answered rather than panicked, because a child really was started and
+            // the parent needs to know that much even when marion cannot say where its answer will
+            // land.
+            let contract = spawned.task_id.clone();
+            let handle = match (&contract, who) {
+                (Some(t), _) => t.clone(),
+                (None, Principal::TopLevel(_)) => TaskId(spawned.agent_id.0.clone()),
+                (None, Principal::Node) => {
+                    return bridge::spawn_result(
+                        id,
+                        &agent_type,
+                        Err(SpawnError::NoContract {
+                            path: project.agent(&spawned.agent_id).contracts_dir(),
+                            why: "this project's supervisor started the child without naming the \
+                                  contract file it will write (`agent/spawn` answers with a \
+                                  `task_id` for every spawn that has a caller), so marion cannot \
+                                  tell which run to read back"
+                                .into(),
+                        }),
+                    );
+                }
             };
             let bound = wait_bound(args["timeout_secs"].as_u64());
             // **§5.4's `background`, read for its value.** Absent and `false` both mean "block".
@@ -154,33 +394,31 @@ fn handle_tool_call(
             // is refused in the frame that asked for it on both paths, by construction rather than
             // by a second call site.
             if args["background"].as_bool() == Some(true) {
-                let started = bg.hand_out(task_id, spawned.agent_id, agent_type, bound);
+                let started = bg.hand_out(handle, contract, spawned.agent_id, agent_type, bound);
                 return bridge::background_result(id, &started);
             }
             // The blocking half: read the node's own stream until it ends, then read the contract
-            // the supervisor wrote before that bookend. A child that ran and failed and a spawn
-            // that never launched are the same news to the parent, and `bridge::spawn_result` is
-            // where that is decided, in one place, so both read alike.
-            bridge::spawn_result(
-                id,
-                &agent_type,
-                match courier::await_contract(
-                    sock.socket(),
-                    &project,
-                    &spawned.agent_id,
-                    &task_id,
-                    bound,
-                ) {
-                    Ok(courier::Delivered::Contract(c)) => Ok(*c),
-                    // The bridge stopped holding this caller's turn; the child did not stop. Said
-                    // as its own sentence rather than as a failure, and the caller is pointed at
-                    // the handle-shaped way to ask again.
-                    Ok(courier::Delivered::StillRunning) => {
-                        Err(SpawnError::OutlivedTheWait(bound.as_secs()))
-                    }
-                    Err(e) => Err(e),
-                },
-            )
+            // the supervisor wrote before that bookend — or, for a root, stop at the bookend,
+            // because there is no contract to read. A child that ran and failed and a spawn that
+            // never launched are the same news to the parent, and [`deliver`] is where that is
+            // decided, in one place, so both read alike.
+            let delivered = courier::await_contract(
+                sock.socket(),
+                &project,
+                &spawned.agent_id,
+                contract.as_ref(),
+                bound,
+            );
+            deliver(id, &agent_type, &project, &spawned.agent_id, delivered).unwrap_or_else(|| {
+                // The bridge stopped holding this caller's turn; the child did not stop. Said as
+                // its own sentence rather than as a failure, and the caller is pointed at the
+                // handle-shaped way to ask again.
+                bridge::spawn_result(
+                    id,
+                    &agent_type,
+                    Err(SpawnError::OutlivedTheWait(bound.as_secs())),
+                )
+            })
         }
         // **The handle's resolving verb** (§5.4). Deliberately the same `bridge::spawn_result`
         // that a synchronous `spawn` returns through: the two paths differ in *when* the caller
@@ -200,60 +438,62 @@ fn handle_tool_call(
             };
             // The table answers **which node** — the one fact only `agent/spawn`'s answer carried
             // — and the blocking is the same read the synchronous path does.
-            let (agent_id, agent_type, bound) = match bg.resolve(task_id) {
+            let (agent_id, agent_type, bound, contract) = match bg.resolve(task_id) {
                 background::Wait::Pending {
                     agent_id,
                     agent_type,
                     bound,
-                } => (agent_id, agent_type, bound),
+                    contract,
+                } => (agent_id, agent_type, bound, contract),
                 background::Wait::Unknown => return bridge::wait_unknown(id, task_id),
                 background::Wait::AlreadyCollected(what) => {
                     return bridge::wait_already_collected(id, task_id, what);
                 }
             };
-            let (sock, project) = match supervisor_paths() {
+            let (sock, project) = match who.paths() {
                 Ok(v) => v,
                 Err(e) => return bridge::tool_result(id, &e, true),
             };
-            match courier::await_contract(
+            // The contract to read at the end comes from the **table**, not from the handle: for a
+            // root the handle is the node's id and there is no contract, and a `wait` that turned
+            // its own handle into a path would go looking for `contracts/<agent-id>.json`.
+            let delivered = courier::await_contract(
                 sock.socket(),
                 &project,
                 &agent_id,
-                &TaskId(task_id.to_string()),
+                contract.as_ref(),
                 bound,
-            ) {
-                Ok(courier::Delivered::Contract(c)) => {
+            );
+            // **Only a terminal outcome burns the handle.** A node that aborted, or whose contract
+            // marion cannot read, has nothing more to give and a second `wait` must be told so. A
+            // supervisor that could not be reached is a different fact entirely — nothing was
+            // learnt about the child — and marking the handle collected there would turn one
+            // unreachable moment into a handle that can never be resolved again. `StillRunning`
+            // collects nothing for the same reason, one step further along.
+            match &delivered {
+                Ok(courier::Delivered::Contract(_)) => {
                     bg.collected(task_id, background::Collected::Contract);
-                    // The agent type for the result line comes from the table, not from these
-                    // arguments: a `wait` carries no `agent_type`, and inventing one would put a
-                    // name in an answer that names the wrong thing.
-                    bridge::spawn_result(id, &agent_type, Ok(*c))
                 }
-                // Deliberately **not** routed through `spawn_result`: every other arm here carries
-                // an outcome, and this one carries the absence of an outcome about a child that is
-                // still going. Flattening it into the contract-shaped reply would make "still
-                // running" indistinguishable from "ran and produced nothing", which is the exact
-                // confusion §7.6's worked example is about. The handle is left uncollected, because
-                // the child really is still running and its contract really will be written.
-                Ok(courier::Delivered::StillRunning) => {
-                    bridge::wait_still_running(id, task_id, &agent_type, bound.as_secs())
+                Ok(courier::Delivered::Ended { .. }) => {
+                    bg.collected(task_id, background::Collected::Ended);
                 }
-                Err(e) => {
-                    // **Only a terminal outcome burns the handle.** A node that aborted, or whose
-                    // contract marion cannot read, has nothing more to give and a second `wait`
-                    // must be told so. A supervisor that could not be reached is a different fact
-                    // entirely — nothing was learnt about the child — and marking the handle
-                    // collected there would turn one unreachable moment into a handle that can
-                    // never be resolved again.
-                    if matches!(
-                        e,
-                        SpawnError::NodeAborted(_) | SpawnError::NoContract { .. }
-                    ) {
-                        bg.collected(task_id, background::Collected::NoContract);
-                    }
-                    bridge::spawn_result(id, &agent_type, Err(e))
+                Err(SpawnError::NodeAborted(_) | SpawnError::NoContract { .. }) => {
+                    bg.collected(task_id, background::Collected::NoContract);
                 }
+                _ => {}
             }
+            // The agent type for the result line comes from the table, not from these arguments: a
+            // `wait` carries no `agent_type`, and inventing one would put a name in an answer that
+            // names the wrong thing.
+            deliver(id, &agent_type, &project, &agent_id, delivered).unwrap_or_else(|| {
+                // Deliberately **not** routed through `spawn_result`: every other outcome carries
+                // one, and this one carries the absence of an outcome about a child that is still
+                // going. Flattening it into the contract-shaped reply would make "still running"
+                // indistinguishable from "ran and produced nothing", which is the exact confusion
+                // §7.6's worked example is about. The handle is left uncollected, because the child
+                // really is still running and its contract really will be written.
+                bridge::wait_still_running(id, task_id, &agent_type, bound.as_secs())
+            })
         }
         // **§5.4's `status`: a read of one child, answered from the supervisor every time.**
         //
@@ -281,7 +521,7 @@ fn handle_tool_call(
             let Some((agent_id, _)) = bg.node_of(task_id) else {
                 return bridge::status_unknown(id, task_id);
             };
-            let (sock, _) = match supervisor_paths() {
+            let (sock, _) = match who.paths() {
                 Ok(v) => v,
                 Err(e) => return bridge::tool_result(id, &e, true),
             };
@@ -300,20 +540,37 @@ fn handle_tool_call(
         // therefore not a convenience: an unfiltered answer would hand a child node the entire
         // fleet, which is wider than §5.4's *"descendants or parent"* by everything else running.
         //
-        // The caller's identity is required for that reason and refused when absent, exactly as
-        // `spawn` refuses it: a `list` that could not say who is asking could not filter, and a
-        // `list` that could not filter must not answer.
+        // For a **node**, the caller's identity is required for that reason and refused when
+        // absent, exactly as `spawn` refuses it: a `list` that could not say who is asking could
+        // not filter, and a `list` that could not filter must not answer.
+        //
+        // For a **top-level client there is nothing to filter to, and that is not the filter being
+        // skipped.** Its scope is the whole of what a same-uid peer of this socket is authorized
+        // for, which since `66c8d0e` is precisely one project: the supervisor refuses to create a
+        // root anywhere but its own, so the project's tree is the exact set of nodes this client
+        // could have caused. It is also the same answer `marion run`'s TUI client gets from
+        // `tree/subscribe` on the same connection — which is what "peers" means when it is a
+        // sentence about authority rather than about shape.
         "list" => {
-            let caller = match node_identity() {
-                Ok(c) => c,
-                Err(e) => return bridge::tool_result(id, &e, true),
-            };
-            let (sock, _) = match supervisor_paths() {
+            let (sock, _) = match who.paths() {
                 Ok(v) => v,
                 Err(e) => return bridge::tool_result(id, &e, true),
             };
+            let scope = match who {
+                Principal::Node => match node_identity() {
+                    Ok(c) => Some(c.agent_id),
+                    Err(e) => return bridge::tool_result(id, &e, true),
+                },
+                Principal::TopLevel(_) => None,
+            };
             match courier::tree(sock.socket()) {
-                Ok(r) => bridge::list_result(id, &descendants_of(&caller.agent_id, &r.nodes)),
+                Ok(r) => bridge::list_result(
+                    id,
+                    &match scope {
+                        Some(caller) => descendants_of(&caller, &r.nodes),
+                        None => r.nodes,
+                    },
+                ),
                 Err(e) => bridge::tool_result(id, &format!("marion: {e}"), true),
             }
         }
@@ -701,7 +958,7 @@ fn signal_ready() {
 /// bridge was §11 item 30's runaway; it is now the ordinary case, and
 /// `tests/background_spawn.rs`'s `a_bridge_killed_mid_child_leaves_the_node_running_and_its_stream_growing`
 /// is where it is measured rather than argued.
-pub fn serve_stdio() {
+pub fn serve_stdio(who: Principal) {
     let bg = background::Background::new();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -725,7 +982,7 @@ pub fn serve_stdio() {
                 id,
                 name,
                 arguments,
-            } => Some(handle_tool_call(&bg, &id, &name, &arguments)),
+            } => Some(handle_tool_call(&who, &bg, &id, &name, &arguments)),
             bridge::Request::Notification => None,
             bridge::Request::Unknown { id, method } => Some(bridge::method_not_found(&id, &method)),
         };
@@ -784,7 +1041,13 @@ mod tests {
     fn wait_refuses_by_name_rather_than_blocking_on_a_child_it_never_started() {
         let bg = crate::background::Background::new();
 
-        let no_id = handle_tool_call(&bg, &serde_json::json!(1), "wait", &serde_json::json!({}));
+        let no_id = handle_tool_call(
+            &Principal::Node,
+            &bg,
+            &serde_json::json!(1),
+            "wait",
+            &serde_json::json!({}),
+        );
         assert_eq!(no_id["result"]["isError"], serde_json::json!(true));
         let text = no_id["result"]["content"][0]["text"]
             .as_str()
@@ -795,6 +1058,7 @@ mod tests {
         );
 
         let unknown = handle_tool_call(
+            &Principal::Node,
             &bg,
             &serde_json::json!(2),
             "wait",
@@ -1146,43 +1410,101 @@ mod tests {
     /// must name the very symbols it forbids — a scan that read its own source could never pass,
     /// and one that worked around that by spelling the symbols obliquely would stop failing when
     /// the real thing was added.
+    ///
+    /// **It scans two files, because there are two entry points and only one of them is this
+    /// one.** `marion mcp` is dispatched from `bin/marion.rs`, in the same `main` that dispatches
+    /// `run` — and `run`'s arm legitimately reaches `run_spawn`. A whole-file scan there would
+    /// therefore be impossible, and a scan that skipped the file would leave the top-level surface
+    /// the one place the rule is not checked, which is exactly where a "just start it here" edit is
+    /// cheapest: the argv is right there, the repo has already been resolved, and nothing about the
+    /// call site says the process must come from somewhere else. So the `mcp` verb's own three
+    /// regions are cut out and scanned, and the positive half asserts each region is still the
+    /// region it claims to be.
     #[test]
     fn the_mcp_entry_point_has_no_spawn_path_of_its_own() {
-        let src = include_str!("mcp.rs");
-        let production = src
-            .split_once("#[cfg(test)]")
-            .expect("this file has a test module")
-            .0;
-        let code: String = production
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        // Every `pub` way to start a node from inside this crate, plus the standard-library call
-        // any hand-rolled path would have to bottom out in.
-        for forbidden in [
-            "run_spawn",
-            "root::launch",
-            "root::prepare",
-            "prepare_watched",
-            "launch_owned",
-            "Command::new",
-        ] {
-            assert!(
-                !code.contains(forbidden),
-                "`{forbidden}` is reachable from the MCP entry point. The supervisor owns every \
-                 process (§11 item 28 step 5): this binary's `mcp` surface is a socket client and \
-                 must ask for a child over `agent/spawn` rather than start one. If this is a \
-                 deliberate change, it re-introduces the defect item 28 removed."
-            );
+        /// Everything from a top-level item's signature to the `}` in column zero that ends it.
+        /// Deliberately not a parser: what it must not do is silently return nothing, which is why
+        /// every caller below unwraps and the positive half checks the contents.
+        fn region<'a>(src: &'a str, from: &str, to: &str) -> &'a str {
+            let start = src
+                .find(from)
+                .unwrap_or_else(|| panic!("the `{from}` region has been renamed or removed"));
+            let rest = &src[start..];
+            let end = rest
+                .find(to)
+                .unwrap_or_else(|| panic!("the `{from}` region does not end with `{to:?}`"));
+            &rest[..end]
         }
-        // The positive half, so the test cannot pass by this file having become empty or by the
-        // dispatch having been moved somewhere the scan does not read.
-        assert!(
-            code.contains("courier::spawn(") && code.contains("AgentSpawnParams"),
-            "the spawn arm must still reach the supervisor over the socket — this half is what \
-             stops the scan above from passing because the dispatch was deleted or moved"
-        );
+        fn strip_comments(code: &str) -> String {
+            code.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let this = include_str!("mcp.rs");
+        let marion = include_str!("bin/marion.rs");
+        // Both surfaces, and the argv that reaches the second one.
+        let surfaces = [
+            (
+                "the MCP dispatch",
+                strip_comments(
+                    this.split_once("#[cfg(test)]")
+                        .expect("this file has a test module")
+                        .0,
+                ),
+                // The dispatch still asks the supervisor for the child.
+                vec!["courier::spawn(", "AgentSpawnParams"],
+            ),
+            (
+                "`marion mcp`'s entry point",
+                strip_comments(region(marion, "fn run_mcp(", "\n}\n")),
+                // …and the entry point still does nothing but hand the resolved paths to it.
+                vec!["mcp::serve_stdio(", "Principal::TopLevel"],
+            ),
+            (
+                "`marion mcp`'s flag parser",
+                strip_comments(region(marion, "fn parse_mcp_args(", "\n}\n")),
+                vec!["--repo"],
+            ),
+            (
+                "`marion`'s `mcp` argv arm",
+                strip_comments(region(marion, r#"== Some("mcp")"#, "\n    }")),
+                // The arm delegates and does not decide: a launch added *here* would be inside
+                // neither function above, which is why the arm is its own region.
+                vec!["run_mcp("],
+            ),
+        ];
+
+        for (what, code, present) in &surfaces {
+            // Every `pub` way to start a node from inside this crate, plus the standard-library
+            // call any hand-rolled path would have to bottom out in.
+            for forbidden in [
+                "run_spawn",
+                "root::launch",
+                "root::prepare",
+                "prepare_watched",
+                "launch_owned",
+                "Command::new",
+            ] {
+                assert!(
+                    !code.contains(forbidden),
+                    "`{forbidden}` is reachable from {what}. The supervisor owns every process \
+                     (§11 item 28 step 5): marion's MCP surfaces are socket clients and must ask \
+                     for a child over `agent/spawn` rather than start one. If this is a deliberate \
+                     change, it re-introduces the defect item 28 removed."
+                );
+            }
+            // The positive half, so no region can pass the scan by having become empty, or by the
+            // code it names having been moved somewhere the scan does not read.
+            for needle in present {
+                assert!(
+                    code.contains(needle),
+                    "{what} no longer contains `{needle}` — this half is what stops the scan above \
+                     from passing because the code it reads was deleted or moved"
+                );
+            }
+        }
     }
 
     /// **Every tool marion declares is dispatched — none is declared and then answered as if it
@@ -1210,7 +1532,13 @@ mod tests {
             .collect();
         assert!(!names.is_empty(), "marion declares at least one tool");
         for name in &names {
-            let answer = handle_tool_call(&bg, &serde_json::json!(1), name, &serde_json::json!({}));
+            let answer = handle_tool_call(
+                &Principal::Node,
+                &bg,
+                &serde_json::json!(1),
+                name,
+                &serde_json::json!({}),
+            );
             let text = answer["result"]["content"][0]["text"].as_str().unwrap();
             assert!(
                 !text.contains("no tool"),
@@ -1220,6 +1548,7 @@ mod tests {
         // The converse, so the assertion above cannot be satisfied by deleting the fallthrough:
         // a name marion never declared is still refused by name.
         let unknown = handle_tool_call(
+            &Principal::Node,
             &bg,
             &serde_json::json!(1),
             "teleport",

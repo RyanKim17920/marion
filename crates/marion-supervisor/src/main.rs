@@ -20,7 +20,7 @@ fn usage() -> ! {
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
-        Some("mcp") => mcp::serve_stdio(),
+        Some("mcp") => mcp::serve_stdio(mcp::Principal::Node),
         Some(detach::SERVE) => {
             let program = std::env::current_exe().unwrap_or_else(|_| "marion-supervisor".into());
             if let Err(e) = detach::run_serve(program, &argv[1..]) {
