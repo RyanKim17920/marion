@@ -30,12 +30,19 @@ fn usage_text() -> String {
     format!(
         "usage: marion                                (interactive: pick harness, model, prompt)\n\
          \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
          \x20                 [--pane] [--canned [--base-url <url>]]\n\
          \x20      marion mcp [--repo <path>] [--state-dir <path>] [--canned [--base-url <url>]]\n\
          \n\
          agent types: {}\n\
+         \n\
+         marion tree shows this project's node tree beside a content pane, with each node's\n\
+         capabilities along the bottom -- the ones its harness cannot do on its surfaces greyed\n\
+         out (§3.3, §9's M5). j/k or the arrows move, tab changes focus, enter attaches to the\n\
+         selected node, q leaves. It starts no supervisor: with none running there is nothing to\n\
+         show, and an empty forest would read as \"no agents\" rather than as \"wrong project\".\n\
          \n\
          marion mcp serves marion's own MCP tools — spawn, wait, status, list — over stdio, for\n\
          an MCP client to be configured with. Its spawn creates a root, the same call `marion run`\n\
@@ -177,22 +184,7 @@ fn attach_main(argv: &[String]) -> ExitCode {
     let Some(args) = parse_attach(argv) else {
         usage()
     };
-    let repo = args.repo.unwrap_or_else(|| {
-        default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-    });
-    let repo = match repo.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    let Some(state) = state_dir(
-        args.state_dir.as_deref(),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    ) else {
-        eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
         return ExitCode::FAILURE;
     };
     match marion_supervisor::attach::run(&args.agent_id, &repo, &state) {
@@ -203,6 +195,80 @@ fn attach_main(argv: &[String]) -> ExitCode {
             // an alternate one that is about to disappear.
             eprintln!("marion: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// `marion tree [--repo <path>] [--state-dir <path>]` — §5.6's tree pane, and the screen §9's M5
+/// clause 3 asks to grey.
+///
+/// It reuses [`parse_attach`] with the agent id absent, because the flags are the same two and for
+/// the same reason: §2 keys a supervisor on the git common dir, so a tree has to resolve the same
+/// project a run did or it will list a different supervisor's forest. A third parser would be a
+/// third place `--state-dir`'s default could drift.
+fn tree_main(argv: &[String]) -> ExitCode {
+    let mut args = AttachArgs {
+        agent_id: String::new(),
+        repo: None,
+        state_dir: None,
+    };
+    let mut rest = argv[1..].iter();
+    while let Some(flag) = rest.next() {
+        let value = rest.next();
+        match (flag.as_str(), value) {
+            ("--repo", Some(v)) => args.repo = Some(PathBuf::from(v)),
+            ("--state-dir", Some(v)) => args.state_dir = Some(v.clone()),
+            // An unknown flag is a refusal here for `parse_attach`'s reason: a mistyped
+            // `--state-dir` that fell through would list the forest under `$HOME`, which is empty,
+            // and report the operator's own agents as absent.
+            _ => usage(),
+        }
+    }
+    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
+        return ExitCode::FAILURE;
+    };
+    match marion_supervisor::tree::run(&repo, &state) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The two flags `attach` and `tree` share, resolved once.
+///
+/// Extracted when the second verb needed it rather than in anticipation: the pair is a *repo* and
+/// a *state dir* resolved together because §2 keys the socket on both, and two copies of that
+/// resolution is exactly how one verb ends up dialling a different supervisor than the other.
+fn resolve_project(
+    repo: Option<PathBuf>,
+    state_dir: Option<&str>,
+) -> Option<(PathBuf, std::path::PathBuf)> {
+    let repo = repo.unwrap_or_else(|| {
+        default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    });
+    let repo = match repo.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
+            return None;
+        }
+    };
+    let state = state_dir_or_report(state_dir)?;
+    Some((repo, state))
+}
+
+fn state_dir_or_report(explicit: Option<&str>) -> Option<std::path::PathBuf> {
+    match state_dir(
+        explicit,
+        std::env::var("XDG_STATE_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    ) {
+        Some(s) => Some(s),
+        None => {
+            eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
+            None
         }
     }
 }
@@ -1489,6 +1555,9 @@ fn main() -> ExitCode {
     // stdin-is-a-terminal rule; this adds a verb without touching what `run` does.
     if argv.first().map(String::as_str) == Some("attach") {
         return attach_main(&argv);
+    }
+    if argv.first().map(String::as_str) == Some("tree") {
+        return tree_main(&argv);
     }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto

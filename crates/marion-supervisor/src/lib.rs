@@ -64,6 +64,10 @@ pub mod spawn;
 /// The SDK-neutral dispatch seam: tool name and arguments in, content blocks and an explicit
 /// `isError` out, with everything marion means by a tool call on the far side of it.
 pub mod tool;
+
+/// `marion tree` — §5.6's tree pane, and the half of §9's M5 clause 3 that decides what to grey.
+/// The drawing is `marion_tui::tree`; the deciding is here, through `doctor::capabilities_at`.
+pub mod tree;
 /// The journal's first production reader: what a person watching a run learns about its
 /// children while it is still running.
 pub mod watch;

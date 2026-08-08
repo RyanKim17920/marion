@@ -104,7 +104,7 @@ extern "C" fn on_winch(_sig: std::ffi::c_int) {
 /// uses, and deliberately not shared with it: the binary's copy is in a `main` this module must
 /// not depend on, and moving it into `socket.rs` would put a `getuid` in a module whose whole
 /// subject is paths.
-fn uid() -> u32 {
+pub(crate) fn uid() -> u32 {
     unsafe extern "C" {
         fn getuid() -> u32;
     }
