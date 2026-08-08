@@ -1,0 +1,37 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "stopReason": "end_turn",
+    "usage": {
+      "totalTokens": 29325,
+      "inputTokens": 905,
+      "cachedReadTokens": 28416,
+      "outputTokens": 4,
+      "thoughtTokens": 0
+    },
+    "_meta": {
+      "quota": {
+        "token_count": {
+          "totalTokens": 29325,
+          "inputTokens": 905,
+          "cachedInputTokens": 28416,
+          "outputTokens": 4,
+          "reasoningOutputTokens": 0
+        },
+        "model_usage": [
+          {
+            "model": "gpt-5.6-sol",
+            "token_count": {
+              "totalTokens": 29325,
+              "inputTokens": 905,
+              "cachedInputTokens": 28416,
+              "outputTokens": 4,
+              "reasoningOutputTokens": 0
+            }
+          }
+        ]
+      }
+    }
+  }
+}
