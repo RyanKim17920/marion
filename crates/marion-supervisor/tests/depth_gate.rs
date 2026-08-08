@@ -479,6 +479,7 @@ fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
         // Root-only, and declined: nothing here asserts on §9's change record and taking it would
         // walk the fixture repo on every node.
         no_change_record: repo.map(|_| true),
+        pane: None,
     }
 }
 

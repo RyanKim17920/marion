@@ -194,6 +194,7 @@ fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
         // then sets the axis by hand, deliberately and visibly; `BuiltinRead` does not, because
         // marion compiles that one itself.
         no_change_record: setup.no_change_record,
+        pane: false,
     })
     .expect("the root node prepares");
 

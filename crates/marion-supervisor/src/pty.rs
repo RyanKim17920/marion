@@ -1170,6 +1170,25 @@ impl PtyHost {
         &self.master
     }
 
+    /// Has the adopted child exited yet? `None` means *not yet* **and** *there is none* — the
+    /// launcher that calls this in a loop adopted one two statements earlier, so the distinction
+    /// it would draw is one it cannot be in.
+    ///
+    /// The reaping is real, not a peek: `PtyChild::try_wait` records the status the moment it sees
+    /// it, which is what lets [`Self::shutdown`] report the child's own exit rather than signalling
+    /// a pid the kernel is free to have reissued.
+    pub fn try_wait(&self) -> io::Result<Option<std::process::ExitStatus>> {
+        match self
+            .child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            None => Ok(None),
+            Some(child) => child.try_wait(),
+        }
+    }
+
     pub fn child_pid(&self) -> Option<i32> {
         self.child
             .lock()

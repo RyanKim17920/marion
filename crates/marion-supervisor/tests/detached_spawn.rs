@@ -223,6 +223,7 @@ fn root_spawn(repo: Option<&Path>) -> AgentSpawnParams {
         timeout_secs: Some(1),
         model: None,
         no_change_record: None,
+        pane: None,
     }
 }
 

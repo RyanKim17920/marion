@@ -324,6 +324,23 @@ pub struct AgentSpawnParams {
     /// indistinguishable from a write that escaped.
     #[serde(default)]
     pub no_change_record: Option<bool>,
+    /// **§9's M3, asked for**: run this node in a terminal marion owns, so `node/attach` can serve
+    /// its pane and a client can drive it by keystrokes.
+    ///
+    /// A second root-only field on [`Self::repo`]'s pairing rule, and it is refused with
+    /// `caller: Some(_)` for a sharper reason than symmetry. A child is defined by its
+    /// `TaskContract`: it is spawned to do a task and to `report`, under the wall clock the
+    /// contract records. A pane is a TUI, which takes no turn at all until a human presses return —
+    /// so a contracted child in a pane is a task that can only ever time out, and the contract
+    /// would record that as the child's failure. A pane belongs to a **root**: a node an operator
+    /// started and is watching.
+    ///
+    /// `Option<bool>` for exactly [`Self::no_change_record`]'s reason: absent and `false` must be
+    /// distinguishable on the wire, or the refusal above fires on a caller's default. Absent is
+    /// `false` — a node gets a pane because a run asked for one, never because the harness has one
+    /// to give.
+    #[serde(default)]
+    pub pane: Option<bool>,
 }
 
 /// `doctor/run`. §8's two modes, plus an optional single-harness filter — which *is* performed:
@@ -405,6 +422,7 @@ mod tests {
             timeout_secs: None,
             model: None,
             no_change_record: Some(true),
+            pane: None,
         });
         rt!(AgentSpawnParams {
             agent_type: "codex-impl".into(),
@@ -419,6 +437,7 @@ mod tests {
             timeout_secs: Some(120),
             model: Some("sonnet".into()),
             no_change_record: None,
+            pane: None,
         });
         rt!(DoctorRunParams {
             mode: ProbeMode::Adapter,
@@ -482,9 +501,10 @@ mod tests {
                 timeout_secs: None,
                 model: None,
                 no_change_record: None,
+                pane: None,
             })
             .unwrap(),
-            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null}"#
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null,"pane":null}"#
         );
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
@@ -500,9 +520,10 @@ mod tests {
                 timeout_secs: Some(60),
                 model: Some("sonnet".into()),
                 no_change_record: None,
+                pane: None,
             })
             .unwrap(),
-            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet","no_change_record":null}"#
+            r#"{"agent_type":"codex-impl","prompt":"go","caller":{"agent_id":"a","node_token":"t"},"repo":null,"acceptance_criteria":["c"],"writable_scope":["src/**"],"timeout_secs":60,"model":"sonnet","no_change_record":null,"pane":null}"#
         );
     }
 

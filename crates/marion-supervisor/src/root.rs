@@ -243,6 +243,23 @@ pub struct RootSpec {
     /// `RootObservation::NotAttempted` naming the flag. It is the escape hatch on
     /// [`availability_axis`]'s gate and never a way past it.
     pub no_change_record: bool,
+    /// `marion run --pane`: run this root in a terminal marion owns, so a client can `marion
+    /// attach` to it and drive it by keystrokes (§9's M3).
+    ///
+    /// **Per run, and that is the whole design of the pane.** It selects
+    /// [`marion_harness::HarnessAdapter::pane_surfaces`] and
+    /// [`marion_harness::HarnessAdapter::compile_pane`] in place of `surfaces`/`compile`, which is
+    /// why a run that does not ask is compiled from bytes this field cannot reach: M1's measured
+    /// `stream-json` path stays exactly the path it was measured on. Threading the request into
+    /// `surfaces()` instead — a fact about the harness, not about a run — would have moved *every*
+    /// `claude` node onto a pty to serve the runs that attach.
+    ///
+    /// A harness with no interactive shape refuses by name
+    /// ([`marion_harness::HarnessError::NoPaneSurface`]) rather than quietly launching headless: a
+    /// caller that asked for a pane is a caller that is about to attach, and a headless node would
+    /// answer that attach with *"no display plane"* — a true sentence about a node marion made
+    /// headless after being told not to.
+    pub pane: bool,
 }
 
 /// The base point of the root's change record, or why there is none (§9).
@@ -307,6 +324,15 @@ pub struct RootNode {
     pub invocation: Invocation,
     /// Which harness this root is, for the error messages that must name a cause.
     pub harness: Harness,
+    /// The shapes this run selected (§3.4) — `HarnessAdapter::surfaces` for an ordinary run,
+    /// `pane_surfaces` for one that asked for a pane.
+    ///
+    /// **Carried rather than re-derived, because `launch_terminal` needs the `PtyWitness` and the
+    /// witness may only come from the surfaces the argv was compiled for.** Asking the adapter
+    /// again at launch would be a second answer to a question already answered — and the two could
+    /// differ for exactly the node where it matters, since which method is asked depends on
+    /// `RootSpec::pane`, which `RootNode` does not carry.
+    pub surfaces: marion_harness::ExecutionSurfaces,
     pub path: RootPath,
     pub prompt: String,
     /// Carried onto the node because the credential decision is not finished at `compile`: the
@@ -571,20 +597,44 @@ pub fn prepare_watched(
         .ok_or_else(|| RootError::UnknownAgentType(spec.agent_type.clone()))?;
     let harness = agent_type.harness;
     let adapter = adapter_for(harness)?;
-    let path = root_path(&adapter.surfaces()).ok_or(RootError::UnsupportedRootSurface(harness))?;
+    // **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
+    // harness; the pane is a fact about the run. Selecting here — once, before anything is
+    // compiled — is what keeps the two from being decided in two places and disagreeing: the
+    // `Invocation` below and the launch path are both derived from this one value, and it is
+    // carried onto the node so `launch_terminal` reads the same surfaces that chose it rather than
+    // asking the adapter a second question.
+    let surfaces = match spec.pane {
+        false => adapter.surfaces(),
+        true => adapter
+            .pane_surfaces()
+            .ok_or(marion_harness::HarnessError::NoPaneSurface(harness))?,
+    };
+    let path = root_path(&surfaces).ok_or(RootError::UnsupportedRootSurface(harness))?;
 
     // Not one of §4.3's normative files: this is marion's own start-up handshake with a process it
     // did not spawn, so it lives beside the node's state rather than in the layout. Only the duplex
     // path has a frame to withhold, so only it has a marker to wait on (§6.1 step 8).
     let ready_file = match path {
-        RootPath::Duplex => {
+        // **The marker is minted on the pane path too, and it is deliberately not a gate there.**
+        //
+        // Two different things have been collapsed under one name: the *file*, which the bridge
+        // touches when the harness fetches marion's tool list, and the *wait* on it, which is §6.1
+        // step 8's gate. A pane needs no wait — its prompt is seeded into the composer and the
+        // operator presses return, so there is no frame being withheld for a marker to release —
+        // but Claude Code's declaration requires somewhere to write it, and `compile_pane` emits
+        // the same `--mcp-config` document the headless shape does. Withholding the path here
+        // failed the whole launch with a sentence about a readiness gate this path does not have.
+        //
+        // It is not wasted either way: the file's existence afterwards is the pane's only evidence
+        // that the bridge was ever reached, and it is the only such evidence a TUI can leave.
+        RootPath::Duplex | RootPath::Terminal => {
             let f = agent_dir.path().join("mcp-ready");
             let _ = std::fs::remove_file(&f);
             Some(f)
         }
-        // A pane has no readiness gate: its prompt is seeded into argv and the operator sends it,
-        // so there is no frame being withheld for a marker to release (§6.1 step 8).
-        RootPath::LaunchOnly | RootPath::Terminal => None,
+        // A `LaunchOnly` node's readiness is asserted post hoc, over its stream
+        // (`assert_a_verb_was_answered`), and its adapters ask for no marker.
+        RootPath::LaunchOnly => None,
     };
 
     // **§9's change record, first half — taken before anything decides what the root may do.**
@@ -718,7 +768,13 @@ pub fn prepare_watched(
         std::fs::write(&path, contents)?;
         written.push(path);
     }
-    let mut invocation = adapter.compile(&launch, &ctx)?;
+    // The compile half of the same selection. Two methods rather than a flag inside one, for the
+    // reason `HarnessAdapter::pane_surfaces` states: the pane's argv is a different launch of the
+    // same harness (a TUI with a seeded composer), not the headless launch with a switch on it.
+    let mut invocation = match spec.pane {
+        false => adapter.compile(&launch, &ctx)?,
+        true => adapter.compile_pane(&launch, &ctx)?,
+    };
 
     // §6.1 step 8, checked against the route the adapter *stated* rather than against the presence
     // of a file. Every branch here is a refusal except the two that positively found the
@@ -850,6 +906,7 @@ pub fn prepare_watched(
         token,
         invocation,
         harness,
+        surfaces,
         path,
         prompt: spec.prompt.clone(),
         auth: spec.auth,
@@ -907,7 +964,27 @@ pub fn launch_watched(
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
 ) -> Result<RootOutcome, RootError> {
-    launch_owned(node, bound, mcp_ready_timeout, watcher, None)
+    launch_owned(node, bound, mcp_ready_timeout, watcher, None, None)
+}
+
+/// **Where a root's pane goes**, for an owner that can serve it.
+///
+/// A pane is only useful to a process that answers `node/attach` — the supervisor — and `root.rs`
+/// must not know what a `RegistryHandle` is, so the seam is this pair of calls rather than a
+/// registry parameter. It is the display-plane counterpart of
+/// [`crate::run::SpawnObserver::started`]: the same "tell the owner at the one instant it becomes
+/// true" shape, on the other axis of §3.4.
+///
+/// **`closed` is not tidiness.** The `Arc` the owner holds keeps the host — and therefore the
+/// master fd — alive for as long as the entry exists, and an entry left behind answers a later
+/// `node/attach` with a pane onto a pty whose child marion reaped. `launch_terminal` calls it
+/// **before** it shuts the host down, so the node stops being advertised at the instant marion
+/// decides to stop rather than at the instant the fd closes.
+pub trait PaneOwner: Sync {
+    /// This node now owns a pty, and a client may attach to it.
+    fn opened(&self, agent_id: &AgentId, host: std::sync::Arc<crate::pty::PtyHost>);
+    /// It no longer does.
+    fn closed(&self, agent_id: &AgentId);
 }
 
 /// [`launch_watched`], with the node's **owner** told the instant a process exists.
@@ -921,14 +998,19 @@ pub fn launch_watched(
 /// **The journal does not depend on it.** `Spawned { pid: Some(_) }` is written from the same
 /// instant whether or not anybody is listening — see [`launch_inner`] — so the record is a property
 /// of the run rather than of who asked for it.
+/// `pane` is the same idea on §3.4's display axis — see [`PaneOwner`]. `None` is a caller with
+/// nowhere to put a pty, and on [`RootPath::Terminal`] it means the node runs and records exactly
+/// as it would have, with nobody able to attach: the recording at `AgentDir::pty_cast()` is written
+/// either way, because what marion observed is not a function of who was watching.
 pub fn launch_owned(
     node: &RootNode,
     bound: StdDuration,
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
     on_started: Option<&dyn Fn(i32)>,
+    pane: Option<&dyn PaneOwner>,
 ) -> Result<RootOutcome, RootError> {
-    launch_inner(node, bound, mcp_ready_timeout, watcher, on_started)
+    launch_inner(node, bound, mcp_ready_timeout, watcher, on_started, pane)
 }
 
 fn launch_inner(
@@ -937,6 +1019,7 @@ fn launch_inner(
     mcp_ready_timeout: StdDuration,
     watcher: Option<duplex::StreamSink<'_>>,
     on_started: Option<&dyn Fn(i32)>,
+    pane: Option<&dyn PaneOwner>,
 ) -> Result<RootOutcome, RootError> {
     // **§6.1 step 7's confirmation, at the instant the process exists** — §11 item 28 step 1's rule,
     // applied to the node it had left out. Written here rather than after the run returns, and
@@ -1019,16 +1102,10 @@ fn launch_inner(
         // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
         // prevent.
         RootPath::LaunchOnly => launch_only(node, bound, events.as_mut(), &started),
-        // **Derived, and deliberately not launched from here yet.** `launch_path` answers
-        // `Terminal` for a `TerminalInput` surface, which is what
-        // `HarnessAdapter::pane_surfaces` returns — but nothing in `prepare_watched` selects
-        // those surfaces yet, so `node.path` cannot hold this value and the refusal is a typed
-        // one rather than an `unreachable!()`. What must land here is `PtyMaster::open` ->
-        // `PtyHost::start` -> `spawn_pty(witness, …, StdinPlan::TerminalSlave)` ->
-        // `RegistryHandle::register_pane`, and `pty.rs` needs `PtyHost::shutdown` to take `&self`
-        // first: the host has to be an `Arc` for `register_pane` and `&mut` for the reap, and it
-        // cannot be both.
-        RootPath::Terminal => Err(RootError::UnsupportedRootSurface(node.harness)),
+        // §9's M3: a node in a terminal marion owns. No stream to tee — a TUI emits bytes, not
+        // frames — so `events` gets only the lifecycle bookends `launch_inner` writes itself, and
+        // the byte-level record is `AgentDir::pty_cast()`.
+        RootPath::Terminal => launch_terminal(node, bound, &started, pane),
     };
     // **Substituted for whatever the kill made the driver return.** The kill above produces a
     // signalled exit on one path and a torn stream on the other, and reporting either as itself
@@ -1567,6 +1644,182 @@ fn launch_only(
     Ok(outcome)
 }
 
+/// The pane's geometry before anybody has attached.
+///
+/// **Somebody has to choose, and it cannot be the operator's terminal**: the master is sized before
+/// the child exists, by a supervisor that does not know what will eventually attach — or whether
+/// anything ever will. 80x24 is the size every harness's own fallback assumes when `TIOCGWINSZ`
+/// answers nothing, so it is the one shape a TUI is certain to lay out for. `node/attach` reports
+/// it back rather than letting the client render its own guess, and the first `NodeResize` replaces
+/// it; the `r` record in `pty.cast` is what makes the change legible afterwards.
+const PANE_SIZE: crate::pty::WinSize = crate::pty::WinSize { cols: 80, rows: 24 };
+
+/// What `TERM` the pane's recording claims, and it is a claim about marion's emulator rather than
+/// about the operator's.
+///
+/// The bytes on the pty are produced by a harness reading *this* value out of its environment, and
+/// they are replayed by `marion_term`, whose capability set is what the name has to describe. It is
+/// the same string the five committed captures were made under, so `pty.cast` stays comparable with
+/// the corpus §5.3's claims are read off.
+const PANE_TERM: &str = "xterm-256color";
+
+/// How often the launcher asks whether the node has exited. See [`launch_terminal`].
+const PANE_POLL: StdDuration = StdDuration::from_millis(25);
+
+/// **§9's M3 criterion C1: the root, in a terminal marion owns.**
+///
+/// The whole of what makes this a *production* node rather than the pty module's test scaffolding
+/// is the four things it does in order, and the order is the argument:
+///
+/// 1. **The master, then the recorder, then the child.** `PtyHost::start` opens `pty.cast` and
+///    starts the reader thread *before* anything is spawned, so there is no window in which the
+///    node is writing and nobody is reading — a pty whose buffer fills with nobody draining it
+///    blocks the harness in `write(2)`, which looks exactly like a hung model.
+/// 2. **`Spawned` with a real pid, through the fallible barrier.** `on_started` is `launch_inner`'s
+///    closure: it appends the record, fsyncs, and only then tells the owner. If the append fails it
+///    kills the tree and the run is refused as [`RootError::UnaccountableNode`] — because the one
+///    thing marion may never leave behind is a live process no record can name (§11 item 30), and
+///    on this path that process owns a terminal.
+/// 3. **The pane is advertised only after the process exists.** Registering earlier would answer a
+///    `node/attach` with a pane onto a pty no child is on: the client would attach successfully,
+///    see nothing for ever, and have no way to tell that from a quiet node.
+/// 4. **Un-advertised, then killed and reaped, then the master closes.** [`PtyHost::shutdown`] owns
+///    the last two and states why: closing the master first hangs up the slave, the kernel SIGHUPs
+///    the foreground group, and the record then reads *"the terminal hung up"* on every node, every
+///    time, when the truth is that marion decided to stop.
+///
+/// # What `bound` means here, and why it is the wall clock
+///
+/// It is [`RootPath::LaunchOnly`]'s reading rather than the duplex path's. A pane has no typed
+/// control plane, so there is no `Blocked` state for marion to budget: marion is not holding an
+/// answer this node is waiting on, and never will be. The only thing marion can bound is elapsed
+/// time. A node still running when it expires is killed and reported `timed_out`, which
+/// `roots_exit` turns into [`ExitStatus::TimedOut`] — marion's own attributed kill, and not a
+/// failure of the harness.
+///
+/// # What this deliberately does not do
+///
+/// **No [`assert_a_verb_was_answered`].** §6.1 step 8's post-hoc gate asks whether the node reached
+/// marion's bridge, and it is read off a stream this node does not produce. A TUI takes no turn at
+/// all until a human presses return, so a root launched in a pane and looked at for ten seconds has
+/// legitimately called nothing — and refusing it would make "the operator did not type anything"
+/// indistinguishable from "the bridge never came up". The evidence for a pane is the recording.
+///
+/// **No transcript and no `marion_calls`.** `RootOutcome`'s stream fields stay empty rather than
+/// being filled from a scrape of the pty bytes: those bytes are a *rendering*, full of cursor
+/// motion and repaints, and anything recovered from them would be a guess presented in the same
+/// shape as a parsed frame.
+fn launch_terminal(
+    node: &RootNode,
+    bound: StdDuration,
+    on_started: &dyn Fn(i32),
+    pane: Option<&dyn PaneOwner>,
+) -> Result<RootOutcome, RootError> {
+    use crate::pty::{PtyHost, PtyMaster, spawn_pty, stdin_plan};
+
+    // **Unforgeable, and from the surfaces this run selected.** `spawn_pty` cannot be called
+    // without it, and it exists only where `display == NativePty` — so the refusal for a harness
+    // with no pane shape has already happened in `prepare_watched`, and this is the type-level
+    // restatement rather than a second check that could disagree.
+    let witness = node
+        .surfaces
+        .display_plane()
+        .ok_or(RootError::UnsupportedRootSurface(node.harness))?;
+    // **S11 MUST #2, derived rather than assumed.** `StdinPlan::TerminalSlave` is the right answer
+    // here and writing the constant would still be wrong: `stdin_plan` is a total match on the
+    // control axis, and a surface that reached this path with `Typed(_)` control must get a
+    // **pipe** on fd 0, because S11 measured `claude -p` exiting 1 with *"Input must be provided…"*
+    // on an `isatty(0)` stdin. Reading the answer off the axis is what keeps that impossible to get
+    // wrong by editing one adapter.
+    let stdin = stdin_plan(node.surfaces.control);
+
+    let master = PtyMaster::open(PANE_SIZE)?;
+    let host = std::sync::Arc::new(PtyHost::start(
+        node.agent_id.clone(),
+        master,
+        &node.agent_dir.pty_cast(),
+        PANE_SIZE,
+        PANE_TERM,
+        std::time::Instant::now(),
+    )?);
+
+    let inv = &node.invocation;
+    let mut cmd = SysCommand::new(&inv.program);
+    cmd.args(&inv.args)
+        .envs(inv.env.iter().cloned())
+        .current_dir(&inv.cwd)
+        // The harness lays out for the terminal it thinks it is on, and the one it is on is
+        // marion's. Pushed here rather than compiled into the `Invocation` because it is a fact
+        // about the pty this launcher just opened, which no adapter can know.
+        .env("TERM", PANE_TERM);
+    if node.auth == Auth::Canned {
+        // The same push `launch_only` makes and for the same reason: codex's generated
+        // `config.toml` names this as its provider `env_key`, and a provider whose key is unset
+        // refuses to start. Claude Code's pane compiles its own credential in `compile_pane`, so
+        // this is here for the second harness to declare a pane rather than for the first.
+        cmd.env("MARION_DUMMY_KEY", &node.token);
+    }
+
+    // The pid is announced by `spawn_pty` itself, through `on_started`, between `spawn()` and the
+    // first byte — that is the only instant at which a durable record can name this process while
+    // marion still holds the handle.
+    host.adopt(spawn_pty(
+        witness,
+        &mut cmd,
+        host.master(),
+        stdin,
+        Some(on_started),
+    )?);
+    // **After the process exists, never before.** See this function's doc, point 3.
+    if let Some(owner) = pane {
+        owner.opened(&node.agent_id, std::sync::Arc::clone(&host));
+    }
+
+    let deadline = std::time::Instant::now() + bound;
+    let mut exited = None;
+    let mut timed_out = false;
+    loop {
+        match host.try_wait()? {
+            Some(status) => {
+                exited = Some(status);
+                break;
+            }
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    timed_out = true;
+                    break;
+                }
+                std::thread::sleep(PANE_POLL);
+            }
+        }
+    }
+
+    // **Un-advertised before the teardown, so no client attaches to a pty marion is closing.** The
+    // owner's `Arc` is released here; this frame's keeps the host alive through the shutdown below.
+    if let Some(owner) = pane {
+        owner.closed(&node.agent_id);
+    }
+    // Kill and reap, join the reader, write the `x` record, and only then let the master close.
+    // Idempotent against the loop above: a child that exited on its own was already reaped there,
+    // and `PtyChild::kill_and_reap` returns that status rather than signalling its pid again.
+    let status = host.shutdown()?;
+    let status = exited.or(status);
+
+    Ok(RootOutcome {
+        exit_code: status.and_then(|s| s.code()),
+        // Empty, deliberately. See this function's doc.
+        transcript: vec![],
+        marion_calls: vec![],
+        failure: None,
+        // Nothing of the node's output belongs here: on a pty stdout *is* the pane, and copying the
+        // rendering into a field a reader will print would reproduce a screenful of escape
+        // sequences in an error message.
+        stderr: String::new(),
+        denied_permissions: vec![],
+        timed_out,
+    })
+}
+
 /// §6.1 step 8's post-hoc readiness assertion, as a decision over what the run produced.
 ///
 /// A `LaunchOnly` node's MCP readiness is not observable before its turn — the prompt is already in
@@ -1849,6 +2102,7 @@ mod tests {
             model: builtin(agent_type).unwrap().model.clone(),
             auth: Auth::Canned,
             no_change_record: false,
+            pane: false,
         }
     }
 
@@ -2289,6 +2543,146 @@ mod tests {
             }
             assert_eq!(node.prompt, "delegate it", "{name}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A run that did not ask for a pane is prepared from the bytes it was prepared from before
+    /// panes existed. That is M1's whole guarantee against this feature.**
+    ///
+    /// The pty module already asserts the *declaration* half — no adapter's `surfaces()` claims a
+    /// display plane (`pty::tests::a_node_that_did_not_ask_for_a_pane_is_not_given_one`) — and that
+    /// is not the half that can now break. `prepare_watched` reads `RootSpec::pane` and picks
+    /// between two surfaces methods and two compile methods, and a mistake there gives a node a pty
+    /// nobody asked for while every adapter test stays green. M1's measured path is
+    /// `--print --output-format stream-json` over pipes; a pane is a TUI with the prompt in argv,
+    /// and the two are not near-misses of each other.
+    ///
+    /// Asserted on both sides, so it cannot pass by answering "no pane" unconditionally.
+    ///
+    /// **Mutation:** in `prepare_watched`, ignore `spec.pane` — take `pane_surfaces()` whenever it
+    /// is `Some`, or take `surfaces()` always. Either fails here.
+    #[test]
+    fn only_a_run_that_asked_for_a_pane_is_compiled_as_one() {
+        use marion_harness::ControlTransport;
+
+        let dir = temp("pane-selection");
+        let headless = prepare(&root_spec(&dir, "claude")).expect("a claude root");
+        let paned = prepare(&RootSpec {
+            pane: true,
+            ..root_spec(&dir, "claude")
+        })
+        .expect("a claude root with a pane");
+
+        // The path, the surfaces and the stdin the surfaces imply — three derivations of the one
+        // decision, and all three have to move together or `launch_terminal` gets a witness for a
+        // node whose stdin is a pipe.
+        assert_eq!(headless.path, RootPath::Duplex);
+        assert!(
+            headless.surfaces.display_plane().is_none(),
+            "a run that asked for nothing was given a display plane, so `launch_terminal` is \
+             reachable from M1's own path"
+        );
+        assert_eq!(
+            crate::pty::stdin_plan(headless.surfaces.control),
+            crate::pty::StdinPlan::Piped,
+            "S11 measured `claude -p` exiting 1 with \"Input must be provided…\" on an isatty(0) \
+             stdin"
+        );
+
+        assert_eq!(paned.path, RootPath::Terminal);
+        assert!(
+            paned.surfaces.display_plane().is_some(),
+            "the pane shape must mint the witness `spawn_pty` requires, or C1 cannot launch"
+        );
+        assert_eq!(paned.surfaces.control, ControlTransport::TerminalInput);
+        assert_eq!(
+            crate::pty::stdin_plan(paned.surfaces.control),
+            crate::pty::StdinPlan::TerminalSlave
+        );
+
+        // And the argv, which is what actually reaches the harness. The headless launch keeps
+        // M1's two switches and does **not** carry the prompt (§6.1 step 8 writes it as a frame);
+        // the pane carries neither switch and seeds the composer instead.
+        let args = |n: &RootNode| n.invocation.args.join("\u{1}");
+        assert!(
+            headless.invocation.args.iter().any(|a| a == "-p"),
+            "M1's measured launch lost `-p`: {:?}",
+            headless.invocation.args
+        );
+        assert!(
+            args(&headless).contains("stream-json"),
+            "M1's measured launch lost its output format: {:?}",
+            headless.invocation.args
+        );
+        assert!(
+            !headless.invocation.args.iter().any(|a| a == "delegate it"),
+            "a duplex prompt is a frame, not an argument: {:?}",
+            headless.invocation.args
+        );
+
+        assert!(
+            !paned.invocation.args.iter().any(|a| a == "-p"),
+            "the pane compiled the headless launch: {:?}",
+            paned.invocation.args
+        );
+        assert!(
+            !args(&paned).contains("stream-json"),
+            "the pane compiled a frame protocol onto a node marion drives by keystrokes: {:?}",
+            paned.invocation.args
+        );
+        assert!(
+            paned.invocation.args.iter().any(|a| a == "delegate it"),
+            "the pane's prompt must be seeded into the composer: {:?}",
+            paned.invocation.args
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A harness with no interactive shape refuses by name, and is never quietly launched
+    /// headless.**
+    ///
+    /// A caller that asked for a pane is a caller that is about to run `marion attach`. Downgrading
+    /// it would answer that attach with *"node has no display plane"* — a true sentence about a
+    /// node marion made headless after being told not to, and the operator has no way to tell it
+    /// from a harness that never supported one.
+    ///
+    /// Asserted over every built-in that declares no pane, and with a positive control, so it
+    /// cannot pass by refusing everything.
+    ///
+    /// **Mutation:** in `prepare_watched`, fall back to `adapter.surfaces()` when `pane_surfaces()`
+    /// is `None`. This fails.
+    #[test]
+    fn asking_for_a_pane_a_harness_does_not_have_is_refused_rather_than_downgraded() {
+        let dir = temp("pane-refusal");
+        let mut refused = 0;
+        for name in ["claude", "codex", "codex-impl", "gemini", "opencode"] {
+            let has_pane = adapter_for(builtin(name).unwrap().harness)
+                .unwrap()
+                .pane_surfaces()
+                .is_some();
+            let got = prepare(&RootSpec {
+                pane: true,
+                ..root_spec(&dir, name)
+            });
+            match (has_pane, got) {
+                (true, Ok(node)) => assert_eq!(node.path, RootPath::Terminal, "{name}"),
+                (true, Err(e)) => panic!("{name} declares a pane shape and would not prepare: {e}"),
+                (false, Ok(node)) => panic!(
+                    "{name} has no pane shape and was silently prepared as a {:?} node anyway. A \
+                     `marion attach` against it would then be refused for having no display \
+                     plane, which reads as marion never having supported one",
+                    node.path
+                ),
+                (false, Err(e)) => {
+                    refused += 1;
+                    assert!(
+                        e.to_string().contains("no pane shape"),
+                        "{name}: the refusal must name the cause, not just fail: {e}"
+                    );
+                }
+            }
+        }
+        assert!(refused > 0, "nothing was refused, so this asserted nothing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

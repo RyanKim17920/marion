@@ -373,6 +373,7 @@ mod tests {
                 timeout_secs: Some(1),
                 model: None,
                 no_change_record: None,
+                pane: None,
             },
         )
         .expect_err("nothing is listening there");

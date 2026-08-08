@@ -432,6 +432,7 @@ mod tests {
                 // `Option` inside the params.
                 Call::AgentSpawn(AgentSpawnParams {
                     no_change_record: None,
+                    pane: None,
                     agent_type: "codex-impl".into(),
                     prompt: "implement §6.3".into(),
                     caller: Some(crate::params::SpawnCaller {

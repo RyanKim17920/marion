@@ -567,6 +567,25 @@ impl NodeOwner {
     }
 }
 
+/// **The pane's half of the same ownership**, on §3.4's display axis (§9's M3 criterion C1).
+///
+/// `root::launch_terminal` opens the pty and reaps the child; this supervisor is the only process
+/// that can *serve* it, because `node/attach` is answered here. The two calls are what make a
+/// launched pane an attachable one, and the window between them is the node's whole life.
+impl crate::root::PaneOwner for NodeOwner {
+    fn opened(&self, agent_id: &AgentId, host: Arc<crate::pty::PtyHost>) {
+        self.handle.register_pane(agent_id, host);
+    }
+
+    /// **The only production caller of `forget_pane`.** Without it the entry outlives the node's
+    /// pty, and a later `node/attach` is answered with a pane onto a master whose child marion has
+    /// already reaped — a client that attaches successfully and then waits for ever on a terminal
+    /// nothing is on.
+    fn closed(&self, agent_id: &AgentId) {
+        self.handle.forget_pane(agent_id);
+    }
+}
+
 impl crate::run::SpawnObserver for NodeOwner {
     fn identified(&self, agent_id: &AgentId) -> Option<String> {
         let token = self
@@ -1503,6 +1522,26 @@ impl RegistryHandle {
                 "§9, §11 item 23",
             ));
         }
+        // **The third field on the same rule, refused for a reason of its own.** Not symmetry with
+        // the two above: a pane is a TUI, and a TUI takes no turn until a human presses return,
+        // while a child is defined by a `TaskContract` it must `report` against inside a wall
+        // clock. A contracted child in a pane is therefore a task that can only ever time out, and
+        // its contract would record that as the child's failure rather than as marion's category
+        // error. `run::run_spawn` refuses `LaunchPath::Terminal` again one layer down; this is the
+        // refusal in the frame that asked for it.
+        if p.caller.is_some() && p.pane.is_some() {
+            return Err(RpcError::refused(
+                "pane",
+                "a spawn with a `caller` must not state `pane`: a pane is a terminal an operator \
+                 attaches to and drives by keystrokes, and a child is defined by the \
+                 `TaskContract` it must report against inside its wall clock. A TUI takes no turn \
+                 until somebody presses return, so a contracted child in a pane is a task that can \
+                 only time out — and the contract would record that as the child's failure. Spawn \
+                 it without a pane and watch its structured events through `node/attach`, or start \
+                 it as a root. Refused rather than dropped (§11 item 23).",
+                "§9 M3, §11 item 23",
+            ));
+        }
         let Some(env) = self.spawn_env.clone() else {
             return Err(RpcError::unimplemented(
                 "agent/spawn",
@@ -1758,6 +1797,9 @@ impl RegistryHandle {
             // Absent is `false` — marion looks. See `AgentSpawnParams::no_change_record`.
             no_change_record: p.no_change_record.unwrap_or(false),
             auth: env.auth,
+            // Absent is `false` — a node gets a pane because a run asked for one. See
+            // `AgentSpawnParams::pane`.
+            pane: p.pane.unwrap_or(false),
         };
         // §9's node-level bound, resolved from what the client stated and the agent type — by the
         // same function `marion run` used to call in-process, so the number an operator typed and
@@ -1802,6 +1844,10 @@ impl RegistryHandle {
                     // this process would have to own. `events.jsonl` is what both legs read.
                     None,
                     Some(&started),
+                    // §9's M3: where a pane goes if this run asked for one. The same observer,
+                    // because it is the same ownership — this supervisor answers `node/attach`,
+                    // so it is the only process for which a registered pane means anything.
+                    Some(&observer),
                 )
                 .map(|_| ())
                 .map_err(|e| e.to_string())
@@ -5641,6 +5687,7 @@ mod tests {
                 // Root-only, and every caller in this helper's `Some` half would be refused by
                 // name for stating it — see `a_caller_that_states_no_change_record_is_refused`.
                 no_change_record: None,
+                pane: None,
                 // Every caller in this module is a `Some`, and a `Some` that states a repository
                 // is refused by name — see `a_caller_that_states_its_own_repository_is_refused`.
                 repo: None,
@@ -6141,6 +6188,7 @@ mod tests {
                     // `false` and not `true`: the refusal is for *stating* it, so a test that sent
                     // the interesting value would pass against a build that only refused `true`.
                     no_change_record: Some(false),
+                    pane: None,
                     ..params(
                         Some(SpawnCaller {
                             agent_id: id("root"),

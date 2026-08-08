@@ -341,6 +341,7 @@ impl Client {
             timeout_secs: Some(ROOT_BLOCKED_SECS.parse().expect("a number")),
             model: None,
             no_change_record: None,
+            pane: None,
         }));
         let (_, outcome) = self.read_to_response(id);
         let Outcome::Result(body) = outcome else {

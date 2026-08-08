@@ -1050,6 +1050,7 @@ fn a_linked_worktree_resolves_to_its_main_repositorys_supervisor_and_journal() {
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         model: None,
         no_change_record: true,
+        pane: false,
         auth: marion_harness::Auth::Canned,
     };
     let from_wt = marion_supervisor::root::prepare(&spec(&wt)).expect("a root prepares");

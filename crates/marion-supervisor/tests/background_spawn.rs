@@ -461,6 +461,7 @@ fn fixture(tag: &str) -> Fixture {
             // §9's change record declined, deliberately: it is a `git add -A` walk of the operator's
             // own checkout on every fixture in this file, and nothing here asserts on it.
             no_change_record: Some(true),
+            pane: None,
         }))
         .expect("the root is created over the socket");
     let MethodResult::AgentSpawn(root) = Method::AgentSpawn

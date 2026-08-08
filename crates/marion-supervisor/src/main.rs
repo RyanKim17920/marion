@@ -130,6 +130,7 @@ fn handle_tool_call(
                 // Root-only (§9): a child's writes are judged against the worktree marion made it,
                 // so there is no snapshot of anybody's checkout here to decline.
                 no_change_record: None,
+                pane: None,
             };
             // **The dial. There is no other branch.** A supervisor that does not answer is a
             // refusal in marion's own voice — see [`SpawnError::SupervisorUnreachable`] and

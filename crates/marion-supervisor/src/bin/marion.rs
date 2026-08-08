@@ -32,7 +32,7 @@ fn usage_text() -> String {
          \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
-         \x20                 [--canned [--base-url <url>]]\n\
+         \x20                 [--pane] [--canned [--base-url <url>]]\n\
          \n\
          agent types: {}\n\
          \n\
@@ -78,6 +78,14 @@ fn usage_text() -> String {
          from a write that escaped. This flag is the way to say that is understood and wanted; the\n\
          run then launches with no built-in tool at all and journals that marion did not look.\n\
          \n\
+         --pane runs the root in a terminal marion owns rather than headlessly, so `marion\n\
+         attach <agent-id>` shows its TUI and types into it. It is asked for per run:\n\
+         without it the node is launched from exactly the bytes it was launched from\n\
+         before panes existed, which is what keeps M1's measured path measured. A harness\n\
+         with no interactive shape marion can drive refuses by name rather than quietly\n\
+         launching headless, because a run that asked for a pane is one that is about to\n\
+         attach to it.\n\
+         \n\
          --timeout is the root's node-level bound, and what it bounds follows the harness's\n\
          surfaces: on a typed control plane (claude) it is §9's per-episode `Blocked`-only budget\n\
          and not a wall-clock ceiling, since marion offers a root none; on a LaunchOnly surface\n\
@@ -103,6 +111,9 @@ struct Args {
     /// `--no-change-record`: launch without snapshotting the repository, and therefore without
     /// any built-in tool. See `root::RootSpec::no_change_record`.
     no_change_record: bool,
+    /// `--pane`: run the root in a terminal marion owns, attachable with `marion attach`. See
+    /// `root::RootSpec::pane`.
+    pane: bool,
     /// Opt **in** to marion's canned provider. The inverse of the flag this replaced: real auth
     /// is what a person at a terminal means, and the canned server is a test fixture.
     canned: bool,
@@ -211,6 +222,7 @@ fn parse_args(argv: &[String]) -> Option<Args> {
         model: None,
         timeout_secs: None,
         no_change_record: false,
+        pane: false,
         canned: false,
     };
     let mut rest = argv[2..].iter();
@@ -229,6 +241,7 @@ fn parse_args(argv: &[String]) -> Option<Args> {
             // Also valueless, and for the same reason: declining the audit that a grant is
             // conditional on is a decision, and it should read as one at the call site.
             "--no-change-record" => args.no_change_record = true,
+            "--pane" => args.pane = true,
             // Accepted and inert. It used to select real auth, which is now the default; every
             // script and note already carrying it keeps working, and refusing it would break
             // them to say nothing the run does not already do.
@@ -1360,6 +1373,7 @@ fn main() -> ExitCode {
                 model: chosen.model,
                 timeout_secs: None,
                 no_change_record: false,
+                pane: false,
                 canned: false,
             },
             // EOF: the operator changed their mind, which is not an error.
@@ -1637,6 +1651,10 @@ fn main() -> ExitCode {
                 // Root-only, and stated rather than defaulted so the supervisor can tell an
                 // operator who declined the snapshot from one who said nothing.
                 no_change_record: Some(args.no_change_record),
+                // **Stated only when asked for**, exactly as `no_change_record` is: absent and
+                // `false` must stay distinguishable on the wire, or the supervisor's root-only
+                // pairing refusal would fire on every operator who never mentioned a pane.
+                pane: args.pane.then_some(true),
             },
         ))?;
         // Nothing can be notified before the first attach, so the sink here is unreachable — and it
