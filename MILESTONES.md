@@ -602,34 +602,73 @@ how much code exists.
     with a start identity that is real and belongs to another live process. A build whose fingerprint
     degenerated to a pid, or in which `procid::resolve` stopped treating a mismatch as evidence,
     fails there in 0.4 s.
-- **M3 [partial]** — tree UI + embedded terminal. **Audited against the code 2026-08-08, not
-  against a summary.** One of §9's three criteria is met; the other two are not, and what is
-  missing from each is named here rather than left to be rediscovered. It moves off `[open]`
-  because "not started" stopped being true — there is a pane host, a real `claude` runs in it, and
-  the commit gate exists — and it does **not** move to `[done]`, because two criteria are open and
-  one of them is blocked on code that does not exist.
-  - **Criterion 1 (a real `claude` TUI in a marion pane) — NOT MET.** `tests/pane_attach.rs` is
-    real and load-bearing: a real `claude`, a real pty, two real `marion attach` clients, and it
-    hard-fails rather than skipping when the binary is absent. It asserts the pre-alt-screen trust
-    dialog on the main screen, a clean resize (the node's cast carries the `r` record, and the
-    operator's screen still renders at the new width), no `ESC[3J` at the operator's terminal, a
-    detach, a second attach, and §7.3.1's survival. **What the criterion also names and nothing
-    asserts:** *mouse through*, *permission prompt correct*, and the *recorded 10-minute manual
-    session* — all three the test's own header declines explicitly and honestly, deferring them to
-    a manual session that does not exist. **And one the header does not name:** *alt-screen switch
-    handled* is nowhere asserted. The run survives the switch incidentally, so a regression that
-    mishandled `?1049h`/`?1049l` while still painting cells would pass. That is the gap most worth
-    closing first, because it is the only one a test could close cheaply.
-  - **Criterion 2 (a real `codex` TUI in a pane, scrollback across a resize) — NOT MET, and it is
-    the subject of the sentence that is missing rather than the mechanism.** The `CSI 3J`
-    interception is well tested offline: `marion-term/tests/replay.rs::scrollback_survives_codex_resize`
-    replays a committed codex asciicast and pins 16 history rows with suppression on against 1 with
-    it off. But that is `marion_term::Term` fed a recording — no process, no pty, no pane. **A
-    codex pane cannot be launched at all:** only `ClaudeCodeAdapter` overrides `pane_surfaces`
-    (`crates/marion-harness/src/adapter.rs:622`); `CodexAdapter` takes the trait defaults, so
-    `pane_surfaces()` is `None` and `compile_pane()` is `Err(NoPaneSurface)`. `pane_attach.rs`
-    declines this criterion in as many words and says why. Closing it needs
-    `CodexAdapter::pane_surfaces`, not another test.
+- **M3 [partial]** — tree UI + embedded terminal. **Re-audited against the code 2026-08-08 after
+  C2 was closed.** Two of §9's three criteria are met; the third is not, and what is missing from
+  it is one thing only and cannot be automated. It stays off `[done]` for that one reason.
+  - **Criterion 1 (a real `claude` TUI in a marion pane) — NOT MET, and the only thing left is the
+    recorded session.** Every clause a test can reach is now reached; the criterion's own words
+    end with *"over a recorded 10-minute manual session"*, and a human has to sit at a screen for
+    that. It is not deferred because it is hard, it is deferred because nothing else can perform
+    it. The runbook is below.
+
+    Clause by clause, and where each is asserted:
+
+    | clause | covered | by |
+    | --- | --- | --- |
+    | a real `claude` in a marion-owned pane | yes | `pane_attach.rs::a_real_claude_runs_in_a_pane_…` — a real binary, a real pty, two real `marion attach` clients, hard-failing rather than skipping when `claude` is absent |
+    | pre-alt-screen trust dialog on the main screen | yes | same test: the dialog text is read off the **operator's** emulated grid, and the node's recorded output up to that point must contain no `?1049h` — the second half was added here, since "the text is visible" alone would pass for a dialog drawn *after* a switch |
+    | alt-screen switch handled | yes, split | live: marion's grid must be on whichever screen the node's own bytes put it on, taking the switch when told and inventing none when not. Positive direction: `marion-term/tests/replay.rs::the_alt_screen_switch_is_handled_including_the_restore_that_never_arrives`, over the committed 2.1.220 captures that switch at bytes 67 and 1900 — one restores at 5866, the other **never does**, which is the absent-restore case. Both directions asserted, plus marion's own restore firing when the node's never comes |
+    | resize clean | yes | same live test, and it was already there: the node's cast carries an `r` record with the operator's geometry, at least two geometries exist so a pane born at the operator's size cannot pass, and the operator's screen still renders the node at the **new** width afterwards |
+    | mouse through | yes, split | live: an SGR-1006 press **and** release written to the operator's pty master arrive intact in the node's `i` record. The enabling leg — putting the operator's terminal into the modes the node asked for — is `attach.rs::the_nodes_mouse_modes_are_mirrored_onto_the_operators_terminal`, over the mode sequences the 2.1.220 capture carries at bytes 98–122 |
+    | permission prompt correct | **no**, and the reading is stated | this is the *harness's own* in-TUI dialog, not marion's `permission/request` queue — §11 item 22's queue is the duplex `can_use_tool` path, and `compile_pane` deliberately omits `--permission-prompt-tool stdio` so the ask stays in the pane. That omission is asserted (`marion-harness::the_pane_argv_is_a_tui_with_the_headless_shape_isolation`). The dialog itself needs a paned node **granted a tool it must ask about**, and a pane compiles `--tools ""` today, so claude has nothing to ask about. Widening that is a decision about what marion mediates, not a test |
+    | over a recorded 10-minute manual session | **no** | nothing can stand in for it |
+
+    **A finding that came out of closing this, and it matters beyond M3: §5.3's Claude Code
+    terminal readings are stale.** Probed 2026-08-08 against **2.1.225**, in a marion pane and
+    again bare, at 100x30 through a boot, a trust dialog, a submitted turn and a resize: **zero
+    `?1049h`** and **zero mouse modes**, with only `?1004`, `?2004`, `?2026` and `?2031` present.
+    §5.3 says *"Claude Code 2.1.220 uses the alternate screen for its entire session"* and that
+    *"both Claude captures enable `?1006`"* — true of 2.1.220, and the committed captures still
+    carry it, but no longer true of the installed binary. That is why both clauses above are split
+    rather than asserted live: a live assertion in either direction would pin a harness version
+    instead of marion. **Nothing was re-recorded and no capture was changed.**
+
+    **And `claude` auto-updated to 2.1.226 mid-session**, which `PINNED_HARNESSES` does not accept.
+    Everything above was verified against **2.1.225** — the newest pinned version, still on disk
+    under `~/.local/share/claude/versions/` — through a `PATH` shim. 2.1.226 has **not** been
+    admitted: that is the ritual `9b0a06d` performs, and doing it as a side effect of this work
+    would be exactly the silent pass the table exists to prevent. Until someone runs it, a bare
+    `cargo test --workspace` on this machine is red at the version gate.
+  - **Criterion 2 (a real `codex` TUI in a pane, scrollback across a resize) — MET**, by
+    `crates/marion-supervisor/tests/pane_attach.rs::a_real_codex_tui_keeps_its_scrollback_across_a_resize_in_a_marion_pane`.
+
+    What was missing was never the mechanism. `marion-term/tests/replay.rs::scrollback_survives_codex_resize`
+    has pinned the `CSI 3J` interception over a committed asciicast all along — 16 history rows
+    with suppression on against 1 with it off — but that is `marion_term::Term` fed a recording,
+    with no process, no pty and no pane, and **a codex pane could not be launched at all**:
+    `CodexAdapter` overrode neither `pane_surfaces` nor `compile_pane`, so `marion run codex --pane`
+    was refused with `NoPaneSurface` before anything opened a pty. Both now exist, and the TUI is a
+    second compile rather than a flag on `compile_exec` — `exec`'s `--json`,
+    `--skip-git-repo-check`, `--output-schema` and `--output-last-message` are argv the interactive
+    command rejects.
+
+    The test is a real codex on a real pty that `marion run codex --pane` opened, a real
+    `marion attach` rendering it, and `TIOCSWINSZ` on the **operator's** terminal travelling to the
+    one master — which is what makes codex emit the `ESC[3J`. Three guards stop it passing
+    vacuously: it insists on **20 retained rows before the resize** (driven by `/status` panels,
+    because a codex that is merely open wrote 2.3 MB at 100x30 and scrolled *zero* rows); it
+    asserts an `ESC[3J` lands **after** the resize record; and it replays the same bytes with the
+    interception off, where those rows are gone. Removing `suppress_erase_saved` kills it in 7 s
+    with a sentence naming the row counts.
+
+    **Read off the node's own `pty.cast` through `marion_tui::grid_options()`, and stated in the
+    test.** The grid that holds the scrollback is the *client's*; `marion attach` paints only its
+    viewport and has no scroll key, so no screen the operator's pty could record ever shows a
+    history row. An assertion on the operator's screen would assert nothing about scrollback.
+
+    Measured on codex 0.147.0 while closing this: the argv prompt is **submitted** rather than
+    seeded (unlike claude's pane), the default is already inline so `--no-alt-screen` is
+    deliberately not passed, and no mouse mode is enabled.
   - **Criterion 3 (L4.5 snapshot tests pass and gate commits) — MET.** `.githooks/pre-commit` runs
     `cargo test -p marion-term --test l45_driver` unconditionally: no opt-out, no staged-file
     filter, and it reads the pass count back and blocks if it is under `MIN_TESTS`, so a filter
@@ -641,6 +680,69 @@ how much code exists.
     per-clone (`git config core.hooksPath .githooks` must be run once), `--no-verify` bypasses it
     as it bypasses any pre-commit hook, and it does not pin `INSTA_UPDATE`, so an environment that
     rewrites snapshots would let the gate pass on rewritten ones.
+
+### M3 C1's recorded manual session — the runbook
+
+**This is the one thing left between M3 and `[done]`, and it needs a person.** Everything else in
+C1 is asserted by a test; §9 ends the criterion with *"over a recorded 10-minute manual session"*,
+and no automation can perform it. Written down so whoever sits down does not have to re-derive it.
+
+**Before starting.** `git config core.hooksPath .githooks` if this is a fresh clone. Put the pinned
+`claude` first on `PATH` — `PINNED_HARNESSES`'s entry zero is what the prose claims, and an
+unpinned binary makes the recording unattributable. Have `asciinema` on `PATH`.
+
+**Start the recording, then the pane, then attach.** Three terminals is easiest; one is enough.
+
+```sh
+# terminal 1 — the node
+marion run claude --pane --prompt "walk the tree with me" --timeout 900
+# it prints: marion: attach with `marion attach <agent-id>`
+
+# terminal 2 — the operator, recorded
+asciinema rec docs/recordings/m3-c1-<date>.cast --command "marion attach <agent-id>"
+```
+
+Ten minutes on the clock from the attach, with a real model behind it — `--pane` without
+`--canned` uses the login the operator already has, which is the point: the criterion is about a
+session a person would actually have.
+
+**What to watch for, one line per clause.** Each is a thing to *do* and a thing to *see*; note
+either in the recording's companion file.
+
+1. **Trust dialog on the main screen.** A fresh checkout gets it. Before answering, confirm it is
+   painted where a shell prompt would be — not on a screen that wiped what was above it.
+2. **Alt-screen switch.** Answer the dialog. Whatever the harness does next, the pane must keep
+   painting. **Note which happens**: 2.1.220 entered `?1049h` here, 2.1.225 does not enter one at
+   all, and if the version under test switches back this is where it shows.
+3. **Resize.** Drag the window edge at least twice, once narrower and once wider, mid-turn if
+   possible. Nothing should be clipped, doubled, or frozen at the old width, and the terminal's
+   scrollback from *before* the attach must still be there afterwards.
+4. **Mouse.** Click in the pane, drag a selection, scroll the wheel. **If the harness enables no
+   tracking mode, the correct behaviour is the operator's own terminal selection** — marion
+   mirrors what the node asked for and invents nothing, so "the mouse does nothing in the TUI" is a
+   pass on 2.1.225 and a fail on a version that asks for `?1000h`.
+5. **Permission prompt.** Ask for something the harness must ask about — a file write outside what
+   it already has, or a command. The dialog must render **in the pane**, be answerable from the
+   keyboard, and the answer must take effect. This is the harness's own dialog, not marion's
+   `permission/request` queue (§11 item 22); marion is deliberately not in this loop on a pane.
+   **Note that a pane compiles `--tools ""` today**, so a stock `marion run claude --pane` may
+   have nothing to ask about — if so, record that fact rather than a dialog, and it becomes the
+   argument for the grant decision the criterion is really waiting on.
+6. **Detach and re-attach.** `^] d`, confirm the shell comes back on the **main** screen with its
+   scrollback and its cursor, then `marion attach <agent-id>` again and confirm the node is where
+   it was left.
+
+**Where it lands.** `docs/recordings/m3-c1-<date>.cast`, with a companion
+`docs/recordings/m3-c1-<date>.md` naming the harness version, the terminal emulator, the geometry,
+and one line per clause above saying what was seen.
+
+**Then it is C3's work too.** §9 intends the recorded cast to be **promoted to a fixture** and
+replayed under L4.5 — the same session, seen twice: once by a human deciding whether it looked
+right, and once by a snapshot that fails when it stops looking that way. Promoting it means
+dropping it beside `tests/fixtures/s2/`, adding a `fixtures::` constant, and adding a
+`snapshot_test!` in `marion-term/tests/replay.rs`. Do not promote a recording whose companion file
+says a clause failed.
+
 - **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
 

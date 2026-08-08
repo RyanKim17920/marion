@@ -1186,6 +1186,21 @@ same binaries, so this is *reproduced*, not independently confirmed on other mac
   `-display_offset-1` to `bottommost_line()` — the viewport. Reading retained history requires
   `Grid` indexing with **negative `Line`** values, or driving `scroll_display()`. Budget the
   rendering adapter accordingly: the ~150-line estimate covers the viewport half only.
+
+  > **2.1.225 no longer does any of this, re-measured 2026-08-08.** Everything above is a 2.1.220
+  > reading and the committed captures still carry it byte for byte; nothing here is retracted and
+  > nothing was re-recorded. But the *installed* binary has moved: probed in a marion pane and
+  > again bare, at 100x30 through a boot, a trust dialog, a submitted turn and a resize, 2.1.225
+  > emits **zero `?1049h`** and **zero mouse modes** — the only private modes present are `?1004`,
+  > `?2004`, `?2026` and `?2031`. It renders inline, on the main screen, like codex.
+  >
+  > Two consequences, both already taken. marion's capability list does not shrink: the alt-screen
+  > and mouse handling stays required, because the corpus needs it and a harness that dropped a
+  > mode can add it back. And **a live test may not assert either shape** — §9's M3 C1 asserts the
+  > *agreement* (marion's grid is on whichever screen the node's bytes put it on) and pins the
+  > positive direction over these captures instead
+  > (`marion-term/tests/replay.rs::the_alt_screen_switch_is_handled_including_the_restore_that_never_arrives`,
+  > `marion-supervisor/src/attach.rs::the_nodes_mouse_modes_are_mirrored_onto_the_operators_terminal`).
 - **Codex 0.146.0 does not use the alternate screen for its main session** and enables no mouse
   tracking. It paints full-screen on the **main** screen via `?2026h` + `\x1b[1;1H\x1b[J` +
   absolute rows. **All scrollback work is a Codex concern.**
