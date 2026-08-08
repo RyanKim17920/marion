@@ -818,7 +818,107 @@ dropping it beside `tests/fixtures/s2/`, adding a `fixtures::` constant, and add
 `snapshot_test!` in `marion-term/tests/replay.rs`. Do not promote a recording whose companion file
 says a clause failed.
 
-- **M4 [open]** — N→1 fan-in: a Codex root spawning two Claude children concurrently.
+- **M4 [done]** — N→1 fan-in: a Codex root spawning two Claude children concurrently. **Audited
+  clause by clause against the code and the test on 2026-08-08, and every clause §9 names is met.**
+  One test measures six of the seven —
+  `marion-supervisor/tests/m4_fan_in.rs::a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_both_contracts`,
+  a real `codex` 0.147.0 root and two real `claude` 2.1.226 children against the canned provider —
+  and the seventh is a reading of marion's source, recorded below against the path it was read on.
+  Clause 4 was **not** met when the test landed; it is now, and the paragraph on it says what was
+  wrong.
+
+  1. **A real `codex` root.** `on_path("codex")` is not a presence check — it runs `--version` and
+     panics unless the output matches `PINNED_HARNESSES`, so the root's binary is gated at the
+     pinned version even though its own `Spawned` records `harness_version: "unknown"` (a root has
+     no contract, so nothing on that path shells out for a version). *That a real codex spoke* is
+     asserted separately from the wire: a recorded `responses` request carrying code mode's
+     `{name, namespace}` dispatch form, which S6 measured and no other harness here emits.
+  2. **Two real `claude` children of that root.** The `SpawnIntent` records whose `parent_id` is the
+     root are counted (exactly two) and each is checked for `harness: "claude-code"`,
+     `agent_type: "claude-impl"`, `depth: 1`; then each child's `Spawned.harness_version` — marion's
+     own reading of the binary it launched, taken for §6.7's `TaskContract.child.version` — is
+     checked against the same `PINNED_HARNESSES` table, not a second list.
+  3. **Concurrently, and with no duration compared against any threshold.** Two independent facts,
+     and each was separately shown to kill a marion that runs the children one after the other.
+     First, a rendezvous inside the canned provider answers neither child until both have asked for
+     a turn, and `Rendezvous::expired()` is read as a *reading* — a serialized marion leaves the
+     first child waiting alone and fails with a sentence rather than hanging. Second, the journal's
+     total order is its byte order, so line indices give Allen overlap: each child's `SpawnIntent`
+     precedes the *other* child's `Exited`. Fact 2 is marion's own account, written by the code
+     under test, and is what the clause is graded on.
+  4. **Both reported through marion's `report` over MCP, into their own contracts.** Per contract:
+     `ExitStatus::Ok` (an `Unreported` status is what an absent report produces),
+     `narrative_synthesized == false`, and `requester == ` the codex root. **The attribution half
+     was measured and was not being measured.** The two assertions that landed with the test were
+     each over a *set* — the narratives present, the changed paths present — and a marion that
+     handed each child's report to its sibling satisfies both, since only the pairing is crossed.
+     Run as a mutation, that defect **passed**. Closed on 2026-08-08 by asserting the pairing
+     *inside* one contract against `changed_paths`, the one field no report can influence (§6.7
+     sources it from a git diff of that child's own worktree).
+  5. **The root received both contracts, asserted on the request side.** Read out of the root's own
+     next-turn transcript, not out of what marion says it replied: each `wait`'s
+     `function_call_output` must not be a `<persisted-output>` stub, must deserialize to a
+     `TaskContract`, and must equal the persisted `contracts/<task_id>.json` after both sides are
+     normalized for §6.7's cap rules. Then the two must be *different* contracts, and the pair must
+     be exactly the two task ids the children ran under.
+  6. **No adapter-specific orchestration code — read from the source, not from a green test.** The
+     fan-in path is harness-blind in non-test code: `handler.rs` (spawn/wait/collect), `background.rs`
+     (the handle table), `courier.rs`, `bridge.rs`, `journal.rs` and the supervisor's `registry.rs`
+     contain no `match`/`if` on `Harness` at all — `handler.rs`'s only harness token in 6 863 lines
+     is `harness: intent.harness` copying a field into a journal record, and `bridge.rs`'s only one
+     is string interpolation in `failure_line`, whose `match` is on `ExitStatus`. The
+     `max_concurrent_children` gate (`agent_type.rs:362`) reads the caller's type and names no
+     harness. **Per-harness *compilation* is expected and is not this clause**: `adapter_for`
+     (`marion-harness/src/adapter.rs:1408`) is the workspace's one per-harness dispatch table and it
+     returns only a `Box<dyn HarnessAdapter>`; every supervisor call site consumes it through the
+     trait. The three-way drive forks (`run.rs:1519`, `root.rs:1085`) branch on `LaunchPath` derived
+     from `adapter.surfaces()` — codex, gemini and opencode all traverse the same `LaunchOnly` arm —
+     which is a control plane, not a name. **Two things are recorded rather than waved past.**
+     `harness.rs:69` `writes_without_a_declaration` is a genuine four-arm match on the enum, and it
+     reaches a concurrency gate through `agent_type.rs:197` and `run.rs:1220`; it is off M4's path,
+     because that gate is in the `Isolation::SharedCwd` arm and M4's children are worktree-isolated,
+     but it is the sharpest thing an adversarial reader will find. And `spawn.rs:1077` hardcodes
+     `Harness::Codex` in `build_contract` as a placeholder that `run.rs:1649` unconditionally
+     overwrites from the adapter — not a branch today, a silently wrong audit record if that
+     overwrite is ever removed.
+  7. **Fan-in aggregates rather than serializing.** Distinct from clause 3 and measuring a different
+     defect: both `spawn`s answered with a **handle** — the sentence, and *not* something that
+     deserializes as a `TaskContract` — which is what let the second child start before the first
+     was collected, and both `spawn`s precede both `wait`s in the root's own transcript. A `spawn`
+     that returned the contract would have produced the same four turns and would have been the
+     serialization the clause forbids. Note the division of labour honestly: clause 7's own
+     assertions do **not** detect a marion that backgrounds correctly and then blocks anyway;
+     clause 3's do.
+
+  **The mutation table (2026-08-08), each entry a named failure and none a bare timeout.**
+  *Children serialized* — `spawn { background: true }` awaits the contract before answering with its
+  handle: killed at the `!rendezvous.expired()` assertion, and, with that assertion removed to test
+  the other fact alone, killed again at the journal-overlap assertion (`3..=5` then `7..=9`, no
+  overlap). *One child's contract dropped* — every `wait` resolves to the first handle: killed
+  deserializing the second `wait`'s result, which was the already-collected sentence. *
+  `max_concurrent_children` forced to 1*: killed at the child count (`left: 1, right: 2`).
+  *A report attributed to the other child* — the two children's narratives swapped as they leave
+  `ChildOutcome::from_stream`: **survived**, verified as a real swap (the contract whose diff is
+  `src/m4_a.txt` carried child B's narrative) and now killed by clause 4's pairing assertion.
+
+  **§11 item 31 at N=2, claimed no wider than it was measured.** Two children means two worktrees,
+  and item 31's cross-process half is open. It is **not exercised here**: sampling `ps` through a
+  run shows one `marion-supervisor serve --detached` daemon and three transient `marion-supervisor
+  mcp` bridges, and only the daemon runs git — so both `make_worktree` calls are two threads of one
+  process and are serialized by `spawn::repo_write_guard`, whose in-process half is exactly the
+  half that is closed. So: **N=2 was safe in this test, on this machine, across the runs recorded
+  here** — that is the whole claim. It is not "N=2 is safe": S17's own N=2 row is 1 failing
+  repetition in 3 at 600 iterations each (~1 in 1 800 operations) for *unguarded concurrent
+  processes*, and this test performs one worktree pair once, so it is orders of magnitude short of
+  witnessing anything either way. Two `marion` processes on one repository remain unmeasured here
+  and item 31 stays OPEN.
+
+  **Verified.** `cargo test --workspace`: **1 188 passed, 0 failed, 0 ignored** (base 1 176 at
+  `6813810`, re-derived rather than restated — the diff since adds 12 `#[test]` and removes none).
+  `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` clean. No
+  `marion`, `codex` or `claude` process outlived the run, `git worktree list` holds only the
+  checkout, and the run's scratch tree is gone; the two directories left under `/tmp/mn-501` are
+  another test's, from 03:05, and predate this work.
 - **M5 [open]** — ACP breadth, degrading per resolved capabilities.
 
 Post-M5: ModelProxy translation. Acceptance criteria for each: design doc §9.
