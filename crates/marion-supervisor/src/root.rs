@@ -694,9 +694,16 @@ pub fn prepare_watched(
         prompt: match path {
             // Written after launch, not compiled into argv (§6.1 step 8).
             RootPath::Duplex => String::new(),
-            // Seeded into the composer, and the operator presses return. See
-            // `marion_harness::claude_code::compile_pane` for why an argv prompt is safe on a TUI
-            // and measured unsafe on `--print`.
+            // A positional, and what the harness then does with it **differs by harness** —
+            // stated rather than generalised, because marion compiles the same field twice and
+            // gets two behaviours. Claude Code seeds its composer and waits for a return
+            // (`marion_harness::claude_code::compile_pane`); codex 0.147.0 **submits** it, so a
+            // paned codex has taken a turn before anybody attaches
+            // (`marion_harness::codex::compile_tui`). Neither is a race the way an argv prompt on
+            // `--print` is: a TUI's MCP servers are connected before it accepts the turn.
+            //
+            // Both are safe for the reason the headless refusal is not: see the same two doc
+            // comments for the measurement.
             RootPath::LaunchOnly | RootPath::Terminal => spec.prompt.clone(),
         },
         // §3.1's availability axis: the agent type's own `tools:` list, exactly as
@@ -2644,6 +2651,41 @@ mod tests {
             "the pane's prompt must be seeded into the composer: {:?}",
             paned.invocation.args
         );
+
+        // **The same two-sided check on codex, because codex now has a pane too.** Its headless
+        // shape is `codex exec --json`, which is M1's child launch, and a selection bug that gave
+        // every codex node the TUI would take that path away without any adapter test noticing.
+        let cx = prepare(&root_spec(&dir, "codex")).expect("a codex root");
+        let cx_paned = prepare(&RootSpec {
+            pane: true,
+            ..root_spec(&dir, "codex")
+        })
+        .expect("a codex root with a pane");
+        assert_eq!(cx.path, RootPath::LaunchOnly);
+        assert_eq!(cx.invocation.args.first().map(String::as_str), Some("exec"));
+        assert!(
+            cx.invocation.args.iter().any(|a| a == "--json"),
+            "M1's codex launch lost its JSONL stream: {:?}",
+            cx.invocation.args
+        );
+        assert!(
+            cx.surfaces.display_plane().is_none(),
+            "a codex run that asked for nothing was given a pty"
+        );
+        assert_eq!(cx_paned.path, RootPath::Terminal);
+        assert_ne!(
+            cx_paned.invocation.args.first().map(String::as_str),
+            Some("exec"),
+            "the codex pane compiled the exec shape, whose flags the interactive command rejects: \
+             {:?}",
+            cx_paned.invocation.args
+        );
+        assert!(
+            cx_paned.invocation.args.iter().any(|a| a == "delegate it"),
+            "the codex pane dropped its prompt: {:?}",
+            cx_paned.invocation.args
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

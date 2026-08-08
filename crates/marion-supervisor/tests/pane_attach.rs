@@ -1,10 +1,15 @@
-//! **§9's M3 criterion C1, end to end: a real `claude` in a pane marion owns, driven over the
-//! socket by a real `marion attach`.**
+//! **§9's M3 criteria C1 and C2, end to end: a real `claude` and a real `codex` in panes marion
+//! owns, driven over the socket by a real `marion attach`.**
 //!
-//! Every other pty test in this workspace drives `/bin/sh` and registers its host by hand. This one
-//! starts nothing by hand: `marion run claude --pane` is a subprocess, the supervisor it wakes is a
-//! subprocess, `marion attach` is a third — and the only thing this file constructs is the
+//! Every other pty test in this workspace drives `/bin/sh` and registers its host by hand. These
+//! start nothing by hand: `marion run <harness> --pane` is a subprocess, the supervisor it wakes is
+//! a subprocess, `marion attach` is a third — and the only thing this file constructs is the
 //! **operator's terminal**, because there has to be one and a test harness has no tty of its own.
+//!
+//! Two harnesses and one bed, because the criteria are two readings of one seam and the second is
+//! not reachable through the first: C2's subject is codex for a measured reason (§5.3) — it keeps
+//! its session on the **main** screen and emits `ESC[3J` on every resize, while Claude Code enters
+//! its own alternate screen seconds after boot and an alternate screen has no scrollback to lose.
 //!
 //! # What each clause of C1 is made to mean here
 //!
@@ -36,15 +41,9 @@
 //! * **permission prompt correct** — a pane's permission ask is answered *in the pane*, by the
 //!   operator, in the harness's own dialog; marion is not in that loop at all on this surface, so
 //!   there is nothing here for a test to assert about marion. I5.
-//! * **§9's C2 end to end.** C2 reads *"a real `codex` TUI runs in a pane with scrollback retained
-//!   across at least one resize"*, and the subject is codex for a measured reason: it writes to the
-//!   **main** screen and emits `CSI 3J`. Claude Code enters its own alternate screen seconds after
-//!   boot, and an alternate screen has no scrollback to retain — measured on this very run, which
-//!   ends with `history_size == 0` and **zero** erase-saved sequences to suppress. So C2 is not
-//!   reachable through the one harness that has a pane shape, and it stays met on the client half
-//!   alone (`marion-term/tests/replay.rs::scrollback_survives_codex_resize`, over a committed
-//!   capture) until `CodexAdapter::pane_surfaces` exists. Asserting it here against claude would
-//!   have been an assertion that passed because there was nothing to lose.
+//! * **the recorded 10-minute manual session** C1 names. A human has to sit at a screen for it;
+//!   nothing here or anywhere else can stand in, and C1 is not met without it. `MILESTONES.md`'s
+//!   M3 entry carries the runbook.
 //!
 //! # Running it
 //!
@@ -52,8 +51,9 @@
 //! cargo test -p marion-supervisor --test pane_attach
 //! ```
 //!
-//! Needs a real `claude` on `PATH` and does **not** skip when it is missing, for the reason
-//! `journal_wiring.rs` gives. Every model call is served by the CannedServer: no paid tokens.
+//! Needs a real `claude` **and** a real `codex` on `PATH` and does **not** skip when either is
+//! missing, for the reason `journal_wiring.rs` gives. Every model call is served by the
+//! CannedServer: no paid tokens.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -135,15 +135,24 @@ impl Drop for Leftovers {
 
 /// Start the paned root and **return when it exists**, which is `marion run --pane`'s whole
 /// contract: a node an operator is about to attach to is not a node this call should hold.
-fn start_paned_run(dir: &Path, repo: &Path, state: &Path, base_url: &str) {
+///
+/// `agent_type` is a parameter because C1 and C2 name two different harnesses and share one bed.
+fn start_paned_run(
+    agent_type: &str,
+    prompt: &str,
+    dir: &Path,
+    repo: &Path,
+    state: &Path,
+    base_url: &str,
+) {
     let out = Command::new(env!("CARGO_BIN_EXE_marion"))
         .args([
             "run",
-            "claude",
+            agent_type,
             // The flag under test. Without it this is M1's launch, byte for byte.
             "--pane",
             "--prompt",
-            PROMPT_MARK,
+            prompt,
             "--repo",
             &repo.to_string_lossy(),
             "--state-dir",
@@ -160,7 +169,7 @@ fn start_paned_run(dir: &Path, repo: &Path, state: &Path, base_url: &str) {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
-        "`marion run --pane` failed: {}\n{err}",
+        "`marion run {agent_type} --pane` failed: {}\n{err}",
         out.status
     );
     // The one thing this call is for, besides the node: telling the operator how to reach it.
@@ -451,7 +460,14 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
     let _leftovers = Leftovers {
         needle: root_dir.display().to_string(),
     };
-    start_paned_run(&root_dir, &repo, &state, &server.base_url());
+    start_paned_run(
+        "claude",
+        PROMPT_MARK,
+        &root_dir,
+        &repo,
+        &state,
+        &server.base_url(),
+    );
     let paths = paths_for(&state, &repo);
 
     // The supervisor and the node, found the way any client would find them.
@@ -648,6 +664,295 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
 
     drop(again);
     drop(op);
+}
+
+// ---------------------------------------------------------------------------------------------
+// C2
+// ---------------------------------------------------------------------------------------------
+
+/// Seeded into codex's composer — and **submitted** by codex 0.147.0 the moment the TUI opens,
+/// which is where the two panes differ (`marion_harness::codex::compile_tui`).
+const CODEX_MARK: &str = "MARIONCODEXPANE5d19";
+
+/// The geometry C2's operator resizes to. Distinct from [`RESIZED`] only so a failure message
+/// cannot be misread as C1's.
+const CODEX_RESIZED: WinSize = WinSize {
+    cols: 108,
+    rows: 32,
+};
+
+/// How many `/status` panels the operator may ask for before the pane is declared to have produced
+/// no scrollback. Three fill a 30-row screen; the rest is headroom for a panel that renders
+/// shorter than measured, and the loop stops as soon as [`MIN_HISTORY`] rows exist.
+const STATUS_SENDS: usize = 12;
+
+/// How much scrollback this test insists on **before** it resizes anything.
+///
+/// Not `> 0`, and the difference is the test's margin. The first shape of this asserted merely that
+/// some history existed, and the run it passed on had **5** rows against 3 retained without the
+/// interception — a two-row verdict, which is close enough to noise that a codex whose panel
+/// rendered one line shorter could have inverted it. 20 rows is more than one `/status` panel, so
+/// the differential below is a panel wide rather than a rounding error.
+const MIN_HISTORY: usize = 20;
+
+/// How long each `/status` is given to render before another is typed. Below codex's own redraw
+/// cadence the second submission lands in a composer the first has not left.
+const STATUS_SETTLE: Duration = Duration::from_millis(1200);
+
+/// **§9's M3 criterion C2, end to end: a real `codex` TUI in a pane marion owns, and the
+/// scrollback it accumulated is still there after a resize.**
+///
+/// # Why this is not `marion-term/tests/replay.rs::scrollback_survives_codex_resize` again
+///
+/// That test is the *mechanism*, and it is a good one: it replays a committed asciicast through
+/// `marion_term::Term` and pins 16 retained rows against 1. But there is no process in it, no pty,
+/// no pane and no resize — the "resize" is an `r` record in a file. C2's sentence is *"a real
+/// `codex` TUI **runs in a pane**"*, and until `CodexAdapter::pane_surfaces` existed the launch
+/// itself was refused, so the criterion was open however green the replay was.
+///
+/// Here codex is a real process on a real pty that `marion run codex --pane` opened, a real
+/// `marion attach` is rendering it, and the resize is `TIOCSWINSZ` on the **operator's** terminal
+/// travelling over the socket to the one master — which is what makes codex emit the `ESC[3J` at
+/// all. Nothing about the sequence is scripted by this test.
+///
+/// # Where the retention is asserted, and why it is not the operator's screen
+///
+/// The grid that holds the scrollback is the **client's** (`attach.rs`'s `View::term`, built with
+/// `marion_tui::grid_options()`), and `marion attach` paints only its *viewport* — there is no
+/// scroll key, so no screen the operator's pty could record ever shows a history row. Asserting on
+/// `Operator::screen()` would therefore assert nothing about scrollback at all.
+///
+/// So the assertion replays the **node's own `pty.cast`** — every byte the real codex wrote, and
+/// every geometry the master was really set to — through `marion_tui::grid_options()`, which is
+/// the client's grid configuration and not a copy of it. That reconstruction is exact: the client
+/// is fed those bytes and resized to those geometries and nothing else.
+///
+/// # Why the assertion cannot pass vacuously
+///
+/// Three separate guards, because "scrollback survived" is easy to assert about a session that had
+/// none:
+///
+/// 1. **There is history before the resize.** The test waits for it and fails by name if codex
+///    never produced any, so a run that scrolled nothing cannot reach the interesting part.
+/// 2. **There is an `ESC[3J` to suppress, and it lands after the resize.** Asserted on the node's
+///    recorded output. Without this the whole test would pass on a harness that never threatens
+///    the history.
+/// 3. **The same bytes lose that history with suppression off.** The differential is what makes
+///    this an assertion about `CSI 3J` interception rather than about codex being quiet.
+///
+/// # Mutations
+///
+/// * `marion_tui::grid_options`: `suppress_erase_saved: false`. Guard 3 fails — and so does the
+///   absolute assertion above it, so this dies twice.
+/// * `marion_term`'s `Suppressor`: pass `ClearMode::Saved` through. Same two.
+/// * `CodexAdapter::pane_surfaces` → `None`. `marion run codex --pane` is refused and the run
+///   never starts.
+/// * `CodexAdapter::compile_pane` → `codex::compile_exec`. `codex exec --json …` is not the TUI:
+///   no pane renders and no history accumulates.
+/// * `handler::deliver_input`, `Input::NodeResize`: drop the write. No `r` record, and guard 2
+///   never sees the `ESC[3J` the resize provokes.
+#[test]
+fn a_real_codex_tui_keeps_its_scrollback_across_a_resize_in_a_marion_pane() {
+    assert!(
+        on_path("codex"),
+        "M3's C2 is a claim about a real harness in a real pane. Put `codex` ({}) on PATH.",
+        pinned_version("codex")
+    );
+
+    let dir = scratch("pane-codex");
+    let root_dir = dir.to_path_buf();
+    let repo = root_dir.join("repo");
+    let state = root_dir.join("state");
+    fixture_repo(&root_dir);
+
+    let server = CannedServer::start(Config {
+        addr: ([127, 0, 0, 1], 0).into(),
+        reqlog: root_dir.join("provider-requests.jsonl"),
+        script: Script::default(),
+    })
+    .expect("the canned provider starts");
+
+    let _leftovers = Leftovers {
+        needle: root_dir.display().to_string(),
+    };
+    start_paned_run(
+        "codex",
+        CODEX_MARK,
+        &root_dir,
+        &repo,
+        &state,
+        &server.base_url(),
+    );
+    let paths = paths_for(&state, &repo);
+    assert!(
+        until(|| paths.socket().exists()),
+        "no supervisor ever came up for this project"
+    );
+    let mut client = Client::dial(&paths);
+    let mut agent = None;
+    assert!(
+        until(|| {
+            agent = client
+                .tree()
+                .into_iter()
+                .find(|n| n.depth == 0)
+                .map(|n| n.agent_id);
+            agent.is_some()
+        }),
+        "the paned codex root never appeared in the supervisor's tree"
+    );
+    let agent = agent.expect("a root");
+    let node_cast = marion_core::paths::ProjectDir::new(
+        &state,
+        &marion_supervisor::socket::project_root(&repo),
+    )
+    .agent(&agent)
+    .pty_cast();
+    assert!(
+        until(|| node_cast.exists()),
+        "the codex node has no pty recording at {}, so `launch_terminal` never opened a pty",
+        node_cast.display()
+    );
+
+    // **A client is really attached and really rendering it**, so the retention below is asserted
+    // about a pane an operator could be watching rather than about a pty nobody reached.
+    let op = Operator::attach(&root_dir, &repo, &state, &agent);
+    assert!(
+        until(|| op.screen().contains("Codex")),
+        "codex's TUI never reached the operator's screen. What the operator saw:\n{}",
+        op.screen()
+    );
+
+    // ---- guard 1: there is scrollback to lose, before anything is resized ----
+    //
+    // **Produced by driving the pane, not by waiting.** A codex session that is merely *open* fills
+    // one screen and repaints it in place for ever: measured on 0.147.0, a boot and a settled turn
+    // at 100x30 wrote 2.3 MB to the pty and scrolled **zero** rows into history. So the operator
+    // types, and what they type is `/status` — measured to print a 14-row panel into the
+    // main-screen transcript, three of which push this pane's banner off the top. It is a slash
+    // command rather than a turn on purpose: nothing here depends on what a model said.
+    //
+    // Codex queues a `\r` typed while a turn is in flight rather than submitting it, so the turn
+    // the argv prompt started is waited out first — `esc to interrupt` is codex's own word for
+    // "working", and its disappearance is the harness saying it is ready for input.
+    assert!(
+        until(|| !op.screen().contains("esc to interrupt")),
+        "codex's opening turn never settled, so nothing typed into the composer would be \
+         submitted. What the operator saw:\n{}",
+        op.screen()
+    );
+    let mut sent = 0usize;
+    assert!(
+        until(|| {
+            if replay_node(&node_cast, true).history_size() >= MIN_HISTORY {
+                return true;
+            }
+            if sent < STATUS_SENDS {
+                op.type_in(b"/status\r");
+                sent += 1;
+                std::thread::sleep(STATUS_SETTLE);
+            }
+            false
+        }),
+        "the codex pane never scrolled {MIN_HISTORY} rows into history after {sent} `/status` \
+         panels, \
+         so there is nothing for a `CSI 3J` to erase and this test would pass whatever marion \
+         did. Its recording is {} bytes over {:?}. What the operator saw:\n{}",
+        std::fs::metadata(&node_cast).map(|m| m.len()).unwrap_or(0),
+        geometries(&node_cast),
+        op.screen()
+    );
+    let before = replay_node(&node_cast, true).history_size();
+
+    // ---- the operator drags the corner of their window ----
+    let want = CODEX_RESIZED.as_cast();
+    op.resize_window(CODEX_RESIZED);
+    assert!(
+        until(|| cast_records(&node_cast)
+            .iter()
+            .any(|(c, d)| c == "r" && *d == want)),
+        "the codex node's pty was never resized to {want}, so `TIOCSWINSZ` did not reach the one \
+         master. Its recorded geometries were {:?}",
+        geometries(&node_cast)
+    );
+
+    // ---- guard 2: the resize really provoked an erase-saved ----
+    //
+    // §5.3: codex emits `ESC[r ESC[0m ESC[H ESC[2J ESC[3J ESC[H` on **every** resize. If a future
+    // codex stops, this test must say so rather than keep passing — the criterion is about
+    // intercepting a sequence, and a harness that no longer sends it has moved the measurement.
+    assert!(
+        until(|| erase_saved_after_the_resize(&node_cast, &want)),
+        "codex emitted no `ESC[3J` after being resized to {want}. §5.3 measured one per resize on \
+         0.146.0 and 0.147.0; without it there is nothing for marion's `Suppressor` to intercept, \
+         so C2's mechanism is untested by this run rather than proved by it"
+    );
+
+    // ---- the criterion: the history is still there, and only because it was intercepted ----
+    let kept = replay_node(&node_cast, true);
+    assert!(
+        kept.history_size() >= before,
+        "the codex pane lost scrollback across the resize: {} rows before, {} after. `CSI 3J` is \
+         erase-saved, and marion's whole answer to it is `marion_tui::grid_options`'s \
+         `suppress_erase_saved`",
+        before,
+        kept.history_size()
+    );
+    assert!(
+        kept.stats().suppressed_erase_saved > 0,
+        "the grid marion attaches with honoured the node's erase-saved instead of suppressing it"
+    );
+
+    // The differential, over the very same bytes: without the interception those pre-resize rows
+    // are gone. This is what stops the assertion above from being a statement about codex having
+    // been quiet.
+    let lost = replay_node(&node_cast, false);
+    assert!(
+        lost.history_size() < before,
+        "with `CSI 3J` honoured the same recording still holds {} of the {} rows it had before \
+         the resize, so the assertion above is not measuring the interception. Suppressed: {}",
+        lost.history_size(),
+        before,
+        kept.history_size()
+    );
+
+    drop(op);
+}
+
+/// Replay a node's `pty.cast` through the grid a marion client attaches with.
+///
+/// `suppress` is `marion_tui::grid_options()`'s own value when true, and its negation when false —
+/// read off the real thing rather than restated, so a client that stopped intercepting cannot
+/// leave this helper still describing the old behaviour.
+fn replay_node(cast: &Path, suppress: bool) -> marion_term::Term {
+    let options = marion_term::Options {
+        suppress_erase_saved: suppress && marion_tui::grid_options().suppress_erase_saved,
+        ..marion_tui::grid_options()
+    };
+    // The pane is born at `root::PANE_SIZE`; every later geometry arrives as an `r` record below.
+    let mut term = marion_term::Term::with_options(marion_term::Size::new(80, 24), options);
+    for (code, data) in cast_records(cast) {
+        match code.as_str() {
+            "o" => term.advance(data.as_bytes()),
+            "r" => resize_from(&mut term, &data),
+            _ => {}
+        }
+    }
+    term
+}
+
+/// Whether the node wrote an `ESC[3J` **after** it was resized to `geometry`.
+///
+/// Ordered rather than counted: an erase-saved from somewhere earlier in the session would satisfy
+/// a bare `contains`, and the sequence C2 is about is the one the resize provokes.
+fn erase_saved_after_the_resize(cast: &Path, geometry: &str) -> bool {
+    let records = cast_records(cast);
+    let Some(at) = records.iter().position(|(c, d)| c == "r" && d == geometry) else {
+        return false;
+    };
+    records[at..]
+        .iter()
+        .any(|(c, d)| c == "o" && d.contains("\u{1b}[3J"))
 }
 
 /// Every geometry the node's pty was ever set to, in order.
