@@ -41,7 +41,7 @@ fn contract(comp: Completion) -> TaskContract {
             model: None,
         },
         repo: RepoIdentity {
-            git_common_dir: "/repo/.git".into(),
+            git_common_dir: Some("/repo/.git".into()),
             head_branch: Some("main".into()),
         },
         base_commit: Oid("a".repeat(40)),

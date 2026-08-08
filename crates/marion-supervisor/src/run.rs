@@ -1521,7 +1521,7 @@ pub fn run_spawn_watched(
         task_id.clone(),
         AgentId(caller.agent_id.clone()),
         RepoIdentity {
-            git_common_dir: req.repo.join(".git"),
+            git_common_dir: crate::socket::git_common_dir(&req.repo),
             head_branch: None,
         },
         base,
@@ -1702,7 +1702,7 @@ mod tests {
             TaskId("019fbf94-53c8-7c60-9f4c-12695a5e79fe".into()),
             AgentId("019fbf94-0000-7000-8000-000000000001".into()),
             RepoIdentity {
-                git_common_dir: "/repo/.git".into(),
+                git_common_dir: Some("/repo/.git".into()),
                 head_branch: Some("main".into()),
             },
             Oid("a".repeat(40)),
@@ -1817,7 +1817,7 @@ mod tests {
             TaskId("task".into()),
             AgentId("root".into()),
             RepoIdentity {
-                git_common_dir: "/r/.git".into(),
+                git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
             Oid("a".repeat(40)),
@@ -2164,7 +2164,7 @@ mod tests {
             TaskId("task".into()),
             AgentId("root".into()),
             RepoIdentity {
-                git_common_dir: "/r/.git".into(),
+                git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
             Oid("a".repeat(40)),

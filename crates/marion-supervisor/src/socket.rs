@@ -259,22 +259,47 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
 /// — two shells in two subdirectories of one non-repo project get two supervisors — and it is the
 /// spec's choice, because the alternative is refusing to run outside git.
 pub fn project_root(cwd: &Path) -> PathBuf {
-    let common = std::process::Command::new("git")
+    let chosen = git_common_dir(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    chosen.canonicalize().unwrap_or(chosen)
+}
+
+/// **The git common directory of the repository `cwd` is in, or `None` because there is none.**
+///
+/// Split out of [`project_root`] rather than duplicated beside it, because two separate questions
+/// turned out to be this one question and were each answering it their own way:
+///
+/// 1. *Which supervisor serves this tree?* — [`project_root`], which folds the `None` into §2's
+///    documented cwd fallback and canonicalizes the result.
+/// 2. *What goes in `TaskContract.repo.git_common_dir`?* — §6.7's audit record. `run.rs` used to
+///    write `req.repo.join(".git")`, which is wrong twice over: in a **linked worktree** `.git` is a
+///    *file* containing `gitdir: …`, not a directory and not the common dir, so the record named a
+///    path that does not identify the repository and could not be opened as one; and outside git
+///    altogether it named a path that does not exist. `RepoIdentity::git_common_dir` is now
+///    `Option`, and this is what fills it — the same derivation §2 keys on, so the contract and the
+///    supervisor can never disagree about which repository a node ran against.
+///
+/// **Not canonicalized**, unlike [`project_root`]'s answer. §2 needs one stable key and canonicalizes
+/// to get it; §6.7 needs the path git itself reports, and a record that silently resolved symlinks
+/// would not be the path an operator can paste back into `git --git-dir`. The caller that needs a key
+/// is the caller that canonicalizes.
+///
+/// A relative answer is joined onto `cwd`: `rev-parse --git-common-dir` answers `.git` from a
+/// repository's own root, and a bare `.git` is not a usable record of anything.
+pub fn git_common_dir(cwd: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(["rev-parse", "--git-common-dir"])
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(|s| {
-            let p = Path::new(&s).to_path_buf();
-            if p.is_absolute() { p } else { cwd.join(p) }
-        });
-    let chosen = common.unwrap_or_else(|| cwd.to_path_buf());
-    chosen.canonicalize().unwrap_or(chosen)
+        .filter(|o| o.status.success())?;
+    let s = String::from_utf8(out.stdout).ok()?;
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let p = Path::new(s).to_path_buf();
+    Some(if p.is_absolute() { p } else { cwd.join(p) })
 }
 
 /// [`socket_paths`], with the environment read for it.
@@ -1118,6 +1143,65 @@ mod tests {
             .output();
     }
 
+    /// **What §6.7's `RepoIdentity.git_common_dir` gets, asked from inside a linked worktree.**
+    ///
+    /// `run.rs` wrote `repo.join(".git")` for this field. In a linked worktree that path exists and
+    /// is a **file** holding `gitdir: …`, so the audit record named something that is not a common
+    /// dir, cannot be opened as one, and differs between two worktrees of one repository — three
+    /// wrong answers from a guess that looked right on a plain checkout. Killing mutation: put
+    /// `repo.join(".git")` back and `is_dir()` fails.
+    #[test]
+    fn the_common_dir_of_a_linked_worktree_is_the_main_repositorys_directory() {
+        let dir = scratch("socket-commondir");
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("f"), b"x").unwrap();
+        git(&repo, &["add", "f"]);
+        git(&repo, &["commit", "-qm", "one"]);
+        let wt = dir.join("wt");
+        git(
+            &repo,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "side"],
+        );
+
+        let guess = wt.join(".git");
+        assert!(
+            guess.is_file(),
+            "the premise of this test: a linked worktree's `.git` is a file, not the common dir"
+        );
+
+        let from_worktree = git_common_dir(&wt).expect("a linked worktree is in a repository");
+        assert!(
+            from_worktree.is_dir(),
+            "an audit record must name a directory git can be pointed at, got {}",
+            from_worktree.display()
+        );
+        assert_ne!(from_worktree, guess);
+        // One repository, one identity — no matter which of its trees the node ran in.
+        assert_eq!(
+            from_worktree.canonicalize().unwrap(),
+            git_common_dir(&repo).unwrap().canonicalize().unwrap()
+        );
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", wt.to_str().unwrap()])
+            .output();
+    }
+
     /// Outside a repository §2 falls back to `cwd` rather than refusing to run.
     #[test]
     fn a_directory_outside_a_repository_keys_on_its_own_path() {
@@ -1136,6 +1220,12 @@ mod tests {
             return;
         }
         assert_eq!(project_root(&sub), sub.canonicalize().unwrap());
+        assert_eq!(
+            git_common_dir(&sub),
+            None,
+            "§2's cwd fallback is `project_root`'s decision, not evidence of a repository — the \
+             contract's `git_common_dir` must not borrow that certainty"
+        );
     }
 
     /// A scratch directory with a **short** path.

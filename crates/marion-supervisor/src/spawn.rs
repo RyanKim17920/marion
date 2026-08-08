@@ -1054,7 +1054,7 @@ mod tests {
             TaskId("t".into()),
             AgentId("r".into()),
             RepoIdentity {
-                git_common_dir: "/r/.git".into(),
+                git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
             Oid("a".repeat(40)),
@@ -1098,7 +1098,7 @@ mod tests {
             TaskId("t".into()),
             AgentId("r".into()),
             RepoIdentity {
-                git_common_dir: "/r/.git".into(),
+                git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
             Oid("a".repeat(40)),
@@ -1153,7 +1153,7 @@ mod tests {
             TaskId("t".into()),
             AgentId("r".into()),
             RepoIdentity {
-                git_common_dir: "/r/.git".into(),
+                git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
             Oid("a".repeat(40)),
@@ -1190,7 +1190,7 @@ mod tests {
             TaskId("t".into()),
             AgentId("r".into()),
             RepoIdentity {
-                git_common_dir: "/r/.git".into(),
+                git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
             Oid("a".repeat(40)),
@@ -1222,7 +1222,7 @@ mod tests {
             TaskId("t".into()),
             AgentId("r".into()),
             RepoIdentity {
-                git_common_dir: "/r/.git".into(),
+                git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
             Oid("a".repeat(40)),
@@ -1255,7 +1255,7 @@ mod tests {
             TaskId("t".into()),
             AgentId("r".into()),
             RepoIdentity {
-                git_common_dir: "/r/.git".into(),
+                git_common_dir: Some("/r/.git".into()),
                 head_branch: None,
             },
             Oid("a".repeat(40)),

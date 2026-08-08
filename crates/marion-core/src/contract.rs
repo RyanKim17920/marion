@@ -59,7 +59,22 @@ pub struct Glob(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoIdentity {
-    pub git_common_dir: PathBuf,
+    /// **`None` when the node did not run in a repository at all**, which [`Workspace::SharedCwd`]
+    /// makes reachable: §2 keys on the git common dir *"falling back to cwd"*, so a project root is
+    /// not evidence of a repository and this field cannot borrow its certainty.
+    ///
+    /// Optional rather than defaulted to the cwd, for the reason the whole of §6.7 is written
+    /// around: a path in a field named `git_common_dir` is a claim that git can be pointed at it.
+    /// A cwd written here would satisfy the type and be false, and `None` is the only value that
+    /// says *there is no repository* rather than guessing at one — the same discipline
+    /// [`Completion::scope_enforced`] holds to one field over.
+    ///
+    /// It is filled from `socket::git_common_dir`, the same derivation §2 keys on. It used to be
+    /// filled from `repo.join(".git")`, which is not the common dir of a **linked worktree** — there
+    /// `.git` is a *file* holding `gitdir: …` — so the audit record named a non-directory that did
+    /// not identify the repository, and two linked worktrees of one repo recorded two different
+    /// "repositories" for what §2 already treats as one project.
+    pub git_common_dir: Option<PathBuf>,
     pub head_branch: Option<String>,
 }
 
