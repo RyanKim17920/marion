@@ -34,6 +34,43 @@ impl Harness {
         }
     }
 
+    /// **Can a node on this harness change a file with an empty `tools:` list?**
+    ///
+    /// §6.6's occupancy rule is *"at most one node with **write tools** per cwd"*, and reading that
+    /// off [`crate::agent_type::AgentType::tools`] alone gets the answer backwards on half the
+    /// harnesses. §3.1's `tools:` is a **grant list** — what marion must positively enable that the
+    /// harness would not do on its own — and two of the four need no such grant. That asymmetry is
+    /// already stated in [`crate::agent_type::TOOL_READ`]'s table, which says outright that
+    /// answering `read` with codex's shell *"would let a reader of `tools: [read]` believe a codex
+    /// node was read-only when it is not"*. The same trap, one field over.
+    ///
+    /// What each adapter actually compiles, which is where these two answers come from:
+    ///
+    /// | harness | with `tools: []` | source |
+    /// |---|---|---|
+    /// | codex | **writes** — `sandbox_mode = "workspace-write"` on every node marion configures, and `codex exec` has no per-tool knob at all | `codex::SANDBOX_MODE` |
+    /// | opencode | **writes** — marion compiles no constraint whatsoever | `opencode::NO_COMPILED_TOOL_CONSTRAINT` |
+    /// | claude-code | withheld — `--tools ""` unless `write` is declared | `ClaudeCodeAdapter::permission_axis` |
+    /// | gemini | withheld — the default approval mode drops the mutating tools from `functionDeclarations` outright | `gemini::DEFAULT_APPROVAL_MODE` |
+    ///
+    /// **Erring towards `true` is the only safe direction here** and is what the two `true` arms
+    /// are. A false `true` costs a caller a refusal they can lift with one documented parameter
+    /// (`allow_concurrent_writes`); a false `false` lets two agents write one tree, which §6.6
+    /// calls worse than two humans doing it — each harness keeps its own checkpoint state, so a
+    /// restore in one silently reverts the other's work — and the caller finds out afterwards, if
+    /// at all.
+    ///
+    /// Exhaustive rather than `_ => true`, so a fifth harness cannot inherit an answer nobody
+    /// measured for it. It lives in `marion-core` because §6.6's rule does, and the adapters that
+    /// own the evidence pin it from their side — see `adapter.rs`'s
+    /// `the_harnesses_that_write_without_a_grant_are_the_ones_that_compile_no_constraint`.
+    pub const fn writes_without_a_declaration(self) -> bool {
+        match self {
+            Harness::Codex | Harness::OpenCode => true,
+            Harness::ClaudeCode | Harness::Gemini => false,
+        }
+    }
+
     /// Every harness marion can name — what `marion doctor` would list.
     pub const ALL: [Harness; 4] = [
         Harness::ClaudeCode,

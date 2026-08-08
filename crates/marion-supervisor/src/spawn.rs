@@ -1482,4 +1482,86 @@ mod tests {
             "detective, not preventive: the run still succeeded"
         );
     }
+
+    // --- §6.6's cwd occupancy table -----------------------------------------------------------
+
+    /// **Check and claim are one locked step, and this is the assertion that says so.**
+    ///
+    /// Split into "is it free?" then "take it", two spawns could both read free and both write —
+    /// which is the lost-update this exists to prevent, one level up from the trees it prevents it
+    /// in. The interface is what makes that unrepresentable: there is no "is it free" to call, only
+    /// a `claim` that answers with the holder, so a caller cannot assemble the racy pair even by
+    /// trying.
+    #[test]
+    fn a_claim_on_an_occupied_cwd_is_refused_naming_the_holder() {
+        let root = marion_testsupport::scratch("claim-occ");
+        let dir = root.join("cwd");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = CwdClaim::claim(&dir, &AgentId("holder-a".into())).expect("an empty cwd");
+        match CwdClaim::claim(&dir, &AgentId("holder-b".into())) {
+            Err(SpawnError::CwdOccupied { holder, cwd }) => {
+                assert_eq!(holder.0, "holder-a", "the *first* holder, not the newcomer");
+                assert_eq!(cwd, dir.canonicalize().unwrap());
+            }
+            other => panic!("expected CwdOccupied, got {other:?}"),
+        }
+        drop(first);
+    }
+
+    /// **Released by dropping, on every exit including a `?`.**
+    ///
+    /// A leaked claim is worse than no guard at all: it refuses every future spawn into that
+    /// directory for the life of the supervisor, naming a node that has long since exited, and an
+    /// operator cannot clear it without restarting. `run_spawn` has several `?` returns below the
+    /// claim, so a matched release call would have to be right at each of them.
+    #[test]
+    fn a_claim_is_released_when_it_drops() {
+        let root = marion_testsupport::scratch("claim-drop");
+        let dir = root.join("cwd");
+        std::fs::create_dir_all(&dir).unwrap();
+        drop(CwdClaim::claim(&dir, &AgentId("transient".into())).expect("an empty cwd"));
+        CwdClaim::claim(&dir, &AgentId("next".into())).expect("the cwd is free again");
+    }
+
+    /// **Occupancy is a fact about a directory, not about a spelling of it.**
+    ///
+    /// `/tmp/p` and `/tmp/p/.` are one tree, and a table keyed on the literal argument would let
+    /// two writers in by arriving through two names — a guard that holds only for callers who
+    /// happen to type the path the same way is not a guard.
+    #[test]
+    fn two_spellings_of_one_directory_are_one_entry() {
+        let root = marion_testsupport::scratch("claim-spell");
+        let dir = root.join("cwd");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _held = CwdClaim::claim(&dir, &AgentId("holder".into())).expect("an empty cwd");
+        assert!(
+            matches!(
+                CwdClaim::claim(&dir.join("."), &AgentId("other".into())),
+                Err(SpawnError::CwdOccupied { .. })
+            ),
+            "the same tree reached by a second spelling is the same entry"
+        );
+    }
+
+    /// **`CwdClaim::none()` occupies nothing and releases nothing.**
+    ///
+    /// The un-claimed case — a `worktree` child, a read-only `shared-cwd` child, or one that passed
+    /// `allow_concurrent_writes: true`. Carried unconditionally and left empty so the release path
+    /// stays single; the risk of that shape is an empty claim that nonetheless evicts a real one on
+    /// drop, which is what this rules out.
+    #[test]
+    fn an_empty_claim_does_not_evict_a_real_one() {
+        let root = marion_testsupport::scratch("claim-none");
+        let dir = root.join("cwd");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _real = CwdClaim::claim(&dir, &AgentId("holder".into())).expect("an empty cwd");
+        drop(CwdClaim::none());
+        assert!(
+            matches!(
+                CwdClaim::claim(&dir, &AgentId("other".into())),
+                Err(SpawnError::CwdOccupied { .. })
+            ),
+            "dropping an empty claim must not release someone else's directory"
+        );
+    }
 }

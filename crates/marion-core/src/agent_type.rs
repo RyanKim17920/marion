@@ -162,19 +162,31 @@ impl AgentType {
     /// **Does a node of this type have write tools?** — §6.6's *"at most one node with write tools
     /// per cwd"*, made a question the code can ask.
     ///
-    /// Read off `tools:` and not off `scope_ceiling`, and the two are genuinely different
-    /// questions. A scope is a *ceiling on where* a write would be allowed to land; every type has
-    /// one, and an orchestrator's default `["**"]` does not make it able to write anything — its
-    /// `tools:` list is empty, so it has no verb that writes. Keying occupancy on the scope would
-    /// put every read-only node in §6.6's table and refuse a second reader from a directory no
-    /// writer is in, which is a refusal §6.6 does not ask for.
+    /// **Two terms, and reading only the first is the bug this function was written with.**
     ///
-    /// [`TOOL_WRITE`] is the whole of the write vocabulary today. `edit` and `bash` are refused by
-    /// every adapter and are not in this list because they are not mappable yet (§11 item 24); when
-    /// either is added it must be added here too, and that is a property of this being one
-    /// predicate rather than a `contains` spelled out at the call site.
+    /// `tools:` is a *grant list* — what marion must positively enable that the harness would not
+    /// do on its own — so it answers "did the operator ask for write?" and not "can this node
+    /// write?". On codex and opencode those come apart completely:
+    /// [`Harness::writes_without_a_declaration`] carries the measurement, and the short form is
+    /// that `codex-impl` — marion's own canonical implementer, the type every worked example
+    /// spawns, the one that applies patches — declares **no tools at all** and writes freely under
+    /// `sandbox_mode = "workspace-write"`. A `tools:`-only predicate therefore said "does not
+    /// write" about the single most common writing node marion runs, which would have left §6.6's
+    /// occupancy guard compiling, passing its own tests, and protecting nothing in the case it
+    /// exists for.
+    ///
+    /// Not read off `scope_ceiling` either, and that is a different mistake worth naming. A scope
+    /// is a *ceiling on where* a write would be allowed to land; every type has one, and an
+    /// orchestrator's default `["**"]` does not make it able to write anything. Keying occupancy on
+    /// the scope would put every read-only node in §6.6's table and refuse a second reader from a
+    /// directory no writer is in, which is a refusal §6.6 does not ask for.
+    ///
+    /// [`TOOL_WRITE`] is the whole of the declared write vocabulary today. `edit` and `bash` are
+    /// refused by every adapter and are not in this list because they are not mappable yet (§11
+    /// item 24); when either is added it must be added here too, and that is a property of this
+    /// being one predicate rather than a `contains` spelled out at the call site.
     pub fn writes_files(&self) -> bool {
-        self.tools.iter().any(|t| t == TOOL_WRITE)
+        self.harness.writes_without_a_declaration() || self.tools.iter().any(|t| t == TOOL_WRITE)
     }
 
     /// A type carrying every §3.1 default, so a built-in only states what it changes.

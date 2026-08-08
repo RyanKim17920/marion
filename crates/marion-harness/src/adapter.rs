@@ -4205,4 +4205,76 @@ mod tests {
         });
         assert_eq!(names, Harness::ALL.to_vec());
     }
+
+    /// **§6.6's occupancy predicate, checked against what the adapters actually compile.**
+    ///
+    /// [`Harness::writes_without_a_declaration`] lives in `marion-core`, because §6.6's rule does;
+    /// the evidence for it lives here, in four `compiled_permissions` implementations. Two files
+    /// holding one fact is exactly the drift this repo refuses elsewhere, so this is the join: for
+    /// each harness, compile a spec that declares **no tools at all** and assert the constraint
+    /// marion emits is still the one the classification was read off.
+    ///
+    /// The mapping from a compiled string to "can it write" is *stated per harness rather than
+    /// derived*, deliberately — deriving it would re-encode the same judgement in a second place
+    /// and this test would then agree with itself for free. What it catches is a change in the
+    /// **evidence**: relax gemini's default approval mode, give codex a per-tool knob, teach the
+    /// opencode adapter to compile a real constraint, and this fails naming the harness, rather
+    /// than §6.6's guard quietly going wrong about which nodes write.
+    /// What the compiled constraint has to look like for the classification beside it to hold.
+    /// Two shapes, because the four harnesses give evidence in two different ways: three name the
+    /// mode they run under, and Claude Code's evidence is an **absence** from a real allowlist.
+    enum Evidence {
+        /// This exact string is among the compiled constraints.
+        Names(&'static str),
+        /// No compiled constraint mentions this — the tool was never granted.
+        Withholds(&'static str),
+    }
+
+    #[test]
+    fn the_harnesses_that_write_without_a_grant_are_the_ones_that_compile_no_constraint() {
+        use Evidence::*;
+        let cases: [(Harness, Evidence, bool); 4] = [
+            // A per-tool allowlist with `write` not in it: the mutating tool is simply absent.
+            (Harness::ClaudeCode, Withholds("Write"), false),
+            // One coarse knob, and it is set to the writing value on every node marion configures.
+            (Harness::Codex, Names("sandbox:workspace-write"), true),
+            // The default mode drops the mutating tools from `functionDeclarations` outright, so
+            // here the *presence* of the default mode is what proves the withholding.
+            (Harness::Gemini, Names("approval-mode:default"), false),
+            // marion compiles nothing here, and nothing is not a constraint.
+            (
+                Harness::OpenCode,
+                Names(crate::opencode::NO_COMPILED_TOOL_CONSTRAINT),
+                true,
+            ),
+        ];
+        for (harness, evidence, writes) in cases {
+            let adapter =
+                adapter_for(harness).unwrap_or_else(|e| panic!("{harness} has an adapter: {e}"));
+            let mut spec = spec_for(harness);
+            spec.tools = vec![];
+            let compiled = adapter
+                .compiled_permissions(&spec)
+                .unwrap_or_else(|e| panic!("{harness} compiles an empty tools list: {e}"));
+            match evidence {
+                Names(e) => assert!(
+                    compiled.iter().any(|c| c == e),
+                    "{harness}'s classification rests on it compiling {e:?} for a spec that \
+                     declares no tools, and it no longer does — the classification must be \
+                     re-measured, not re-asserted. Compiled: {compiled:?}"
+                ),
+                Withholds(e) => assert!(
+                    !compiled.iter().any(|c| c.contains(e)),
+                    "{harness} is classified as withholding the write tool without a grant, and it \
+                     now compiles {e:?} for a spec that declares none. Compiled: {compiled:?}"
+                ),
+            }
+            assert_eq!(
+                harness.writes_without_a_declaration(),
+                writes,
+                "{harness}: marion-core's classification and this harness's compiled constraint \
+                 have come apart, which is §6.6's guard going wrong about which nodes write"
+            );
+        }
+    }
 }
