@@ -711,17 +711,44 @@ how much code exists.
     Measured on codex 0.147.0 while closing this: the argv prompt is **submitted** rather than
     seeded (unlike claude's pane), the default is already inline so `--no-alt-screen` is
     deliberately not passed, and no mouse mode is enabled.
-  - **Criterion 3 (L4.5 snapshot tests pass and gate commits) — MET.** `.githooks/pre-commit` runs
-    `cargo test -p marion-term --test l45_driver` unconditionally: no opt-out, no staged-file
-    filter, and it reads the pass count back and blocks if it is under `MIN_TESTS`, so a filter
-    that matched nothing or a renamed target cannot no-op the gate. `core.hooksPath` is
-    `.githooks`. It is latched from inside the target by
-    `the_gate_names_this_target_and_only_this_target`, which asserts the hook exists, is
-    executable, names this target and no other, and that `MIN_TESTS` equals the count of tests in
-    the file. Soft edges, stated because they are not visible from the green: the hook is
-    per-clone (`git config core.hooksPath .githooks` must be run once), `--no-verify` bypasses it
-    as it bypasses any pre-commit hook, and it does not pin `INSTA_UPDATE`, so an environment that
-    rewrites snapshots would let the gate pass on rewritten ones.
+  - **Criterion 3 (L4.5 snapshot tests pass and gate commits) — MET, and now over two targets.**
+    `.githooks/pre-commit` runs `cargo test -p marion-term --test l45_driver` **and**
+    `cargo test -p marion-supervisor --test l45_tree` unconditionally: no opt-out, no staged-file
+    filter, and it reads each pass count back and blocks if it is under that target's minimum, so a
+    filter that matched nothing or a renamed target cannot no-op the gate. `core.hooksPath` is
+    `.githooks`. Each is latched from inside itself —
+    `the_gate_names_this_target_and_only_this_target` for the driver and
+    `the_gate_names_this_target_too` for the tree — asserting the hook exists, is executable, names
+    that target, and that the declared minimum equals the count of tests in the file. Soft edges,
+    stated because they are not visible from the green: the hook is per-clone (`git config
+    core.hooksPath .githooks` must be run once), `--no-verify` bypasses it as it bypasses any
+    pre-commit hook, and it does not pin `INSTA_UPDATE`, so an environment that rewrites snapshots
+    would let the gate pass on rewritten ones.
+
+    *(The second target arrived 2026-08-08 with the tree UI, and it is in `marion-supervisor`
+    rather than `marion-tui` for a reason worth keeping: what is worth snapshotting about a tree
+    pane is **which actions are greyed**, and `marion-tui` cannot decide that — it has no
+    dependency that could reach a capability table. A snapshot taken there would be a snapshot of
+    availability bits a test invented. The payload therefore carries a per-style-run census of the
+    action strip and a per-row style of the tree column, because the greyed and offered labels are
+    the same characters by design and a text-only snapshot would render a completely mis-greyed bar
+    identically to a correct one.)*
+
+  - **The tree UI landed 2026-08-08, and it moves none of M3's three criteria.** Said plainly
+    because the temptation runs the other way: M3's **title** is *"tree UI + embedded terminal"*,
+    and there is now a tree UI. But a title is not a criterion, and **no C1/C2/C3 bullet mentions a
+    tree** — C1 is a claude pane, C2 is a codex pane's scrollback, C3 is the L4.5 gate. C3's
+    *description* changed above, because the gate grew a target; C3's *status* did not, because it
+    was already MET. **M3 stays `[partial]`, blocked on exactly what it was blocked on before: C1's
+    recorded 10-minute manual session, which needs a person.**
+
+    What the tree does correct is a count this repo had written down twice and got wrong twice.
+    `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
+    criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
+    block: **pane 5×, tree 1×** — the one being the title. The deferral was still defensible on the
+    bullets, and it is not being retro-fitted into a mistake; the arithmetic under it simply never
+    held, and both comments now say so. What actually forced the work was **M5 clause 3**, which is
+    a different milestone and is ruled on below.
 
 ### M3 C1's recorded manual session — the runbook
 
@@ -922,16 +949,73 @@ says a clause failed.
 - **M5 [partial]** — ACP breadth, degrading per resolved capabilities. **Re-ruled 2026-08-08**,
   after the ACP adapter landed and S21 drove a real `opencode acp` child to a marion tool call.
 
-  **Read the marker precisely: one of §9's three clauses is now met, and the marker does not move.**
-  `[partial]` still names machinery rather than criteria. What changed is *why* clause 1 is not met:
-  it was two gaps, one of them marion's, and **the code gap is closed**. What remains is the
-  operator/vendor one, and no amount of marion code reaches it.
+  **Read the marker precisely: one of §9's three clauses is met, and the marker does not move.**
+  `[partial]` still names machinery rather than criteria. What changed on 2026-08-08 is *why* the
+  other two are not met, and in both cases the reason narrowed rather than the status moving:
+  clause 1 was two gaps, one of them marion's, and **that code gap is closed** — what remains is
+  the operator/vendor one, which no marion code reaches. Clause 3 was blocked by a standing
+  decision that `marion-tui` would be one full-screen pane; **that decision is reversed and the
+  greying is built, doctor-sourced and measured** — what remains is that a node summary names a
+  harness rather than an ACP agent, which is downstream of clause 1. Both are ruled below.
 
   | §9's clause | status | why |
   | --- | --- | --- |
   | *"at least two ACP agents beyond the day-one set run as children through the single ACP adapter"* | **NOT MET** — but now for **one** reason, not two | **(a) closed.** `Harness::Acp` and `AcpAdapter` exist; a real `opencode acp` child runs end to end from the shipped `marion-supervisor doctor --adapter --harness acp` binary — spawn, `initialize`, `session/new`, `session/prompt` (`stopReason: end_turn`), `session/cancel`, clean termination, leak check. **(b) open.** Only one of the two installed agents can open a session at all: `gemini --acp` is refused `session/new` vendor-side. One agent runs; §9 asks for two |
   | *"with `marion doctor` reporting their differing capabilities"* | **MET** | `marion-supervisor doctor --capabilities --harness acp` prints **two rows**, one per agent in `acp::AGENTS`, each keyed on `(acp, «the agent's own `agentInfo`», Typed(Acp)/StructuredUi/ProtocolEvents)` and each capability column produced by **that agent's own live `initialize`** (§3.3 stage two). `OpenCode 1.17.3` publishes `fork, resume, view, token_deltas, usage`; `gemini-cli 0.53.0` publishes `view, token_deltas, usage`. The difference is exactly `fork` and `resume`, which is what S20 measured, and it is asserted as that **named pair** rather than as "the two rows are unequal" |
-  | *"and the UI greying out what they cannot do"* | **NOT MET** — out of reach by a standing decision, not half-built | Unchanged. It needs a tree UI, and `marion-tui` is deliberately a single full-screen pane: *"No layout engine, no splits, no focus model, no tree list"*. That is M3/I6's work |
+  | *"and the UI greying out what they cannot do"* | **NOT MET** — but the blocker moved, and the half that was missing is built | **Was:** *"out of reach by a standing decision"* — there was no tree UI, and `marion-tui` was deliberately one full-screen pane. **That decision is reversed as of 2026-08-08**: `marion tree` exists, is reachable from the shipped binary (`marion --help` lists it; `crates/marion-supervisor/src/bin/marion.rs`'s dispatch calls `tree_main`), renders §5.6's tree pane beside a content pane, and greys every capability a node's harness cannot do on its surfaces. **What is not met is the ACP-specific half**, and it is downstream of clause 1 — see the two paragraphs under this table |
+
+  **Clause 3, ruled precisely: the greying is built and measured; the clause is still not met, for
+  one named reason.**
+
+  What exists. `marion tree` draws every node `tree/subscribe` reports and, along the bottom, all
+  ten of §3.3's capabilities for the selected node — the ones its harness cannot do on its surfaces
+  in `DarkGray` + `CROSSED_OUT`, the rest plain. **The availability bit is not computed by the UI.**
+  `marion_tui::tree` has no dependency that could reach a capability table and cannot name a
+  harness; it receives an `Action { name, available }` and chooses a style.
+  `marion_supervisor::tree::actions_for` is what decides, through
+  **`doctor::capabilities_at` — the same function `marion doctor` builds its capability column
+  from**, extracted from `probe_one` in the same change so there is one call site's worth of
+  arithmetic and not two. The key is §3.3's whole key, and `NodeSummary` grew the two components it
+  was missing to carry it: `harness_version` (from the journal's `Spawned`) and `pane` (from the
+  supervisor's live pty map, the same source `node/attach` answers `PaneAttach` from).
+
+  Measured by:
+  - `marion_supervisor::tree::the_trees_greying_is_doctors_own_answer_at_every_key` — every harness
+    × both surface roles × four versions, asserting the tree's offered set equals
+    `doctor::capabilities_at`'s at **that exact key**. Keyed, not compared as sets: a set comparison
+    would pass while two rows were swapped, which is a failure this repo has already shipped once.
+    It also asserts the keys do not all produce the same answer, so it cannot pass for a tree that
+    ignored its key.
+  - `…::a_pane_node_is_not_offered_what_only_its_headless_key_can_do` — the named row in both
+    directions. claude-code 2.1.223 headless offers `interrupt, permissions`; the same binary on a
+    pane offers `interrupt` alone and draws `permissions` **greyed rather than absent**, because
+    §3.4's `opaque` cannot carry a permission routing. That is §9's M1 sentence said about
+    claude-code, and it is the exact defect the clause names.
+  - `…::the_version_reaches_the_key_rather_than_being_dropped_on_the_way` — codex `resume` on
+    0.145.0 vs 0.146.0 vs no version at all.
+  - L4.5: `crates/marion-supervisor/tests/l45_tree.rs`, five reviewed snapshots over the production
+    projection, whose payload includes a per-style-run census of the action strip.
+  - `bin/marion.rs`'s `the_tree_screen_is_reachable_from_this_binary` — the usage text names the
+    verb, `main` dispatches it, and `tree_main` really resolves a project instead of stubbing. Its
+    own first version passed with the dispatch arm deleted, because `include_str!` fed it the test's
+    own literals; that is recorded here rather than quietly fixed, because "the greying is measured"
+    and "an operator can open the thing being greyed" are separate claims and this is the second one.
+
+  **What is not met, and why it is downstream of clause 1.** §9's clause is about *"their"*
+  capabilities — the two ACP agents'. `marion doctor` tells `OpenCode 1.17.3` from `gemini-cli
+  0.53.0` because it performs each agent's own `initialize` and applies §3.3's **stage two**. A
+  client cannot: `NodeSummary` names a **harness**, and `Harness::Acp` is one adapter over many
+  agents (§5.2), so the tree publishes the protocol's unrefined static set and would offer `fork`
+  and `resume` to a `gemini-cli` node that doctor's own row greys. That is stated in
+  `doctor::capabilities_at`'s own doc rather than left to be discovered, and it is **narrowing in
+  doctor, never widening** — the tree is never more permissive than stage one, only less specific
+  than stage two.
+
+  It is also not observable today: no ACP node can be in a tree at all. Clause 1 is not met, `acp`
+  runs only under `doctor --adapter`, and nothing spawns an `Acp` node into the registry. Closing
+  clause 3 therefore means giving a node summary the *agent* identity behind its harness, which is
+  work that belongs with whatever first spawns one — i.e. with clause 1. **The marker does not
+  move**, and the reason it does not is now one sentence about ACP rather than "there is no UI".
 
   **What the adapter decided, and the argument for each.**
   - **Surfaces: `Typed(Acp)` / `StructuredUi` / `{ProtocolEvents}`** — §3.4's `headless` preset.
