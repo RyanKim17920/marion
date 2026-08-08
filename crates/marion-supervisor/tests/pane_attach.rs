@@ -393,13 +393,15 @@ fn paths_for(state: &Path, repo: &Path) -> SocketPaths {
     )
 }
 
-/// The one script: the pane never submits a turn in this test, so the provider is here to be the
-/// endpoint a canned credential points at rather than to answer anything.
+/// **An empty script, and that is the design rather than an omission.**
+///
+/// This pane never submits a turn: the test types into the composer and never presses return
+/// after the trust dialog, because what C1 asks is whether a keystroke *arrives*, and submitting
+/// would make every assertion after it depend on what a model said. So the provider is here to be
+/// the endpoint a canned credential can point at, and nothing else. A script carrying a root turn
+/// would advertise a turn that is never taken, and the next reader would take its absence for a
+/// failure of this test instead of for its shape.
 fn script() -> Script {
-    // `root: None` — this pane never submits a turn, so the provider is here to be the endpoint a
-    // canned credential points at rather than to answer anything. A script with a root turn in it
-    // would suggest a turn is expected, and a reader would then take the absence of one as a
-    // failure of this test rather than as its design.
     Script::default()
 }
 
@@ -577,6 +579,18 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
         }),
         "after the resize the operator's screen no longer shows the node at the new geometry:\n{}",
         op.screen()
+    );
+
+    // **And marion never erased the operator's own scrollback doing it.** `CSI 3J` is
+    // erase-saved: `marion_term`'s `Suppressor` swallows the node's, and this is the other side —
+    // marion must not emit one of its own. The check is here rather than only in
+    // `marion_tui::backend` because the resize above is exactly what provokes a full clear, so a
+    // backend that cleared with `3J` would have just thrown away everything above this attach in
+    // the operator's terminal.
+    assert!(
+        !op.seen().contains("\u{1b}[3J"),
+        "marion emitted erase-saved at the operator's terminal, which discards the scrollback of \
+         whatever they were doing before they attached"
     );
 
     // ---- detach, and the node is left exactly as it was (§7.3.1) ----

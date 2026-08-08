@@ -1663,6 +1663,26 @@ const PANE_SIZE: crate::pty::WinSize = crate::pty::WinSize { cols: 80, rows: 24 
 /// the corpus §5.3's claims are read off.
 const PANE_TERM: &str = "xterm-256color";
 
+/// Block until the node exits or `bound` expires, whichever comes first.
+///
+/// `(exit status, timed out)`. Split out of [`launch_terminal`] so its one fallible step can be
+/// held as a value across the un-advertisement — see the call site.
+fn wait_for_the_pane_to_end(
+    host: &crate::pty::PtyHost,
+    bound: StdDuration,
+) -> std::io::Result<(Option<std::process::ExitStatus>, bool)> {
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        if let Some(status) = host.try_wait()? {
+            return Ok((Some(status), false));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok((None, true));
+        }
+        std::thread::sleep(PANE_POLL);
+    }
+}
+
 /// How often the launcher asks whether the node has exited. See [`launch_terminal`].
 const PANE_POLL: StdDuration = StdDuration::from_millis(25);
 
@@ -1775,30 +1795,19 @@ fn launch_terminal(
         owner.opened(&node.agent_id, std::sync::Arc::clone(&host));
     }
 
-    let deadline = std::time::Instant::now() + bound;
-    let mut exited = None;
-    let mut timed_out = false;
-    loop {
-        match host.try_wait()? {
-            Some(status) => {
-                exited = Some(status);
-                break;
-            }
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    timed_out = true;
-                    break;
-                }
-                std::thread::sleep(PANE_POLL);
-            }
-        }
-    }
+    // **Not `?`, and that is the point of the binding.** From the `opened` above until the `closed`
+    // below there is a registry entry pointing at this host, and an early return through `?` would
+    // leave it there — answering a later `node/attach` with a pane onto a master that is about to
+    // close, which is precisely what `forget_pane` exists to prevent. So the wait's failure is
+    // *carried* past the un-advertisement rather than thrown through it.
+    let waited = wait_for_the_pane_to_end(&host, bound);
 
     // **Un-advertised before the teardown, so no client attaches to a pty marion is closing.** The
     // owner's `Arc` is released here; this frame's keeps the host alive through the shutdown below.
     if let Some(owner) = pane {
         owner.closed(&node.agent_id);
     }
+    let (exited, timed_out) = waited?;
     // Kill and reap, join the reader, write the `x` record, and only then let the master close.
     // Idempotent against the loop above: a child that exited on its own was already reaped there,
     // and `PtyChild::kill_and_reap` returns that status rather than signalling its pid again.
