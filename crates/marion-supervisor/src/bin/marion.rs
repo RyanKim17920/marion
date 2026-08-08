@@ -2266,6 +2266,41 @@ mod tests {
         let text = usage_text();
         assert!(text.contains("marion attach <agent-id>"), "{text}");
     }
+
+    /// **§9's M5 clause 3 needs a UI an operator can actually open**, and a tree screen reachable
+    /// from no binary is the "fully tested in isolation, wired to nothing" failure this repo has
+    /// shipped more than once. Three links, each asserted rather than assumed.
+    ///
+    /// The middle one is a source latch for the reason `l45_tree`'s hook latch is: `main` takes
+    /// `std::env::args()` and returns `ExitCode`, so the dispatch arm cannot be called from a test
+    /// without spawning the binary — and a test that spawned it would be asserting the same string
+    /// through a slower door. Deleting the arm must fail *something*, and this is that something.
+    #[test]
+    fn the_tree_screen_is_reachable_from_this_binary() {
+        // 1. Discoverable: a subcommand nobody can find does not exist for the operator who needs it.
+        let text = usage_text();
+        assert!(text.contains("marion tree ["), "usage does not name `tree`:\n{text}");
+
+        // 2. Dispatched: `main` routes the verb, and routes it *before* the run parser for the
+        //    reason `mcp` is routed early — a fall-through would print usage instead of a screen.
+        let src = include_str!("marion.rs");
+        assert!(
+            src.contains(r#"== Some("tree") {"#) && src.contains("return tree_main(&argv);"),
+            "`main` no longer dispatches `tree`, so the screen is unreachable"
+        );
+
+        // 3. Wired: `tree_main` resolves a project and hands it to the screen, rather than being a
+        //    stub. An unresolvable repo must fail *there*, which is only observable if the call
+        //    happens at all.
+        assert_eq!(
+            tree_main(&[
+                "tree".to_string(),
+                "--repo".to_string(),
+                "/nonexistent-marion-tree-smoke".to_string(),
+            ]),
+            ExitCode::FAILURE
+        );
+    }
     use super::*;
 
     // The shared self-removing scratch dir, rather than the tenth hand-rolled copy of one.
