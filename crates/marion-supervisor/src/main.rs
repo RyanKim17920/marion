@@ -10,7 +10,7 @@
 //! `bin/marion.rs` refuses every argv[0] but `run`, a refusal that is pinned by a test and that
 //! this change deliberately leaves standing. `detach.rs` owns all three of its stages.
 
-use marion_supervisor::{detach, mcp};
+use marion_supervisor::{detach, doctor, mcp};
 
 fn usage() -> ! {
     eprintln!("usage: marion-supervisor <mcp|serve|doctor>");
@@ -31,9 +31,25 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Some("doctor") => {
-            println!("marion doctor: no adapters registered yet (M1 in progress)");
-        }
+        Some("doctor") => match doctor::parse_args(&argv[1..]) {
+            Ok(opts) => {
+                let rows = doctor::run(&opts);
+                print!("{}", doctor::render(&rows));
+                // A non-zero exit for a failing `--adapter`, so §8's "Run `--adapter` in CI" is a
+                // gate rather than a log. `--capabilities` cannot fail: it reports what is
+                // installed, and nothing being installed is an answer, not an error.
+                if rows.iter().any(|r| r.report.adapter_check == Some(false)) {
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("marion doctor: {e}");
+                eprintln!(
+                    "usage: marion-supervisor doctor <--capabilities|--adapter> [--harness <name>] [--model <id>]"
+                );
+                std::process::exit(2);
+            }
+        },
         _ => usage(),
     }
 }
