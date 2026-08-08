@@ -63,3 +63,8 @@ marion-provider = { path = "../marion-provider" }
 # integration files and none of the guards inside this crate's own `#[cfg(test)]` modules; a
 # dev-dependency reaches both.
 marion-testsupport = { path = "../marion-testsupport" }
+
+# L4.5's other half. §8 names `TestBackend` + `insta`, and `tests/l45_tree.rs` is the tree
+# screen's driver — it lives in this crate because this is where the greying is decided, and a
+# snapshot taken in `marion-tui` would be a snapshot of availability bits a test invented.
+insta = "1"

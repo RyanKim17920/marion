@@ -1,0 +1,35 @@
+---
+source: crates/marion-supervisor/tests/l45_tree.rs
+expression: "report(&tree, false)"
+---
+--- 96x12, tree blurred ---
+root-claude [running]
+  └ pane-claude [idle]
+  └ codex-146 [blocked:permission]
+    └ codex-unversioned [spawning]
+orphan-gemini [exited:ok]
+
+
+
+
+
+
+ steer  interrupt  fork  resume  view  permissions  elicitation  set_model  token_deltas  usage
+--- tree column, one line per row, styled ---
+Style::new().fg(Color::Reset).bg(Color::Reset).bold()  "root-claude [running]"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "  └ pane-claude [idle]"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "  └ codex-146 [blocked:permission]"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "    └ codex-unversioned [spawning]"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "orphan-gemini [exited:ok]"
+Style::new().fg(Color::Reset).bg(Color::Reset)  ""
+Style::new().fg(Color::Reset).bg(Color::Reset)  ""
+Style::new().fg(Color::Reset).bg(Color::Reset)  ""
+Style::new().fg(Color::Reset).bg(Color::Reset)  ""
+Style::new().fg(Color::Reset).bg(Color::Reset)  ""
+Style::new().fg(Color::Reset).bg(Color::Reset)  ""
+--- action strip, one line per style run ---
+Style::new().dark_gray().bg(Color::Reset).crossed_out()  " steer "
+Style::new().fg(Color::Reset).bg(Color::Reset)  " interrupt "
+Style::new().dark_gray().bg(Color::Reset).crossed_out()  " fork  resume  view "
+Style::new().fg(Color::Reset).bg(Color::Reset)  " permissions "
+Style::new().dark_gray().bg(Color::Reset).crossed_out()  " elicitation  set_model  token_deltas  usage "

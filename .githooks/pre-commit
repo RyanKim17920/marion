@@ -47,3 +47,32 @@ if [ -z "${passed:-}" ] || [ "$passed" -lt "$MIN_TESTS" ]; then
 fi
 
 printf 'L4.5 ok (%s tests).\n' "$passed" >&2
+
+# L4.5's second target: the tree screen (§5.6, §9's M5 clause 3). It lives in `marion-supervisor`
+# rather than `marion-tui` because the *greying* is what is worth snapshotting and `marion-tui`
+# cannot decide it — see `crates/marion-supervisor/tests/l45_tree.rs`. Named explicitly, for the
+# same reason the target above is: no future test file may be swept into the gate by existing.
+
+TARGET_TREE=l45_tree
+MIN_TESTS_TREE=9
+
+printf 'L4.5 gate: cargo test -p marion-supervisor --test %s\n' "$TARGET_TREE" >&2
+
+if ! output=$(cargo test -p marion-supervisor --test "$TARGET_TREE" 2>&1); then
+	printf '%s\n' "$output" >&2
+	printf '\nL4.5 (tree) FAILED — commit blocked.\n' >&2
+	printf 'A snapshot diff is reviewed with `cargo insta review`, never accepted blind.\n' >&2
+	exit 1
+fi
+
+passed=$(printf '%s\n' "$output" | sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' | head -1)
+
+if [ -z "${passed:-}" ] || [ "$passed" -lt "$MIN_TESTS_TREE" ]; then
+	printf '%s\n' "$output" >&2
+	printf '\nL4.5 (tree) DID NOT RUN — commit blocked.\n' >&2
+	printf 'Expected at least %s passing tests in --test %s, saw "%s".\n' \
+		"$MIN_TESTS_TREE" "$TARGET_TREE" "${passed:-none}" >&2
+	exit 1
+fi
+
+printf 'L4.5 (tree) ok (%s tests).\n' "$passed" >&2
