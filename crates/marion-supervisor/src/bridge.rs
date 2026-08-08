@@ -65,7 +65,7 @@ use crate::tool::{ContentBlock, ToolOutcome};
 /// # The coming break
 ///
 /// `2026-07-28` is deliberately not here and cannot be added by listing it: it removes the
-/// `initialize` handshake this constant is consulted from. See §11 item 31 of the design document.
+/// `initialize` handshake this constant is consulted from. See §11 item 32 of the design document.
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
     &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 

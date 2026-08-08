@@ -20,11 +20,23 @@ wiring change can cite it. **The wiring is deliberately not in this change.**
 | gemini 0.53.0 | **`read_file`** | none measured that gates it | **SILENTLY IGNORED** by `--allowed-tools` | **yes** — granting `read` is a no-op |
 | opencode 1.17.3 | **`read`** | `OPENCODE_PERMISSION` — **`deny` gates** | **SILENTLY IGNORED** | **yes** — granting `read` is a no-op |
 
-**Two of the four silently ignore an unknown tool name, and a third has no per-tool axis at all.**
-Only codex errors, and it errors because the flag does not exist rather than because it validates
-names. So §3.1's rule — a verb ships only with a measured mapping — is not a stylistic preference
-on three of four harnesses: it is the only thing standing between a typo and a child that runs
-green with no tool.
+**Three of the four silently ignore an unknown tool name — claude, gemini and opencode — each on
+its own configuration surface: `--tools`, `--allowed-tools`, and `OPENCODE_PERMISSION`
+respectively.** The fourth, codex, **has no per-tool flag at all**; it errors because `--tools`
+itself is unsupported argv, not because it validates names. So codex is not a fourth data point on
+the same axis, and it is not evidence that anything validates: there is no surface there to ignore
+a name *on*.
+
+So §3.1's rule — a verb ships only with a measured mapping — is not a stylistic preference on three
+of four harnesses: it is the only thing standing between a typo and a child that runs green with no
+tool.
+
+> **This paragraph read "Two of the four" until 2026-08-07, contradicting the table directly above
+> it**, which has marked `SILENTLY IGNORED` in three rows since the fixture was written. The
+> sentence following it ("only codex errors") was right the whole time, which is what made the
+> wrong count survive: the shape of the claim was correct and only the number was not. The count
+> had already propagated to `marion-core/src/agent_type.rs`, which said three and was therefore
+> right about the number while still conflating the three surfaces into claude's `--tools`.
 
 ## The critical negative, verbatim
 

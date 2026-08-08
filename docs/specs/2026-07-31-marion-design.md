@@ -5518,6 +5518,62 @@ list usable as a triage surface. Nothing *unmarked* elsewhere is open.
     in `spawn.rs`'s doc comment, where whoever next considers deleting the guard will meet it.
     Cross-referenced from **§5.7**, **§6.6**, **§6.7**, **§9** and **§11 items 19 and 26**.
 
+
+32. **MCP `2026-07-28` deletes the handshake marion's bridge is built on — OPEN, dated, NOT
+    implemented, and deliberately recorded before it is met.** marion's stdio bridge negotiates a
+    protocol version as of 2026-08-07 (`bridge::SUPPORTED_PROTOCOL_VERSIONS`, claiming
+    `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`, with fixtures under
+    `tests/fixtures/protocol/`). Every one of those revisions shares one shape: the client opens
+    with `initialize`, the server answers with a version, the client sends
+    `notifications/initialized`, and only then does `tools/list` mean anything. **`2026-07-28`
+    removes that.** It is a deliberately breaking revision, and the four changes that touch marion
+    are:
+
+    **(a) The `initialize`/`initialized` handshake is gone.** There is no frame in which to offer or
+    answer a version, so `negotiate_protocol_version` has nothing to negotiate *from* and the
+    `-32002` "not initialized" gate has no event to wait for. Both are correct today and both become
+    unreachable code, not merely stale.
+
+    **(b) `server/discover` becomes mandatory, and is explicitly the STDIO backward-compatibility
+    probe that replaces version probing.** This is the load-bearing item: it is how a
+    `2026-07-28` client decides what an unknown server speaks. A server that does not answer
+    `server/discover` is not a server that negotiates down — it is a server the client cannot
+    classify. marion currently answers `-32601` to it, along with every other unknown method.
+
+    **(c) Every result must carry `resultType`.** marion's `initialize`, `tools/list` and
+    `tools/call` results carry none. This is a change to `bridge`'s result builders, not to
+    `handle_tool_call` — it lands on the MCP side of the seam in `§5.4`/`crate::tool`'s table.
+
+    **(d) The JSON-RPC error range is repartitioned.** marion emits `-32700`, `-32600`, `-32601` and
+    `-32002`. The five-point review trigger on `SUPPORTED_PROTOCOL_VERSIONS` names this as one of
+    the five things to diff, and it is the one most likely to be missed, because the codes still
+    *parse* under the new range while meaning something else.
+
+    **What marion would have to do**, and the order is not free: answer `server/discover` first,
+    since it is the probe everything else is gated behind; then add `resultType`; then decide
+    whether the initialization state machine becomes a no-op or is deleted; then re-audit the four
+    error codes. Only after all four can `2026-07-28` be added to
+    `SUPPORTED_PROTOCOL_VERSIONS` — and note that **it cannot be added by listing it**, which is
+    the trap this item exists to prevent. The list's contract is "marion will not send a frame this
+    revision cannot parse", and today marion would send a `2026-07-28` client an
+    `initialize` result it has no grammar for.
+
+    **Why this is recorded now rather than when it bites.** Because of *where* it would bite. The
+    bridge runs inside a spawned agent, and a handshake that fails there does not surface as a
+    protocol error: it surfaces as a child that produced no tool calls, which §12 and
+    `tests/fixtures/s14/` both record as the shape marion cannot distinguish from a healthy run. The
+    63 ms silent exit in `mcp::signal_ready`'s doc comment is the same failure reached by a
+    different route. An operator meeting this cold would see a harness that "just didn't use
+    marion".
+
+    **What is not known and is stated so it is not read as evidence.** No `2026-07-28` client has
+    been measured against marion — no such client was installed at the time of writing, and nothing
+    here is a fixture. The four changes above are read from the revision's own text, not observed.
+    Which harnesses will adopt it, and when, is unknown; the most recent measurements are codex
+    0.146.0 offering `2025-06-18` (s6) and opencode 1.17.3 negotiating `2025-11-25` (s13), so
+    nothing in the measured set is close to it yet. Cross-referenced from **§5.4** and
+    `crates/marion-supervisor/src/bridge.rs`.
+
 ---
 
 ## 12. History: what was retracted or corrected

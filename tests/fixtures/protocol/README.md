@@ -47,4 +47,5 @@ the failure is a named error rather than silence. See the doc comment on
 ## What is not here
 
 `2026-07-28`. It removes the `initialize`/`initialized` handshake these fixtures are made of, so it
-cannot be added by writing a file — see the dated entry in the design doc.
+cannot be added by writing a file — see §11 item 32 of
+`docs/specs/2026-07-31-marion-design.md`, dated 2026-08-07.

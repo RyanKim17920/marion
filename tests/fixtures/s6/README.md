@@ -16,6 +16,21 @@ All three questions are answered. Design doc §11 item 12 closes.
 
 **marion's `report` return path exists. M1 takes the primary branch, not the fallback.**
 
+> **The `out` frames are a historical capture, not a conformance expectation.** Each of the five
+> `initialize` answers here reads `"protocolVersion": "2024-11-05"` against a client that offered
+> `2025-06-18`. That was marion answering a hardcoded constant without reading the offer — the
+> defect fixed on 2026-08-07. marion now echoes `2025-06-18` to this exact frame, so replaying the
+> capture and diffing the `out` lines byte-for-byte **should** disagree here.
+>
+> What the five answers remain evidence *of* is codex's backward compatibility: a real
+> `codex-mcp-client/0.146.0` offered a newer revision, was handed `2024-11-05`, and proceeded to a
+> working `tools/call` five times over. That is why `2024-11-05` is marion's floor rather than
+> something dropped. See `bridge::PROTOCOL_VERSION_FLOOR` and `tests/fixtures/protocol/`.
+>
+> The `in` frames are replayed against the compiled binary by
+> `the_frames_a_real_codex_sent_are_all_still_answered`, which asserts every one is answered and
+> that no id-less frame draws a reply — deliberately without pinning the recorded `out` bodies.
+
 Two operational details worth keeping:
 
 - **codex spawns the server more than once per run** — the frame log holds two full
