@@ -255,14 +255,33 @@ pub const MCP_SERVER_NAME: &str = "marion";
 /// ACP has no field anywhere that narrows an agent's own tools — not in `initialize`, not in
 /// `session/new`. S21's session had `write`, `edit` and `bash` in scope with marion asking for
 /// nothing, and marion's own `clientCapabilities.fs.writeTextFile` hands the agent a further one.
+/// What [`crate::AcpAdapter::marion_tool_name`] answers when it has no measured spelling to give.
+///
+/// **Not a tool name in any of the three measured spellings, and deliberately not one in any
+/// plausible fourth**: it carries a colon, which no MCP tool name may. So it matches nothing in any
+/// transcript and would be a permission entry naming a tool that cannot exist — which is why no
+/// launch is allowed to reach it, and both routes to a launch refuse first, by name.
+pub const UNBOUND_TOOL_NAME: &str = "acp:no-agent-bound:";
+
 pub const NO_TOOL_AVAILABILITY_SURFACE: &str =
     "acp:no-tool-availability-surface (marion compiles no constraint; the protocol has none)";
 
 /// How one agent spells an MCP server's tool to its model.
 ///
-/// An enum with one variant rather than a `&'static str` format string, because the thing being
-/// recorded is a **measurement of an agent**, and there is exactly one agent it has been taken on.
-/// A second agent adds a variant here only when somebody has watched it call a tool.
+/// An enum rather than a `&'static str` format string, because the thing being recorded is a
+/// **measurement of an agent**. A variant is added here only when somebody has watched that agent
+/// call a tool — and the reason that rule is not pedantry is the table below, which is three
+/// measurements of the same question with three different answers:
+///
+/// | agent | what the model typed | where |
+/// |---|---|---|
+/// | `opencode acp` 1.17.3 | `marion_report` | S21 |
+/// | `claude-agent-acp` 0.66.0 | `mcp__marion__report` | S22 |
+/// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
+///
+/// s14's finding is that an unknown tool name is *silently ignored*, so an adapter that had
+/// generalised the first form would have compiled a name the other two do not have, watched the
+/// turn end `end_turn`, and recorded a healthy run that called nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSpelling {
     /// `<server>_<tool>`. Measured on `opencode acp` 1.17.3 (S21): marion declared a server named
@@ -271,13 +290,43 @@ pub enum ToolSpelling {
     /// to the server carries the **unprefixed** `report`, which is the wire layer and not a name
     /// any model types; the same two-layer split S13 measured on `opencode run`.
     ServerUnderscoreTool,
+    /// `mcp__<server>__<tool>`. Measured on `@agentclientprotocol/claude-agent-acp` 0.66.0 (S22),
+    /// which is Claude Code's own MCP spelling surfacing one protocol up: the shim puts the flat
+    /// name in `title` and repeats it in `_meta.claudeCode.toolName`.
+    McpDoubleUnderscore,
+    /// `mcp.<server>.<tool>`. Measured on `@agentclientprotocol/codex-acp` 1.1.14 (S22).
+    ///
+    /// This agent is also the one that **does not flatten the call at all**: its `rawInput` is
+    /// `{"server", "tool", "arguments"}`, so the verb's arguments are one level deeper than the
+    /// other two put them. See [`Self::arguments`].
+    McpDotted,
 }
 
 impl ToolSpelling {
     pub fn spell(self, tool: &str) -> String {
         match self {
             Self::ServerUnderscoreTool => format!("{MCP_SERVER_NAME}_{tool}"),
+            Self::McpDoubleUnderscore => format!("mcp__{MCP_SERVER_NAME}__{tool}"),
+            Self::McpDotted => format!("mcp.{MCP_SERVER_NAME}.{tool}"),
         }
+    }
+
+    /// The verb's **arguments**, given a frame's `rawInput` — which is not always the arguments.
+    ///
+    /// S22 measured `codex-acp` reporting a marion call as an `execute` kind whose `rawInput` is
+    /// *structured*: `{"server":"marion","tool":"report","arguments":{"narrative":"…"}}`. A reader
+    /// written against S21's flat shape finds the call and reads no arguments out of it — which is
+    /// a run that reported nothing, recorded as a run whose report was empty.
+    ///
+    /// Keyed on the spelling rather than sniffed for an `arguments` key, because the nesting is a
+    /// **fact about an agent** measured alongside its spelling, and a shape sniff would also fire
+    /// on a marion verb that one day takes an argument called `arguments`.
+    pub fn arguments(self, raw_input: &Value) -> Option<&Value> {
+        match self {
+            Self::McpDotted => raw_input.get("arguments"),
+            Self::ServerUnderscoreTool | Self::McpDoubleUnderscore => Some(raw_input),
+        }
+        .filter(|a| a.as_object().is_some_and(|o| !o.is_empty()))
     }
 }
 
@@ -296,8 +345,40 @@ pub struct Agent {
     pub argv: &'static [&'static str],
     /// The measured tool spelling, or `None` where marion has never seen this agent call a tool.
     pub tools: Option<ToolSpelling>,
+    /// How this agent is pointed at a provider **marion** chose, or `None` where marion has never
+    /// made one do it. See [`CannedRecipe`].
+    pub canned: Option<CannedRecipe>,
     /// What is known about running it here — carried so a refusal can quote it.
     pub note: &'static str,
+}
+
+/// How one ACP agent is pointed at [`crate::Auth::Canned`]'s endpoint.
+///
+/// **This is per agent because there is nothing per protocol.** ACP's `initialize` and
+/// `session/new` name no provider, no base URL and no credential — a fact `AcpAdapter::compile`
+/// used to turn into a blanket refusal of `Auth::Canned` on every agent. That refusal read the
+/// right fact and drew the wrong conclusion: the *protocol* has no such channel, and the *agent*
+/// behind it may have one that marion already knows how to compile. An agent with no measured
+/// recipe is still refused, by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CannedRecipe {
+    /// opencode's own config document under `$XDG_CONFIG_HOME`, plus the sandbox relocations —
+    /// exactly what [`crate::opencode::config_json`] and [`crate::opencode::isolation_env`] already
+    /// compile for `opencode run`, because `opencode acp` is the same binary reading the same
+    /// files.
+    ///
+    /// **Derived, not yet measured on `opencode acp` itself.** What *is* measured is S13: the same
+    /// binary, under the same document at the same path, running against marion's canned provider
+    /// at $0.00 on the `opencode run` subcommand. The step this recipe takes on top is that `acp`
+    /// reads the same document — which is a claim about opencode's config loading being
+    /// subcommand-independent, and it is the reason this variant names a document rather than an
+    /// argv: there is no argv. Until an ACP-subcommand capture exists, treat the row as one
+    /// inference deep.
+    ///
+    /// The document's `model` key is what carries the model, since ACP chooses the model *inside*
+    /// the session (S21's `session/new` result carries a `configOptions` `model` select) and marion
+    /// has measured no argv that sets it.
+    OpencodeConfigDocument,
 }
 
 /// `opencode acp` — the one agent measured all the way to a tool call (S21).
@@ -305,8 +386,10 @@ pub const OPENCODE: Agent = Agent {
     id: "opencode",
     argv: &["opencode", "acp"],
     tools: Some(ToolSpelling::ServerUnderscoreTool),
+    canned: Some(CannedRecipe::OpencodeConfigDocument),
     note: "S21: initialize, session/new, session/prompt and a real `marion_report` tool call, \
-           against opencode 1.17.3",
+           against opencode 1.17.3. Its canned recipe is inferred from S13 over the same binary, \
+           not measured on the `acp` subcommand",
 };
 
 /// `gemini --acp` — completes `initialize` and is refused `session/new` **vendor-side**.
@@ -319,12 +402,47 @@ pub const GEMINI: Agent = Agent {
     id: "gemini",
     argv: &["gemini", "--acp"],
     tools: None,
+    canned: None,
     note: "S20: `initialize` succeeds; `session/new` is refused -32000 (Gemini Code Assist \
            ineligibility). No turn has run, so no tool spelling has been measured",
 };
 
+/// `@agentclientprotocol/claude-agent-acp` — an ACP Registry **shim**, not a vendor's own server.
+///
+/// S22 ran it to a terminal `end_turn` against the operator's already-established `claude` login,
+/// with no new credential supplied, and watched it call marion's declared MCP tool. `argv` is the
+/// command S22 launched, **version-pinned**, because an unpinned `npx -y` resolves to whatever the
+/// registry holds today and this row's `tools` is a measurement of 0.66.0 and of nothing else.
+pub const CLAUDE_ACP: Agent = Agent {
+    id: "claude-acp",
+    argv: &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"],
+    tools: Some(ToolSpelling::McpDoubleUnderscore),
+    canned: None,
+    note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
+           `mcp__marion__report` call, wrapping the operator's own claude-code 2.1.220",
+};
+
+/// `@agentclientprotocol/codex-acp` — the second ACP Registry shim, over the local `codex`.
+///
+/// `argv` names the installed executable rather than `npx -y @agentclientprotocol/codex-acp`, and
+/// that is a measurement too: S22's first probe of this agent returned **zero frames** and looked
+/// like a dead agent, because `npx -y` was still downloading `@openai/codex` when the 30 s
+/// `initialize` budget expired. `codex-acp` is the bin npm installs, and run from
+/// `node_modules/.bin` the same version handshakes in under a second. A cold download is not a
+/// property of the agent, and compiling one into a launch would make every first run look like a
+/// hang.
+pub const CODEX_ACP: Agent = Agent {
+    id: "codex-acp",
+    argv: &["codex-acp"],
+    tools: Some(ToolSpelling::McpDotted),
+    canned: None,
+    note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
+           `mcp.marion.report` call, wrapping the operator's own codex 0.147.0. Install it \
+           (`npm i @agentclientprotocol/codex-acp@1.1.14`) rather than relying on `npx -y`",
+};
+
 /// Every ACP agent marion can name. Naming one is not having measured it — see [`Agent::tools`].
-pub const AGENTS: [Agent; 2] = [OPENCODE, GEMINI];
+pub const AGENTS: [Agent; 4] = [OPENCODE, GEMINI, CLAUDE_ACP, CODEX_ACP];
 
 /// Resolve an operator's `acp_agent` id. `None` is *"marion has never heard of it"*, which the
 /// adapter turns into a refusal that lists the ids it does know.
@@ -439,7 +557,8 @@ fn call_id(u: &Value) -> Option<&str> {
 /// **`"title": ""`**, so the verb exists only on the opening `tool_call` frame and the outcome only
 /// on the closing one. A reader that took either frame in isolation would report either a call with
 /// no result or a result with no verb.
-pub fn marion_calls(stdout: &str, prefix: &str) -> Vec<MarionCall> {
+pub fn marion_calls(stdout: &str, spelling: ToolSpelling) -> Vec<MarionCall> {
+    let prefix = &spelling.spell("");
     let mut open: Vec<(String, String)> = Vec::new(); // (toolCallId, verb) in call order
     let mut outcome: Vec<(String, CallOutcome)> = Vec::new();
     for frame in json_frames(stdout) {
@@ -496,16 +615,19 @@ fn text_of(content: Option<&Value>) -> String {
         .unwrap_or_default()
 }
 
-/// §6.1 step 9 for an ACP transcript.
+/// §6.1 step 9 for an ACP transcript, read in **this agent's** spelling.
 ///
-/// `report_tool` is this agent's **model-facing** spelling ([`ToolSpelling::spell`]), because the
-/// name in a `tool_call` frame's title is the model-facing one — the unprefixed `report` never
-/// appears on this wire at all, only on the MCP wire between the agent and marion's bridge.
+/// The name matched is the model-facing one ([`ToolSpelling::spell`]), because that is what a
+/// `tool_call` frame's title carries — the unprefixed `report` never appears on this wire at all,
+/// only on the MCP wire between the agent and marion's bridge. The whole [`ToolSpelling`] is taken
+/// rather than the compiled string, because the *arguments* are in a different place on one of the
+/// three agents ([`ToolSpelling::arguments`]) and a reader handed only a name cannot know which.
 ///
 /// The exit code is **not consulted**, for the same reason opencode's reader ignores it: an ACP
 /// agent is a long-lived stdio server that marion kills, so its exit status describes marion's
 /// shutdown, not the turn. What describes the turn is `stopReason` and the frames.
-pub fn parse_stream(stdout: &str, _exit: ChildExit, report_tool: &str) -> StreamOutcome {
+pub fn parse_stream(stdout: &str, _exit: ChildExit, spelling: ToolSpelling) -> StreamOutcome {
+    let report_tool = &spelling.spell("report");
     let mut out = StreamOutcome::default();
     // The ids of the calls that were opened *as `report`*. Every other tool call on this session
     // also carries a `rawInput`, and a reader that took `narrative` off whichever object happened
@@ -532,21 +654,30 @@ pub fn parse_stream(stdout: &str, _exit: ChildExit, report_tool: &str) -> Stream
         if kind(u) == "tool_call" && u.get("title").and_then(Value::as_str) == Some(report_tool) {
             report_ids.push(id.to_string());
         }
-        if report_ids.iter().any(|k| k == id) {
-            // `rawInput` is the arguments object, **revised in place** across the call's frames:
-            // S21's opening `tool_call` carries `{}` and the two updates carry the real arguments,
-            // so the last non-empty one wins rather than the first.
-            if let Some(args) = u
-                .get("rawInput")
-                .filter(|a| a.as_object().is_some_and(|o| !o.is_empty()))
-            {
-                if let Some(n) = args.get("narrative").and_then(Value::as_str) {
-                    out.narrative = Some(n.to_string());
-                }
-                let commits = report_commits(args);
-                if !commits.is_empty() {
-                    out.result_commits = commits;
-                }
+        // **Every read below is confined to marion's own calls, and both halves of that are
+        // measured.** The arguments half is S21's: `rawInput` is revised in place on every tool
+        // call the session makes, so a reader taking `narrative` off whichever object had the key
+        // would file another tool's arguments as marion's report.
+        //
+        // The failure half is S22's, and it is the sharper one. `codex-acp`'s **first** frame,
+        // before the session is in use, is a `tool_call` titled `mcp__marion__startup` with
+        // `status: "failed"` — a startup diagnostic, wearing the *claude* shim's prefix on the
+        // *codex* shim, for a verb marion does not have. A blanket "any failed tool call fails the
+        // turn" reads that as marion's verb being refused and reports a refusal for a turn that
+        // went on to end `end_turn` having called `report` successfully. A tool of the agent's own
+        // failing is the agent's business; what this function reports is what became of marion's.
+        if !report_ids.iter().any(|k| k == id) {
+            continue;
+        }
+        if let Some(raw) = u.get("rawInput")
+            && let Some(args) = spelling.arguments(raw)
+        {
+            if let Some(n) = args.get("narrative").and_then(Value::as_str) {
+                out.narrative = Some(n.to_string());
+            }
+            let commits = report_commits(args);
+            if !commits.is_empty() {
+                out.result_commits = commits;
             }
         }
         if u.get("status").and_then(Value::as_str) == Some("failed") {
@@ -576,9 +707,20 @@ mod tests {
         std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"))
     }
 
+    /// The agent whose transcript S21 captured, and whose spelling the tests below read it in.
+    const OC: ToolSpelling = ToolSpelling::ServerUnderscoreTool;
+
+    const S22: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s22");
+
+    /// One shim's own stdout, verbatim, from a live run against the operator's own vendor CLI.
+    fn s22(agent: &str) -> String {
+        let p = format!("{S22}/{agent}-session.jsonl");
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"))
+    }
+
     /// The model-facing spelling, as the shipped adapter produces it.
     fn report() -> String {
-        ToolSpelling::ServerUnderscoreTool.spell("report")
+        OC.spell("report")
     }
 
     /// **The measured mapping, pinned to the capture it was measured in.**
@@ -647,16 +789,13 @@ mod tests {
     #[test]
     fn a_real_transcript_yields_the_verb_and_its_outcome() {
         assert_eq!(
-            marion_calls(
-                &s21_session(),
-                &ToolSpelling::ServerUnderscoreTool.spell("")
-            ),
+            marion_calls(&s21_session(), OC),
             vec![MarionCall {
                 verb: "report".into(),
                 outcome: CallOutcome::Answered,
             }]
         );
-        let out = parse_stream(&s21_session(), ChildExit::default(), &report());
+        let out = parse_stream(&s21_session(), ChildExit::default(), OC);
         assert_eq!(out.narrative.as_deref(), Some("hello from acp"));
         assert_eq!(out.failure, None, "the turn ended `end_turn`");
     }
@@ -678,20 +817,19 @@ mod tests {
             .filter(|l| !l.contains(r#""sessionUpdate":"tool_call""#))
             .collect::<Vec<_>>()
             .join("\n");
-        let prefix = ToolSpelling::ServerUnderscoreTool.spell("");
         // Opening frame only: the verb is known, the outcome is not — and `Unknown` is the answer,
         // never `Answered`.
         assert_eq!(
-            marion_calls(&opening, &prefix),
+            marion_calls(&opening, OC),
             vec![MarionCall {
                 verb: "report".into(),
                 outcome: CallOutcome::Unknown,
             }]
         );
         // Closing frames only: no verb was ever opened, so there is no call to report.
-        assert!(marion_calls(&closing, &prefix).is_empty());
+        assert!(marion_calls(&closing, OC).is_empty());
         assert_eq!(
-            parse_stream(&closing, ChildExit::default(), &report()).narrative,
+            parse_stream(&closing, ChildExit::default(), OC).narrative,
             None,
             "arguments with no opening frame belong to no verb marion can name"
         );
@@ -707,13 +845,13 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"other","title":"write","status":"pending","rawInput":{}}}}"#,
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"other","status":"completed","rawInput":{"narrative":"not marion's"}}}}"#
         );
-        let out = parse_stream(&other, ChildExit::default(), &report());
+        let out = parse_stream(&other, ChildExit::default(), OC);
         assert_eq!(out.narrative, None);
-        assert!(marion_calls(&other, &ToolSpelling::ServerUnderscoreTool.spell("")).is_empty());
+        assert!(marion_calls(&other, OC).is_empty());
         // And prepending it to the real transcript must not change the real answer.
         let both = format!("{other}\n{}", s21_session());
         assert_eq!(
-            parse_stream(&both, ChildExit::default(), &report())
+            parse_stream(&both, ChildExit::default(), OC)
                 .narrative
                 .as_deref(),
             Some("hello from acp")
@@ -733,13 +871,12 @@ mod tests {
                 )
             )
         };
-        let prefix = ToolSpelling::ServerUnderscoreTool.spell("");
         assert_eq!(
-            marion_calls(&frame("completed", ""), &prefix)[0].outcome,
+            marion_calls(&frame("completed", ""), OC)[0].outcome,
             CallOutcome::Answered
         );
         assert_eq!(
-            marion_calls(&frame("in_progress", ""), &prefix)[0].outcome,
+            marion_calls(&frame("in_progress", ""), OC)[0].outcome,
             CallOutcome::Unknown,
             "a call that never ended is news, not a success"
         );
@@ -749,7 +886,7 @@ mod tests {
                     "failed",
                     r#","content":[{"type":"content","content":{"type":"text","text":"depth 3 exceeds max_depth 2"}}]"#
                 ),
-                &prefix
+                OC
             )[0]
             .outcome,
             CallOutcome::Refused("depth 3 exceeds max_depth 2".into()),
@@ -757,7 +894,7 @@ mod tests {
         );
         // And a failure reaches the stream outcome, where the exit code cannot see it.
         assert_eq!(
-            parse_stream(&frame("failed", ""), ChildExit::default(), &report())
+            parse_stream(&frame("failed", ""), ChildExit::default(), OC)
                 .failure
                 .as_deref(),
             Some("the agent marked tool call c1 failed")
@@ -770,40 +907,34 @@ mod tests {
     #[test]
     fn a_refused_turn_is_a_failure_however_the_process_exits() {
         let refused = r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"refusal"}}"#;
-        let out = parse_stream(refused, ChildExit::default(), &report());
+        let out = parse_stream(refused, ChildExit::default(), OC);
         assert!(out.failure.is_some_and(|f| f.contains("refusal")));
         // `end_turn` is not a failure, or the assertion above would hold for every transcript.
         assert_eq!(
             parse_stream(
                 r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#,
                 ChildExit::default(),
-                &report()
+                OC
             )
             .failure,
             None
         );
     }
 
-    /// **The registry is a table of measurements.** An agent with no measured spelling must not be
-    /// silently served by the one spelling this adapter has — that is the s14 trap. The invariant
-    /// is stated over the registry rather than over today's two rows, so a third agent has to
-    /// declare which side it is on.
+    /// **The registry is a table of measurements, and no two measured agents share a spelling.**
+    ///
+    /// This assertion used to say the opposite — that every launchable agent spells marion's verbs
+    /// the *one* way the adapter compiles — and it was right to, because there was one measurement.
+    /// S22 took two more and got two more answers. What survives is the invariant underneath: a
+    /// spelling is a fact about an agent, so an agent with none is refused rather than served by a
+    /// neighbour's, and two agents that genuinely differ must not be recorded as agreeing.
     #[test]
-    fn every_launchable_agent_spells_marions_verbs_the_way_this_adapter_says() {
-        let mut measured = 0;
+    fn every_measured_agent_has_its_own_spelling_and_the_unmeasured_have_none() {
+        let mut spellings: Vec<(&str, String)> = Vec::new();
         let mut unmeasured = 0;
         for a in AGENTS {
             match a.tools {
-                Some(t) => {
-                    assert_eq!(
-                        t.spell("report"),
-                        report(),
-                        "`{}` spells marion's verbs differently from what the adapter compiles, so \
-                         the adapter needs a per-agent spelling before it can launch it",
-                        a.id
-                    );
-                    measured += 1;
-                }
+                Some(t) => spellings.push((a.id, t.spell("report"))),
                 None => unmeasured += 1,
             }
             assert!(!a.argv.is_empty(), "`{}` names no program", a.id);
@@ -814,11 +945,162 @@ mod tests {
                 a.id
             );
         }
-        assert!(
-            measured > 0 && unmeasured > 0,
-            "both sides must be exercised"
+        // Three agents, three names, none of them guessable from another (S21, S22).
+        assert_eq!(
+            spellings,
+            vec![
+                ("opencode", "marion_report".to_string()),
+                ("claude-acp", "mcp__marion__report".to_string()),
+                ("codex-acp", "mcp.marion.report".to_string()),
+            ]
         );
+        let mut distinct: Vec<&String> = spellings.iter().map(|(_, s)| s).collect();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            spellings.len(),
+            "two agents recorded as spelling a verb the same way is a claim, not a default"
+        );
+        assert!(unmeasured > 0, "the refusing side must be exercised too");
         assert_eq!(agent("no-such-agent"), None);
+    }
+
+    /// **The third measurement, read out of the two verbatim shim transcripts.**
+    ///
+    /// s14's finding is that an unknown tool name is silently ignored, so the cost of a wrong
+    /// spelling is a turn that ends `end_turn` having called nothing. This asserts the string
+    /// marion compiles for each shim is the string that shim's model actually typed — read out of
+    /// S22's captures rather than restated — and, in the same breath, that each agent's spelling
+    /// finds *nothing* in the other's transcript, which is what "silently ignored" would look like
+    /// in production.
+    #[test]
+    fn each_shim_is_read_in_its_own_spelling_and_in_no_others() {
+        for (session, spelling, id) in [
+            (s22("claude-agent-acp"), ToolSpelling::McpDoubleUnderscore, "claude-acp"),
+            (s22("codex-acp"), ToolSpelling::McpDotted, "codex-acp"),
+        ] {
+            let calls = marion_calls(&session, spelling);
+            assert_eq!(
+                calls,
+                vec![MarionCall {
+                    verb: "report".into(),
+                    outcome: CallOutcome::Answered,
+                }],
+                "{id}: one marion call, answered"
+            );
+            let out = parse_stream(&session, ChildExit::default(), spelling);
+            assert_eq!(
+                out.narrative.as_deref(),
+                Some("hello from acp"),
+                "{id}: the narrative the model actually passed"
+            );
+            assert_eq!(out.failure, None, "{id}: the turn ended `end_turn`");
+
+            // **No other spelling finds this agent's report.** That is the s14 failure mode made
+            // visible: a healthy transcript, and a reader that reports no report at all.
+            //
+            // Stated over `report` rather than over "any call", because on one of these two
+            // captures the weaker claim is simply false: `codex-acp`'s transcript contains a
+            // startup diagnostic titled in the *claude* shim's spelling, so a reader in that
+            // spelling does find something here — a verb marion does not have, marked failed. That
+            // is the trap, and it is pinned in
+            // `a_startup_diagnostic_in_another_agents_spelling_is_not_a_refused_turn` rather than
+            // asserted away here.
+            for other in AGENTS.iter().filter_map(|a| a.tools) {
+                if other == spelling {
+                    continue;
+                }
+                assert!(
+                    !marion_calls(&session, other)
+                        .iter()
+                        .any(|c| c.verb == "report"),
+                    "{id}: `{:?}` found this agent's `report` in a spelling it does not use",
+                    other
+                );
+                assert_eq!(
+                    parse_stream(&session, ChildExit::default(), other).narrative,
+                    None,
+                    "{id}: `{other:?}` read a narrative out of another agent's transcript"
+                );
+            }
+        }
+    }
+
+    /// **`codex-acp` does not flatten the call, and a reader of the flat shape gets nothing.**
+    ///
+    /// Its `rawInput` is `{"server","tool","arguments"}`, so the narrative is one level deeper than
+    /// the other two agents put it. This is the trap stated as its own row rather than only as part
+    /// of the transcript read above: strip the nesting handling and the call is still *found* — the
+    /// title matches — and it reports an empty report.
+    #[test]
+    fn the_codex_shims_arguments_are_nested_and_are_read_where_they_are() {
+        let raw = json!({"server":"marion","tool":"report","arguments":{"narrative":"hello from acp"}});
+        assert_eq!(
+            ToolSpelling::McpDotted.arguments(&raw),
+            Some(&raw["arguments"]),
+            "one level deeper than S21's shape"
+        );
+        // Read as a flat object — which is what the other two agents are — the narrative is absent
+        // rather than wrong, and the call is still found. That combination is the whole hazard.
+        assert_eq!(
+            ToolSpelling::McpDoubleUnderscore
+                .arguments(&raw)
+                .and_then(|a| a.get("narrative")),
+            None
+        );
+        assert_eq!(
+            ToolSpelling::ServerUnderscoreTool.arguments(&raw),
+            Some(&raw)
+        );
+        // And an empty or absent `arguments` is not arguments: the opening frame of a call carries
+        // `{}`, and `rawInput` is revised in place, so the last non-empty one has to win.
+        assert_eq!(
+            ToolSpelling::McpDotted.arguments(&json!({"server":"marion","arguments":{}})),
+            None
+        );
+        assert_eq!(ToolSpelling::McpDotted.arguments(&json!({})), None);
+        assert_eq!(ToolSpelling::ServerUnderscoreTool.arguments(&json!({})), None);
+    }
+
+    /// **The phantom `mcp__marion__startup` frame, which is neither marion's nor a real failure.**
+    ///
+    /// S22: `codex-acp`'s *first* frame, before the session is in use, is a `tool_call` with
+    /// `status: "failed"`, titled with the **claude** shim's `mcp__<server>__<tool>` spelling, on
+    /// the **codex** shim, naming a verb (`startup`) marion does not have. It matched marion's
+    /// server name and nothing else about it was real; the startup then succeeded and the same
+    /// session went on to call `report`.
+    ///
+    /// Two readers would have been fooled and both are pinned here: one matching by the
+    /// `mcp__marion__` prefix, and one treating *any* failed tool call as a failed turn.
+    #[test]
+    fn a_startup_diagnostic_in_another_agents_spelling_is_not_a_refused_turn() {
+        let session = s22("codex-acp");
+        assert!(
+            session.contains("mcp__marion__startup"),
+            "the premise: the frame is in the capture"
+        );
+        // The turn is read as what it was — one answered call, no failure — in this agent's own
+        // spelling.
+        assert_eq!(
+            parse_stream(&session, ChildExit::default(), ToolSpelling::McpDotted).failure,
+            None,
+            "a startup diagnostic for a verb marion does not have is not marion's verb failing"
+        );
+        // And the trap is real: read with the *claude* shim's prefix — the one the frame is
+        // actually titled in — a prefix-matching reader picks it up as a refused marion verb.
+        let wrong = marion_calls(&session, ToolSpelling::McpDoubleUnderscore);
+        assert_eq!(
+            wrong,
+            vec![MarionCall {
+                verb: "startup".into(),
+                outcome: CallOutcome::Refused(
+                    "[codex-acp forwarded startup error] MCP server `marion` startup was cancelled."
+                        .into()
+                ),
+            }],
+            "the hazard must be present, or the row above guards nothing"
+        );
     }
 
     /// The three request shapes, against the ones a live agent answered. Values, not prose: S21

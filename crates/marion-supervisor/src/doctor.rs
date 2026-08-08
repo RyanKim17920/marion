@@ -1021,7 +1021,7 @@ fn acp_live_turn(
     }
 
     let stdout = agent.stdout();
-    let shape = shape.unwrap_or_else(|| acp_shape_finding(&stdout, timed_out));
+    let shape = shape.unwrap_or_else(|| acp_shape_finding(agent_spec, &stdout, timed_out));
     let clean = agent.finish();
     trailing.push(if clean {
         "termination: the agent exited on SIGINT".into()
@@ -1054,7 +1054,7 @@ fn acp_live_turn(
 /// Three things, and the third is the one that would catch drift: the agent wrote frames, one of
 /// them is the `session/prompt` response carrying a `stopReason`, and marion's own ACP reader does
 /// not find a failure in the transcript.
-fn acp_shape_finding(stdout: &str, timed_out: bool) -> (bool, String) {
+fn acp_shape_finding(agent_spec: acp::Agent, stdout: &str, timed_out: bool) -> (bool, String) {
     let frames = marion_harness::json_frames(stdout);
     if frames.is_empty() {
         return (
@@ -1069,11 +1069,16 @@ fn acp_shape_finding(stdout: &str, timed_out: bool) -> (bool, String) {
     let stop = frames
         .iter()
         .find_map(|f| f.pointer("/result/stopReason")?.as_str());
-    let outcome = acp::parse_stream(
-        stdout,
-        marion_harness::ChildExit::default(),
-        &marion_harness::AcpAdapter.marion_tool_name("report"),
-    );
+    // **This agent's spelling, not the one agent marion measured first.** The doctor probes every
+    // row in `acp::AGENTS`, and the three measured ones spell marion's verbs three different ways
+    // (S21, S22). Reading them all in opencode's is the s14 trap with marion on the reading end: a
+    // transcript in which the model called `mcp.marion.report` and a reader that reports no call.
+    // An agent with no measured spelling gets no reader at all rather than a neighbour's, which is
+    // the same refusal `AcpAdapter` makes.
+    let outcome = match agent_spec.tools {
+        Some(spelling) => acp::parse_stream(stdout, marion_harness::ChildExit::default(), spelling),
+        None => marion_harness::StreamOutcome::default(),
+    };
     match (stop, &outcome.failure) {
         (_, Some(f)) => (
             false,
