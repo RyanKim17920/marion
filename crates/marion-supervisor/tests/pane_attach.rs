@@ -92,6 +92,10 @@ const PROMPT_MARK: &str = "MARIONPANEPROMPT7f3c";
 /// submitting a turn would make the assertion depend on what the canned provider said next.
 const TYPED_MARK: &str = "MARIONTYPED9a2b";
 
+/// Typed by the **second** operator, after the first has detached. Distinct from `TYPED_MARK` so
+/// that finding it in the node's recording cannot be the first client's keystroke read twice.
+const SECOND_MARK: &str = "MARIONAGAIN4e71";
+
 /// The operator's terminal, in the geometry `PANE_SIZE` is not. Different from the launcher's 80x24
 /// on purpose — the first thing `marion attach` does is forward its own size, so a test that used
 /// 80x24 could not tell a resize that worked from one that never happened.
@@ -596,8 +600,39 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
     // ---- detach, and the node is left exactly as it was (§7.3.1) ----
     op.type_in(&[marion_tui::keys::PREFIX, marion_tui::keys::DETACH_KEY]);
     assert!(until(|| op.exited()), "`marion attach` did not exit on ^]d");
-    // Asserted over a second connection, after the client is gone: the node is the supervisor's,
-    // not the client's, and a detach that ended it would be §7.3.1 broken.
+    // **The node is proved alive by using it, not by failing to observe its death.**
+    //
+    // The first shape of this assertion read the tree once and checked the node was not exited,
+    // and it was vacuous: a supervisor that ended the node on detach takes a moment to journal the
+    // exit, so the read raced the teardown and passed. Asserting an *absence* over a fixed wait
+    // would only have made the race longer.
+    //
+    // So a second operator attaches to the same node and types. A marker that lands in the node's
+    // pty after the first client is gone is positive evidence of three things at once: the node
+    // still exists, its pty is still marion's, and the write half the first client held was
+    // released — which is §7.3.1's actual content, and the half a crashed client makes urgent.
+    let again = Operator::attach(&root_dir, &repo, &state, &agent);
+    // **Wait for its first paint before typing into it.** `marion_tui::guard::Screen::enter` puts
+    // the terminal into raw mode with `TCSAFLUSH`, which *discards* whatever is already pending on
+    // the input queue — so a keystroke sent between spawning the client and its setup is dropped on
+    // the floor, and the assertion below would fail for a reason that has nothing to do with the
+    // node. This is also the re-attach's own evidence: a second client is rendering the same pane.
+    assert!(
+        until(|| again.screen().contains(PROMPT_MARK)),
+        "the second client attached but never rendered the node:\n{}",
+        again.screen()
+    );
+    again.type_in(SECOND_MARK.as_bytes());
+    assert!(
+        until(|| again.screen().contains(SECOND_MARK)),
+        "after the first client detached, a second one could not drive the node. What is asserted \
+         is the *echo*, not the write: a `node/pty-write` lands an `i` record in the recording \
+         whether or not anything is alive on the other end of the master, so a marker that comes \
+         back **through the harness's own composer** is the only form of this assertion that a \
+         dead node fails. What the second operator saw:\n{}",
+        again.screen()
+    );
+    // And the supervisor agrees, on a connection that never attached.
     let mut after = Client::dial(&paths);
     let node = after
         .tree()
@@ -611,6 +646,7 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
         node.state
     );
 
+    drop(again);
     drop(op);
 }
 
