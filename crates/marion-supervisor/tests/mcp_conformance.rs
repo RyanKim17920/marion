@@ -648,11 +648,12 @@ fn readiness_is_written_only_after_the_tools_list_reply_is_flushed() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     b.finish();
+    // Cleanup precedes the assertion: a failing test must not also leak a directory.
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         appeared,
         "the marker must be written once the list has gone out, or the root never starts"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **The marker cannot appear when the reply never reached the harness.**
@@ -783,12 +784,13 @@ fn readiness_is_not_written_before_tools_list_is_even_requested() {
     std::thread::sleep(std::time::Duration::from_millis(250));
     let early = marker.exists();
     b.finish();
+    // Cleanup precedes the assertion: a failing test must not also leak a directory.
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         !early,
         "readiness was signalled before the tool list was ever requested: the root's first turn \
          can now go out before marion's tools exist, which is the 63 ms silent exit"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- the s6 recording, replayed --------------------------------------------------------------------
