@@ -123,6 +123,78 @@ fn scrollback_survives_codex_resize() {
     assert_scrollback_lines(&lost, 0);
 }
 
+// ---------------------------------------------------------------------------------------------
+// §9's M3 criterion C1: the alt-screen switch, including the leg that never arrives
+// ---------------------------------------------------------------------------------------------
+
+/// **The switch is handled, and the *restore* is not depended on.**
+///
+/// §9's C1 names *"alt-screen switch handled"* and §5.3 measures where: Claude Code enters
+/// `?1049h` at byte **67** on `claude-2.1.220-boot-exit` and at byte **1900** on
+/// `claude-2.1.220-boot-help-status-resize` — the run with the trust dialog, which is the clause
+/// about pre-alt-screen output on the main screen. The two captures differ in exactly the way that
+/// matters: the first exits cleanly and emits its `?1049l` at 5866; the second **never emits one
+/// at all**. So the restore leg is frequently not exercised, and an emulator that only left the
+/// alternate screen when told to would be right on one capture and wrong on the other.
+///
+/// This asserts the transition at both ends and in both directions, which is what makes it an
+/// assertion about *handling* rather than about the byte being present:
+///
+/// * before the switch the grid is on the main screen (so the trust dialog is painted there);
+/// * after it the grid is on the alternate screen;
+/// * on the capture that restores, the grid comes **back**;
+/// * on the capture that does not, the grid stays — it does not guess.
+///
+/// Why this lives here and not in `marion-supervisor/tests/pane_attach.rs` with the rest of C1:
+/// **claude 2.1.225 no longer takes the switch at all.** Probed on 2026-08-08 under a marion pane
+/// and again bare, at 100x30 through a boot, a trust dialog, a submitted turn and a resize: zero
+/// `?1049h`, zero mouse modes, and only `?1004`, `?2004`, `?2026` and `?2031`. §5.3's reading is a
+/// 2.1.220 reading and this corpus is where it is still live, so the clause is pinned against the
+/// bytes it was measured from. The live test asserts the other half — that marion's grid agrees
+/// with whichever screen the node's own bytes put it on.
+#[test]
+fn the_alt_screen_switch_is_handled_including_the_restore_that_never_arrives() {
+    for (name, at, restores) in [
+        (fixtures::CLAUDE_BOOT_EXIT, 67usize, true),
+        (fixtures::CLAUDE_BOOT_HELP_STATUS_RESIZE, 1900usize, false),
+    ] {
+        let cap = fixtures::load(name);
+        assert!(
+            cap.raw[at..].starts_with(b"\x1b[?1049h"),
+            "{name}: §5.3 puts the switch at byte {at} and it is not there. The offsets below are \
+             read off this capture, so a capture that moved makes every one of them meaningless"
+        );
+
+        let mut term = Term::with_options(
+            Size::new(cap.cols, cap.rows),
+            Options {
+                suppress_erase_saved: true,
+                ..Options::default()
+            },
+        );
+        term.advance(&cap.raw[..at]);
+        assert!(
+            !term.on_alt_screen(),
+            "{name}: the grid was already on the alternate screen before byte {at}, so nothing \
+             this capture paints first is pre-alt-screen output"
+        );
+
+        term.advance(&cap.raw[at..at + b"\x1b[?1049h".len()]);
+        assert!(
+            term.on_alt_screen(),
+            "{name}: the grid did not switch buffers on `?1049h`"
+        );
+
+        term.advance(&cap.raw[at + b"\x1b[?1049h".len()..]);
+        assert_eq!(
+            term.on_alt_screen(),
+            !restores,
+            "{name}: the grid ends on the wrong screen. This capture {} a `?1049l`",
+            if restores { "sends" } else { "never sends" }
+        );
+    }
+}
+
 /// **§11 item 10, half two — the `121 → 2` claim.**
 ///
 /// `codex-cli-0.145.0-boot-status-help-diff-resize` retains **121** history rows with `CSI 3J`

@@ -25,22 +25,40 @@
 //!   means, so the thing being tested is that `TIOCSWINSZ` reached the one master.
 //! * **detach leaves the node running** — §7.3.1. Asserted on the supervisor's own tree over a
 //!   *separate* connection, after the attaching process has exited.
+//! * **the alt-screen switch handled** — asserted as an *agreement*: marion's grid must be on
+//!   whichever screen the node's own bytes put it on, taking the switch when told and inventing
+//!   none when not. Stated that way because the harness moved — see the clause in the test.
+//! * **the mouse through** — asserted as an SGR-1006 press and release written to the operator's
+//!   pty master and read back out of the node's `i` record, press and release both.
 //!
 //! # What this file does not cover, and where it is covered instead
 //!
 //! **Covered here**: a real `claude` in a marion-owned pane; a client attaching; bytes rendering;
 //! the pre-alt-screen trust dialog rendered on the main screen (§9 names that clause explicitly,
 //! and it is this file's render anchor); a keystroke arriving *and changing what the node does*; a
-//! resize reaching the one master and the client repainting at the new geometry; and detach
+//! resize reaching the one master and the client repainting at the new geometry; a click reaching
+//! the node intact; marion's own alternate-screen restore not depending on the node's; and detach
 //! leaving the node running.
 //!
 //! **Not covered here, named rather than left to be assumed:**
 //!
-//! * **mouse through** — `marion_tui::mouse` decodes the reports and `attach.rs` forwards
-//!   keystrokes, but nothing in this file presses a button. It is I5's recorded manual session.
+//! * **the alt-screen switch's *positive* direction, live.** claude 2.1.225 takes no switch at all
+//!   — probed 2026-08-08, zero `?1049h` over a boot, a trust dialog, a turn and a resize — so the
+//!   agreement asserted here can only catch a spurious switch on this version. The direction that
+//!   needs a harness that switches is pinned over the committed 2.1.220 captures, in
+//!   `marion-term/tests/replay.rs::the_alt_screen_switch_is_handled_including_the_restore_that_never_arrives`.
+//! * **the mouse's *enabling* leg, live.** No harness marion can pane asks for a mouse today:
+//!   2.1.225 enables no tracking mode and codex never has (§5.3). 2.1.220 enabled all four, so
+//!   `attach.rs`'s `the_nodes_mouse_modes_are_mirrored_onto_the_operators_terminal` pins the mirror
+//!   against those sequences rather than against a harness that stopped sending them.
 //! * **permission prompt correct** — a pane's permission ask is answered *in the pane*, by the
-//!   operator, in the harness's own dialog; marion is not in that loop at all on this surface, so
-//!   there is nothing here for a test to assert about marion. I5.
+//!   operator, in the harness's own dialog. That reading is not a shrug: `compile_pane`
+//!   deliberately omits `--permission-prompt-tool stdio`, which is the flag that would route the
+//!   ask to marion instead (§5.2, §11 item 22), and `marion-harness`'s
+//!   `the_pane_argv_is_a_tui_with_the_headless_shape_isolation` asserts the omission. What is left
+//!   is the dialog itself, and provoking one needs a paned node **granted a tool it must ask
+//!   about** — today a pane compiles `--tools ""`, so claude has nothing to ask permission for.
+//!   Widening that is a decision about what marion mediates, not a test. It is the manual session.
 //! * **the recorded 10-minute manual session** C1 names. A human has to sit at a screen for it;
 //!   nothing here or anywhere else can stand in, and C1 is not met without it. `MILESTONES.md`'s
 //!   M3 entry carries the runbook.
@@ -109,6 +127,14 @@ const RESIZED: WinSize = WinSize {
     cols: 112,
     rows: 34,
 };
+
+/// A left-button press at row 5, column 12, in SGR-1006 — one-based on the wire, which is what a
+/// real terminal emits and therefore what this test must emit to stand in for one.
+const MOUSE_PRESS: &str = "\u{1b}[<0;12;5M";
+
+/// The matching release. Lowercase `m` is SGR-1006's whole reason for existing over X10, where
+/// every release is button 3 and a child cannot tell which button came up.
+const MOUSE_RELEASE: &str = "\u{1b}[<0;12;5m";
 
 // ---------------------------------------------------------------------------------------------
 // The run
@@ -436,6 +462,11 @@ fn script() -> Script {
 ///   setting `leaving`. The client never exits.
 /// * `root::launch_terminal`: kill the node when the pane is forgotten. The node is gone after the
 ///   detach and §7.3.1 is broken.
+/// * `attach::View::mirror_modes`: drop the `screen().mirror(...)` call, or return early. The
+///   operator's terminal is never put into a tracking mode and the mouse clause fails.
+/// * `marion_tui::guard::leave_bytes`: drop the `?1049l`. The operator is left on the alternate
+///   screen by a node that never sent a `?1049l` of its own, which is the whole absent-restore
+///   case.
 #[test]
 fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_without_ending_it() {
     assert!(
@@ -518,6 +549,16 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
          rendered. What the operator saw:\n{}",
         op.screen()
     );
+    // **Pre-alt-screen, and not merely "before the composer".** The clause says *"on the main
+    // screen"*, and the assertion above would be satisfied by a claude that drew its dialog after
+    // switching. So the node's recorded output up to this point must contain no `?1049h` at all —
+    // which is the same fact stated where a regression could actually change it.
+    assert!(
+        !cast_text(&node_cast, "o").contains("\u{1b}[?1049h"),
+        "claude had already entered its alternate screen by the time the trust dialog was on the \
+         operator's screen, so this run cannot say whether marion renders pre-alt-screen output. \
+         §5.3 measured the switch at byte 1900 on a run that shows this dialog"
+    );
     // **And this client got the keyboard.** `marion attach` prints its read-only banner when
     // somebody else holds the write half, and a run that watched its own paned node over the
     // socket used to be that somebody — for the node's entire life, from a process with no
@@ -553,6 +594,69 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
     assert!(
         until(|| cast_text(&node_cast, "i").contains(TYPED_MARK)),
         "the typed marker never reached the node's pty. Its recorded input was {:?}",
+        cast_text(&node_cast, "i")
+    );
+
+    // ---- the alt-screen switch is handled ----
+    //
+    // **Stated as an agreement rather than as a switch, because which one the harness takes has
+    // moved.** §5.3 measured 2.1.220 entering `?1049h` at byte 67 (trusted directory) or 1900
+    // (after the trust dialog) and never leaving; probed on 2026-08-08, **2.1.225 takes no switch
+    // at all** — a boot, a trust dialog, a submitted turn and a resize at 100x30 emit zero
+    // `?1049h`, and the only private modes are `?1004`, `?2004`, `?2026` and `?2031`.
+    //
+    // So a live assertion that the grid *is* on the alternate screen would pin a harness version
+    // rather than marion, and one that it is *not* would break the day claude changes back. What
+    // is true of marion on both is that its grid must be on whichever screen the node's own bytes
+    // put it on: it must take the switch when told, and must not invent one when not. The positive
+    // direction is pinned where it is still live — `marion-term`'s
+    // `the_alt_screen_switch_is_handled_including_the_restore_that_never_arrives`, over the
+    // committed 2.1.220 captures that do switch.
+    let node_bytes = cast_text(&node_cast, "o");
+    let switched = match node_bytes.rfind("\u{1b}[?1049h") {
+        None => false,
+        Some(h) => node_bytes.rfind("\u{1b}[?1049l").is_none_or(|l| l < h),
+    };
+    assert_eq!(
+        replay_node(&node_cast, true).on_alt_screen(),
+        switched,
+        "marion's grid disagrees with the node about which screen the node is on. The node's own \
+         bytes {} it on the alternate screen",
+        if switched { "put" } else { "do not put" }
+    );
+
+    // ---- the mouse goes through ----
+    //
+    // **What is asserted live is the forwarding leg, and the reason the enabling leg is not is a
+    // measurement rather than a gap.** A mouse report is input: the operator's terminal produces
+    // it and `Keys` forwards it to `node/pty-write` untouched. What puts a terminal into a
+    // tracking mode is `attach::View::mirror_modes`, which mirrors whatever modes the node asked
+    // for — and **no harness marion can pane asks for one today**. 2.1.225 enables none (probed
+    // above); codex enables none and never has (§5.3). 2.1.220 enabled all four, at bytes 98–122,
+    // and the committed captures still carry them, so the mirror is unit-tested against those
+    // sequences in `attach.rs` rather than left to a harness that stopped sending them.
+    //
+    // The bytes below are what an SGR-1006 terminal emits when the left button goes down and comes
+    // up at one cell. The test stands in for the operator's mouse exactly as `type_in` stands in
+    // for their keyboard, and at the same seam: a write to the master of the pty `marion attach`
+    // is reading. Nothing here calls into marion.
+    op.type_in(MOUSE_PRESS.as_bytes());
+    op.type_in(MOUSE_RELEASE.as_bytes());
+    assert!(
+        until(|| cast_text(&node_cast, "i").contains(MOUSE_PRESS)),
+        "the click never reached the node's pty. `Keys` forwards a mouse report as it forwards any \
+         other input, so a report that stops here stopped in the client or in `deliver_input`. Its \
+         recorded input was {:?}",
+        cast_text(&node_cast, "i")
+    );
+    // Third, **it arrived intact**. A report re-encoded on the way — X10 rather than SGR, or a
+    // coordinate off by the one-based conversion — reaches the node and tells it about a click
+    // somewhere else, which is the failure `marion_tui::mouse`'s module doc calls "clicks land in
+    // the wrong place when the window is wide".
+    assert!(
+        cast_text(&node_cast, "i").contains(MOUSE_RELEASE),
+        "the press arrived and the release did not, so the node has a button held down for ever. \
+         Its recorded input was {:?}",
         cast_text(&node_cast, "i")
     );
 
@@ -616,6 +720,36 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
     // ---- detach, and the node is left exactly as it was (§7.3.1) ----
     op.type_in(&[marion_tui::keys::PREFIX, marion_tui::keys::DETACH_KEY]);
     assert!(until(|| op.exited()), "`marion attach` did not exit on ^]d");
+
+    // **The other half of "the alt-screen switch is handled": the restore leg is never exercised,
+    // and marion must not wait for it.**
+    //
+    // Measured (§5.3, and again on this run): claude emits `?1049l` only on a clean exit. This node
+    // does not have one — the operator walks away and the supervisor kills it on its bound — so the
+    // node's own restore never arrives, and a client that mirrored the node's alt-screen state
+    // instead of owning its own would hand the operator's shell back on the alternate screen, with
+    // their scrollback apparently gone. `guard::leave_bytes` is unconditional for exactly this
+    // reason and this is the case that proves it rather than restating it.
+    assert!(
+        !cast_text(&node_cast, "o").contains("\u{1b}[?1049l"),
+        "the node left its alternate screen on its own, so this run is not the absent-restore case \
+         C1 is about and the assertion below no longer proves anything. §5.3 measured `?1049l` only \
+         on a clean exit; if that has changed, the measurement moved"
+    );
+    assert!(
+        op.seen().contains("\u{1b}[?1049l"),
+        "`marion attach` exited leaving the operator's terminal on the alternate screen. The node \
+         never sent a `?1049l`, which is the ordinary case, so marion's own restore is the only \
+         thing that can put the shell back. Last bytes marion wrote:\n{}",
+        tail(&op.seen())
+    );
+    // And the mirror it opened is closed too, or the operator's shell keeps emitting mouse reports
+    // as text for ever. `leave_bytes` sends all four unconditionally for the same reason.
+    assert!(
+        op.seen().contains("\u{1b}[?1006l") && op.seen().contains("\u{1b}[?1000l"),
+        "marion turned the operator's mouse tracking on and left it on:\n{}",
+        tail(&op.seen())
+    );
     // **The node is proved alive by using it, not by failing to observe its death.**
     //
     // The first shape of this assertion read the tree once and checked the node was not exited,
