@@ -10,6 +10,7 @@
 
 pub mod acp;
 pub mod adapter;
+pub(crate) mod auth;
 pub mod caps;
 pub mod claude_code;
 pub mod codex;
@@ -21,10 +22,11 @@ pub mod surfaces;
 
 pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
-    AcpAdapter, Auth, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter,
+    AcpAdapter, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter,
     HarnessError, LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx, adapter_for,
     adapter_for_type,
 };
+pub use auth::Auth;
 pub use caps::{Capabilities, advertised, static_caps};
 pub use claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, HeadlessSpec, McpEnv, READY_FILE_ENV,

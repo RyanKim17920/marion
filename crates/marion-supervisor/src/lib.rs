@@ -24,6 +24,7 @@ pub mod bridge;
 /// sends `agent/spawn`, and reads the node's own stream back — carrying a request and an answer
 /// rather than owning a process.
 pub mod courier;
+pub(crate) mod depth;
 /// §5.7's start and S15's detach: how a `marion-supervisor` comes to exist detached, and how a
 /// client that finds nothing listening asks for one without becoming a second start race.
 pub mod detach;

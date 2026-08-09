@@ -75,6 +75,8 @@ use crate::duplex::{self, DuplexError, DuplexSpec};
 use crate::run::{entropy, run_bounded_watched, unix_millis};
 use crate::spawn::SpawnError;
 
+pub use crate::depth::ROOT_DEPTH;
+
 /// The typed-control-plane protocol, which a root shares with a child (`crate::duplex`).
 ///
 /// Re-exported rather than reimplemented: §6.1 step 8's gate is normative for **any** launcher
@@ -92,13 +94,6 @@ pub use marion_harness::claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, McpEnv, READY_FILE_ENV,
     anthropic_base_url, mcp_config_json,
 };
-
-/// §3.1/§6.1 step 2: *"`max_depth` … counting the root as 0"*.
-///
-/// Stated once, here, because the root is the only node whose depth is not derived from another's:
-/// every other node's is its caller's plus one (`run::run_spawn`). A literal `0` at the call site
-/// would be a magic number that reads as "unknown" quite as easily as "the root".
-pub const ROOT_DEPTH: u32 = 0;
 
 /// The permission axis for an M1 root (§9).
 ///

@@ -205,7 +205,7 @@ impl Caller {
             agent_type,
             // The same constant `root::prepare` writes into the root's own declaration, not a
             // second literal beside it: two spellings of "the root is 0" could disagree.
-            depth: crate::root::ROOT_DEPTH,
+            depth: crate::depth::ROOT_DEPTH,
             // A caller that is not going through a bridge has no background table to count, and a
             // `marion run` root calling this has not spawned anything yet. Zero is the measurement,
             // not the old constant's assumption: the bridge overwrites it from
@@ -3179,7 +3179,7 @@ mod tests {
     fn a_freshly_minted_root_has_no_live_children() {
         let c = Caller::root("root", builtin("claude").unwrap());
         assert_eq!(c.live_children, 0);
-        assert_eq!(c.depth, crate::root::ROOT_DEPTH);
+        assert_eq!(c.depth, crate::depth::ROOT_DEPTH);
     }
 
     #[test]

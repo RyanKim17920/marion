@@ -1362,7 +1362,7 @@ printf '{{"type":"result","subtype":"success","result":"{SENTINEL}"}}\n'"#
                     init_id: "marion-init-probe".into(),
                     mcp_ready_timeout: Duration::from_secs(5),
                     blocked_bound: Duration::ZERO,
-                    depth: crate::root::ROOT_DEPTH + 1,
+                    depth: crate::depth::ROOT_DEPTH + 1,
                     wall_clock: Some(Duration::from_secs(30)),
                     sink: Some(&record),
                     on_started: None,

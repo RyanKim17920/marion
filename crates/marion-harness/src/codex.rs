@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use marion_core::contract::AgentId;
 
 // The bridge's own env-var contract, imported rather than respelled — see [`BridgeEnv`].
-use crate::adapter::Auth;
+use crate::auth::Auth;
 use crate::claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };

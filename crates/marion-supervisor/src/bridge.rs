@@ -438,7 +438,7 @@ pub const REPORT_ON_A_ROOT: &str = "marion: `report` is self only, and only on a
 /// It takes a depth rather than a "is this a root" flag because `ROOT_DEPTH` is the definition
 /// (§3.1: *"counting the root as 0"*), and every other node's depth is derived from it.
 pub fn authorization_refusal(depth: u32, verb: &str) -> Option<&'static str> {
-    (verb == REPORT && depth == crate::root::ROOT_DEPTH).then_some(REPORT_ON_A_ROOT)
+    (verb == REPORT && depth == crate::depth::ROOT_DEPTH).then_some(REPORT_ON_A_ROOT)
 }
 
 /// Answer `initialize`, **with a version chosen from what the client offered**.

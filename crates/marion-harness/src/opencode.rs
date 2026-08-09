@@ -17,7 +17,7 @@ use marion_core::contract::AgentId;
 use serde_json::{Value, json};
 
 // The bridge's env contract, imported for the same reason gemini imports it: one spelling.
-use crate::adapter::Auth;
+use crate::auth::Auth;
 use crate::claude_code::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };

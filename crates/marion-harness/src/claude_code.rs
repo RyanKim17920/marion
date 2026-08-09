@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use marion_core::contract::AgentId;
 use serde_json::{Value, json};
 
-use crate::adapter::Auth;
+use crate::auth::Auth;
 use crate::invocation::Invocation;
 use crate::stream::{
     CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
