@@ -439,6 +439,7 @@ mod tests {
                     allow_concurrent_writes: None,
                     agent_type: "codex-impl".into(),
                     prompt: "implement §6.3".into(),
+                    native_launch: None,
                     caller: Some(crate::params::SpawnCaller {
                         agent_id: agent("parent"),
                         node_token: "tok-9f2c".into(),

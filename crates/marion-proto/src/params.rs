@@ -21,6 +21,7 @@ use crate::model::{
     ElicitationRequestId, ElicitationResponse, PermissionDecision, PermissionRequestId, ProbeMode,
     QuitDisposition,
 };
+use crate::native::NativeLaunchContextV1;
 
 /// `tree/subscribe` — no parameters, deliberately.
 ///
@@ -265,6 +266,10 @@ pub struct AgentSpawnParams {
     /// §3.1's `name:` key — the agent type's identity, resolved through §3.1's precedence chain.
     pub agent_type: String,
     pub prompt: String,
+    /// Byte-exact launch inputs captured by a native facade. Absent for legacy callers and all
+    /// existing generic spawn paths; omission is the backward-compatible wire spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_launch: Option<NativeLaunchContextV1>,
     /// `None` is a client creating a root; `Some` is a node spawning a child. See [`SpawnCaller`].
     #[serde(default)]
     pub caller: Option<SpawnCaller>,
@@ -443,6 +448,7 @@ mod tests {
         rt!(AgentSpawnParams {
             agent_type: "codex-impl".into(),
             prompt: "implement §6.3".into(),
+            native_launch: None,
             caller: None,
             repo: Some("/r".into()),
             acceptance_criteria: vec![],
@@ -457,6 +463,7 @@ mod tests {
         rt!(AgentSpawnParams {
             agent_type: "codex-impl".into(),
             prompt: "implement §6.3".into(),
+            native_launch: None,
             caller: Some(SpawnCaller {
                 agent_id: agent(),
                 node_token: "tok-abc".into(),
@@ -518,14 +525,17 @@ mod tests {
             .unwrap(),
             r#"{"disposition":"DetachAll"}"#
         );
-        // **Every field is written, including the absent ones.** A `skip_serializing_if` here would
-        // make `caller` absent and `caller: null` mean the same thing on the wire, and those are the
-        // two halves of the only distinction this method has: a client creating a root, and a node
-        // spawning a child. Stating `null` costs five bytes and makes the shape one thing.
+        // **Every pre-existing field is written, including the absent ones.** `native_launch` is
+        // the one backward-compatible exception: its absence must preserve the legacy frame byte
+        // for byte. A `skip_serializing_if` on `caller` would make absent and `caller: null` mean
+        // the same thing on the wire, and those are the two halves of this method's distinction: a
+        // client creating a root, and a node spawning a child. Stating `null` costs five bytes and
+        // makes the legacy shape one thing.
         assert_eq!(
             serde_json::to_string(&AgentSpawnParams {
                 agent_type: "codex-impl".into(),
                 prompt: "go".into(),
+                native_launch: None,
                 caller: None,
                 repo: Some("/r".into()),
                 acceptance_criteria: vec![],
@@ -544,6 +554,7 @@ mod tests {
             serde_json::to_string(&AgentSpawnParams {
                 agent_type: "codex-impl".into(),
                 prompt: "go".into(),
+                native_launch: None,
                 caller: Some(SpawnCaller {
                     agent_id: AgentId("a".into()),
                     node_token: "t".into(),

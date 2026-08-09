@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64.workspace = true
 # The domain types these messages carry. §10 puts the registry model, the journal and the task
 # contract in `marion-core`, so a wire vocabulary that re-declared `NodeState` or `AgentId` would
 # be a second source of truth for the thing the supervisor is authoritative about.

@@ -5759,6 +5759,7 @@ mod tests {
             AgentSpawnParams {
                 agent_type: "claude".into(),
                 prompt: "do the task".into(),
+                native_launch: None,
                 caller,
                 // Root-only, and every caller in this helper's `Some` half would be refused by
                 // name for stating it — see `a_caller_that_states_no_change_record_is_refused`.
@@ -6037,6 +6038,7 @@ mod tests {
         /// A root spawn that states a repository, which is the well-formed shape for the case.
         fn root_params(repo: &Path, secs: u64) -> AgentSpawnParams {
             AgentSpawnParams {
+                native_launch: None,
                 repo: Some(repo.to_path_buf()),
                 ..params(None, secs)
             }
@@ -6061,6 +6063,7 @@ mod tests {
             let e = spawn(
                 &fx,
                 AgentSpawnParams {
+                    native_launch: None,
                     agent_type: "no-such-agent-type".into(),
                     ..root_params(&fx.repo, 1)
                 },
@@ -6263,6 +6266,7 @@ mod tests {
             let e = spawn(
                 &fx,
                 AgentSpawnParams {
+                    native_launch: None,
                     // `false` and not `true`: the refusal is for *stating* it, so a test that sent
                     // the interesting value would pass against a build that only refused `true`.
                     no_change_record: Some(false),
@@ -6381,6 +6385,7 @@ mod tests {
             let e = spawn(
                 &fx,
                 AgentSpawnParams {
+                    native_launch: None,
                     // The *real* tree, not an implausible one: the refusal must not depend on the
                     // value being wrong. Stating it at all is the error.
                     repo: Some(fx.repo.clone()),

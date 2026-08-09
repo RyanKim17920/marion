@@ -63,6 +63,7 @@ pub mod error;
 pub mod input;
 pub mod method;
 pub mod model;
+pub mod native;
 pub mod notify;
 pub mod params;
 pub mod result;
@@ -77,6 +78,10 @@ pub use model::{
     AttachMode, ClientGone, Delivery, DetachGuidance, ElicitationRequestId, ElicitationResponse,
     HarnessReport, KilledNode, NodeSummary, PermissionDecision, PermissionRequestId, ProbeMode,
     QuitDisposition, QuitOutcome, ReplayPoint, ReplyOutcome, ResidentReason, SupervisorDisposition,
+};
+pub use native::{
+    NativeEnvVarV1, NativeLaunchContextV1, NativeOsValueConversionError, OpaqueOsValueV1,
+    TerminalGeometryV1,
 };
 pub use notify::Event;
 /// Re-exported beside the models because it is one: `agent/spawn` is the only method whose caller

@@ -1852,6 +1852,7 @@ fn main() -> ExitCode {
             marion_proto::params::AgentSpawnParams {
                 agent_type: args.agent_type.clone(),
                 prompt: args.prompt.clone(),
+                native_launch: None,
                 caller: None,
                 repo: Some(repo.clone()),
                 // A root states none: §9's contract terms belong to a child's `spawn`, and a root

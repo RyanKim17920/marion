@@ -334,6 +334,7 @@ impl Client {
         let id = self.send(Call::AgentSpawn(marion_proto::params::AgentSpawnParams {
             agent_type: "claude".into(),
             prompt: prompt.into(),
+            native_launch: None,
             caller: None,
             repo: Some(repo.to_path_buf()),
             acceptance_criteria: vec![],

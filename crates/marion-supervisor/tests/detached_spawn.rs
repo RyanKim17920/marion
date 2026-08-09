@@ -216,6 +216,7 @@ fn root_spawn(repo: Option<&Path>) -> AgentSpawnParams {
     AgentSpawnParams {
         agent_type: "claude".into(),
         prompt: "unused: every case here is refused before anything launches".into(),
+        native_launch: None,
         caller: None,
         repo: repo.map(Path::to_path_buf),
         acceptance_criteria: vec![],
@@ -258,6 +259,7 @@ fn a_detached_supervisor_serves_root_creation_rather_than_naming_a_step_that_wou
     let e = agent_spawn(
         &bed.paths,
         AgentSpawnParams {
+            native_launch: None,
             agent_type: "no-such-agent-type".into(),
             ..root_spawn(Some(&bed.root))
         },
@@ -314,6 +316,7 @@ fn the_caller_and_repo_pairing_is_refused_by_name_over_the_socket() {
     let e = agent_spawn(
         &bed.paths,
         AgentSpawnParams {
+            native_launch: None,
             caller: Some(SpawnCaller {
                 agent_id: marion_core::contract::AgentId(
                     "0199c0ff-ee00-7000-8000-000000000001".into(),
@@ -443,6 +446,7 @@ fn a_root_for_another_repository_is_refused_on_the_socket_that_does_not_serve_it
     let e = agent_spawn(
         &bed.paths,
         AgentSpawnParams {
+            native_launch: None,
             agent_type: "no-such-agent-type".into(),
             ..root_spawn(Some(&wt))
         },

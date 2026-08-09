@@ -452,6 +452,7 @@ fn fixture(tag: &str) -> Fixture {
         .call(Call::AgentSpawn(AgentSpawnParams {
             agent_type: CALLER_TYPE.into(),
             prompt: format!("{ROOT_MARKER}: hold until this fixture is torn down"),
+            native_launch: None,
             caller: None,
             repo: Some(repo.clone()),
             acceptance_criteria: vec![],

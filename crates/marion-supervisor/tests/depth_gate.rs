@@ -449,6 +449,7 @@ fn spawn_over_socket(
     p: AgentSpawnParams,
 ) -> Result<Owned, String> {
     let p = AgentSpawnParams {
+        native_launch: None,
         caller: caller.map(|c| SpawnCaller {
             agent_id: c.agent_id.clone(),
             node_token: c.token.clone(),
@@ -476,6 +477,7 @@ fn chain_params(repo: Option<&Path>, depth: u32) -> AgentSpawnParams {
     AgentSpawnParams {
         agent_type: CHAIN_TYPE.into(),
         prompt: format!("depth-gate chain node at depth {depth}: hold until released"),
+        native_launch: None,
         caller: None,
         repo: repo.map(Path::to_path_buf),
         acceptance_criteria: vec![],
@@ -550,6 +552,7 @@ fn drive(node: &Node) -> Evidence {
         &state,
         Some(&caller),
         AgentSpawnParams {
+            native_launch: None,
             agent_type: node.agent_type.into(),
             prompt: format!("{DELEGATOR_MARKER}: delegate this task to a child of your own."),
             acceptance_criteria: vec!["the task is delegated".into()],

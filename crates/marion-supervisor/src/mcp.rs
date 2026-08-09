@@ -312,6 +312,7 @@ fn handle_tool_call(
             let params = marion_proto::params::AgentSpawnParams {
                 agent_type: agent_type.clone(),
                 prompt: args["prompt"].as_str().unwrap_or_default().to_string(),
+                native_launch: None,
                 caller,
                 // Forbidden with a caller, by name: the supervisor already knows which tree this
                 // node lives in, and a caller that states it is a caller that can lie about it.

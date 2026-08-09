@@ -489,6 +489,7 @@ mod tests {
             AgentSpawnParams {
                 agent_type: "codex-impl".into(),
                 prompt: "nothing may be started by this call".into(),
+                native_launch: None,
                 caller: Some(marion_proto::SpawnCaller {
                     agent_id: AgentId("019f-node".into()),
                     node_token: "tok".into(),
