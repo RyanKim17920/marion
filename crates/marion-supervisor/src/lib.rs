@@ -34,6 +34,8 @@ pub mod doctor;
 pub mod duplex;
 /// `events.jsonl`, writer and reader side: one node's stream on disk, and §7.3.3's one cursor.
 pub mod events;
+/// First-token native-facade routing, kept ahead of the legacy UTF-8 command parser.
+pub mod facade_cli;
 /// The seam between the registry and the socket: §2's `node/get` and `tree/subscribe`, and the
 /// projection of a replayed node into something a client can be told.
 pub mod handler;

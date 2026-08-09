@@ -19,8 +19,10 @@ use std::time::Duration as StdDuration;
 use marion_core::agent_type::{builtin, builtin_names};
 use marion_core::contract::ExitStatus;
 use marion_core::paths::state_dir;
+use marion_core::production_native_facades;
 use marion_supervisor::detach;
 use marion_supervisor::duplex::StreamEvent;
+use marion_supervisor::facade_cli::resolve_native_invocation;
 use marion_supervisor::root;
 use marion_supervisor::socket;
 use marion_supervisor::watch::{ChildEvent, JournalWatch};
@@ -1545,6 +1547,17 @@ fn uid() -> u32 {
 }
 
 fn main() -> ExitCode {
+    let native_facades = production_native_facades();
+    if let Some(invocation) =
+        resolve_native_invocation(std::env::args_os().skip(1), &native_facades)
+    {
+        eprintln!(
+            "marion: native facade transport is not ready for {:?}",
+            invocation.descriptor.command
+        );
+        return ExitCode::FAILURE;
+    }
+
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.iter().any(|a| a == "--help" || a == "-h") {
         println!("{}", usage_text());
