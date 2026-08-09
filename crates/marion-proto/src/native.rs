@@ -2,10 +2,18 @@
 
 use std::ffi::{OsStr, OsString};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::DecodePaddingMode;
+use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
+use base64::{Engine, alphabet};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+const OPAQUE_OS_VALUE_BASE64: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new()
+        .with_encode_padding(true)
+        .with_decode_padding_mode(DecodePaddingMode::RequireCanonical),
+);
 
 /// An operating-system value encoded with RFC 4648's standard padded base64 alphabet.
 ///
@@ -53,7 +61,7 @@ impl Serialize for OpaqueOsValueV1 {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&STANDARD.encode(&self.0))
+        serializer.serialize_str(&OPAQUE_OS_VALUE_BASE64.encode(&self.0))
     }
 }
 
@@ -63,7 +71,7 @@ impl<'de> Deserialize<'de> for OpaqueOsValueV1 {
         D: Deserializer<'de>,
     {
         let encoded = String::deserialize(deserializer)?;
-        STANDARD
+        OPAQUE_OS_VALUE_BASE64
             .decode(encoded)
             .map(Self)
             .map_err(|_| D::Error::custom("invalid base64-encoded OS value"))
@@ -96,15 +104,83 @@ pub struct TerminalGeometryV1 {
 }
 
 /// Version 1 of the byte-exact native process launch context.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Wire-version state is established by the type, not supplied by its caller:
+///
+/// ```compile_fail
+/// use std::ffi::OsStr;
+/// use marion_proto::{NativeLaunchContextV1, OpaqueOsValueV1, TerminalGeometryV1};
+///
+/// let value = OpaqueOsValueV1::from_os_str(OsStr::new("value")).unwrap();
+/// let _invalid = NativeLaunchContextV1 {
+///     wire_version: 2,
+///     program: value.clone(),
+///     argv: vec![],
+///     cwd: value,
+///     env: vec![],
+///     geometry: TerminalGeometryV1 { cols: 80, rows: 24, xpixel: 0, ypixel: 0 },
+/// };
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeLaunchContextV1 {
-    pub wire_version: u16,
     pub program: OpaqueOsValueV1,
     pub argv: Vec<OpaqueOsValueV1>,
     pub cwd: OpaqueOsValueV1,
     pub env: Vec<NativeEnvVarV1>,
     pub geometry: TerminalGeometryV1,
+}
+
+const NATIVE_LAUNCH_WIRE_VERSION: u16 = 1;
+
+impl NativeLaunchContextV1 {
+    /// Build semantic launch state. The wire version is fixed by this type and is not an input.
+    pub fn new(
+        program: OpaqueOsValueV1,
+        argv: Vec<OpaqueOsValueV1>,
+        cwd: OpaqueOsValueV1,
+        env: Vec<NativeEnvVarV1>,
+        geometry: TerminalGeometryV1,
+    ) -> Self {
+        Self {
+            program,
+            argv,
+            cwd,
+            env,
+            geometry,
+        }
+    }
+
+    /// The only wire version this type can serialize or deserialize.
+    pub const fn wire_version(&self) -> u16 {
+        NATIVE_LAUNCH_WIRE_VERSION
+    }
+}
+
+#[derive(Serialize)]
+struct NativeLaunchContextV1WireRef<'a> {
+    wire_version: u16,
+    program: &'a OpaqueOsValueV1,
+    argv: &'a [OpaqueOsValueV1],
+    cwd: &'a OpaqueOsValueV1,
+    env: &'a [NativeEnvVarV1],
+    geometry: &'a TerminalGeometryV1,
+}
+
+impl Serialize for NativeLaunchContextV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        NativeLaunchContextV1WireRef {
+            wire_version: self.wire_version(),
+            program: &self.program,
+            argv: &self.argv,
+            cwd: &self.cwd,
+            env: &self.env,
+            geometry: &self.geometry,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Deserialize)]
@@ -134,14 +210,13 @@ impl TryFrom<NativeLaunchContextV1Wire> for NativeLaunchContextV1 {
             });
         }
 
-        Ok(Self {
-            wire_version: wire.wire_version,
-            program: wire.program,
-            argv: wire.argv,
-            cwd: wire.cwd,
-            env: wire.env,
-            geometry: wire.geometry,
-        })
+        Ok(Self::new(
+            wire.program,
+            wire.argv,
+            wire.cwd,
+            wire.env,
+            wire.geometry,
+        ))
     }
 }
 
@@ -192,34 +267,67 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn opaque_os_values_use_padded_standard_base64() {
-        let value = opaque(&[0xfb, 0xff, 0xff]);
+        let value = opaque(&[0xff]);
 
-        assert_eq!(serde_json::to_string(&value).unwrap(), r#""+///""#);
+        assert_eq!(serde_json::to_string(&value).unwrap(), r#""/w==""#);
         assert_eq!(
-            serde_json::from_str::<OpaqueOsValueV1>(r#""+///""#).unwrap(),
+            serde_json::from_str::<OpaqueOsValueV1>(r#""/w==""#).unwrap(),
             value
+        );
+    }
+
+    #[test]
+    fn noncanonical_base64_padding_variants_are_rejected() {
+        for encoded in [r#""/w""#, r#""/w=""#, r#""/w===""#] {
+            let error = serde_json::from_str::<OpaqueOsValueV1>(encoded)
+                .expect_err("only canonical `/w==` may encode byte 0xff")
+                .to_string();
+
+            assert!(error.contains("base64-encoded OS value"), "{error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_native_context_construction_serializes_only_wire_version_one() {
+        let context = NativeLaunchContextV1::new(
+            opaque(b"program"),
+            vec![],
+            opaque(b"/cwd"),
+            vec![],
+            TerminalGeometryV1 {
+                cols: 80,
+                rows: 24,
+                xpixel: 0,
+                ypixel: 0,
+            },
+        );
+
+        assert_eq!(context.wire_version(), 1);
+        assert_eq!(
+            serde_json::to_string(&context).unwrap(),
+            r#"{"wire_version":1,"program":"cHJvZ3JhbQ==","argv":[],"cwd":"L2N3ZA==","env":[],"geometry":{"cols":80,"rows":24,"xpixel":0,"ypixel":0}}"#
         );
     }
 
     #[cfg(unix)]
     #[test]
     fn invalid_unix_bytes_survive_a_native_context_json_round_trip() {
-        let context = NativeLaunchContextV1 {
-            wire_version: 1,
-            program: opaque(b"/bin/tool\xff"),
-            argv: vec![opaque(b"tool\xfe"), opaque(b"--mode=\xfd")],
-            cwd: opaque(b"/tmp/tree\xfc"),
-            env: vec![NativeEnvVarV1 {
+        let context = NativeLaunchContextV1::new(
+            opaque(b"/bin/tool\xff"),
+            vec![opaque(b"tool\xfe"), opaque(b"--mode=\xfd")],
+            opaque(b"/tmp/tree\xfc"),
+            vec![NativeEnvVarV1 {
                 name: opaque(b"KEY\xfb"),
                 value: opaque(b"VALUE\xfa"),
             }],
-            geometry: TerminalGeometryV1 {
+            TerminalGeometryV1 {
                 cols: 211,
                 rows: 73,
                 xpixel: 1920,
                 ypixel: 1080,
             },
-        };
+        );
 
         let json = serde_json::to_string(&context).unwrap();
         let decoded: NativeLaunchContextV1 = serde_json::from_str(&json).unwrap();
@@ -232,18 +340,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn argv_and_env_keep_order_boundaries_and_empty_values() {
-        let context = NativeLaunchContextV1 {
-            wire_version: 1,
-            program: opaque(b"program"),
-            argv: vec![
+        let context = NativeLaunchContextV1::new(
+            opaque(b"program"),
+            vec![
                 opaque(b""),
                 opaque(b"ab"),
                 opaque(b"c"),
                 opaque(b"a"),
                 opaque(b"bc"),
             ],
-            cwd: opaque(b"/cwd"),
-            env: vec![
+            opaque(b"/cwd"),
+            vec![
                 NativeEnvVarV1 {
                     name: opaque(b"FIRST"),
                     value: opaque(b""),
@@ -253,13 +360,13 @@ mod tests {
                     value: opaque(b"two"),
                 },
             ],
-            geometry: TerminalGeometryV1 {
+            TerminalGeometryV1 {
                 cols: 0,
                 rows: u16::MAX,
                 xpixel: 1,
                 ypixel: u16::MAX - 1,
             },
-        };
+        );
 
         let decoded: NativeLaunchContextV1 =
             serde_json::from_str(&serde_json::to_string(&context).unwrap()).unwrap();
