@@ -182,6 +182,7 @@ fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
         // handed to `launch`, so the prompt that was prepared and the prompt that is written are
         // one string.
         prompt: "Call the report tool.".into(),
+        native_launch: None,
         repo: repo.canonicalize().unwrap(),
         state,
         base_url: Some(server.base_url()),

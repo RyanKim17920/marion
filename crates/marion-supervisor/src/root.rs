@@ -69,6 +69,7 @@ use marion_harness::{
     Auth, CallOutcome, ChildExit, Extras, Invocation, LaunchSpec, MarionCall, McpDeclaration,
     SpawnCtx, adapter_for, json_frames,
 };
+use marion_proto::NativeLaunchContextV1;
 use serde_json::Value;
 
 use crate::duplex::{self, DuplexError, DuplexSpec};
@@ -213,6 +214,13 @@ pub struct RootSpec {
     /// **into argv** at `prepare` time. One field, so the prompt that was compiled and the prompt
     /// that is written can never be two different strings.
     pub prompt: String,
+    /// Byte-exact native process state captured at the facade boundary.
+    ///
+    /// This slice carries the context into the root domain unchanged but never compiles or launches
+    /// it: the handler's readiness gate refuses production native requests before construction.
+    /// Keeping it here is the preparatory threading proof and prevents a later transport from
+    /// recovering these values from lossy generic fields.
+    pub native_launch: Option<NativeLaunchContextV1>,
     /// Canonical repository root. The root's cwd, and the repo its children are worktrees of.
     pub repo: PathBuf,
     /// Resolved state directory (`<state>` of §4.3), *not* the per-project subdirectory.
@@ -2113,6 +2121,7 @@ mod tests {
         RootSpec {
             agent_type: agent_type.into(),
             prompt: "delegate it".into(),
+            native_launch: None,
             repo: dir.join("repo"),
             state: dir.join("state"),
             base_url: Some("http://127.0.0.1:8099/v1".into()),

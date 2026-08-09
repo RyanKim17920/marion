@@ -82,8 +82,8 @@ use marion_proto::result::{
 };
 use marion_proto::{
     AttachMode, Call, ClientGone, DetachGuidance, FailureKind, KilledNode, MethodResult,
-    NodeSummary, QuitDisposition, QuitOutcome, ReplayPoint, ResidentReason, RpcError,
-    SupervisorDisposition,
+    NativeLaunchContextV1, NativeOsValueConversionError, NodeSummary, QuitDisposition, QuitOutcome,
+    ReplayPoint, ResidentReason, RpcError, SpawnCaller, SupervisorDisposition,
 };
 
 use crate::registry::{LiveRegistry, Registry};
@@ -106,6 +106,79 @@ pub enum Unprojectable {
     /// writer producing nonsense rather than a deep tree, and saturating it would silently place the
     /// node somewhere it is not.
     DepthOutOfRange(u32),
+}
+
+/// The one decision made at the native-launch root boundary.
+///
+/// A public V1 value has already passed protocol-version validation during deserialization. This
+/// gate therefore owns only the remaining three frame-level decisions: native state is root-only,
+/// its opaque values require a byte-exact platform conversion, and the transport is not shipped
+/// yet. Keeping them in one pure function makes the absence of launch fallback explicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum NativeLaunchGateError {
+    #[error("native launch context belongs only on a root request")]
+    ChildMisuse,
+    #[error(transparent)]
+    UnsupportedPlatform(#[from] NativeOsValueConversionError),
+    #[error("native facade transport is not ready")]
+    TransportNotReady,
+}
+
+impl NativeLaunchGateError {
+    fn into_rpc(self) -> RpcError {
+        match self {
+            Self::ChildMisuse => RpcError::refused(
+                "native_launch",
+                "native launch context belongs only on a root: a spawn carrying `caller` is a \
+                 managed child whose launch marion derives from its agent type and contract. \
+                 Refused rather than dropping the native context or replacing the managed launch.",
+                "§6.1, §9, §11 item 23",
+            ),
+            Self::UnsupportedPlatform(error) => RpcError::unsupported(
+                "native_launch",
+                format!(
+                    "this native launch request requires byte-exact operating-system values, but \
+                     {error}. Refused before any launch state was created."
+                ),
+                "§9",
+            ),
+            Self::TransportNotReady => RpcError::refused(
+                "native_launch",
+                "native facade transport is not ready. The V1 native launch context was accepted \
+                 as byte-exact root data, but marion has no shipped transport for it and will not \
+                 silently downgrade it to the managed headless launcher.",
+                "§9, §11 item 23",
+            ),
+        }
+    }
+}
+
+/// Validate the native launch shape before anything can claim, journal, allocate, or spawn.
+///
+/// On Unix every opaque value is reconstructed through `OsStringExt`, via the protocol type's
+/// conversion API. No value is decoded through `String`, logged, or retained as a second copy.
+pub(crate) fn validate_native_launch_boundary(
+    caller: Option<&SpawnCaller>,
+    native_launch: Option<&NativeLaunchContextV1>,
+) -> Result<(), NativeLaunchGateError> {
+    let Some(context) = native_launch else {
+        return Ok(());
+    };
+    if caller.is_some() {
+        return Err(NativeLaunchGateError::ChildMisuse);
+    }
+
+    let _ = context.program.to_os_string()?;
+    for arg in &context.argv {
+        let _ = arg.to_os_string()?;
+    }
+    let _ = context.cwd.to_os_string()?;
+    for entry in &context.env {
+        let _ = entry.name.to_os_string()?;
+        let _ = entry.value.to_os_string()?;
+    }
+
+    Err(NativeLaunchGateError::TransportNotReady)
 }
 
 impl Unprojectable {
@@ -864,6 +937,38 @@ pub struct RegistryHandle {
     exiting: AtomicBool,
 }
 
+/// Assemble the root domain input from the validated socket request and supervisor environment.
+///
+/// Pure by construction: it clones values already in memory and performs no adapter lookup,
+/// compilation, argv synthesis, filesystem access, PTY allocation, or launch. Production uses
+/// this same seam; while the native transport gate is closed, its focused test proves the opaque
+/// context is nevertheless threaded through unchanged for the slice that will eventually open it.
+fn root_spec_from_spawn(
+    p: &marion_proto::params::AgentSpawnParams,
+    repo: PathBuf,
+    env: &crate::run::Env,
+    agent_type: &marion_core::agent_type::AgentType,
+) -> crate::root::RootSpec {
+    crate::root::RootSpec {
+        agent_type: p.agent_type.clone(),
+        prompt: p.prompt.clone(),
+        native_launch: p.native_launch.clone(),
+        repo,
+        state: env.state.clone(),
+        base_url: env.base_url.clone(),
+        bridge: env.bridge.clone(),
+        // §3.1's precedence, the same one a child's spawn gets: the stated model, else the agent
+        // type's own `model` key.
+        model: p.model.clone().or_else(|| agent_type.model.clone()),
+        // Absent is `false` — marion looks. See `AgentSpawnParams::no_change_record`.
+        no_change_record: p.no_change_record.unwrap_or(false),
+        auth: env.auth,
+        // Absent is `false` — a node gets a pane because a run asked for one. See
+        // `AgentSpawnParams::pane`.
+        pane: p.pane.unwrap_or(false),
+    }
+}
+
 impl RegistryHandle {
     /// A handle that describes nodes and does not own any. See [`Self::spawn_env`].
     pub fn new(live: Arc<LiveRegistry>) -> Arc<RegistryHandle> {
@@ -1490,6 +1595,8 @@ impl RegistryHandle {
         p: &marion_proto::params::AgentSpawnParams,
         peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
+        validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_ref())
+            .map_err(NativeLaunchGateError::into_rpc)?;
         let me = self.me.upgrade().ok_or_else(|| {
             RpcError::internal(
                 "this supervisor is being dropped and will not start a node it could not then own",
@@ -1853,23 +1960,7 @@ impl RegistryHandle {
         // one layer down; two call sites of one lookup, never two rules.
         let agent_type =
             agent_type::builtin(&p.agent_type).ok_or_else(spawn_refused_before_the_node_existed)?;
-        let spec = crate::root::RootSpec {
-            agent_type: p.agent_type.clone(),
-            prompt: p.prompt.clone(),
-            repo: repo.clone(),
-            state: env.state.clone(),
-            base_url: env.base_url.clone(),
-            bridge: env.bridge.clone(),
-            // §3.1's precedence, the same one a child's spawn gets: the stated model, else the
-            // agent type's own `model` key.
-            model: p.model.clone().or_else(|| agent_type.model.clone()),
-            // Absent is `false` — marion looks. See `AgentSpawnParams::no_change_record`.
-            no_change_record: p.no_change_record.unwrap_or(false),
-            auth: env.auth,
-            // Absent is `false` — a node gets a pane because a run asked for one. See
-            // `AgentSpawnParams::pane`.
-            pane: p.pane.unwrap_or(false),
-        };
+        let spec = root_spec_from_spawn(p, repo.clone(), &env, &agent_type);
         // §9's node-level bound, resolved from what the client stated and the agent type — by the
         // same function `marion run` used to call in-process, so the number an operator typed and
         // the number the node runs under are one resolution.
@@ -5695,8 +5786,10 @@ mod tests {
     mod owns_nodes {
         use super::*;
         use marion_core::paths::ProjectDir;
-        use marion_proto::SpawnCaller;
         use marion_proto::params::AgentSpawnParams;
+        use marion_proto::{
+            NativeEnvVarV1, NativeLaunchContextV1, OpaqueOsValueV1, SpawnCaller, TerminalGeometryV1,
+        };
         use marion_testsupport::{fixture_repo, scratch};
 
         /// A handle that **owns** what it spawns, over a real repo and a real project directory.
@@ -6042,6 +6135,119 @@ mod tests {
                 repo: Some(repo.to_path_buf()),
                 ..params(None, secs)
             }
+        }
+
+        #[cfg(unix)]
+        fn opaque(bytes: &[u8]) -> OpaqueOsValueV1 {
+            use std::os::unix::ffi::OsStrExt;
+
+            OpaqueOsValueV1::from_os_str(std::ffi::OsStr::from_bytes(bytes))
+                .expect("Unix preserves native launch bytes")
+        }
+
+        #[cfg(unix)]
+        fn native_context(repo: &Path) -> NativeLaunchContextV1 {
+            NativeLaunchContextV1::new(
+                opaque(b"/native/program-\xff"),
+                vec![opaque(b"--opaque=\xfe")],
+                OpaqueOsValueV1::from_os_str(repo.as_os_str())
+                    .expect("the repository path is byte-exact on Unix"),
+                vec![NativeEnvVarV1 {
+                    name: opaque(b"NATIVE_MARKER"),
+                    value: opaque(b"value-\xfd"),
+                }],
+                TerminalGeometryV1 {
+                    cols: 137,
+                    rows: 43,
+                    xpixel: 9,
+                    ypixel: 11,
+                },
+            )
+        }
+
+        /// Native process state belongs only to the root request that originated at the CLI.
+        /// A child carrying it is a category error, before token lookup and before every write.
+        #[cfg(unix)]
+        #[test]
+        fn a_child_request_carrying_native_launch_is_refused_before_every_side_effect() {
+            let fx = owning("owns-native-child", vec![]);
+            let before = journal_len(&fx);
+            let mut p = params(
+                Some(SpawnCaller {
+                    agent_id: id("not-owned"),
+                    node_token: "not-a-token".into(),
+                }),
+                1,
+            );
+            p.native_launch = Some(native_context(&fx.repo));
+
+            let e = spawn(&fx, p).expect_err("native launch state is root-only");
+
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
+            assert!(
+                e.message
+                    .contains("native launch context belongs only on a root"),
+                "the refusal must name child misuse: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), before, "the refusal journals nothing");
+            assert_eq!(fx.handle.owned_nodes(), 0, "the refusal claims no node");
+        }
+
+        /// A valid V1 context is accepted as data but cannot launch until its transport exists.
+        /// This gate is deliberately earlier than type lookup, node claim, journal, PTY or process.
+        #[cfg(unix)]
+        #[test]
+        fn a_valid_root_native_launch_is_refused_because_transport_is_not_ready() {
+            let fx = owning("owns-native-root", vec![]);
+            let mut p = root_params(&fx.repo, 1);
+            p.native_launch = Some(native_context(&fx.repo));
+
+            let e = spawn(&fx, p).expect_err("the native facade transport is not ready");
+
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
+            assert!(
+                e.message.contains("native facade transport is not ready"),
+                "the refusal must name readiness: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), 0, "the readiness gate journals nothing");
+            assert_eq!(
+                fx.handle.owned_nodes(),
+                0,
+                "the readiness gate claims no node"
+            );
+        }
+
+        /// The production `RootSpec` constructor is the preparatory threading proof: byte-exact
+        /// context survives that boundary even though the readiness gate keeps production from
+        /// reaching it today.
+        #[cfg(unix)]
+        #[test]
+        fn root_spec_construction_preserves_native_launch_byte_for_byte() {
+            let fx = owning("owns-native-spec", vec![]);
+            let context = native_context(&fx.repo);
+            let expected = serde_json::to_vec(&context).expect("the context serializes");
+            let mut p = root_params(&fx.repo, 1);
+            p.native_launch = Some(context);
+            let env = fx
+                .handle
+                .spawn_env
+                .as_ref()
+                .expect("an owning handle has a spawn environment");
+            let ty = agent_type::builtin(&p.agent_type).expect("the fixture type exists");
+
+            let spec = root_spec_from_spawn(&p, fx.repo.clone(), env, &ty);
+            let carried = spec
+                .native_launch
+                .as_ref()
+                .expect("the root spec carries native context");
+            let actual = serde_json::to_vec(carried).expect("the carried context serializes");
+
+            assert!(
+                actual == expected,
+                "RootSpec must preserve every opaque native-context byte"
+            );
         }
 
         /// **§11 item 28 step 6, at the handler: a client creating a root is served.**
