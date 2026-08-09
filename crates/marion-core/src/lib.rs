@@ -12,6 +12,7 @@ pub mod ids;
 pub mod ir;
 pub mod journal;
 pub mod node;
+pub mod native_facade;
 pub mod paths;
 pub mod registry;
 pub mod root_change;
@@ -30,6 +31,11 @@ pub use harness::{Harness, UnknownHarness};
 pub use ids::{new_agent_id, new_task_id, uuid_v7};
 pub use ir::{Completeness, EventId, Provenance, Source, SrcSeq, Transformation};
 pub use journal::{JournalRecord, RecordKind, WriterId};
+pub use native_facade::{
+    NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry,
+    NativeFacadeValidationError, NativeFacadeTokenError, PRODUCTION_NATIVE_FACADES,
+    production_native_facades,
+};
 pub use node::{BlockReason, NodeState, ReapState};
 pub use paths::{AgentDir, ProjectDir, project_hash, state_dir};
 pub use registry::{Replay, ReplayedNode, Truncation, replay};
