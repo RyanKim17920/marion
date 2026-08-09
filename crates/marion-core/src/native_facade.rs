@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 /// The exact command words owned by marion rather than a native facade.
-const RESERVED_COMMANDS: &[&str] = &["help", "doctor", "version"];
+const RESERVED_COMMANDS: &[&str] = &["help", "doctor", "version", "run", "attach", "tree", "mcp"];
 
 /// A named native facade. This is metadata only; it neither locates nor launches a program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +270,34 @@ mod tests {
                 alias: "doctor",
             }
         );
+    }
+
+    #[test]
+    fn rejects_each_omitted_control_verb_as_a_primary_and_alias() {
+        for (verb, aliases) in [
+            ("run", &["run"] as &[_]),
+            ("attach", &["attach"]),
+            ("tree", &["tree"]),
+            ("mcp", &["mcp"]),
+        ] {
+            let primary = NativeFacadeDescriptor {
+                command: verb,
+                ..ATLAS
+            };
+            assert_eq!(
+                NativeFacadeRegistry::new(&[primary]).unwrap_err(),
+                NativeFacadeValidationError::ReservedCommand { command: verb }
+            );
+
+            let alias = NativeFacadeDescriptor { aliases, ..ATLAS };
+            assert_eq!(
+                NativeFacadeRegistry::new(&[alias]).unwrap_err(),
+                NativeFacadeValidationError::ReservedAlias {
+                    command: "atlas",
+                    alias: verb,
+                }
+            );
+        }
     }
 
     #[test]
