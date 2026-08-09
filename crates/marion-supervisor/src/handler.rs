@@ -108,12 +108,11 @@ pub enum Unprojectable {
     DepthOutOfRange(u32),
 }
 
-/// The one decision made at the native-launch root boundary.
+/// Failures made at the native-launch boundary.
 ///
 /// A public V1 value has already passed protocol-version validation during deserialization. This
-/// gate therefore owns only the remaining three frame-level decisions: native state is root-only,
-/// its opaque values require a byte-exact platform conversion, and the transport is not shipped
-/// yet. Keeping them in one pure function makes the absence of launch fallback explicit.
+/// type therefore owns only the remaining three decisions: native state is root-only, its opaque
+/// values require a byte-exact platform conversion, and the transport is not shipped yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum NativeLaunchGateError {
     #[error("native launch context belongs only on a root request")]
@@ -153,20 +152,31 @@ impl NativeLaunchGateError {
     }
 }
 
-/// Validate the native launch shape before anything can claim, journal, allocate, or spawn.
+/// Refuse the cheap native/child pairing before token lookup or any other handler state.
+///
+/// This function deliberately does not inspect an opaque value. A root's values and native
+/// support state are examined only after [`root_spawn_authorized`] authenticates its socket peer.
+pub(crate) fn validate_native_launch_pairing(
+    caller: Option<&SpawnCaller>,
+    native_launch: Option<&NativeLaunchContextV1>,
+) -> Result<(), NativeLaunchGateError> {
+    if caller.is_some() && native_launch.is_some() {
+        return Err(NativeLaunchGateError::ChildMisuse);
+    }
+    Ok(())
+}
+
+/// Validate authenticated root-native state before anything can claim, journal, allocate, or
+/// spawn.
 ///
 /// On Unix every opaque value is reconstructed through `OsStringExt`, via the protocol type's
 /// conversion API. No value is decoded through `String`, logged, or retained as a second copy.
-pub(crate) fn validate_native_launch_boundary(
-    caller: Option<&SpawnCaller>,
+pub(crate) fn validate_root_native_launch(
     native_launch: Option<&NativeLaunchContextV1>,
 ) -> Result<(), NativeLaunchGateError> {
     let Some(context) = native_launch else {
         return Ok(());
     };
-    if caller.is_some() {
-        return Err(NativeLaunchGateError::ChildMisuse);
-    }
 
     let _ = context.program.to_os_string()?;
     for arg in &context.argv {
@@ -1595,7 +1605,7 @@ impl RegistryHandle {
         p: &marion_proto::params::AgentSpawnParams,
         peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
-        validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_ref())
+        validate_native_launch_pairing(p.caller.as_ref(), p.native_launch.as_ref())
             .map_err(NativeLaunchGateError::into_rpc)?;
         let me = self.me.upgrade().ok_or_else(|| {
             RpcError::internal(
@@ -1908,6 +1918,8 @@ impl RegistryHandle {
         peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
         root_spawn_authorized(peer)?;
+        validate_root_native_launch(p.native_launch.as_ref())
+            .map_err(NativeLaunchGateError::into_rpc)?;
         let repo = p.repo.clone().ok_or_else(|| {
             // Unreachable: the frame-shape match above refuses `(None, None)` by name before any
             // state is consulted. A refusal rather than an `expect`, because a supervisor owning a
@@ -6536,6 +6548,38 @@ mod tests {
                 "{}",
                 e.message
             );
+        }
+
+        /// Native root state is still attacker-controlled until the socket peer is authenticated.
+        /// An unauthorized peer learns only that its credentials were refused: platform support
+        /// and transport readiness are facts marion reveals after that boundary, never before it.
+        #[cfg(unix)]
+        #[test]
+        fn an_unauthorized_root_native_request_gets_the_credential_refusal_first() {
+            let fx = owning("owns-native-peer", vec![]);
+            let mut p = root_params(&fx.repo, 1);
+            p.native_launch = Some(native_context(&fx.repo));
+
+            let e = fx
+                .handle
+                .agent_spawn(&p, Peer::Unknown)
+                .expect_err("an unreadable peer may not create a native root");
+
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
+            assert!(
+                e.message
+                    .contains("could not read this connection's peer credentials"),
+                "credential refusal must precede platform/readiness disclosure: {}",
+                e.message
+            );
+            assert!(
+                !e.message.contains("native facade transport")
+                    && !e.message.contains("byte-exact operating-system"),
+                "an unauthorized peer learned native support state: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), 0, "the refusal journals nothing");
+            assert_eq!(fx.handle.owned_nodes(), 0, "the refusal claims no node");
         }
 
         /// **And it is not a token, deliberately** — the other half of open question 3.
