@@ -955,7 +955,7 @@ fn root_spec_from_spawn(
     crate::root::RootSpec {
         agent_type: p.agent_type.clone(),
         prompt: p.prompt.clone(),
-        native_launch: p.native_launch.clone(),
+        native_launch: p.native_launch.as_deref().cloned(),
         repo,
         state: env.state.clone(),
         base_url: env.base_url.clone(),
@@ -1599,7 +1599,7 @@ impl RegistryHandle {
         peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
         if p.caller.is_some() {
-            validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_ref())
+            validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_deref())
                 .map_err(NativeLaunchGateError::into_rpc)?;
         }
         let me = self.me.upgrade().ok_or_else(|| {
@@ -1913,7 +1913,7 @@ impl RegistryHandle {
         peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
         root_spawn_authorized(peer)?;
-        validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_ref())
+        validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_deref())
             .map_err(NativeLaunchGateError::into_rpc)?;
         let repo = p.repo.clone().ok_or_else(|| {
             // Unreachable: the frame-shape match above refuses `(None, None)` by name before any
@@ -6210,7 +6210,7 @@ mod tests {
                 }),
                 1,
             );
-            p.native_launch = Some(native_context(&fx.repo));
+            p.native_launch = Some(Box::new(native_context(&fx.repo)));
 
             let e = spawn(&fx, p).expect_err("native launch state is root-only");
 
@@ -6232,7 +6232,7 @@ mod tests {
         fn a_valid_root_native_launch_is_refused_because_transport_is_not_ready() {
             let fx = owning("owns-native-root", vec![]);
             let mut p = root_params(&fx.repo, 1);
-            p.native_launch = Some(native_context(&fx.repo));
+            p.native_launch = Some(Box::new(native_context(&fx.repo)));
 
             let e = spawn(&fx, p).expect_err("the native facade transport is not ready");
 
@@ -6260,7 +6260,7 @@ mod tests {
             let context = native_context(&fx.repo);
             let expected = serde_json::to_vec(&context).expect("the context serializes");
             let mut p = root_params(&fx.repo, 1);
-            p.native_launch = Some(context);
+            p.native_launch = Some(Box::new(context));
             let env = fx
                 .handle
                 .spawn_env
@@ -6577,7 +6577,7 @@ mod tests {
         fn an_unauthorized_root_native_request_gets_the_credential_refusal_first() {
             let fx = owning("owns-native-peer", vec![]);
             let mut p = root_params(&fx.repo, 1);
-            p.native_launch = Some(native_context(&fx.repo));
+            p.native_launch = Some(Box::new(native_context(&fx.repo)));
 
             let e = fx
                 .handle

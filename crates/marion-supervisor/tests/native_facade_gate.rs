@@ -160,7 +160,7 @@ impl Bed {
         AgentSpawnParams {
             agent_type: "claude".into(),
             prompt: "unused because native launch is gated".into(),
-            native_launch: Some(self.context()),
+            native_launch: Some(Box::new(self.context())),
             caller: None,
             repo: Some(self.repo.clone()),
             acceptance_criteria: vec![],

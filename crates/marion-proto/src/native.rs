@@ -478,6 +478,24 @@ mod tests {
     }
 
     #[test]
+    fn a_v1_native_spawn_frame_has_one_canonical_wire_shape() {
+        let context = minimal_context_json(1);
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"agent/spawn","params":{{"agent_type":"t","prompt":"p","native_launch":{context}}}}}"#
+        );
+
+        let frame = Frame::from_line(&line).expect("the V1 native spawn frame is valid");
+
+        assert_eq!(
+            frame.to_line(),
+            concat!(
+                r#"{"jsonrpc":"2.0","id":1,"method":"agent/spawn","params":{"agent_type":"t","prompt":"p","native_launch":{"wire_version":1,"program":"L2Jpbi9zaA==","argv":[],"cwd":"L3RtcA==","env":[],"geometry":{"cols":80,"rows":24,"xpixel":0,"ypixel":0}},"caller":null,"repo":null,"acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}}"#,
+                "\n"
+            )
+        );
+    }
+
+    #[test]
     fn a_spawn_frame_with_an_unknown_native_field_is_refused_loudly() {
         let context = format!(
             "{},\"surprise\":true}}",

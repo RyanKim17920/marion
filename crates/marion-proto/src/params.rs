@@ -267,9 +267,11 @@ pub struct AgentSpawnParams {
     pub agent_type: String,
     pub prompt: String,
     /// Byte-exact launch inputs captured by a native facade. Absent for legacy callers and all
-    /// existing generic spawn paths; omission is the backward-compatible wire spelling.
+    /// existing generic spawn paths; omission is the backward-compatible wire spelling. The
+    /// dormant payload is boxed so the enclosing protocol call does not reserve its full size for
+    /// every legacy spawn; serde keeps the JSON shape unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_launch: Option<NativeLaunchContextV1>,
+    pub native_launch: Option<Box<NativeLaunchContextV1>>,
     /// `None` is a client creating a root; `Some` is a node spawning a child. See [`SpawnCaller`].
     #[serde(default)]
     pub caller: Option<SpawnCaller>,
