@@ -7,8 +7,8 @@ use std::ffi::OsString;
 use std::process::{Command, ExitCode};
 
 use marion_core::{
-    production_native_facades, NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry,
-    NativeFacadeTransport,
+    NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry, NativeFacadeTransport,
+    production_native_facades,
 };
 use marion_supervisor::facade_cli::dispatch_native_facade_or_legacy;
 
