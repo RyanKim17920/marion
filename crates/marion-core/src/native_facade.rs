@@ -53,10 +53,13 @@ pub enum NativeFacadeValidationError {
     },
     #[error("native facade command {command:?} is registered more than once")]
     DuplicatePrimary { command: &'static str },
-    #[error("native facade alias {alias:?} collides with primary command {command:?}")]
+    #[error(
+        "native facade alias {alias:?} for command {alias_command:?} collides with primary command {primary_command:?}"
+    )]
     AliasMatchesPrimary {
         alias: &'static str,
-        command: &'static str,
+        alias_command: &'static str,
+        primary_command: &'static str,
     },
     #[error(
         "native facade alias {alias:?} is registered for both {first_command:?} and {second_command:?}"
@@ -101,10 +104,11 @@ impl<'a> NativeFacadeRegistry<'a> {
                     command: descriptor.command,
                 });
             }
-            if aliases.contains_key(descriptor.command) {
+            if let Some(&alias_command) = aliases.get(descriptor.command) {
                 return Err(NativeFacadeValidationError::AliasMatchesPrimary {
                     alias: descriptor.command,
-                    command: descriptor.command,
+                    alias_command,
+                    primary_command: descriptor.command,
                 });
             }
 
@@ -119,7 +123,8 @@ impl<'a> NativeFacadeRegistry<'a> {
                 if primaries.contains_key(alias) {
                     return Err(NativeFacadeValidationError::AliasMatchesPrimary {
                         alias,
-                        command: alias,
+                        alias_command: descriptor.command,
+                        primary_command: alias,
                     });
                 }
                 if let Some(first_command) = aliases.insert(alias, descriptor.command) {
@@ -314,19 +319,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_alias_that_collides_with_a_primary_name() {
-        let descriptor = NativeFacadeDescriptor {
+    fn a_primary_alias_collision_names_both_owners_in_either_registration_order() {
+        let alias_owner = NativeFacadeDescriptor {
             aliases: &["boreal"],
             ..ATLAS
         };
 
-        assert_eq!(
-            NativeFacadeRegistry::new(&[descriptor, BOREAL]).unwrap_err(),
-            NativeFacadeValidationError::AliasMatchesPrimary {
-                alias: "boreal",
-                command: "boreal",
-            }
-        );
+        for descriptors in [[alias_owner, BOREAL], [BOREAL, alias_owner]] {
+            assert_eq!(
+                NativeFacadeRegistry::new(&descriptors).unwrap_err(),
+                NativeFacadeValidationError::AliasMatchesPrimary {
+                    alias: "boreal",
+                    alias_command: "atlas",
+                    primary_command: "boreal",
+                }
+            );
+        }
     }
 
     #[test]
