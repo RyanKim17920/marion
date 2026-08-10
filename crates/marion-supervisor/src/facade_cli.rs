@@ -4,11 +4,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use marion_core::{NativeFacadeDescriptor, NativeFacadeRegistry};
+use marion_harness::validate_native_process_values;
 use marion_proto::{NativeEnvVarV1, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1};
 
-use crate::native_binding::{
-    NativeBindingError, resolve_declared_executable, validate_launch_values,
-};
+use crate::native_binding::{NativeBindingError, resolve_declared_executable};
 
 /// One ready native facade selected by argv's first token.
 #[derive(Debug, PartialEq, Eq)]
@@ -25,11 +24,11 @@ pub fn build_native_launch_v2(
     geometry: TerminalGeometryV1,
 ) -> Result<NativeLaunchContextV2, NativeBindingError> {
     let NativeFacadeInvocation { descriptor, argv } = invocation;
-    validate_launch_values(
+    validate_native_process_values(
         std::ffi::OsStr::new(descriptor.executable),
         &argv,
-        &cwd,
         &env,
+        &cwd,
     )?;
     let program = resolve_declared_executable(descriptor.executable, &cwd, &env)?;
 

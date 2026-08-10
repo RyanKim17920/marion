@@ -1,8 +1,8 @@
-use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use marion_core::{NativeFacadeDescriptor, NativeFacadeRegistry, NativeFacadeTransport};
+use marion_harness::{NativeInjectionError, validate_native_process_values};
 use marion_proto::{
     NativeLaunchContext, NativeLaunchContextV2, NativeOsValueConversionError, TerminalGeometryV1,
 };
@@ -33,58 +33,14 @@ pub enum NativeBindingError {
     TransportMismatch(NativeFacadeTransport),
     #[error("native launch environment has no PATH")]
     MissingPath,
-    #[error("native launch contains an invalid environment name")]
-    InvalidEnvironmentName,
-    #[error("native launch contains a duplicate environment name")]
-    DuplicateEnvironmentName,
-    #[error("native launch contains an embedded NUL")]
-    EmbeddedNul,
+    #[error(transparent)]
+    InvalidProcess(#[from] NativeInjectionError),
     #[error("declared executable {0:?} was not found on the submitted PATH")]
     ProgramNotFound(String),
     #[error("submitted native program does not equal the declared executable resolution")]
     ProgramMismatch,
     #[error(transparent)]
     UnsupportedPlatform(#[from] NativeOsValueConversionError),
-}
-
-fn contains_nul(value: &OsStr) -> bool {
-    value.as_encoded_bytes().contains(&0)
-}
-
-fn validate_environment(env: &[(OsString, OsString)]) -> Result<(), NativeBindingError> {
-    if env
-        .iter()
-        .any(|(name, value)| contains_nul(name) || contains_nul(value))
-    {
-        return Err(NativeBindingError::EmbeddedNul);
-    }
-
-    let mut names = HashSet::with_capacity(env.len());
-    for (name, _) in env {
-        let bytes = name.as_encoded_bytes();
-        if bytes.is_empty() || bytes.contains(&b'=') {
-            return Err(NativeBindingError::InvalidEnvironmentName);
-        }
-        if !names.insert(name.clone()) {
-            return Err(NativeBindingError::DuplicateEnvironmentName);
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_launch_values(
-    program: &OsStr,
-    argv: &[OsString],
-    cwd: &Path,
-    env: &[(OsString, OsString)],
-) -> Result<(), NativeBindingError> {
-    if contains_nul(program)
-        || argv.iter().any(|argument| contains_nul(argument))
-        || contains_nul(cwd.as_os_str())
-    {
-        return Err(NativeBindingError::EmbeddedNul);
-    }
-    validate_environment(env)
 }
 
 /// Resolve only the declared executable from the exact submitted `PATH` and cwd.
@@ -105,10 +61,8 @@ pub fn resolve_declared_executable(
     {
         use std::os::unix::fs::PermissionsExt;
 
-        if executable.as_bytes().contains(&0) || contains_nul(cwd.as_os_str()) {
-            return Err(NativeBindingError::EmbeddedNul);
-        }
-        validate_environment(env)?;
+        validate_native_process_values(OsStr::new(executable), &[], env, cwd)?;
+
         let path = env
             .iter()
             .find(|(name, _)| name == OsStr::new("PATH"))
@@ -156,7 +110,7 @@ fn convert_v2(
         .iter()
         .map(|entry| Ok((entry.name.to_os_string()?, entry.value.to_os_string()?)))
         .collect::<Result<Vec<_>, NativeOsValueConversionError>>()?;
-    validate_launch_values(&program, &argv, &cwd, &env)?;
+    validate_native_process_values(&program, &argv, &env, &cwd)?;
     Ok(ConvertedNativeLaunch {
         program,
         argv,
@@ -533,12 +487,12 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_and_invalid_environment_names_are_refused_before_path_lookup() {
+    fn duplicate_and_invalid_environment_names_are_refused_before_descriptor_lookup() {
         let work = scratch("native-binding-invalid-env");
         let registry = NativeFacadeRegistry::new(&[READY]).expect("the registry is valid");
 
         let duplicate = v2_context(
-            "atlas",
+            "unknown",
             OsStr::new("/missing/atlas-cli"),
             &[],
             &work,
@@ -549,55 +503,74 @@ mod tests {
         );
         assert!(matches!(
             bind_native_launch(&duplicate, "atlas-agent", &registry),
-            Err(NativeBindingError::DuplicateEnvironmentName)
+            Err(NativeBindingError::InvalidProcess(
+                NativeInjectionError::DuplicateEnvironmentName
+            ))
         ));
 
-        for name in [OsStr::new(""), OsStr::new("BAD=NAME")] {
-            let invalid = v2_context(
-                "atlas",
-                OsStr::new("/missing/atlas-cli"),
-                &[],
-                &work,
-                vec![
-                    env_var(OsStr::new("PATH"), OsStr::new("/missing")),
-                    env_var(name, OsStr::new("value")),
-                ],
-            );
-            assert!(matches!(
-                bind_native_launch(&invalid, "atlas-agent", &registry),
-                Err(NativeBindingError::InvalidEnvironmentName)
-            ));
-        }
+        let empty = v2_context(
+            "unknown",
+            OsStr::new("/missing/atlas-cli"),
+            &[],
+            &work,
+            vec![
+                env_var(OsStr::new("PATH"), OsStr::new("/missing")),
+                env_var(OsStr::new(""), OsStr::new("value")),
+            ],
+        );
+        assert!(matches!(
+            bind_native_launch(&empty, "atlas-agent", &registry),
+            Err(NativeBindingError::InvalidProcess(
+                NativeInjectionError::EmptyEnvironmentName
+            ))
+        ));
+
+        let equals = v2_context(
+            "unknown",
+            OsStr::new("/missing/atlas-cli"),
+            &[],
+            &work,
+            vec![
+                env_var(OsStr::new("PATH"), OsStr::new("/missing")),
+                env_var(OsStr::new("BAD=NAME"), OsStr::new("value")),
+            ],
+        );
+        assert!(matches!(
+            bind_native_launch(&equals, "atlas-agent", &registry),
+            Err(NativeBindingError::InvalidProcess(
+                NativeInjectionError::InvalidEnvironmentName
+            ))
+        ));
     }
 
     #[test]
-    fn nul_in_any_native_os_value_is_refused_before_path_lookup() {
+    fn nul_in_any_native_os_value_is_refused_before_descriptor_lookup() {
         let work = scratch("native-binding-nul");
         let registry = NativeFacadeRegistry::new(&[READY]).expect("the registry is valid");
         let cases = [
             v2_context(
-                "atlas",
+                "unknown",
                 OsStr::from_bytes(b"/missing/atlas\0-cli"),
                 &[],
                 &work,
                 vec![env_var(OsStr::new("PATH"), OsStr::new("/missing"))],
             ),
             v2_context(
-                "atlas",
+                "unknown",
                 OsStr::new("/missing/atlas-cli"),
                 &[OsStr::from_bytes(b"arg\0ument")],
                 &work,
                 vec![env_var(OsStr::new("PATH"), OsStr::new("/missing"))],
             ),
             v2_context(
-                "atlas",
+                "unknown",
                 OsStr::new("/missing/atlas-cli"),
                 &[],
                 Path::new(OsStr::from_bytes(b"/missing/cwd\0")),
                 vec![env_var(OsStr::new("PATH"), OsStr::new("/missing"))],
             ),
             v2_context(
-                "atlas",
+                "unknown",
                 OsStr::new("/missing/atlas-cli"),
                 &[],
                 &work,
@@ -607,7 +580,7 @@ mod tests {
                 ],
             ),
             v2_context(
-                "atlas",
+                "unknown",
                 OsStr::new("/missing/atlas-cli"),
                 &[],
                 &work,
@@ -621,7 +594,9 @@ mod tests {
         for context in cases {
             assert!(matches!(
                 bind_native_launch(&context, "atlas-agent", &registry),
-                Err(NativeBindingError::EmbeddedNul)
+                Err(NativeBindingError::InvalidProcess(
+                    NativeInjectionError::EmbeddedNul
+                ))
             ));
         }
     }

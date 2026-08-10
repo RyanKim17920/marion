@@ -17,6 +17,7 @@ pub mod codex;
 pub mod gemini;
 pub mod invocation;
 pub mod mcp_bridge;
+pub mod native;
 pub mod opencode;
 pub mod stream;
 pub mod surfaces;
@@ -34,6 +35,11 @@ pub use claude_code::{
 };
 pub use codex::{ExecSpec, compile_exec, config_toml};
 pub use mcp_bridge::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
+pub use native::{
+    NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
+    NativeInjectionError, NativeInvocation, NativeNodeContext, NativeProcessBase,
+    NativeTerminalGeometry, PreparedNativeLaunch, assemble_native, validate_native_process_values,
+};
 // `gemini` and `opencode` are addressed by module path rather than flattened here. Both define a
 // `BridgeEnv` and an `MCP_ALIAS`, and both spell marion's tool names differently — a flattened
 // `BridgeEnv` would make the harness a caller is configuring invisible at the use site, which is
