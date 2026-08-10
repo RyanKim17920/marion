@@ -13,6 +13,19 @@ fn production_exposes_no_facade_and_known_or_arbitrary_names_keep_legacy_usage()
         "a native facade became public before its transport exists"
     );
 
+    let canonical_help = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .arg("--help")
+        .output()
+        .expect("the marion binary runs");
+    assert!(
+        canonical_help.status.success(),
+        "the canonical marion help command no longer succeeds"
+    );
+    assert!(
+        canonical_help.stderr.is_empty(),
+        "the canonical marion help command printed to stderr"
+    );
+
     for selector in ["claude", "codex", "definitely-not-a-facade"] {
         let output = Command::new(env!("CARGO_BIN_EXE_marion"))
             .arg(selector)
@@ -25,9 +38,9 @@ fn production_exposes_no_facade_and_known_or_arbitrary_names_keep_legacy_usage()
             Some(2),
             "{selector:?} no longer takes the legacy refusal path; stderr: {stderr}"
         );
-        assert!(
-            stderr.starts_with("usage: marion"),
-            "{selector:?} no longer prints legacy usage; stderr: {stderr}"
+        assert_eq!(
+            output.stderr, canonical_help.stdout,
+            "{selector:?} no longer prints byte-exact legacy usage; stderr: {stderr}"
         );
         assert!(
             output.stdout.is_empty(),
@@ -43,9 +56,9 @@ fn production_exposes_no_facade_and_known_or_arbitrary_names_keep_legacy_usage()
             help.status.success(),
             "{selector:?} no longer retains the legacy all-argument help scan"
         );
-        assert!(
-            String::from_utf8_lossy(&help.stdout).starts_with("usage: marion"),
-            "{selector:?} did not print legacy help"
+        assert_eq!(
+            help.stdout, canonical_help.stdout,
+            "{selector:?} no longer prints byte-exact legacy help"
         );
         assert!(
             help.stderr.is_empty(),
