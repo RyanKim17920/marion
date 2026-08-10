@@ -56,20 +56,26 @@ pub fn dispatch_native_facade_or_legacy<'a>(
 mod tests {
     use std::ffi::OsString;
 
-    use marion_core::{NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry};
+    use marion_core::{
+        NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry, NativeFacadeTransport,
+    };
 
     use super::*;
 
     const READY: NativeFacadeDescriptor = NativeFacadeDescriptor {
         command: "atlas",
         aliases: &["at"],
+        executable: "atlas-cli",
         agent_type: "atlas-agent",
+        transport: NativeFacadeTransport::TransparentPty,
         readiness: NativeFacadeReadiness::Ready,
     };
     const PLANNED: NativeFacadeDescriptor = NativeFacadeDescriptor {
         command: "boreal",
         aliases: &["bo"],
+        executable: "boreal-cli",
         agent_type: "boreal-agent",
+        transport: NativeFacadeTransport::TransparentPty,
         readiness: NativeFacadeReadiness::Planned,
     };
     const DESCRIPTORS: &[NativeFacadeDescriptor] = &[READY, PLANNED];

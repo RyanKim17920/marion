@@ -8,8 +8,18 @@ const RESERVED_COMMANDS: &[&str] = &["help", "doctor", "version", "run", "attach
 pub struct NativeFacadeDescriptor {
     pub command: &'static str,
     pub aliases: &'static [&'static str],
+    pub executable: &'static str,
     pub agent_type: &'static str,
+    pub transport: NativeFacadeTransport,
     pub readiness: NativeFacadeReadiness,
+}
+
+/// The protocol used to communicate with a native facade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeFacadeTransport {
+    TransparentPty,
+    TypedAcp,
+    RecursiveMarion,
 }
 
 /// Whether a descriptor is eligible for launch.
@@ -30,6 +40,19 @@ pub enum NativeFacadeTokenError {
     LeadingDash,
 }
 
+/// The reason an executable program name cannot be registered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum NativeFacadeExecutableError {
+    #[error("is empty")]
+    Empty,
+    #[error("contains non-ASCII characters")]
+    NonAscii,
+    #[error("starts with '-'")]
+    LeadingDash,
+    #[error("contains a path separator")]
+    PathSeparator,
+}
+
 /// A malformed or ambiguous native-facade descriptor set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NativeFacadeValidationError {
@@ -43,6 +66,12 @@ pub enum NativeFacadeValidationError {
         command: &'static str,
         alias: &'static str,
         reason: NativeFacadeTokenError,
+    },
+    #[error("invalid executable {executable:?} for native facade command {command:?}: {reason}")]
+    InvalidExecutable {
+        command: &'static str,
+        executable: &'static str,
+        reason: NativeFacadeExecutableError,
     },
     #[error("native facade command {command:?} is reserved")]
     ReservedCommand { command: &'static str },
@@ -94,6 +123,7 @@ impl<'a> NativeFacadeRegistry<'a> {
 
         for descriptor in descriptors {
             validate_command(descriptor.command)?;
+            validate_executable(descriptor.command, descriptor.executable)?;
             if RESERVED_COMMANDS.contains(&descriptor.command) {
                 return Err(NativeFacadeValidationError::ReservedCommand {
                     command: descriptor.command,
@@ -153,6 +183,13 @@ impl<'a> NativeFacadeRegistry<'a> {
             .filter(|descriptor| descriptor.readiness == NativeFacadeReadiness::Ready)
     }
 
+    /// Resolves a ready facade by its canonical primary command only.
+    pub fn resolve_primary_for_launch(&self, command: &str) -> Option<&'a NativeFacadeDescriptor> {
+        self.descriptors.iter().find(|descriptor| {
+            descriptor.command == command && descriptor.readiness == NativeFacadeReadiness::Ready
+        })
+    }
+
     /// Primary command names that are currently permitted to launch.
     pub fn ready_commands(&self) -> Vec<&'a str> {
         self.descriptors
@@ -179,6 +216,17 @@ fn validate_alias(
     })
 }
 
+fn validate_executable(
+    command: &'static str,
+    executable: &'static str,
+) -> Result<(), NativeFacadeValidationError> {
+    executable_error(executable).map_err(|reason| NativeFacadeValidationError::InvalidExecutable {
+        command,
+        executable,
+        reason,
+    })
+}
+
 fn token_error(token: &str) -> Result<(), NativeFacadeTokenError> {
     if token.is_empty() {
         Err(NativeFacadeTokenError::Empty)
@@ -186,6 +234,20 @@ fn token_error(token: &str) -> Result<(), NativeFacadeTokenError> {
         Err(NativeFacadeTokenError::NonAscii)
     } else if token.starts_with('-') {
         Err(NativeFacadeTokenError::LeadingDash)
+    } else {
+        Ok(())
+    }
+}
+
+fn executable_error(executable: &str) -> Result<(), NativeFacadeExecutableError> {
+    if executable.is_empty() {
+        Err(NativeFacadeExecutableError::Empty)
+    } else if !executable.is_ascii() {
+        Err(NativeFacadeExecutableError::NonAscii)
+    } else if executable.starts_with('-') {
+        Err(NativeFacadeExecutableError::LeadingDash)
+    } else if executable.contains('/') || executable.contains('\\') {
+        Err(NativeFacadeExecutableError::PathSeparator)
     } else {
         Ok(())
     }
@@ -207,13 +269,17 @@ mod tests {
     const ATLAS: NativeFacadeDescriptor = NativeFacadeDescriptor {
         command: "atlas",
         aliases: &["at"],
+        executable: "atlas-cli",
         agent_type: "atlas-agent",
+        transport: NativeFacadeTransport::TransparentPty,
         readiness: NativeFacadeReadiness::Ready,
     };
     const BOREAL: NativeFacadeDescriptor = NativeFacadeDescriptor {
         command: "boreal",
         aliases: &["bo"],
+        executable: "boreal-cli",
         agent_type: "boreal-agent",
+        transport: NativeFacadeTransport::TransparentPty,
         readiness: NativeFacadeReadiness::Planned,
     };
 
@@ -229,6 +295,50 @@ mod tests {
         let registry = NativeFacadeRegistry::new(&[ATLAS]).unwrap();
 
         assert_eq!(registry.resolve("at"), Some(&ATLAS));
+    }
+
+    #[test]
+    fn client_alias_resolution_and_handler_primary_binding_are_distinct() {
+        let registry = NativeFacadeRegistry::new(&[ATLAS]).unwrap();
+
+        assert_eq!(registry.resolve_for_launch("at"), Some(&ATLAS));
+        assert_eq!(registry.resolve_primary_for_launch("atlas"), Some(&ATLAS));
+        assert_eq!(registry.resolve_primary_for_launch("at"), None);
+    }
+
+    #[test]
+    fn rejects_invalid_executable_names() {
+        for (executable, reason) in [
+            ("", NativeFacadeExecutableError::Empty),
+            ("atlás", NativeFacadeExecutableError::NonAscii),
+            ("-atlas", NativeFacadeExecutableError::LeadingDash),
+            ("../atlas", NativeFacadeExecutableError::PathSeparator),
+            ("atlas\\\\cli", NativeFacadeExecutableError::PathSeparator),
+        ] {
+            let descriptor = NativeFacadeDescriptor {
+                executable,
+                ..ATLAS
+            };
+
+            assert_eq!(
+                NativeFacadeRegistry::new(&[descriptor]).unwrap_err(),
+                NativeFacadeValidationError::InvalidExecutable {
+                    command: "atlas",
+                    executable,
+                    reason,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn transport_metadata_distinguishes_typed_acp_from_transparent_pty() {
+        let typed_acp = NativeFacadeDescriptor {
+            transport: NativeFacadeTransport::TypedAcp,
+            ..ATLAS
+        };
+
+        assert_ne!(typed_acp.transport, ATLAS.transport);
     }
 
     #[test]
@@ -342,7 +452,9 @@ mod tests {
         let duplicate_alias = NativeFacadeDescriptor {
             command: "cinder",
             aliases: &["at"],
+            executable: "cinder-cli",
             agent_type: "cinder-agent",
+            transport: NativeFacadeTransport::TransparentPty,
             readiness: NativeFacadeReadiness::Ready,
         };
 

@@ -7,7 +7,8 @@ use std::ffi::OsString;
 use std::process::{Command, ExitCode};
 
 use marion_core::{
-    NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry, production_native_facades,
+    production_native_facades, NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry,
+    NativeFacadeTransport,
 };
 use marion_supervisor::facade_cli::dispatch_native_facade_or_legacy;
 
@@ -16,7 +17,9 @@ fn a_synthetic_ready_facade_is_refused_before_the_legacy_cli_runs() {
     const DESCRIPTORS: &[NativeFacadeDescriptor] = &[NativeFacadeDescriptor {
         command: "atlas",
         aliases: &[],
+        executable: "atlas-cli",
         agent_type: "atlas-agent",
+        transport: NativeFacadeTransport::TransparentPty,
         readiness: NativeFacadeReadiness::Ready,
     }];
     let registry = NativeFacadeRegistry::new(DESCRIPTORS).expect("synthetic registry is valid");

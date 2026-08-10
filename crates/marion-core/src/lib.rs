@@ -19,8 +19,8 @@ pub mod root_change;
 pub mod scope;
 
 pub use agent_type::{
-    AgentType, DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_DEPTH, DEFAULT_TIMEOUT_SECS,
-    SpawnGateError, check_spawn_gates, default_scope_ceiling,
+    check_spawn_gates, default_scope_ceiling, AgentType, SpawnGateError,
+    DEFAULT_MAX_CONCURRENT_CHILDREN, DEFAULT_MAX_DEPTH, DEFAULT_TIMEOUT_SECS,
 };
 pub use contract::{
     AgentId, Capped, ChildRef, Command, CommandOutcome, Completion, ExitStatus, Glob, Oid,
@@ -32,10 +32,11 @@ pub use ids::{new_agent_id, new_task_id, uuid_v7};
 pub use ir::{Completeness, EventId, Provenance, Source, SrcSeq, Transformation};
 pub use journal::{JournalRecord, RecordKind, WriterId};
 pub use native_facade::{
-    NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry, NativeFacadeTokenError,
-    NativeFacadeValidationError, PRODUCTION_NATIVE_FACADES, production_native_facades,
+    production_native_facades, NativeFacadeDescriptor, NativeFacadeExecutableError,
+    NativeFacadeReadiness, NativeFacadeRegistry, NativeFacadeTokenError, NativeFacadeTransport,
+    NativeFacadeValidationError, PRODUCTION_NATIVE_FACADES,
 };
 pub use node::{BlockReason, NodeState, ReapState};
-pub use paths::{AgentDir, ProjectDir, project_hash, state_dir};
-pub use registry::{Replay, ReplayedNode, Truncation, replay};
+pub use paths::{project_hash, state_dir, AgentDir, ProjectDir};
+pub use registry::{replay, Replay, ReplayedNode, Truncation};
 pub use root_change::{Reason, RootChange, RootChanged, RootDelta, RootObservation, RootScope};
