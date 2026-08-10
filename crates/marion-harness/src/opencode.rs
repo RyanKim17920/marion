@@ -340,10 +340,10 @@ pub struct BridgeEnv {
     pub repo: PathBuf,
     pub state: PathBuf,
     /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
-    /// ([`crate::claude_code::BASE_URL_ENV`]).
+    /// ([`crate::mcp_bridge::BASE_URL_ENV`]).
     pub base_url: Option<String>,
     /// Which endpoint a child this node spawns should talk to
-    /// ([`crate::claude_code::AUTH_ENV`]).
+    /// ([`crate::mcp_bridge::AUTH_ENV`]).
     pub auth: Auth,
     pub agent_id: AgentId,
     /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
@@ -351,7 +351,7 @@ pub struct BridgeEnv {
     /// The node's depth, root = 0 (§3.1's `max_depth`).
     pub depth: u32,
     /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
-    /// absent, never empty ([`crate::claude_code::NODE_TOKEN_ENV`]).
+    /// absent, never empty ([`crate::mcp_bridge::NODE_TOKEN_ENV`]).
     pub node_token: Option<String>,
     /// `None` on this surface — the prompt rides argv (§6.1 step 8).
     pub ready_file: Option<PathBuf>,
@@ -464,7 +464,7 @@ fn mcp_block(b: &BridgeEnv) -> Value {
     if let Some(u) = &b.base_url {
         environment[BASE_URL_ENV] = json!(u);
     }
-    // Same rule; see [`crate::claude_code::NODE_TOKEN_ENV`].
+    // Same rule; see [`crate::mcp_bridge::NODE_TOKEN_ENV`].
     if let Some(t) = &b.node_token {
         environment[NODE_TOKEN_ENV] = json!(t);
     }

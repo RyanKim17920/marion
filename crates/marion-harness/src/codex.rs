@@ -318,10 +318,10 @@ pub struct BridgeEnv {
     pub repo: PathBuf,
     pub state: PathBuf,
     /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
-    /// ([`crate::claude_code::BASE_URL_ENV`]).
+    /// ([`crate::mcp_bridge::BASE_URL_ENV`]).
     pub base_url: Option<String>,
     /// Which endpoint a child this node spawns should talk to
-    /// ([`crate::claude_code::AUTH_ENV`]).
+    /// ([`crate::mcp_bridge::AUTH_ENV`]).
     pub auth: Auth,
     pub agent_id: AgentId,
     /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
@@ -329,7 +329,7 @@ pub struct BridgeEnv {
     /// The node's depth, root = 0 (§3.1's `max_depth`).
     pub depth: u32,
     /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
-    /// absent, never empty ([`crate::claude_code::NODE_TOKEN_ENV`]).
+    /// absent, never empty ([`crate::mcp_bridge::NODE_TOKEN_ENV`]).
     pub node_token: Option<String>,
     /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
     /// withhold and nothing to wait on (§6.1 step 8). codex is `LaunchOnly` on every path today, so
@@ -393,11 +393,11 @@ pub fn bridge_env_pairs(env: &BridgeEnv) -> Vec<(String, String)> {
         (AGENT_TYPE_ENV.to_string(), env.agent_type.clone()),
         (DEPTH_ENV.to_string(), env.depth.to_string()),
     ];
-    // Present or absent, never empty ([`crate::claude_code::BASE_URL_ENV`]).
+    // Present or absent, never empty ([`crate::mcp_bridge::BASE_URL_ENV`]).
     if let Some(u) = &env.base_url {
         pairs.push((BASE_URL_ENV.to_string(), u.clone()));
     }
-    // Same rule; [`crate::claude_code::NODE_TOKEN_ENV`] argues why an empty one is worse here than
+    // Same rule; [`crate::mcp_bridge::NODE_TOKEN_ENV`] argues why an empty one is worse here than
     // anywhere else this rule applies.
     if let Some(t) = &env.node_token {
         pairs.push((NODE_TOKEN_ENV.to_string(), t.clone()));

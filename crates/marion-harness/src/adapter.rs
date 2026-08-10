@@ -256,7 +256,7 @@ pub struct SpawnCtx {
     pub depth: u32,
     /// **§5.4's per-node capability token**, minted by whoever owns this node's lifecycle and
     /// written into the declaration this node's bridge reads
-    /// ([`crate::claude_code::NODE_TOKEN_ENV`]).
+    /// ([`crate::mcp_bridge::NODE_TOKEN_ENV`]).
     ///
     /// It rides `SpawnCtx` rather than `LaunchSpec` for the reason [`Self::agent_type`] does: this
     /// is *what marion knows about the node*, not what was asked for. Nobody asks for a token.
@@ -1761,7 +1761,7 @@ impl HarnessAdapter for AcpAdapter {
     /// The `session/new` request, with marion's bridge declared as a stdio MCP server.
     ///
     /// The env block is the **same key set** the other adapters put in their own declarations
-    /// ([`claude_code::AGENT_ID_ENV`] and its neighbours), because the process on the other end is
+    /// ([`mcp_bridge::AGENT_ID_ENV`] and its neighbours), because the process on the other end is
     /// the same `marion-supervisor mcp` bridge reading the same variables. A second spelling here
     /// would be a second thing to keep true.
     fn session_declaration(
@@ -1790,7 +1790,7 @@ impl HarnessAdapter for AcpAdapter {
             (mcp_bridge::AGENT_TYPE_ENV.into(), ctx.agent_type.clone()),
             (mcp_bridge::DEPTH_ENV.into(), ctx.depth.to_string()),
         ];
-        // Present or absent, never empty — `claude_code::NODE_TOKEN_ENV`'s rule, and the same for
+        // Present or absent, never empty — `mcp_bridge::NODE_TOKEN_ENV`'s rule, and the same for
         // the other two optionals.
         if let Some(u) = &spec.base_url {
             env.push((mcp_bridge::BASE_URL_ENV.into(), u.clone()));
@@ -3652,7 +3652,7 @@ mod tests {
         }
     }
 
-    /// **Present or absent, never empty** — [`claude_code::BASE_URL_ENV`]'s rule, applied to the one
+    /// **Present or absent, never empty** — [`mcp_bridge::BASE_URL_ENV`]'s rule, applied to the one
     /// value where breaking it is a security hole rather than a misconfiguration.
     ///
     /// `MARION_NODE_TOKEN=""` read back through `var()` is `Ok("")`, which is a capability token
