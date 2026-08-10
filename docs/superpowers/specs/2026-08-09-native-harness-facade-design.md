@@ -151,16 +151,31 @@ picker; it is not presented as a facade list.
 `native_launch: NativeLaunchContextV1` field. V1 denies unknown fields; incompatible
 changes create a new version instead of changing V1 silently.
 
+Foundation NativeLaunchContextV1 is selectorless and dormant. It carries exact
+process state only, cannot bind a facade, and remains refused before any native
+handler, adapter, PTY, or process side effect.
+
+Strict NativeLaunchContextV2 adds facade_command as the canonical primary registry
+key selected by the client. V2 is the first bindable native context. The supervisor
+must resolve that key through the validated ready registry; it must not infer facade
+identity from argv, a program basename, PATH, or agent-type aliases. Old supervisors
+reject V2, and new supervisors refuse V1 for binding; neither silently downgrades.
+
 ```text
 NativeLaunchContextV1
-  facade_command: UTF-8 registry key
-  platform: Unix | Windows
-  argv: [OpaqueOsValue]
   program: OpaqueOsValue
+  argv: [OpaqueOsValue]
   cwd: OpaqueOsValue
-  environment: [NativeEnvVar]
-  terminal: optional TerminalSize
-  attach: TransparentForeground | TypedForeground
+  env: [NativeEnvVar]
+  geometry: TerminalGeometry
+
+NativeLaunchContextV2
+  facade_command: UTF-8 canonical primary registry key
+  program: OpaqueOsValue
+  argv: [OpaqueOsValue]
+  cwd: OpaqueOsValue
+  env: [NativeEnvVar]
+  geometry: TerminalGeometry
 ```
 
 `OpaqueOsValue` is platform-tagged:
@@ -270,7 +285,7 @@ The flow is:
 
 ```text
 registry facade selection
-  -> NativeLaunchContextV1
+  -> NativeLaunchContextV2
   -> supervisor validation and adapter injection
   -> supervisor-owned controlling PTY/process
   -> atomic startup replay/live subscription
