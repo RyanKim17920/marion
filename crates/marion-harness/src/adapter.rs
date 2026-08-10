@@ -23,6 +23,7 @@ use crate::claude_code::{self, HeadlessSpec, McpEnv, compile_headless};
 use crate::codex::{self, ExecSpec, compile_exec};
 use crate::gemini;
 use crate::invocation::Invocation;
+use crate::mcp_bridge;
 use crate::opencode;
 use crate::stream::{ChildExit, MarionCall, StreamOutcome};
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
@@ -1784,22 +1785,22 @@ impl HarnessAdapter for AcpAdapter {
                 "MARION_STATE_DIR".into(),
                 ctx.state_dir.to_string_lossy().into_owned(),
             ),
-            (claude_code::AUTH_ENV.into(), spec.auth.as_wire().into()),
-            (claude_code::AGENT_ID_ENV.into(), ctx.agent_id.0.clone()),
-            (claude_code::AGENT_TYPE_ENV.into(), ctx.agent_type.clone()),
-            (claude_code::DEPTH_ENV.into(), ctx.depth.to_string()),
+            (mcp_bridge::AUTH_ENV.into(), spec.auth.as_wire().into()),
+            (mcp_bridge::AGENT_ID_ENV.into(), ctx.agent_id.0.clone()),
+            (mcp_bridge::AGENT_TYPE_ENV.into(), ctx.agent_type.clone()),
+            (mcp_bridge::DEPTH_ENV.into(), ctx.depth.to_string()),
         ];
         // Present or absent, never empty — `claude_code::NODE_TOKEN_ENV`'s rule, and the same for
         // the other two optionals.
         if let Some(u) = &spec.base_url {
-            env.push((claude_code::BASE_URL_ENV.into(), u.clone()));
+            env.push((mcp_bridge::BASE_URL_ENV.into(), u.clone()));
         }
         if let Some(t) = &ctx.node_token {
-            env.push((claude_code::NODE_TOKEN_ENV.into(), t.clone()));
+            env.push((mcp_bridge::NODE_TOKEN_ENV.into(), t.clone()));
         }
         if let Some(r) = &ctx.ready_file {
             env.push((
-                claude_code::READY_FILE_ENV.into(),
+                mcp_bridge::READY_FILE_ENV.into(),
                 r.to_string_lossy().into_owned(),
             ));
         }
@@ -1933,8 +1934,8 @@ pub fn adapter_for_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude_code::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::codex::config_toml;
+    use crate::mcp_bridge::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface};
 
@@ -3640,9 +3641,9 @@ mod tests {
             };
             let doc = declaration_bytes(h, &spec_for(h), &ctx);
             assert!(
-                doc.contains(claude_code::NODE_TOKEN_ENV),
+                doc.contains(mcp_bridge::NODE_TOKEN_ENV),
                 "{h}: {} is not in its bridge env:\n{doc}",
-                claude_code::NODE_TOKEN_ENV
+                mcp_bridge::NODE_TOKEN_ENV
             );
             assert!(
                 doc.contains("\"MARION-TOKEN-VALUE-4e1b\""),
@@ -3667,7 +3668,7 @@ mod tests {
             };
             let doc = declaration_bytes(h, &spec_for(h), &ctx);
             assert!(
-                !doc.contains(claude_code::NODE_TOKEN_ENV),
+                !doc.contains(mcp_bridge::NODE_TOKEN_ENV),
                 "{h}: a node with no token must declare no token key, not an empty one:\n{doc}"
             );
         }

@@ -16,6 +16,7 @@ pub mod claude_code;
 pub mod codex;
 pub mod gemini;
 pub mod invocation;
+pub mod mcp_bridge;
 pub mod opencode;
 pub mod stream;
 pub mod surfaces;
@@ -29,10 +30,10 @@ pub use adapter::{
 pub use auth::Auth;
 pub use caps::{Capabilities, advertised, static_caps};
 pub use claude_code::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, HeadlessSpec, McpEnv, READY_FILE_ENV,
-    anthropic_base_url, compile_headless, mcp_config_json,
+    HeadlessSpec, McpEnv, anthropic_base_url, compile_headless, mcp_config_json,
 };
 pub use codex::{ExecSpec, compile_exec, config_toml};
+pub use mcp_bridge::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
 // `gemini` and `opencode` are addressed by module path rather than flattened here. Both define a
 // `BridgeEnv` and an `MCP_ALIAS`, and both spell marion's tool names differently — a flattened
 // `BridgeEnv` would make the harness a caller is configuring invisible at the use site, which is

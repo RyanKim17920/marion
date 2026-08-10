@@ -17,11 +17,11 @@ use serde_json::{Value, json};
 // `MARION_AGENT_ID` whichever harness started it — so they are imported rather than respelled: a
 // second spelling would put a gemini child's `TaskContract.requester` back on "unattributed-root".
 use crate::auth::Auth;
-use crate::claude_code::{
+use crate::invocation::Invocation;
+use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV as MARION_BASE_URL_ENV, DEPTH_ENV,
     NODE_TOKEN_ENV, READY_FILE_ENV,
 };
-use crate::invocation::Invocation;
 use crate::stream::{
     CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
 };

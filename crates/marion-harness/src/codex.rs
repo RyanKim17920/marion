@@ -17,10 +17,10 @@ use marion_core::contract::AgentId;
 
 // The bridge's own env-var contract, imported rather than respelled — see [`BridgeEnv`].
 use crate::auth::Auth;
-use crate::claude_code::{
+use crate::invocation::Invocation;
+use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
-use crate::invocation::Invocation;
 use crate::stream::{CallOutcome, MarionCall, StreamOutcome, json_frames, report_commits};
 
 /// The sandbox every codex node marion generates a config for runs in — and **this harness's whole

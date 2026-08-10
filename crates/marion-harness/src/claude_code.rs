@@ -12,75 +12,12 @@ use serde_json::{Value, json};
 
 use crate::auth::Auth;
 use crate::invocation::Invocation;
+pub use crate::mcp_bridge::{
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
+};
 use crate::stream::{
     CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
 };
-
-/// Env var naming the file the bridge touches once it has answered `tools/list`.
-pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
-/// Env var carrying a node's `AgentId` to the bridge, so a top-level `spawn` can stamp
-/// `TaskContract.requester` with it (§9).
-pub const AGENT_ID_ENV: &str = "MARION_AGENT_ID";
-/// Env var carrying a node's **agent type name** to the bridge.
-///
-/// §6.1 step 2 says the `spawn` gates read *"the **caller's** agent type"*, and `max_depth` /
-/// `max_concurrent_children` are per-type keys (§3.1). The bridge is a process the *harness*
-/// starts, so it knows nothing about the node it serves beyond what this declaration tells it —
-/// without this name it would have to assume [`marion_core::agent_type::DEFAULT_MAX_DEPTH`], which
-/// is a constant pretending to be a lookup and would silently ignore any type that stated its own
-/// bound. That is the same shape as `AgentType.harness` having once been a `String` nothing read.
-pub const AGENT_TYPE_ENV: &str = "MARION_AGENT_TYPE";
-/// Env var carrying the node's **auth mode** to the bridge (§6.4, `--live`).
-///
-/// The sixth member of the bridge's env contract, and the one that makes `--live` survive a spawn
-/// hop. The bridge is a process the *harness* starts, so the per-server `env` block is marion's only
-/// channel to it — and until this existed nothing in that block said "live": a live root's child was
-/// silently compiled canned, against an endpoint that was not running.
-///
-/// **Explicit rather than inferred from an absent `MARION_BASE_URL`.** The absence of a URL is
-/// already ambiguous — a declaration written by an older marion, a harness that reads no URL, a bug
-/// that dropped it — and "guess live from a missing key" turns every one of those into a real
-/// credential pointed somewhere marion did not choose. The mode is a decision, so it is stated. Its
-/// absence still means [`crate::Auth::Canned`], which is what every pre-`--live` declaration meant.
-pub const AUTH_ENV: &str = "MARION_AUTH";
-/// Env var carrying the provider base URL the bridge should hand a child it spawns.
-///
-/// **Omitted entirely under [`crate::Auth::Inherited`]**, never written empty: `MARION_BASE_URL=""`
-/// read back through `var()` is `Ok("")`, which is a base URL that names nothing and compiles into a
-/// child's config as a provider pointing at the empty string. Absent is a state the reader can act
-/// on; empty is one it cannot tell from a value.
-pub const BASE_URL_ENV: &str = "MARION_BASE_URL";
-/// Env var carrying a node's **depth** to the bridge, with the root at 0 (§3.1, §6.1 step 2).
-///
-/// The other half of the same problem: depth is a property of the *tree*, which only marion can
-/// see, and a node's `spawn` is served by a bridge that marion did not start. Until this existed
-/// nothing anywhere computed a depth, so `max_depth` was inert and a child could spawn a
-/// grandchild — and that grandchild another — without bound.
-pub const DEPTH_ENV: &str = "MARION_DEPTH";
-/// Env var carrying the node's **per-node capability token** to its bridge — §5.4's *"a per-node
-/// capability token bound to its `AgentId`"*, which until §11 item 28 step 4 was a sentence in the
-/// design with nothing implementing it.
-///
-/// [`AGENT_ID_ENV`] tells the bridge who it serves, and since §11 item 28 step 5 the bridge states
-/// that identity back over a connection nobody authenticated: `serve_conn` performs no
-/// `SO_PEERCRED`/`getpeereid` check for a node's spawn, so **any process that can `connect(2)` could
-/// assert another node's `AgentId`**, and §6.1 step 2's gates would be a check the caller chooses
-/// whether to fail. This is what makes the identity provable rather than merely stated: the
-/// supervisor minted the value, holds the `AgentId → token` binding in memory, and wrote it into
-/// exactly one place — this declaration, which only the node's own bridge reads.
-///
-/// **In memory, so a supervisor restart invalidates it**, and that is now visible rather than
-/// theoretical: the node keeps running, its bridge keeps serving, and its next `spawn` is refused
-/// because the supervisor that minted this value is gone (`handler::resolve_caller` says so in the
-/// refusal). §5.4 asks for a capability bound to an `AgentId`, and a secret at rest under `<state>`
-/// would be readable by exactly the processes it excludes — so the cost is the restart, taken
-/// deliberately (§11 item 28, open question 2).
-///
-/// **Present or absent, never empty**, for [`BASE_URL_ENV`]'s reason sharpened: `MARION_NODE_TOKEN=""`
-/// read back through `var()` is `Ok("")`, and a capability token every process on the machine can
-/// guess is worse than none, because the bridge would present it and be believed by any check that
-/// only asked whether a token was stated.
-pub const NODE_TOKEN_ENV: &str = "MARION_NODE_TOKEN";
 
 /// What marion needs to compile a headless invocation — **root or child.**
 ///
