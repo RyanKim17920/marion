@@ -308,7 +308,7 @@ pub fn marion_calls(s: &str) -> Vec<MarionCall> {
 /// The values [`config_toml`] writes into `[mcp_servers.marion]`.
 ///
 /// The key names in the `env` block are the **bridge's** contract, not codex's, which is why they
-/// are taken from [`crate::claude_code`]'s constants rather than respelled here: the bridge reads
+/// are taken from [`crate::mcp_bridge`]'s constants rather than respelled here: the bridge reads
 /// `MARION_AGENT_ID` no matter which harness started it (`marion-supervisor::main::requester`), and
 /// a second spelling would put a codex node's contract back on `"unattributed-root"`.
 #[derive(Debug, Clone)]
