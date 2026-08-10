@@ -1,11 +1,13 @@
 //! Exact native process-launch values carried by the client↔supervisor protocol.
 
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 
 use base64::engine::DecodePaddingMode;
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
 use base64::{Engine, alphabet};
-use serde::de::Error as _;
+use serde::de::{Error as _, MapAccess, SeqAccess, Visitor};
+use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 const OPAQUE_OS_VALUE_BASE64: GeneralPurpose = GeneralPurpose::new(
@@ -328,8 +330,130 @@ struct NativeLaunchContextV2Wire {
 #[derive(Deserialize)]
 struct NativeLaunchContextDispatch {
     wire_version: u16,
-    #[serde(flatten)]
-    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+/// JSON buffered without a key-unique map, so duplicate keys survive version selection and are
+/// rejected by the selected strict wire schema, including inside nested objects.
+enum NativeLaunchRawJson {
+    Null,
+    Bool(bool),
+    Number(serde_json::Number),
+    String(String),
+    Array(Vec<Self>),
+    Object(Vec<(String, Self)>),
+}
+
+impl Serialize for NativeLaunchRawJson {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Null => serializer.serialize_unit(),
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Number(value) => value.serialize(serializer),
+            Self::String(value) => serializer.serialize_str(value),
+            Self::Array(values) => {
+                let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    sequence.serialize_element(value)?;
+                }
+                sequence.end()
+            }
+            Self::Object(fields) => {
+                let mut object = serializer.serialize_map(Some(fields.len()))?;
+                for (name, value) in fields {
+                    object.serialize_entry(name, value)?;
+                }
+                object.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NativeLaunchRawJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct NativeLaunchRawJsonVisitor;
+
+        impl<'de> Visitor<'de> for NativeLaunchRawJsonVisitor {
+            type Value = NativeLaunchRawJson;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("any valid JSON value")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(NativeLaunchRawJson::Null)
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(NativeLaunchRawJson::Null)
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                NativeLaunchRawJson::deserialize(deserializer)
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(NativeLaunchRawJson::Bool(value))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(NativeLaunchRawJson::Number(value.into()))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(NativeLaunchRawJson::Number(value.into()))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                serde_json::Number::from_f64(value)
+                    .map(NativeLaunchRawJson::Number)
+                    .ok_or_else(|| E::custom("non-finite number is not valid JSON"))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(NativeLaunchRawJson::String(value.to_owned()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(NativeLaunchRawJson::String(value))
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
+                while let Some(value) = sequence.next_element()? {
+                    values.push(value);
+                }
+                Ok(NativeLaunchRawJson::Array(values))
+            }
+
+            fn visit_map<A>(self, mut object: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut fields = Vec::with_capacity(object.size_hint().unwrap_or(0));
+                while let Some(field) = object.next_entry()? {
+                    fields.push(field);
+                }
+                Ok(NativeLaunchRawJson::Object(fields))
+            }
+        }
+
+        deserializer.deserialize_any(NativeLaunchRawJsonVisitor)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -388,19 +512,19 @@ impl<'de> Deserialize<'de> for NativeLaunchContext {
     where
         D: Deserializer<'de>,
     {
-        let dispatch = NativeLaunchContextDispatch::deserialize(deserializer)?;
+        let raw = NativeLaunchRawJson::deserialize(deserializer)?;
+        let raw = serde_json::to_vec(&raw).map_err(D::Error::custom)?;
+        let dispatch = serde_json::from_slice::<NativeLaunchContextDispatch>(&raw)
+            .map_err(D::Error::custom)?;
         let wire_version = dispatch.wire_version;
-        let mut fields = dispatch.fields;
-        fields.insert("wire_version".into(), wire_version.into());
-        let object = serde_json::Value::Object(fields);
 
         match wire_version {
-            1 => serde_json::from_value::<NativeLaunchContextV1Wire>(object)
+            1 => serde_json::from_slice::<NativeLaunchContextV1Wire>(&raw)
                 .map_err(D::Error::custom)?
                 .try_into()
                 .map(Self::V1)
                 .map_err(D::Error::custom),
-            2 => serde_json::from_value::<NativeLaunchContextV2Wire>(object)
+            2 => serde_json::from_slice::<NativeLaunchContextV2Wire>(&raw)
                 .map(NativeLaunchContextV2::from)
                 .map(Self::V2)
                 .map_err(D::Error::custom),
@@ -432,6 +556,20 @@ mod tests {
 
     fn minimal_v2_context_json() -> &'static str {
         r#"{"wire_version":2,"facade_command":"atlas","program":"L2Jpbi9zaA==","argv":[],"cwd":"L3RtcA==","env":[],"geometry":{"cols":80,"rows":24,"xpixel":0,"ypixel":0}}"#
+    }
+
+    fn assert_duplicate_native_context_is_rejected(case: &str, context: &str) {
+        assert!(
+            serde_json::from_str::<NativeLaunchContext>(context).is_err(),
+            "{case}: direct native-context decoding accepted a duplicate field"
+        );
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"agent/spawn","params":{{"agent_type":"t","prompt":"p","native_launch":{context}}}}}"#
+        );
+        assert!(
+            Frame::from_line(&line).is_err(),
+            "{case}: frame decoding accepted a duplicate native-context field"
+        );
     }
 
     #[cfg(unix)]
@@ -701,6 +839,34 @@ mod tests {
         let unknown_v2 =
             minimal_v2_context_json().replacen(r#""geometry""#, r#""surprise":true,"geometry""#, 1);
         assert!(serde_json::from_str::<NativeLaunchContext>(&unknown_v2).is_err());
+    }
+
+    #[test]
+    fn duplicate_native_wire_version_is_rejected() {
+        let json = r#"{"wire_version":1,"wire_version":1,"program":"L2Jpbi9zaA==","argv":[],"cwd":"L3RtcA==","env":[],"geometry":{"cols":80,"rows":24,"xpixel":0,"ypixel":0}}"#;
+
+        assert_duplicate_native_context_is_rejected("wire_version", json);
+    }
+
+    #[test]
+    fn duplicate_native_v1_program_is_rejected() {
+        let json = r#"{"wire_version":1,"program":"L2Jpbi9zaA==","program":"L2Jpbi9iYXNo","argv":[],"cwd":"L3RtcA==","env":[],"geometry":{"cols":80,"rows":24,"xpixel":0,"ypixel":0}}"#;
+
+        assert_duplicate_native_context_is_rejected("V1 program", json);
+    }
+
+    #[test]
+    fn duplicate_native_v2_facade_command_is_rejected() {
+        let json = r#"{"wire_version":2,"facade_command":"atlas","facade_command":"codex","program":"L2Jpbi9zaA==","argv":[],"cwd":"L3RtcA==","env":[],"geometry":{"cols":80,"rows":24,"xpixel":0,"ypixel":0}}"#;
+
+        assert_duplicate_native_context_is_rejected("V2 facade_command", json);
+    }
+
+    #[test]
+    fn duplicate_native_nested_geometry_field_is_rejected() {
+        let json = r#"{"wire_version":2,"facade_command":"atlas","program":"L2Jpbi9zaA==","argv":[],"cwd":"L3RtcA==","env":[],"geometry":{"cols":80,"cols":81,"rows":24,"xpixel":0,"ypixel":0}}"#;
+
+        assert_duplicate_native_context_is_rejected("nested geometry.cols", json);
     }
 
     #[test]

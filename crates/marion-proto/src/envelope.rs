@@ -214,8 +214,9 @@ impl Frame {
     /// Classification is by key presence rather than by trial deserialization — see the module
     /// doc. Each of the four `(method, id)` combinations gets its own sentence.
     pub fn from_line(line: &str) -> Result<Frame, RpcError> {
-        let value: serde_json::Value = serde_json::from_str(line.trim_end_matches('\n'))
-            .map_err(|e| RpcError::parse(format!("not JSON: {e}")))?;
+        let line = line.trim_end_matches('\n');
+        let value: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| RpcError::parse(format!("not JSON: {e}")))?;
         let obj = value.as_object().ok_or_else(|| {
             RpcError::invalid_request("a JSON-RPC frame is a JSON object; this line is not")
         })?;
@@ -244,7 +245,14 @@ impl Frame {
                         "no such method: {method}"
                     )));
                 }
-                serde_json::from_value::<Request>(value)
+                let request = if method == crate::Method::AgentSpawn.as_str() {
+                    // Native launch dispatch must see duplicate keys at every depth. `Value`
+                    // classification above is only a probe; replay this request from its source.
+                    serde_json::from_str::<Request>(line)
+                } else {
+                    serde_json::from_value::<Request>(value)
+                };
+                request
                     .map(Frame::Request)
                     .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
             }
