@@ -1,4 +1,6 @@
 use std::ffi::OsString;
+use std::io::Write;
+use std::process::ExitCode;
 
 use marion_core::{NativeFacadeDescriptor, NativeFacadeRegistry};
 
@@ -24,6 +26,30 @@ pub fn resolve_native_invocation<'a>(
         descriptor,
         argv: argv.collect(),
     })
+}
+
+/// Run the native-facade probe before handing unmatched argv to the legacy CLI.
+///
+/// This is the user-facing binary's top-level dispatch boundary. Parameterizing argv and the
+/// validated registry lets tests exercise a ready descriptor while the production registry stays
+/// empty, and parameterizing the legacy continuation makes the required ordering observable.
+pub fn dispatch_native_facade_or_legacy<'a>(
+    argv: impl IntoIterator<Item = OsString>,
+    registry: &'a NativeFacadeRegistry<'a>,
+    mut stderr: impl Write,
+    legacy: impl FnOnce() -> ExitCode,
+) -> ExitCode {
+    let Some(invocation) = resolve_native_invocation(argv, registry) else {
+        return legacy();
+    };
+
+    writeln!(
+        stderr,
+        "marion: native facade transport is not ready for {:?}",
+        invocation.descriptor.command
+    )
+    .expect("write native facade refusal to stderr");
+    ExitCode::FAILURE
 }
 
 #[cfg(test)]

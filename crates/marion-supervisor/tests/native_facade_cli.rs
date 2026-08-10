@@ -2,9 +2,47 @@
 //! These selectors therefore retain the legacy usage refusal until a later transport slice makes
 //! one production descriptor ready.
 
-use std::process::Command;
+use std::cell::Cell;
+use std::ffi::OsString;
+use std::process::{Command, ExitCode};
 
-use marion_core::production_native_facades;
+use marion_core::{
+    NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry, production_native_facades,
+};
+use marion_supervisor::facade_cli::dispatch_native_facade_or_legacy;
+
+#[test]
+fn a_synthetic_ready_facade_is_refused_before_the_legacy_cli_runs() {
+    const DESCRIPTORS: &[NativeFacadeDescriptor] = &[NativeFacadeDescriptor {
+        command: "atlas",
+        aliases: &[],
+        agent_type: "atlas-agent",
+        readiness: NativeFacadeReadiness::Ready,
+    }];
+    let registry = NativeFacadeRegistry::new(DESCRIPTORS).expect("synthetic registry is valid");
+    let legacy_called = Cell::new(false);
+    let mut stderr = Vec::new();
+
+    let status = dispatch_native_facade_or_legacy(
+        [OsString::from("atlas"), OsString::from("--help")],
+        &registry,
+        &mut stderr,
+        || {
+            legacy_called.set(true);
+            ExitCode::SUCCESS
+        },
+    );
+
+    assert_eq!(status, ExitCode::FAILURE);
+    assert_eq!(
+        stderr,
+        b"marion: native facade transport is not ready for \"atlas\"\n"
+    );
+    assert!(
+        !legacy_called.get(),
+        "matched facade reached the legacy CLI"
+    );
+}
 
 #[test]
 fn production_exposes_no_facade_and_known_or_arbitrary_names_keep_legacy_usage() {
