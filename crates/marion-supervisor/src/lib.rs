@@ -46,6 +46,8 @@ pub mod journal;
 /// `marion mcp` (the top-level entry point). One dispatch, so there is one spawn path, and it
 /// goes over the socket.
 pub mod mcp;
+/// Pure binding of byte-exact V2 launch state to one ready native facade descriptor.
+pub mod native_binding;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.
 pub mod procid;

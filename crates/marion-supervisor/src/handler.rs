@@ -82,10 +82,11 @@ use marion_proto::result::{
 };
 use marion_proto::{
     AttachMode, Call, ClientGone, DetachGuidance, FailureKind, KilledNode, MethodResult,
-    NativeLaunchContext, NativeOsValueConversionError, NodeSummary, QuitDisposition, QuitOutcome,
-    ReplayPoint, ResidentReason, RpcError, SpawnCaller, SupervisorDisposition,
+    NativeLaunchContext, NodeSummary, QuitDisposition, QuitOutcome, ReplayPoint, ResidentReason,
+    RpcError, SpawnCaller, SupervisorDisposition,
 };
 
+use crate::native_binding::{NativeBindingError, bind_native_launch};
 use crate::registry::{LiveRegistry, Registry};
 use crate::serve::{ConnId, Departure, Handle, Outbound, Peer};
 
@@ -111,16 +112,11 @@ pub enum Unprojectable {
 /// Failures made at the native-launch boundary.
 ///
 /// A public versioned value has already passed protocol-version validation during deserialization.
-/// This type therefore owns only the remaining three decisions: native state is root-only, its
-/// opaque values require a byte-exact platform conversion, and the transport is not shipped yet.
+/// This early gate owns only root/child pairing; root binding runs after peer authentication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum NativeLaunchGateError {
     #[error("native launch context belongs only on a root request")]
     ChildMisuse,
-    #[error(transparent)]
-    UnsupportedPlatform(#[from] NativeOsValueConversionError),
-    #[error("native facade transport is not ready")]
-    TransportNotReady,
 }
 
 impl NativeLaunchGateError {
@@ -133,64 +129,63 @@ impl NativeLaunchGateError {
                  Refused rather than dropping the native context or replacing the managed launch.",
                 "§6.1, §9, §11 item 23",
             ),
-            Self::UnsupportedPlatform(error) => RpcError::unsupported(
-                "native_launch",
-                format!(
-                    "this native launch request requires byte-exact operating-system values, but \
-                     {error}. Refused before any launch state was created."
-                ),
-                "§9",
-            ),
-            Self::TransportNotReady => RpcError::refused(
-                "native_launch",
-                "native facade transport is not ready. The native launch context was accepted as \
-                 byte-exact root data, but marion has no shipped transport for it and will not \
-                 silently downgrade it to the managed headless launcher.",
-                "§9, §11 item 23",
-            ),
         }
     }
 }
 
-/// Validate the complete native-launch boundary before anything can claim, journal, allocate, or
-/// spawn.
+fn native_binding_error_into_rpc(error: NativeBindingError) -> RpcError {
+    match error {
+        NativeBindingError::UnsupportedPlatform(error) => RpcError::unsupported(
+            "native_launch",
+            format!(
+                "this native launch request requires byte-exact operating-system values, but \
+                 {error}. Refused before any launch state was created."
+            ),
+            "§9",
+        ),
+        error => RpcError::refused(
+            "native_launch",
+            format!("{error}. Refused before any launch state was created."),
+            "§9, §11 item 23",
+        ),
+    }
+}
+
+fn native_launch_refusal(
+    context: &NativeLaunchContext,
+    requested_agent_type: &str,
+    registry: &marion_core::NativeFacadeRegistry<'_>,
+) -> RpcError {
+    match bind_native_launch(context, requested_agent_type, registry) {
+        Err(error) => native_binding_error_into_rpc(error),
+        Ok(bound) => RpcError::refused(
+            "native_launch",
+            format!(
+                "native facade {:?} was bound successfully, but native launch is not enabled. \
+                 Refused before the managed launcher could interpret native state.",
+                bound.descriptor.command
+            ),
+            "§9, §11 item 23",
+        ),
+    }
+}
+
+/// Refuse child/native pairing before token lookup or any launch state is consulted.
 ///
-/// Callers choose when this pure function runs: a child reaches it before token lookup so pairing
-/// misuse wins, while a root reaches it only after [`root_spawn_authorized`] authenticates its
-/// socket peer. On Unix every root-native opaque value is reconstructed through `OsStringExt`, via
-/// the protocol type's conversion API. No value is decoded through `String`, logged, or retained
-/// as a second copy.
+/// Root requests pass unchanged here; their opaque selector/program binding is deliberately later,
+/// after [`root_spawn_authorized`] authenticates the socket peer.
 pub(crate) fn validate_native_launch_boundary(
     caller: Option<&SpawnCaller>,
     native_launch: Option<&NativeLaunchContext>,
 ) -> Result<(), NativeLaunchGateError> {
-    let Some(context) = native_launch else {
+    if native_launch.is_none() {
         return Ok(());
-    };
+    }
     if caller.is_some() {
         return Err(NativeLaunchGateError::ChildMisuse);
     }
 
-    let (program, argv, cwd, env) = match context {
-        NativeLaunchContext::V1(context) => {
-            (&context.program, &context.argv, &context.cwd, &context.env)
-        }
-        NativeLaunchContext::V2(context) => {
-            (&context.program, &context.argv, &context.cwd, &context.env)
-        }
-    };
-
-    let _ = program.to_os_string()?;
-    for arg in argv {
-        let _ = arg.to_os_string()?;
-    }
-    let _ = cwd.to_os_string()?;
-    for entry in env {
-        let _ = entry.name.to_os_string()?;
-        let _ = entry.value.to_os_string()?;
-    }
-
-    Err(NativeLaunchGateError::TransportNotReady)
+    Ok(())
 }
 
 impl Unprojectable {
@@ -1922,8 +1917,25 @@ impl RegistryHandle {
         peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
         root_spawn_authorized(peer)?;
-        validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_deref())
-            .map_err(NativeLaunchGateError::into_rpc)?;
+        if let Some(context) = p.native_launch.as_deref() {
+            let canonical_agent_type = if matches!(context, NativeLaunchContext::V2(_)) {
+                Some(
+                    agent_type::builtin(&p.agent_type)
+                        .ok_or_else(spawn_refused_before_the_node_existed)?,
+                )
+            } else {
+                None
+            };
+            let requested_agent_type = canonical_agent_type
+                .as_ref()
+                .map_or(p.agent_type.as_str(), |agent_type| agent_type.name.as_str());
+            let registry = marion_core::production_native_facades();
+            return Err(native_launch_refusal(
+                context,
+                requested_agent_type,
+                &registry,
+            ));
+        }
         let repo = p.repo.clone().ok_or_else(|| {
             // Unreachable: the frame-shape match above refuses `(None, None)` by name before any
             // state is consulted. A refusal rather than an `expect`, because a supervisor owning a
@@ -5802,11 +5814,18 @@ mod tests {
     mod owns_nodes {
         use super::*;
         use marion_core::paths::ProjectDir;
+        use marion_core::{
+            NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry,
+            NativeFacadeTransport,
+        };
         use marion_proto::params::AgentSpawnParams;
         use marion_proto::{
-            NativeEnvVarV1, NativeLaunchContextV1, OpaqueOsValueV1, SpawnCaller, TerminalGeometryV1,
+            NativeEnvVarV1, NativeLaunchContextV1, NativeLaunchContextV2, OpaqueOsValueV1,
+            SpawnCaller, TerminalGeometryV1,
         };
         use marion_testsupport::{fixture_repo, scratch};
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
 
         /// A handle that **owns** what it spawns, over a real repo and a real project directory.
         struct Owning {
@@ -6181,11 +6200,24 @@ mod tests {
             )
         }
 
-        /// One pure boundary owns all four native-launch shapes. Call sites may choose *when* to
-        /// invoke it for authorization ordering, but cannot select only one of its decisions.
+        #[cfg(unix)]
+        fn native_context_v2(repo: &Path) -> NativeLaunchContextV2 {
+            let context = native_context(repo);
+            NativeLaunchContextV2::new(
+                "atlas".into(),
+                context.program,
+                context.argv,
+                context.cwd,
+                context.env,
+                context.geometry,
+            )
+        }
+
+        /// The early pure boundary owns only child/native pairing; root binding happens after peer
+        /// authentication and owns selector, platform, transport, and executable decisions.
         #[cfg(unix)]
         #[test]
-        fn one_native_launch_boundary_owns_pairing_platform_and_readiness() {
+        fn the_early_native_launch_boundary_owns_only_child_pairing() {
             let fx = owning("owns-native-boundary", vec![]);
             let caller = SpawnCaller {
                 agent_id: id("caller"),
@@ -6201,7 +6233,7 @@ mod tests {
             );
             assert_eq!(
                 validate_native_launch_boundary(None, Some(&context)),
-                Err(NativeLaunchGateError::TransportNotReady)
+                Ok(())
             );
         }
 
@@ -6234,28 +6266,104 @@ mod tests {
             assert_eq!(fx.handle.owned_nodes(), 0, "the refusal claims no node");
         }
 
-        /// A valid V1 context is accepted as data but cannot launch until its transport exists.
-        /// This gate is deliberately earlier than type lookup, node claim, journal, PTY or process.
+        /// V1 cannot name the facade that owns its program, so it stops before every launch effect.
         #[cfg(unix)]
         #[test]
-        fn a_valid_root_native_launch_is_refused_because_transport_is_not_ready() {
+        fn a_v1_root_native_launch_is_refused_because_its_selector_is_missing() {
             let fx = owning("owns-native-root", vec![]);
             let mut p = root_params(&fx.repo, 1);
             p.native_launch = Some(Box::new(NativeLaunchContext::V1(native_context(&fx.repo))));
 
-            let e = spawn(&fx, p).expect_err("the native facade transport is not ready");
+            let e = spawn(&fx, p).expect_err("V1 cannot be bound without a selector");
 
             assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
             assert!(
-                e.message.contains("native facade transport is not ready"),
-                "the refusal must name readiness: {}",
+                e.message.contains("V1 carries no facade selector"),
+                "the refusal must name the missing selector: {}",
                 e.message
             );
-            assert_eq!(journal_len(&fx), 0, "the readiness gate journals nothing");
+            assert_eq!(journal_len(&fx), 0, "the binding gate journals nothing");
             assert_eq!(
                 fx.handle.owned_nodes(),
                 0,
-                "the readiness gate claims no node"
+                "the binding gate claims no node"
+            );
+        }
+
+        /// Production declares no ready facade, so a named V2 launch stops at registry ownership.
+        #[cfg(unix)]
+        #[test]
+        fn a_v2_root_native_launch_names_the_unavailable_production_facade() {
+            let fx = owning("owns-native-v2-root", vec![]);
+            let mut p = root_params(&fx.repo, 1);
+            p.native_launch = Some(Box::new(NativeLaunchContext::V2(native_context_v2(
+                &fx.repo,
+            ))));
+
+            let e = spawn(&fx, p).expect_err("production has no ready atlas facade");
+
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
+            assert!(
+                e.message
+                    .contains("native facade command \"atlas\" is unavailable"),
+                "the refusal must name registry availability: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), 0, "the binding gate journals nothing");
+            assert_eq!(
+                fx.handle.owned_nodes(),
+                0,
+                "the binding gate claims no node"
+            );
+        }
+
+        /// A future ready descriptor must still stop here until a native launcher consumes the
+        /// bound value; successful binding may never fall through to the managed root launcher.
+        #[cfg(unix)]
+        #[test]
+        fn successful_native_binding_is_still_a_handler_refusal() {
+            let work = scratch("native-handler-bound-refusal");
+            let bin = work.join("bin");
+            std::fs::create_dir(&bin).expect("the fixture bin exists");
+            let executable = bin.join("atlas-cli");
+            std::fs::write(&executable, b"fixture executable\n")
+                .expect("the executable is written");
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+                .expect("the executable is executable");
+            let descriptors = [NativeFacadeDescriptor {
+                command: "atlas",
+                aliases: &["at"],
+                executable: "atlas-cli",
+                agent_type: "atlas-agent",
+                transport: NativeFacadeTransport::TransparentPty,
+                readiness: NativeFacadeReadiness::Ready,
+            }];
+            let registry =
+                NativeFacadeRegistry::new(&descriptors).expect("the synthetic registry is valid");
+            let context = NativeLaunchContext::V2(NativeLaunchContextV2::new(
+                "atlas".into(),
+                OpaqueOsValueV1::from_os_str(executable.as_os_str()).unwrap(),
+                vec![],
+                OpaqueOsValueV1::from_os_str(work.as_os_str()).unwrap(),
+                vec![NativeEnvVarV1 {
+                    name: opaque(b"PATH"),
+                    value: OpaqueOsValueV1::from_os_str(bin.as_os_str()).unwrap(),
+                }],
+                TerminalGeometryV1 {
+                    cols: 80,
+                    rows: 24,
+                    xpixel: 0,
+                    ypixel: 0,
+                },
+            ));
+
+            let error = native_launch_refusal(&context, "atlas-agent", &registry);
+
+            assert_eq!(error.kind(), Some(FailureKind::Refused));
+            assert!(
+                error.message.contains("native launch is not enabled"),
+                "a successful binding must still stop before the managed launcher: {}",
+                error.message
             );
         }
 
@@ -6601,8 +6709,9 @@ mod tests {
                 e.message
             );
             assert!(
-                !e.message.contains("native facade transport")
-                    && !e.message.contains("byte-exact operating-system"),
+                !e.message.contains("native facade")
+                    && !e.message.contains("byte-exact operating-system")
+                    && !e.message.contains("V1 carries no facade selector"),
                 "an unauthorized peer learned native support state: {}",
                 e.message
             );

@@ -318,8 +318,8 @@ fn native_launch_frames_are_refused_at_the_real_socket_before_every_launch_artif
     assert_eq!(v1.code, FailureKind::Refused.code(), "V1 refusal code");
     assert_eq!(v1.kind(), Some(FailureKind::Refused), "V1 refusal kind");
     assert!(
-        v1.message.contains("native facade transport is not ready"),
-        "V1 names transport readiness: {}",
+        v1.message.contains("V1 carries no facade selector"),
+        "V1 names its missing selector: {}",
         v1.message
     );
     let v1_frame = Frame::Request(Request::new(
@@ -332,12 +332,13 @@ fn native_launch_frames_are_refused_at_the_real_socket_before_every_launch_artif
     v2["params"]["native_launch"]["facade_command"] = serde_json::json!("claude");
     let v2 = bed.send_line(&serde_json::to_string(&v2).expect("the V2 frame serializes"));
     bed.assert_zero_artifacts("valid V2");
-    let v2 = v2.expect_err("valid V2 must be refused while transport is unavailable");
+    let v2 = v2.expect_err("valid V2 must be refused while its facade is unavailable");
     assert_eq!(v2.code, FailureKind::Refused.code(), "V2 code");
     assert_eq!(v2.kind(), Some(FailureKind::Refused), "V2 refusal kind");
     assert!(
-        v2.message.contains("native facade transport is not ready"),
-        "V2 names transport readiness: {}",
+        v2.message
+            .contains("native facade command \"claude\" is unavailable"),
+        "V2 names the unavailable production facade: {}",
         v2.message
     );
     let mut child = bed.root_params();
