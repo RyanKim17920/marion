@@ -513,6 +513,11 @@ is a structural non-regression signal, never a substitute for behavior evidence.
 Changes land as small logical commits. Each step compiles and keeps its affected tests
 green before the next step.
 
+The foundation commits from `ec7f7d0` (protocol field introduction) through `7b7f6d7`
+(authenticated root gate), inclusive, are review micro-commits, not independently safe release
+units. They **MUST** be squash-merged atomically and must never be cherry-picked or deployed
+independently.
+
 ## Non-goals
 
 - Executing arbitrary first-token programs from `PATH`.
