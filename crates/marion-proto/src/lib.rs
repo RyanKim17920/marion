@@ -80,8 +80,8 @@ pub use model::{
     QuitDisposition, QuitOutcome, ReplayPoint, ReplyOutcome, ResidentReason, SupervisorDisposition,
 };
 pub use native::{
-    NativeEnvVarV1, NativeLaunchContextV1, NativeOsValueConversionError, OpaqueOsValueV1,
-    TerminalGeometryV1,
+    NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1, NativeLaunchContextV2,
+    NativeOsValueConversionError, OpaqueOsValueV1, TerminalGeometryV1,
 };
 pub use notify::Event;
 /// Re-exported beside the models because it is one: `agent/spawn` is the only method whose caller

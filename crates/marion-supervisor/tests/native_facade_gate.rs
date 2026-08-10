@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use marion_proto::params::AgentSpawnParams;
 use marion_proto::{
-    Call, FailureKind, Frame, NativeEnvVarV1, NativeLaunchContextV1, OpaqueOsValueV1, Outcome,
-    Request, RequestId, RpcError, SpawnCaller, TerminalGeometryV1,
+    Call, FailureKind, Frame, NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1,
+    OpaqueOsValueV1, Outcome, Request, RequestId, RpcError, SpawnCaller, TerminalGeometryV1,
 };
 use marion_testsupport::{Scratch, fixture_repo, scratch};
 
@@ -160,7 +160,7 @@ impl Bed {
         AgentSpawnParams {
             agent_type: "claude".into(),
             prompt: "unused because native launch is gated".into(),
-            native_launch: Some(Box::new(self.context())),
+            native_launch: Some(Box::new(NativeLaunchContext::V1(self.context()))),
             caller: None,
             repo: Some(self.repo.clone()),
             acceptance_criteria: vec![],
@@ -329,14 +329,15 @@ fn native_launch_frames_are_refused_at_the_real_socket_before_every_launch_artif
     let mut v2: serde_json::Value =
         serde_json::from_str(v1_frame.to_line().trim()).expect("the V1 frame is JSON");
     v2["params"]["native_launch"]["wire_version"] = serde_json::json!(2);
+    v2["params"]["native_launch"]["facade_command"] = serde_json::json!("claude");
     let v2 = bed.send_line(&serde_json::to_string(&v2).expect("the V2 frame serializes"));
-    bed.assert_zero_artifacts("raw V2");
-    let v2 = v2.expect_err("raw V2 must fail deserialization");
-    assert_eq!(v2.code, marion_proto::error::INVALID_PARAMS, "V2 code");
-    assert_eq!(v2.kind(), None, "V2 fails before a Call exists");
+    bed.assert_zero_artifacts("valid V2");
+    let v2 = v2.expect_err("valid V2 must be refused while transport is unavailable");
+    assert_eq!(v2.code, FailureKind::Refused.code(), "V2 code");
+    assert_eq!(v2.kind(), Some(FailureKind::Refused), "V2 refusal kind");
     assert!(
-        v2.message.contains("wire_version 2") && v2.message.contains("expected 1"),
-        "V2 names the safe protocol-version error: {}",
+        v2.message.contains("native facade transport is not ready"),
+        "V2 names transport readiness: {}",
         v2.message
     );
     let mut child = bed.root_params();

@@ -121,6 +121,23 @@ pub struct TerminalGeometryV1 {
 ///     geometry: TerminalGeometryV1 { cols: 80, rows: 24, xpixel: 0, ypixel: 0 },
 /// };
 /// ```
+///
+/// V1 has no facade selector:
+///
+/// ```compile_fail
+/// use std::ffi::OsStr;
+/// use marion_proto::{NativeLaunchContextV1, OpaqueOsValueV1, TerminalGeometryV1};
+///
+/// let value = OpaqueOsValueV1::from_os_str(OsStr::new("value")).unwrap();
+/// let _invalid = NativeLaunchContextV1 {
+///     facade_command: "atlas".into(),
+///     program: value.clone(),
+///     argv: vec![],
+///     cwd: value,
+///     env: vec![],
+///     geometry: TerminalGeometryV1 { cols: 80, rows: 24, xpixel: 0, ypixel: 0 },
+/// };
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeLaunchContextV1 {
     pub program: OpaqueOsValueV1,
@@ -130,7 +147,42 @@ pub struct NativeLaunchContextV1 {
     pub geometry: TerminalGeometryV1,
 }
 
+/// Versioned native process-launch state carried by the client↔supervisor protocol.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeLaunchContext {
+    V1(NativeLaunchContextV1),
+    V2(NativeLaunchContextV2),
+}
+
+/// Version 2 of the native process launch context, bound to one canonical facade command.
+///
+/// The facade selector is required by semantic construction:
+///
+/// ```compile_fail
+/// use std::ffi::OsStr;
+/// use marion_proto::{NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1};
+///
+/// let value = OpaqueOsValueV1::from_os_str(OsStr::new("value")).unwrap();
+/// let _invalid = NativeLaunchContextV2 {
+///     program: value.clone(),
+///     argv: vec![],
+///     cwd: value,
+///     env: vec![],
+///     geometry: TerminalGeometryV1 { cols: 80, rows: 24, xpixel: 0, ypixel: 0 },
+/// };
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeLaunchContextV2 {
+    pub facade_command: String,
+    pub program: OpaqueOsValueV1,
+    pub argv: Vec<OpaqueOsValueV1>,
+    pub cwd: OpaqueOsValueV1,
+    pub env: Vec<NativeEnvVarV1>,
+    pub geometry: TerminalGeometryV1,
+}
+
 const NATIVE_LAUNCH_WIRE_VERSION: u16 = 1;
+const NATIVE_LAUNCH_V2_WIRE_VERSION: u16 = 2;
 
 impl NativeLaunchContextV1 {
     /// Build semantic launch state. The wire version is fixed by this type and is not an input.
@@ -156,9 +208,46 @@ impl NativeLaunchContextV1 {
     }
 }
 
+impl NativeLaunchContextV2 {
+    /// Build semantic V2 launch state with its canonical facade selector.
+    pub fn new(
+        facade_command: String,
+        program: OpaqueOsValueV1,
+        argv: Vec<OpaqueOsValueV1>,
+        cwd: OpaqueOsValueV1,
+        env: Vec<NativeEnvVarV1>,
+        geometry: TerminalGeometryV1,
+    ) -> Self {
+        Self {
+            facade_command,
+            program,
+            argv,
+            cwd,
+            env,
+            geometry,
+        }
+    }
+
+    /// The only wire version this type can serialize.
+    pub const fn wire_version(&self) -> u16 {
+        NATIVE_LAUNCH_V2_WIRE_VERSION
+    }
+}
+
 #[derive(Serialize)]
 struct NativeLaunchContextV1WireRef<'a> {
     wire_version: u16,
+    program: &'a OpaqueOsValueV1,
+    argv: &'a [OpaqueOsValueV1],
+    cwd: &'a OpaqueOsValueV1,
+    env: &'a [NativeEnvVarV1],
+    geometry: &'a TerminalGeometryV1,
+}
+
+#[derive(Serialize)]
+struct NativeLaunchContextV2WireRef<'a> {
+    wire_version: u16,
+    facade_command: &'a str,
     program: &'a OpaqueOsValueV1,
     argv: &'a [OpaqueOsValueV1],
     cwd: &'a OpaqueOsValueV1,
@@ -183,6 +272,36 @@ impl Serialize for NativeLaunchContextV1 {
     }
 }
 
+impl Serialize for NativeLaunchContextV2 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        NativeLaunchContextV2WireRef {
+            wire_version: self.wire_version(),
+            facade_command: &self.facade_command,
+            program: &self.program,
+            argv: &self.argv,
+            cwd: &self.cwd,
+            env: &self.env,
+            geometry: &self.geometry,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl Serialize for NativeLaunchContext {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::V1(context) => context.serialize(serializer),
+            Self::V2(context) => context.serialize(serializer),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeLaunchContextV1Wire {
@@ -192,6 +311,25 @@ struct NativeLaunchContextV1Wire {
     cwd: OpaqueOsValueV1,
     env: Vec<NativeEnvVarV1>,
     geometry: TerminalGeometryV1,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeLaunchContextV2Wire {
+    wire_version: u16,
+    facade_command: String,
+    program: OpaqueOsValueV1,
+    argv: Vec<OpaqueOsValueV1>,
+    cwd: OpaqueOsValueV1,
+    env: Vec<NativeEnvVarV1>,
+    geometry: TerminalGeometryV1,
+}
+
+#[derive(Deserialize)]
+struct NativeLaunchContextDispatch {
+    wire_version: u16,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -220,6 +358,20 @@ impl TryFrom<NativeLaunchContextV1Wire> for NativeLaunchContextV1 {
     }
 }
 
+impl From<NativeLaunchContextV2Wire> for NativeLaunchContextV2 {
+    fn from(wire: NativeLaunchContextV2Wire) -> Self {
+        let _ = wire.wire_version;
+        Self::new(
+            wire.facade_command,
+            wire.program,
+            wire.argv,
+            wire.cwd,
+            wire.env,
+            wire.geometry,
+        )
+    }
+}
+
 impl<'de> Deserialize<'de> for NativeLaunchContextV1 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -231,11 +383,43 @@ impl<'de> Deserialize<'de> for NativeLaunchContextV1 {
     }
 }
 
+impl<'de> Deserialize<'de> for NativeLaunchContext {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let dispatch = NativeLaunchContextDispatch::deserialize(deserializer)?;
+        let wire_version = dispatch.wire_version;
+        let mut fields = dispatch.fields;
+        fields.insert("wire_version".into(), wire_version.into());
+        let object = serde_json::Value::Object(fields);
+
+        match wire_version {
+            1 => serde_json::from_value::<NativeLaunchContextV1Wire>(object)
+                .map_err(D::Error::custom)?
+                .try_into()
+                .map(Self::V1)
+                .map_err(D::Error::custom),
+            2 => serde_json::from_value::<NativeLaunchContextV2Wire>(object)
+                .map(NativeLaunchContextV2::from)
+                .map(Self::V2)
+                .map_err(D::Error::custom),
+            actual => Err(D::Error::custom(format_args!(
+                "unsupported native launch wire_version {actual}; expected 1 or 2"
+            ))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(unix))]
     use super::NativeOsValueConversionError;
-    use super::{NativeEnvVarV1, NativeLaunchContextV1, OpaqueOsValueV1, TerminalGeometryV1};
+    use super::{
+        NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1, NativeLaunchContextV2,
+        OpaqueOsValueV1, TerminalGeometryV1,
+    };
+    use crate::params::AgentSpawnParams;
     use crate::{Call, Frame};
 
     const OLD_SPAWN_FRAME: &str = r#"{"jsonrpc":"2.0","id":1,"method":"agent/spawn","params":{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}}"#;
@@ -244,6 +428,10 @@ mod tests {
         format!(
             r#"{{"wire_version":{wire_version},"program":"L2Jpbi9zaA==","argv":[],"cwd":"L3RtcA==","env":[],"geometry":{{"cols":80,"rows":24,"xpixel":0,"ypixel":0}}}}"#
         )
+    }
+
+    fn minimal_v2_context_json() -> &'static str {
+        r#"{"wire_version":2,"facade_command":"atlas","program":"L2Jpbi9zaA==","argv":[],"cwd":"L3RtcA==","env":[],"geometry":{"cols":80,"rows":24,"xpixel":0,"ypixel":0}}"#
     }
 
     #[cfg(unix)]
@@ -414,13 +602,165 @@ mod tests {
     }
 
     #[test]
-    fn native_launch_wire_version_two_is_refused() {
-        let error = serde_json::from_str::<NativeLaunchContextV1>(&minimal_context_json(2))
-            .unwrap_err()
-            .to_string();
+    fn direct_v1_decoder_refuses_wire_version_two() {
+        assert!(serde_json::from_str::<NativeLaunchContextV1>(&minimal_context_json(2)).is_err());
+    }
 
-        assert!(error.contains("wire_version"), "{error}");
-        assert!(error.contains('1'), "{error}");
+    #[cfg(unix)]
+    #[test]
+    fn v1_context_keeps_canonical_bytes_and_accepts_noncanonical_json() {
+        use std::ffi::OsStr;
+
+        let opaque = |value: &str| {
+            OpaqueOsValueV1::from_os_str(OsStr::new(value))
+                .expect("Unix OS values are byte strings")
+        };
+        let semantic_v1 = NativeLaunchContext::V1(NativeLaunchContextV1::new(
+            opaque("/bin/probe"),
+            vec![opaque("--foo")],
+            opaque("/tmp"),
+            vec![],
+            TerminalGeometryV1 {
+                cols: 80,
+                rows: 24,
+                xpixel: 0,
+                ypixel: 0,
+            },
+        ));
+
+        let canonical_once = serde_json::to_vec(&semantic_v1).unwrap();
+        let decoded = serde_json::from_slice::<NativeLaunchContext>(&canonical_once).unwrap();
+        let canonical_twice = serde_json::to_vec(&decoded).unwrap();
+        assert_eq!(decoded, semantic_v1);
+        assert_eq!(canonical_twice, canonical_once);
+
+        let accepted_noncanonical = br#"{
+  "geometry": { "ypixel": 0, "xpixel": 0, "rows": 24, "cols": 80 },
+  "env": [],
+  "cwd": "L3RtcA==",
+  "argv": [ "LS1mb28=" ],
+  "program": "L2Jpbi9wcm9iZQ==",
+  "wire_version": 1
+}"#;
+        assert_eq!(
+            serde_json::from_slice::<NativeLaunchContext>(accepted_noncanonical).unwrap(),
+            semantic_v1,
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn v2_carries_the_canonical_selector_and_opaque_values() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let opaque = |bytes: &[u8]| {
+            OpaqueOsValueV1::from_os_str(OsStr::from_bytes(bytes))
+                .expect("Unix OS values are byte strings")
+        };
+        let context = NativeLaunchContext::V2(NativeLaunchContextV2::new(
+            "atlas".into(),
+            opaque(b"/probe/atlas-cli"),
+            vec![opaque(&[0xff, b'x'])],
+            opaque(&[b'/', b'w', 0x80]),
+            vec![NativeEnvVarV1 {
+                name: opaque(b"PATH"),
+                value: opaque(&[b'/', b'p', 0x81]),
+            }],
+            TerminalGeometryV1 {
+                cols: 91,
+                rows: 37,
+                xpixel: 0,
+                ypixel: 0,
+            },
+        ));
+
+        let json = serde_json::to_string(&context).unwrap();
+        assert!(json.contains(r#""wire_version":2"#));
+        assert!(json.contains(r#""facade_command":"atlas""#));
+        assert_eq!(
+            serde_json::from_str::<NativeLaunchContext>(&json).unwrap(),
+            context
+        );
+        assert!(serde_json::from_str::<NativeLaunchContextV1>(&json).is_err());
+    }
+
+    #[test]
+    fn native_context_dispatch_is_strict_per_known_version() {
+        let unknown_v1 = format!(
+            "{},\"facade_command\":\"atlas\"}}",
+            minimal_context_json(1)
+                .strip_suffix('}')
+                .expect("the fixture is an object")
+        );
+        assert!(serde_json::from_str::<NativeLaunchContext>(&unknown_v1).is_err());
+
+        let missing_v2 = minimal_context_json(2);
+        assert!(serde_json::from_str::<NativeLaunchContext>(&missing_v2).is_err());
+
+        let unknown_v2 =
+            minimal_v2_context_json().replacen(r#""geometry""#, r#""surprise":true,"geometry""#, 1);
+        assert!(serde_json::from_str::<NativeLaunchContext>(&unknown_v2).is_err());
+    }
+
+    #[test]
+    fn unknown_native_context_versions_never_fall_through_to_known_schemas() {
+        for version in [0_u16, 3, u16::MAX] {
+            let json = minimal_v2_context_json().replacen(
+                r#""wire_version":2"#,
+                &format!(r#""wire_version":{version}"#),
+                1,
+            );
+            assert!(
+                serde_json::from_str::<NativeLaunchContext>(&json).is_err(),
+                "wire version {version} must not dispatch"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn boxing_native_context_does_not_change_agent_spawn_json() {
+        let context = NativeLaunchContextV1::new(
+            opaque(b"/bin/sh"),
+            vec![],
+            opaque(b"/tmp"),
+            vec![],
+            TerminalGeometryV1 {
+                cols: 80,
+                rows: 24,
+                xpixel: 0,
+                ypixel: 0,
+            },
+        );
+        let expected = serde_json::json!({
+            "wire_version": 1,
+            "program": "L2Jpbi9zaA==",
+            "argv": [],
+            "cwd": "L3RtcA==",
+            "env": [],
+            "geometry": { "cols": 80, "rows": 24, "xpixel": 0, "ypixel": 0 },
+        });
+        let params = AgentSpawnParams {
+            agent_type: "t".into(),
+            prompt: "p".into(),
+            native_launch: Some(Box::new(NativeLaunchContext::V1(context))),
+            caller: None,
+            repo: None,
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            timeout_secs: None,
+            model: None,
+            no_change_record: None,
+            pane: None,
+            isolation: None,
+            allow_concurrent_writes: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(params).unwrap()["native_launch"],
+            expected
+        );
     }
 
     #[test]
@@ -514,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spawn_frame_with_native_wire_version_two_is_refused_loudly() {
+    fn a_spawn_frame_with_v2_but_no_selector_is_refused_loudly() {
         let context = minimal_context_json(2);
         let line = format!(
             r#"{{"jsonrpc":"2.0","id":1,"method":"agent/spawn","params":{{"agent_type":"t","prompt":"p","native_launch":{context}}}}}"#
@@ -523,7 +863,7 @@ mod tests {
         let error = Frame::from_line(&line).unwrap_err();
 
         assert!(error.message.contains("agent/spawn"), "{error}");
-        assert!(error.message.contains("wire_version"), "{error}");
+        assert!(error.message.contains("facade_command"), "{error}");
     }
 
     #[cfg(not(unix))]

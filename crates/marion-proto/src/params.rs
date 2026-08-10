@@ -21,7 +21,7 @@ use crate::model::{
     ElicitationRequestId, ElicitationResponse, PermissionDecision, PermissionRequestId, ProbeMode,
     QuitDisposition,
 };
-use crate::native::NativeLaunchContextV1;
+use crate::native::NativeLaunchContext;
 
 /// `tree/subscribe` — no parameters, deliberately.
 ///
@@ -271,7 +271,7 @@ pub struct AgentSpawnParams {
     /// dormant payload is boxed so the enclosing protocol call does not reserve its full size for
     /// every legacy spawn; serde keeps the JSON shape unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_launch: Option<Box<NativeLaunchContextV1>>,
+    pub native_launch: Option<Box<NativeLaunchContext>>,
     /// `None` is a client creating a root; `Some` is a node spawning a child. See [`SpawnCaller`].
     #[serde(default)]
     pub caller: Option<SpawnCaller>,

@@ -69,7 +69,7 @@ use marion_harness::{
     Auth, CallOutcome, ChildExit, Extras, Invocation, LaunchSpec, MarionCall, McpDeclaration,
     SpawnCtx, adapter_for, json_frames,
 };
-use marion_proto::NativeLaunchContextV1;
+use marion_proto::NativeLaunchContext;
 use serde_json::Value;
 
 use crate::duplex::{self, DuplexError, DuplexSpec};
@@ -220,7 +220,7 @@ pub struct RootSpec {
     /// it: the handler's readiness gate refuses production native requests before construction.
     /// Keeping it here is the preparatory threading proof and prevents a later transport from
     /// recovering these values from lossy generic fields.
-    pub native_launch: Option<NativeLaunchContextV1>,
+    pub native_launch: Option<NativeLaunchContext>,
     /// Canonical repository root. The root's cwd, and the repo its children are worktrees of.
     pub repo: PathBuf,
     /// Resolved state directory (`<state>` of §4.3), *not* the per-project subdirectory.

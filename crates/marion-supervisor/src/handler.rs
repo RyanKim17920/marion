@@ -82,7 +82,7 @@ use marion_proto::result::{
 };
 use marion_proto::{
     AttachMode, Call, ClientGone, DetachGuidance, FailureKind, KilledNode, MethodResult,
-    NativeLaunchContextV1, NativeOsValueConversionError, NodeSummary, QuitDisposition, QuitOutcome,
+    NativeLaunchContext, NativeOsValueConversionError, NodeSummary, QuitDisposition, QuitOutcome,
     ReplayPoint, ResidentReason, RpcError, SpawnCaller, SupervisorDisposition,
 };
 
@@ -110,9 +110,9 @@ pub enum Unprojectable {
 
 /// Failures made at the native-launch boundary.
 ///
-/// A public V1 value has already passed protocol-version validation during deserialization. This
-/// type therefore owns only the remaining three decisions: native state is root-only, its opaque
-/// values require a byte-exact platform conversion, and the transport is not shipped yet.
+/// A public versioned value has already passed protocol-version validation during deserialization.
+/// This type therefore owns only the remaining three decisions: native state is root-only, its
+/// opaque values require a byte-exact platform conversion, and the transport is not shipped yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum NativeLaunchGateError {
     #[error("native launch context belongs only on a root request")]
@@ -143,8 +143,8 @@ impl NativeLaunchGateError {
             ),
             Self::TransportNotReady => RpcError::refused(
                 "native_launch",
-                "native facade transport is not ready. The V1 native launch context was accepted \
-                 as byte-exact root data, but marion has no shipped transport for it and will not \
+                "native facade transport is not ready. The native launch context was accepted as \
+                 byte-exact root data, but marion has no shipped transport for it and will not \
                  silently downgrade it to the managed headless launcher.",
                 "§9, §11 item 23",
             ),
@@ -162,7 +162,7 @@ impl NativeLaunchGateError {
 /// as a second copy.
 pub(crate) fn validate_native_launch_boundary(
     caller: Option<&SpawnCaller>,
-    native_launch: Option<&NativeLaunchContextV1>,
+    native_launch: Option<&NativeLaunchContext>,
 ) -> Result<(), NativeLaunchGateError> {
     let Some(context) = native_launch else {
         return Ok(());
@@ -171,12 +171,21 @@ pub(crate) fn validate_native_launch_boundary(
         return Err(NativeLaunchGateError::ChildMisuse);
     }
 
-    let _ = context.program.to_os_string()?;
-    for arg in &context.argv {
+    let (program, argv, cwd, env) = match context {
+        NativeLaunchContext::V1(context) => {
+            (&context.program, &context.argv, &context.cwd, &context.env)
+        }
+        NativeLaunchContext::V2(context) => {
+            (&context.program, &context.argv, &context.cwd, &context.env)
+        }
+    };
+
+    let _ = program.to_os_string()?;
+    for arg in argv {
         let _ = arg.to_os_string()?;
     }
-    let _ = context.cwd.to_os_string()?;
-    for entry in &context.env {
+    let _ = cwd.to_os_string()?;
+    for entry in env {
         let _ = entry.name.to_os_string()?;
         let _ = entry.value.to_os_string()?;
     }
@@ -6182,7 +6191,7 @@ mod tests {
                 agent_id: id("caller"),
                 node_token: "token".into(),
             };
-            let context = native_context(&fx.repo);
+            let context = NativeLaunchContext::V1(native_context(&fx.repo));
 
             assert_eq!(validate_native_launch_boundary(None, None), Ok(()));
             assert_eq!(validate_native_launch_boundary(Some(&caller), None), Ok(()));
@@ -6210,7 +6219,7 @@ mod tests {
                 }),
                 1,
             );
-            p.native_launch = Some(Box::new(native_context(&fx.repo)));
+            p.native_launch = Some(Box::new(NativeLaunchContext::V1(native_context(&fx.repo))));
 
             let e = spawn(&fx, p).expect_err("native launch state is root-only");
 
@@ -6232,7 +6241,7 @@ mod tests {
         fn a_valid_root_native_launch_is_refused_because_transport_is_not_ready() {
             let fx = owning("owns-native-root", vec![]);
             let mut p = root_params(&fx.repo, 1);
-            p.native_launch = Some(Box::new(native_context(&fx.repo)));
+            p.native_launch = Some(Box::new(NativeLaunchContext::V1(native_context(&fx.repo))));
 
             let e = spawn(&fx, p).expect_err("the native facade transport is not ready");
 
@@ -6260,7 +6269,7 @@ mod tests {
             let context = native_context(&fx.repo);
             let expected = serde_json::to_vec(&context).expect("the context serializes");
             let mut p = root_params(&fx.repo, 1);
-            p.native_launch = Some(Box::new(context));
+            p.native_launch = Some(Box::new(NativeLaunchContext::V1(context)));
             let env = fx
                 .handle
                 .spawn_env
@@ -6577,7 +6586,7 @@ mod tests {
         fn an_unauthorized_root_native_request_gets_the_credential_refusal_first() {
             let fx = owning("owns-native-peer", vec![]);
             let mut p = root_params(&fx.repo, 1);
-            p.native_launch = Some(Box::new(native_context(&fx.repo)));
+            p.native_launch = Some(Box::new(NativeLaunchContext::V1(native_context(&fx.repo))));
 
             let e = fx
                 .handle
