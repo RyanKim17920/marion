@@ -152,31 +152,24 @@ impl NativeLaunchGateError {
     }
 }
 
-/// Refuse the cheap native/child pairing before token lookup or any other handler state.
-///
-/// This function deliberately does not inspect an opaque value. A root's values and native
-/// support state are examined only after [`root_spawn_authorized`] authenticates its socket peer.
-pub(crate) fn validate_native_launch_pairing(
-    caller: Option<&SpawnCaller>,
-    native_launch: Option<&NativeLaunchContextV1>,
-) -> Result<(), NativeLaunchGateError> {
-    if caller.is_some() && native_launch.is_some() {
-        return Err(NativeLaunchGateError::ChildMisuse);
-    }
-    Ok(())
-}
-
-/// Validate authenticated root-native state before anything can claim, journal, allocate, or
+/// Validate the complete native-launch boundary before anything can claim, journal, allocate, or
 /// spawn.
 ///
-/// On Unix every opaque value is reconstructed through `OsStringExt`, via the protocol type's
-/// conversion API. No value is decoded through `String`, logged, or retained as a second copy.
-pub(crate) fn validate_root_native_launch(
+/// Callers choose when this pure function runs: a child reaches it before token lookup so pairing
+/// misuse wins, while a root reaches it only after [`root_spawn_authorized`] authenticates its
+/// socket peer. On Unix every root-native opaque value is reconstructed through `OsStringExt`, via
+/// the protocol type's conversion API. No value is decoded through `String`, logged, or retained
+/// as a second copy.
+pub(crate) fn validate_native_launch_boundary(
+    caller: Option<&SpawnCaller>,
     native_launch: Option<&NativeLaunchContextV1>,
 ) -> Result<(), NativeLaunchGateError> {
     let Some(context) = native_launch else {
         return Ok(());
     };
+    if caller.is_some() {
+        return Err(NativeLaunchGateError::ChildMisuse);
+    }
 
     let _ = context.program.to_os_string()?;
     for arg in &context.argv {
@@ -1605,8 +1598,10 @@ impl RegistryHandle {
         p: &marion_proto::params::AgentSpawnParams,
         peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
-        validate_native_launch_pairing(p.caller.as_ref(), p.native_launch.as_ref())
-            .map_err(NativeLaunchGateError::into_rpc)?;
+        if p.caller.is_some() {
+            validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_ref())
+                .map_err(NativeLaunchGateError::into_rpc)?;
+        }
         let me = self.me.upgrade().ok_or_else(|| {
             RpcError::internal(
                 "this supervisor is being dropped and will not start a node it could not then own",
@@ -1918,7 +1913,7 @@ impl RegistryHandle {
         peer: Peer,
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
         root_spawn_authorized(peer)?;
-        validate_root_native_launch(p.native_launch.as_ref())
+        validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_ref())
             .map_err(NativeLaunchGateError::into_rpc)?;
         let repo = p.repo.clone().ok_or_else(|| {
             // Unreachable: the frame-shape match above refuses `(None, None)` by name before any
@@ -6175,6 +6170,30 @@ mod tests {
                     ypixel: 11,
                 },
             )
+        }
+
+        /// One pure boundary owns all four native-launch shapes. Call sites may choose *when* to
+        /// invoke it for authorization ordering, but cannot select only one of its decisions.
+        #[cfg(unix)]
+        #[test]
+        fn one_native_launch_boundary_owns_pairing_platform_and_readiness() {
+            let fx = owning("owns-native-boundary", vec![]);
+            let caller = SpawnCaller {
+                agent_id: id("caller"),
+                node_token: "token".into(),
+            };
+            let context = native_context(&fx.repo);
+
+            assert_eq!(validate_native_launch_boundary(None, None), Ok(()));
+            assert_eq!(validate_native_launch_boundary(Some(&caller), None), Ok(()));
+            assert_eq!(
+                validate_native_launch_boundary(Some(&caller), Some(&context)),
+                Err(NativeLaunchGateError::ChildMisuse)
+            );
+            assert_eq!(
+                validate_native_launch_boundary(None, Some(&context)),
+                Err(NativeLaunchGateError::TransportNotReady)
+            );
         }
 
         /// Native process state belongs only to the root request that originated at the CLI.
