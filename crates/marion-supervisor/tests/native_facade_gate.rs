@@ -257,16 +257,19 @@ impl Bed {
             "{case}: the refusal wrote to the journal"
         );
         let agent_dirs = match std::fs::read_dir(project.agents_dir()) {
-            Ok(entries) => entries
-                .map(|entry| {
+            Ok(entries) => {
+                let mut count = 0;
+                for entry in entries {
                     entry.unwrap_or_else(|error| {
                         panic!(
                             "{case}: could not inspect an entry under {}: {error}",
                             project.agents_dir().display()
                         )
-                    })
-                })
-                .count(),
+                    });
+                    count += 1;
+                }
+                count
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(error) => panic!(
                 "{case}: could not inspect {} for node-directory absence: {error}",
