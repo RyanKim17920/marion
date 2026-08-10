@@ -148,8 +148,9 @@ picker; it is not presented as a facade list.
 ## Shared native launch context
 
 `AgentSpawnParams` gains an omitted-when-absent, root-only
-`native_launch: NativeLaunchContextV1` field. V1 denies unknown fields; incompatible
-changes create a new version instead of changing V1 silently.
+`native_launch: NativeLaunchContext` field. The wire type dispatches strictly to V1 or
+V2 by version; each version denies unknown fields, and incompatible changes create a
+new version instead of changing an existing version silently.
 
 Foundation NativeLaunchContextV1 is selectorless and dormant. It carries exact
 process state only, cannot bind a facade, and remains refused before any native
@@ -220,7 +221,7 @@ Handler validation occurs before claim, journal, config, workspace, or process e
 
 An old client remains byte-compatible with a new supervisor because the field is omitted.
 A new facade client meeting an old strict supervisor fails loudly as “resident supervisor
-does not support native facade V1”; it never downgrades to managed pane behavior.
+does not support native facade V2”; it never downgrades to managed pane behavior.
 
 ## Adapter-owned native injection
 
