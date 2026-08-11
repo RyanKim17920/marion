@@ -1,6 +1,6 @@
 //! Atomic replay-to-live cursor contract for the supervisor-owned PTY byte stream.
 
-// This production-dark skeleton lands before its cursor operations and callsite integration.
+// Replay remains production-dark; the supervisor currently feeds only the retained prefix.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, VecDeque};
@@ -9,20 +9,20 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum DisplayKind {
+pub(super) enum DisplayKind {
     Output(Arc<[u8]>),
     Resize { rows: u16, cols: u16 },
     End,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DisplayRecord {
-    seq: u64,
-    kind: DisplayKind,
+pub(super) struct DisplayRecord {
+    pub(super) seq: u64,
+    pub(super) kind: DisplayKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SpliceLimits {
+pub(super) struct SpliceLimits {
     retained_bytes: usize,
     max_retained_records: usize,
     subscribers: usize,
@@ -30,7 +30,7 @@ struct SpliceLimits {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
-enum SpliceError {
+pub(super) enum SpliceError {
     #[error("PTY display stream has ended")]
     Ended,
     #[error("PTY retained output exceeds the {limit}-byte limit")]
@@ -66,7 +66,7 @@ struct EmitOutcome {
     overflowed: Vec<SubscriberId>,
 }
 
-struct PtySplice {
+pub(super) struct PtySplice {
     inner: Arc<Inner>,
 }
 
@@ -85,7 +85,7 @@ struct State {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct SubscriberId(u64);
+pub(super) struct SubscriberId(u64);
 
 struct SubscriberState {
     phase: SubscriberPhase,
@@ -323,7 +323,7 @@ impl Drop for ReplaySubscription {
 }
 
 impl PtySplice {
-    fn new(limits: SpliceLimits) -> Self {
+    pub(super) fn new(limits: SpliceLimits) -> Self {
         Self {
             inner: Arc::new(Inner {
                 limits,
@@ -337,6 +337,23 @@ impl PtySplice {
                 }),
             }),
         }
+    }
+
+    pub(super) fn retain_output(&self, bytes: Arc<[u8]>) -> Result<(), SpliceError> {
+        self.emit_output(bytes).map(|_| ())
+    }
+
+    pub(super) fn retain_resize(&self, rows: u16, cols: u16) -> Result<(), SpliceError> {
+        self.emit_resize(rows, cols).map(|_| ())
+    }
+
+    pub(super) fn retain_end(&self) -> Result<(), SpliceError> {
+        self.emit_end().map(|_| ())
+    }
+
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> Vec<DisplayRecord> {
+        lock_recover(&self.inner.state).records.clone()
     }
 
     fn begin_replay(&self) -> Result<ReplaySubscription, SpliceError> {
@@ -433,6 +450,27 @@ impl PtySplice {
             wake_ready,
             overflowed,
         })
+    }
+}
+
+impl SpliceLimits {
+    pub(super) const fn production() -> Self {
+        Self {
+            retained_bytes: 64 * 1024 * 1024,
+            max_retained_records: 1_000_000,
+            subscribers: 64,
+            queued_records_per_subscriber: 16_384,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn testing(retained_bytes: usize, max_retained_records: usize) -> Self {
+        Self {
+            retained_bytes,
+            max_retained_records,
+            subscribers: 0,
+            queued_records_per_subscriber: 0,
+        }
     }
 }
 

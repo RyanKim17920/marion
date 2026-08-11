@@ -89,7 +89,7 @@
 //!    macOS returns 0. A reader treating `EIO` as a fault reports a read failure for every normal
 //!    exit.
 
-use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
+use std::ffi::{c_char, c_int, c_ulong, c_void, CStr};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -107,9 +107,9 @@ use marion_proto::Event;
 
 use crate::serve::{ConnId, Outbound};
 
+mod splice;
 /// Production-dark durable binary PTY recording and recovery.
 pub mod stream;
-mod splice;
 
 // ---------------------------------------------------------------------------------------------
 // libc, hand-declared
@@ -1008,6 +1008,9 @@ struct Shared {
     seq: AtomicU64,
     probes: AtomicU64,
     bytes: Arc<AtomicU64>,
+    splice: splice::PtySplice,
+    splice_error: Mutex<Option<String>>,
+    splice_disabled: AtomicBool,
     /// Resizes handed to the reader thread, and the answer coming back. See [`PtyHost::resize`].
     resize: Mutex<ResizeQueue>,
     resize_done: Condvar,
@@ -1016,6 +1019,10 @@ struct Shared {
     #[cfg(test)]
     #[allow(clippy::type_complexity)]
     resize_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    resize_ioctl_failure: Mutex<Option<String>>,
+    #[cfg(test)]
+    resize_cast_failure: Mutex<Option<String>>,
 }
 
 /// **A resize in flight between the caller who asked for it and the thread that performs it.**
@@ -1040,6 +1047,67 @@ struct ResizeQueue {
 }
 
 impl Shared {
+    fn set_size(&self, master: &PtyMaster, size: WinSize) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(error) = self
+            .resize_ioctl_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            return Err(io::Error::other(error));
+        }
+        master.set_size(size)
+    }
+
+    fn resize_cast(&self, cast: &mut CastWriter, size: WinSize) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(error) = self
+            .resize_cast_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            return Err(io::Error::other(error));
+        }
+        cast.resize(size)
+    }
+
+    fn retain_output(&self, chunk: &[u8]) {
+        if self.splice_disabled.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Err(error) = self.splice.retain_output(Arc::from(chunk)) {
+            self.latch_splice_error(error);
+        }
+    }
+
+    fn retain_resize(&self, size: WinSize) {
+        if self.splice_disabled.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Err(error) = self.splice.retain_resize(size.rows, size.cols) {
+            self.latch_splice_error(error);
+        }
+    }
+
+    fn retain_end(&self) {
+        if self.splice_disabled.load(Ordering::SeqCst) {
+            return;
+        }
+        match self.splice.retain_end() {
+            Ok(()) => self.splice_disabled.store(true, Ordering::SeqCst),
+            Err(error) => self.latch_splice_error(error),
+        }
+    }
+
+    fn latch_splice_error(&self, error: splice::SpliceError) {
+        if self.splice_disabled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        *self.splice_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+    }
+
     fn emit(&self, text: &str) {
         if text.is_empty() {
             return;
@@ -1080,6 +1148,11 @@ pub struct PtyHost {
     stopped: Arc<AtomicBool>,
 }
 
+struct PtyHostStart {
+    splice_limits: splice::SpliceLimits,
+    start_reader: bool,
+}
+
 impl PtyHost {
     /// Take ownership of a master and start recording. The child may be attached later with
     /// [`Self::adopt`], or never — a host with no child is exactly what a test needs to drive the
@@ -1092,6 +1165,76 @@ impl PtyHost {
         term: &str,
         origin: Instant,
     ) -> io::Result<Self> {
+        Self::start_inner(
+            agent_id,
+            master,
+            cast_path,
+            size,
+            term,
+            origin,
+            PtyHostStart {
+                splice_limits: splice::SpliceLimits::production(),
+                start_reader: true,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    fn start_with_splice_limits(
+        agent_id: AgentId,
+        master: PtyMaster,
+        cast_path: &Path,
+        size: WinSize,
+        term: &str,
+        origin: Instant,
+        splice_limits: splice::SpliceLimits,
+    ) -> io::Result<Self> {
+        Self::start_inner(
+            agent_id,
+            master,
+            cast_path,
+            size,
+            term,
+            origin,
+            PtyHostStart {
+                splice_limits,
+                start_reader: true,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    fn start_without_reader_for_test(
+        agent_id: AgentId,
+        master: PtyMaster,
+        cast_path: &Path,
+        size: WinSize,
+        term: &str,
+        origin: Instant,
+    ) -> io::Result<Self> {
+        Self::start_inner(
+            agent_id,
+            master,
+            cast_path,
+            size,
+            term,
+            origin,
+            PtyHostStart {
+                splice_limits: splice::SpliceLimits::production(),
+                start_reader: false,
+            },
+        )
+    }
+
+    fn start_inner(
+        agent_id: AgentId,
+        master: PtyMaster,
+        cast_path: &Path,
+        size: WinSize,
+        term: &str,
+        origin: Instant,
+        options: PtyHostStart,
+    ) -> io::Result<Self> {
         let cast = CastWriter::create(cast_path, size, term, origin)?;
         let shared = Arc::new(Shared {
             agent_id,
@@ -1101,32 +1244,43 @@ impl PtyHost {
             seq: AtomicU64::new(0),
             probes: AtomicU64::new(0),
             bytes: Arc::new(AtomicU64::new(0)),
+            splice: splice::PtySplice::new(options.splice_limits),
+            splice_error: Mutex::new(None),
+            splice_disabled: AtomicBool::new(false),
             resize: Mutex::new(ResizeQueue {
                 pending: None,
                 requested: 0,
                 applied: 0,
                 failure: None,
-                reader: true,
+                reader: options.start_reader,
             }),
             resize_done: Condvar::new(),
             #[cfg(test)]
             resize_hook: Mutex::new(None),
+            #[cfg(test)]
+            resize_ioctl_failure: Mutex::new(None),
+            #[cfg(test)]
+            resize_cast_failure: Mutex::new(None),
         });
         let master = Arc::new(master);
         let stopped = Arc::new(AtomicBool::new(false));
-        let reader = {
+        let reader = if options.start_reader {
             let master = Arc::clone(&master);
             let shared = Arc::clone(&shared);
             let stopped = Arc::clone(&stopped);
-            std::thread::Builder::new()
-                .name("marion-pty".into())
-                .spawn(move || read_loop(&master, &shared, &stopped))?
+            Some(
+                std::thread::Builder::new()
+                    .name("marion-pty".into())
+                    .spawn(move || read_loop(&master, &shared, &stopped))?,
+            )
+        } else {
+            None
         };
         Ok(Self {
             master,
             shared,
             child: Mutex::new(None),
-            reader: Mutex::new(Some(reader)),
+            reader: Mutex::new(reader),
             stopped,
         })
     }
@@ -1156,6 +1310,24 @@ impl PtyHost {
             .resize_hook
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    #[cfg(test)]
+    fn fail_next_resize_ioctl(&self, error: &str) {
+        *self
+            .shared
+            .resize_ioctl_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+    }
+
+    #[cfg(test)]
+    fn fail_next_cast_resize(&self, error: &str) {
+        *self
+            .shared
+            .resize_cast_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
     }
 
     /// The running byte count, shareable into a resize hook. See
@@ -1209,6 +1381,20 @@ impl PtyHost {
 
     pub fn bytes_read(&self) -> u64 {
         self.shared.bytes.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn retention_snapshot(&self) -> Vec<splice::DisplayRecord> {
+        self.shared.splice.snapshot()
+    }
+
+    #[cfg(test)]
+    fn retention_error(&self) -> Option<String> {
+        self.shared
+            .splice_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The ordinal the next [`Event::NodePty`] will carry.
@@ -1414,8 +1600,11 @@ impl PtyHost {
             let size = q.pending.take().unwrap_or(size);
             q.applied = q.requested;
             let mut cast = self.shared.cast.lock().unwrap_or_else(|e| e.into_inner());
-            self.master.set_size(size)?;
-            cast.resize(size)?;
+            self.shared.set_size(&self.master, size)?;
+            self.shared.retain_resize(size);
+            let cast_result = self.shared.resize_cast(&mut cast, size);
+            drop(cast);
+            cast_result?;
         } else if let Some(failure) = q.failure.take() {
             return Err(io::Error::other(failure));
         }
@@ -1558,6 +1747,7 @@ fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) {
             .output(&tail);
         shared.emit(&tail);
     }
+    shared.retain_end();
 }
 
 /// **Hands the resize job back when the reader leaves, however it leaves.**
@@ -1586,6 +1776,7 @@ impl Drop for ReaderGone<'_> {
 /// about the UTF-8 carry — which is S11's *"a `read()` is not a frame"* defect reintroduced by
 /// duplication rather than by ignorance.
 fn record_chunk(shared: &Shared, utf8: &mut Utf8Stream, probes: &mut ProbeScan, chunk: &[u8]) {
+    shared.retain_output(chunk);
     shared.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);
     let seen = probes.count(chunk);
     if seen > 0 {
@@ -1681,7 +1872,13 @@ fn apply_pending_resize(
 
     let outcome = {
         let mut cast = shared.cast.lock().unwrap_or_else(|e| e.into_inner());
-        master.set_size(size).and_then(|()| cast.resize(size))
+        match shared.set_size(master, size) {
+            Ok(()) => {
+                shared.retain_resize(size);
+                shared.resize_cast(&mut cast, size)
+            }
+            Err(error) => Err(error),
+        }
     };
 
     let mut q = shared.resize.lock().unwrap_or_else(|e| e.into_inner());

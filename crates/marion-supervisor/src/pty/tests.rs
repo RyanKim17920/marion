@@ -90,11 +90,38 @@ struct Loopback {
 
 impl Loopback {
     fn new(tag: &str, size: WinSize) -> Self {
+        Self::with_splice_limits(tag, size, super::splice::SpliceLimits::production())
+    }
+
+    fn with_splice_limits(tag: &str, size: WinSize, limits: super::splice::SpliceLimits) -> Self {
         let dir = marion_testsupport::scratch(tag);
         let cast = dir.join("pty.cast");
         let master = PtyMaster::open(size).expect("a pty");
         let slave = std::fs::File::from(master.open_slave().expect("the slave opens"));
-        let host = PtyHost::start(
+        let host = PtyHost::start_with_splice_limits(
+            AgentId("node-under-test".into()),
+            master,
+            &cast,
+            size,
+            "xterm-256color",
+            Instant::now(),
+            limits,
+        )
+        .expect("the host starts");
+        Self {
+            _dir: dir,
+            cast,
+            host,
+            slave: Some(slave),
+        }
+    }
+
+    fn without_reader(tag: &str, size: WinSize) -> Self {
+        let dir = marion_testsupport::scratch(tag);
+        let cast = dir.join("pty.cast");
+        let master = PtyMaster::open(size).expect("a pty");
+        let slave = std::fs::File::from(master.open_slave().expect("the slave opens"));
+        let host = PtyHost::start_without_reader_for_test(
             AgentId("node-under-test".into()),
             master,
             &cast,
@@ -102,7 +129,7 @@ impl Loopback {
             "xterm-256color",
             Instant::now(),
         )
-        .expect("the host starts");
+        .expect("the host starts without a reader");
         Self {
             _dir: dir,
             cast,
@@ -1001,6 +1028,258 @@ fn the_reader_carries_an_incomplete_utf8_sequence_across_reads() {
     assert_eq!(s.pending(), 0);
 }
 
+/// Retention is fed from the raw pty read, before the lossy UTF-8 view used by the cast and live
+/// listener paths. A replacement character in either retained position would make replay
+/// byte-inexact for terminal control streams.
+#[test]
+fn pty_retention_keeps_invalid_utf8_output_byte_exact() {
+    let mut lb = Loopback::new("pty-retention-raw", WinSize::new(80, 24));
+    let raw: &[u8] = b"before\xffafter";
+    lb.child_writes(raw);
+
+    let retained = lb.host.retention_snapshot();
+    assert_eq!(retained.len(), 1, "one pty read must be retained once");
+    let super::splice::DisplayKind::Output(bytes) = &retained[0].kind else {
+        panic!("first retained record must be Output");
+    };
+    assert_eq!(bytes.as_ref(), raw);
+
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+}
+
+#[test]
+fn pty_retention_orders_resize_between_raw_outputs() {
+    let mut lb = Loopback::new("pty-retention-resize", WinSize::new(80, 24));
+    lb.child_writes(b"before");
+    lb.host.resize(WinSize::new(100, 40)).unwrap();
+    lb.child_writes(b"after");
+
+    let retained = lb.host.retention_snapshot();
+    assert_eq!(
+        retained.iter().map(|record| record.seq).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(matches!(
+        &retained[0].kind,
+        super::splice::DisplayKind::Output(bytes) if bytes.as_ref() == b"before"
+    ));
+    assert!(matches!(
+        retained[1].kind,
+        super::splice::DisplayKind::Resize {
+            rows: 40,
+            cols: 100
+        }
+    ));
+    assert!(matches!(
+        &retained[2].kind,
+        super::splice::DisplayKind::Output(bytes) if bytes.as_ref() == b"after"
+    ));
+
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+}
+
+#[test]
+fn pty_retention_ends_once_and_accepts_no_later_record() {
+    let mut lb = Loopback::new("pty-retention-end", WinSize::new(80, 24));
+    lb.child_writes(b"last");
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+
+    let ended = lb.host.retention_snapshot();
+    assert_eq!(
+        ended.iter().map(|record| record.seq).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert!(matches!(
+        &ended[0].kind,
+        super::splice::DisplayKind::Output(bytes) if bytes.as_ref() == b"last"
+    ));
+    assert!(matches!(ended[1].kind, super::splice::DisplayKind::End));
+
+    lb.host.resize(WinSize::new(100, 40)).unwrap();
+    lb.host.shutdown().unwrap();
+    assert_eq!(lb.host.retention_snapshot(), ended);
+}
+
+#[test]
+fn pty_retention_overflow_latches_without_blocking_cast_or_live_output() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-retention-overflow",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing(3, 8),
+    );
+    let (listener, rx) = crate::serve::capture(crate::serve::ConnId(91));
+    lb.host.listen(listener);
+
+    lb.child_writes(b"ok");
+    lb.child_writes(b"\xffboom");
+    let first_error = lb
+        .host
+        .retention_error()
+        .expect("the first over-limit output is latched");
+    assert!(first_error.contains("3-byte limit"), "{first_error}");
+    let frozen = lb.host.retention_snapshot();
+    assert_eq!(frozen.len(), 1);
+
+    lb.child_writes(b"later");
+    assert_eq!(
+        lb.host.retention_error().as_deref(),
+        Some(first_error.as_str())
+    );
+    assert_eq!(lb.host.retention_snapshot(), frozen);
+    assert!(
+        until(|| lb.host.next_seq() == 3),
+        "live output stopped after retention failed"
+    );
+
+    let mut live = String::new();
+    while let Ok(frame) = rx.try_recv() {
+        let frame: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(frame["method"], "node/pty");
+        live.push_str(frame["params"]["bytes"].as_str().unwrap());
+    }
+    assert_eq!(live, "ok\u{fffd}boomlater");
+
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+    let (_, records) = read_cast(&lb.cast);
+    let cast_output: String = records
+        .iter()
+        .filter(|(_, code, _)| code == "o")
+        .map(|(_, _, data)| data.as_str())
+        .collect();
+    assert_eq!(cast_output, live);
+    assert_eq!(lb.host.retention_snapshot(), frozen);
+}
+
+#[test]
+fn pty_resize_retention_overflow_does_not_rollback_cast_or_output() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-retention-resize-overflow",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing(64, 1),
+    );
+    lb.child_writes(b"before");
+    lb.host.resize(WinSize::new(100, 40)).unwrap();
+    let first_error = lb
+        .host
+        .retention_error()
+        .expect("the over-limit resize is latched");
+    assert!(first_error.contains("record limit 1"), "{first_error}");
+    lb.child_writes(b"after");
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+
+    let retained = lb.host.retention_snapshot();
+    assert_eq!(retained.len(), 1);
+    assert!(matches!(
+        &retained[0].kind,
+        super::splice::DisplayKind::Output(bytes) if bytes.as_ref() == b"before"
+    ));
+    assert_eq!(
+        lb.host.retention_error().as_deref(),
+        Some(first_error.as_str())
+    );
+
+    let (_, records) = read_cast(&lb.cast);
+    let observed: Vec<_> = records
+        .iter()
+        .filter(|(_, code, _)| code == "o" || code == "r")
+        .map(|(_, code, data)| (code.as_str(), data.as_str()))
+        .collect();
+    assert_eq!(observed, [("o", "before"), ("r", "100x40"), ("o", "after")]);
+}
+
+#[test]
+fn pty_live_resize_retains_kernel_success_before_reporting_cast_failure() {
+    let mut lb = Loopback::new("pty-retention-live-cast-failure", WinSize::new(80, 24));
+    lb.child_writes(b"before");
+    lb.host
+        .fail_next_cast_resize("injected live cast resize failure");
+    let error = lb
+        .host
+        .resize(WinSize::new(100, 40))
+        .expect_err("the injected cast failure reaches the caller");
+    assert!(error
+        .to_string()
+        .contains("injected live cast resize failure"));
+    lb.child_writes(b"after");
+
+    let retained = lb.host.retention_snapshot();
+    assert_eq!(
+        retained.iter().map(|record| record.seq).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(matches!(
+        retained[1].kind,
+        super::splice::DisplayKind::Resize {
+            rows: 40,
+            cols: 100
+        }
+    ));
+
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+}
+
+#[test]
+fn pty_no_reader_resize_retains_kernel_success_before_reporting_cast_failure() {
+    let mut lb =
+        Loopback::without_reader("pty-retention-no-reader-cast-failure", WinSize::new(80, 24));
+    lb.host.shared.retain_output(b"before");
+    lb.host
+        .fail_next_cast_resize("injected fallback cast resize failure");
+    let error = lb
+        .host
+        .resize(WinSize::new(100, 40))
+        .expect_err("the injected cast failure reaches the caller");
+    assert!(error
+        .to_string()
+        .contains("injected fallback cast resize failure"));
+    lb.host.shared.retain_output(b"after");
+
+    let retained = lb.host.retention_snapshot();
+    assert_eq!(
+        retained.iter().map(|record| record.seq).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(matches!(
+        retained[1].kind,
+        super::splice::DisplayKind::Resize {
+            rows: 40,
+            cols: 100
+        }
+    ));
+
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+}
+
+#[test]
+fn pty_ioctl_failure_never_retains_resize_in_either_path() {
+    let mut live = Loopback::new("pty-retention-live-ioctl-failure", WinSize::new(80, 24));
+    live.host
+        .fail_next_resize_ioctl("injected live ioctl failure");
+    assert!(live.host.resize(WinSize::new(100, 40)).is_err());
+    assert!(live.host.retention_snapshot().is_empty());
+    live.hang_up();
+    live.host.shutdown().unwrap();
+
+    let mut fallback = Loopback::without_reader(
+        "pty-retention-no-reader-ioctl-failure",
+        WinSize::new(80, 24),
+    );
+    fallback
+        .host
+        .fail_next_resize_ioctl("injected fallback ioctl failure");
+    assert!(fallback.host.resize(WinSize::new(100, 40)).is_err());
+    assert!(fallback.host.retention_snapshot().is_empty());
+    fallback.hang_up();
+    fallback.host.shutdown().unwrap();
+}
+
 /// **No pty byte reaches `events.jsonl`.** §3.4 said they would; they do not, and §3.4 has been
 /// corrected. Recorded here as a decision so it cannot be undone by accident.
 ///
@@ -1495,7 +1774,7 @@ fn a_node_that_did_not_ask_for_a_pane_is_not_given_one() {
 #[test]
 fn no_built_in_agent_types_default_shape_is_driven_by_keystrokes() {
     use marion_core::harness::Harness;
-    use marion_harness::{ControlTransport, adapter_for};
+    use marion_harness::{adapter_for, ControlTransport};
 
     let terminal: Vec<Harness> = Harness::ALL
         .into_iter()
