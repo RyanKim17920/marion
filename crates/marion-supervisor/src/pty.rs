@@ -107,6 +107,9 @@ use marion_proto::Event;
 
 use crate::serve::{ConnId, Outbound};
 
+/// Production-dark durable binary PTY recording and recovery.
+pub mod stream;
+
 // ---------------------------------------------------------------------------------------------
 // libc, hand-declared
 // ---------------------------------------------------------------------------------------------
