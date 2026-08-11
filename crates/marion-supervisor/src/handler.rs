@@ -86,7 +86,7 @@ use marion_proto::{
     RpcError, SpawnCaller, SupervisorDisposition,
 };
 
-use crate::native_binding::{NativeBindingError, bind_native_launch};
+use crate::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
 use crate::registry::{LiveRegistry, Registry};
 use crate::serve::{ConnId, Departure, Handle, Outbound, Peer};
 
@@ -151,23 +151,8 @@ fn native_binding_error_into_rpc(error: NativeBindingError) -> RpcError {
     }
 }
 
-fn native_launch_refusal(
-    context: &NativeLaunchContext,
-    requested_agent_type: &str,
-    registry: &marion_core::NativeFacadeRegistry<'_>,
-) -> RpcError {
-    match bind_native_launch(context, requested_agent_type, registry) {
-        Err(error) => native_binding_error_into_rpc(error),
-        Ok(bound) => RpcError::refused(
-            "native_launch",
-            format!(
-                "native facade {:?} was bound successfully, but native launch is not enabled. \
-                 Refused before the managed launcher could interpret native state.",
-                bound.descriptor.command
-            ),
-            "§9, §11 item 23",
-        ),
-    }
+fn native_launch_refusal(context: &NativeLaunchContext) -> RpcError {
+    native_binding_error_into_rpc(refuse_untrusted_native_launch(context))
 }
 
 /// Refuse child/native pairing before token lookup or any launch state is consulted.
@@ -1918,23 +1903,7 @@ impl RegistryHandle {
     ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
         root_spawn_authorized(peer)?;
         if let Some(context) = p.native_launch.as_deref() {
-            let canonical_agent_type = if matches!(context, NativeLaunchContext::V2(_)) {
-                Some(
-                    agent_type::builtin(&p.agent_type)
-                        .ok_or_else(spawn_refused_before_the_node_existed)?,
-                )
-            } else {
-                None
-            };
-            let requested_agent_type = canonical_agent_type
-                .as_ref()
-                .map_or(p.agent_type.as_str(), |agent_type| agent_type.name.as_str());
-            let registry = marion_core::production_native_facades();
-            return Err(native_launch_refusal(
-                context,
-                requested_agent_type,
-                &registry,
-            ));
+            return Err(native_launch_refusal(context));
         }
         let repo = p.repo.clone().ok_or_else(|| {
             // Unreachable: the frame-shape match above refuses `(None, None)` by name before any
@@ -5814,10 +5783,6 @@ mod tests {
     mod owns_nodes {
         use super::*;
         use marion_core::paths::ProjectDir;
-        use marion_core::{
-            NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry,
-            NativeFacadeTransport,
-        };
         use marion_proto::params::AgentSpawnParams;
         use marion_proto::{
             NativeEnvVarV1, NativeLaunchContextV1, NativeLaunchContextV2, OpaqueOsValueV1,
@@ -6290,23 +6255,23 @@ mod tests {
             );
         }
 
-        /// Production declares no ready facade, so a named V2 launch stops at registry ownership.
+        /// Ordinary root RPC cannot present the native-bootstrap authority required by V2.
         #[cfg(unix)]
         #[test]
-        fn a_v2_root_native_launch_names_the_unavailable_production_facade() {
+        fn a_v2_root_native_launch_requires_the_native_bootstrap() {
             let fx = owning("owns-native-v2-root", vec![]);
             let mut p = root_params(&fx.repo, 1);
             p.native_launch = Some(Box::new(NativeLaunchContext::V2(native_context_v2(
                 &fx.repo,
             ))));
 
-            let e = spawn(&fx, p).expect_err("production has no ready atlas facade");
+            let e = spawn(&fx, p).expect_err("ordinary root RPC cannot authorize raw V2");
 
             assert_eq!(e.kind(), Some(FailureKind::Refused), "{e}");
             assert!(
                 e.message
-                    .contains("native facade command \"atlas\" is unavailable"),
-                "the refusal must name registry availability: {}",
+                    .contains("raw V2 native launch requires the native bootstrap"),
+                "the refusal must name missing native-bootstrap authority: {}",
                 e.message
             );
             assert_eq!(journal_len(&fx), 0, "the binding gate journals nothing");
@@ -6317,11 +6282,10 @@ mod tests {
             );
         }
 
-        /// A future ready descriptor must still stop here until a native launcher consumes the
-        /// bound value; successful binding may never fall through to the managed root launcher.
+        /// A raw V2 frame cannot become bound even if its executable-shaped fields are valid.
         #[cfg(unix)]
         #[test]
-        fn successful_native_binding_is_still_a_handler_refusal() {
+        fn raw_v2_handler_validation_has_no_bound_success_arm() {
             let work = scratch("native-handler-bound-refusal");
             let bin = work.join("bin");
             std::fs::create_dir(&bin).expect("the fixture bin exists");
@@ -6330,16 +6294,6 @@ mod tests {
                 .expect("the executable is written");
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
                 .expect("the executable is executable");
-            let descriptors = [NativeFacadeDescriptor {
-                command: "atlas",
-                aliases: &["at"],
-                executable: "atlas-cli",
-                agent_type: "atlas-agent",
-                transport: NativeFacadeTransport::TransparentPty,
-                readiness: NativeFacadeReadiness::Ready,
-            }];
-            let registry =
-                NativeFacadeRegistry::new(&descriptors).expect("the synthetic registry is valid");
             let context = NativeLaunchContext::V2(NativeLaunchContextV2::new(
                 "atlas".into(),
                 OpaqueOsValueV1::from_os_str(executable.as_os_str()).unwrap(),
@@ -6357,12 +6311,14 @@ mod tests {
                 },
             ));
 
-            let error = native_launch_refusal(&context, "atlas-agent", &registry);
+            let error = native_launch_refusal(&context);
 
             assert_eq!(error.kind(), Some(FailureKind::Refused));
             assert!(
-                error.message.contains("native launch is not enabled"),
-                "a successful binding must still stop before the managed launcher: {}",
+                error
+                    .message
+                    .contains("raw V2 native launch requires the native bootstrap"),
+                "raw V2 must stop before registry or managed-launch selection: {}",
                 error.message
             );
         }

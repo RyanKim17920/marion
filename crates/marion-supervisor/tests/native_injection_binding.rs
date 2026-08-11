@@ -4,31 +4,21 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use marion_core::{
-    NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry, NativeFacadeTransport,
-    production_native_facades,
-};
+use marion_core::PRODUCTION_NATIVE_FACADES;
 use marion_harness::mcp_bridge::MarionMcpBridge;
 use marion_harness::{
     NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
-    NativeInjectionError, NativeNodeContext, assemble_native,
+    NativeInjectionError, NativeNodeContext, NativeProcessBase, NativeTerminalGeometry,
+    assemble_native,
 };
 use marion_proto::{
     NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1,
 };
-use marion_supervisor::native_binding::{NativeBindingError, bind_native_launch};
+use marion_supervisor::native_binding::{NativeBindingError, refuse_untrusted_native_launch};
 use marion_testsupport::{Scratch, scratch};
 
-const READY: NativeFacadeDescriptor = NativeFacadeDescriptor {
-    command: "atlas",
-    aliases: &["at"],
-    executable: "atlas-cli",
-    agent_type: "atlas-agent",
-    transport: NativeFacadeTransport::TransparentPty,
-    readiness: NativeFacadeReadiness::Ready,
-};
+const EXECUTABLE: &str = "atlas-cli";
 
 fn opaque(value: &OsStr) -> OpaqueOsValueV1 {
     OpaqueOsValueV1::from_os_str(value).expect("Unix preserves native launch bytes")
@@ -54,7 +44,7 @@ fn executable_fixture(tag: &str) -> (Scratch, PathBuf, PathBuf) {
     let work = scratch(tag);
     let bin = work.join("bin");
     std::fs::create_dir(&bin).expect("the isolated fixture bin exists");
-    let executable = bin.join(READY.executable);
+    let executable = bin.join(EXECUTABLE);
     std::fs::write(&executable, b"inert synthetic executable\n")
         .expect("the inert executable fixture is written");
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
@@ -69,7 +59,7 @@ fn v2_context(
     env: Vec<NativeEnvVarV1>,
 ) -> NativeLaunchContext {
     NativeLaunchContext::V2(NativeLaunchContextV2::new(
-        READY.command.into(),
+        "atlas".into(),
         opaque(program),
         argv.iter().map(|argument| opaque(argument)).collect(),
         opaque(cwd.as_os_str()),
@@ -123,7 +113,7 @@ impl NativeInjectionAdapter for SyntheticAdapter {
 }
 
 #[test]
-fn binding_and_assembly_preserve_every_indexed_native_value_without_launching() {
+fn assembly_preserves_every_indexed_native_value_without_launching() {
     let (work, bin, executable) = executable_fixture("native-injection-binding");
     let document_dir = work.join("documents-must-remain-absent");
     assert!(
@@ -159,12 +149,34 @@ fn binding_and_assembly_preserve_every_indexed_native_value_without_launching() 
             env_var(OsStr::new("MARION_AGENT_ID"), OsStr::new("forged")),
         ],
     );
-    let descriptors = [READY];
-    let registry =
-        NativeFacadeRegistry::new(&descriptors).expect("the synthetic registry is valid");
-    let base = bind_native_launch(&context, READY.agent_type, &registry)
-        .expect("the exact synthetic facade launch binds")
-        .into_process_base();
+    let NativeLaunchContext::V2(context) = context else {
+        unreachable!()
+    };
+    let base = NativeProcessBase {
+        program: context.program.to_os_string().unwrap(),
+        user_argv: context
+            .argv
+            .iter()
+            .map(|value| value.to_os_string().unwrap())
+            .collect(),
+        env: context
+            .env
+            .iter()
+            .map(|entry| {
+                (
+                    entry.name.to_os_string().unwrap(),
+                    entry.value.to_os_string().unwrap(),
+                )
+            })
+            .collect(),
+        cwd: context.cwd.to_os_string().unwrap().into(),
+        geometry: NativeTerminalGeometry {
+            cols: context.geometry.cols,
+            rows: context.geometry.rows,
+            xpixel: context.geometry.xpixel,
+            ypixel: context.geometry.ypixel,
+        },
+    };
     let bridge = bridge();
     let tools = ["spawn_agent", "send_message"];
     let injection = SyntheticAdapter
@@ -258,41 +270,12 @@ fn binding_and_assembly_preserve_every_indexed_native_value_without_launching() 
             .try_exists()
             .expect("document path absence is observable after assembly")
     );
-    assert!(production_native_facades().ready_commands().is_empty());
-}
-
-fn prepare_only_after_binding(
-    context: &NativeLaunchContext,
-    registry: &NativeFacadeRegistry<'_>,
-    document_dir: &Path,
-    adapter_calls: &AtomicUsize,
-) -> Result<(), NativeBindingError> {
-    let base = bind_native_launch(context, READY.agent_type, registry)?.into_process_base();
-    adapter_calls.fetch_add(1, Ordering::SeqCst);
-    let bridge = bridge();
-    let tools = ["spawn_agent", "send_message"];
-    let _injection = SyntheticAdapter
-        .prepare_native(&NativeNodeContext {
-            bridge: &bridge,
-            document_dir,
-            allowed_marion_tools: &tools,
-            environment: NativeEnvironmentView::validate(&base.env)
-                .expect("the bound environment is a valid exact adapter view"),
-        })
-        .expect("a bound launch can reach the synthetic adapter");
-    Ok(())
+    assert!(PRODUCTION_NATIVE_FACADES.is_empty());
 }
 
 #[test]
-fn typed_transport_is_refused_before_adapter_preparation() {
-    let (work, bin, executable) = executable_fixture("native-injection-typed-transport");
-    let typed = NativeFacadeDescriptor {
-        transport: NativeFacadeTransport::TypedAcp,
-        ..READY
-    };
-    let descriptors = [typed];
-    let registry =
-        NativeFacadeRegistry::new(&descriptors).expect("the synthetic registry is valid");
+fn ordinary_rpc_v2_is_refusal_only_before_injection_can_begin() {
+    let (work, bin, executable) = executable_fixture("native-injection-raw-v2");
     let context = v2_context(
         executable.as_os_str(),
         &[],
@@ -303,19 +286,9 @@ fn typed_transport_is_refused_before_adapter_preparation() {
             env_var(OsStr::new("REPLACE"), OsStr::new("old")),
         ],
     );
-    let adapter_calls = AtomicUsize::new(0);
 
-    let result = prepare_only_after_binding(&context, &registry, &work, &adapter_calls);
-
-    assert!(
-        matches!(
-            &result,
-            Err(NativeBindingError::TransportMismatch(
-                NativeFacadeTransport::TypedAcp
-            ))
-        ),
-        "TypedAcp binding returned {result:?} and reached the synthetic adapter {} time(s)",
-        adapter_calls.load(Ordering::SeqCst)
-    );
-    assert_eq!(adapter_calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        refuse_untrusted_native_launch(&context),
+        NativeBindingError::RawV2RequiresNativeBootstrap
+    ));
 }

@@ -32,9 +32,13 @@ pub use ids::{new_agent_id, new_task_id, uuid_v7};
 pub use ir::{Completeness, EventId, Provenance, Source, SrcSeq, Transformation};
 pub use journal::{JournalRecord, RecordKind, WriterId};
 pub use native_facade::{
-    NativeFacadeDescriptor, NativeFacadeExecutableError, NativeFacadeReadiness,
-    NativeFacadeRegistry, NativeFacadeTokenError, NativeFacadeTransport,
-    NativeFacadeValidationError, PRODUCTION_NATIVE_FACADES, production_native_facades,
+    Lane, LaneReadiness, LaneReadinessBlock, LaneReadinessResult, NativeAdapterId,
+    NativeFacadeDescriptor, NativeFacadeExecutableError, NativeFacadeLaunchMode,
+    NativeFacadeNativeLane, NativeFacadeRegistry, NativeFacadeStructuredLane,
+    NativeFacadeStructuredTransport, NativeFacadeTokenError, NativeFacadeValidationError,
+    NativeLane, PRODUCTION_NATIVE_FACADES, ResolvedNativeFacade, ResolvedNativeFacadeNativeLane,
+    StructuredAdapterId, StructuredAgentIdentity, StructuredControl, StructuredLane,
+    VendorIdentity, production_native_facades,
 };
 pub use node::{BlockReason, NodeState, ReapState};
 pub use paths::{AgentDir, ProjectDir, project_hash, state_dir};

@@ -332,13 +332,13 @@ fn native_launch_frames_are_refused_at_the_real_socket_before_every_launch_artif
     v2["params"]["native_launch"]["facade_command"] = serde_json::json!("claude");
     let v2 = bed.send_line(&serde_json::to_string(&v2).expect("the V2 frame serializes"));
     bed.assert_zero_artifacts("valid V2");
-    let v2 = v2.expect_err("valid V2 must be refused while its facade is unavailable");
+    let v2 = v2.expect_err("ordinary root RPC can never authorize raw V2 native state");
     assert_eq!(v2.code, FailureKind::Refused.code(), "V2 code");
     assert_eq!(v2.kind(), Some(FailureKind::Refused), "V2 refusal kind");
     assert!(
         v2.message
-            .contains("native facade command \"claude\" is unavailable"),
-        "V2 names the unavailable production facade: {}",
+            .contains("raw V2 native launch requires the native bootstrap"),
+        "V2 names its missing native-bootstrap authority: {}",
         v2.message
     );
     let mut child = bed.root_params();

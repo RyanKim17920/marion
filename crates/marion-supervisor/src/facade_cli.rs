@@ -8,29 +8,82 @@ use marion_harness::validate_native_process_values;
 use marion_proto::{NativeEnvVarV1, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1};
 
 use crate::native_binding::{NativeBindingError, resolve_declared_executable};
+use crate::native_intent::SelectedNativeFacade;
 
-/// One ready native facade selected by argv's first token.
+/// An untrusted first-token facade match. This value carries no native launch authority.
 #[derive(Debug, PartialEq, Eq)]
-pub struct NativeFacadeInvocation<'a> {
-    pub descriptor: &'a NativeFacadeDescriptor,
-    pub argv: Vec<OsString>,
+pub struct MatchedNativeFacadeRequest<'a> {
+    descriptor: &'a NativeFacadeDescriptor,
+    native_lane_availability: NativeLaneAvailability,
+    argv: Vec<OsString>,
 }
 
-/// Build byte-exact V2 wire state from an invocation already resolved through the facade registry.
-pub fn build_native_launch_v2(
-    invocation: NativeFacadeInvocation<'_>,
+/// Static native-lane policy for a selector that the registry already recognized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeLaneAvailability {
+    Absent,
+    Disabled,
+    Enabled,
+}
+
+impl<'a> MatchedNativeFacadeRequest<'a> {
+    pub const fn descriptor(&self) -> &'a NativeFacadeDescriptor {
+        self.descriptor
+    }
+
+    pub fn argv(&self) -> &[OsString] {
+        &self.argv
+    }
+
+    pub const fn native_lane_availability(&self) -> NativeLaneAvailability {
+        self.native_lane_availability
+    }
+}
+
+/// Match argv's first token without selecting a lane or minting authorization.
+pub fn match_native_facade_request<'a>(
+    argv: impl IntoIterator<Item = OsString>,
+    registry: &'a NativeFacadeRegistry<'a>,
+) -> Option<MatchedNativeFacadeRequest<'a>> {
+    let mut argv = argv.into_iter();
+    let selector = argv.next()?.into_string().ok()?;
+    if !selector.is_ascii() {
+        return None;
+    }
+    let resolved = registry.resolve(&selector)?;
+    let native_lane_availability = match resolved.native_lane() {
+        None => NativeLaneAvailability::Absent,
+        Some(native) if native.lane().enabled() => NativeLaneAvailability::Enabled,
+        Some(_) => NativeLaneAvailability::Disabled,
+    };
+    Some(MatchedNativeFacadeRequest {
+        descriptor: resolved.descriptor(),
+        native_lane_availability,
+        argv: argv.collect(),
+    })
+}
+
+/// Build byte-exact V2 wire state only after sealed native selection was consumed.
+#[allow(
+    dead_code,
+    reason = "Task 2 supplies the first production authorization issuer"
+)]
+pub(crate) fn build_native_launch_v2(
+    selection: SelectedNativeFacade<'_>,
+    argv: Vec<OsString>,
     env: Vec<(OsString, OsString)>,
     cwd: PathBuf,
     geometry: TerminalGeometryV1,
 ) -> Result<NativeLaunchContextV2, NativeBindingError> {
-    let NativeFacadeInvocation { descriptor, argv } = invocation;
+    let descriptor = selection.descriptor();
+    let native_lane = selection.native_lane();
     validate_native_process_values(
-        std::ffi::OsStr::new(descriptor.executable),
+        std::ffi::OsStr::new(native_lane.executable()),
         &argv,
         &env,
         &cwd,
     )?;
-    let program = resolve_declared_executable(descriptor.executable, &cwd, &env)?;
+    let program = resolve_declared_executable(native_lane.executable(), &cwd, &env)?;
 
     Ok(NativeLaunchContextV2::new(
         descriptor.command.into(),
@@ -51,85 +104,86 @@ pub fn build_native_launch_v2(
     ))
 }
 
-/// Resolve only argv's first token and return a ready facade's remaining OS arguments untouched.
-pub fn resolve_native_invocation<'a>(
-    argv: impl IntoIterator<Item = OsString>,
-    registry: &'a NativeFacadeRegistry<'a>,
-) -> Option<NativeFacadeInvocation<'a>> {
-    let mut argv = argv.into_iter();
-    let selector = argv.next()?.into_string().ok()?;
-    if !selector.is_ascii() {
-        return None;
-    }
-    let descriptor = registry.resolve_for_launch(&selector)?;
-    Some(NativeFacadeInvocation {
-        descriptor,
-        argv: argv.collect(),
-    })
-}
-
-/// Run the native-facade probe before handing unmatched argv to the legacy CLI.
+/// Run the untrusted native-facade match before handing unmatched argv to the legacy CLI.
 ///
-/// This is the user-facing binary's top-level dispatch boundary. Parameterizing argv and the
-/// validated registry lets tests exercise a ready descriptor while the production registry stays
-/// empty, and parameterizing the legacy continuation makes the required ordering observable.
+/// This Task-1 dispatcher can only refuse a registered synthetic selector. It cannot produce a
+/// launch selection; Task 2's native bootstrap will own that authorization boundary.
 pub fn dispatch_native_facade_or_legacy<'a>(
     argv: impl IntoIterator<Item = OsString>,
     registry: &'a NativeFacadeRegistry<'a>,
     mut stderr: impl Write,
     legacy: impl FnOnce() -> ExitCode,
 ) -> ExitCode {
-    let Some(invocation) = resolve_native_invocation(argv, registry) else {
+    let Some(request) = match_native_facade_request(argv, registry) else {
         return legacy();
     };
 
-    writeln!(
-        stderr,
-        "marion: native facade transport is not ready for {:?}",
-        invocation.descriptor.command
-    )
+    match request.native_lane_availability() {
+        NativeLaneAvailability::Absent => writeln!(
+            stderr,
+            "marion: registered facade {:?} has no native lane",
+            request.descriptor().command
+        ),
+        NativeLaneAvailability::Disabled => writeln!(
+            stderr,
+            "marion: native lane is disabled for {:?}",
+            request.descriptor().command
+        ),
+        NativeLaneAvailability::Enabled => writeln!(
+            stderr,
+            "marion: native facade transport is not ready for {:?}",
+            request.descriptor().command
+        ),
+    }
     .expect("write native facade refusal to stderr");
     ExitCode::FAILURE
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
-    use std::ffi::OsString;
-    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::PermissionsExt;
 
-    use marion_core::{
-        NativeFacadeDescriptor, NativeFacadeReadiness, NativeFacadeRegistry, NativeFacadeTransport,
-    };
+    use marion_core::{Lane, NativeAdapterId, NativeFacadeRegistry, NativeLane, VendorIdentity};
     use marion_proto::TerminalGeometryV1;
     use marion_testsupport::scratch;
+
+    use crate::native_intent::select_test_native;
 
     use super::*;
 
     const READY: NativeFacadeDescriptor = NativeFacadeDescriptor {
+        identity: VendorIdentity::new("atlas"),
         command: "atlas",
         aliases: &["at"],
-        executable: "atlas-cli",
-        agent_type: "atlas-agent",
-        transport: NativeFacadeTransport::TransparentPty,
-        readiness: NativeFacadeReadiness::Ready,
+        native: Some(Lane::new(
+            true,
+            NativeLane::new("atlas-cli", "codex", NativeAdapterId::new("atlas-native")),
+        )),
+        structured: None,
     };
-    const PLANNED: NativeFacadeDescriptor = NativeFacadeDescriptor {
+    const DISABLED: NativeFacadeDescriptor = NativeFacadeDescriptor {
+        identity: VendorIdentity::new("boreal"),
         command: "boreal",
         aliases: &["bo"],
-        executable: "boreal-cli",
-        agent_type: "boreal-agent",
-        transport: NativeFacadeTransport::TransparentPty,
-        readiness: NativeFacadeReadiness::Planned,
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("boreal-cli", "codex", NativeAdapterId::new("boreal-native")),
+        )),
+        structured: None,
     };
-    const DESCRIPTORS: &[NativeFacadeDescriptor] = &[READY, PLANNED];
+    const DESCRIPTORS: &[NativeFacadeDescriptor] = &[READY, DISABLED];
 
     fn registry() -> NativeFacadeRegistry<'static> {
         NativeFacadeRegistry::new(DESCRIPTORS).expect("the synthetic registry is valid")
     }
 
+    fn selected_native<'a>(registry: &'a NativeFacadeRegistry<'a>) -> SelectedNativeFacade<'a> {
+        select_test_native(registry, "atlas").expect("the test-only sealed native intent selects")
+    }
+
     #[test]
-    fn a_ready_primary_consumes_only_the_selector_and_preserves_its_opaque_tail() {
+    fn untrusted_match_preserves_the_opaque_tail_without_producing_selection() {
         let expected = vec![
             OsString::from("--help"),
             OsString::from("--version"),
@@ -142,39 +196,27 @@ mod tests {
             .collect::<Vec<_>>();
 
         let registry = registry();
-        let invocation =
-            resolve_native_invocation(argv, &registry).expect("the ready facade resolves");
+        let request = match_native_facade_request(argv, &registry).unwrap();
 
-        assert_eq!(invocation.descriptor, &READY);
-        assert_eq!(invocation.argv, expected);
+        assert_eq!(request.descriptor(), &READY);
+        assert_eq!(request.argv(), expected);
     }
 
     #[test]
-    fn a_ready_alias_routes_to_the_same_descriptor() {
-        let registry = registry();
-        let invocation = resolve_native_invocation([OsString::from("at")], &registry)
-            .expect("the ready alias resolves");
-
-        assert_eq!(invocation.descriptor, &READY);
-        assert!(invocation.argv.is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn client_constructor_canonicalizes_an_alias_through_its_resolved_descriptor() {
+    fn alias_match_is_untrusted_but_builder_canonicalizes_the_authorized_selection() {
         let work = scratch("native-facade-client-v2");
         let bin = work.join("bin");
         std::fs::create_dir(&bin).expect("the fixture bin exists");
-        let executable = bin.join(READY.executable);
+        let executable = bin.join(READY.native.unwrap().executable());
         std::fs::write(&executable, b"fixture executable\n").expect("the executable is written");
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
             .expect("the executable is executable");
         let registry = registry();
-        let invocation = resolve_native_invocation(
+        let matched = match_native_facade_request(
             [OsString::from("at"), OsString::from("--opaque-tail")],
             &registry,
         )
-        .expect("the ready alias resolves before construction");
+        .expect("the alias matches without authorizing");
         let geometry = TerminalGeometryV1 {
             cols: 103,
             rows: 41,
@@ -183,73 +225,63 @@ mod tests {
         };
 
         let context = build_native_launch_v2(
-            invocation,
+            selected_native(&registry),
+            matched.argv,
             vec![(OsString::from("PATH"), bin.as_os_str().to_owned())],
             work.to_path_buf(),
             geometry.clone(),
         )
-        .expect("the descriptor's declared executable resolves");
+        .expect("the selected descriptor's executable resolves");
 
         assert_eq!(context.facade_command, "atlas");
         assert_eq!(context.program.to_os_string().unwrap(), executable);
-        assert_eq!(
-            context.argv[0].to_os_string().unwrap(),
-            OsString::from("--opaque-tail")
-        );
+        assert_eq!(context.argv[0].to_os_string().unwrap(), "--opaque-tail");
         assert_eq!(context.cwd.to_os_string().unwrap(), work.as_os_str());
         assert_eq!(context.geometry, geometry);
     }
 
     #[test]
-    fn only_the_first_token_can_select_a_facade() {
+    fn only_the_first_registered_token_matches_and_disabled_policy_stays_visible() {
         let registry = registry();
-        let invocation = resolve_native_invocation(
-            [OsString::from("unknown"), OsString::from("atlas")],
-            &registry,
+        assert!(
+            match_native_facade_request(
+                [OsString::from("unknown"), OsString::from("atlas")],
+                &registry,
+            )
+            .is_none()
         );
-
-        assert!(invocation.is_none());
-    }
-
-    #[test]
-    fn legacy_reserved_unknown_and_planned_selectors_return_control() {
         for selector in [
             "run", "attach", "tree", "mcp", "doctor", "help", "version", "-h", "--help", "unknown",
-            "boreal", "bo", "λ",
+            "lambda",
         ] {
-            let registry = registry();
-            let invocation = resolve_native_invocation([OsString::from(selector)], &registry);
             assert!(
-                invocation.is_none(),
+                match_native_facade_request([OsString::from(selector)], &registry).is_none(),
                 "{selector:?} escaped the legacy parser"
             );
         }
-        assert!(resolve_native_invocation(Vec::<OsString>::new(), &registry()).is_none());
+        for selector in ["boreal", "bo"] {
+            assert_eq!(
+                match_native_facade_request([OsString::from(selector)], &registry)
+                    .unwrap()
+                    .native_lane_availability(),
+                NativeLaneAvailability::Disabled
+            );
+        }
+        assert!(match_native_facade_request(Vec::<OsString>::new(), &registry).is_none());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn invalid_utf8_in_the_selector_returns_control_to_the_legacy_parser() {
-        use std::os::unix::ffi::OsStringExt;
-
+    fn invalid_utf8_selector_returns_control_but_tail_stays_byte_exact() {
         let registry = registry();
-        let invocation =
-            resolve_native_invocation([OsString::from_vec(vec![0xff, 0x80, b'x'])], &registry);
-
-        assert!(invocation.is_none());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_ready_facade_preserves_invalid_utf8_in_its_tail_byte_for_byte() {
-        use std::os::unix::ffi::OsStringExt;
+        assert!(
+            match_native_facade_request([OsString::from_vec(vec![0xff, 0x80, b'x'])], &registry,)
+                .is_none()
+        );
 
         let invalid = OsString::from_vec(vec![0xff, 0x80, b'x']);
-        let registry = registry();
-        let invocation =
-            resolve_native_invocation([OsString::from("atlas"), invalid.clone()], &registry)
-                .expect("the ready facade resolves");
-
-        assert_eq!(invocation.argv, vec![invalid]);
+        let request =
+            match_native_facade_request([OsString::from("atlas"), invalid.clone()], &registry)
+                .unwrap();
+        assert_eq!(request.argv(), [invalid]);
     }
 }

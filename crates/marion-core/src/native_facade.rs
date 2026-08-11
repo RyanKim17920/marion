@@ -1,32 +1,325 @@
 use std::collections::HashMap;
 
+use crate::agent_type::{self, AgentType};
+
 /// The exact command words owned by marion rather than a native facade.
 const RESERVED_COMMANDS: &[&str] = &["help", "doctor", "version", "run", "attach", "tree", "mcp"];
 
-/// A named native facade. This is metadata only; it neither locates nor launches a program.
+/// A named facade with independently configured native and structured lanes.
+///
+/// This is metadata only; it neither locates nor launches a program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeFacadeDescriptor {
+    pub identity: VendorIdentity,
     pub command: &'static str,
     pub aliases: &'static [&'static str],
-    pub executable: &'static str,
-    pub agent_type: &'static str,
-    pub transport: NativeFacadeTransport,
-    pub readiness: NativeFacadeReadiness,
+    pub native: Option<NativeFacadeNativeLane>,
+    pub structured: Option<NativeFacadeStructuredLane>,
 }
 
-/// The protocol used to communicate with a native facade.
+/// Stable vendor identity owned by Marion rather than inferred from an executable basename.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeFacadeTransport {
-    TransparentPty,
-    TypedAcp,
-    RecursiveMarion,
+pub struct VendorIdentity(&'static str);
+
+impl VendorIdentity {
+    pub const fn new(identity: &'static str) -> Self {
+        Self(identity)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
 }
 
-/// Whether a descriptor is eligible for launch.
+/// Stable identifier for a native injection/readiness adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeFacadeReadiness {
-    Planned,
+pub struct NativeAdapterId(&'static str);
+
+impl NativeAdapterId {
+    pub const fn new(identity: &'static str) -> Self {
+        Self(identity)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// Stable identifier for a structured protocol adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StructuredAdapterId(&'static str);
+
+impl StructuredAdapterId {
+    pub const fn new(identity: &'static str) -> Self {
+        Self(identity)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// Static enablement policy paired with one lane's immutable configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lane<T> {
+    enabled: bool,
+    config: T,
+}
+
+impl<T> Lane<T> {
+    pub const fn new(enabled: bool, config: T) -> Self {
+        Self { enabled, config }
+    }
+
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub const fn config(&self) -> &T {
+        &self.config
+    }
+
+    /// Requires current computed evidence as well as static enablement policy.
+    pub const fn is_bindable(&self, readiness: LaneReadiness) -> bool {
+        self.enabled && readiness.is_ready()
+    }
+}
+
+/// Immutable native-lane configuration. Runtime readiness never lives here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeLane {
+    executable: &'static str,
+    agent_type: &'static str,
+    adapter: NativeAdapterId,
+}
+
+impl NativeLane {
+    pub const fn new(
+        executable: &'static str,
+        agent_type: &'static str,
+        adapter: NativeAdapterId,
+    ) -> Self {
+        Self {
+            executable,
+            agent_type,
+            adapter,
+        }
+    }
+
+    pub const fn executable(&self) -> &'static str {
+        self.executable
+    }
+
+    pub const fn agent_type_name(&self) -> &'static str {
+        self.agent_type
+    }
+
+    pub const fn adapter(&self) -> NativeAdapterId {
+        self.adapter
+    }
+}
+
+/// One concrete structured agent implementation and protocol version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StructuredAgentIdentity {
+    name: &'static str,
+    protocol_version: u16,
+}
+
+impl StructuredAgentIdentity {
+    pub const fn new(name: &'static str, protocol_version: u16) -> Self {
+        Self {
+            name,
+            protocol_version,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    pub const fn protocol_version(self) -> u16 {
+        self.protocol_version
+    }
+}
+
+/// The control plane used by a concrete structured agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuredControl {
+    Typed,
+    Acp,
+    Mcp,
+}
+
+/// Immutable structured-lane configuration. Runtime readiness never lives here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StructuredLane {
+    agent_identity: StructuredAgentIdentity,
+    control: StructuredControl,
+    adapter: StructuredAdapterId,
+}
+
+impl StructuredLane {
+    pub const fn new(
+        agent_identity: StructuredAgentIdentity,
+        control: StructuredControl,
+        adapter: StructuredAdapterId,
+    ) -> Self {
+        Self {
+            agent_identity,
+            control,
+            adapter,
+        }
+    }
+
+    pub const fn agent_identity(&self) -> StructuredAgentIdentity {
+        self.agent_identity
+    }
+
+    pub const fn control(&self) -> StructuredControl {
+        self.control
+    }
+
+    pub const fn adapter(&self) -> StructuredAdapterId {
+        self.adapter
+    }
+}
+
+pub type NativeFacadeNativeLane = Lane<NativeLane>;
+pub type NativeFacadeStructuredLane = Lane<StructuredLane>;
+pub type NativeFacadeStructuredTransport = StructuredControl;
+
+impl Lane<NativeLane> {
+    pub const fn executable(&self) -> &'static str {
+        self.config.executable()
+    }
+
+    pub const fn agent_type_name(&self) -> &'static str {
+        self.config.agent_type_name()
+    }
+
+    pub const fn adapter(&self) -> NativeAdapterId {
+        self.config.adapter()
+    }
+}
+
+impl Lane<StructuredLane> {
+    pub const fn agent_identity(&self) -> StructuredAgentIdentity {
+        self.config.agent_identity()
+    }
+
+    pub const fn control(&self) -> StructuredControl {
+        self.config.control()
+    }
+
+    pub const fn transport(&self) -> StructuredControl {
+        self.config.control()
+    }
+
+    pub const fn adapter(&self) -> StructuredAdapterId {
+        self.config.adapter()
+    }
+}
+
+/// The computed result for one lane at one doctor or bind evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneReadinessResult {
+    Disabled,
+    Blocked(LaneReadinessBlock),
     Ready,
+}
+
+/// The first causal fact that blocks one evaluated lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneReadinessBlock {
+    NotInstalled,
+    VersionIncompatible,
+    InjectionUnavailable,
+    BehaviorUnavailable,
+}
+
+/// Current readiness facts. These are computed evidence, never vendor declaration state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaneReadiness {
+    enabled: bool,
+    installed: bool,
+    version_compatible: bool,
+    injection_ready: bool,
+    behavior_ready: bool,
+    result: LaneReadinessResult,
+}
+
+impl LaneReadiness {
+    /// Derive one current report from observed facts in stable causal order.
+    pub const fn evaluate(
+        enabled: bool,
+        installed: bool,
+        version_compatible: bool,
+        injection_ready: bool,
+        behavior_ready: bool,
+    ) -> Self {
+        let result = if !enabled {
+            LaneReadinessResult::Disabled
+        } else if !installed {
+            LaneReadinessResult::Blocked(LaneReadinessBlock::NotInstalled)
+        } else if !version_compatible {
+            LaneReadinessResult::Blocked(LaneReadinessBlock::VersionIncompatible)
+        } else if !injection_ready {
+            LaneReadinessResult::Blocked(LaneReadinessBlock::InjectionUnavailable)
+        } else if !behavior_ready {
+            LaneReadinessResult::Blocked(LaneReadinessBlock::BehaviorUnavailable)
+        } else {
+            LaneReadinessResult::Ready
+        };
+        Self {
+            enabled,
+            installed,
+            version_compatible,
+            injection_ready,
+            behavior_ready,
+            result,
+        }
+    }
+
+    pub const fn enabled(self) -> bool {
+        self.enabled
+    }
+
+    pub const fn installed(self) -> bool {
+        self.installed
+    }
+
+    pub const fn version_compatible(self) -> bool {
+        self.version_compatible
+    }
+
+    pub const fn injection_ready(self) -> bool {
+        self.injection_ready
+    }
+
+    pub const fn behavior_ready(self) -> bool {
+        self.behavior_ready
+    }
+
+    pub const fn is_ready(self) -> bool {
+        self.enabled
+            && self.installed
+            && self.version_compatible
+            && self.injection_ready
+            && self.behavior_ready
+            && matches!(self.result, LaneReadinessResult::Ready)
+    }
+
+    pub const fn result(self) -> LaneReadinessResult {
+        self.result
+    }
+}
+
+/// The lane selected by a provenance-bearing launch intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeFacadeLaunchMode {
+    Native,
+    Structured,
 }
 
 /// The reason a command token cannot be registered.
@@ -56,6 +349,13 @@ pub enum NativeFacadeExecutableError {
 /// A malformed or ambiguous native-facade descriptor set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NativeFacadeValidationError {
+    #[error("invalid vendor identity {identity:?}: {reason}")]
+    InvalidVendorIdentity {
+        identity: &'static str,
+        reason: NativeFacadeTokenError,
+    },
+    #[error("vendor identity {identity:?} is registered more than once")]
+    DuplicateVendorIdentity { identity: &'static str },
     #[error("invalid native facade command {command:?}: {reason}")]
     InvalidCommand {
         command: &'static str,
@@ -82,6 +382,33 @@ pub enum NativeFacadeValidationError {
     },
     #[error("native facade command {command:?} is registered more than once")]
     DuplicatePrimary { command: &'static str },
+    #[error("unknown native agent type {agent_type:?} for facade command {command:?}")]
+    UnknownNativeAgentType {
+        command: &'static str,
+        agent_type: &'static str,
+    },
+    #[error("invalid native adapter id {adapter:?} for facade command {command:?}: {reason}")]
+    InvalidNativeAdapterId {
+        command: &'static str,
+        adapter: &'static str,
+        reason: NativeFacadeTokenError,
+    },
+    #[error(
+        "invalid structured agent identity {identity:?} for facade command {command:?}: {reason}"
+    )]
+    InvalidStructuredAgentIdentity {
+        command: &'static str,
+        identity: &'static str,
+        reason: NativeFacadeTokenError,
+    },
+    #[error("structured agent identity for facade command {command:?} has protocol version zero")]
+    InvalidStructuredProtocolVersion { command: &'static str },
+    #[error("invalid structured adapter id {adapter:?} for facade command {command:?}: {reason}")]
+    InvalidStructuredAdapterId {
+        command: &'static str,
+        adapter: &'static str,
+        reason: NativeFacadeTokenError,
+    },
     #[error(
         "native facade alias {alias:?} for command {alias_command:?} collides with primary command {primary_command:?}"
     )]
@@ -106,7 +433,62 @@ pub enum NativeFacadeValidationError {
 /// reads `PATH`, probes the filesystem, installs a program, or derives a program path.
 #[derive(Debug)]
 pub struct NativeFacadeRegistry<'a> {
-    descriptors: &'a [NativeFacadeDescriptor],
+    entries: Vec<RegisteredNativeFacade<'a>>,
+}
+
+#[derive(Debug)]
+struct RegisteredNativeFacade<'a> {
+    descriptor: &'a NativeFacadeDescriptor,
+    native_agent_type: Option<AgentType>,
+}
+
+/// One descriptor resolved through a validated registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedNativeFacade<'a> {
+    descriptor: &'a NativeFacadeDescriptor,
+    native_agent_type: Option<&'a AgentType>,
+}
+
+impl<'a> ResolvedNativeFacade<'a> {
+    pub const fn descriptor(self) -> &'a NativeFacadeDescriptor {
+        self.descriptor
+    }
+
+    pub fn native_lane(self) -> Option<ResolvedNativeFacadeNativeLane<'a>> {
+        Some(ResolvedNativeFacadeNativeLane {
+            lane: self.descriptor.native.as_ref()?,
+            agent_type: self.native_agent_type?,
+        })
+    }
+
+    pub const fn structured_lane(self) -> Option<&'a NativeFacadeStructuredLane> {
+        self.descriptor.structured.as_ref()
+    }
+}
+
+/// A native lane whose agent-type identity was canonicalized during registry construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedNativeFacadeNativeLane<'a> {
+    lane: &'a NativeFacadeNativeLane,
+    agent_type: &'a AgentType,
+}
+
+impl<'a> ResolvedNativeFacadeNativeLane<'a> {
+    pub const fn lane(self) -> &'a NativeFacadeNativeLane {
+        self.lane
+    }
+
+    pub const fn is_bindable(self, readiness: LaneReadiness) -> bool {
+        self.lane.is_bindable(readiness)
+    }
+
+    pub const fn executable(self) -> &'static str {
+        self.lane.executable()
+    }
+
+    pub const fn agent_type(self) -> &'a AgentType {
+        self.agent_type
+    }
 }
 
 impl<'a> NativeFacadeRegistry<'a> {
@@ -115,15 +497,33 @@ impl<'a> NativeFacadeRegistry<'a> {
         descriptors: &'a [NativeFacadeDescriptor],
     ) -> Result<Self, NativeFacadeValidationError> {
         let mut primaries = HashMap::with_capacity(descriptors.len());
+        let mut vendor_identities = HashMap::with_capacity(descriptors.len());
         let alias_capacity = descriptors
             .iter()
             .map(|descriptor| descriptor.aliases.len())
             .sum();
         let mut aliases = HashMap::with_capacity(alias_capacity);
+        let mut entries = Vec::with_capacity(descriptors.len());
 
         for descriptor in descriptors {
+            validate_vendor_identity(descriptor.identity)?;
             validate_command(descriptor.command)?;
-            validate_executable(descriptor.command, descriptor.executable)?;
+            let native_agent_type = if let Some(native) = descriptor.native {
+                validate_executable(descriptor.command, native.executable())?;
+                validate_native_adapter(descriptor.command, native.adapter())?;
+                Some(agent_type::builtin(native.agent_type_name()).ok_or(
+                    NativeFacadeValidationError::UnknownNativeAgentType {
+                        command: descriptor.command,
+                        agent_type: native.agent_type_name(),
+                    },
+                )?)
+            } else {
+                None
+            };
+            if let Some(structured) = descriptor.structured {
+                validate_structured_identity(descriptor.command, structured.agent_identity())?;
+                validate_structured_adapter(descriptor.command, structured.adapter())?;
+            }
             if RESERVED_COMMANDS.contains(&descriptor.command) {
                 return Err(NativeFacadeValidationError::ReservedCommand {
                     command: descriptor.command,
@@ -165,39 +565,123 @@ impl<'a> NativeFacadeRegistry<'a> {
                     });
                 }
             }
+
+            if vendor_identities
+                .insert(descriptor.identity.as_str(), ())
+                .is_some()
+            {
+                return Err(NativeFacadeValidationError::DuplicateVendorIdentity {
+                    identity: descriptor.identity.as_str(),
+                });
+            }
+
+            entries.push(RegisteredNativeFacade {
+                descriptor,
+                native_agent_type,
+            });
         }
 
-        Ok(Self { descriptors })
+        Ok(Self { entries })
     }
 
-    /// Resolves a primary command or alias for diagnostics, including planned descriptors.
-    pub fn resolve(&self, spelling: &str) -> Option<&'a NativeFacadeDescriptor> {
-        self.descriptors.iter().find(|descriptor| {
-            descriptor.command == spelling || descriptor.aliases.contains(&spelling)
-        })
-    }
-
-    /// Resolves only facades that are currently permitted to launch.
-    pub fn resolve_for_launch(&self, spelling: &str) -> Option<&'a NativeFacadeDescriptor> {
-        self.resolve(spelling)
-            .filter(|descriptor| descriptor.readiness == NativeFacadeReadiness::Ready)
-    }
-
-    /// Resolves a ready facade by its canonical primary command only.
-    pub fn resolve_primary_for_launch(&self, command: &str) -> Option<&'a NativeFacadeDescriptor> {
-        self.descriptors.iter().find(|descriptor| {
-            descriptor.command == command && descriptor.readiness == NativeFacadeReadiness::Ready
-        })
-    }
-
-    /// Primary command names that are currently permitted to launch.
-    pub fn ready_commands(&self) -> Vec<&'a str> {
-        self.descriptors
+    /// Resolves a primary command or alias without choosing a lane.
+    pub fn resolve(&self, spelling: &str) -> Option<ResolvedNativeFacade<'_>> {
+        self.entries
             .iter()
-            .filter(|descriptor| descriptor.readiness == NativeFacadeReadiness::Ready)
-            .map(|descriptor| descriptor.command)
+            .find(|entry| {
+                entry.descriptor.command == spelling || entry.descriptor.aliases.contains(&spelling)
+            })
+            .map(|entry| ResolvedNativeFacade {
+                descriptor: entry.descriptor,
+                native_agent_type: entry.native_agent_type.as_ref(),
+            })
+    }
+
+    /// Resolves a canonical primary command without choosing a lane.
+    pub fn resolve_primary(&self, command: &str) -> Option<ResolvedNativeFacade<'_>> {
+        self.entries
+            .iter()
+            .find(|entry| entry.descriptor.command == command)
+            .map(|entry| ResolvedNativeFacade {
+                descriptor: entry.descriptor,
+                native_agent_type: entry.native_agent_type.as_ref(),
+            })
+    }
+
+    /// Primary commands whose static native-lane policy is enabled.
+    pub fn enabled_native_commands(&self) -> Vec<&'a str> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.descriptor.native.is_some_and(|lane| lane.enabled()))
+            .map(|entry| entry.descriptor.command)
             .collect()
     }
+
+    /// Primary commands whose static structured-lane policy is enabled.
+    pub fn enabled_structured_commands(&self) -> Vec<&'a str> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .descriptor
+                    .structured
+                    .is_some_and(|lane| lane.enabled())
+            })
+            .map(|entry| entry.descriptor.command)
+            .collect()
+    }
+}
+
+fn validate_vendor_identity(identity: VendorIdentity) -> Result<(), NativeFacadeValidationError> {
+    token_error(identity.as_str()).map_err(|reason| {
+        NativeFacadeValidationError::InvalidVendorIdentity {
+            identity: identity.as_str(),
+            reason,
+        }
+    })
+}
+
+fn validate_native_adapter(
+    command: &'static str,
+    adapter: NativeAdapterId,
+) -> Result<(), NativeFacadeValidationError> {
+    token_error(adapter.as_str()).map_err(|reason| {
+        NativeFacadeValidationError::InvalidNativeAdapterId {
+            command,
+            adapter: adapter.as_str(),
+            reason,
+        }
+    })
+}
+
+fn validate_structured_identity(
+    command: &'static str,
+    identity: StructuredAgentIdentity,
+) -> Result<(), NativeFacadeValidationError> {
+    token_error(identity.name()).map_err(|reason| {
+        NativeFacadeValidationError::InvalidStructuredAgentIdentity {
+            command,
+            identity: identity.name(),
+            reason,
+        }
+    })?;
+    if identity.protocol_version() == 0 {
+        return Err(NativeFacadeValidationError::InvalidStructuredProtocolVersion { command });
+    }
+    Ok(())
+}
+
+fn validate_structured_adapter(
+    command: &'static str,
+    adapter: StructuredAdapterId,
+) -> Result<(), NativeFacadeValidationError> {
+    token_error(adapter.as_str()).map_err(|reason| {
+        NativeFacadeValidationError::InvalidStructuredAdapterId {
+            command,
+            adapter: adapter.as_str(),
+            reason,
+        }
+    })
 }
 
 fn validate_command(command: &'static str) -> Result<(), NativeFacadeValidationError> {
@@ -266,44 +750,88 @@ pub fn production_native_facades() -> NativeFacadeRegistry<'static> {
 mod tests {
     use super::*;
 
+    const fn native(
+        enabled: bool,
+        executable: &'static str,
+        agent_type: &'static str,
+    ) -> NativeFacadeNativeLane {
+        Lane::new(
+            enabled,
+            NativeLane::new(
+                executable,
+                agent_type,
+                NativeAdapterId::new("synthetic-native"),
+            ),
+        )
+    }
+
+    const fn structured(
+        enabled: bool,
+        identity: &'static str,
+        control: StructuredControl,
+    ) -> NativeFacadeStructuredLane {
+        Lane::new(
+            enabled,
+            StructuredLane::new(
+                StructuredAgentIdentity::new(identity, 1),
+                control,
+                StructuredAdapterId::new("synthetic-structured"),
+            ),
+        )
+    }
+
     const ATLAS: NativeFacadeDescriptor = NativeFacadeDescriptor {
+        identity: VendorIdentity::new("atlas"),
         command: "atlas",
         aliases: &["at"],
-        executable: "atlas-cli",
-        agent_type: "atlas-agent",
-        transport: NativeFacadeTransport::TransparentPty,
-        readiness: NativeFacadeReadiness::Ready,
+        native: Some(native(true, "atlas-cli", "codex")),
+        structured: Some(structured(false, "atlas-acp", StructuredControl::Acp)),
     };
     const BOREAL: NativeFacadeDescriptor = NativeFacadeDescriptor {
+        identity: VendorIdentity::new("boreal"),
         command: "boreal",
         aliases: &["bo"],
-        executable: "boreal-cli",
-        agent_type: "boreal-agent",
-        transport: NativeFacadeTransport::TransparentPty,
-        readiness: NativeFacadeReadiness::Planned,
+        native: Some(native(true, "boreal-cli", "codex")),
+        structured: None,
     };
 
     #[test]
     fn resolves_an_exact_primary_name() {
         let registry = NativeFacadeRegistry::new(&[ATLAS]).unwrap();
 
-        assert_eq!(registry.resolve("atlas"), Some(&ATLAS));
+        assert_eq!(
+            registry
+                .resolve("atlas")
+                .map(|resolved| resolved.descriptor()),
+            Some(&ATLAS)
+        );
     }
 
     #[test]
     fn resolves_an_explicit_alias() {
         let registry = NativeFacadeRegistry::new(&[ATLAS]).unwrap();
 
-        assert_eq!(registry.resolve("at"), Some(&ATLAS));
+        assert_eq!(
+            registry.resolve("at").map(|resolved| resolved.descriptor()),
+            Some(&ATLAS)
+        );
     }
 
     #[test]
     fn client_alias_resolution_and_handler_primary_binding_are_distinct() {
         let registry = NativeFacadeRegistry::new(&[ATLAS]).unwrap();
 
-        assert_eq!(registry.resolve_for_launch("at"), Some(&ATLAS));
-        assert_eq!(registry.resolve_primary_for_launch("atlas"), Some(&ATLAS));
-        assert_eq!(registry.resolve_primary_for_launch("at"), None);
+        assert_eq!(
+            registry.resolve("at").map(|resolved| resolved.descriptor()),
+            Some(&ATLAS)
+        );
+        assert_eq!(
+            registry
+                .resolve_primary("atlas")
+                .map(|resolved| resolved.descriptor()),
+            Some(&ATLAS)
+        );
+        assert!(registry.resolve_primary("at").is_none());
     }
 
     #[test]
@@ -316,7 +844,7 @@ mod tests {
             ("atlas\\\\cli", NativeFacadeExecutableError::PathSeparator),
         ] {
             let descriptor = NativeFacadeDescriptor {
-                executable,
+                native: Some(native(true, executable, "codex")),
                 ..ATLAS
             };
 
@@ -332,21 +860,24 @@ mod tests {
     }
 
     #[test]
-    fn transport_metadata_distinguishes_typed_acp_from_transparent_pty() {
-        let typed_acp = NativeFacadeDescriptor {
-            transport: NativeFacadeTransport::TypedAcp,
+    fn structured_control_metadata_distinguishes_acp_from_mcp() {
+        let mcp = NativeFacadeDescriptor {
+            structured: Some(structured(true, "atlas-mcp", StructuredControl::Mcp)),
             ..ATLAS
         };
 
-        assert_ne!(typed_acp.transport, ATLAS.transport);
+        assert_ne!(
+            mcp.structured.unwrap().control(),
+            ATLAS.structured.unwrap().transport()
+        );
     }
 
     #[test]
     fn lookup_is_case_sensitive() {
         let registry = NativeFacadeRegistry::new(&[ATLAS]).unwrap();
 
-        assert_eq!(registry.resolve("Atlas"), None);
-        assert_eq!(registry.resolve("AT"), None);
+        assert!(registry.resolve("Atlas").is_none());
+        assert!(registry.resolve("AT").is_none());
     }
 
     #[test]
@@ -355,7 +886,7 @@ mod tests {
 
         // `sh` is an executable on the test host's PATH, but a pure registry only resolves names
         // explicitly registered in its descriptors.
-        assert_eq!(registry.resolve("sh"), None);
+        assert!(registry.resolve("sh").is_none());
     }
 
     #[test]
@@ -450,12 +981,11 @@ mod tests {
     #[test]
     fn rejects_an_alias_that_collides_with_another_alias() {
         let duplicate_alias = NativeFacadeDescriptor {
+            identity: VendorIdentity::new("cinder"),
             command: "cinder",
             aliases: &["at"],
-            executable: "cinder-cli",
-            agent_type: "cinder-agent",
-            transport: NativeFacadeTransport::TransparentPty,
-            readiness: NativeFacadeReadiness::Ready,
+            native: Some(native(true, "cinder-cli", "codex")),
+            structured: None,
         };
 
         assert_eq!(
@@ -518,18 +1048,155 @@ mod tests {
     }
 
     #[test]
-    fn planned_descriptors_are_diagnostic_only() {
+    fn current_computed_readiness_never_becomes_descriptor_state() {
         let registry = NativeFacadeRegistry::new(&[ATLAS, BOREAL]).unwrap();
 
-        assert_eq!(registry.resolve("boreal"), Some(&BOREAL));
-        assert_eq!(registry.resolve_for_launch("boreal"), None);
-        assert_eq!(registry.resolve_for_launch("bo"), None);
-        assert_eq!(registry.resolve_for_launch("atlas"), Some(&ATLAS));
-        assert_eq!(registry.ready_commands(), vec!["atlas"]);
+        assert_eq!(
+            registry
+                .resolve("boreal")
+                .map(|resolved| resolved.descriptor()),
+            Some(&BOREAL)
+        );
+        assert!(
+            !registry
+                .resolve("boreal")
+                .unwrap()
+                .native_lane()
+                .unwrap()
+                .is_bindable(LaneReadiness::evaluate(true, true, true, true, false))
+        );
+        assert!(
+            registry
+                .resolve("atlas")
+                .unwrap()
+                .native_lane()
+                .unwrap()
+                .is_bindable(LaneReadiness::evaluate(true, true, true, true, true))
+        );
+        assert_eq!(registry.enabled_native_commands(), vec!["atlas", "boreal"]);
     }
 
     #[test]
-    fn production_registry_has_no_ready_native_facades() {
-        assert!(production_native_facades().ready_commands().is_empty());
+    fn production_registry_has_no_enabled_facades() {
+        assert!(
+            production_native_facades()
+                .enabled_native_commands()
+                .is_empty()
+        );
+        assert!(
+            production_native_facades()
+                .enabled_structured_commands()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn production_native_facades_remain_literal_empty_and_fail_closed() {
+        assert_eq!(PRODUCTION_NATIVE_FACADES, &[]);
+        assert!(
+            production_native_facades()
+                .resolve("codex-native")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn registry_construction_rejects_an_unknown_native_agent_type() {
+        let descriptor = NativeFacadeDescriptor {
+            identity: VendorIdentity::new("unknown-agent"),
+            command: "unknown-agent",
+            aliases: &[],
+            native: Some(native(false, "unknown-cli", "not-a-built-in-agent-type")),
+            structured: None,
+        };
+
+        assert_eq!(
+            NativeFacadeRegistry::new(&[descriptor]).unwrap_err(),
+            NativeFacadeValidationError::UnknownNativeAgentType {
+                command: "unknown-agent",
+                agent_type: "not-a-built-in-agent-type",
+            }
+        );
+    }
+
+    #[test]
+    fn registry_stores_the_canonical_native_agent_type() {
+        let descriptor = NativeFacadeDescriptor {
+            identity: VendorIdentity::new("codex"),
+            command: "codex-native",
+            aliases: &[],
+            native: Some(native(true, "codex", "codex")),
+            structured: None,
+        };
+        let descriptors = [descriptor];
+        let registry = NativeFacadeRegistry::new(&descriptors).unwrap();
+
+        assert_eq!(
+            registry
+                .resolve("codex-native")
+                .unwrap()
+                .native_lane()
+                .unwrap()
+                .agent_type()
+                .name,
+            "codex-impl"
+        );
+    }
+
+    #[test]
+    fn static_lane_policy_and_computed_readiness_are_distinct() {
+        const LANE: Lane<NativeLane> = Lane::new(
+            true,
+            NativeLane::new("atlas-cli", "codex", NativeAdapterId::new("atlas-native")),
+        );
+
+        let ready = LaneReadiness::evaluate(true, true, true, true, true);
+        let blocked = LaneReadiness::evaluate(true, true, true, true, false);
+
+        assert!(LANE.enabled());
+        assert!(LANE.is_bindable(ready));
+        assert!(!LANE.is_bindable(blocked));
+        assert_eq!(
+            blocked.result(),
+            LaneReadinessResult::Blocked(LaneReadinessBlock::BehaviorUnavailable)
+        );
+        assert!(blocked.enabled());
+        assert!(blocked.installed());
+        assert!(blocked.version_compatible());
+        assert!(blocked.injection_ready());
+        assert!(!blocked.behavior_ready());
+    }
+
+    #[test]
+    fn descriptor_carries_stable_vendor_and_concrete_adapter_identities() {
+        const DESCRIPTOR: NativeFacadeDescriptor = NativeFacadeDescriptor {
+            identity: VendorIdentity::new("atlas"),
+            command: "atlas",
+            aliases: &["at"],
+            native: Some(Lane::new(
+                true,
+                NativeLane::new("atlas-cli", "codex", NativeAdapterId::new("atlas-native")),
+            )),
+            structured: Some(Lane::new(
+                true,
+                StructuredLane::new(
+                    StructuredAgentIdentity::new("atlas-acp", 1),
+                    StructuredControl::Acp,
+                    StructuredAdapterId::new("atlas-structured"),
+                ),
+            )),
+        };
+
+        assert_eq!(DESCRIPTOR.identity.as_str(), "atlas");
+        assert_eq!(
+            DESCRIPTOR.native.unwrap().config().adapter().as_str(),
+            "atlas-native"
+        );
+        let structured_lane = DESCRIPTOR.structured.unwrap();
+        let structured = structured_lane.config();
+        assert_eq!(structured.agent_identity().name(), "atlas-acp");
+        assert_eq!(structured.agent_identity().protocol_version(), 1);
+        assert_eq!(structured.control(), StructuredControl::Acp);
+        assert_eq!(structured.adapter().as_str(), "atlas-structured");
     }
 }
