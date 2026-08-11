@@ -2143,6 +2143,7 @@ fn watch_the_root(
     let id = supervisor.send(marion_proto::Call::NodeAttach(
         marion_proto::params::NodeAttachParams {
             agent_id: root_id.clone(),
+            pane_stream: None,
         },
     ))?;
     let outcome = supervisor.pump(Awaited::Response(id), &mut |e| r.note(e))?;

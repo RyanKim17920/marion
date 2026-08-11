@@ -12,6 +12,7 @@ use marion_core::contract::{AgentId, TaskId};
 use marion_core::node::{NodeState, ReapState};
 use serde::{Deserialize, Serialize};
 
+use crate::PaneReadyTokenV1;
 use crate::model::{
     AttachMode, Delivery, HarnessReport, NodeSummary, QuitOutcome, ReplayPoint, ReplyOutcome,
 };
@@ -65,6 +66,12 @@ pub struct NodeAttachResult {
 /// refusal is required to be a sentence: a client told only that it may not type cannot tell a
 /// colleague in the same node from a lease its own crashed predecessor never released.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneReadyDescriptorV1 {
+    pub token: PaneReadyTokenV1,
+    pub cut: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneAttach {
     /// The pty's size **now**, as the supervisor set it before the child existed. A client uses it
     /// to decide whether its first act is a `node/resize`, and a client that renders without
@@ -76,6 +83,8 @@ pub struct PaneAttach {
     /// The connection holding the write half, when it is not this one. `None` when `writable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_by: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_ready: Option<PaneReadyDescriptorV1>,
 }
 
 /// `node/detach` — returns the node's state, which is the *evidence* that detaching did nothing.
@@ -277,6 +286,59 @@ mod tests {
         let r: AgentSpawnResult =
             serde_json::from_str(r#"{"agent_id":"a","state":"Spawning"}"#).unwrap();
         assert_eq!(r.task_id, None);
+    }
+
+    #[test]
+    fn pane_attach_without_readiness_keeps_the_exact_legacy_wire_shape() {
+        let legacy = PaneAttach {
+            cols: 80,
+            rows: 24,
+            writable: true,
+            held_by: None,
+            pane_ready: None,
+        };
+        let json = r#"{"cols":80,"rows":24,"writable":true}"#;
+
+        assert_eq!(serde_json::to_string(&legacy).unwrap(), json);
+        assert_eq!(serde_json::from_str::<PaneAttach>(json).unwrap(), legacy);
+    }
+
+    #[test]
+    fn pane_attach_readiness_round_trips_cut_boundaries() {
+        for cut in [0, u64::MAX] {
+            let pane = PaneAttach {
+                cols: 80,
+                rows: 24,
+                writable: true,
+                held_by: None,
+                pane_ready: Some(PaneReadyDescriptorV1 {
+                    token: PaneReadyTokenV1::new([
+                        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                        0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+                        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+                    ]),
+                    cut,
+                }),
+            };
+
+            let json = serde_json::to_string(&pane).unwrap();
+            let decoded = serde_json::from_str::<PaneAttach>(&json).unwrap();
+            assert_eq!(decoded, pane);
+            assert_eq!(decoded.pane_ready.unwrap().cut, cut);
+        }
+    }
+
+    #[test]
+    fn pane_attach_readiness_requires_both_token_and_cut() {
+        for invalid in [
+            r#"{"cols":80,"rows":24,"writable":true,"pane_ready":{"cut":0}}"#,
+            r#"{"cols":80,"rows":24,"writable":true,"pane_ready":{"token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<PaneAttach>(invalid).is_err(),
+                "accepted incomplete pane readiness descriptor: {invalid}"
+            );
+        }
     }
 
     #[test]

@@ -1243,6 +1243,7 @@ impl RegistryHandle {
             rows: size.rows,
             writable,
             held_by,
+            pane_ready: None,
         })
     }
 
@@ -1286,7 +1287,31 @@ impl RegistryHandle {
     /// a write that fails at the fd — that is a node whose pty has gone, and it is reported to the
     /// supervisor's own stderr rather than to a client that cannot act on it.
     fn deliver_input(&self, conn: ConnId, input: &marion_proto::Input) {
-        let id = input.agent_id();
+        enum PaneDelivery<'a> {
+            Write(&'a [u8]),
+            Resize { cols: u16, rows: u16 },
+        }
+
+        let (id, delivery) = match input {
+            marion_proto::Input::NodePtyWrite {
+                agent_id, bytes, ..
+            } => (agent_id, PaneDelivery::Write(bytes.as_bytes())),
+            marion_proto::Input::NodeResize {
+                agent_id,
+                cols,
+                rows,
+            } => (
+                agent_id,
+                PaneDelivery::Resize {
+                    cols: *cols,
+                    rows: *rows,
+                },
+            ),
+            // Production-dark until an attach response has advertised a matching descriptor.
+            // Inbound notifications have no response channel, so fail closed exactly as an input
+            // without a pane or write lease does: perform no lookup and change no state.
+            marion_proto::Input::NodePaneReady(_) => return,
+        };
         // Both taken out from under the lock in one look, and the lock released before the write:
         // see `Panes::leases`. A harness that has stopped reading its stdin must stall one attach,
         // never the supervisor.
@@ -1300,12 +1325,10 @@ impl RegistryHandle {
                 None => return,
             }
         };
-        let outcome = match input {
-            marion_proto::Input::NodePtyWrite { bytes, .. } => {
-                host.write_input(&lease, bytes.as_bytes())
-            }
-            marion_proto::Input::NodeResize { cols, rows, .. } => {
-                host.resize(crate::pty::WinSize::new(*cols, *rows))
+        let outcome = match delivery {
+            PaneDelivery::Write(bytes) => host.write_input(&lease, bytes),
+            PaneDelivery::Resize { cols, rows } => {
+                host.resize(crate::pty::WinSize::new(cols, rows))
             }
         };
         if let Err(e) = outcome {
@@ -5091,6 +5114,7 @@ mod tests {
             c,
             Call::NodeAttach(marion_proto::params::NodeAttachParams {
                 agent_id: id(agent),
+                pane_stream: None,
             }),
             rid,
         );
@@ -5188,6 +5212,43 @@ mod tests {
         ));
         s.write_all(f.to_line().as_bytes()).unwrap();
         s.flush().unwrap();
+    }
+
+    #[test]
+    fn a_forged_pane_ready_before_advertisement_is_inert() {
+        let w = Wired::new("handler-pane-ready-dark");
+        let host = pane(&w, "root", "sleep 30");
+        assert_eq!(w.fx.handle.panes(), 1);
+        assert_eq!(host.listeners(), 0);
+        assert_eq!(w.fx.handle.attachments(), 0);
+        assert_eq!(w.fx.handle.subscribers(), 0);
+
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        let forged = Frame::Input(marion_proto::ClientNotification::new(
+            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+                agent_id: id("root"),
+                token: marion_proto::PaneReadyTokenV1::new([0x5a; 32]),
+                cut: 0,
+            }),
+        ));
+        c.write_all(forged.to_line().as_bytes()).unwrap();
+        c.flush().unwrap();
+
+        // A later request on the same connection is the processing barrier and the no-crash proof.
+        // It must be the next frame: the forged notification produces no notification of its own.
+        call(
+            &mut c,
+            Call::NodeGet(marion_proto::params::NodeGetParams {
+                agent_id: id("root"),
+            }),
+            9,
+        );
+        assert!(matches!(next_frame(&mut r), Frame::Response(_)));
+        assert_eq!(w.fx.handle.panes(), 1);
+        assert_eq!(host.listeners(), 0);
+        assert_eq!(w.fx.handle.attachments(), 0);
+        assert_eq!(w.fx.handle.subscribers(), 0);
     }
 
     /// Read `node/pty` notifications until `want` appears in the accumulated bytes.

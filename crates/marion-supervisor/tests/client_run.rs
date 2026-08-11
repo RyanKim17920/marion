@@ -273,6 +273,7 @@ impl Client {
     fn attach(&mut self, agent: &AgentId) -> (Vec<Note>, marion_proto::result::NodeAttachResult) {
         let id = self.send(Call::NodeAttach(marion_proto::params::NodeAttachParams {
             agent_id: agent.clone(),
+            pane_stream: None,
         }));
         let (notes, outcome) = self.read_to_response(id);
         let Outcome::Result(body) = outcome else {

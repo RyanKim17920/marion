@@ -330,6 +330,7 @@ mod tests {
             (
                 Call::NodeAttach(NodeAttachParams {
                     agent_id: agent("a"),
+                    pane_stream: None,
                 }),
                 MethodResult::NodeAttach(NodeAttachResult {
                     node: node(),
@@ -345,6 +346,7 @@ mod tests {
                         rows: 40,
                         writable: false,
                         held_by: Some(3),
+                        pane_ready: None,
                     }),
                 }),
             ),

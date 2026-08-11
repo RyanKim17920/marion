@@ -41,6 +41,40 @@ pub struct NodeGetParams {
     pub agent_id: AgentId,
 }
 
+/// Versioned opt-in to the byte-exact pane replay stream on `node/attach`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneStreamCapabilityV1 {
+    #[serde(deserialize_with = "deserialize_pane_stream_version")]
+    version: u8,
+}
+
+impl PaneStreamCapabilityV1 {
+    pub fn new() -> Self {
+        Self { version: 1 }
+    }
+}
+
+impl Default for PaneStreamCapabilityV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn deserialize_pane_stream_version<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let version = u8::deserialize(deserializer)?;
+    if version == 1 {
+        Ok(version)
+    } else {
+        Err(serde::de::Error::custom(
+            "unsupported pane stream capability version",
+        ))
+    }
+}
+
 /// `node/attach` — §7.3.3's re-attach, per node.
 ///
 /// One node per call, not a session-wide attach, because §7.3.3's finding is that *"the split is
@@ -51,6 +85,8 @@ pub struct NodeGetParams {
 #[serde(deny_unknown_fields)]
 pub struct NodeAttachParams {
     pub agent_id: AgentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_stream: Option<PaneStreamCapabilityV1>,
 }
 
 /// `node/detach`.
@@ -421,7 +457,10 @@ mod tests {
         }
         rt!(TreeSubscribeParams {});
         rt!(NodeGetParams { agent_id: agent() });
-        rt!(NodeAttachParams { agent_id: agent() });
+        rt!(NodeAttachParams {
+            agent_id: agent(),
+            pane_stream: None,
+        });
         rt!(NodeDetachParams { agent_id: agent() });
         rt!(NodePromptParams {
             agent_id: agent(),
@@ -496,6 +535,45 @@ mod tests {
                 confirmed: vec![agent()]
             }
         });
+    }
+
+    #[test]
+    fn node_attach_pane_stream_opt_in_is_versioned_without_changing_legacy_json() {
+        let legacy = NodeAttachParams {
+            agent_id: agent(),
+            pane_stream: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&legacy).unwrap(),
+            r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NodeAttachParams>(
+                r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001"}"#,
+            )
+            .unwrap(),
+            legacy
+        );
+
+        let opted_in = NodeAttachParams {
+            agent_id: agent(),
+            pane_stream: Some(PaneStreamCapabilityV1::new()),
+        };
+        assert_eq!(
+            serde_json::to_string(&opted_in).unwrap(),
+            r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001","pane_stream":{"version":1}}"#
+        );
+        for invalid in [
+            r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001","pane_stream":{}}"#,
+            r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001","pane_stream":{"version":0}}"#,
+            r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001","pane_stream":{"version":2}}"#,
+            r#"{"agent_id":"0199c0ff-ee00-7000-8000-000000000001","pane_stream":{"version":1,"extra":true}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<NodeAttachParams>(invalid).is_err(),
+                "accepted unsupported pane stream capability: {invalid}"
+            );
+        }
     }
 
     #[test]

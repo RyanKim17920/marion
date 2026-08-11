@@ -51,6 +51,17 @@
 use marion_core::contract::AgentId;
 use serde::{Deserialize, Serialize};
 
+use crate::PaneReadyTokenV1;
+
+/// Strict parameters for the version-one pane replay readiness notification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodePaneReadyV1 {
+    pub agent_id: AgentId,
+    pub token: PaneReadyTokenV1,
+    pub cut: u64,
+}
+
 /// Adjacently tagged, exactly as [`crate::Call`] and [`crate::Event`] are.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -93,6 +104,10 @@ pub enum Input {
         cols: u16,
         rows: u16,
     },
+
+    /// The client has consumed the pane replay through `cut` and may join the live stream.
+    #[serde(rename = "node/pane-ready")]
+    NodePaneReady(NodePaneReadyV1),
 }
 
 impl Input {
@@ -101,6 +116,7 @@ impl Input {
         match self {
             Input::NodePtyWrite { .. } => "node/pty-write",
             Input::NodeResize { .. } => "node/resize",
+            Input::NodePaneReady(_) => "node/pane-ready",
         }
     }
 
@@ -110,18 +126,27 @@ impl Input {
     pub const fn agent_id(&self) -> &AgentId {
         match self {
             Input::NodePtyWrite { agent_id, .. } | Input::NodeResize { agent_id, .. } => agent_id,
+            Input::NodePaneReady(params) => &params.agent_id,
         }
     }
 
     /// Every inbound notification name, for the frame reader — so an unknown one is refused **by
     /// name** rather than as an anonymous parse failure.
-    pub const METHODS: [&'static str; 2] = ["node/pty-write", "node/resize"];
+    pub const METHODS: [&'static str; 3] = ["node/pty-write", "node/resize", "node/pane-ready"];
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Event, Method};
+    use crate::{Event, Method, PaneReadyTokenV1};
+
+    fn pane_ready_token() -> PaneReadyTokenV1 {
+        PaneReadyTokenV1::new([
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
+        ])
+    }
 
     fn every_input() -> Vec<Input> {
         vec![
@@ -137,6 +162,11 @@ mod tests {
                 cols: 140,
                 rows: 40,
             },
+            Input::NodePaneReady(NodePaneReadyV1 {
+                agent_id: AgentId("a".into()),
+                token: pane_ready_token(),
+                cut: 9,
+            }),
         ]
     }
 
@@ -180,6 +210,31 @@ mod tests {
             .unwrap(),
             r#"{"method":"node/resize","params":{"agent_id":"a","cols":140,"rows":40}}"#
         );
+        assert_eq!(
+            serde_json::to_string(&Input::NodePaneReady(NodePaneReadyV1 {
+                agent_id: AgentId("a".into()),
+                token: pane_ready_token(),
+                cut: 9,
+            }))
+            .unwrap(),
+            r#"{"method":"node/pane-ready","params":{"agent_id":"a","token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","cut":9}}"#
+        );
+    }
+
+    #[test]
+    fn pane_ready_requires_a_valid_token_and_cut() {
+        for invalid in [
+            r#"{"method":"node/pane-ready","params":{"agent_id":"a","cut":9}}"#,
+            r#"{"method":"node/pane-ready","params":{"agent_id":"a","token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="}}"#,
+            r#"{"method":"node/pane-ready","params":{"agent_id":"a","token":"AA==","cut":9}}"#,
+            r#"{"method":"node/pane-ready","params":{"agent_id":"a","token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","cut":-1}}"#,
+            r#"{"method":"node/pane-ready","params":{"agent_id":"a","token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","cut":9,"cutt":9}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Input>(invalid).is_err(),
+                "accepted malformed pane readiness input: {invalid}"
+            );
+        }
     }
 
     /// **The pin this change was required not to move.**
@@ -233,6 +288,8 @@ mod tests {
             n,
             "two wire names on one socket are the same string"
         );
+        assert_eq!(Method::from_wire("node/pane-ready"), None);
+        assert!(!Event::METHODS.contains(&"node/pane-ready"));
     }
 
     /// `node/pty-write` and `node/pty` are one character apart, and the reader distinguishes them

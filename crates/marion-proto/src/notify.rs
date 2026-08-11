@@ -7,7 +7,7 @@
 //! a TUI that has been SIGKILLed would make §7.3.1's invariant — *"a crashed client MUST leave
 //! every node exactly as it was"* — depend on the dead client answering.
 //!
-//! Seven events, and the set is deliberately small. Each one exists because a specific client
+//! Eight events, and the set is deliberately small. Each one exists because a specific client
 //! behaviour is impossible without it, named in its doc; anything a client can derive from the
 //! journal it already replayed is not here.
 //!
@@ -32,6 +32,7 @@ use marion_core::ir::{Provenance, SrcSeq};
 use marion_core::node::{NodeState, ReapState};
 use serde::{Deserialize, Serialize};
 
+use crate::PaneFrameV1;
 use crate::model::{ElicitationRequestId, NodeSummary, PermissionRequestId, ResidentReason};
 
 /// Adjacently tagged, exactly as [`crate::Call`] is, so a notification and a request are the same
@@ -125,6 +126,10 @@ pub enum Event {
         bytes: String,
     },
 
+    /// One byte-exact record from the replayable pane stream. `seq` is dense from zero.
+    #[serde(rename = "node/pane-frame")]
+    NodePaneFrame(PaneFrameV1),
+
     /// A node is asking for permission. §5.6's single queue across every harness that has a
     /// permission channel.
     ///
@@ -179,6 +184,7 @@ impl Event {
             Event::NodeState { .. } => "node/state",
             Event::NodeEvent { .. } => "node/event",
             Event::NodePty { .. } => "node/pty",
+            Event::NodePaneFrame(_) => "node/pane-frame",
             Event::PermissionRequest { .. } => "permission/request",
             Event::ElicitationRequest { .. } => "elicitation/request",
             Event::SupervisorExiting { .. } => "supervisor/exiting",
@@ -187,11 +193,12 @@ impl Event {
 
     /// Every notification method name. Used by the frame reader to reject an unknown one by name
     /// rather than as an anonymous parse failure.
-    pub const METHODS: [&'static str; 7] = [
+    pub const METHODS: [&'static str; 8] = [
         "tree/node-added",
         "node/state",
         "node/event",
         "node/pty",
+        "node/pane-frame",
         "permission/request",
         "elicitation/request",
         "supervisor/exiting",
@@ -201,7 +208,7 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Method;
+    use crate::{Input, Method, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1};
     use marion_core::contract::ExitStatus;
     use marion_core::encoding::Duration;
     use marion_core::harness::Harness;
@@ -258,6 +265,13 @@ mod tests {
                 // encoding gets wrong: the first is multibyte, the second is a control character.
                 bytes: "\u{1b}[?1049h\u{256d}".into(),
             },
+            Event::NodePaneFrame(PaneFrameV1::new(
+                AgentId("a".into()),
+                0,
+                PaneFrameKindV1::Output {
+                    bytes: OpaquePaneBytesV1::new([0xff]),
+                },
+            )),
             Event::PermissionRequest {
                 request_id: PermissionRequestId("r-1".into()),
                 agent_id: AgentId("a".into()),
@@ -302,6 +316,10 @@ mod tests {
         // precisely what a truncated or hand-written line gets wrong.
         for n in Event::METHODS {
             assert_eq!(Method::from_wire(n), None, "{n} is also a request method");
+            assert!(
+                !Input::METHODS.contains(&n),
+                "{n} is also a client→supervisor input"
+            );
         }
     }
 

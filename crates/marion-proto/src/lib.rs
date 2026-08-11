@@ -65,6 +65,7 @@ pub mod method;
 pub mod model;
 pub mod native;
 pub mod notify;
+pub mod pane;
 pub mod params;
 pub mod result;
 
@@ -72,7 +73,7 @@ pub use envelope::{
     ClientNotification, Frame, JsonRpcVersion, Notification, Outcome, Request, RequestId, Response,
 };
 pub use error::{ErrorData, FailureKind, RpcError};
-pub use input::Input;
+pub use input::{Input, NodePaneReadyV1};
 pub use method::{Call, Method, MethodResult};
 pub use model::{
     AttachMode, ClientGone, Delivery, DetachGuidance, ElicitationRequestId, ElicitationResponse,
@@ -84,6 +85,7 @@ pub use native::{
     NativeOsValueConversionError, OpaqueOsValueV1, TerminalGeometryV1,
 };
 pub use notify::Event;
+pub use pane::{OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1, PaneReadyTokenV1};
 /// Re-exported beside the models because it is one: `agent/spawn` is the only method whose caller
 /// is not always a client, and every consumer of that distinction — the supervisor's handler, the
 /// bridge, a test client — reaches for this type rather than for the params struct around it.

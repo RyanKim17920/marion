@@ -264,11 +264,26 @@ impl Frame {
             (Some(method), false) => {
                 let method = method?;
                 if Event::METHODS.contains(&method.as_str()) {
-                    serde_json::from_value::<Notification>(value)
+                    let notification = if method == "node/pane-frame" {
+                        // Pane frames are strict at every depth. `Value` classification above is
+                        // only a probe because it has already collapsed duplicate object keys;
+                        // replay this notification from its original source before accepting it.
+                        serde_json::from_str::<Notification>(line)
+                    } else {
+                        serde_json::from_value::<Notification>(value)
+                    };
+                    notification
                         .map(Frame::Notification)
                         .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
                 } else if Input::METHODS.contains(&method.as_str()) {
-                    serde_json::from_value::<ClientNotification>(value)
+                    let input = if method == "node/pane-ready" {
+                        // Readiness is strict typed state. Preserve duplicate-key evidence that
+                        // the classification `Value` above has necessarily collapsed.
+                        serde_json::from_str::<ClientNotification>(line)
+                    } else {
+                        serde_json::from_value::<ClientNotification>(value)
+                    };
+                    input
                         .map(Frame::Input)
                         .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
                 } else {
@@ -297,6 +312,9 @@ mod tests {
     use crate::model::*;
     use crate::params::*;
     use crate::result::NodeCancelResult;
+    use crate::{
+        NodePaneReadyV1, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1, PaneReadyTokenV1,
+    };
     use marion_core::contract::{AgentId, ExitStatus};
     use marion_core::encoding::SystemTime;
     use marion_core::node::{NodeState, ReapState};
@@ -336,6 +354,26 @@ mod tests {
         })
     }
 
+    fn input_pane_ready() -> ClientNotification {
+        ClientNotification::new(Input::NodePaneReady(NodePaneReadyV1 {
+            agent_id: AgentId("a".into()),
+            token: PaneReadyTokenV1::new([
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+                0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+                0x1c, 0x1d, 0x1e, 0x1f,
+            ]),
+            cut: 9,
+        }))
+    }
+
+    fn pane_frame(seq: u64, kind: PaneFrameKindV1) -> Frame {
+        Frame::Notification(Notification::new(Event::NodePaneFrame(PaneFrameV1::new(
+            AgentId("a".into()),
+            seq,
+            kind,
+        ))))
+    }
+
     fn every_frame() -> Vec<Frame> {
         vec![
             Frame::Request(req()),
@@ -345,12 +383,19 @@ mod tests {
                 RpcError::refused("a", "the node is running; use node/steer", "§6.3"),
             )),
             Frame::Notification(note()),
+            pane_frame(
+                0,
+                PaneFrameKindV1::Output {
+                    bytes: OpaquePaneBytesV1::new([0xff]),
+                },
+            ),
             Frame::Input(input_write()),
             Frame::Input(ClientNotification::new(Input::NodeResize {
                 agent_id: AgentId("a".into()),
                 cols: 140,
                 rows: 40,
             })),
+            Frame::Input(input_pane_ready()),
         ]
     }
 
@@ -398,6 +443,10 @@ mod tests {
             "{\"jsonrpc\":\"2.0\",\"method\":\"node/state\",\"params\":{\"agent_id\":\"a\",\"state\":\"Idle\",\"reap_state\":\"Live\",\"ts\":\"1970-01-01T00:00:00.000Z\"}}\n"
         );
         assert_eq!(
+            Frame::Input(input_pane_ready()).to_line(),
+            "{\"jsonrpc\":\"2.0\",\"method\":\"node/pane-ready\",\"params\":{\"agent_id\":\"a\",\"token\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\",\"cut\":9}}\n"
+        );
+        assert_eq!(
             Frame::Response(Response::err(
                 RequestId::Number(2),
                 RpcError::internal("lock poisoned")
@@ -405,6 +454,80 @@ mod tests {
             .to_line(),
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32603,\"message\":\"lock poisoned\",\"data\":{\"kind\":\"Internal\",\"spec\":\"\"}}}\n"
         );
+    }
+
+    #[test]
+    fn pane_frames_pin_all_three_ndjson_wire_shapes() {
+        let cases = [
+            (
+                pane_frame(
+                    0,
+                    PaneFrameKindV1::Output {
+                        bytes: OpaquePaneBytesV1::new([0x00, 0x01, 0xff, 0x80]),
+                    },
+                ),
+                "{\"jsonrpc\":\"2.0\",\"method\":\"node/pane-frame\",\"params\":{\"version\":1,\"agent_id\":\"a\",\"seq\":0,\"frame\":{\"kind\":\"Output\",\"bytes\":\"AAH/gA==\"}}}\n",
+            ),
+            (
+                pane_frame(
+                    1,
+                    PaneFrameKindV1::Resize {
+                        cols: 140,
+                        rows: 40,
+                    },
+                ),
+                "{\"jsonrpc\":\"2.0\",\"method\":\"node/pane-frame\",\"params\":{\"version\":1,\"agent_id\":\"a\",\"seq\":1,\"frame\":{\"kind\":\"Resize\",\"cols\":140,\"rows\":40}}}\n",
+            ),
+            (
+                pane_frame(2, PaneFrameKindV1::End {}),
+                "{\"jsonrpc\":\"2.0\",\"method\":\"node/pane-frame\",\"params\":{\"version\":1,\"agent_id\":\"a\",\"seq\":2,\"frame\":{\"kind\":\"End\"}}}\n",
+            ),
+        ];
+
+        for (frame, line) in cases {
+            assert_eq!(frame.to_line(), line);
+            assert_eq!(Frame::from_line(line).unwrap(), frame);
+            assert_eq!(line.matches('\n').count(), 1);
+        }
+    }
+
+    #[test]
+    fn pane_frame_duplicate_keys_are_rejected_from_the_original_line() {
+        for line in [
+            r#"{"jsonrpc":"2.0","method":"node/pane-frame","method":"node/pane-frame","params":{"version":1,"agent_id":"a","seq":0,"frame":{"kind":"End"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"node/pane-frame","params":{"version":1,"version":1,"agent_id":"a","seq":0,"frame":{"kind":"End"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"node/pane-frame","params":{"version":1,"agent_id":"a","seq":0,"frame":{"kind":"End","kind":"End"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"node/pane-frame","params":{"version":1,"agent_id":"a","seq":0,"frame":{"kind":"Output","bytes":"AAH/gA==","bytes":"AAH/gA=="}}}"#,
+        ] {
+            assert!(
+                Frame::from_line(line).is_err(),
+                "accepted duplicate pane-frame key from source: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_ready_duplicate_keys_are_rejected_from_the_original_line() {
+        const TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+        for line in [
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"node/pane-ready","method":"node/pane-ready","params":{{"agent_id":"a","token":"{TOKEN}","cut":9}}}}"#,
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"node/pane-ready","params":{{"agent_id":"a","agent_id":"a","token":"{TOKEN}","cut":9}}}}"#,
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"node/pane-ready","params":{{"agent_id":"a","token":"{TOKEN}","token":"{TOKEN}","cut":9}}}}"#,
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"node/pane-ready","params":{{"agent_id":"a","token":"{TOKEN}","cut":9,"cut":9}}}}"#,
+            ),
+        ] {
+            assert!(
+                Frame::from_line(&line).is_err(),
+                "accepted duplicate pane-ready key from source: {line}"
+            );
+        }
     }
 
     #[test]
@@ -475,6 +598,11 @@ mod tests {
             matches!(inbound, Frame::Input(_)),
             "an inbound name must not parse as a supervisor event: {inbound:?}"
         );
+        let pane_ready = Frame::from_line(
+            r#"{"jsonrpc":"2.0","method":"node/pane-ready","params":{"agent_id":"a","token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","cut":9}}"#,
+        )
+        .unwrap();
+        assert_eq!(pane_ready, Frame::Input(input_pane_ready()));
         let outbound = Frame::from_line(
             r#"{"jsonrpc":"2.0","method":"node/pty","params":{"agent_id":"a","seq":0,"mono_ns":0,"bytes":"x"}}"#,
         )
@@ -483,6 +611,11 @@ mod tests {
             matches!(outbound, Frame::Notification(_)),
             "an outbound name must not parse as client input: {outbound:?}"
         );
+        let pane_frame = Frame::from_line(
+            r#"{"jsonrpc":"2.0","method":"node/pane-frame","params":{"version":1,"agent_id":"a","seq":2,"frame":{"kind":"End"}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(pane_frame, Frame::Notification(_)));
     }
 
     /// `node/pty-write` is `node/pty` plus a suffix, and the reader matches exactly. A

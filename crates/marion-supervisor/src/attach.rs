@@ -319,6 +319,7 @@ impl Session {
             RequestId::Number(1),
             Call::NodeAttach(marion_proto::params::NodeAttachParams {
                 agent_id: self.id.clone(),
+                pane_stream: None,
             }),
         ));
         self.stream

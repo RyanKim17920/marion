@@ -377,6 +377,7 @@ pub fn await_contract(
     c.bound(bound)?;
     let attach = c.send(Call::NodeAttach(marion_proto::params::NodeAttachParams {
         agent_id: agent_id.clone(),
+        pane_stream: None,
     }))?;
     let mut ended: Option<Lifecycle> = None;
     while ended.is_none() {
