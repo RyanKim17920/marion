@@ -5,7 +5,7 @@ use marion_core::{
     NativeFacadeRegistry, NativeLane, StructuredAdapterId, StructuredAgentIdentity,
     StructuredControl, StructuredLane, VendorIdentity,
 };
-use marion_supervisor::facade_cli::{NativeLaneAvailability, match_native_facade_request};
+use marion_supervisor::facade_cli::match_native_facade_request;
 use marion_supervisor::native_intent::{
     LaunchIntent, StructuredLaunchOrigin, select_native_facade,
 };
@@ -39,15 +39,9 @@ fn each_enablement_combination_exposes_only_the_requested_public_surface() {
         let registry = NativeFacadeRegistry::new(&descriptors).unwrap();
 
         let native_match = match_native_facade_request([OsString::from("codex-native")], &registry);
-        assert_eq!(
-            native_match.map(|matched| matched.native_lane_availability()),
-            Some(if native_enabled {
-                NativeLaneAvailability::Enabled
-            } else {
-                NativeLaneAvailability::Disabled
-            }),
-            "registered selector recognition for ({native_enabled}, {structured_enabled})"
-        );
+        let native_match = native_match.expect("registered selector is recognized before auth");
+        assert_eq!(native_match.requested_selector(), "codex-native");
+        assert!(native_match.opaque_tail().is_empty());
 
         let structured = select_native_facade(
             &registry,

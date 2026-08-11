@@ -3,40 +3,33 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use marion_core::{NativeFacadeDescriptor, NativeFacadeRegistry};
+#[cfg(test)]
+use marion_core::NativeFacadeDescriptor;
+use marion_core::NativeFacadeRegistry;
 use marion_harness::validate_native_process_values;
 use marion_proto::{NativeEnvVarV1, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1};
 
 use crate::native_binding::{NativeBindingError, resolve_declared_executable};
+use crate::native_bootstrap::{
+    BootstrapError, DirectNativeRequestContext, NATIVE_WIRE_VERSION, NativeBootstrapClient,
+};
 use crate::native_intent::SelectedNativeFacade;
+use crate::native_tty::capture_process_stdio;
 
 /// An untrusted first-token facade match. This value carries no native launch authority.
 #[derive(Debug, PartialEq, Eq)]
-pub struct MatchedNativeFacadeRequest<'a> {
-    descriptor: &'a NativeFacadeDescriptor,
-    native_lane_availability: NativeLaneAvailability,
-    argv: Vec<OsString>,
+pub struct MatchedNativeFacadeRequest {
+    requested_selector: String,
+    opaque_tail: Vec<OsString>,
 }
 
-/// Static native-lane policy for a selector that the registry already recognized.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeLaneAvailability {
-    Absent,
-    Disabled,
-    Enabled,
-}
-
-impl<'a> MatchedNativeFacadeRequest<'a> {
-    pub const fn descriptor(&self) -> &'a NativeFacadeDescriptor {
-        self.descriptor
+impl MatchedNativeFacadeRequest {
+    pub fn requested_selector(&self) -> &str {
+        &self.requested_selector
     }
 
-    pub fn argv(&self) -> &[OsString] {
-        &self.argv
-    }
-
-    pub const fn native_lane_availability(&self) -> NativeLaneAvailability {
-        self.native_lane_availability
+    pub fn opaque_tail(&self) -> &[OsString] {
+        &self.opaque_tail
     }
 }
 
@@ -44,22 +37,16 @@ impl<'a> MatchedNativeFacadeRequest<'a> {
 pub fn match_native_facade_request<'a>(
     argv: impl IntoIterator<Item = OsString>,
     registry: &'a NativeFacadeRegistry<'a>,
-) -> Option<MatchedNativeFacadeRequest<'a>> {
+) -> Option<MatchedNativeFacadeRequest> {
     let mut argv = argv.into_iter();
     let selector = argv.next()?.into_string().ok()?;
     if !selector.is_ascii() {
         return None;
     }
-    let resolved = registry.resolve(&selector)?;
-    let native_lane_availability = match resolved.native_lane() {
-        None => NativeLaneAvailability::Absent,
-        Some(native) if native.lane().enabled() => NativeLaneAvailability::Enabled,
-        Some(_) => NativeLaneAvailability::Disabled,
-    };
+    registry.resolve(&selector)?;
     Some(MatchedNativeFacadeRequest {
-        descriptor: resolved.descriptor(),
-        native_lane_availability,
-        argv: argv.collect(),
+        requested_selector: selector,
+        opaque_tail: argv.collect(),
     })
 }
 
@@ -106,11 +93,13 @@ pub(crate) fn build_native_launch_v2(
 
 /// Run the untrusted native-facade match before handing unmatched argv to the legacy CLI.
 ///
-/// This Task-1 dispatcher can only refuse a registered synthetic selector. It cannot produce a
-/// launch selection; Task 2's native bootstrap will own that authorization boundary.
+/// Registered selectors require a foreground controlling-TTY witness, then traverse Task 2's
+/// same-connection bootstrap. The server consumes authority and selects the canonical native lane;
+/// this client never reads lane or readiness detail from its pre-authorization match.
 pub fn dispatch_native_facade_or_legacy<'a>(
     argv: impl IntoIterator<Item = OsString>,
     registry: &'a NativeFacadeRegistry<'a>,
+    connect_native: impl FnOnce() -> Result<NativeBootstrapClient, BootstrapError>,
     mut stderr: impl Write,
     legacy: impl FnOnce() -> ExitCode,
 ) -> ExitCode {
@@ -118,25 +107,51 @@ pub fn dispatch_native_facade_or_legacy<'a>(
         return legacy();
     };
 
-    match request.native_lane_availability() {
-        NativeLaneAvailability::Absent => writeln!(
+    let witness = match capture_process_stdio() {
+        Ok(witness) => witness,
+        Err(_) => {
+            writeln!(
             stderr,
-            "marion: registered facade {:?} has no native lane",
-            request.descriptor().command
-        ),
-        NativeLaneAvailability::Disabled => writeln!(
+            "marion: native facade \"{}\" requires stdin and stdout on the same foreground controlling terminal; use 'marion run <agent-type> --prompt <text>' for structured execution",
+            request.requested_selector()
+        )
+        .expect("write native facade refusal to stderr");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let connection = match connect_native() {
+        Ok(connection) => connection,
+        Err(_) => {
+            writeln!(
+                stderr,
+                "marion: native facade bootstrap authorization was refused"
+            )
+            .expect("write native facade refusal to stderr");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let context = DirectNativeRequestContext::new(
+        connection.canonical_project().to_path_buf(),
+        OsString::from(request.requested_selector()),
+        request.opaque_tail().to_vec(),
+        std::env::var_os("TERM").unwrap_or_default(),
+        NATIVE_WIRE_VERSION,
+    );
+    let authorized = witness
+        .bootstrap(connection, context)
+        .and_then(|session| session.consume());
+    if authorized.is_err() {
+        writeln!(
             stderr,
-            "marion: native lane is disabled for {:?}",
-            request.descriptor().command
-        ),
-        NativeLaneAvailability::Enabled => writeln!(
-            stderr,
-            "marion: native facade transport is not ready for {:?}",
-            request.descriptor().command
-        ),
+            "marion: native facade bootstrap authorization was refused"
+        )
+        .expect("write native facade refusal to stderr");
+        return ExitCode::FAILURE;
     }
-    .expect("write native facade refusal to stderr");
-    ExitCode::FAILURE
+
+    ExitCode::SUCCESS
 }
 
 #[cfg(all(test, unix))]
@@ -198,8 +213,8 @@ mod tests {
         let registry = registry();
         let request = match_native_facade_request(argv, &registry).unwrap();
 
-        assert_eq!(request.descriptor(), &READY);
-        assert_eq!(request.argv(), expected);
+        assert_eq!(request.requested_selector(), "atlas");
+        assert_eq!(request.opaque_tail(), expected);
     }
 
     #[test]
@@ -226,7 +241,7 @@ mod tests {
 
         let context = build_native_launch_v2(
             selected_native(&registry),
-            matched.argv,
+            matched.opaque_tail,
             vec![(OsString::from("PATH"), bin.as_os_str().to_owned())],
             work.to_path_buf(),
             geometry.clone(),
@@ -241,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_first_registered_token_matches_and_disabled_policy_stays_visible() {
+    fn only_the_first_registered_token_matches_without_exposing_lane_policy() {
         let registry = registry();
         assert!(
             match_native_facade_request(
@@ -263,8 +278,8 @@ mod tests {
             assert_eq!(
                 match_native_facade_request([OsString::from(selector)], &registry)
                     .unwrap()
-                    .native_lane_availability(),
-                NativeLaneAvailability::Disabled
+                    .requested_selector(),
+                selector
             );
         }
         assert!(match_native_facade_request(Vec::<OsString>::new(), &registry).is_none());
@@ -282,6 +297,6 @@ mod tests {
         let request =
             match_native_facade_request([OsString::from("atlas"), invalid.clone()], &registry)
                 .unwrap();
-        assert_eq!(request.argv(), [invalid]);
+        assert_eq!(request.opaque_tail(), [invalid]);
     }
 }

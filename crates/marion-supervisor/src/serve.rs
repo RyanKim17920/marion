@@ -1490,11 +1490,13 @@ mod tests {
         };
         let leaver = Arc::new(Leaver::default());
         let handler = Arc::new(SupportedNativeHandler(AtomicU64::new(0)));
-        let native = Arc::new(NativeBootstrapService::new(
-            paths.canonical_project().to_path_buf(),
-            crate::native_bootstrap::NATIVE_WIRE_VERSION,
-            Arc::clone(&handler) as Arc<dyn crate::native_bootstrap::NativeBootstrapHandler>,
-        ));
+        let native = Arc::new(
+            NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+                paths.canonical_project().to_path_buf(),
+                crate::native_bootstrap::NATIVE_WIRE_VERSION,
+                Arc::clone(&handler) as Arc<dyn crate::native_bootstrap::NativeBootstrapHandler>,
+            ),
+        );
         let server = Server::start_with_native_handler(
             serving,
             Arc::clone(&leaver) as Arc<dyn Handle>,

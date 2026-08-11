@@ -1551,6 +1551,7 @@ fn main() -> ExitCode {
     dispatch_native_facade_or_legacy(
         std::env::args_os().skip(1),
         &native_facades,
+        marion_supervisor::native_bootstrap::NativeBootstrapClient::connect_for_cwd,
         io::stderr(),
         legacy_main,
     )

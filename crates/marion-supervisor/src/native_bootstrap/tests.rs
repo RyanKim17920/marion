@@ -1,7 +1,16 @@
 use super::*;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStringExt;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::unix::process::CommandExt;
 use std::sync::Barrier;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use marion_core::{
+    Lane, NativeAdapterId, NativeFacadeDescriptor, NativeFacadeRegistry, NativeLane, VendorIdentity,
+};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use rustix::process::{Pid, getpgrp, getsid};
 
 #[derive(Default)]
 struct ManualClock(AtomicU64);
@@ -94,8 +103,9 @@ fn fixture(id: u64) -> Fixture {
             special_device: stat.st_rdev as u64,
         },
         geometry: geometry(),
-        _stdin: stdin,
-        _stdout: stdout,
+        witness: None,
+        _test_stdin: Some(stdin),
+        _test_stdout: Some(stdout),
     };
     Fixture {
         _client: client,
@@ -160,6 +170,33 @@ fn descriptor_roles_accept_read_write_stdio_but_refuse_insufficient_rights() {
     assert!(descriptor_roles_allow(OFlags::RDONLY, OFlags::WRONLY));
     assert!(!descriptor_roles_allow(OFlags::WRONLY, OFlags::WRONLY));
     assert!(!descriptor_roles_allow(OFlags::RDONLY, OFlags::RDONLY));
+}
+
+#[test]
+fn server_tty_verifier_refuses_nonterminal_rights_before_downstream_effects() {
+    let input = rustix::fs::open(
+        "/dev/null",
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .unwrap();
+    let output = rustix::fs::open(
+        "/dev/null",
+        OFlags::WRONLY | OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .unwrap();
+    let peer = PeerIdentity {
+        uid: own_uid(),
+        pid: std::process::id(),
+    };
+    let effects = Effects::default();
+
+    assert!(matches!(
+        crate::native_tty::verify_bootstrap_tty(peer, [input, output]),
+        Err(crate::native_tty::NativeTtyError::NotATerminal)
+    ));
+    effects.assert_zero();
 }
 
 #[test]
@@ -640,6 +677,655 @@ fn consumed_service_request_moves_once_into_native_selection_with_authenticated_
 }
 
 #[test]
+fn consumed_alias_hash_precedes_canonical_selector_resolution() {
+    use marion_core::{
+        Lane, NativeAdapterId, NativeFacadeDescriptor, NativeFacadeRegistry, NativeLane,
+        VendorIdentity,
+    };
+
+    const DESCRIPTOR: NativeFacadeDescriptor = NativeFacadeDescriptor {
+        identity: VendorIdentity::new("atlas"),
+        command: "atlas",
+        aliases: &["at"],
+        native: Some(Lane::new(
+            true,
+            NativeLane::new("atlas", "codex", NativeAdapterId::new("atlas-native")),
+        )),
+        structured: None,
+    };
+
+    let clock = Arc::new(ManualClock::default());
+    let authority = authority(clock);
+    let fixture = fixture(131);
+    let mut alias_context = request_context();
+    alias_context.selector = OsString::from("at");
+    alias_context.opaque_tail = vec![OsString::from_vec(b"--opaque-\xff".to_vec())];
+    let alias_hash = context_hash(&alias_context);
+    let mut canonical_context = alias_context.clone();
+    canonical_context.selector = OsString::from("atlas");
+    assert_ne!(alias_hash, context_hash(&canonical_context));
+
+    let token = authority
+        .issue(&fixture.connection, &fixture.terminal, "at", alias_hash)
+        .unwrap()
+        .wire_bytes();
+    let authorization = authority
+        .consume(
+            &fixture.connection,
+            &fixture.terminal,
+            "at",
+            alias_hash,
+            token,
+        )
+        .unwrap();
+    let descriptors = [DESCRIPTOR];
+    let registry = NativeFacadeRegistry::new(&descriptors).unwrap();
+    let selected = crate::native_intent::select_consumed_native(&registry, authorization).unwrap();
+    assert_eq!(selected.descriptor().command, "atlas");
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const ROUTE_DESCRIPTOR: NativeFacadeDescriptor = NativeFacadeDescriptor {
+    identity: VendorIdentity::new("atlas"),
+    command: "atlas",
+    aliases: &["at"],
+    native: Some(Lane::new(
+        true,
+        NativeLane::new("atlas", "codex", NativeAdapterId::new("atlas-native")),
+    )),
+    structured: None,
+};
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct SelectingRouteHandler {
+    selected_command: Mutex<Option<String>>,
+    raw_context: Mutex<Option<(OsString, Vec<OsString>, ContextHash)>>,
+    terminal: Mutex<Option<crate::native_tty::ControllingTtyWitness>>,
+    effects: Effects,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl SelectingRouteHandler {
+    fn new() -> Self {
+        Self {
+            selected_command: Mutex::new(None),
+            raw_context: Mutex::new(None),
+            terminal: Mutex::new(None),
+            effects: Effects::default(),
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl NativeBootstrapHandler for SelectingRouteHandler {
+    fn verify_terminal(
+        &self,
+        _peer: PeerIdentity,
+        _stdin: BorrowedFd<'_>,
+        _stdout: BorrowedFd<'_>,
+    ) -> Result<TerminalGeometryObservation, BootstrapError> {
+        Ok(TerminalGeometryObservation::new(geometry()))
+    }
+
+    fn authorized(&self, request: ConsumedNativeRequest<'_>) -> Result<(), BootstrapError> {
+        assert_eq!(request.hash(), context_hash(request.context()));
+        *lock(&self.raw_context) = Some((
+            request.context().selector.clone(),
+            request.context().opaque_tail.clone(),
+            request.hash(),
+        ));
+        let registry = NativeFacadeRegistry::new(&[ROUTE_DESCRIPTOR]).expect("route registry");
+        let (selected, terminal) =
+            crate::native_intent::select_consumed_direct_cli(&registry, request)
+                .ok_or(BootstrapError::AuthorizationRefused)?;
+        *lock(&self.selected_command) = Some(selected.descriptor().command.to_owned());
+        *lock(&self.terminal) = Some(terminal);
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_tty_route_child(mut command: std::process::Command) -> (std::process::ExitStatus, String) {
+    use std::io::Read;
+
+    let mut child = command.spawn().expect("spawn real TTY route probe");
+    drop(command);
+    let pid = child.id() as i32;
+    let mut stderr = child.stderr.take().expect("probe control pipe");
+    let (output_tx, output_rx) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || {
+        let mut output = String::new();
+        stderr
+            .read_to_string(&mut output)
+            .expect("read route probe");
+        let _ = output_tx.send(output);
+    });
+    let (status_tx, status_rx) = std::sync::mpsc::sync_channel(1);
+    let waiter = std::thread::spawn(move || {
+        let _ = status_tx.send(child.wait());
+    });
+    let status = match status_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(status) => status.expect("wait for route probe"),
+        Err(error) => {
+            unsafe extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            const SIGKILL: i32 = 9;
+            // SAFETY: `pid` is the exact owned child and SIGKILL is used only as a deadlock ceiling.
+            let _ = unsafe { kill(pid, SIGKILL) };
+            let _ = status_rx.recv_timeout(Duration::from_secs(2));
+            panic!("real TTY route probe exceeded watchdog: {error}");
+        }
+    };
+    waiter.join().expect("join route waiter");
+    let output = output_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("route control reader exceeded watchdog");
+    reader.join().expect("join route reader");
+    (status, output)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct RevalidationProbeWatchdogOutcome {
+    status: std::process::ExitStatus,
+    timed_out: bool,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn wait_for_revalidation_probe_with_watchdog(
+    child: &mut std::process::Child,
+    deadlock_ceiling: Duration,
+) -> RevalidationProbeWatchdogOutcome {
+    let deadline = std::time::Instant::now()
+        .checked_add(deadlock_ceiling)
+        .expect("revalidation watchdog deadline");
+    loop {
+        if let Some(status) = child.try_wait().expect("poll revalidation probe") {
+            return RevalidationProbeWatchdogOutcome {
+                status,
+                timed_out: false,
+            };
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            child.kill().expect("kill timed-out revalidation probe");
+            let status = child.wait().expect("reap timed-out revalidation probe");
+            return RevalidationProbeWatchdogOutcome {
+                status,
+                timed_out: true,
+            };
+        }
+        std::thread::sleep((deadline - now).min(Duration::from_millis(1)));
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn real_tty_bootstrap_selects_alias_only_after_atomic_consume() {
+    use crate::pty::PtyMaster;
+
+    #[cfg(target_os = "linux")]
+    const TIOCSCTTY: std::ffi::c_ulong = 0x540e;
+    #[cfg(target_os = "macos")]
+    const TIOCSCTTY: std::ffi::c_ulong = 0x2000_7461;
+
+    unsafe extern "C" {
+        fn setsid() -> i32;
+        fn ioctl(fd: i32, request: std::ffi::c_ulong, ...) -> i32;
+        fn write(fd: i32, bytes: *const std::ffi::c_void, len: usize) -> isize;
+    }
+
+    let master = PtyMaster::open(crate::pty::WinSize::new(117, 43)).expect("route PTY");
+    let stdin = master.open_slave().expect("route stdin");
+    let stdout = master.open_slave().expect("route stdout");
+    let mut command = std::process::Command::new(std::env::current_exe().expect("unit test path"));
+    command
+        .args([
+            "--exact",
+            "native_bootstrap::tests::real_tty_bootstrap_alias_probe",
+            "--nocapture",
+        ])
+        .env("MARION_REAL_TTY_ROUTE_PROBE", "1")
+        .stdin(std::process::Stdio::from(stdin))
+        .stdout(std::process::Stdio::from(stdout))
+        .stderr(std::process::Stdio::piped());
+    // SAFETY: only async-signal-safe session/ioctl/write calls run between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            if setsid() < 0 || ioctl(0, TIOCSCTTY, 0_i32) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let marker = b"SESSION_READY\n";
+            let _ = write(2, marker.as_ptr().cast(), marker.len());
+            Ok(())
+        });
+    }
+
+    let (status, output) = run_tty_route_child(command);
+    assert!(status.success(), "real route probe failed: {output}");
+    assert!(
+        output.contains("SESSION_READY"),
+        "missing readiness barrier: {output}"
+    );
+    assert!(
+        output.contains("TTY_IDENTITY_READY"),
+        "missing terminal identity barrier: {output}"
+    );
+    assert!(
+        output.contains("REAL_ROUTE_OK"),
+        "missing route result: {output}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn real_tty_bootstrap_alias_probe() {
+    if std::env::var_os("MARION_REAL_TTY_ROUTE_PROBE").is_none() {
+        return;
+    }
+
+    let stdin = std::io::stdin();
+    assert_eq!(
+        rustix::termios::tcgetsid(stdin.as_fd()).unwrap(),
+        getsid(None).unwrap()
+    );
+    assert_eq!(
+        rustix::termios::tcgetpgrp(stdin.as_fd()).unwrap(),
+        getpgrp()
+    );
+    eprintln!("TTY_IDENTITY_READY");
+
+    let handler = Arc::new(SelectingRouteHandler::new());
+    let (client_stream, server_stream) = UnixStream::pair().expect("bootstrap socket pair");
+    let service = Arc::new(NativeBootstrapService::new(
+        PathBuf::from("/project"),
+        NATIVE_WIRE_VERSION,
+        Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+    ));
+    let (stage_tx, stage_rx) = std::sync::mpsc::channel();
+    let worker = {
+        let service = Arc::clone(&service);
+        let active = service.try_acquire_connection().expect("connection permit");
+        std::thread::spawn(move || {
+            let _hook = install_native_route_test_hook(stage_tx);
+            service.serve_connection(ConnId(3_001), server_stream, active);
+        })
+    };
+    let client = NativeBootstrapClient {
+        stream: client_stream,
+        canonical_project: PathBuf::from("/project"),
+    };
+    let registry = NativeFacadeRegistry::new(&[ROUTE_DESCRIPTOR]).expect("client registry");
+    let opaque = OsString::from_vec(b"--opaque-\xff".to_vec());
+    let mut stderr = Vec::new();
+    let status = crate::facade_cli::dispatch_native_facade_or_legacy(
+        [OsString::from("at"), opaque.clone()],
+        &registry,
+        move || Ok(client),
+        &mut stderr,
+        || panic!("registered selector reached legacy"),
+    );
+    worker.join().expect("join real bootstrap service");
+
+    assert_eq!(
+        status,
+        std::process::ExitCode::SUCCESS,
+        "stderr: {}",
+        String::from_utf8_lossy(&stderr)
+    );
+    assert!(
+        stderr.is_empty(),
+        "successful native route emitted a refusal"
+    );
+    assert_eq!(
+        stage_rx.try_iter().collect::<Vec<_>>(),
+        [
+            NativeRouteTestStage::DescriptorsVerified,
+            NativeRouteTestStage::CapabilityConsumed,
+            NativeRouteTestStage::SelectorSelected,
+        ]
+    );
+    assert_eq!(lock(&handler.selected_command).as_deref(), Some("atlas"));
+    let (selector, opaque_tail, alias_hash) = lock(&handler.raw_context)
+        .clone()
+        .expect("authenticated raw context retained");
+    assert_eq!(selector, OsString::from("at"));
+    assert_eq!(opaque_tail, [opaque]);
+    let canonical = DirectNativeRequestContext::new(
+        PathBuf::from("/project"),
+        OsString::from("atlas"),
+        opaque_tail,
+        std::env::var_os("TERM").unwrap_or_default(),
+        NATIVE_WIRE_VERSION,
+    );
+    assert_ne!(alias_hash, context_hash(&canonical));
+    assert!(
+        lock(&handler.terminal).as_ref().is_some_and(|terminal| {
+            let geometry = terminal.initial_geometry();
+            geometry.cols == 117 && geometry.rows == 43
+        }),
+        "selected route did not retain the server controlling-terminal witness"
+    );
+    handler.effects.assert_zero();
+    eprintln!("REAL_ROUTE_OK");
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn control_line(reader: &mut std::io::BufReader<UnixStream>) -> String {
+    use std::io::BufRead;
+
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read control barrier");
+    assert!(!line.is_empty(), "control channel closed before a barrier");
+    line.trim_end().to_owned()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn send_control(stream: &mut UnixStream, marker: &str) {
+    stream
+        .write_all(marker.as_bytes())
+        .expect("write control marker");
+    stream.write_all(b"\n").expect("terminate control marker");
+    stream.flush().expect("flush control marker");
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn consume_revalidates_the_real_peer_after_issue_before_any_route_effect() {
+    use crate::pty::PtyMaster;
+
+    #[cfg(target_os = "linux")]
+    const TIOCSCTTY: std::ffi::c_ulong = 0x540e;
+    #[cfg(target_os = "macos")]
+    const TIOCSCTTY: std::ffi::c_ulong = 0x2000_7461;
+
+    unsafe extern "C" {
+        fn setsid() -> i32;
+        fn ioctl(fd: i32, request: std::ffi::c_ulong, ...) -> i32;
+        fn write(fd: i32, bytes: *const std::ffi::c_void, len: usize) -> isize;
+    }
+
+    let master = PtyMaster::open(crate::pty::WinSize::new(117, 43)).expect("TOCTOU PTY");
+    let stdin = master.open_slave().expect("session stdin");
+    let stdout = master.open_slave().expect("session stdout");
+    let mut command = std::process::Command::new(std::env::current_exe().expect("unit test path"));
+    command
+        .args([
+            "--exact",
+            "native_bootstrap::tests::real_tty_revalidation_session_helper",
+            "--nocapture",
+        ])
+        .env("MARION_REAL_TTY_REVALIDATION_SESSION", "1")
+        .stdin(std::process::Stdio::from(stdin))
+        .stdout(std::process::Stdio::from(stdout))
+        .stderr(std::process::Stdio::piped());
+    // SAFETY: only async-signal-safe session/ioctl/write calls run between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            if setsid() < 0 || ioctl(0, TIOCSCTTY, 0_i32) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let marker = b"REVALIDATION_SESSION_READY\n";
+            let _ = write(2, marker.as_ptr().cast(), marker.len());
+            Ok(())
+        });
+    }
+
+    let (status, output) = run_tty_route_child(command);
+    assert!(
+        status.success(),
+        "real revalidation fixture failed: {output}"
+    );
+    for marker in [
+        "REVALIDATION_SESSION_READY",
+        "REVALIDATION_SESSION_IDENTIFIED",
+        "REVALIDATION_PROBE_FOREGROUND",
+        "CAPABILITY_ISSUED",
+        "PEER_BACKGROUNDED",
+        "CONSUME_REFUSED",
+    ] {
+        assert!(output.contains(marker), "missing {marker}: {output}");
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn revalidation_probe_watchdog_reaps_a_probe_parked_after_refusal() {
+    use std::io::{BufRead, Read};
+    use std::process::Stdio;
+
+    let mut command = std::process::Command::new(std::env::current_exe().expect("unit test path"));
+    command
+        .args([
+            "--exact",
+            "native_bootstrap::tests::real_tty_revalidation_watchdog_probe",
+            "--nocapture",
+        ])
+        .env("MARION_REAL_TTY_REVALIDATION_WATCHDOG_PROBE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn parked revalidation probe");
+    drop(command);
+    let stderr = child.stderr.take().expect("probe marker pipe");
+    let (marker_tx, marker_rx) = std::sync::mpsc::sync_channel(1);
+    let (eof_tx, eof_rx) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stderr);
+        let mut marker = String::new();
+        reader.read_line(&mut marker).expect("read refusal marker");
+        let _ = marker_tx.send(marker);
+        let mut remainder = String::new();
+        let _ = eof_tx.send(reader.read_to_string(&mut remainder));
+    });
+    let marker = match marker_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(marker) => marker,
+        Err(error) => {
+            let _ = wait_for_revalidation_probe_with_watchdog(&mut child, Duration::ZERO);
+            eof_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("refusal marker reader did not reach EOF")
+                .expect("drain refusal marker pipe");
+            reader.join().expect("join refusal marker reader");
+            panic!("probe did not reach REFUSED: {error}");
+        }
+    };
+
+    let outcome = wait_for_revalidation_probe_with_watchdog(&mut child, Duration::from_millis(25));
+    eof_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("parked probe reader did not reach EOF after child reap")
+        .expect("drain refusal marker pipe");
+    reader.join().expect("join bounded refusal marker reader");
+    assert_eq!(marker.trim_end(), "REFUSED");
+    assert!(outcome.timed_out, "parked probe escaped its watchdog");
+    assert!(
+        !outcome.status.success(),
+        "watchdog did not kill its exact owned probe"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn real_tty_revalidation_watchdog_probe() {
+    if std::env::var_os("MARION_REAL_TTY_REVALIDATION_WATCHDOG_PROBE").is_none() {
+        return;
+    }
+    eprintln!("REFUSED");
+    loop {
+        std::thread::park();
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn real_tty_revalidation_session_helper() {
+    use std::os::fd::{AsFd, AsRawFd};
+    use std::process::Stdio;
+
+    if std::env::var_os("MARION_REAL_TTY_REVALIDATION_SESSION").is_none() {
+        return;
+    }
+
+    assert_eq!(
+        rustix::termios::tcgetsid(std::io::stdin().as_fd()).unwrap(),
+        getsid(None).unwrap()
+    );
+    assert_eq!(
+        rustix::termios::tcgetpgrp(std::io::stdin().as_fd()).unwrap(),
+        getpgrp()
+    );
+    eprintln!("REVALIDATION_SESSION_IDENTIFIED");
+
+    unsafe extern "C" {
+        fn signal(signal: i32, handler: usize) -> usize;
+    }
+    const SIGTTOU: i32 = 22;
+    const SIG_IGN: usize = 1;
+    // SAFETY: this fixture process owns no prior SIGTTOU handler and exits after the scenario.
+    let _ = unsafe { signal(SIGTTOU, SIG_IGN) };
+
+    const CONTROL_FD: i32 = 9;
+    let (mut control, probe_control) = UnixStream::pair().expect("revalidation control pair");
+    let probe_control_fd = probe_control.as_raw_fd();
+    let mut command = std::process::Command::new(std::env::current_exe().expect("unit test path"));
+    command
+        .args([
+            "--exact",
+            "native_bootstrap::tests::real_tty_revalidation_probe",
+            "--nocapture",
+        ])
+        .env("MARION_REAL_TTY_REVALIDATION_PROBE", "1")
+        .env(
+            "MARION_REAL_TTY_REVALIDATION_CONTROL_FD",
+            CONTROL_FD.to_string(),
+        )
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .process_group(0);
+    // SAFETY: `dup2` is async-signal-safe and the captured descriptor remains owned until spawn.
+    unsafe {
+        command.pre_exec(move || {
+            unsafe extern "C" {
+                fn dup2(old: i32, new: i32) -> i32;
+            }
+            if dup2(probe_control_fd, CONTROL_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().expect("spawn revalidation probe");
+    drop(command);
+    drop(probe_control);
+    let probe_pgid = Pid::from_raw(child.id() as i32).expect("probe pid");
+    control
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("bound control reads");
+    let mut reader = std::io::BufReader::new(control.try_clone().expect("clone control reader"));
+    assert_eq!(control_line(&mut reader), "PROBE_READY");
+    rustix::termios::tcsetpgrp(std::io::stdin().as_fd(), probe_pgid)
+        .expect("make probe foreground");
+    send_control(&mut control, "FOREGROUND");
+    eprintln!("REVALIDATION_PROBE_FOREGROUND");
+
+    assert_eq!(control_line(&mut reader), "ISSUED");
+    eprintln!("CAPABILITY_ISSUED");
+    rustix::termios::tcsetpgrp(std::io::stdin().as_fd(), getpgrp())
+        .expect("background probe before consume");
+    send_control(&mut control, "BACKGROUND");
+    eprintln!("PEER_BACKGROUNDED");
+    assert_eq!(control_line(&mut reader), "REFUSED");
+    eprintln!("CONSUME_REFUSED");
+    let outcome = wait_for_revalidation_probe_with_watchdog(&mut child, Duration::from_secs(5));
+    assert!(
+        !outcome.timed_out,
+        "revalidation probe exceeded its watchdog"
+    );
+    assert!(
+        outcome.status.success(),
+        "revalidation probe failed: {}",
+        outcome.status
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn real_tty_revalidation_probe() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    if std::env::var_os("MARION_REAL_TTY_REVALIDATION_PROBE").is_none() {
+        return;
+    }
+
+    let control_fd: i32 = std::env::var("MARION_REAL_TTY_REVALIDATION_CONTROL_FD")
+        .expect("control descriptor")
+        .parse()
+        .expect("numeric control descriptor");
+    // SAFETY: the session helper duplicated its owned stream endpoint to this exact descriptor
+    // immediately before exec, and this probe takes its sole post-exec ownership.
+    let control_fd = unsafe { OwnedFd::from_raw_fd(control_fd) };
+    let mut control = UnixStream::from(control_fd);
+    control
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("bound control reads");
+    let mut reader = std::io::BufReader::new(control.try_clone().expect("clone control reader"));
+    send_control(&mut control, "PROBE_READY");
+    assert_eq!(control_line(&mut reader), "FOREGROUND");
+    assert_eq!(
+        rustix::termios::tcgetsid(std::io::stdin().as_fd()).unwrap(),
+        getsid(None).unwrap()
+    );
+    assert_eq!(
+        rustix::termios::tcgetpgrp(std::io::stdin().as_fd()).unwrap(),
+        getpgrp()
+    );
+
+    let effects = Arc::new(Effects::default());
+    let handler = Arc::new(CountingHandler {
+        terminal_verifications: AtomicU64::new(0),
+        effects: Arc::clone(&effects),
+    });
+    let (client_stream, server_stream) = UnixStream::pair().expect("bootstrap socket pair");
+    let service = Arc::new(NativeBootstrapService::new(
+        PathBuf::from("/project"),
+        NATIVE_WIRE_VERSION,
+        Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+    ));
+    let worker = {
+        let service = Arc::clone(&service);
+        let active = service.try_acquire_connection().expect("connection permit");
+        std::thread::spawn(move || service.serve_connection(ConnId(3_002), server_stream, active))
+    };
+    let client = NativeBootstrapClient {
+        stream: client_stream,
+        canonical_project: PathBuf::from("/project"),
+    };
+    let context = DirectNativeRequestContext::new(
+        PathBuf::from("/project"),
+        OsString::from("atlas"),
+        vec![OsString::from("--opaque")],
+        std::env::var_os("TERM").unwrap_or_default(),
+        NATIVE_WIRE_VERSION,
+    );
+    let witness = crate::native_tty::capture_process_stdio().expect("foreground client witness");
+    let session = witness
+        .bootstrap(client, context)
+        .expect("capability issuance");
+    send_control(&mut control, "ISSUED");
+    assert_eq!(control_line(&mut reader), "BACKGROUND");
+    assert!(matches!(
+        session.consume(),
+        Err(BootstrapError::AuthorizationRefused)
+    ));
+    worker.join().expect("join rejecting service");
+    assert_eq!(handler.terminal_verifications.load(Ordering::SeqCst), 1);
+    effects.assert_zero();
+    send_control(&mut control, "REFUSED");
+}
+
+#[test]
 fn service_policy_rejects_wrong_project_and_wire_version() {
     let service = NativeBootstrapService::disabled(PathBuf::from("/expected"));
     let wrong_project = DirectNativeRequestContext::new(
@@ -975,11 +1661,13 @@ fn unsupported_service_closes_the_wire_with_zero_verification_authority_or_effec
         terminal_verifications: AtomicU64::new(0),
         effects: Arc::clone(&effects),
     });
-    let service = Arc::new(NativeBootstrapService::new(
-        request_context().canonical_project().to_path_buf(),
-        request_context().native_wire_version(),
-        Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
-    ));
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            request_context().canonical_project().to_path_buf(),
+            request_context().native_wire_version(),
+            Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
     let (mut client, server) = UnixStream::pair().unwrap();
     let worker = {
         let service = Arc::clone(&service);
@@ -1003,11 +1691,13 @@ fn native_wire_issues_and_consumes_only_after_the_verified_handoff() {
         terminal_verifications: AtomicU64::new(0),
         effects: Arc::clone(&effects),
     });
-    let service = Arc::new(NativeBootstrapService::new(
-        request_context().canonical_project().to_path_buf(),
-        request_context().native_wire_version(),
-        Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
-    ));
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            request_context().canonical_project().to_path_buf(),
+            request_context().native_wire_version(),
+            Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
     let (mut client, server) = UnixStream::pair().unwrap();
     let worker = {
         let service = Arc::clone(&service);
@@ -1352,11 +2042,13 @@ mod supported_descriptors {
             terminal_verifications: AtomicU64::new(0),
             effects: Arc::clone(&effects),
         });
-        let service = Arc::new(NativeBootstrapService::new(
-            request_context().canonical_project().to_path_buf(),
-            request_context().native_wire_version(),
-            Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
-        ));
+        let service = Arc::new(
+            NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+                request_context().canonical_project().to_path_buf(),
+                request_context().native_wire_version(),
+                Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+            ),
+        );
         let (mut client, server) = UnixStream::pair().unwrap();
         let worker = {
             let service = Arc::clone(&service);
@@ -1401,11 +2093,13 @@ mod supported_descriptors {
                 effects: Arc::clone(&effects),
             });
             let expected = request_context();
-            let service = Arc::new(NativeBootstrapService::new(
-                expected.canonical_project().to_path_buf(),
-                expected.native_wire_version(),
-                Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
-            ));
+            let service = Arc::new(
+                NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+                    expected.canonical_project().to_path_buf(),
+                    expected.native_wire_version(),
+                    Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+                ),
+            );
             let (mut client, server) = UnixStream::pair().unwrap();
             let worker = {
                 let active = service.try_acquire_connection().unwrap();

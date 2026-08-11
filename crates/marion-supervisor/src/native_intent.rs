@@ -32,7 +32,8 @@
 //! let _reused = select_native_facade(&registry, intent);
 //! ```
 
-use crate::native_bootstrap::ConsumedNativeCapability;
+use crate::native_bootstrap::{ConsumedNativeCapability, ConsumedNativeRequest};
+use crate::native_tty::ControllingTtyWitness;
 #[cfg(test)]
 use marion_core::LaneReadiness;
 use marion_core::{
@@ -217,6 +218,21 @@ pub(crate) fn select_consumed_native<'registry>(
     authorization: AuthorizedNativeFacade<'_>,
 ) -> Option<SelectedNativeFacade<'registry>> {
     select_native_facade(registry, LaunchIntent::native(authorization))?.into_native()
+}
+
+/// Consume Task 2's authenticated request before resolving any descriptor or lane detail.
+pub(crate) fn select_consumed_direct_cli<'registry>(
+    registry: &'registry NativeFacadeRegistry<'_>,
+    consumed: ConsumedNativeRequest<'_>,
+) -> Option<(SelectedNativeFacade<'registry>, ControllingTtyWitness)> {
+    let (_context, _hash, terminal, authorization) = consumed.into_parts().into_components();
+    let selected = select_consumed_native(registry, authorization)?;
+    let terminal = terminal.into_controlling_tty_witness()?;
+    #[cfg(test)]
+    crate::native_bootstrap::observe_native_route_test_stage(
+        crate::native_bootstrap::NativeRouteTestStage::SelectorSelected,
+    );
+    Some((selected, terminal))
 }
 
 #[cfg(test)]

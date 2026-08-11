@@ -83,8 +83,12 @@ use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
 use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
-use crate::native_intent::AuthorizedNativeFacade;
+use marion_core::production_native_facades;
+
+use crate::native_intent::{AuthorizedNativeFacade, select_consumed_direct_cli};
+use crate::native_tty::{ControllingTtyWitness, verify_bootstrap_tty};
 use crate::serve::{ConnId, own_uid};
+use crate::socket;
 
 const CONTEXT_DOMAIN: &[u8] = b"marion/direct-native-context/v1\0";
 const DESCRIPTOR_MESSAGE: &[u8] = b"MNB1";
@@ -97,6 +101,107 @@ const MAX_CONTEXT_BYTES: usize = 192 * 1024;
 const MAX_SELECTOR_BYTES: usize = 255;
 const MAX_CAPABILITY_GENERATION_ATTEMPTS: usize = 128;
 pub(crate) const NATIVE_WIRE_VERSION: u32 = 1;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeRouteTestStage {
+    DescriptorsVerified,
+    CapabilityConsumed,
+    SelectorSelected,
+}
+
+#[cfg(test)]
+thread_local! {
+    static NATIVE_ROUTE_TEST_SENDER: std::cell::RefCell<
+        Option<std::sync::mpsc::Sender<NativeRouteTestStage>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct NativeRouteTestHookGuard;
+
+#[cfg(test)]
+impl Drop for NativeRouteTestHookGuard {
+    fn drop(&mut self) {
+        NATIVE_ROUTE_TEST_SENDER.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_native_route_test_hook(
+    sender: std::sync::mpsc::Sender<NativeRouteTestStage>,
+) -> NativeRouteTestHookGuard {
+    NATIVE_ROUTE_TEST_SENDER.with(|slot| {
+        assert!(slot.borrow_mut().replace(sender).is_none());
+    });
+    NativeRouteTestHookGuard
+}
+
+#[cfg(test)]
+pub(crate) fn observe_native_route_test_stage(stage: NativeRouteTestStage) {
+    NATIVE_ROUTE_TEST_SENDER.with(|slot| {
+        if let Some(sender) = slot.borrow().as_ref() {
+            let _ = sender.send(stage);
+        }
+    });
+}
+
+/// The sole client for the native-only Task 2 transport.
+#[derive(Debug)]
+pub struct NativeBootstrapClient {
+    stream: UnixStream,
+    canonical_project: PathBuf,
+}
+
+impl NativeBootstrapClient {
+    /// Resolve the current project and connect to its private native-bootstrap sibling socket.
+    pub fn connect_for_cwd() -> Result<Self, BootstrapError> {
+        let cwd = std::env::current_dir().map_err(BootstrapError::NativeTransportIo)?;
+        let paths = socket::resolve(&cwd).map_err(|error| {
+            BootstrapError::NativeTransportIo(std::io::Error::other(error.to_string()))
+        })?;
+        let stream = UnixStream::connect(paths.native_bootstrap())
+            .map_err(BootstrapError::NativeTransportIo)?;
+        Ok(Self {
+            stream,
+            canonical_project: paths.canonical_project().to_path_buf(),
+        })
+    }
+
+    pub(crate) fn canonical_project(&self) -> &std::path::Path {
+        &self.canonical_project
+    }
+
+    pub(crate) fn request(
+        mut self,
+        stdin: BorrowedFd<'_>,
+        stdout: BorrowedFd<'_>,
+        context: DirectNativeRequestContext,
+    ) -> Result<NativeBootstrapClientSession, BootstrapError> {
+        let capability = request_direct_cli_capability(&mut self.stream, stdin, stdout, &context)?;
+        Ok(NativeBootstrapClientSession {
+            stream: self.stream,
+            capability,
+            context,
+        })
+    }
+}
+
+/// One issued capability kept on the authenticated connection that issued it.
+#[derive(Debug)]
+pub(crate) struct NativeBootstrapClientSession {
+    stream: UnixStream,
+    capability: DirectCliCapability,
+    context: DirectNativeRequestContext,
+}
+
+impl NativeBootstrapClientSession {
+    pub(crate) fn consume(mut self) -> Result<(), BootstrapError> {
+        present_direct_cli_capability(&mut self.stream, self.capability, &self.context)
+    }
+}
 
 #[cfg(target_os = "linux")]
 const LINUX_ATOMIC_RECEIVE_FLAGS: RecvFlags = RecvFlags::CMSG_CLOEXEC;
@@ -182,9 +287,16 @@ impl PeerIdentity {
         self.uid
     }
 
-    #[cfg(test)]
-    pub const fn pid(self) -> u32 {
+    pub(crate) const fn pid(self) -> u32 {
         self.pid
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_for_tty_test() -> Self {
+        Self {
+            uid: own_uid(),
+            pid: std::process::id(),
+        }
     }
 }
 
@@ -211,8 +323,24 @@ pub(crate) struct BoundTerminalDescriptors {
     peer: PeerIdentity,
     fingerprint: TerminalFingerprint,
     geometry: TerminalGeometry,
-    _stdin: OwnedFd,
-    _stdout: OwnedFd,
+    witness: Option<ControllingTtyWitness>,
+    _test_stdin: Option<OwnedFd>,
+    _test_stdout: Option<OwnedFd>,
+}
+
+impl BoundTerminalDescriptors {
+    fn revalidate_peer(&self) -> Result<(), BootstrapError> {
+        if let Some(witness) = &self.witness {
+            witness
+                .revalidate_peer(self.peer)
+                .map_err(|error| BootstrapError::TerminalVerification(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_controlling_tty_witness(self) -> Option<ControllingTtyWitness> {
+        self.witness
+    }
 }
 
 /// An authenticated connection on the native-only bootstrap transport.
@@ -682,9 +810,37 @@ fn bind_terminal_identity(
         peer,
         fingerprint,
         geometry,
-        _stdin: stdin,
-        _stdout: stdout,
+        witness: None,
+        _test_stdin: Some(stdin),
+        _test_stdout: Some(stdout),
     })
+}
+
+fn bind_verified_terminal(
+    connection: ConnId,
+    peer: PeerIdentity,
+    witness: ControllingTtyWitness,
+) -> BoundTerminalDescriptors {
+    let (device, inode, special_device) = witness.fingerprint().components();
+    let geometry = witness.initial_geometry();
+    BoundTerminalDescriptors {
+        connection,
+        peer,
+        fingerprint: TerminalFingerprint {
+            device,
+            inode,
+            special_device,
+        },
+        geometry: TerminalGeometry {
+            cols: geometry.cols,
+            rows: geometry.rows,
+            xpixel: geometry.xpixel,
+            ypixel: geometry.ypixel,
+        },
+        witness: Some(witness),
+        _test_stdin: None,
+        _test_stdout: None,
+    }
 }
 
 fn descriptor_roles_allow(input_mode: OFlags, output_mode: OFlags) -> bool {
@@ -1319,7 +1475,10 @@ impl NativeBootstrapHandler for DisabledNativeBootstrapHandler {
         Err(BootstrapError::AuthorizationRefused)
     }
 
-    fn authorized(&self, _request: ConsumedNativeRequest<'_>) -> Result<(), BootstrapError> {
+    fn authorized(&self, request: ConsumedNativeRequest<'_>) -> Result<(), BootstrapError> {
+        let registry = production_native_facades();
+        let (_selected, _terminal) = select_consumed_direct_cli(&registry, request)
+            .ok_or(BootstrapError::AuthorizationRefused)?;
         Err(BootstrapError::AuthorizationRefused)
     }
 }
@@ -1332,6 +1491,7 @@ pub(crate) struct NativeBootstrapService {
     active_connections: Arc<AtomicUsize>,
     handshake_clock: Arc<dyn MonotonicClock>,
     handshake_timeout: Duration,
+    verify_received_terminal: bool,
 }
 
 impl NativeBootstrapService {
@@ -1344,6 +1504,7 @@ impl NativeBootstrapService {
             active_connections: Arc::new(AtomicUsize::new(0)),
             handshake_clock: Arc::new(SystemClock::default()),
             handshake_timeout: HANDSHAKE_TIMEOUT,
+            verify_received_terminal: true,
         }
     }
 
@@ -1361,6 +1522,25 @@ impl NativeBootstrapService {
             active_connections: Arc::new(AtomicUsize::new(0)),
             handshake_clock: Arc::new(SystemClock::default()),
             handshake_timeout: HANDSHAKE_TIMEOUT,
+            verify_received_terminal: true,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_without_terminal_verification_for_task2_tests(
+        expected_project: PathBuf,
+        supported_wire_version: u32,
+        handler: Arc<dyn NativeBootstrapHandler>,
+    ) -> Self {
+        Self {
+            authority: CapabilityAuthority::default(),
+            handler,
+            expected_project,
+            supported_wire_version,
+            active_connections: Arc::new(AtomicUsize::new(0)),
+            handshake_clock: Arc::new(SystemClock::default()),
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+            verify_received_terminal: false,
         }
     }
 
@@ -1380,6 +1560,7 @@ impl NativeBootstrapService {
             active_connections: Arc::new(AtomicUsize::new(0)),
             handshake_clock,
             handshake_timeout,
+            verify_received_terminal: true,
         }
     }
 
@@ -1460,16 +1641,27 @@ impl NativeBootstrapService {
         let issue = read_wire_request(&mut transport)?.authenticate_issue()?;
         self.validate_context(&issue.context)?;
         deadline.require_remaining()?;
-        let handoff =
-            self.handler
-                .verify_terminal(connection.peer, stdin.as_fd(), stdout.as_fd())?;
-        let terminal = bind_terminal_identity(
-            connection.id,
-            connection.peer,
-            handoff.geometry,
-            stdin,
-            stdout,
-        )?;
+        let terminal = if self.verify_received_terminal {
+            let witness = verify_bootstrap_tty(connection.peer, [stdin, stdout])
+                .map_err(|error| BootstrapError::TerminalVerification(error.to_string()))?;
+            let _handoff =
+                self.handler
+                    .verify_terminal(connection.peer, witness.stdin(), witness.stdout())?;
+            bind_verified_terminal(connection.id, connection.peer, witness)
+        } else {
+            let handoff =
+                self.handler
+                    .verify_terminal(connection.peer, stdin.as_fd(), stdout.as_fd())?;
+            bind_terminal_identity(
+                connection.id,
+                connection.peer,
+                handoff.geometry,
+                stdin,
+                stdout,
+            )?
+        };
+        #[cfg(test)]
+        observe_native_route_test_stage(NativeRouteTestStage::DescriptorsVerified);
         let selector = context_selector(&issue.context)?;
         deadline.require_remaining()?;
         let capability = self
@@ -1489,6 +1681,7 @@ impl NativeBootstrapService {
         self.validate_context(&consume.context)?;
         let selector = context_selector(&consume.context)?;
         deadline.require_remaining()?;
+        terminal.revalidate_peer()?;
         let authorization = self.authority.consume(
             &connection,
             &terminal,
@@ -1496,6 +1689,8 @@ impl NativeBootstrapService {
             consume.hash,
             consume.token,
         )?;
+        #[cfg(test)]
+        observe_native_route_test_stage(NativeRouteTestStage::CapabilityConsumed);
         deadline.require_remaining()?;
         self.handler.authorized(ConsumedNativeRequest {
             context: &consume.context,
@@ -1733,6 +1928,8 @@ pub enum BootstrapError {
     HandshakeExpired,
     #[error("native bootstrap authorization was refused")]
     AuthorizationRefused,
+    #[error("native bootstrap terminal verification failed: {0}")]
+    TerminalVerification(String),
 }
 
 fn io_error(error: rustix::io::Errno) -> BootstrapError {

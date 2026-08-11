@@ -52,6 +52,7 @@ pub mod native_binding;
 pub mod native_bootstrap;
 /// Closed native-versus-structured launch provenance and descriptor-owned lane selection.
 pub mod native_intent;
+mod native_tty;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather
 /// than a pure function only tests call.
 pub mod procid;
