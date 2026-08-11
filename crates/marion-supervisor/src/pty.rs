@@ -109,6 +109,7 @@ use crate::serve::{ConnId, Outbound};
 
 /// Production-dark durable binary PTY recording and recovery.
 pub mod stream;
+mod splice;
 
 // ---------------------------------------------------------------------------------------------
 // libc, hand-declared
