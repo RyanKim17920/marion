@@ -89,7 +89,8 @@
 //!    macOS returns 0. A reader treating `EIO` as a fault reports a read failure for every normal
 //!    exit.
 
-use std::ffi::{c_char, c_int, c_ulong, c_void, CStr};
+use std::collections::BTreeMap;
+use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -98,12 +99,14 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_harness::{ControlTransport, PtyWitness};
-use marion_proto::Event;
+use marion_proto::{
+    Event, Frame, Notification, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1, PaneReadyTokenV1,
+};
 
 use crate::serve::{ConnId, Outbound};
 
@@ -999,6 +1002,7 @@ impl std::error::Error for WriterBusy {}
 
 /// Shared between the host and its reader thread.
 struct Shared {
+    self_weak: Weak<Shared>,
     agent_id: AgentId,
     cast: Mutex<CastWriter>,
     /// Clients receiving [`Event::NodePty`]. **Listeners, not owners** — see the module doc.
@@ -1011,6 +1015,18 @@ struct Shared {
     splice: splice::PtySplice,
     splice_error: Mutex<Option<String>>,
     splice_disabled: AtomicBool,
+    pane_streams: Mutex<PaneStreams>,
+    pane_clock: Mutex<Arc<dyn Fn() -> Instant + Send + Sync>>,
+    #[cfg(test)]
+    pane_transition_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    pane_delivery_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    pane_splice_outcome_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    pane_pre_pull_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    pane_guarded_pull_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Resizes handed to the reader thread, and the answer coming back. See [`PtyHost::resize`].
     resize: Mutex<ResizeQueue>,
     resize_done: Condvar,
@@ -1023,6 +1039,250 @@ struct Shared {
     resize_ioctl_failure: Mutex<Option<String>>,
     #[cfg(test)]
     resize_cast_failure: Mutex<Option<String>>,
+}
+
+struct PaneStreams {
+    generation: u64,
+    valid: bool,
+    slots: BTreeMap<ConnId, PaneSlot>,
+}
+
+struct PaneSlot {
+    generation: u64,
+    token: [u8; 32],
+    cut: u64,
+    out: Outbound,
+    cancellation: Arc<PaneCancellation>,
+    pending_since: Instant,
+    phase: PanePhase,
+}
+
+const PANE_PENDING_TTL: Duration = Duration::from_secs(10);
+
+enum PanePhase {
+    Pending(splice::ReplaySubscription),
+    Transitioning {
+        subscriber: splice::SubscriberId,
+        wake_pending: bool,
+    },
+    Ready(splice::ReadySubscription),
+}
+
+enum PaneFlowCursor {
+    Replay(splice::ReplaySubscription),
+    Ready(splice::ReadySubscription),
+}
+
+struct PaneFlow {
+    shared: Weak<Shared>,
+    out: Outbound,
+    conn: ConnId,
+    generation: u64,
+    subscriber: splice::SubscriberId,
+    cancellation: Arc<PaneCancellation>,
+    cursor: Option<PaneFlowCursor>,
+    transition_hook_pending: bool,
+    terminal_cleanup_pending: bool,
+    installed: bool,
+}
+
+enum PaneFlowCompletion {
+    Installed,
+    Continue(splice::ReadySubscription),
+    Cancelled,
+}
+
+impl PaneFlow {
+    fn replay(
+        shared: &Shared,
+        out: Outbound,
+        conn: ConnId,
+        generation: u64,
+        subscriber: splice::SubscriberId,
+        cancellation: Arc<PaneCancellation>,
+        replay: splice::ReplaySubscription,
+    ) -> Self {
+        Self {
+            shared: shared.self_weak.clone(),
+            out,
+            conn,
+            generation,
+            subscriber,
+            cancellation,
+            cursor: Some(PaneFlowCursor::Replay(replay)),
+            transition_hook_pending: true,
+            terminal_cleanup_pending: false,
+            installed: false,
+        }
+    }
+
+    fn ready(
+        shared: &Shared,
+        out: Outbound,
+        conn: ConnId,
+        generation: u64,
+        subscriber: splice::SubscriberId,
+        cancellation: Arc<PaneCancellation>,
+        ready: splice::ReadySubscription,
+    ) -> Self {
+        Self {
+            shared: shared.self_weak.clone(),
+            out,
+            conn,
+            generation,
+            subscriber,
+            cancellation,
+            cursor: Some(PaneFlowCursor::Ready(ready)),
+            transition_hook_pending: false,
+            terminal_cleanup_pending: false,
+            installed: false,
+        }
+    }
+
+    fn next_frame(&mut self) -> Option<Frame> {
+        if self.cancellation.is_cancelled() {
+            return None;
+        }
+        let shared = self.shared.upgrade()?;
+        if self.terminal_cleanup_pending {
+            self.cursor.take();
+            shared.remove_transition(self.conn, self.generation, self.subscriber);
+            self.installed = true;
+            return None;
+        }
+        loop {
+            if self.cancellation.is_cancelled() {
+                return None;
+            }
+            shared.observe_pane_pre_pull();
+            let cancelled = self
+                .cancellation
+                .cancelled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if *cancelled {
+                return None;
+            }
+            match self.cursor.take()? {
+                PaneFlowCursor::Replay(mut replay) => {
+                    shared.observe_pane_guarded_pull();
+                    let pulled = replay.pull_one();
+                    drop(cancelled);
+                    match pulled {
+                        Ok(splice::ReplayPull::Record(record)) => {
+                            return Some(self.record_frame(
+                                &shared,
+                                PaneFlowCursor::Replay(replay),
+                                record,
+                            ));
+                        }
+                        Ok(splice::ReplayPull::Ready(ready)) => {
+                            self.cursor = Some(PaneFlowCursor::Ready(ready));
+                        }
+                        Err(error) => {
+                            self.fail_if_overflowed(&shared, &error);
+                            return None;
+                        }
+                    }
+                }
+                PaneFlowCursor::Ready(mut ready) => {
+                    shared.observe_pane_guarded_pull();
+                    let pulled = ready.pull_one();
+                    drop(cancelled);
+                    match pulled {
+                        Ok(Some(record)) => {
+                            return Some(self.record_frame(
+                                &shared,
+                                PaneFlowCursor::Ready(ready),
+                                record,
+                            ));
+                        }
+                        Ok(None) => match shared.finish_pane_flow(
+                            self.conn,
+                            self.generation,
+                            self.subscriber,
+                            ready,
+                            std::mem::take(&mut self.transition_hook_pending),
+                        ) {
+                            PaneFlowCompletion::Installed => {
+                                self.installed = true;
+                                return None;
+                            }
+                            PaneFlowCompletion::Continue(ready) => {
+                                self.cursor = Some(PaneFlowCursor::Ready(ready));
+                            }
+                            PaneFlowCompletion::Cancelled => return None,
+                        },
+                        Err(error) => {
+                            self.fail_if_overflowed(&shared, &error);
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn record_frame(
+        &mut self,
+        shared: &Shared,
+        cursor: PaneFlowCursor,
+        record: splice::DisplayRecord,
+    ) -> Frame {
+        self.terminal_cleanup_pending = matches!(record.kind, splice::DisplayKind::End);
+        self.cursor = Some(cursor);
+        shared.observe_pane_delivery();
+        Frame::Notification(Notification::new(Event::NodePaneFrame(pane_frame(
+            &shared.agent_id,
+            record,
+        ))))
+    }
+
+    fn fail_if_overflowed(&self, shared: &Shared, error: &splice::SpliceError) {
+        if matches!(error, splice::SpliceError::SubscriberOverflowed(id) if *id == self.subscriber)
+        {
+            self.out.fail(crate::serve::Departure::PaneOverflow {
+                agent_id: shared.agent_id.0.clone(),
+            });
+        }
+    }
+}
+
+impl Drop for PaneFlow {
+    fn drop(&mut self) {
+        if self.installed {
+            return;
+        }
+        self.cancellation.cancel();
+        if let Some(shared) = self.shared.upgrade() {
+            shared.remove_transition(self.conn, self.generation, self.subscriber);
+        }
+    }
+}
+
+#[derive(Default)]
+struct PaneCancellation {
+    cancelled: Mutex<bool>,
+}
+
+impl PaneCancellation {
+    fn cancel(&self) {
+        *self.cancelled.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    }
+
+    fn is_cancelled(&self) -> bool {
+        *self.cancelled.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl PanePhase {
+    fn subscriber(&self) -> Result<splice::SubscriberId, splice::SpliceError> {
+        match self {
+            Self::Pending(subscription) => subscription.id(),
+            Self::Transitioning { subscriber, .. } => Ok(*subscriber),
+            Self::Ready(subscription) => subscription.id(),
+        }
+    }
 }
 
 /// **A resize in flight between the caller who asked for it and the thread that performs it.**
@@ -1077,17 +1337,30 @@ impl Shared {
         if self.splice_disabled.load(Ordering::SeqCst) {
             return;
         }
-        if let Err(error) = self.splice.retain_output(Arc::from(chunk)) {
-            self.latch_splice_error(error);
+        match self.splice.retain_output(Arc::from(chunk)) {
+            Ok(outcome) => self.handle_splice_outcome(outcome),
+            Err(error) => self.latch_splice_error(error),
         }
     }
 
-    fn retain_resize(&self, size: WinSize) {
+    fn retain_resize(
+        &self,
+        size: WinSize,
+    ) -> Result<Option<splice::EmitOutcome>, splice::SpliceError> {
         if self.splice_disabled.load(Ordering::SeqCst) {
-            return;
+            return Ok(None);
         }
-        if let Err(error) = self.splice.retain_resize(size.rows, size.cols) {
-            self.latch_splice_error(error);
+        self.splice.retain_resize(size.rows, size.cols).map(Some)
+    }
+
+    fn finish_resize_retention(
+        &self,
+        outcome: Result<Option<splice::EmitOutcome>, splice::SpliceError>,
+    ) {
+        match outcome {
+            Ok(Some(outcome)) => self.handle_splice_outcome(outcome),
+            Ok(None) => {}
+            Err(error) => self.latch_splice_error(error),
         }
     }
 
@@ -1096,8 +1369,267 @@ impl Shared {
             return;
         }
         match self.splice.retain_end() {
-            Ok(()) => self.splice_disabled.store(true, Ordering::SeqCst),
+            Ok(outcome) => {
+                self.handle_splice_outcome(outcome);
+            }
             Err(error) => self.latch_splice_error(error),
+        }
+    }
+
+    fn handle_splice_outcome(&self, outcome: splice::EmitOutcome) {
+        self.prune_expired_pane_replays();
+        #[cfg(test)]
+        if let Some(hook) = self
+            .pane_splice_outcome_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            hook();
+        }
+        for subscriber in outcome.overflowed {
+            self.cancel_subscriber(subscriber);
+        }
+        for subscriber in outcome.wake_ready {
+            self.wake_subscriber(subscriber);
+        }
+    }
+
+    fn pane_now(&self) -> Instant {
+        let clock = self
+            .pane_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        clock()
+    }
+
+    fn prune_expired_pane_replays(&self) {
+        let now = self.pane_now();
+        let expired = {
+            let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+            let conns = streams
+                .slots
+                .iter()
+                .filter_map(|(conn, slot)| {
+                    (matches!(slot.phase, PanePhase::Pending(_))
+                        && now.saturating_duration_since(slot.pending_since) >= PANE_PENDING_TTL)
+                        .then_some(*conn)
+                })
+                .collect::<Vec<_>>();
+            conns
+                .into_iter()
+                .filter_map(|conn| streams.slots.remove(&conn))
+                .map(|slot| {
+                    slot.cancellation.cancel();
+                    slot.out
+                })
+                .collect::<Vec<_>>()
+        };
+        for out in expired {
+            out.fail(crate::serve::Departure::PaneReplayExpired {
+                agent_id: self.agent_id.0.clone(),
+            });
+        }
+    }
+
+    fn cancel_subscriber(&self, subscriber: splice::SubscriberId) {
+        let out = {
+            let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(conn) = streams.slots.iter().find_map(|(conn, slot)| {
+                (slot.phase.subscriber().ok() == Some(subscriber)).then_some(*conn)
+            }) else {
+                return;
+            };
+            let transitioning = matches!(
+                streams.slots.get(&conn).map(|slot| &slot.phase),
+                Some(PanePhase::Transitioning { .. })
+            );
+            if transitioning {
+                let slot = streams
+                    .slots
+                    .get(&conn)
+                    .expect("the matching transition is still registered");
+                slot.cancellation.cancel();
+                slot.out.clone()
+            } else {
+                let slot = streams
+                    .slots
+                    .remove(&conn)
+                    .expect("the matching subscriber is still registered");
+                slot.cancellation.cancel();
+                slot.out
+            }
+        };
+        out.fail(crate::serve::Departure::PaneOverflow {
+            agent_id: self.agent_id.0.clone(),
+        });
+    }
+
+    fn wake_subscriber(&self, subscriber: splice::SubscriberId) {
+        let Some((conn, generation, out, cancellation, subscription)) =
+            self.take_ready_subscription(subscriber)
+        else {
+            return;
+        };
+        let mut flow = PaneFlow::ready(
+            self,
+            out.clone(),
+            conn,
+            generation,
+            subscriber,
+            cancellation,
+            subscription,
+        );
+        out.start_flow(move || flow.next_frame());
+    }
+
+    fn take_ready_subscription(
+        &self,
+        subscriber: splice::SubscriberId,
+    ) -> Option<(
+        ConnId,
+        u64,
+        Outbound,
+        Arc<PaneCancellation>,
+        splice::ReadySubscription,
+    )> {
+        let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = *streams.slots.iter().find_map(|(conn, slot)| {
+            (slot.phase.subscriber().ok() == Some(subscriber)).then_some(conn)
+        })?;
+        let slot = streams.slots.get_mut(&conn)?;
+        match &mut slot.phase {
+            PanePhase::Transitioning { wake_pending, .. } => {
+                *wake_pending = true;
+                None
+            }
+            PanePhase::Pending(_) => None,
+            PanePhase::Ready(_) => {
+                let phase = std::mem::replace(
+                    &mut slot.phase,
+                    PanePhase::Transitioning {
+                        subscriber,
+                        wake_pending: false,
+                    },
+                );
+                let PanePhase::Ready(subscription) = phase else {
+                    unreachable!("the phase was matched above")
+                };
+                Some((
+                    conn,
+                    slot.generation,
+                    slot.out.clone(),
+                    Arc::clone(&slot.cancellation),
+                    subscription,
+                ))
+            }
+        }
+    }
+
+    fn remove_transition(&self, conn: ConnId, generation: u64, subscriber: splice::SubscriberId) {
+        let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+        let remove = streams.slots.get(&conn).is_some_and(|slot| {
+            slot.generation == generation
+                && matches!(
+                    slot.phase,
+                    PanePhase::Transitioning {
+                        subscriber: active,
+                        ..
+                    } if active == subscriber
+                )
+        });
+        if remove {
+            streams.slots.remove(&conn);
+        }
+    }
+
+    fn observe_pane_delivery(&self) {
+        #[cfg(test)]
+        if let Some(hook) = self
+            .pane_delivery_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    fn observe_pane_pre_pull(&self) {
+        let hook = self
+            .pane_pre_pull_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn observe_pane_pre_pull(&self) {}
+
+    #[cfg(test)]
+    fn observe_pane_guarded_pull(&self) {
+        let hook = self
+            .pane_guarded_pull_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn observe_pane_guarded_pull(&self) {}
+
+    fn finish_pane_flow(
+        &self,
+        conn: ConnId,
+        generation: u64,
+        subscriber: splice::SubscriberId,
+        ready: splice::ReadySubscription,
+        _invoke_transition_hook: bool,
+    ) -> PaneFlowCompletion {
+        #[cfg(test)]
+        if _invoke_transition_hook
+            && let Some(hook) = self
+                .pane_transition_hook
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+        {
+            hook();
+        }
+        let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+        let valid = streams.valid && streams.generation == generation;
+        let Some(slot) = streams.slots.get_mut(&conn) else {
+            return PaneFlowCompletion::Cancelled;
+        };
+        let matching = slot.generation == generation
+            && matches!(
+                slot.phase,
+                PanePhase::Transitioning {
+                    subscriber: active,
+                    ..
+                } if active == subscriber
+            );
+        if !valid || !matching || slot.cancellation.is_cancelled() {
+            streams.slots.remove(&conn);
+            return PaneFlowCompletion::Cancelled;
+        }
+        let wake_pending = match &mut slot.phase {
+            PanePhase::Transitioning { wake_pending, .. } => std::mem::take(wake_pending),
+            _ => unreachable!("the transition was matched above"),
+        };
+        if wake_pending {
+            PaneFlowCompletion::Continue(ready)
+        } else {
+            slot.phase = PanePhase::Ready(ready);
+            PaneFlowCompletion::Installed
         }
     }
 
@@ -1105,7 +1637,43 @@ impl Shared {
         if self.splice_disabled.swap(true, Ordering::SeqCst) {
             return;
         }
-        *self.splice_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+        let error = error.to_string();
+        *self.splice_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+        let outbounds = {
+            let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+            streams.generation = streams.generation.wrapping_add(1);
+            streams.valid = false;
+            let outbounds = streams
+                .slots
+                .values()
+                .map(|slot| {
+                    slot.cancellation.cancel();
+                    slot.out.clone()
+                })
+                .collect::<Vec<_>>();
+            streams
+                .slots
+                .retain(|_, slot| matches!(slot.phase, PanePhase::Transitioning { .. }));
+            outbounds
+        };
+        for out in outbounds {
+            out.fail(crate::serve::Departure::PaneRetentionFailed {
+                agent_id: self.agent_id.0.clone(),
+                error: error.clone(),
+            });
+        }
+    }
+
+    fn invalidate_pane_streams(&self) {
+        let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+        streams.generation = streams.generation.wrapping_add(1);
+        streams.valid = false;
+        for slot in streams.slots.values() {
+            slot.cancellation.cancel();
+        }
+        streams
+            .slots
+            .retain(|_, slot| matches!(slot.phase, PanePhase::Transitioning { .. }));
     }
 
     fn emit(&self, text: &str) {
@@ -1127,6 +1695,18 @@ impl Shared {
             })
         });
     }
+}
+
+fn pane_frame(agent_id: &AgentId, record: splice::DisplayRecord) -> PaneFrameV1 {
+    let frame = match record.kind {
+        splice::DisplayKind::Output(bytes) => PaneFrameKindV1::Output {
+            bytes: OpaquePaneBytesV1::new(bytes.as_ref()),
+        },
+        splice::DisplayKind::Resize { rows, cols } => PaneFrameKindV1::Resize { cols, rows },
+        splice::DisplayKind::End => PaneFrameKindV1::End {},
+    };
+    // The splice cursor is one-origin internally; the versioned wire stream is dense from zero.
+    PaneFrameV1::new(agent_id.clone(), record.seq - 1, frame)
 }
 
 /// One node's pty, its recording, and the thread that reads it.
@@ -1236,7 +1816,8 @@ impl PtyHost {
         options: PtyHostStart,
     ) -> io::Result<Self> {
         let cast = CastWriter::create(cast_path, size, term, origin)?;
-        let shared = Arc::new(Shared {
+        let shared = Arc::new_cyclic(|self_weak| Shared {
+            self_weak: self_weak.clone(),
             agent_id,
             cast: Mutex::new(cast),
             listeners: Mutex::new(Vec::new()),
@@ -1247,6 +1828,22 @@ impl PtyHost {
             splice: splice::PtySplice::new(options.splice_limits),
             splice_error: Mutex::new(None),
             splice_disabled: AtomicBool::new(false),
+            pane_streams: Mutex::new(PaneStreams {
+                generation: 1,
+                valid: true,
+                slots: BTreeMap::new(),
+            }),
+            pane_clock: Mutex::new(Arc::new(Instant::now)),
+            #[cfg(test)]
+            pane_transition_hook: Mutex::new(None),
+            #[cfg(test)]
+            pane_delivery_hook: Mutex::new(None),
+            #[cfg(test)]
+            pane_splice_outcome_hook: Mutex::new(None),
+            #[cfg(test)]
+            pane_pre_pull_hook: Mutex::new(None),
+            #[cfg(test)]
+            pane_guarded_pull_hook: Mutex::new(None),
             resize: Mutex::new(ResizeQueue {
                 pending: None,
                 requested: 0,
@@ -1402,6 +1999,11 @@ impl PtyHost {
         self.shared.seq.load(Ordering::SeqCst)
     }
 
+    #[cfg(test)]
+    pub(crate) fn emit_for_test(&self, text: &str) {
+        self.shared.emit(text);
+    }
+
     /// Subscribe a client. It receives bytes from **now**; replay is I4's problem.
     ///
     /// (A note for I4, since it is the thing a reader will get wrong: a bare tail of `pty.cast` is
@@ -1414,6 +2016,134 @@ impl PtyHost {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(out);
+    }
+
+    /// Reserve the exact retained prefix now, but deliberately send nothing until the caller has
+    /// received the attach response and returns the advertised token.
+    pub fn begin_pane_replay(
+        &self,
+        conn: ConnId,
+        out: Outbound,
+    ) -> Option<marion_proto::result::PaneReadyDescriptorV1> {
+        self.shared.prune_expired_pane_replays();
+        if self.shared.splice_disabled.load(Ordering::SeqCst) {
+            return None;
+        }
+        let pending_since = self.shared.pane_now();
+        // Entropy is the only external fallible operation. Do it before taking any state lock so
+        // a failure leaves the connection's existing legacy or pane subscription byte-for-byte
+        // unchanged.
+        let mut token = [0u8; 32];
+        if getrandom::fill(&mut token).is_err() {
+            return None;
+        }
+        // Commit order: legacy listeners, pane registry, then splice. Emitters release the splice
+        // lock before consulting the pane registry, so no reverse nested acquisition exists.
+        let mut listeners = self
+            .shared
+            .listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut streams = self
+            .shared
+            .pane_streams
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !streams.valid {
+            return None;
+        }
+        if let Some(existing) = streams.slots.get(&conn)
+            && matches!(existing.phase, PanePhase::Transitioning { .. })
+        {
+            return None;
+        }
+        // Register the replacement before touching the old slot. If the splice bound or terminal
+        // state refuses, dropping this temporary is a no-op and the old stream stays authoritative.
+        let replay = self.shared.splice.begin_replay().ok()?;
+        let cut = replay.cut();
+        let generation = streams.generation;
+        if let Some(existing) = streams.slots.remove(&conn) {
+            existing.cancellation.cancel();
+        }
+        listeners.retain(|listener| listener.conn() != conn);
+        streams.slots.insert(
+            conn,
+            PaneSlot {
+                generation,
+                token,
+                cut,
+                out,
+                cancellation: Arc::new(PaneCancellation::default()),
+                pending_since,
+                phase: PanePhase::Pending(replay),
+            },
+        );
+        Some(marion_proto::result::PaneReadyDescriptorV1 {
+            token: PaneReadyTokenV1::new(token),
+            cut,
+        })
+    }
+
+    pub fn pane_ready(&self, conn: ConnId, token: &PaneReadyTokenV1, cut: u64) {
+        self.shared.prune_expired_pane_replays();
+        let Some((generation, subscriber, out, cancellation, replay)) = ({
+            let mut streams = self
+                .shared
+                .pane_streams
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let valid = streams.valid;
+            let generation = streams.generation;
+            let Some(slot) = streams.slots.get_mut(&conn) else {
+                return;
+            };
+            if !valid
+                || slot.generation != generation
+                || slot.token != *token.as_bytes()
+                || slot.cut != cut
+            {
+                return;
+            }
+            let Ok(subscriber) = slot.phase.subscriber() else {
+                return;
+            };
+            let phase = std::mem::replace(
+                &mut slot.phase,
+                PanePhase::Transitioning {
+                    subscriber,
+                    wake_pending: false,
+                },
+            );
+            let PanePhase::Pending(replay) = phase else {
+                slot.phase = phase;
+                return;
+            };
+            Some((
+                generation,
+                subscriber,
+                slot.out.clone(),
+                Arc::clone(&slot.cancellation),
+                replay,
+            ))
+        }) else {
+            return;
+        };
+        let mut flow = PaneFlow::replay(
+            &self.shared,
+            out.clone(),
+            conn,
+            generation,
+            subscriber,
+            cancellation,
+            replay,
+        );
+        out.start_flow(move || flow.next_frame());
+    }
+
+    /// Permanently disable this host's pane stream registrations and cancel every delivery that
+    /// was already in flight. The pty, cast, legacy listeners, and write lease are untouched.
+    pub fn invalidate_pane_streams(&self) {
+        self.shared.invalidate_pane_streams();
     }
 
     /// Drop a connection's listener.
@@ -1429,6 +2159,18 @@ impl PtyHost {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|l| l.conn() != conn);
+        let mut streams = self
+            .shared
+            .pane_streams
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let transitioning = streams.slots.get(&conn).is_some_and(|slot| {
+            slot.cancellation.cancel();
+            matches!(slot.phase, PanePhase::Transitioning { .. })
+        });
+        if !transitioning {
+            streams.slots.remove(&conn);
+        }
     }
 
     pub fn listeners(&self) -> usize {
@@ -1601,9 +2343,10 @@ impl PtyHost {
             q.applied = q.requested;
             let mut cast = self.shared.cast.lock().unwrap_or_else(|e| e.into_inner());
             self.shared.set_size(&self.master, size)?;
-            self.shared.retain_resize(size);
+            let retention = self.shared.retain_resize(size);
             let cast_result = self.shared.resize_cast(&mut cast, size);
             drop(cast);
+            self.shared.finish_resize_retention(retention);
             cast_result?;
         } else if let Some(failure) = q.failure.take() {
             return Err(io::Error::other(failure));
@@ -1870,16 +2613,19 @@ fn apply_pending_resize(
         }
     }
 
-    let outcome = {
+    let (outcome, retention) = {
         let mut cast = shared.cast.lock().unwrap_or_else(|e| e.into_inner());
         match shared.set_size(master, size) {
             Ok(()) => {
-                shared.retain_resize(size);
-                shared.resize_cast(&mut cast, size)
+                let retention = shared.retain_resize(size);
+                (shared.resize_cast(&mut cast, size), Some(retention))
             }
-            Err(error) => Err(error),
+            Err(error) => (Err(error), None),
         }
     };
+    if let Some(retention) = retention {
+        shared.finish_resize_retention(retention);
+    }
 
     let mut q = shared.resize.lock().unwrap_or_else(|e| e.into_inner());
     q.applied = q.requested;

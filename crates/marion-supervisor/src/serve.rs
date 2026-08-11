@@ -71,6 +71,8 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -103,6 +105,9 @@ pub const MAX_FRAME_BYTES: usize = 1 << 20;
 /// far more than a burst (a whole tree's `tree/node-added` storm is tens of frames) and far less
 /// than an unbounded queue, which is the same failure as no bound at all with a slower onset.
 pub const OUTBOUND_CAPACITY: usize = 1024;
+
+/// Maximum wall-clock time one serialized frame may occupy the connection writer.
+const OUTBOUND_FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long the accept loop sleeps between polls when idle.
 ///
@@ -148,6 +153,14 @@ pub enum Departure {
     ReadFailed(String),
     /// The write failed — the peer went away mid-answer, or the socket broke.
     WriteFailed(String),
+    /// One negotiated pane subscriber exceeded its bounded splice backlog.
+    PaneOverflow { agent_id: String },
+    /// The host-wide retained pane stream failed and can no longer support exact replay.
+    PaneRetentionFailed { agent_id: String, error: String },
+    /// A client never completed the response-first pane handshake within its bounded lifetime.
+    PaneReplayExpired { agent_id: String },
+    /// An internal paced producer panicked while the connection writer pulled its next frame.
+    OutboundFlowPanicked,
     /// A `session/quit` completed and its response was queued, so marion closed this connection on
     /// purpose. Not `Eof`: the peer did not vanish, and calling it that would erase the voluntary
     /// half of §7.3 at the transport layer immediately after preserving it at the protocol layer.
@@ -330,8 +343,83 @@ pub struct Outbound {
     /// Who the kernel says is on the other end. Carried here rather than passed beside every call
     /// because it is a property of the connection and is read once, at accept — see [`Peer`].
     peer: Peer,
-    tx: SyncSender<Vec<u8>>,
+    tx: SyncSender<OutboundItem>,
     departed: Arc<Mutex<Option<Departure>>>,
+    shutdown: Option<Arc<std::os::unix::net::UnixStream>>,
+}
+
+enum OutboundItem {
+    Frame(Vec<u8>),
+    Flow(OutboundFlow),
+}
+
+type OutboundFlow = Box<dyn FnMut() -> Option<Frame> + Send>;
+
+enum FlowRequeue {
+    Requeued,
+    Dropped,
+    Fatal,
+}
+
+trait FrameWriter: Write {
+    fn set_frame_write_timeout(&mut self, timeout: Duration) -> std::io::Result<()>;
+}
+
+impl FrameWriter for std::os::unix::net::UnixStream {
+    fn set_frame_write_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
+        self.set_write_timeout(Some(timeout))
+    }
+}
+
+fn write_frame_before<W, N>(
+    writer: &mut W,
+    frame: &[u8],
+    timeout: Duration,
+    now: N,
+) -> std::io::Result<()>
+where
+    W: FrameWriter,
+    N: Fn() -> Instant,
+{
+    let deadline = now().checked_add(timeout).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "outbound frame deadline overflowed",
+        )
+    })?;
+    let remaining = || {
+        deadline
+            .checked_duration_since(now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "outbound frame deadline expired",
+                )
+            })
+    };
+    let mut unwritten = frame;
+    while !unwritten.is_empty() {
+        writer.set_frame_write_timeout(remaining()?)?;
+        match writer.write(unwritten) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "failed to write the complete outbound frame",
+                ));
+            }
+            Ok(written) => unwritten = &unwritten[written..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    loop {
+        writer.set_frame_write_timeout(remaining()?)?;
+        match writer.flush() {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            result => return result,
+        }
+    }
 }
 
 impl Outbound {
@@ -354,10 +442,13 @@ impl Outbound {
         if self.departed().is_some() {
             return false;
         }
-        match self.tx.try_send(frame.to_line().into_bytes()) {
+        match self
+            .tx
+            .try_send(OutboundItem::Frame(frame.to_line().into_bytes()))
+        {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                self.depart(Departure::TooSlow {
+                self.fail(Departure::TooSlow {
                     queued: OUTBOUND_CAPACITY,
                 });
                 false
@@ -365,7 +456,7 @@ impl Outbound {
             Err(TrySendError::Disconnected(_)) => {
                 // The writer is already gone and has recorded why; do not overwrite its reason with
                 // a less specific one.
-                self.depart(Departure::Eof);
+                self.fail(Departure::Eof);
                 false
             }
         }
@@ -376,6 +467,28 @@ impl Outbound {
         self.send(&Frame::Notification(Notification::new(event)))
     }
 
+    /// Schedule a writer-paced stream. The connection writer pulls one frame per queue turn and
+    /// requeues the producer at the tail, bounding memory and preserving fairness with ordinary
+    /// responses and notifications.
+    pub(crate) fn start_flow(&self, flow: impl FnMut() -> Option<Frame> + Send + 'static) -> bool {
+        if self.departed().is_some() {
+            return false;
+        }
+        match self.tx.try_send(OutboundItem::Flow(Box::new(flow))) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                self.fail(Departure::TooSlow {
+                    queued: OUTBOUND_CAPACITY,
+                });
+                false
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.fail(Departure::Eof);
+                false
+            }
+        }
+    }
+
     pub fn departed(&self) -> Option<Departure> {
         lock(&self.departed).clone()
     }
@@ -383,9 +496,64 @@ impl Outbound {
     /// **First reason wins.** The writer thread's `WriteFailed` and the reader's `Eof` race on every
     /// ordinary disconnect, and the first one to notice saw the actual cause.
     fn depart(&self, why: Departure) {
+        self.record_departure(why);
+    }
+
+    /// Record a connection-fatal producer failure and wake the socket reader so `gone` can remove
+    /// every subscription. A departure flag alone cannot wake `Lines::next_line`.
+    pub(crate) fn fail(&self, why: Departure) {
+        if self.record_departure(why)
+            && let Some(stream) = &self.shutdown
+        {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    fn record_departure(&self, why: Departure) -> bool {
         let mut slot = lock(&self.departed);
         if slot.is_none() {
             *slot = Some(why);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn prepare_outbound_item(
+    out: &Outbound,
+    item: OutboundItem,
+) -> Option<(Vec<u8>, Option<OutboundFlow>)> {
+    match item {
+        OutboundItem::Frame(frame) => Some((frame, None)),
+        OutboundItem::Flow(_flow) if out.departed().is_some() => None,
+        OutboundItem::Flow(mut flow) => {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut flow)) {
+                Ok(frame) => frame.map(|frame| (frame.to_line().into_bytes(), Some(flow))),
+                Err(_) => {
+                    out.fail(Departure::OutboundFlowPanicked);
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn requeue_flow(out: &Outbound, flow: OutboundFlow) -> FlowRequeue {
+    if out.departed().is_some() {
+        return FlowRequeue::Dropped;
+    }
+    match out.tx.try_send(OutboundItem::Flow(flow)) {
+        Ok(()) => FlowRequeue::Requeued,
+        Err(TrySendError::Full(_)) => {
+            out.fail(Departure::TooSlow {
+                queued: OUTBOUND_CAPACITY,
+            });
+            FlowRequeue::Fatal
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            out.fail(Departure::Eof);
+            FlowRequeue::Fatal
         }
     }
 }
@@ -404,6 +572,7 @@ pub(crate) fn sink(conn: ConnId) -> Outbound {
         peer: Peer::Uid(own_uid()),
         tx,
         departed: Arc::new(Mutex::new(None)),
+        shutdown: None,
     }
 }
 
@@ -415,17 +584,57 @@ pub(crate) fn sink(conn: ConnId) -> Outbound {
 /// client whose process just died, which is how `pty.rs`'s M2 regression guard kills a client
 /// without a second process.
 #[cfg(test)]
-pub(crate) fn capture(conn: ConnId) -> (Outbound, std::sync::mpsc::Receiver<Vec<u8>>) {
+pub(crate) fn capture(conn: ConnId) -> (Outbound, Captured) {
     let (tx, rx) = sync_channel(OUTBOUND_CAPACITY);
-    (
-        Outbound {
-            conn,
-            peer: Peer::Uid(own_uid()),
-            tx,
-            departed: Arc::new(Mutex::new(None)),
-        },
-        rx,
-    )
+    let out = Outbound {
+        conn,
+        peer: Peer::Uid(own_uid()),
+        tx,
+        departed: Arc::new(Mutex::new(None)),
+        shutdown: None,
+    };
+    (out.clone(), Captured { out, rx })
+}
+
+/// Test-side writer scheduler. It preserves the production queue's one-flow-frame-per-turn rule
+/// without adding a background thread that could make ordering assertions depend on scheduling.
+#[cfg(test)]
+pub(crate) struct Captured {
+    out: Outbound,
+    rx: Receiver<OutboundItem>,
+}
+
+#[cfg(test)]
+impl Captured {
+    pub(crate) fn try_recv(&self) -> Result<Vec<u8>, TryRecvError> {
+        loop {
+            let Some((frame, flow)) = prepare_outbound_item(&self.out, self.rx.try_recv()?) else {
+                continue;
+            };
+            if let Some(flow) = flow {
+                let _ = requeue_flow(&self.out, flow);
+            }
+            return Ok(frame);
+        }
+    }
+
+    pub(crate) fn try_iter(&self) -> CapturedTryIter<'_> {
+        CapturedTryIter { captured: self }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct CapturedTryIter<'a> {
+    captured: &'a Captured,
+}
+
+#[cfg(test)]
+impl Iterator for CapturedTryIter<'_> {
+    type Item = Vec<u8>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.captured.try_recv().ok()
+    }
 }
 
 /// Split a byte stream into `\n`-terminated frames.
@@ -704,6 +913,16 @@ fn serve_conn(
     handle: Arc<dyn Handle>,
     stopping: &AtomicBool,
 ) {
+    serve_conn_with_frame_timeout(id, stream, handle, stopping, OUTBOUND_FRAME_WRITE_TIMEOUT);
+}
+
+fn serve_conn_with_frame_timeout(
+    id: ConnId,
+    stream: std::os::unix::net::UnixStream,
+    handle: Arc<dyn Handle>,
+    stopping: &AtomicBool,
+    frame_write_timeout: Duration,
+) {
     let Ok(write_half) = stream.try_clone() else {
         handle.gone(
             id,
@@ -712,14 +931,23 @@ fn serve_conn(
         );
         return;
     };
+    let Ok(shutdown_half) = stream.try_clone() else {
+        handle.gone(
+            id,
+            &ClientGone::SocketClosed,
+            &Departure::ReadFailed("the connection could not retain a cancellation handle".into()),
+        );
+        return;
+    };
     let departed = Arc::new(Mutex::new(None));
-    let (tx, rx) = sync_channel::<Vec<u8>>(OUTBOUND_CAPACITY);
+    let (tx, rx) = sync_channel::<OutboundItem>(OUTBOUND_CAPACITY);
     let out = Outbound {
         conn: id,
         // **Once, here, from the kernel.** Not per call and not from any frame — see [`Peer`].
         peer: peer_of(&stream),
         tx,
         departed: Arc::clone(&departed),
+        shutdown: Some(Arc::new(shutdown_half)),
     };
     let writer = {
         let out = out.clone();
@@ -727,9 +955,28 @@ fn serve_conn(
             let mut w = write_half;
             loop {
                 match rx.recv_timeout(WRITER_POLL) {
-                    Ok(frame) => {
-                        if let Err(e) = w.write_all(&frame).and_then(|()| w.flush()) {
-                            out.depart(Departure::WriteFailed(e.to_string()));
+                    Ok(item) => {
+                        let Some((frame, flow)) = prepare_outbound_item(&out, item) else {
+                            continue;
+                        };
+                        if let Err(e) =
+                            write_frame_before(&mut w, &frame, frame_write_timeout, Instant::now)
+                        {
+                            if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                            ) {
+                                out.fail(Departure::TooSlow {
+                                    queued: OUTBOUND_CAPACITY,
+                                });
+                            } else {
+                                out.fail(Departure::WriteFailed(e.to_string()));
+                            }
+                            break;
+                        }
+                        if let Some(flow) = flow
+                            && matches!(requeue_flow(&out, flow), FlowRequeue::Fatal)
+                        {
                             break;
                         }
                     }
@@ -890,6 +1137,89 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct AdvancingWriter {
+        now: Arc<Mutex<Instant>>,
+        writes: usize,
+    }
+
+    impl Write for AdvancingWriter {
+        fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+            *lock(&self.now) += Duration::from_millis(4);
+            self.writes += 1;
+            Ok(input.len().min(1))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl FrameWriter for AdvancingWriter {
+        fn set_frame_write_timeout(&mut self, _timeout: Duration) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn partial_write_progress_cannot_reset_the_frame_deadline() {
+        let start = Instant::now();
+        let now = Arc::new(Mutex::new(start));
+        let mut writer = AdvancingWriter {
+            now: Arc::clone(&now),
+            writes: 0,
+        };
+        let result = write_frame_before(&mut writer, b"four", Duration::from_millis(10), || {
+            *lock(&now)
+        });
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            writer.writes, 3,
+            "the fourth partial write began after expiry"
+        );
+    }
+
+    /// Once the reader has declared the connection departed, a paced flow may finish the frame
+    /// already pulled by the writer but must not requeue itself. The production change that must
+    /// make this fail is unconditional flow requeue after a successful write, which can delay
+    /// `gone` by an entire million-record replay after a peer half-closes its write side.
+    #[test]
+    fn departed_connection_drops_a_flow_after_its_current_frame() {
+        let (out, captured) = capture(ConnId(700));
+        let pulls = Arc::new(AtomicU64::new(0));
+        let seen = Arc::clone(&pulls);
+        let drops = Arc::new(AtomicU64::new(0));
+        let probe = FlowDropProbe(Arc::clone(&drops));
+        let flow_out = out.clone();
+        assert!(out.start_flow(move || {
+            let _probe = &probe;
+            let seq = seen.fetch_add(1, Ordering::SeqCst);
+            flow_out.depart(Departure::Eof);
+            Some(Frame::Notification(Notification::new(Event::NodePty {
+                agent_id: marion_core::contract::AgentId("flow".into()),
+                seq,
+                mono_ns: 0,
+                bytes: "paced".into(),
+            })))
+        }));
+
+        assert!(
+            captured.try_recv().is_ok(),
+            "the already-pulled frame drains"
+        );
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "the departed Flow remained queued after its current frame"
+        );
+        assert_eq!(
+            captured.try_recv(),
+            Err(TryRecvError::Empty),
+            "a departed flow was requeued"
+        );
+        assert_eq!(pulls.load(Ordering::SeqCst), 1);
+    }
 
     /// A reader that hands out exactly the chunks it was given — the pty S11 measured, and every
     /// socket, in a form a test can be precise about.
@@ -1237,6 +1567,7 @@ mod tests {
         inputs: Mutex<Vec<(ConnId, marion_proto::Input)>>,
         panic_on: Mutex<Option<Method>>,
         quit_ok: AtomicBool,
+        gone_signal: Mutex<Option<SyncSender<Departure>>>,
     }
 
     fn a_node() -> NodeSummary {
@@ -1306,8 +1637,198 @@ mod tests {
         }
 
         fn gone(&self, conn: ConnId, gone: &ClientGone, why: &Departure) {
+            lock(&self.subs).retain(|out| out.conn() != conn);
             lock(&self.gone).push((conn, gone.clone(), why.clone()));
+            if let Some(signal) = lock(&self.gone_signal).as_ref() {
+                let _ = signal.send(why.clone());
+            }
         }
+    }
+
+    fn assert_pane_failure_closes_connection(conn: ConnId, why: Departure) {
+        let rec = Arc::new(Recorder::default());
+        let handle = Arc::clone(&rec) as Arc<dyn Handle>;
+        let stopping = Arc::new(AtomicBool::new(false));
+        let (mut client, server_half) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let worker = {
+            let stopping = Arc::clone(&stopping);
+            std::thread::spawn(move || serve_conn(conn, server_half, handle, &stopping))
+        };
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        send(
+            &mut client,
+            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            1,
+        );
+        assert!(matches!(read_frame(&mut reader), Frame::Response(_)));
+        let out = lock(&rec.subs)
+            .iter()
+            .find(|out| out.conn() == conn)
+            .expect("the response causally follows subscription registration")
+            .clone();
+
+        out.fail(why.clone());
+
+        let mut tail = String::new();
+        assert_eq!(
+            reader.read_line(&mut tail).unwrap(),
+            0,
+            "producer failure must wake the blocking reader and close the peer"
+        );
+        worker.join().unwrap();
+        assert!(
+            lock(&rec.subs).iter().all(|out| out.conn() != conn),
+            "gone must perform unlisten-like cleanup"
+        );
+        assert_eq!(
+            lock(&rec.gone).as_slice(),
+            &[(conn, ClientGone::SocketClosed, why)]
+        );
+    }
+
+    #[test]
+    fn pane_failures_shutdown_the_peer_and_run_gone_cleanup() {
+        assert_pane_failure_closes_connection(
+            ConnId(701),
+            Departure::PaneOverflow {
+                agent_id: "pane-overflow".into(),
+            },
+        );
+        assert_pane_failure_closes_connection(
+            ConnId(702),
+            Departure::PaneRetentionFailed {
+                agent_id: "pane-retention".into(),
+                error: "retained pane stream exceeded its limit".into(),
+            },
+        );
+    }
+
+    struct FlowDropProbe(Arc<AtomicU64>);
+
+    impl Drop for FlowDropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_nonreading_peer_times_out_one_flow_frame_and_releases_it() {
+        let rec = Arc::new(Recorder::default());
+        let (gone_tx, gone_rx) = sync_channel(1);
+        *lock(&rec.gone_signal) = Some(gone_tx);
+        let handle = Arc::clone(&rec) as Arc<dyn Handle>;
+        let stopping = Arc::new(AtomicBool::new(false));
+        let conn = ConnId(703);
+        let (mut client, server_half) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let worker = {
+            let stopping = Arc::clone(&stopping);
+            std::thread::spawn(move || {
+                serve_conn_with_frame_timeout(
+                    conn,
+                    server_half,
+                    handle,
+                    &stopping,
+                    Duration::from_millis(20),
+                )
+            })
+        };
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        send(
+            &mut client,
+            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            1,
+        );
+        assert!(matches!(read_frame(&mut reader), Frame::Response(_)));
+        let out = lock(&rec.subs)[0].clone();
+        let drops = Arc::new(AtomicU64::new(0));
+        let probe = FlowDropProbe(Arc::clone(&drops));
+        let payload = "x".repeat(8 * 1024 * 1024);
+        assert!(out.start_flow(move || {
+            let _probe = &probe;
+            Some(Frame::Notification(Notification::new(Event::NodePty {
+                agent_id: AgentId("blocked-flow".into()),
+                seq: 0,
+                mono_ns: 0,
+                bytes: payload.clone(),
+            })))
+        }));
+
+        let departure = gone_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the absolute frame deadline wakes serve_conn");
+        let mut tail = Vec::new();
+        reader
+            .read_to_end(&mut tail)
+            .expect("fatal timeout shuts down the peer after any buffered prefix");
+        worker.join().unwrap();
+
+        assert_eq!(
+            departure,
+            Departure::TooSlow {
+                queued: OUTBOUND_CAPACITY
+            }
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1, "the paced cursor leaked");
+        assert!(lock(&rec.subs).is_empty(), "gone did not unlisten the flow");
+    }
+
+    #[test]
+    fn a_panicking_flow_fails_the_connection_and_releases_once() {
+        let rec = Arc::new(Recorder::default());
+        let (gone_tx, gone_rx) = sync_channel(1);
+        *lock(&rec.gone_signal) = Some(gone_tx);
+        let handle = Arc::clone(&rec) as Arc<dyn Handle>;
+        let stopping = Arc::new(AtomicBool::new(false));
+        let conn = ConnId(704);
+        let (mut client, server_half) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let worker = {
+            let stopping = Arc::clone(&stopping);
+            std::thread::spawn(move || serve_conn(conn, server_half, handle, &stopping))
+        };
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        send(
+            &mut client,
+            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
+            1,
+        );
+        assert!(matches!(read_frame(&mut reader), Frame::Response(_)));
+        let out = lock(&rec.subs)[0].clone();
+        let drops = Arc::new(AtomicU64::new(0));
+        let probe = FlowDropProbe(Arc::clone(&drops));
+        assert!(out.start_flow(move || -> Option<Frame> {
+            let _probe = &probe;
+            panic!("internal flow panic")
+        }));
+
+        let departure = gone_rx.recv_timeout(Duration::from_secs(1));
+        let saw_eof = if departure.is_ok() {
+            let mut tail = String::new();
+            reader.read_line(&mut tail).unwrap() == 0
+        } else {
+            drop(reader);
+            drop(client);
+            false
+        };
+        drop(out);
+        worker.join().unwrap();
+
+        assert_eq!(departure.unwrap(), Departure::OutboundFlowPanicked);
+        assert!(saw_eof, "flow panic did not shut down the peer");
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "the flow leaked or double-dropped"
+        );
+        assert!(lock(&rec.subs).is_empty(), "gone did not unlisten the flow");
     }
 
     /// `registry.rs`'s helper: assert that something **happens**, never how long it takes.

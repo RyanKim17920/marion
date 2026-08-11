@@ -883,6 +883,8 @@ pub struct RegistryHandle {
     nodes: Mutex<HashMap<AgentId, NodeHandle>>,
     /// §3.4's display plane, per node. See [`Panes`] for why this is not in `shared`.
     panes: Mutex<Panes>,
+    #[cfg(test)]
+    pane_listener_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// **What `agent/spawn` runs a node in**, or `None` for a supervisor that cannot spawn.
     ///
     /// **Production fills this.** `detach.rs`'s stage 3 builds [`RegistryHandle::owning`] from what
@@ -991,6 +993,8 @@ impl RegistryHandle {
             nodes: Mutex::new(HashMap::new()),
             spawn_env,
             panes: Mutex::new(Panes::default()),
+            #[cfg(test)]
+            pane_listener_hook: Mutex::new(None),
             spawn_decision: Mutex::new(()),
             quit: Mutex::new(()),
             quit_waived_grace: AtomicBool::new(false),
@@ -1179,10 +1183,14 @@ impl RegistryHandle {
                 out: out.clone(),
             });
         }
+        // The pane-v1 wire arm remains dark until completed-host lifecycle retention is safe.
+        // Preserve the legacy contract: durable NodeEvents and their live cursor are committed
+        // before this live-only PTY listener can enqueue bytes.
+        let pane = self.attach_pane(id, out);
         Ok(NodeAttachResult {
             node: summary,
             mode,
-            pane: self.attach_pane(id, out),
+            pane,
         })
     }
 
@@ -1212,10 +1220,17 @@ impl RegistryHandle {
         id: &AgentId,
         out: &Outbound,
     ) -> Option<marion_proto::result::PaneAttach> {
+        // Held through listener and lease commit. `forget_pane` cannot invalidate a host between
+        // those two halves, and neither host operation performs a delivery callback while this
+        // global registry lock is held.
         let mut panes = lock(&self.panes);
-        let host = Arc::clone(panes.hosts.get(id)?);
+        let host = panes.hosts.get(id).cloned()?;
         host.unlisten(out.conn());
         host.listen(out.clone());
+        #[cfg(test)]
+        if let Some(hook) = lock(&self.pane_listener_hook).take() {
+            hook();
+        }
         // The size the master really has, not the size it was asked for: `PtyMaster::size` reads
         // `TIOCGWINSZ` back, so a client is told what the child will see rather than what marion
         // intended it to see.
@@ -1261,10 +1276,16 @@ impl RegistryHandle {
     /// leaving a dangling entry here would answer a later `node/attach` with a pane onto a master
     /// that has already been closed.
     pub fn forget_pane(&self, id: &AgentId) {
-        let mut panes = lock(&self.panes);
-        panes.hosts.remove(id);
-        for leases in panes.leases.values_mut() {
-            leases.retain(|(a, _)| a != id);
+        let host = {
+            let mut panes = lock(&self.panes);
+            let host = panes.hosts.remove(id);
+            for leases in panes.leases.values_mut() {
+                leases.retain(|(a, _)| a != id);
+            }
+            host
+        };
+        if let Some(host) = host {
+            host.invalidate_pane_streams();
         }
     }
 
@@ -1307,9 +1328,8 @@ impl RegistryHandle {
                     rows: *rows,
                 },
             ),
-            // Production-dark until an attach response has advertised a matching descriptor.
-            // Inbound notifications have no response channel, so fail closed exactly as an input
-            // without a pane or write lease does: perform no lookup and change no state.
+            // The pane-v1 wire arm is deliberately production-dark. Do not even look up the host:
+            // an exact internally minted token remains unreachable from a same-UID socket peer.
             marion_proto::Input::NodePaneReady(_) => return,
         };
         // Both taken out from under the lock in one look, and the lock released before the write:
@@ -5249,6 +5269,193 @@ mod tests {
         assert_eq!(host.listeners(), 0);
         assert_eq!(w.fx.handle.attachments(), 0);
         assert_eq!(w.fx.handle.subscribers(), 0);
+    }
+
+    /// Forgetting the registry entry invalidates the host generation, including clones already
+    /// held by an attach path. The production change that must make this fail is removing the host
+    /// from `Panes` without first cancelling its pending pane replay: the stale clone can still
+    /// activate and emit the retained prefix after the node was forgotten.
+    #[test]
+    fn forgetting_a_pane_cancels_pending_replay_on_cloned_hosts() {
+        let w = Wired::new("handler-pane-forget-replay");
+        let host = pane(&w, "root", "printf 'prefix'; sleep 30");
+        assert!(
+            until(|| host.bytes_read() >= b"prefix".len() as u64),
+            "the retained prefix never arrived"
+        );
+        let conn = ConnId(103);
+        let (out, rx) = crate::serve::capture(conn);
+        let descriptor = host
+            .begin_pane_replay(conn, out.clone())
+            .expect("the pre-forget replay is reserved");
+
+        w.fx.handle.forget_pane(&id("root"));
+        host.pane_ready(conn, &descriptor.token, descriptor.cut);
+
+        assert!(
+            rx.try_iter().next().is_none(),
+            "a forgotten host activated its old retained replay"
+        );
+        assert!(
+            host.begin_pane_replay(conn, out).is_none(),
+            "a cloned forgotten host minted a new replay generation"
+        );
+        host.shutdown().unwrap();
+    }
+
+    /// Dark wire behavior cannot accidentally depend on the internal replay engine being enabled.
+    /// Legacy live attach remains available and advertises no cursor even after replay invalidation.
+    #[test]
+    fn dark_pane_attach_does_not_consult_internal_replay_state() {
+        let w = Wired::new("handler-pane-dark-internal-state");
+        let host = pane(&w, "root", "sleep 30");
+        host.invalidate_pane_streams();
+        let conn = ConnId(104);
+        let (out, rx) = crate::serve::capture(conn);
+        let attached =
+            w.fx.handle
+                .node_attach(&id("root"), &out)
+                .expect("legacy attach does not consult replay state");
+        let pane = attached.pane.expect("the pty remains attachable");
+
+        assert!(pane.pane_ready.is_none());
+        assert_eq!(host.listeners(), 1);
+        assert_eq!(host.writer(), Some(conn));
+        assert!(
+            rx.try_iter().next().is_none(),
+            "dark attach cannot emit replay or pane frames"
+        );
+        host.unlisten(conn);
+        host.shutdown().unwrap();
+    }
+
+    /// Legacy attach has always replayed the durable node stream before making live PTY bytes
+    /// observable. Force a PTY emit at the listener-install seam so the queue order, not timing,
+    /// proves that contract.
+    #[test]
+    fn legacy_attach_enqueues_replayed_node_events_before_concurrent_pty_output() {
+        let w = Wired::new("handler-pane-legacy-order");
+        say(&events_of(&w.fx, "root"), "root", &["event-first"]);
+        let host = pane(&w, "root", "sleep 30");
+        let conn = ConnId(106);
+        let (out, captured) = crate::serve::capture(conn);
+        let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        *lock(&w.fx.handle.pane_listener_hook) = Some(Box::new(move || {
+            reached_tx
+                .send(())
+                .expect("the deterministic assertion side is alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("the deterministic listener hook was not released");
+        }));
+
+        std::thread::scope(|scope| {
+            let handle = Arc::clone(&w.fx.handle);
+            let out = out.clone();
+            let attaching = scope.spawn(move || handle.node_attach(&id("root"), &out));
+            reached_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("attach reached the listener-install seam");
+            host.emit_for_test("pty-second");
+            release_tx.send(()).expect("the attach worker is alive");
+            attaching.join().unwrap().unwrap();
+        });
+        let order = captured
+            .try_iter()
+            .map(|bytes| Frame::from_line(std::str::from_utf8(&bytes).unwrap()).unwrap())
+            .filter_map(|frame| match frame {
+                Frame::Notification(note) => Some(match note.event {
+                    Event::NodeEvent { .. } => "event",
+                    Event::NodePty { .. } => "pty",
+                    _ => "other",
+                }),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        host.unlisten(conn);
+        host.shutdown().unwrap();
+
+        assert_eq!(order, ["event", "pty"]);
+    }
+
+    /// The pane-v1 fields are present in the shared protocol but remain production-dark until the
+    /// completed-host lifecycle is safe. An opt-in bit therefore behaves exactly like a legacy
+    /// attach: no Ready descriptor and no `NodePaneFrame` vocabulary becomes reachable.
+    #[test]
+    fn pane_stream_capability_is_wire_dark_and_keeps_legacy_attach() {
+        let w = Wired::new("handler-pane-wire-dark");
+        let host = pane(&w, "root", "printf 'prefix'; sleep 30");
+        assert!(
+            until(|| host.bytes_read() >= b"prefix".len() as u64),
+            "the retained prefix never arrived"
+        );
+        let mut c = w.dial();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+
+        call(
+            &mut c,
+            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+                agent_id: id("root"),
+                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+            }),
+            1,
+        );
+        let mut before_response = Vec::new();
+        let attached = loop {
+            match next_frame(&mut r) {
+                Frame::Response(response) => break attached_ok(response.outcome),
+                Frame::Notification(note) => before_response.push(note.event),
+                other => panic!("unexpected frame while attaching: {other:?}"),
+            }
+        };
+        let pane = attached.pane.expect("the real pty is attachable");
+        assert!(
+            pane.pane_ready.is_none(),
+            "the dark wire arm advertised an activatable pane cursor"
+        );
+        assert_eq!(host.listeners(), 1, "opt-in bypassed the legacy listener");
+        assert!(
+            before_response
+                .iter()
+                .all(|event| !matches!(event, Event::NodePaneFrame(_))),
+            "the dark arm emitted pane-v1 vocabulary"
+        );
+    }
+
+    #[test]
+    fn exact_pane_ready_input_is_inert_while_the_wire_arm_is_dark() {
+        let w = Wired::new("handler-pane-ready-exact-dark");
+        let host = pane(&w, "root", "printf 'prefix'; sleep 30");
+        assert!(
+            until(|| host.bytes_read() >= b"prefix".len() as u64),
+            "the retained prefix never arrived"
+        );
+        let conn = ConnId(105);
+        let (out, captured) = crate::serve::capture(conn);
+        let descriptor = host
+            .begin_pane_replay(conn, out)
+            .expect("the internal replay seam remains testable");
+
+        w.fx.handle.input(
+            conn,
+            &marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+                agent_id: id("root"),
+                token: descriptor.token,
+                cut: descriptor.cut,
+            }),
+        );
+        let observed = captured.try_iter().next();
+        host.unlisten(conn);
+        host.shutdown().unwrap();
+
+        assert!(
+            observed.is_none(),
+            "the handler activated an exact internal token from the dark wire arm"
+        );
     }
 
     /// Read `node/pty` notifications until `want` appears in the accumulated bytes.

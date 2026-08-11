@@ -1,8 +1,5 @@
 //! Atomic replay-to-live cursor contract for the supervisor-owned PTY byte stream.
 
-// Replay remains production-dark; the supervisor currently feeds only the retained prefix.
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -51,19 +48,20 @@ pub(super) enum SpliceError {
     RetainedRecordsExceeded { limit: usize },
 }
 
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
-enum DeliveryError<E> {
+pub(super) enum DeliveryError<E> {
     Splice(SpliceError),
     Callback(E),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EmitOutcome {
-    wake_ready: Vec<SubscriberId>,
-    /// These subscribers stopped accepting records immediately. This is not a completed removal:
-    /// one record already reserved by an active callback may finish before its token observes the
-    /// overflow and removes the entry.
-    overflowed: Vec<SubscriberId>,
+pub(super) struct EmitOutcome {
+    pub(super) wake_ready: Vec<SubscriberId>,
+    /// Subscribers whose bounded backlogs overflowed. They are marked removing under the splice
+    /// lock; the next cursor pull observes that tombstone and removes the entry, while a record
+    /// already pulled may still be delivered. The host must consume every ID as a visible failure.
+    pub(super) overflowed: Vec<SubscriberId>,
 }
 
 pub(super) struct PtySplice {
@@ -115,9 +113,10 @@ impl SubscriberPhase {
     }
 }
 
-struct ReplaySubscription {
+pub(super) struct ReplaySubscription {
     core: Option<SubscriptionCore>,
-    prefix: Vec<DisplayRecord>,
+    prefix_next: usize,
+    prefix_end: usize,
     cut: u64,
 }
 
@@ -147,94 +146,90 @@ fn remove_subscription(core: &mut Option<SubscriptionCore>) -> bool {
 }
 
 impl ReplaySubscription {
-    fn id(&self) -> Result<SubscriberId, SpliceError> {
+    pub(super) fn id(&self) -> Result<SubscriberId, SpliceError> {
         subscriber_id(&self.core)
     }
 
+    #[cfg(test)]
     fn remove(mut self) -> bool {
         remove_subscription(&mut self.core)
     }
 
-    fn cut(&self) -> u64 {
+    pub(super) fn cut(&self) -> u64 {
         self.cut
     }
 
-    fn replay_with<E, F>(mut self, mut callback: F) -> Result<ReadySubscription, DeliveryError<E>>
+    #[cfg(test)]
+    pub(super) fn replay_with<E, F>(
+        mut self,
+        mut callback: F,
+    ) -> Result<ReadySubscription, DeliveryError<E>>
     where
         F: FnMut(DisplayRecord) -> Result<(), E>,
     {
-        let Some(core) = self.core.as_ref().cloned() else {
-            return Err(DeliveryError::Splice(SpliceError::SubscriberGone(
-                SubscriberId(0),
-            )));
-        };
-
-        for record in std::mem::take(&mut self.prefix) {
-            if let Err(error) = reserve_replay_record(&core) {
-                remove_subscription(&mut self.core);
-                return Err(DeliveryError::Splice(error));
-            }
-            if let Err(error) = callback(record) {
-                remove_subscription(&mut self.core);
-                return Err(DeliveryError::Callback(error));
-            }
-        }
-
         loop {
-            let step = match replay_step(&core) {
-                Ok(step) => step,
-                Err(error) => {
-                    remove_subscription(&mut self.core);
-                    return Err(DeliveryError::Splice(error));
-                }
-            };
-            match step {
-                ReplayStep::Record(record) => {
+            match self.pull_one().map_err(DeliveryError::Splice)? {
+                ReplayPull::Record(record) => {
                     if let Err(error) = callback(record) {
-                        remove_subscription(&mut self.core);
                         return Err(DeliveryError::Callback(error));
                     }
                 }
-                ReplayStep::Ready => break,
+                ReplayPull::Ready(subscription) => return Ok(subscription),
             }
         }
+    }
 
-        self.core.take();
-        Ok(ReadySubscription { core: Some(core) })
+    pub(super) fn pull_one(&mut self) -> Result<ReplayPull, SpliceError> {
+        let Some(core) = self.core.as_ref().cloned() else {
+            return Err(SpliceError::SubscriberGone(SubscriberId(0)));
+        };
+        if self.prefix_next < self.prefix_end {
+            let record = replay_prefix_record(&core, self.prefix_next, self.prefix_end)
+                .inspect_err(|_| {
+                    remove_subscription(&mut self.core);
+                })?;
+            self.prefix_next += 1;
+            return Ok(ReplayPull::Record(record));
+        }
+        match replay_step(&core).inspect_err(|_| {
+            remove_subscription(&mut self.core);
+        })? {
+            ReplayStep::Record(record) => Ok(ReplayPull::Record(record)),
+            ReplayStep::Ready => {
+                self.core.take();
+                Ok(ReplayPull::Ready(ReadySubscription { core: Some(core) }))
+            }
+        }
     }
 }
 
-struct ReadySubscription {
+pub(super) enum ReplayPull {
+    Record(DisplayRecord),
+    Ready(ReadySubscription),
+}
+
+pub(super) struct ReadySubscription {
     core: Option<SubscriptionCore>,
 }
 
 impl ReadySubscription {
-    fn id(&self) -> Result<SubscriberId, SpliceError> {
+    pub(super) fn id(&self) -> Result<SubscriberId, SpliceError> {
         subscriber_id(&self.core)
     }
 
+    #[cfg(test)]
     fn remove(mut self) -> bool {
         remove_subscription(&mut self.core)
     }
 
-    fn drain_with<E, F>(&mut self, mut callback: F) -> Result<usize, DeliveryError<E>>
+    #[cfg(test)]
+    pub(super) fn drain_with<E, F>(&mut self, mut callback: F) -> Result<usize, DeliveryError<E>>
     where
         F: FnMut(DisplayRecord) -> Result<(), E>,
     {
-        let Some(core) = self.core.as_ref().cloned() else {
-            return Err(DeliveryError::Splice(SpliceError::SubscriberGone(
-                SubscriberId(0),
-            )));
-        };
         let mut delivered = 0;
         loop {
-            let record = match ready_record(&core) {
-                Ok(record) => record,
-                Err(error) => {
-                    remove_subscription(&mut self.core);
-                    return Err(DeliveryError::Splice(error));
-                }
-            };
+            let record = self.pull_one().map_err(DeliveryError::Splice)?;
             let Some(record) = record else {
                 return Ok(delivered);
             };
@@ -244,6 +239,15 @@ impl ReadySubscription {
             }
             delivered += 1;
         }
+    }
+
+    pub(super) fn pull_one(&mut self) -> Result<Option<DisplayRecord>, SpliceError> {
+        let Some(core) = self.core.as_ref().cloned() else {
+            return Err(SpliceError::SubscriberGone(SubscriberId(0)));
+        };
+        ready_record(&core).inspect_err(|_| {
+            remove_subscription(&mut self.core);
+        })
     }
 }
 
@@ -281,14 +285,24 @@ fn active_subscriber(
         .expect("subscriber was checked above"))
 }
 
-fn reserve_replay_record(core: &SubscriptionCore) -> Result<(), SpliceError> {
+fn replay_prefix_record(
+    core: &SubscriptionCore,
+    index: usize,
+    prefix_end: usize,
+) -> Result<DisplayRecord, SpliceError> {
     let mut state = lock_recover(&core.inner.state);
     let subscriber = active_subscriber(&mut state, core.id)?;
-    if matches!(subscriber.phase, SubscriberPhase::Replaying(_)) {
-        Ok(())
-    } else {
-        Err(SpliceError::WrongSubscriberPhase)
+    if !matches!(subscriber.phase, SubscriberPhase::Replaying(_)) {
+        return Err(SpliceError::WrongSubscriberPhase);
     }
+    if index >= prefix_end {
+        return Err(SpliceError::WrongSubscriberPhase);
+    }
+    state
+        .records
+        .get(index)
+        .cloned()
+        .ok_or(SpliceError::WrongSubscriberPhase)
 }
 
 fn replay_step(core: &SubscriptionCore) -> Result<ReplayStep, SpliceError> {
@@ -339,16 +353,16 @@ impl PtySplice {
         }
     }
 
-    pub(super) fn retain_output(&self, bytes: Arc<[u8]>) -> Result<(), SpliceError> {
-        self.emit_output(bytes).map(|_| ())
+    pub(super) fn retain_output(&self, bytes: Arc<[u8]>) -> Result<EmitOutcome, SpliceError> {
+        self.emit_output(bytes)
     }
 
-    pub(super) fn retain_resize(&self, rows: u16, cols: u16) -> Result<(), SpliceError> {
-        self.emit_resize(rows, cols).map(|_| ())
+    pub(super) fn retain_resize(&self, rows: u16, cols: u16) -> Result<EmitOutcome, SpliceError> {
+        self.emit_resize(rows, cols)
     }
 
-    pub(super) fn retain_end(&self) -> Result<(), SpliceError> {
-        self.emit_end().map(|_| ())
+    pub(super) fn retain_end(&self) -> Result<EmitOutcome, SpliceError> {
+        self.emit_end()
     }
 
     #[cfg(test)]
@@ -356,7 +370,7 @@ impl PtySplice {
         lock_recover(&self.inner.state).records.clone()
     }
 
-    fn begin_replay(&self) -> Result<ReplaySubscription, SpliceError> {
+    pub(super) fn begin_replay(&self) -> Result<ReplaySubscription, SpliceError> {
         let mut state = lock_recover(&self.inner.state);
         if state.subscribers.len() >= self.inner.limits.subscribers {
             return Err(SpliceError::SubscriberLimitExceeded {
@@ -368,8 +382,8 @@ impl PtySplice {
             .next_subscriber
             .checked_add(1)
             .ok_or(SpliceError::SubscriberIdExhausted)?;
-        let prefix = state.records.clone();
-        let cut = prefix.last().map_or(0, |record| record.seq);
+        let prefix_end = state.records.len();
+        let cut = state.records.last().map_or(0, |record| record.seq);
         state.subscribers.insert(
             id,
             SubscriberState {
@@ -383,7 +397,8 @@ impl PtySplice {
                 inner: Arc::clone(&self.inner),
                 id,
             }),
-            prefix,
+            prefix_next: 0,
+            prefix_end,
             cut,
         })
     }
@@ -472,11 +487,26 @@ impl SpliceLimits {
             queued_records_per_subscriber: 0,
         }
     }
+
+    #[cfg(test)]
+    pub(super) const fn testing_with_subscribers(
+        retained_bytes: usize,
+        max_retained_records: usize,
+        subscribers: usize,
+        queued_records_per_subscriber: usize,
+    ) -> Self {
+        Self {
+            retained_bytes,
+            max_retained_records,
+            subscribers,
+            queued_records_per_subscriber,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{mpsc, Barrier};
+    use std::sync::{Barrier, mpsc};
     use std::time::Duration;
 
     use super::*;
@@ -527,6 +557,31 @@ mod tests {
             DisplayKind::Resize { rows: 24, cols: 80 }
         );
         assert_eq!(state.records[2].kind, DisplayKind::End);
+    }
+
+    /// Reserving a replay cursor must be O(1) in the retained prefix. The production change that
+    /// must make this fail is cloning `State.records` into every `ReplaySubscription`: even its
+    /// shallow byte Arcs gain one owner per subscriber, making the configured 64 subscribers
+    /// amplify the million-record retention bound 64-fold.
+    #[test]
+    fn begin_replay_does_not_clone_the_retained_prefix() {
+        let splice = PtySplice::new(SpliceLimits {
+            retained_bytes: 32,
+            max_retained_records: 4,
+            subscribers: 2,
+            queued_records_per_subscriber: 2,
+        });
+        let bytes: Arc<[u8]> = Arc::from(&b"retained"[..]);
+        splice.emit_output(Arc::clone(&bytes)).unwrap();
+        assert_eq!(Arc::strong_count(&bytes), 2, "caller plus retained record");
+
+        let _first = splice.begin_replay().unwrap();
+        let _second = splice.begin_replay().unwrap();
+        assert_eq!(
+            Arc::strong_count(&bytes),
+            2,
+            "cursor reservations must not clone retained record payloads"
+        );
     }
 
     #[test]
@@ -666,11 +721,13 @@ mod tests {
         });
         let replay = splice.begin_replay().unwrap();
         let id = replay.id().unwrap();
-        assert!(splice
-            .emit_output(Arc::from(&b"a"[..]))
-            .unwrap()
-            .overflowed
-            .is_empty());
+        assert!(
+            splice
+                .emit_output(Arc::from(&b"a"[..]))
+                .unwrap()
+                .overflowed
+                .is_empty()
+        );
 
         let overflow = splice.emit_output(Arc::from(&b"b"[..])).unwrap();
         assert_eq!(overflow.overflowed, [id]);
@@ -688,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn pty_splice_begin_replay_registers_exact_shallow_prefix_and_cut() {
+    fn pty_splice_begin_replay_registers_exact_prefix_cursor_and_cut() {
         let splice = PtySplice::new(SpliceLimits {
             retained_bytes: 32,
             max_retained_records: 4,
@@ -701,15 +758,9 @@ mod tests {
 
         let replay = splice.begin_replay().unwrap();
         assert_eq!(replay.cut(), 2);
-        assert_eq!(replay.prefix.len(), 2);
-        let DisplayKind::Output(prefix_bytes) = &replay.prefix[0].kind else {
-            panic!("prefix starts with output");
-        };
-        assert!(Arc::ptr_eq(prefix_bytes, &bytes));
-        assert_eq!(
-            replay.prefix[1].kind,
-            DisplayKind::Resize { rows: 24, cols: 80 }
-        );
+        assert_eq!(replay.prefix_next, 0);
+        assert_eq!(replay.prefix_end, 2);
+        assert_eq!(Arc::strong_count(&bytes), 2);
         let state = splice
             .inner
             .state
@@ -797,13 +848,15 @@ mod tests {
 
         let replay = splice.begin_replay().unwrap();
         assert!(replay.remove());
-        assert!(splice
-            .inner
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .subscribers
-            .is_empty());
+        assert!(
+            splice
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .subscribers
+                .is_empty()
+        );
     }
 
     #[test]
@@ -838,11 +891,13 @@ mod tests {
         };
 
         prefix_started_rx.recv().unwrap();
-        assert!(splice
-            .emit_output(Arc::from(&b"queued"[..]))
-            .unwrap()
-            .wake_ready
-            .is_empty());
+        assert!(
+            splice
+                .emit_output(Arc::from(&b"queued"[..]))
+                .unwrap()
+                .wake_ready
+                .is_empty()
+        );
         assert!(splice.emit_resize(24, 80).unwrap().wake_ready.is_empty());
         release_prefix.wait();
         let (mut ready, mut observed) = replay_thread.join().unwrap();
@@ -881,9 +936,11 @@ mod tests {
             replay_result,
             Err(DeliveryError::Callback("replay send failed"))
         ));
-        assert!(!lock_recover(&splice.inner.state)
-            .subscribers
-            .contains_key(&replay_id));
+        assert!(
+            !lock_recover(&splice.inner.state)
+                .subscribers
+                .contains_key(&replay_id)
+        );
 
         let replay = splice.begin_replay().unwrap();
         let mut ready = replay.replay_with(|_| Ok::<(), &'static str>(())).unwrap();
@@ -893,9 +950,11 @@ mod tests {
             ready.drain_with(|_| Err("ready send failed")),
             Err(DeliveryError::Callback("ready send failed"))
         ));
-        assert!(!lock_recover(&splice.inner.state)
-            .subscribers
-            .contains_key(&ready_id));
+        assert!(
+            !lock_recover(&splice.inner.state)
+                .subscribers
+                .contains_key(&ready_id)
+        );
         assert!(splice.emit_resize(25, 81).unwrap().wake_ready.is_empty());
     }
 
@@ -993,9 +1052,11 @@ mod tests {
             )))
         );
         assert!(!removed);
-        assert!(!lock_recover(&splice.inner.state)
-            .subscribers
-            .contains_key(&id));
+        assert!(
+            !lock_recover(&splice.inner.state)
+                .subscribers
+                .contains_key(&id)
+        );
     }
 
     #[test]
@@ -1124,8 +1185,10 @@ mod tests {
         let outcome = emitter.join().unwrap();
         assert!(outcome.wake_ready.is_empty());
         assert!(outcome.overflowed.is_empty());
-        assert!(!lock_recover(&splice.inner.state)
-            .subscribers
-            .contains_key(&id));
+        assert!(
+            !lock_recover(&splice.inner.state)
+                .subscribers
+                .contains_key(&id)
+        );
     }
 }

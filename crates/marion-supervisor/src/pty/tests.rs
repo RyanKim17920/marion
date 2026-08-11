@@ -33,6 +33,27 @@ fn until(mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
+fn bounded_hook_gate() -> (
+    Box<dyn Fn() + Send + Sync>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::SyncSender<()>,
+) {
+    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let release_rx = std::sync::Mutex::new(release_rx);
+    let hook = Box::new(move || {
+        reached_tx
+            .send(())
+            .expect("the deterministic assertion side is alive");
+        release_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the deterministic hook was not released");
+    });
+    (hook, reached_rx, release_tx)
+}
+
 unsafe extern "C" {
     fn kill(pid: c_int, sig: c_int) -> c_int;
     /// The session id of the session for which this terminal is the **controlling terminal**.
@@ -1103,6 +1124,624 @@ fn pty_retention_ends_once_and_accepts_no_later_record() {
     assert_eq!(lb.host.retention_snapshot(), ended);
 }
 
+/// A subscriber must be reachable by an emitter for the whole replay-to-ready handoff. The
+/// production change that must make this fail is removing the pending registry entry before
+/// installing the ready entry: an `End` retained in that gap supplies the only wake the queued
+/// terminal record will ever receive.
+#[test]
+fn pane_replay_delivers_end_retained_during_the_ready_handoff() {
+    let lb = Loopback::without_reader("pty-pane-ready-handoff", WinSize::new(80, 24));
+    lb.host.shared.retain_output(b"prefix");
+    let (out, rx) = crate::serve::capture(crate::serve::ConnId(101));
+    let descriptor = lb
+        .host
+        .begin_pane_replay(out.conn(), out)
+        .expect("the replay is reserved");
+
+    let (hook, reached, release) = bounded_hook_gate();
+    *lb.host
+        .shared
+        .pane_transition_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+
+    lb.host
+        .pane_ready(crate::serve::ConnId(101), &descriptor.token, descriptor.cut);
+    let captured = std::thread::scope(|scope| {
+        let driver = scope.spawn(move || rx.try_iter().collect::<Vec<_>>());
+        reached
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the replay reached its transition seam");
+        lb.host.shared.retain_end();
+        release.send(()).expect("the replay driver is alive");
+        driver.join().unwrap()
+    });
+
+    let frames = captured
+        .into_iter()
+        .map(|bytes| marion_proto::Frame::from_line(std::str::from_utf8(&bytes).unwrap()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        frames.len(),
+        2,
+        "the handoff dropped the end wake: {frames:?}"
+    );
+    assert!(matches!(
+        &frames[0],
+        marion_proto::Frame::Notification(note)
+            if matches!(&note.event, Event::NodePaneFrame(frame)
+                if matches!(&frame.frame, PaneFrameKindV1::Output { bytes }
+                    if bytes.as_bytes() == b"prefix"))
+    ));
+    assert!(matches!(
+        &frames[1],
+        marion_proto::Frame::Notification(note)
+            if matches!(&note.event, Event::NodePaneFrame(frame)
+                if matches!(frame.frame, PaneFrameKindV1::End {}))
+    ));
+}
+
+/// Pane delivery is an outbound callback and therefore cannot run while the cast serialization
+/// lock is held. The production change that must make this fail is retaining and dispatching a
+/// resize from inside the cast critical section: the callback then observes that lock as busy.
+#[test]
+fn pane_resize_delivery_runs_after_the_cast_lock_is_released() {
+    let lb = Loopback::without_reader("pty-pane-resize-lock", WinSize::new(80, 24));
+    let (out, rx) = crate::serve::capture(crate::serve::ConnId(102));
+    let descriptor = lb
+        .host
+        .begin_pane_replay(out.conn(), out)
+        .expect("the replay is reserved");
+    lb.host
+        .pane_ready(crate::serve::ConnId(102), &descriptor.token, descriptor.cut);
+    assert!(
+        rx.try_iter().next().is_none(),
+        "an empty replay installs the live cursor without emitting a frame"
+    );
+
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let shared = Arc::downgrade(&lb.host.shared);
+    *lb.host
+        .shared
+        .pane_delivery_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(Box::new(move || {
+        let shared = shared.upgrade().expect("the host still owns shared state");
+        observed_tx
+            .send(shared.cast.try_lock().is_ok())
+            .expect("the assertion side is alive");
+    }));
+
+    lb.host.resize(WinSize::new(100, 30)).unwrap();
+    let _resize_frame = rx.try_recv().expect("the writer pulls the resize frame");
+    assert!(
+        observed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the resize delivery hook did not run"),
+        "the resize callback ran under the cast lock"
+    );
+}
+
+/// A failed replacement is transactional: it cannot cancel the pane stream the connection
+/// already owns. The production change that must make this fail is cancelling the existing slot
+/// before noticing that it is `Transitioning`; the original replay then never becomes live.
+#[test]
+fn failed_replay_replacement_preserves_the_existing_subscription() {
+    let lb = Loopback::without_reader("pty-pane-transaction", WinSize::new(80, 24));
+    lb.host.shared.retain_output(b"prefix");
+    let conn = crate::serve::ConnId(105);
+    let (out, rx) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out.clone())
+        .expect("the original replay is reserved");
+
+    let (hook, reached, release) = bounded_hook_gate();
+    *lb.host
+        .shared
+        .pane_transition_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+    let (rx, mut frames, replacement_rejected) = std::thread::scope(|scope| {
+        let driver = scope.spawn(move || {
+            let frames = rx.try_iter().collect::<Vec<_>>();
+            (rx, frames)
+        });
+        reached
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the replay reached its transition seam");
+        let replacement_rejected = lb.host.begin_pane_replay(conn, out.clone()).is_none();
+        release.send(()).expect("the replay driver is alive");
+        let (rx, frames) = driver.join().unwrap();
+        (rx, frames, replacement_rejected)
+    });
+    *lb.host
+        .shared
+        .pane_transition_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    lb.host.shared.retain_output(b"live");
+
+    frames.extend(rx.try_iter());
+    assert!(
+        replacement_rejected,
+        "a transitioning slot accepts replacement"
+    );
+    assert_eq!(
+        frames.len(),
+        2,
+        "the failed replacement cancelled the old live stream"
+    );
+}
+
+/// Replaying a retained history larger than the connection queue must be paced by the writer, not
+/// mistaken for a slow client. The production change that must make this fail is synchronously
+/// calling `try_send` for every prefix record from the Ready notification handler.
+#[test]
+fn retained_replay_larger_than_the_outbound_queue_does_not_depart_a_healthy_client() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-pane-paced-prefix",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing_with_subscribers(2_048, 1_100, 1, 1_100),
+    );
+    for _ in 0..1_025 {
+        lb.host.shared.retain_output(b"x");
+    }
+    let conn = crate::serve::ConnId(106);
+    let (out, rx) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out.clone())
+        .expect("the replay is reserved");
+
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+
+    let first = rx
+        .try_recv()
+        .expect("the writer pulls the first replay frame");
+    assert!(out.notify(Event::NodePty {
+        agent_id: AgentId("sentinel".into()),
+        seq: 0,
+        mono_ns: 0,
+        bytes: "ordinary".into(),
+    }));
+    let frames = std::iter::once(first)
+        .chain(rx.try_iter())
+        .map(|bytes| Frame::from_line(std::str::from_utf8(&bytes).unwrap()).unwrap())
+        .collect::<Vec<_>>();
+    let mut pane = Vec::new();
+    let mut sentinel_at = None;
+    for (at, frame) in frames.iter().enumerate() {
+        let Frame::Notification(note) = frame else {
+            panic!("captured outbound item is not a notification: {frame:?}")
+        };
+        match &note.event {
+            Event::NodePaneFrame(frame) => pane.push(frame),
+            Event::NodePty {
+                agent_id, bytes, ..
+            } if agent_id.0 == "sentinel" && bytes == "ordinary" => sentinel_at = Some(at),
+            other => panic!("unexpected captured event: {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        out.departed(),
+        None,
+        "a healthy client was classified TooSlow solely because replay burst faster than its writer"
+    );
+    assert_eq!(
+        pane.len(),
+        1_025,
+        "the writer must drain the complete prefix"
+    );
+    assert_eq!(
+        pane.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        (0..1_025).collect::<Vec<_>>(),
+        "replay remains dense and ordered"
+    );
+    assert!(pane.iter().all(|frame| {
+        matches!(&frame.frame, PaneFrameKindV1::Output { bytes } if bytes.as_bytes() == b"x")
+    }));
+    assert!(
+        sentinel_at.is_some_and(|at| at < frames.len() - 1),
+        "an ordinary queued frame must run before replay completion: {sentinel_at:?} of {}",
+        frames.len()
+    );
+    lb.hang_up();
+}
+
+/// A successfully written terminal `End` completes the subscriber; it cannot leave a permanent
+/// Ready slot on an append-only stream that will never wake again. The production change that must
+/// make this fail is installing Ready after End, so 64 open clients exhaust the subscriber cap and
+/// the 65th completed replay is refused.
+#[test]
+fn completed_replay_releases_its_subscriber_while_connections_stay_open() {
+    let lb = Loopback::without_reader("pty-pane-completed-release", WinSize::new(80, 24));
+    lb.host.shared.retain_output(b"complete");
+    lb.host.shared.retain_end();
+    let mut open_connections = Vec::new();
+
+    for ordinal in 0..65 {
+        let conn = crate::serve::ConnId(1_000 + ordinal);
+        let (out, captured) = crate::serve::capture(conn);
+        let descriptor = lb
+            .host
+            .begin_pane_replay(conn, out.clone())
+            .unwrap_or_else(|| panic!("completed replay {ordinal} exhausted a stale subscriber"));
+        lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+        let frames = captured
+            .try_iter()
+            .map(|bytes| Frame::from_line(std::str::from_utf8(&bytes).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            frames.last(),
+            Some(Frame::Notification(note))
+                if matches!(&note.event, Event::NodePaneFrame(frame)
+                    if matches!(frame.frame, PaneFrameKindV1::End {}))
+        ));
+        open_connections.push((out, captured));
+    }
+
+    assert_eq!(open_connections.len(), 65);
+}
+
+/// Overflow before Ready is a visible connection failure, not a token that will later be accepted
+/// into silence. The production change that must make this fail is removing the Pending slot while
+/// ignoring `EmitOutcome::overflowed` at the connection boundary.
+#[test]
+fn pending_pane_overflow_visibly_departs_its_connection() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-pane-pending-overflow",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing_with_subscribers(16, 8, 2, 1),
+    );
+    let conn = crate::serve::ConnId(1_100);
+    let (out, captured) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out.clone())
+        .expect("the pending replay is reserved");
+
+    lb.host.shared.retain_output(b"a");
+    lb.host.shared.retain_output(b"b");
+
+    assert_eq!(
+        out.departed(),
+        Some(crate::serve::Departure::PaneOverflow {
+            agent_id: "node-under-test".into()
+        }),
+        "pending overflow must name its connection-fatal reason"
+    );
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+    assert!(
+        captured.try_iter().next().is_none(),
+        "overflow must not forge a terminal frame"
+    );
+    lb.hang_up();
+}
+
+/// Overflow while a Ready record is waiting for its writer is likewise connection-fatal and must
+/// remove only that subscriber. The production change that must make this fail is cancelling its
+/// Transitioning slot without surfacing a departure.
+#[test]
+fn ready_pane_overflow_visibly_departs_its_connection() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-pane-ready-overflow",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing_with_subscribers(16, 8, 2, 1),
+    );
+    let conn = crate::serve::ConnId(1_101);
+    let (out, captured) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out.clone())
+        .expect("the replay is reserved");
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+    assert!(
+        captured.try_iter().next().is_none(),
+        "empty replay installs Ready"
+    );
+
+    lb.host.shared.retain_output(b"a");
+    lb.host.shared.retain_output(b"b");
+
+    assert_eq!(
+        out.departed(),
+        Some(crate::serve::Departure::PaneOverflow {
+            agent_id: "node-under-test".into()
+        }),
+        "ready overflow must name its connection-fatal reason"
+    );
+    assert!(
+        captured.try_iter().next().is_none(),
+        "overflow must not forge a terminal frame"
+    );
+    lb.hang_up();
+}
+
+/// The writer can consume the splice overflow tombstone and drop its Transitioning slot before
+/// the emitter handles `EmitOutcome::overflowed`. That ordering must still visibly fail the
+/// connection; relying only on the emitter finding the slot loses the sole `Outbound`.
+#[test]
+fn transitioning_flow_overflow_departs_when_it_consumes_the_tombstone_first() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-pane-transition-overflow-race",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing_with_subscribers(16, 8, 2, 1),
+    );
+    let conn = crate::serve::ConnId(1_106);
+    let (out, captured) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out.clone())
+        .expect("the replay is reserved");
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+    assert!(
+        captured.try_iter().next().is_none(),
+        "empty replay installs Ready"
+    );
+
+    lb.host.shared.retain_output(b"a");
+    let (hook, reached, release) = bounded_hook_gate();
+    *lb.host
+        .shared
+        .pane_splice_outcome_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+
+    let (observed, tombstone_was_silent) = std::thread::scope(|scope| {
+        let shared = Arc::clone(&lb.host.shared);
+        let emitter = scope.spawn(move || shared.retain_output(b"b"));
+        reached
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the emitter reached the overflow outcome seam");
+        let tombstone_was_silent = captured.try_iter().next().is_none();
+        let observed = out.departed();
+        release.send(()).expect("the emitter is alive");
+        emitter.join().unwrap();
+        (observed, tombstone_was_silent)
+    });
+    *lb.host
+        .shared
+        .pane_splice_outcome_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    lb.hang_up();
+
+    assert!(
+        tombstone_was_silent,
+        "the flow forged a frame while consuming the overflow tombstone"
+    );
+    assert_eq!(
+        observed,
+        Some(crate::serve::Departure::PaneOverflow {
+            agent_id: "node-under-test".into()
+        }),
+        "flow-side tombstone consumption must retain a connection-fatal path"
+    );
+}
+
+/// Once unlisten returns, a Flow may finish only a record it had already reserved. A cancellation
+/// that wins before `pull_one` must prevent that record from being pulled and written.
+#[test]
+fn unlisten_linearizes_before_a_not_yet_started_pane_pull() {
+    let mut lb = Loopback::without_reader("pty-pane-unlisten-pre-pull", WinSize::new(80, 24));
+    lb.host.shared.retain_output(b"must-not-be-pulled");
+    let conn = crate::serve::ConnId(1_107);
+    let (out, captured) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out.clone())
+        .expect("the replay is reserved");
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+
+    let (hook, reached, release) = bounded_hook_gate();
+    *lb.host
+        .shared
+        .pane_pre_pull_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+
+    let result = std::thread::scope(|scope| {
+        let driver = scope.spawn(move || captured.try_recv());
+        reached
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the replay reached its pre-pull seam");
+        lb.host.unlisten(conn);
+        release.send(()).expect("the replay driver is alive");
+        driver.join().unwrap()
+    });
+    lb.hang_up();
+
+    assert!(
+        matches!(result, Err(std::sync::mpsc::TryRecvError::Empty)),
+        "unlisten returned before a new replay frame was pulled: {result:?}"
+    );
+}
+
+/// The cancellation mutex is the reservation boundary: an unlisten that acquires it first stops
+/// the next record, while a pull that holds it may finish exactly that already-reserved record.
+#[test]
+fn pane_pull_holds_the_cancellation_guard_through_cursor_reservation() {
+    let mut lb = Loopback::without_reader("pty-pane-guarded-pull", WinSize::new(80, 24));
+    lb.host.shared.retain_output(b"reserved-under-guard");
+    let conn = crate::serve::ConnId(1_108);
+    let (out, captured) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out)
+        .expect("the replay is reserved");
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+
+    let cancellation = {
+        let streams = lb
+            .host
+            .shared
+            .pane_streams
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            &streams
+                .slots
+                .get(&conn)
+                .expect("the transitioning replay remains registered")
+                .cancellation,
+        )
+    };
+    let (hook, reached, release) = bounded_hook_gate();
+    *lb.host
+        .shared
+        .pane_guarded_pull_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+
+    let (guarded, result) = std::thread::scope(|scope| {
+        let driver = scope.spawn(move || captured.try_recv());
+        reached
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the replay reached its guarded-pull seam");
+        let guarded = matches!(
+            cancellation.cancelled.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        );
+        release.send(()).expect("the replay driver is alive");
+        (guarded, driver.join().unwrap())
+    });
+    lb.host.unlisten(conn);
+    lb.hang_up();
+
+    assert!(
+        guarded,
+        "the cancellation mutex was released before cursor reservation"
+    );
+    assert!(
+        result.is_ok(),
+        "the guarded replay record was not pulled: {result:?}"
+    );
+}
+
+/// Pending response-first handshakes are bounded without a timer thread. Advancing an injected
+/// clock makes the next reservation prune one stale token, and an exact Ready on another stale
+/// token performs the same visible connection failure.
+#[test]
+fn pending_pane_replays_expire_lazily_on_begin_and_exact_ready() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-pane-pending-expiry",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing_with_subscribers(16, 8, 1, 4),
+    );
+    let start = Instant::now();
+    let now = Arc::new(std::sync::Mutex::new(start));
+    *lb.host
+        .shared
+        .pane_clock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Arc::new({
+        let now = Arc::clone(&now);
+        move || *now.lock().unwrap_or_else(|e| e.into_inner())
+    });
+
+    let first_conn = crate::serve::ConnId(1_108);
+    let (first_out, first_captured) = crate::serve::capture(first_conn);
+    lb.host
+        .begin_pane_replay(first_conn, first_out.clone())
+        .expect("the first pending replay is reserved");
+    *now.lock().unwrap_or_else(|e| e.into_inner()) = start + Duration::from_secs(10);
+
+    let second_conn = crate::serve::ConnId(1_109);
+    let (second_out, second_captured) = crate::serve::capture(second_conn);
+    let second = lb.host.begin_pane_replay(second_conn, second_out.clone());
+    let first_departure = first_out.departed();
+    let third_conn = crate::serve::ConnId(1_110);
+    let (third_out, _third_captured) = crate::serve::capture(third_conn);
+    let (second_departure, third) = if let Some(second) = &second {
+        *now.lock().unwrap_or_else(|e| e.into_inner()) = start + Duration::from_secs(20);
+        lb.host.pane_ready(second_conn, &second.token, second.cut);
+        (
+            second_out.departed(),
+            lb.host.begin_pane_replay(third_conn, third_out),
+        )
+    } else {
+        (second_out.departed(), None)
+    };
+    lb.host.unlisten(third_conn);
+    lb.hang_up();
+
+    let expired = Some(crate::serve::Departure::PaneReplayExpired {
+        agent_id: "node-under-test".into(),
+    });
+    assert_eq!(first_departure, expired);
+    assert!(
+        second.is_some(),
+        "begin prunes the expired subscriber before enforcing the cap"
+    );
+    assert_eq!(second_departure, expired);
+    assert!(first_captured.try_iter().next().is_none());
+    assert!(second_captured.try_iter().next().is_none());
+    assert!(
+        third.is_some(),
+        "exact Ready expiry releases the sole subscriber"
+    );
+}
+
+/// A host-wide retention failure visibly fails every negotiated pane stream, while legacy live
+/// output and the PTY itself continue. The production change that must make this fail is latching
+/// the splice error and cancelling slots without waking their connections.
+#[test]
+fn global_pane_retention_failure_departs_only_opted_in_connections() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-pane-global-failure",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing_with_subscribers(1, 8, 4, 4),
+    );
+    let pending_conn = crate::serve::ConnId(1_102);
+    let ready_conn = crate::serve::ConnId(1_103);
+    let legacy_conn = crate::serve::ConnId(1_104);
+    let (pending_out, pending_rx) = crate::serve::capture(pending_conn);
+    let (ready_out, ready_rx) = crate::serve::capture(ready_conn);
+    let (legacy_out, legacy_rx) = crate::serve::capture(legacy_conn);
+    let _pending = lb
+        .host
+        .begin_pane_replay(pending_conn, pending_out.clone())
+        .expect("pending replay");
+    let ready = lb
+        .host
+        .begin_pane_replay(ready_conn, ready_out.clone())
+        .expect("ready replay");
+    lb.host.pane_ready(ready_conn, &ready.token, ready.cut);
+    assert!(ready_rx.try_iter().next().is_none());
+    lb.host.listen(legacy_out.clone());
+
+    lb.host.shared.retain_output(b"too large");
+
+    for out in [&pending_out, &ready_out] {
+        assert!(
+            matches!(
+                out.departed(),
+                Some(crate::serve::Departure::PaneRetentionFailed { ref agent_id, .. })
+                    if agent_id == "node-under-test"
+            ),
+            "retention failure was silent for connection {}: {:?}",
+            out.conn().0,
+            out.departed()
+        );
+    }
+    assert_eq!(legacy_out.departed(), None);
+    lb.host.shared.emit("legacy-continues");
+    assert!(legacy_rx.try_recv().is_ok(), "legacy live output stopped");
+    assert!(pending_rx.try_iter().next().is_none());
+    assert!(ready_rx.try_iter().next().is_none());
+    assert!(
+        lb.host
+            .begin_pane_replay(crate::serve::ConnId(1_105), legacy_out)
+            .is_none(),
+        "failed retention minted a future exact replay"
+    );
+    lb.hang_up();
+}
+
 #[test]
 fn pty_retention_overflow_latches_without_blocking_cast_or_live_output() {
     let mut lb = Loopback::with_splice_limits(
@@ -1202,9 +1841,11 @@ fn pty_live_resize_retains_kernel_success_before_reporting_cast_failure() {
         .host
         .resize(WinSize::new(100, 40))
         .expect_err("the injected cast failure reaches the caller");
-    assert!(error
-        .to_string()
-        .contains("injected live cast resize failure"));
+    assert!(
+        error
+            .to_string()
+            .contains("injected live cast resize failure")
+    );
     lb.child_writes(b"after");
 
     let retained = lb.host.retention_snapshot();
@@ -1235,9 +1876,11 @@ fn pty_no_reader_resize_retains_kernel_success_before_reporting_cast_failure() {
         .host
         .resize(WinSize::new(100, 40))
         .expect_err("the injected cast failure reaches the caller");
-    assert!(error
-        .to_string()
-        .contains("injected fallback cast resize failure"));
+    assert!(
+        error
+            .to_string()
+            .contains("injected fallback cast resize failure")
+    );
     lb.host.shared.retain_output(b"after");
 
     let retained = lb.host.retention_snapshot();
@@ -1774,7 +2417,7 @@ fn a_node_that_did_not_ask_for_a_pane_is_not_given_one() {
 #[test]
 fn no_built_in_agent_types_default_shape_is_driven_by_keystrokes() {
     use marion_core::harness::Harness;
-    use marion_harness::{adapter_for, ControlTransport};
+    use marion_harness::{ControlTransport, adapter_for};
 
     let terminal: Vec<Harness> = Harness::ALL
         .into_iter()
