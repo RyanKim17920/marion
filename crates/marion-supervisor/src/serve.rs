@@ -1444,11 +1444,11 @@ mod tests {
         assert_eq!(permits.len(), 32);
     }
 
-    #[cfg(target_os = "linux")]
-    struct LinuxNativeHandler(AtomicU64);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    struct SupportedNativeHandler(AtomicU64);
 
-    #[cfg(target_os = "linux")]
-    impl crate::native_bootstrap::NativeBootstrapHandler for LinuxNativeHandler {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl crate::native_bootstrap::NativeBootstrapHandler for SupportedNativeHandler {
         fn verify_terminal(
             &self,
             _peer: crate::native_bootstrap::PeerIdentity,
@@ -1477,7 +1477,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn native_listener_dispatches_the_wire_and_native_connections_block_idle_until_cleanup() {
         use std::os::fd::AsFd;
@@ -1489,7 +1489,7 @@ mod tests {
             panic!("nothing was listening")
         };
         let leaver = Arc::new(Leaver::default());
-        let handler = Arc::new(LinuxNativeHandler(AtomicU64::new(0)));
+        let handler = Arc::new(SupportedNativeHandler(AtomicU64::new(0)));
         let native = Arc::new(NativeBootstrapService::new(
             paths.canonical_project().to_path_buf(),
             crate::native_bootstrap::NATIVE_WIRE_VERSION,
@@ -1522,7 +1522,7 @@ mod tests {
             .open("/dev/null")
             .unwrap();
         let context = crate::native_bootstrap::DirectNativeRequestContext::new(
-            std::path::PathBuf::from("/project"),
+            paths.canonical_project().to_path_buf(),
             std::ffi::OsString::from("atlas"),
             Vec::new(),
             std::ffi::OsString::from("xterm"),

@@ -396,9 +396,15 @@ fn parse_ps_rows(s: &str) -> Vec<ProcRow> {
 /// primitives (see `marion-core::encoding`'s civil-date arithmetic) and one `ps` sweep is all the
 /// remedy S7 measured needs.
 fn ps_rows() -> Vec<ProcRow> {
-    SysCommand::new("ps")
+    let mut command = SysCommand::new("ps");
+    command
         .args(["-axo", "pid=,ppid=,pgid="])
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
+        .and_then(std::process::Child::wait_with_output)
         .ok()
         .filter(|o| o.status.success())
         .map(|o| parse_ps_rows(&String::from_utf8_lossy(&o.stdout)))
@@ -529,9 +535,15 @@ pub(crate) fn kill_process_tree_and_wait(child_pid: i32) -> bool {
     kill_process_tree(child_pid);
     let deadline = Instant::now() + StdDuration::from_secs(5);
     while Instant::now() < deadline {
-        let observation = SysCommand::new("ps")
+        let mut command = SysCommand::new("ps");
+        command
             .args(["-o", "stat=", "-p", &child_pid.to_string()])
-            .output();
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let observation = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+            .spawn(&mut command)
+            .and_then(std::process::Child::wait_with_output);
         match observation {
             Ok(output) => {
                 let state = String::from_utf8_lossy(&output.stdout);
@@ -593,7 +605,7 @@ fn run_bounded_with(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
+    let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(command)?;
     // **Before the pipes are drained, let alone before the process is waited on.** Everything below
     // this line can block for the child's whole lifetime, so a hook called anywhere else would be
     // reporting the existence of a process the caller had already finished with — see
@@ -1812,10 +1824,16 @@ pub fn run_spawn_watched(
 /// is exactly the kind of scheduling-dependent flake the guard exists to make impossible.
 fn cleanup(repo: &Path, wt: &Path) {
     let _serialized = crate::spawn::repo_write_guard();
-    let _ = SysCommand::new("git")
+    let mut command = SysCommand::new("git");
+    command
         .current_dir(repo)
         .args(["worktree", "remove", "--force", &wt.to_string_lossy()])
-        .output();
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let _ = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
+        .and_then(std::process::Child::wait_with_output);
 }
 
 #[cfg(test)]

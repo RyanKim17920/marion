@@ -637,7 +637,7 @@ pub fn spawn_pty(
         });
     }
 
-    let mut child = command.spawn()?;
+    let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(command)?;
     let pid = child.id() as i32;
     // The write half of a `Piped` stdin, before the reset below can touch anything. `None` for the
     // other two plans, which is the honest answer: there is nothing to write into.

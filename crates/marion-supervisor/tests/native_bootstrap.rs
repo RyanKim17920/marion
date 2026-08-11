@@ -2,9 +2,9 @@
 
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -23,7 +23,7 @@ fn request_context(selector: &str, tail: Vec<OsString>) -> DirectNativeRequestCo
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn native_bootstrap_listener_is_a_private_sibling_of_the_project_socket() {
     let work = scratch("native-bootstrap-listener");
@@ -55,9 +55,9 @@ fn native_bootstrap_listener_is_a_private_sibling_of_the_project_socket() {
     drop((client, accepted));
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
-fn macos_fails_closed_without_a_native_listener_or_socket_artifact() {
+fn unsupported_platform_fails_closed_without_a_native_listener_or_socket_artifact() {
     let work = scratch("native-bootstrap-disabled-macos");
     let state = work.join("state");
     let project = work.join("project");

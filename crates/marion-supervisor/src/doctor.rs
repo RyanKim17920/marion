@@ -621,7 +621,7 @@ fn live_turn(
     for (k, v) in &inv.env {
         cmd.env(k, v);
     }
-    let mut child = match cmd.spawn() {
+    let mut child = match crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd) {
         Ok(c) => c,
         Err(e) => {
             return TurnOutcome {
@@ -808,7 +808,7 @@ impl AcpChild {
         for (k, v) in &inv.env {
             cmd.env(k, v);
         }
-        let mut child = cmd.spawn()?;
+        let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd)?;
         let pid = child.id() as i32;
         let stdin = child.stdin.take();
         let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1198,12 +1198,14 @@ fn wait_bounded(
 /// `<program> --version`, and the version token out of it.
 fn read_version(program: &Path, notes: &mut Vec<String>) -> Option<String> {
     let started = Instant::now();
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
         .map_err(|e| notes.push(format!("version: FAILED — {e}")))
         .ok()?;
     let (out, timed_out) = read_bounded(&mut child, VERSION_BUDGET);

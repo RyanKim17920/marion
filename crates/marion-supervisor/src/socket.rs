@@ -301,11 +301,17 @@ pub fn project_root(cwd: &Path) -> PathBuf {
 /// A relative answer is joined onto `cwd`: `rev-parse --git-common-dir` answers `.git` from a
 /// repository's own root, and a bare `.git` is not a usable record of anything.
 pub fn git_common_dir(cwd: &Path) -> Option<PathBuf> {
-    let out = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    command
         .arg("-C")
         .arg(cwd)
         .args(["rev-parse", "--git-common-dir"])
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let out = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
+        .and_then(std::process::Child::wait_with_output)
         .ok()
         .filter(|o| o.status.success())?;
     let s = String::from_utf8(out.stdout).ok()?;
@@ -603,9 +609,9 @@ impl Serving {
             &self.path,
             self.bound,
         );
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return ordinary && self.native_bootstrap_bound.is_none();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         return ordinary
             && self.native_bootstrap_bound.is_some()
             && FileId::at(&self.native_bootstrap_path) == self.native_bootstrap_bound;
@@ -658,7 +664,7 @@ pub struct Sentry {
     socket: PathBuf,
     bound: FileId,
     #[cfg_attr(
-        not(target_os = "linux"),
+        not(any(target_os = "linux", target_os = "macos")),
         allow(dead_code, reason = "non-Linux intentionally has no native listener")
     )]
     native_bootstrap_socket: PathBuf,
@@ -675,9 +681,9 @@ impl Sentry {
             &self.socket,
             Some(self.bound),
         );
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return ordinary && self.native_bootstrap_bound.is_none();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         return ordinary
             && self.native_bootstrap_bound.is_some()
             && FileId::at(&self.native_bootstrap_socket) == self.native_bootstrap_bound;
@@ -685,7 +691,7 @@ impl Sentry {
 
     /// What to say to an operator who finds the supervisor gone.
     pub fn why(&self) -> String {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return format!(
             "the supervisor lock {} is no longer the file this process holds, or {} is no longer \
              the socket it bound. This platform intentionally publishes no native descriptor \
@@ -694,7 +700,7 @@ impl Sentry {
             self.lock_path.display(),
             self.socket.display(),
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         format!(
             "the supervisor lock {} is no longer the file this process holds, or {} / {} are no \
              longer the sockets it bound. That is what removing a project's state directory under a \
@@ -906,7 +912,7 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
                         });
                     }
                 }
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 match std::fs::remove_file(paths.native_bootstrap()) {
                     Ok(()) => {}
                     Err(e) if e.kind() == ErrorKind::NotFound => {}
@@ -922,7 +928,7 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
                 // can escape this constructor.
                 let (listener, native_bootstrap_listener) = bind_configured_listeners(
                     paths,
-                    cfg!(target_os = "linux"),
+                    cfg!(any(target_os = "linux", target_os = "macos")),
                     |listener, path| {
                         rustix::fs::chmod(path, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
                             .map_err(std::io::Error::from)?;
@@ -1600,8 +1606,13 @@ mod tests {
                 panic!("first")
             };
             assert!(p.socket().exists());
+            assert!(p.native_bootstrap().exists());
         }
         assert!(!p.socket().exists(), "a clean exit unlinks its socket");
+        assert!(
+            !p.native_bootstrap().exists(),
+            "a clean exit unlinks its native bootstrap socket"
+        );
         assert!(
             p.lock().exists(),
             "the lock file persists on purpose: unlinking it would let two processes flock two \
@@ -1726,11 +1737,19 @@ mod tests {
             UnixStream::connect(p.socket()).is_ok(),
             "the successor serves"
         );
+        assert!(
+            UnixStream::connect(p.native_bootstrap()).is_ok(),
+            "the successor serves native bootstrap"
+        );
 
         drop(evicted);
         assert!(
             p.socket().exists(),
             "the evicted supervisor unlinked a socket it did not bind"
+        );
+        assert!(
+            p.native_bootstrap().exists(),
+            "the evicted supervisor unlinked a native socket it did not bind"
         );
         assert!(
             UnixStream::connect(p.socket()).is_ok(),
@@ -1764,6 +1783,13 @@ mod tests {
                 std::fs::remove_file(p.socket()).unwrap();
                 std::fs::write(p.socket(), b"").unwrap();
             }),
+            (
+                "the native socket alone",
+                &|_dir: &Path, p: &SocketPaths| {
+                    std::fs::remove_file(p.native_bootstrap()).unwrap();
+                    std::fs::write(p.native_bootstrap(), b"").unwrap();
+                },
+            ),
         ] {
             let dir = ShortDir::new("entitled");
             let p = paths_in(&dir);
@@ -1936,6 +1962,15 @@ mod tests {
             0o600,
             "the socket is the fleet's control plane; §5.4's model is that the client is the \
              operator, and the file mode is what says which operator"
+        );
+        assert_eq!(
+            std::fs::metadata(p.native_bootstrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "the native descriptor transport is private to the operator"
         );
     }
 }

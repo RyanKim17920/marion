@@ -354,18 +354,24 @@ fn nobody_answered(e: &std::io::Error) -> bool {
 /// zombies. It does *not* wait for the supervisor: stage 3 outlives all of this by construction,
 /// which is the point, and readiness is established by dialing rather than by a parent's `wait`.
 fn spawn_stage_one(launch: &Launch) -> Result<(), DetachError> {
-    let status = Command::new(&launch.program)
+    let mut command = Command::new(&launch.program);
+    command
         .args(launch.argv())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        // stderr is inherited on stages 1 and 2 **only**: a supervisor that could not start must
-        // say so where the operator who asked for it is looking. Stage 3 redirects it to a file
-        // before it becomes long-lived — see [`spawn_stage_three`].
-        .status()
+        .stdout(Stdio::null());
+    // stderr is inherited on stages 1 and 2 **only**: a supervisor that could not start must
+    // say so where the operator who asked for it is looking. Stage 3 redirects it to a file
+    // before it becomes long-lived — see [`spawn_stage_three`].
+    let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
         .map_err(|source| DetachError::Spawn {
             program: launch.program.clone(),
             source,
         })?;
+    let status = child.wait().map_err(|source| DetachError::Spawn {
+        program: launch.program.clone(),
+        source,
+    })?;
     if status.success() {
         return Ok(());
     }
@@ -381,15 +387,21 @@ fn spawn_stage_one(launch: &Launch) -> Result<(), DetachError> {
 pub fn run_stage_one(launch: &Launch) -> Result<(), DetachError> {
     let mut argv = launch.argv();
     argv.push(SESSION_LEADER_FLAG.to_string());
-    let status = Command::new(&launch.program)
+    let mut command = Command::new(&launch.program);
+    command
         .args(argv)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .status()
+        .stdout(Stdio::null());
+    let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
         .map_err(|source| DetachError::Spawn {
             program: launch.program.clone(),
             source,
         })?;
+    let status = child.wait().map_err(|source| DetachError::Spawn {
+        program: launch.program.clone(),
+        source,
+    })?;
     if status.success() {
         return Ok(());
     }
@@ -451,15 +463,17 @@ fn spawn_stage_three(launch: &Launch) -> Result<(), DetachError> {
         .open(&log)
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null());
-    Command::new(&launch.program)
+    let mut command = Command::new(&launch.program);
+    command
         .args(argv)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(stderr)
         // `/` and not the launcher's cwd: see the module doc. A detached process holding a cwd pins
         // a directory that may be deleted, and marion's own path derivation reads `cwd`.
-        .current_dir(Path::new("/"))
-        .spawn()
+        .current_dir(Path::new("/"));
+    crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)
         .map(|_child| ())
         .map_err(|source| DetachError::Spawn {
             program: launch.program.clone(),

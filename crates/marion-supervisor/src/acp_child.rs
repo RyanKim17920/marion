@@ -437,10 +437,12 @@ impl Driver {
         // what closes them. `kill_process_tree` refuses marion's own pgid, so without a group of
         // its own the sweep would have nothing it is allowed to address.
         cmd.process_group(0);
-        let mut child = cmd.spawn().map_err(|source| AcpChildError::Spawn {
-            program: inv.program.clone(),
-            source,
-        })?;
+        let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+            .spawn(&mut cmd)
+            .map_err(|source| AcpChildError::Spawn {
+                program: inv.program.clone(),
+                source,
+            })?;
         let pid = child.id() as i32;
         let stdin = child.stdin.take();
         let frames = Arc::new(Mutex::new(Vec::new()));

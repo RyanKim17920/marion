@@ -71,6 +71,7 @@ pub mod serve;
 /// the same one M2's detached supervisor will bind, which is what makes the split invisible (§10).
 pub mod socket;
 pub mod spawn;
+pub(crate) mod spawn_receive_gate;
 /// The SDK-neutral dispatch seam: tool name and arguments in, content blocks and an explicit
 /// `isError` out, with everything marion means by a tool call on the far side of it.
 pub mod tool;

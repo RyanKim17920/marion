@@ -58,7 +58,7 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::IoSliceMut;
 use std::io::{IoSlice, Read, Write};
 use std::mem::MaybeUninit;
@@ -71,9 +71,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use rustix::fs::{OFlags, fcntl_getfl, fstat};
+#[cfg(all(test, target_os = "macos"))]
+use rustix::io::FdFlags;
+#[cfg(target_os = "macos")]
+use rustix::io::fcntl_dupfd_cloexec;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+use rustix::io::fcntl_getfd;
 #[cfg(target_os = "linux")]
 use rustix::io::{FdFlags, fcntl_setfd};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
 use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
@@ -91,6 +97,11 @@ const MAX_CONTEXT_BYTES: usize = 192 * 1024;
 const MAX_SELECTOR_BYTES: usize = 255;
 const MAX_CAPABILITY_GENERATION_ATTEMPTS: usize = 128;
 pub(crate) const NATIVE_WIRE_VERSION: u32 = 1;
+
+#[cfg(target_os = "linux")]
+const LINUX_ATOMIC_RECEIVE_FLAGS: RecvFlags = RecvFlags::CMSG_CLOEXEC;
+#[cfg(target_os = "linux")]
+const _: () = assert!(LINUX_ATOMIC_RECEIVE_FLAGS.contains(RecvFlags::CMSG_CLOEXEC));
 
 /// The exact secret-free request state authenticated by the native bootstrap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,14 +302,21 @@ fn receive_terminal_descriptors_before(
     stream: &UnixStream,
     deadline: &HandshakeDeadline,
 ) -> Result<[OwnedFd; 2], BootstrapError> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (stream, deadline);
         Err(BootstrapError::AtomicCloexecUnsupported)
     }
 
     #[cfg(target_os = "linux")]
-    receive_terminal_descriptors_atomic(stream, deadline)
+    {
+        receive_terminal_descriptors_atomic(stream, deadline)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        receive_terminal_descriptors_non_atomic(stream, deadline)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -309,17 +327,19 @@ fn receive_terminal_descriptors_atomic(
     deadline.install_read_timeout(stream)?;
     let mut message = [0u8; DESCRIPTOR_MESSAGE.len()];
     let mut iov = [IoSliceMut::new(&mut message)];
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(3))];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(4)) - 1];
     let mut control = RecvAncillaryBuffer::new(&mut space);
-    let receive_flags = RecvFlags::CMSG_CLOEXEC;
-    let received = recvmsg(stream, &mut iov, &mut control, receive_flags).map_err(io_error)?;
+    let received =
+        recvmsg(stream, &mut iov, &mut control, LINUX_ATOMIC_RECEIVE_FLAGS).map_err(io_error)?;
     let mut descriptors = Vec::new();
     for ancillary in control.drain() {
         if let RecvAncillaryMessage::ScmRights(rights) = ancillary {
             descriptors.extend(rights);
         }
     }
-    if received.flags.contains(rustix::net::ReturnFlags::CTRUNC) {
+    #[cfg(test)]
+    post_recv_test_hook(&descriptors);
+    if received.flags.contains(rustix::net::ReturnFlags::CTRUNC) || descriptors.len() > 3 {
         return Err(BootstrapError::AncillaryTruncated);
     }
     if received.bytes == 0 || message[..received.bytes] != DESCRIPTOR_MESSAGE[..received.bytes] {
@@ -340,11 +360,277 @@ fn receive_terminal_descriptors_atomic(
     Ok([stdin, stdout])
 }
 
+#[cfg(target_os = "macos")]
+fn receive_terminal_descriptors_non_atomic(
+    stream: &UnixStream,
+    deadline: &HandshakeDeadline,
+) -> Result<[OwnedFd; 2], BootstrapError> {
+    deadline.install_read_timeout(stream)?;
+    let mut message = [0u8; DESCRIPTOR_MESSAGE.len()];
+    let received = {
+        let receive = || {
+            crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.receive_non_atomic(|| {
+                let mut iov = [IoSliceMut::new(&mut message)];
+                let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(4)) - 1];
+                let mut control = RecvAncillaryBuffer::new(&mut space);
+                deadline.install_read_timeout(stream)?;
+                let received = recvmsg(stream, &mut iov, &mut control, RecvFlags::empty())
+                    .map_err(io_error)?;
+                #[cfg(test)]
+                pre_drain_unwind_test_hook();
+                let mut originals = Vec::new();
+                for ancillary in control.drain() {
+                    if let RecvAncillaryMessage::ScmRights(rights) = ancillary {
+                        originals.extend(rights);
+                    }
+                }
+                #[cfg(test)]
+                post_recv_test_hook(&originals);
+                if received.flags.contains(rustix::net::ReturnFlags::CTRUNC) || originals.len() > 3
+                {
+                    return Err(BootstrapError::AncillaryTruncated);
+                }
+                if received.bytes == 0
+                    || iov[0][..received.bytes] != DESCRIPTOR_MESSAGE[..received.bytes]
+                {
+                    return Err(BootstrapError::DescriptorMessage);
+                }
+                if originals.len() != 2 {
+                    return Err(BootstrapError::DescriptorCount);
+                }
+                let mut duplicates = Vec::with_capacity(2);
+                for original in &originals {
+                    duplicates.push(fcntl_dupfd_cloexec(original, 3).map_err(io_error)?);
+                }
+                drop(originals);
+                let descriptors = duplicates
+                    .try_into()
+                    .map_err(|_| BootstrapError::DescriptorCount)?;
+                Ok((descriptors, received.bytes))
+            })
+        };
+        let received = observe_receive_unwind(receive);
+        received?
+    };
+    let (descriptors, received_bytes) = received;
+    if received_bytes < DESCRIPTOR_MESSAGE.len() {
+        let mut transport = DeadlineIo::new(stream, deadline);
+        read_descriptor_message_tail(&mut transport, &mut message, received_bytes)?;
+        if message != DESCRIPTOR_MESSAGE {
+            return Err(BootstrapError::DescriptorMessage);
+        }
+    }
+    Ok(descriptors)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+struct ReceiveUnwindTestEndpoint {
+    received: std::sync::mpsc::SyncSender<()>,
+    panic_now: std::sync::mpsc::Receiver<()>,
+    unwound: std::sync::mpsc::SyncSender<()>,
+    resume_unwind: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+thread_local! {
+    static RECEIVE_UNWIND_TEST_HOOK: std::cell::RefCell<Option<ReceiveUnwindTestEndpoint>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(all(test, target_os = "macos"))]
+struct ReceiveUnwindTestControl {
+    received: std::sync::mpsc::Receiver<()>,
+    panic_now: std::sync::mpsc::SyncSender<()>,
+    unwound: std::sync::mpsc::Receiver<()>,
+    resume_unwind: std::sync::mpsc::SyncSender<()>,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+struct ReceiveUnwindTestInstaller(Option<ReceiveUnwindTestEndpoint>);
+
+#[cfg(all(test, target_os = "macos"))]
+impl ReceiveUnwindTestInstaller {
+    fn install(mut self) -> InstalledReceiveUnwindTestHook {
+        let endpoint = self.0.take().expect("receive unwind hook installed once");
+        RECEIVE_UNWIND_TEST_HOOK.with(|hook| {
+            assert!(hook.borrow_mut().replace(endpoint).is_none());
+        });
+        InstalledReceiveUnwindTestHook
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+struct InstalledReceiveUnwindTestHook;
+
+#[cfg(all(test, target_os = "macos"))]
+impl Drop for InstalledReceiveUnwindTestHook {
+    fn drop(&mut self) {
+        RECEIVE_UNWIND_TEST_HOOK.with(|hook| {
+            hook.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn receive_unwind_test_hook() -> (ReceiveUnwindTestControl, ReceiveUnwindTestInstaller) {
+    let (received_tx, received_rx) = std::sync::mpsc::sync_channel(0);
+    let (panic_tx, panic_rx) = std::sync::mpsc::sync_channel(0);
+    let (unwound_tx, unwound_rx) = std::sync::mpsc::sync_channel(0);
+    let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(0);
+    (
+        ReceiveUnwindTestControl {
+            received: received_rx,
+            panic_now: panic_tx,
+            unwound: unwound_rx,
+            resume_unwind: resume_tx,
+        },
+        ReceiveUnwindTestInstaller(Some(ReceiveUnwindTestEndpoint {
+            received: received_tx,
+            panic_now: panic_rx,
+            unwound: unwound_tx,
+            resume_unwind: resume_rx,
+        })),
+    )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn pre_drain_unwind_test_hook() {
+    RECEIVE_UNWIND_TEST_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow().as_ref() {
+            hook.received
+                .send(())
+                .expect("observe raw descriptor receipt");
+            hook.panic_now.recv().expect("inject receive unwind");
+            panic!("injected panic before ancillary drain");
+        }
+    });
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn observe_receive_unwind<T>(receive: impl FnOnce() -> T) -> T {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(receive)) {
+        Ok(value) => value,
+        Err(payload) => {
+            RECEIVE_UNWIND_TEST_HOOK.with(|hook| {
+                if let Some(hook) = hook.borrow().as_ref() {
+                    hook.unwound.send(()).expect("observe receive unwind");
+                    hook.resume_unwind.recv().expect("resume receive unwind");
+                }
+            });
+            std::panic::resume_unwind(payload)
+        }
+    }
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn observe_receive_unwind<T>(receive: impl FnOnce() -> T) -> T {
+    receive()
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[derive(Debug, PartialEq, Eq)]
+struct PostRecvTestEvent {
+    cloexec: Vec<bool>,
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+struct ReceiveTestEndpoint {
+    events: std::sync::mpsc::SyncSender<PostRecvTestEvent>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+thread_local! {
+    static RECEIVE_TEST_HOOK: std::cell::RefCell<Option<ReceiveTestEndpoint>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+struct ReceiveTestControl {
+    events: std::sync::mpsc::Receiver<PostRecvTestEvent>,
+    resume: std::sync::mpsc::SyncSender<()>,
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+impl ReceiveTestControl {
+    fn event(&self) -> PostRecvTestEvent {
+        self.events.recv().expect("post-recv hook event")
+    }
+
+    fn resume(&self) {
+        self.resume.send(()).expect("resume descriptor receipt")
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+struct ReceiveTestInstaller(Option<ReceiveTestEndpoint>);
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+impl ReceiveTestInstaller {
+    fn install(mut self) -> InstalledReceiveTestHook {
+        let endpoint = self.0.take().expect("receive hook installed once");
+        RECEIVE_TEST_HOOK.with(|hook| {
+            assert!(hook.borrow_mut().replace(endpoint).is_none());
+        });
+        InstalledReceiveTestHook
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+struct InstalledReceiveTestHook;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+impl Drop for InstalledReceiveTestHook {
+    fn drop(&mut self) {
+        RECEIVE_TEST_HOOK.with(|hook| {
+            hook.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+fn receive_test_hook() -> (ReceiveTestControl, ReceiveTestInstaller) {
+    let (event_tx, event_rx) = std::sync::mpsc::sync_channel(0);
+    let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(0);
+    (
+        ReceiveTestControl {
+            events: event_rx,
+            resume: resume_tx,
+        },
+        ReceiveTestInstaller(Some(ReceiveTestEndpoint {
+            events: event_tx,
+            resume: resume_rx,
+        })),
+    )
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+fn post_recv_test_hook(descriptors: &[OwnedFd]) {
+    RECEIVE_TEST_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow().as_ref() {
+            let event = PostRecvTestEvent {
+                cloexec: descriptors
+                    .iter()
+                    .map(|descriptor| {
+                        fcntl_getfd(descriptor)
+                            .expect("inspect received descriptor flags")
+                            .contains(FdFlags::CLOEXEC)
+                    })
+                    .collect(),
+            };
+            hook.events.send(event).expect("observe descriptor receipt");
+            hook.resume.recv().expect("resume descriptor receipt");
+        }
+    });
+}
+
 #[cfg_attr(
-    not(target_os = "linux"),
+    not(any(target_os = "linux", target_os = "macos")),
     allow(
         dead_code,
-        reason = "non-Linux refuses before descriptor marker receipt"
+        reason = "unsupported targets refuse before descriptor marker receipt"
     )
 )]
 fn read_descriptor_message_tail<R: Read>(
@@ -454,7 +740,7 @@ impl HandshakeDeadline {
         Ok(remaining)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn install_read_timeout(&self, stream: &UnixStream) -> Result<(), BootstrapError> {
         stream
             .set_read_timeout(Some(self.require_remaining()?))

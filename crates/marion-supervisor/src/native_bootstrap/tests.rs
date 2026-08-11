@@ -1,5 +1,5 @@
 use super::*;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStringExt;
 use std::sync::Barrier;
 
@@ -351,9 +351,9 @@ fn native_handshakes_install_deadlines_and_the_active_cap_releases_exactly() {
     let probe = server.try_clone().unwrap();
     let active = service.try_acquire_connection().unwrap();
     service.serve_connection(ConnId(8), server, active);
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     assert_eq!(probe.read_timeout().unwrap(), Some(timeout));
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     assert_eq!(probe.read_timeout().unwrap(), None);
     assert_eq!(probe.write_timeout().unwrap(), Some(timeout));
 }
@@ -950,7 +950,7 @@ impl NativeBootstrapHandler for CountingHandler {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
 fn unsupported_platform_refuses_before_receiving_descriptors_or_minting_authority() {
     let (client, server) = UnixStream::pair().unwrap();
@@ -967,7 +967,7 @@ fn unsupported_platform_refuses_before_receiving_descriptors_or_minting_authorit
     ));
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
 fn unsupported_service_closes_the_wire_with_zero_verification_authority_or_effects() {
     let effects = Arc::new(Effects::default());
@@ -995,7 +995,7 @@ fn unsupported_service_closes_the_wire_with_zero_verification_authority_or_effec
     effects.assert_zero();
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn native_wire_issues_and_consumes_only_after_the_verified_handoff() {
     let effects = Arc::new(Effects::default());
@@ -1032,8 +1032,293 @@ fn native_wire_issues_and_consumes_only_after_the_verified_handoff() {
     assert_eq!(effects.artifacts.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(target_os = "linux")]
-mod linux_descriptors {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn received_rights_cannot_cross_the_real_spawn_boundary() {
+    use crate::spawn_receive_gate::{SpawnTestEvent, spawn_test_hook};
+
+    #[derive(Debug)]
+    enum RaceSignal {
+        Contended,
+        HookClosed,
+        Child(Option<i32>),
+    }
+
+    let scratch = marion_testsupport::scratch("spawn-receive-race");
+    let path = scratch.join("rights");
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let identity = fstat(&file).unwrap();
+    let (client, server) = UnixStream::pair().unwrap();
+    send_terminal_descriptors(&client, file.as_fd(), file.as_fd()).unwrap();
+    drop(file);
+
+    let (receive_control, receive_install) = receive_test_hook();
+    let receiver = std::thread::spawn(move || {
+        let _hook = receive_install.install();
+        receive_terminal_descriptors(&server)
+    });
+    let post_recv = receive_control.event();
+    #[cfg(target_os = "linux")]
+    assert_eq!(post_recv.cloexec, vec![true, true]);
+    #[cfg(target_os = "macos")]
+    assert_eq!(post_recv.cloexec, vec![false, false]);
+
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "native_bootstrap::tests::received_rights_child_probe",
+        ])
+        .env("MARION_RECEIVED_RIGHTS_PROBE", "1")
+        .env("MARION_RECEIVED_RIGHTS_DEV", identity.st_dev.to_string())
+        .env("MARION_RECEIVED_RIGHTS_INO", identity.st_ino.to_string());
+    let (spawn_control, spawn_install) = spawn_test_hook();
+    let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel(4);
+    let spawn_observer = {
+        let signal_tx = signal_tx.clone();
+        std::thread::spawn(move || {
+            loop {
+                match spawn_control.event_result() {
+                    Ok(SpawnTestEvent::Attempting) => {}
+                    Ok(SpawnTestEvent::Contended) => {
+                        signal_tx.send(RaceSignal::Contended).unwrap();
+                    }
+                    Ok(SpawnTestEvent::Acquired) => {
+                        spawn_control.resume();
+                        return;
+                    }
+                    Err(()) => {
+                        signal_tx.send(RaceSignal::HookClosed).unwrap();
+                        return;
+                    }
+                }
+            }
+        })
+    };
+    let child = {
+        let signal_tx = signal_tx.clone();
+        std::thread::spawn(move || {
+            let _hook = spawn_install.install();
+            let code = crate::run::run_bounded(&mut command, Duration::from_secs(5))
+                .ok()
+                .and_then(|output| output.code);
+            signal_tx.send(RaceSignal::Child(code)).unwrap();
+        })
+    };
+    drop(signal_tx);
+
+    #[cfg(target_os = "macos")]
+    assert!(matches!(
+        signal_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        RaceSignal::Contended
+    ));
+    #[cfg(target_os = "macos")]
+    receive_control.resume();
+
+    let child_code = match signal_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+        RaceSignal::Child(code) => code,
+        RaceSignal::Contended => panic!("Linux atomic receipt must not take the spawn gate"),
+        RaceSignal::HookClosed => panic!("real run_bounded spawn bypassed the gate"),
+    };
+    assert_eq!(child_code, Some(0));
+
+    #[cfg(target_os = "linux")]
+    receive_control.resume();
+    let received = receiver.join().unwrap().unwrap();
+    for descriptor in &received {
+        assert!(fcntl_getfd(descriptor).unwrap().contains(FdFlags::CLOEXEC));
+    }
+    child.join().unwrap();
+    spawn_observer.join().unwrap();
+    drop(client);
+    let _ = std::fs::remove_file(path);
+    drop(scratch);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unwinding_before_ancillary_drain_closes_rights_before_spawn_can_enter() {
+    use crate::spawn_receive_gate::{SpawnTestEvent, spawn_test_hook};
+
+    let scratch = marion_testsupport::scratch("spawn-receive-unwind");
+    let path = scratch.join("rights");
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let identity = fstat(&file).unwrap();
+    let (client, server) = UnixStream::pair().unwrap();
+    send_terminal_descriptors(&client, file.as_fd(), file.as_fd()).unwrap();
+    drop(file);
+
+    let (unwind_control, unwind_install) = receive_unwind_test_hook();
+    let (receiver_tx, receiver_rx) = std::sync::mpsc::sync_channel(1);
+    let receiver = std::thread::spawn(move || {
+        let _hook = unwind_install.install();
+        let panicked = std::panic::catch_unwind(|| receive_terminal_descriptors(&server)).is_err();
+        receiver_tx.send(panicked).unwrap();
+    });
+    unwind_control
+        .received
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "native_bootstrap::tests::received_rights_child_probe",
+        ])
+        .env("MARION_RECEIVED_RIGHTS_PROBE", "1")
+        .env("MARION_RECEIVED_RIGHTS_DEV", identity.st_dev.to_string())
+        .env("MARION_RECEIVED_RIGHTS_INO", identity.st_ino.to_string());
+    let (spawn_control, spawn_install) = spawn_test_hook();
+    let (child_tx, child_rx) = std::sync::mpsc::sync_channel(1);
+    let child = std::thread::spawn(move || {
+        let _hook = spawn_install.install();
+        let code = crate::run::run_bounded(&mut command, Duration::from_secs(5))
+            .ok()
+            .and_then(|output| output.code);
+        child_tx.send(code).unwrap();
+    });
+    assert_eq!(
+        spawn_control.event_timeout(Duration::from_secs(5)),
+        Ok(SpawnTestEvent::Attempting)
+    );
+    assert_eq!(
+        spawn_control.event_timeout(Duration::from_secs(5)),
+        Ok(SpawnTestEvent::Contended)
+    );
+
+    unwind_control.panic_now.send(()).unwrap();
+    unwind_control
+        .unwound
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(
+        spawn_control.event_timeout(Duration::from_secs(5)),
+        Ok(SpawnTestEvent::Acquired)
+    );
+    spawn_control.resume();
+    assert_eq!(
+        child_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+        Some(0)
+    );
+    unwind_control.resume_unwind.send(()).unwrap();
+    assert!(receiver_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+
+    child.join().unwrap();
+    receiver.join().unwrap();
+    drop(client);
+    let _ = std::fs::remove_file(path);
+    drop(scratch);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn gate_contention_consumes_the_absolute_receive_deadline_before_recvmsg() {
+    use crate::spawn_receive_gate::{SPAWN_RECEIVE_GATE, SpawnTestEvent, spawn_test_hook};
+
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    let (holder_done_tx, holder_done_rx) = std::sync::mpsc::sync_channel(1);
+    let holder = std::thread::spawn(move || {
+        SPAWN_RECEIVE_GATE.receive_non_atomic(|| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        holder_done_tx.send(()).unwrap();
+    });
+    entered_rx.recv().unwrap();
+
+    let clock = Arc::new(ManualClock::default());
+    let deadline = HandshakeDeadline::new(clock.clone(), Duration::from_millis(25)).unwrap();
+    let (client, server) = UnixStream::pair().unwrap();
+    let (control, install) = spawn_test_hook();
+    let (receiver_tx, receiver_rx) = std::sync::mpsc::sync_channel(1);
+    let receiver = std::thread::spawn(move || {
+        let _hook = install.install();
+        receiver_tx
+            .send(receive_terminal_descriptors_before(&server, &deadline))
+            .unwrap();
+    });
+    let attempting = control.event_timeout(Duration::from_secs(1));
+    let contended = control.event_timeout(Duration::from_secs(1));
+    clock.set(Duration::from_millis(26));
+    drop(client);
+    let release = release_tx.send(());
+    let acquired = control.event_timeout(Duration::from_secs(1));
+    if acquired == Ok(SpawnTestEvent::Acquired) {
+        control.resume();
+    }
+    let result = receiver_rx.recv_timeout(Duration::from_secs(2));
+    let holder_done = holder_done_rx.recv_timeout(Duration::from_secs(2));
+    if result.is_ok() {
+        receiver.join().unwrap();
+    }
+    if holder_done.is_ok() {
+        holder.join().unwrap();
+    }
+
+    assert_eq!(attempting, Ok(SpawnTestEvent::Attempting));
+    assert_eq!(contended, Ok(SpawnTestEvent::Contended));
+    assert_eq!(acquired, Ok(SpawnTestEvent::Acquired));
+    assert!(release.is_ok());
+    assert!(holder_done.is_ok());
+    assert!(matches!(
+        result.unwrap(),
+        Err(BootstrapError::HandshakeExpired)
+    ));
+}
+
+#[test]
+fn received_rights_child_probe() {
+    if std::env::var_os("MARION_RECEIVED_RIGHTS_PROBE").is_none() {
+        return;
+    }
+    let expected_dev: u64 = std::env::var("MARION_RECEIVED_RIGHTS_DEV")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let expected_ino: u64 = std::env::var("MARION_RECEIVED_RIGHTS_INO")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let fd_dir = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    for entry in std::fs::read_dir(fd_dir).unwrap() {
+        let Ok(fd) = entry.unwrap().file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        if fd <= 2 {
+            continue;
+        }
+        // SAFETY: the fd came from this process's live fd directory and is borrowed for one fstat.
+        let descriptor = unsafe { BorrowedFd::borrow_raw(fd) };
+        if let Ok(stat) = fstat(descriptor) {
+            #[cfg(target_os = "macos")]
+            let device = stat.st_dev as u64;
+            #[cfg(target_os = "linux")]
+            let device = stat.st_dev;
+            if device == expected_dev && stat.st_ino == expected_ino {
+                panic!("spawned child inherited received descriptor {fd}");
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod supported_descriptors {
     use super::*;
     use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
     use std::io::IoSlice;
@@ -1163,7 +1448,10 @@ mod linux_descriptors {
             send_count(&client, &files);
             let error = receive_terminal_descriptors(&server).unwrap_err();
             if count == 4 {
-                assert!(matches!(error, BootstrapError::AncillaryTruncated));
+                assert!(
+                    matches!(error, BootstrapError::AncillaryTruncated),
+                    "unexpected four-descriptor result: {error:?}"
+                );
             } else {
                 assert!(matches!(error, BootstrapError::DescriptorCount));
             }
@@ -1198,14 +1486,7 @@ mod linux_descriptors {
     #[test]
     fn every_received_descriptor_is_closed_when_ancillary_data_is_truncated() {
         let (client, server) = UnixStream::pair().unwrap();
-        let pipes: Vec<_> = (0..4)
-            .map(|_| {
-                rustix::pipe::pipe_with(
-                    rustix::pipe::PipeFlags::CLOEXEC | rustix::pipe::PipeFlags::NONBLOCK,
-                )
-                .unwrap()
-            })
-            .collect();
+        let pipes: Vec<_> = (0..4).map(|_| rustix::pipe::pipe().unwrap()).collect();
         let writes: Vec<_> = pipes.iter().map(|(_, write)| write.as_fd()).collect();
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(4))];
         let mut control = SendAncillaryBuffer::new(&mut space);
@@ -1218,17 +1499,18 @@ mod linux_descriptors {
         )
         .unwrap();
         let reads: Vec<_> = pipes.into_iter().map(|(read, _)| read).collect();
-        assert!(matches!(
-            receive_terminal_descriptors(&server),
-            Err(BootstrapError::AncillaryTruncated)
-        ));
+        let result = receive_terminal_descriptors(&server);
+        assert!(
+            matches!(result, Err(BootstrapError::AncillaryTruncated)),
+            "unexpected truncation result: {result:?}"
+        );
         for read in reads {
             assert_eq!(rustix::io::read(&read, &mut [0u8; 1]).unwrap(), 0);
         }
     }
 
     #[test]
-    fn exact_pair_is_atomic_cloexec_and_different_identities_refuse() {
+    fn exact_pair_is_cloexec_and_different_identities_refuse() {
         let (client, server) = UnixStream::pair().unwrap();
         let read = std::fs::File::open("/dev/null").unwrap();
         let write = std::fs::OpenOptions::new()

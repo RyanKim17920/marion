@@ -484,7 +484,7 @@ pub fn run_duplex(
         // a root's launch is left byte-identical to what it was.
         command.process_group(0);
     }
-    let mut child = command.spawn()?;
+    let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(command)?;
     let pid = child.id() as i32;
     // **Before one byte reaches the node.** §6.1 step 7's confirmation is the caller's to write and
     // this is the first instant it can be written truthfully; putting it here rather than after the

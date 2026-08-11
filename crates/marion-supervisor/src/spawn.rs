@@ -368,10 +368,16 @@ impl SpawnError {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, SpawnError> {
-    let out = SysCommand::new("git")
+    let mut command = SysCommand::new("git");
+    command
         .current_dir(repo)
         .args(args)
-        .output()?;
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let out = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut command)?
+        .wait_with_output()?;
     if !out.status.success() {
         return Err(SpawnError::Git(
             "command",
@@ -631,7 +637,12 @@ fn git_env(wt: &Path, env: &[(&str, &OsStr)], args: &[&str]) -> Result<String, S
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output()?;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let out = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE
+        .spawn(&mut cmd)?
+        .wait_with_output()?;
     if !out.status.success() {
         return Err(SpawnError::Git(
             "command",
