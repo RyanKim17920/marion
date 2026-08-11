@@ -32,6 +32,7 @@
 //! let _reused = select_native_facade(&registry, intent);
 //! ```
 
+use crate::native_bootstrap::ConsumedNativeCapability;
 #[cfg(test)]
 use marion_core::LaneReadiness;
 use marion_core::{
@@ -41,7 +42,6 @@ use marion_core::{
 
 /// A direct-CLI native request whose provenance was established inside the supervisor crate.
 ///
-/// Task 2 replaces this temporary crate-private issuer with the consumed direct-CLI capability.
 /// The value remains move-only so selection consumes the authorization decision exactly once.
 #[derive(Debug)]
 pub struct AuthorizedNativeFacade<'request> {
@@ -49,12 +49,10 @@ pub struct AuthorizedNativeFacade<'request> {
 }
 
 impl<'request> AuthorizedNativeFacade<'request> {
-    #[allow(
-        dead_code,
-        reason = "Task 2 replaces this temporary crate-private issuer"
-    )]
-    const fn new(selector: &'request str) -> Self {
-        Self { selector }
+    pub(crate) const fn from_consumed(proof: ConsumedNativeCapability<'request>) -> Self {
+        Self {
+            selector: proof.selector(),
+        }
     }
 }
 
@@ -208,6 +206,19 @@ impl<'registry> NativeFacadeSelection<'registry> {
     }
 }
 
+/// Consumes bootstrap authorization into native-only selection without exposing a constructor for
+/// that authorization to external callers.
+#[allow(
+    dead_code,
+    reason = "Task 3 receives authorization through ConsumedNativeRequest::into_parts"
+)]
+pub(crate) fn select_consumed_native<'registry>(
+    registry: &'registry NativeFacadeRegistry<'_>,
+    authorization: AuthorizedNativeFacade<'_>,
+) -> Option<SelectedNativeFacade<'registry>> {
+    select_native_facade(registry, LaunchIntent::native(authorization))?.into_native()
+}
+
 #[cfg(test)]
 pub(crate) fn select_test_native<'registry>(
     registry: &'registry NativeFacadeRegistry<'_>,
@@ -215,7 +226,7 @@ pub(crate) fn select_test_native<'registry>(
 ) -> Option<SelectedNativeFacade<'registry>> {
     select_native_facade(
         registry,
-        LaunchIntent::native(AuthorizedNativeFacade::new(selector)),
+        LaunchIntent::native(AuthorizedNativeFacade { selector }),
     )?
     .into_native()
 }
@@ -276,7 +287,9 @@ mod tests {
     fn only_the_crate_private_authorized_value_can_form_native_provenance() {
         let descriptors = [NATIVE_ONLY];
         let registry = NativeFacadeRegistry::new(&descriptors).unwrap();
-        let authorized = AuthorizedNativeFacade::new("codex-native");
+        let authorized = AuthorizedNativeFacade {
+            selector: "codex-native",
+        };
 
         let selection = select_native_facade(&registry, LaunchIntent::native(authorized)).unwrap();
         let native = selection.into_native().unwrap();
@@ -318,7 +331,9 @@ mod tests {
         };
         let descriptors = [descriptor];
         let registry = NativeFacadeRegistry::new(&descriptors).unwrap();
-        let authorized = AuthorizedNativeFacade::new("codex-native");
+        let authorized = AuthorizedNativeFacade {
+            selector: "codex-native",
+        };
 
         assert!(select_native_facade(&registry, LaunchIntent::native(authorized)).is_none());
     }
@@ -334,7 +349,9 @@ mod tests {
         };
         let descriptors = [descriptor];
         let registry = NativeFacadeRegistry::new(&descriptors).unwrap();
-        let authorized = AuthorizedNativeFacade::new("codex-native");
+        let authorized = AuthorizedNativeFacade {
+            selector: "codex-native",
+        };
 
         assert!(select_native_facade(&registry, LaunchIntent::native(authorized)).is_none());
     }

@@ -48,6 +48,8 @@ pub mod journal;
 pub mod mcp;
 /// Pure binding of byte-exact V2 launch state to one ready native facade descriptor.
 pub mod native_binding;
+/// Native-only fd bootstrap authentication and direct-CLI capability issuance.
+pub mod native_bootstrap;
 /// Closed native-versus-structured launch provenance and descriptor-owned lane selection.
 pub mod native_intent;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather

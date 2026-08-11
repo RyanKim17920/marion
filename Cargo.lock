@@ -488,6 +488,8 @@ dependencies = [
 name = "marion-supervisor"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "getrandom",
  "insta",
  "marion-core",
  "marion-harness",
@@ -497,6 +499,7 @@ dependencies = [
  "marion-testsupport",
  "marion-tui",
  "ratatui",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror",

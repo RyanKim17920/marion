@@ -20,6 +20,8 @@ name = "marion"
 path = "src/bin/marion.rs"
 
 [dependencies]
+blake3 = "1"
+getrandom = "0.4"
 marion-core = { path = "../marion-core" }
 serde.workspace = true
 serde_json.workspace = true
@@ -45,6 +47,7 @@ marion-term = { path = "../marion-term" }
 # marion uses is its own.
 ratatui = { version = "0.30", default-features = false }
 marion-proto = { path = "../marion-proto" }
+rustix = { version = "1", features = ["fs", "net", "process", "termios"] }
 
 # A **dev**-dependency, not a dependency: only the end-to-end test starts a provider. Linking the
 # canned provider into the user-facing `marion` binary would put a fake-model server inside the

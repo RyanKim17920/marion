@@ -81,6 +81,7 @@ use marion_proto::{
     Response, RpcError,
 };
 
+use crate::native_bootstrap::NativeBootstrapService;
 use crate::socket::Serving;
 
 /// The longest single frame the supervisor will assemble, in bytes.
@@ -530,12 +531,29 @@ impl Server {
         handle: Arc<dyn Handle>,
         idle_grace: Duration,
     ) -> Server {
+        let expected_project = serving.canonical_project().to_path_buf();
+        Self::start_with_native_handler(
+            serving,
+            handle,
+            Arc::new(NativeBootstrapService::disabled(expected_project)),
+            idle_grace,
+        )
+    }
+
+    pub(crate) fn start_with_native_handler(
+        serving: Serving,
+        handle: Arc<dyn Handle>,
+        native: Arc<NativeBootstrapService>,
+        idle_grace: Duration,
+    ) -> Server {
         let stop = Arc::new(AtomicBool::new(false));
         let conns: Conns = Arc::new(Mutex::new(HashMap::new()));
         let accept = {
             let stop = Arc::clone(&stop);
             let conns = Arc::clone(&conns);
-            std::thread::spawn(move || accept_loop(serving, handle, stop, conns, idle_grace))
+            std::thread::spawn(move || {
+                accept_loop(serving, handle, native, stop, conns, idle_grace)
+            })
         };
         Server {
             stop,
@@ -587,16 +605,13 @@ impl Drop for Server {
 fn accept_loop(
     serving: Serving,
     handle: Arc<dyn Handle>,
+    native: Arc<NativeBootstrapService>,
     stop: Arc<AtomicBool>,
     conns: Conns,
     idle_grace: Duration,
 ) {
     let next = AtomicU64::new(1);
     let mut idle_since: Option<Instant> = None;
-    if serving.listener().set_nonblocking(true).is_err() {
-        // Nothing else can be done from here and going quiet is the one forbidden option, so the
-        // loop still runs: a blocking accept simply makes shutdown wait for a connection.
-    }
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     while !stop.load(Ordering::SeqCst) && !handle.exiting() {
         handle.tick();
@@ -632,6 +647,27 @@ fn accept_loop(
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => std::thread::sleep(ACCEPT_POLL),
         }
+        if let Some(listener) = serving.native_bootstrap_listener() {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let id = ConnId(next.fetch_add(1, Ordering::SeqCst));
+                    let Some((dup, active)) = prepare_native_connection(&native, &mut stream)
+                    else {
+                        continue;
+                    };
+                    lock(&conns).insert(id, dup);
+                    let native = Arc::clone(&native);
+                    let conns = Arc::clone(&conns);
+                    threads.push(std::thread::spawn(move || {
+                        native.serve_connection(id, stream, active);
+                        lock(&conns).remove(&id);
+                    }));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => std::thread::sleep(ACCEPT_POLL),
+            }
+        }
         threads.retain(|t| !t.is_finished());
     }
     // **One last tick after the flag, never before it** — `LiveRegistry::follow` and
@@ -646,6 +682,19 @@ fn accept_loop(
     for t in threads {
         let _ = t.join();
     }
+}
+
+fn prepare_native_connection(
+    native: &NativeBootstrapService,
+    stream: &mut std::os::unix::net::UnixStream,
+) -> Option<(
+    std::os::unix::net::UnixStream,
+    crate::native_bootstrap::ActiveNativeConnection,
+)> {
+    stream.set_nonblocking(false).ok()?;
+    let active = native.admit_connection(stream)?;
+    let duplicate = stream.try_clone().ok()?;
+    Some((duplicate, active))
 }
 
 /// One connection, start to finish.
@@ -920,6 +969,7 @@ mod tests {
         waived: AtomicBool,
         asked: AtomicU64,
         exiting: AtomicBool,
+        ticks: AtomicU64,
     }
 
     impl Handle for Leaver {
@@ -935,6 +985,10 @@ mod tests {
 
         fn exiting(&self) -> bool {
             self.exiting.load(Ordering::SeqCst)
+        }
+
+        fn tick(&self) {
+            self.ticks.fetch_add(1, Ordering::SeqCst);
         }
 
         fn idle_exit_eligible(&self) -> bool {
@@ -1327,6 +1381,165 @@ mod tests {
         let n = r.read_line(&mut line).expect("a frame arrives");
         assert!(n > 0, "the supervisor closed instead of answering");
         Frame::from_line(&line).expect("the supervisor emits well-formed frames")
+    }
+
+    #[test]
+    fn ordinary_json_rpc_rejects_copied_native_token_before_capability_lookup() {
+        let dir = marion_testsupport::scratch("native-ordinary");
+        let paths = crate::socket::socket_paths(&dir, std::path::Path::new("/p"), 1);
+        let Acquired::Serving(serving) = acquire(&paths).unwrap() else {
+            panic!("nothing was listening")
+        };
+        let recorder = Arc::new(Recorder::default());
+        let native = Arc::new(NativeBootstrapService::disabled(
+            paths.canonical_project().to_path_buf(),
+        ));
+        let server = Server::start_with_native_handler(
+            serving,
+            Arc::clone(&recorder) as Arc<dyn Handle>,
+            Arc::clone(&native),
+            DEFAULT_IDLE_GRACE,
+        );
+        let mut client = UnixStream::connect(paths.socket()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client
+            .write_all(
+                b"{\"jsonrpc\":\"2.0\",\"id\":900,\"method\":\"native/bootstrap\",\"params\":{\"capability\":\"copied-secret-token\"}}\n",
+            )
+            .unwrap();
+        client.flush().unwrap();
+        let mut response = String::new();
+        std::io::BufReader::new(client)
+            .read_line(&mut response)
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["id"], 900);
+        assert_eq!(
+            response["error"]["code"],
+            marion_proto::error::METHOD_NOT_FOUND
+        );
+        assert_eq!(native.capability_lookup_count(), 0);
+        assert!(lock(&recorder.calls).is_empty());
+        server.stop();
+    }
+
+    #[test]
+    fn native_accept_preparation_holds_the_cap_before_any_worker_spawn() {
+        let native = NativeBootstrapService::disabled(std::path::PathBuf::from("/p"));
+        let mut permits = Vec::new();
+        while let Ok(permit) = native.try_acquire_connection() {
+            permits.push(permit);
+        }
+        let spawned = AtomicU64::new(0);
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        if prepare_native_connection(&native, &mut server).is_some() {
+            spawned.fetch_add(1, Ordering::SeqCst);
+        }
+        let mut status = [0u8];
+        client.read_exact(&mut status).unwrap();
+        assert_eq!(status, [1]);
+        assert_eq!(spawned.load(Ordering::SeqCst), 0);
+        assert_eq!(permits.len(), 32);
+    }
+
+    #[cfg(target_os = "linux")]
+    struct LinuxNativeHandler(AtomicU64);
+
+    #[cfg(target_os = "linux")]
+    impl crate::native_bootstrap::NativeBootstrapHandler for LinuxNativeHandler {
+        fn verify_terminal(
+            &self,
+            _peer: crate::native_bootstrap::PeerIdentity,
+            _stdin: std::os::fd::BorrowedFd<'_>,
+            _stdout: std::os::fd::BorrowedFd<'_>,
+        ) -> Result<
+            crate::native_bootstrap::TerminalGeometryObservation,
+            crate::native_bootstrap::BootstrapError,
+        > {
+            Ok(crate::native_bootstrap::TerminalGeometryObservation::new(
+                crate::native_bootstrap::TerminalGeometry {
+                    cols: 80,
+                    rows: 24,
+                    xpixel: 0,
+                    ypixel: 0,
+                },
+            ))
+        }
+
+        fn authorized(
+            &self,
+            _request: crate::native_bootstrap::ConsumedNativeRequest<'_>,
+        ) -> Result<(), crate::native_bootstrap::BootstrapError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_listener_dispatches_the_wire_and_native_connections_block_idle_until_cleanup() {
+        use std::os::fd::AsFd;
+
+        const GRACE: Duration = Duration::ZERO;
+        let dir = marion_testsupport::scratch("native-dispatch");
+        let paths = crate::socket::socket_paths(&dir, std::path::Path::new("/p"), 1);
+        let Acquired::Serving(serving) = acquire(&paths).unwrap() else {
+            panic!("nothing was listening")
+        };
+        let leaver = Arc::new(Leaver::default());
+        let handler = Arc::new(LinuxNativeHandler(AtomicU64::new(0)));
+        let native = Arc::new(NativeBootstrapService::new(
+            paths.canonical_project().to_path_buf(),
+            crate::native_bootstrap::NATIVE_WIRE_VERSION,
+            Arc::clone(&handler) as Arc<dyn crate::native_bootstrap::NativeBootstrapHandler>,
+        ));
+        let server = Server::start_with_native_handler(
+            serving,
+            Arc::clone(&leaver) as Arc<dyn Handle>,
+            Arc::clone(&native),
+            GRACE,
+        );
+
+        let idle_client = UnixStream::connect(paths.native_bootstrap()).unwrap();
+        assert!(until(|| lock(&server.conns).len() == 1));
+        let tick = leaver.ticks.load(Ordering::SeqCst);
+        leaver.eligible.store(true, Ordering::SeqCst);
+        assert!(until(|| leaver.ticks.load(Ordering::SeqCst) >= tick + 3));
+        assert_eq!(leaver.asked.load(Ordering::SeqCst), 0);
+        leaver.eligible.store(false, Ordering::SeqCst);
+        drop(idle_client);
+        assert!(until(|| lock(&server.conns).is_empty()));
+
+        let mut client = UnixStream::connect(paths.native_bootstrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let input = std::fs::File::open("/dev/null").unwrap();
+        let output = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        let context = crate::native_bootstrap::DirectNativeRequestContext::new(
+            std::path::PathBuf::from("/project"),
+            std::ffi::OsString::from("atlas"),
+            Vec::new(),
+            std::ffi::OsString::from("xterm"),
+            1,
+        );
+        let capability = crate::native_bootstrap::request_direct_cli_capability(
+            &mut client,
+            input.as_fd(),
+            output.as_fd(),
+            &context,
+        )
+        .unwrap();
+        crate::native_bootstrap::present_direct_cli_capability(&mut client, capability, &context)
+            .unwrap();
+        assert_eq!(handler.0.load(Ordering::SeqCst), 1);
+        server.stop();
+        assert!(!paths.native_bootstrap().exists());
     }
 
     fn node_get(agent: &str) -> Call {

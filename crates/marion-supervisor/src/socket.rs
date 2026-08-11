@@ -156,8 +156,10 @@ const START_DEADLINE: Duration = Duration::from_secs(5);
 /// Where the socket, its lock and their directory are, and whether §2's fallback was taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketPaths {
+    canonical_project: PathBuf,
     dir: PathBuf,
     socket: PathBuf,
+    native_bootstrap: PathBuf,
     lock: PathBuf,
     identity: PathBuf,
     log: PathBuf,
@@ -169,8 +171,17 @@ pub struct SocketPaths {
 }
 
 impl SocketPaths {
+    pub fn canonical_project(&self) -> &Path {
+        &self.canonical_project
+    }
+
     pub fn socket(&self) -> &Path {
         &self.socket
+    }
+
+    /// Native-only descriptor-passing listener beside the ordinary project RPC socket.
+    pub fn native_bootstrap(&self) -> &Path {
+        &self.native_bootstrap
     }
 
     /// The `flock` file. Beside the socket, never inside a different directory: the two must share
@@ -222,18 +233,22 @@ pub fn socket_paths(state: &Path, canonical_root: &Path, uid: u32) -> SocketPath
     let len = primary.as_os_str().as_encoded_bytes().len();
     if len <= MAX_SOCKET_PATH_BYTES {
         return SocketPaths {
+            canonical_project: canonical_root.to_path_buf(),
             dir: project.path().to_path_buf(),
             lock: project.path().join("supervisor.lock"),
             identity: project.path().join("supervisor.identity"),
             log: project.path().join("supervisor.log"),
             socket: primary,
+            native_bootstrap: project.path().join("native.sock"),
             overflow: None,
         };
     }
     let hash = project_hash(canonical_root);
     let dir = PathBuf::from(format!("/tmp/marion-{uid}"));
     SocketPaths {
+        canonical_project: canonical_root.to_path_buf(),
         socket: dir.join(format!("{hash}.sock")),
+        native_bootstrap: dir.join(format!("{hash}.native.sock")),
         lock: dir.join(format!("{hash}.lock")),
         identity: dir.join(format!("{hash}.identity")),
         log: dir.join(format!("{hash}.log")),
@@ -329,6 +344,10 @@ pub fn resolve(cwd: &Path) -> Result<SocketPaths, SocketError> {
 /// dials the winner rather than erroring or starting a second"* — a caller that had to ask "am I
 /// first?" and then act on the answer would have a window between the two.
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Serving must own its listeners and lock as one entitlement value"
+)]
 pub enum Acquired {
     /// This caller holds the lock and the listener. Nobody else can reach this arm until it drops.
     Serving(Serving),
@@ -481,8 +500,12 @@ fn someone_is_serving(lock: &Path) -> bool {
 /// split was for.
 #[derive(Debug)]
 pub struct Serving {
+    canonical_project: PathBuf,
     listener: UnixListener,
     path: PathBuf,
+    native_bootstrap_listener: Option<UnixListener>,
+    native_bootstrap_path: PathBuf,
+    native_bootstrap_bound: Option<FileId>,
     /// Where this process published [`SupervisorIdentity`]. Removed with the socket, because the
     /// two say the same thing — *a supervisor is here* — and a reader that found one without the
     /// other would have to guess which was telling the truth.
@@ -522,12 +545,23 @@ impl FileId {
 }
 
 impl Serving {
+    pub fn canonical_project(&self) -> &Path {
+        &self.canonical_project
+    }
     pub fn listener(&self) -> &UnixListener {
         &self.listener
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn native_bootstrap_listener(&self) -> Option<&UnixListener> {
+        self.native_bootstrap_listener.as_ref()
+    }
+
+    pub fn native_bootstrap_path(&self) -> &Path {
+        &self.native_bootstrap_path
     }
 
     /// The identity this process published when it took the socket.
@@ -562,13 +596,19 @@ impl Serving {
     /// A missing file counts as gone and an unreadable one counts as gone: the one answer this must
     /// never invent is *"still fine"*.
     pub fn still_entitled(&self) -> bool {
-        entitled(
+        let ordinary = entitled(
             &self.lock,
             self.lock_id,
             &self.lock_path,
             &self.path,
             self.bound,
-        )
+        );
+        #[cfg(not(target_os = "linux"))]
+        return ordinary && self.native_bootstrap_bound.is_none();
+        #[cfg(target_os = "linux")]
+        return ordinary
+            && self.native_bootstrap_bound.is_some()
+            && FileId::at(&self.native_bootstrap_path) == self.native_bootstrap_bound;
     }
 
     /// [`Serving::still_entitled`] as a value another thread can hold while the serve loop owns
@@ -582,6 +622,8 @@ impl Serving {
             lock_id: self.lock_id?,
             socket: self.path.clone(),
             bound: self.bound?,
+            native_bootstrap_socket: self.native_bootstrap_path.clone(),
+            native_bootstrap_bound: self.native_bootstrap_bound,
         })
     }
 }
@@ -615,32 +657,55 @@ pub struct Sentry {
     lock_id: FileId,
     socket: PathBuf,
     bound: FileId,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "non-Linux intentionally has no native listener")
+    )]
+    native_bootstrap_socket: PathBuf,
+    native_bootstrap_bound: Option<FileId>,
 }
 
 impl Sentry {
     /// The same question [`Serving::still_entitled`] answers, asked from wherever this was carried.
     pub fn still_entitled(&self) -> bool {
-        entitled(
+        let ordinary = entitled(
             &self.lock,
             Some(self.lock_id),
             &self.lock_path,
             &self.socket,
             Some(self.bound),
-        )
+        );
+        #[cfg(not(target_os = "linux"))]
+        return ordinary && self.native_bootstrap_bound.is_none();
+        #[cfg(target_os = "linux")]
+        return ordinary
+            && self.native_bootstrap_bound.is_some()
+            && FileId::at(&self.native_bootstrap_socket) == self.native_bootstrap_bound;
     }
 
     /// What to say to an operator who finds the supervisor gone.
     pub fn why(&self) -> String {
-        format!(
+        #[cfg(not(target_os = "linux"))]
+        return format!(
             "the supervisor lock {} is no longer the file this process holds, or {} is no longer \
-             the socket it bound. That is what removing a project's state directory under a \
+             the socket it bound. This platform intentionally publishes no native descriptor \
+             socket until process-wide spawn/receive exclusion exists. Removing a project's state \
+             directory can permit a second supervisor, so this one stands down (§5.7).",
+            self.lock_path.display(),
+            self.socket.display(),
+        );
+        #[cfg(target_os = "linux")]
+        format!(
+            "the supervisor lock {} is no longer the file this process holds, or {} / {} are no \
+             longer the sockets it bound. That is what removing a project's state directory under a \
              running supervisor does: the pathnames survive, the inodes behind them do not, and \
              the flock that makes one supervisor per project is an agreement about inodes. A \
              second supervisor can be started at those names against no opposition, so this one \
              stands down rather than serve a socket nobody can dial over a journal it can no \
              longer append its own exit to (§5.7).",
             self.lock_path.display(),
-            self.socket.display()
+            self.socket.display(),
+            self.native_bootstrap_socket.display()
         )
     }
 }
@@ -658,6 +723,7 @@ impl Drop for Serving {
     /// what I made*.
     fn drop(&mut self) {
         remove_if_still(&self.path, self.bound);
+        remove_if_still(&self.native_bootstrap_path, self.native_bootstrap_bound);
         remove_if_still(&self.identity, self.identity_id);
     }
 }
@@ -715,6 +781,49 @@ pub enum SocketError {
         #[source]
         source: std::io::Error,
     },
+}
+
+fn bind_configured_listeners(
+    paths: &SocketPaths,
+    native_enabled: bool,
+    mut configure: impl FnMut(&UnixListener, &Path) -> std::io::Result<()>,
+) -> Result<(UnixListener, Option<UnixListener>), SocketError> {
+    let cleanup = || {
+        let _ = std::fs::remove_file(paths.socket());
+        let _ = std::fs::remove_file(paths.native_bootstrap());
+    };
+    let listener = UnixListener::bind(paths.socket()).map_err(|source| SocketError::Bind {
+        path: paths.socket().to_path_buf(),
+        source,
+    })?;
+    let native = if native_enabled {
+        match UnixListener::bind(paths.native_bootstrap()) {
+            Ok(listener) => Some(listener),
+            Err(source) => {
+                cleanup();
+                return Err(SocketError::Bind {
+                    path: paths.native_bootstrap().to_path_buf(),
+                    source,
+                });
+            }
+        }
+    } else {
+        None
+    };
+    for (bound, path) in std::iter::once((&listener, paths.socket())).chain(
+        native
+            .as_ref()
+            .map(|listener| (listener, paths.native_bootstrap())),
+    ) {
+        if let Err(source) = configure(bound, path) {
+            cleanup();
+            return Err(SocketError::Bind {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    }
+    Ok((listener, native))
 }
 
 /// §5.7's start, made idempotent under contention: **exactly one caller serves and every other one
@@ -797,18 +906,29 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
                         });
                     }
                 }
-                let listener =
-                    UnixListener::bind(paths.socket()).map_err(|e| SocketError::Bind {
-                        path: paths.socket().to_path_buf(),
-                        source: e,
-                    })?;
-                // 0600: the socket is the fleet's control plane and §5.4's authorization model is
-                // "the client is the operator". File mode is the only thing that says which
-                // operator.
-                let _ = std::fs::set_permissions(
-                    paths.socket(),
-                    std::fs::Permissions::from_mode(0o600),
-                );
+                #[cfg(target_os = "linux")]
+                match std::fs::remove_file(paths.native_bootstrap()) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(SocketError::Bind {
+                            path: paths.native_bootstrap().to_path_buf(),
+                            source: e,
+                        });
+                    }
+                }
+                // Both listeners are private and nonblocking before `Serving` is published. A
+                // failure on either rolls both paths back, so no bound-but-unserved native socket
+                // can escape this constructor.
+                let (listener, native_bootstrap_listener) = bind_configured_listeners(
+                    paths,
+                    cfg!(target_os = "linux"),
+                    |listener, path| {
+                        rustix::fs::chmod(path, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
+                            .map_err(std::io::Error::from)?;
+                        listener.set_nonblocking(true)
+                    },
+                )?;
                 // Published **after** the bind and before this returns, so the window in which a
                 // socket exists without an identity beside it is the two syscalls between them and
                 // never a scheduling decision. Best-effort on the write itself: a supervisor that
@@ -816,14 +936,20 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
                 // would trade a fleet for a diagnostic.
                 write_identity(paths.identity(), &SupervisorIdentity::own());
                 return Ok(Acquired::Serving(Serving {
+                    canonical_project: paths.canonical_project().to_path_buf(),
                     // Recorded now, from the filesystem, because these are what this process is
                     // entitled to — and a pathname is not an identity (see
                     // [`Serving::still_entitled`]).
                     bound: FileId::at(paths.socket()),
+                    native_bootstrap_bound: native_bootstrap_listener
+                        .as_ref()
+                        .and_then(|_| FileId::at(paths.native_bootstrap())),
                     identity_id: FileId::at(paths.identity()),
                     lock_id: lock.metadata().ok().map(|m| FileId::of(&m)),
                     listener,
                     path: paths.socket().to_path_buf(),
+                    native_bootstrap_listener,
+                    native_bootstrap_path: paths.native_bootstrap().to_path_buf(),
                     identity: paths.identity().to_path_buf(),
                     lock_path: paths.lock().to_path_buf(),
                     lock,
@@ -1239,7 +1365,14 @@ mod tests {
 
     impl ShortDir {
         fn new(tag: &str) -> Self {
-            let p = PathBuf::from(format!("/tmp/mr-{tag}-{}", std::process::id()));
+            let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .canonicalize()
+                .expect("manifest directory")
+                .parent()
+                .and_then(Path::parent)
+                .expect("workspace root")
+                .to_path_buf();
+            let p = repo.join(format!(".mr-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).expect("scratch dir");
             assert!(
@@ -1269,13 +1402,35 @@ mod tests {
 
     fn paths_in(dir: &Path) -> SocketPaths {
         SocketPaths {
+            canonical_project: PathBuf::from("/p"),
             dir: dir.to_path_buf(),
             socket: dir.join("supervisor.sock"),
+            native_bootstrap: dir.join("native.sock"),
             lock: dir.join("supervisor.lock"),
             identity: dir.join("supervisor.identity"),
             log: dir.join("supervisor.log"),
             overflow: None,
         }
+    }
+
+    #[test]
+    fn native_listener_configuration_failure_rolls_back_every_socket_before_publication() {
+        let dir = ShortDir::new("native-config-fail");
+        let paths = paths_in(&dir);
+        let error = bind_configured_listeners(&paths, true, |_listener, path| {
+            if path == paths.native_bootstrap() {
+                Err(std::io::Error::other("injected native nonblocking failure"))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&error, SocketError::Bind { path, .. } if path == paths.native_bootstrap()),
+            "unexpected rollback error: {error:?}"
+        );
+        assert!(!paths.socket().exists());
+        assert!(!paths.native_bootstrap().exists());
     }
 
     /// Wait for a condition, checking often, up to a bound generous enough that a loaded machine
@@ -1742,7 +1897,9 @@ mod tests {
             .unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o777)).unwrap();
         let p = SocketPaths {
+            canonical_project: PathBuf::from("/p"),
             socket: target.join("a.sock"),
+            native_bootstrap: target.join("a.native.sock"),
             lock: target.join("a.lock"),
             identity: target.join("a.identity"),
             log: target.join("a.log"),
