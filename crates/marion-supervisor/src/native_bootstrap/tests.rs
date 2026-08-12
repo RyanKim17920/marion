@@ -118,6 +118,287 @@ fn authority(clock: Arc<ManualClock>) -> CapabilityAuthority {
     CapabilityAuthority::with_sources(Arc::new(SequenceRng::default()), clock)
 }
 
+fn pending_receipt(agent_id: &str) -> PendingNativeLaunchReceipt {
+    PendingNativeLaunchReceipt::new(
+        NativeLaunchReceipt::new(
+            AgentId(agent_id.into()),
+            NativeLaunchTicket::for_test([0x5a; 32]),
+        ),
+        || {},
+    )
+}
+
+const NATIVE_TEST_AGENT: &str = "019f0000-0000-7000-8000-000000000001";
+
+fn launch_binding(peer: PeerIdentity) -> NativeLaunchBinding {
+    NativeLaunchBinding::new(
+        AgentId(NATIVE_TEST_AGENT.into()),
+        PathBuf::from("/project"),
+        peer,
+        ConnId(12),
+        TerminalFingerprint {
+            device: 3,
+            inode: 4,
+            special_device: 5,
+        },
+        geometry(),
+        NativeLaunchDescriptor::new("atlas", "atlas", "atlas-native"),
+        context_hash(&request_context()),
+    )
+}
+
+fn claimant(conn: ConnId, peer: PeerIdentity) -> NativeClaimant {
+    NativeClaimant::new(conn, peer)
+}
+
+#[test]
+fn pending_native_launch_is_exact_single_use_and_expires_from_publish() {
+    let clock = Arc::new(ManualClock::default());
+    let launches = Arc::new(PendingNativeLaunches::with_sources(
+        Arc::new(SequenceRng::default()),
+        Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        Duration::from_secs(60),
+    ));
+    let peer = PeerIdentity {
+        uid: 501,
+        pid: 7001,
+    };
+    let binding = launch_binding(peer);
+    let pending = launches.reserve(binding.clone()).unwrap();
+    let ticket_bytes = pending.receipt().ticket().wire_bytes();
+    let presented = NativeLaunchTicket::from_reserved(ticket_bytes).unwrap();
+    assert!(launches.has_pending(binding.agent_id()));
+    assert_eq!(
+        launches.consume(
+            &presented,
+            binding.agent_id(),
+            9,
+            claimant(ConnId(77), peer)
+        ),
+        Err(NativeLaunchClaimError::Unpublished)
+    );
+
+    clock.set(Duration::from_secs(45));
+    launches.publish(pending.receipt(), 9).unwrap();
+    pending.commit();
+    clock.set(Duration::from_secs(104));
+
+    let wrong_agent = AgentId("019f0000-0000-7000-8000-000000000099".into());
+    assert_eq!(
+        launches.consume(&presented, &wrong_agent, 9, claimant(ConnId(77), peer)),
+        Err(NativeLaunchClaimError::WrongBinding)
+    );
+    for wrong_peer in [
+        PeerIdentity {
+            uid: peer.uid + 1,
+            pid: peer.pid,
+        },
+        PeerIdentity {
+            uid: peer.uid,
+            pid: peer.pid + 1,
+        },
+    ] {
+        assert_eq!(
+            launches.consume(
+                &presented,
+                binding.agent_id(),
+                9,
+                claimant(ConnId(77), wrong_peer),
+            ),
+            Err(NativeLaunchClaimError::WrongBinding)
+        );
+    }
+    assert_eq!(
+        launches.consume(
+            &presented,
+            binding.agent_id(),
+            10,
+            claimant(ConnId(77), peer)
+        ),
+        Err(NativeLaunchClaimError::WrongBinding)
+    );
+    let claim = launches
+        .consume(
+            &presented,
+            binding.agent_id(),
+            9,
+            claimant(ConnId(77), peer),
+        )
+        .unwrap();
+    assert_eq!(claim.agent_id(), binding.agent_id());
+    assert_eq!(claim.conn(), ConnId(77));
+    assert_eq!(claim.host_generation(), 9);
+    assert_eq!(
+        launches.consume(
+            &presented,
+            binding.agent_id(),
+            9,
+            claimant(ConnId(78), peer)
+        ),
+        Err(NativeLaunchClaimError::UnknownTicket)
+    );
+
+    let expiring = launches.reserve(binding.clone()).unwrap();
+    let expired_ticket =
+        NativeLaunchTicket::from_reserved(expiring.receipt().ticket().wire_bytes()).unwrap();
+    launches.publish(expiring.receipt(), 11).unwrap();
+    assert_eq!(
+        launches.publish(expiring.receipt(), 12),
+        Err(NativeLaunchReservationError::AlreadyPublished)
+    );
+    expiring.commit();
+    clock.set(Duration::from_secs(164));
+    assert_eq!(
+        launches.consume(
+            &expired_ticket,
+            binding.agent_id(),
+            11,
+            claimant(ConnId(79), peer)
+        ),
+        Err(NativeLaunchClaimError::Expired)
+    );
+    assert!(!launches.has_pending(binding.agent_id()));
+
+    let pruned = launches.reserve(binding.clone()).unwrap();
+    launches.publish(pruned.receipt(), 12).unwrap();
+    pruned.commit();
+    clock.set(Duration::from_secs(225));
+    assert!(!launches.has_pending(binding.agent_id()));
+}
+
+#[test]
+fn pending_native_launch_drop_revokes_and_ticket_generation_is_bounded() {
+    let clock = Arc::new(ManualClock::default());
+    let launches = Arc::new(PendingNativeLaunches::with_sources(
+        Arc::new(SequenceRng::default()),
+        Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        Duration::from_secs(60),
+    ));
+    let binding = launch_binding(PeerIdentity { uid: 501, pid: 8 });
+    let pending = launches.reserve(binding.clone()).unwrap();
+    drop(pending);
+    assert!(!launches.has_pending(binding.agent_id()));
+
+    let zeros = Arc::new(PendingNativeLaunches::with_sources(
+        Arc::new(RepeatingRng([0; 32])),
+        clock as Arc<dyn MonotonicClock>,
+        Duration::from_secs(60),
+    ));
+    assert_eq!(
+        zeros.reserve(binding).unwrap_err(),
+        NativeLaunchReservationError::TicketGenerationExhausted
+    );
+}
+
+#[test]
+fn pending_native_launch_retries_existing_ticket_collisions() {
+    let peer = PeerIdentity { uid: 501, pid: 8 };
+    let binding = launch_binding(peer);
+    struct CollisionThenFresh(AtomicU64);
+    impl CapabilityRng for CollisionThenFresh {
+        fn fill(&self, bytes: &mut [u8]) -> Result<(), BootstrapError> {
+            let call = self.0.fetch_add(1, Ordering::SeqCst);
+            bytes.fill(if call < 2 { 7 } else { 8 });
+            Ok(())
+        }
+    }
+    let launches = Arc::new(PendingNativeLaunches::with_sources(
+        Arc::new(CollisionThenFresh(AtomicU64::new(0))),
+        Arc::new(ManualClock::default()),
+        Duration::from_secs(60),
+    ));
+    let first = launches.reserve(binding.clone()).unwrap();
+    let second = launches
+        .reserve({
+            let mut other = binding;
+            other.agent_id = AgentId("019f0000-0000-7000-8000-000000000098".into());
+            other
+        })
+        .unwrap();
+    assert_ne!(
+        first.receipt().ticket().wire_bytes(),
+        second.receipt().ticket().wire_bytes()
+    );
+}
+
+#[test]
+fn pending_native_launch_concurrent_consume_has_one_winner() {
+    let binding = launch_binding(PeerIdentity { uid: 501, pid: 8 });
+    let launches = Arc::new(PendingNativeLaunches::with_sources(
+        Arc::new(SequenceRng::default()),
+        Arc::new(ManualClock::default()),
+        Duration::from_secs(60),
+    ));
+    let pending = launches.reserve(binding.clone()).unwrap();
+    let bytes = pending.receipt().ticket().wire_bytes();
+    launches.publish(pending.receipt(), 9).unwrap();
+    pending.commit();
+    let barrier = Arc::new(Barrier::new(3));
+    let workers: Vec<_> = [ConnId(71), ConnId(72)]
+        .into_iter()
+        .map(|conn| {
+            let launches = Arc::clone(&launches);
+            let binding = binding.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                launches.consume(
+                    &NativeLaunchTicket::from_reserved(bytes).unwrap(),
+                    binding.agent_id(),
+                    9,
+                    claimant(conn, binding.principal),
+                )
+            })
+        })
+        .collect();
+    barrier.wait();
+    let results: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(NativeLaunchClaimError::UnknownTicket)))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn failed_claim_callback_preserves_the_ticket_for_retry() {
+    let binding = launch_binding(PeerIdentity { uid: 501, pid: 8 });
+    let launches = Arc::new(PendingNativeLaunches::with_sources(
+        Arc::new(SequenceRng::default()),
+        Arc::new(ManualClock::default()),
+        Duration::from_secs(60),
+    ));
+    let pending = launches.reserve(binding.clone()).unwrap();
+    let ticket =
+        NativeLaunchTicket::from_reserved(pending.receipt().ticket().wire_bytes()).unwrap();
+    launches.publish(pending.receipt(), 9).unwrap();
+    pending.commit();
+    assert_eq!(
+        launches.claim_with(
+            &ticket,
+            binding.agent_id(),
+            9,
+            claimant(ConnId(1), binding.principal),
+            || { Err::<(), _>(NativeLaunchClaimError::WriterBusy) },
+        ),
+        Err(NativeLaunchClaimError::WriterBusy)
+    );
+    launches
+        .consume(
+            &ticket,
+            binding.agent_id(),
+            9,
+            claimant(ConnId(2), binding.principal),
+        )
+        .unwrap();
+}
+
 fn request_context() -> DirectNativeRequestContext {
     DirectNativeRequestContext::new(
         PathBuf::from(OsString::from_vec(b"/project-\xff".to_vec())),
@@ -767,20 +1048,42 @@ impl NativeBootstrapHandler for SelectingRouteHandler {
         Ok(TerminalGeometryObservation::new(geometry()))
     }
 
-    fn authorized(&self, request: ConsumedNativeRequest<'_>) -> Result<(), BootstrapError> {
+    fn authorized(
+        &self,
+        request: ConsumedNativeRequest<'_>,
+        _deadline: &NativeLaunchDeadline,
+    ) -> Result<PendingNativeLaunchReceipt, BootstrapError> {
         assert_eq!(request.hash(), context_hash(request.context()));
+        let expected_project = request.context().canonical_project.clone();
+        let expected_principal = request.terminal.peer;
+        let expected_conn = request.terminal.connection;
+        let expected_fingerprint = request.terminal.fingerprint;
+        let expected_geometry = request.terminal.geometry;
         *lock(&self.raw_context) = Some((
             request.context().selector.clone(),
             request.context().opaque_tail.clone(),
             request.hash(),
         ));
         let registry = NativeFacadeRegistry::new(&[ROUTE_DESCRIPTOR]).expect("route registry");
-        let (selected, terminal) =
-            crate::native_intent::select_consumed_direct_cli(&registry, request)
-                .ok_or(BootstrapError::AuthorizationRefused)?;
+        let selected = select_authenticated_native_launch(&registry, request)
+            .ok_or(BootstrapError::AuthorizationRefused)?;
+        let (selected, terminal, binding) = selected.into_parts(AgentId(NATIVE_TEST_AGENT.into()));
+        assert_eq!(binding.agent_id(), &AgentId(NATIVE_TEST_AGENT.into()));
+        assert_eq!(
+            binding.context_hash,
+            lock(&self.raw_context).as_ref().unwrap().2
+        );
+        assert_eq!(binding.project, expected_project);
+        assert_eq!(binding.principal, expected_principal);
+        assert_eq!(binding.bootstrap_conn, expected_conn);
+        assert_eq!(binding.terminal, expected_fingerprint);
+        assert_eq!(binding.initial_geometry, expected_geometry);
+        assert_eq!(binding.descriptor.vendor, "atlas");
+        assert_eq!(binding.descriptor.command, "atlas");
+        assert_eq!(binding.descriptor.adapter, "atlas-native");
         *lock(&self.selected_command) = Some(selected.descriptor().command.to_owned());
         *lock(&self.terminal) = Some(terminal);
-        Ok(())
+        Ok(pending_receipt(NATIVE_TEST_AGENT))
     }
 }
 
@@ -962,6 +1265,11 @@ fn real_tty_bootstrap_alias_probe() {
         [OsString::from("at"), opaque.clone()],
         &registry,
         move || Ok(client),
+        |handoff| {
+            let (receipt, _tty) = handoff.into_parts();
+            assert_eq!(receipt.agent_id(), &AgentId(NATIVE_TEST_AGENT.into()));
+            std::process::ExitCode::SUCCESS
+        },
         &mut stderr,
         || panic!("registered selector reached legacy"),
     );
@@ -1629,10 +1937,95 @@ impl NativeBootstrapHandler for CountingHandler {
         Ok(TerminalGeometryObservation::new(geometry()))
     }
 
-    fn authorized(&self, request: ConsumedNativeRequest<'_>) -> Result<(), BootstrapError> {
+    fn authorized(
+        &self,
+        request: ConsumedNativeRequest<'_>,
+        _deadline: &NativeLaunchDeadline,
+    ) -> Result<PendingNativeLaunchReceipt, BootstrapError> {
         assert_eq!(request.hash(), context_hash(request.context()));
         self.effects.record_authorized(request.authorization());
-        Ok(())
+        Ok(pending_receipt(NATIVE_TEST_AGENT))
+    }
+}
+
+struct LateLaunchDecisionHandler {
+    clock: Arc<ManualClock>,
+    refuse: bool,
+}
+
+impl NativeBootstrapHandler for LateLaunchDecisionHandler {
+    fn verify_terminal(
+        &self,
+        _peer: PeerIdentity,
+        _stdin: BorrowedFd<'_>,
+        _stdout: BorrowedFd<'_>,
+    ) -> Result<TerminalGeometryObservation, BootstrapError> {
+        self.clock.set(Duration::from_secs(9));
+        Ok(TerminalGeometryObservation::new(geometry()))
+    }
+
+    fn authorized(
+        &self,
+        _request: ConsumedNativeRequest<'_>,
+        deadline: &NativeLaunchDeadline,
+    ) -> Result<PendingNativeLaunchReceipt, BootstrapError> {
+        assert_eq!(deadline.require_remaining().unwrap(), LAUNCH_RESULT_TIMEOUT);
+        self.clock.set(HANDSHAKE_TIMEOUT);
+        if self.refuse {
+            Err(BootstrapError::AuthorizationRefused)
+        } else {
+            Ok(pending_receipt(NATIVE_TEST_AGENT))
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn launch_success_and_handler_refusal_use_a_fresh_result_deadline() {
+    for refuse in [false, true] {
+        let clock = Arc::new(ManualClock::default());
+        let handler = Arc::new(LateLaunchDecisionHandler {
+            clock: Arc::clone(&clock),
+            refuse,
+        });
+        let service = Arc::new(
+            NativeBootstrapService::with_clock_without_terminal_verification_for_tests(
+                request_context().canonical_project().to_path_buf(),
+                request_context().native_wire_version(),
+                handler,
+                clock,
+            ),
+        );
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let worker = {
+            let service = Arc::clone(&service);
+            let active = service.try_acquire_connection().unwrap();
+            std::thread::spawn(move || {
+                service.serve_connection(ConnId(3_100 + u64::from(refuse)), server, active)
+            })
+        };
+        let input = std::fs::File::open("/dev/null").unwrap();
+        let output = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        let context = request_context();
+        let capability =
+            request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), &context)
+                .unwrap();
+        let result = present_direct_cli_capability(&mut client, capability, &context);
+        if refuse {
+            assert!(matches!(result, Err(BootstrapError::AuthorizationRefused)));
+        } else {
+            assert_eq!(
+                result.unwrap().agent_id(),
+                &AgentId(NATIVE_TEST_AGENT.into())
+            );
+        }
+        worker.join().unwrap();
     }
 }
 
@@ -1713,7 +2106,12 @@ fn native_wire_issues_and_consumes_only_after_the_verified_handoff() {
     let capability =
         request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), &context)
             .unwrap();
-    present_direct_cli_capability(&mut client, capability, &context).unwrap();
+    let receipt = present_direct_cli_capability(&mut client, capability, &context).unwrap();
+    assert_eq!(
+        receipt.agent_id(),
+        &marion_core::contract::AgentId(NATIVE_TEST_AGENT.into()),
+        "bootstrap success must name the exact node whose writer priority it reserved"
+    );
     worker.join().unwrap();
     assert_eq!(handler.terminal_verifications.load(Ordering::SeqCst), 1);
     assert_eq!(effects.descriptor_details.load(Ordering::SeqCst), 1);

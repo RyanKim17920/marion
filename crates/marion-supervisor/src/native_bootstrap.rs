@@ -83,10 +83,15 @@ use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
 use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
+use marion_core::contract::AgentId;
+use marion_core::ids::{UUID_LEN, is_uuid_v7};
 use marion_core::production_native_facades;
 
-use crate::native_intent::{AuthorizedNativeFacade, select_consumed_direct_cli};
-use crate::native_tty::{ControllingTtyWitness, verify_bootstrap_tty};
+use crate::native_intent::{
+    AuthorizedNativeFacade, SelectedNativeFacade, select_consumed_direct_cli,
+    select_consumed_native,
+};
+use crate::native_tty::{ClientTtyWitness, ControllingTtyWitness, verify_bootstrap_tty};
 use crate::serve::{ConnId, own_uid};
 use crate::socket;
 
@@ -94,6 +99,7 @@ const CONTEXT_DOMAIN: &[u8] = b"marion/direct-native-context/v1\0";
 const DESCRIPTOR_MESSAGE: &[u8] = b"MNB1";
 const CAPABILITY_TTL: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const LAUNCH_RESULT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ACTIVE_NATIVE_CONNECTIONS: usize = 32;
 const MAX_CONTEXT_FIELD_BYTES: usize = 64 * 1024;
 const MAX_CONTEXT_ARGUMENTS: usize = 4096;
@@ -103,7 +109,7 @@ const MAX_CAPABILITY_GENERATION_ATTEMPTS: usize = 128;
 pub(crate) const NATIVE_WIRE_VERSION: u32 = 1;
 
 #[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativeRouteTestStage {
     DescriptorsVerified,
     CapabilityConsumed,
@@ -176,15 +182,16 @@ impl NativeBootstrapClient {
 
     pub(crate) fn request(
         mut self,
-        stdin: BorrowedFd<'_>,
-        stdout: BorrowedFd<'_>,
+        tty: ClientTtyWitness,
         context: DirectNativeRequestContext,
     ) -> Result<NativeBootstrapClientSession, BootstrapError> {
-        let capability = request_direct_cli_capability(&mut self.stream, stdin, stdout, &context)?;
+        let capability =
+            request_direct_cli_capability(&mut self.stream, tty.stdin(), tty.stdout(), &context)?;
         Ok(NativeBootstrapClientSession {
             stream: self.stream,
             capability,
             context,
+            tty,
         })
     }
 }
@@ -195,11 +202,35 @@ pub(crate) struct NativeBootstrapClientSession {
     stream: UnixStream,
     capability: DirectCliCapability,
     context: DirectNativeRequestContext,
+    tty: ClientTtyWitness,
 }
 
 impl NativeBootstrapClientSession {
-    pub(crate) fn consume(mut self) -> Result<(), BootstrapError> {
-        present_direct_cli_capability(&mut self.stream, self.capability, &self.context)
+    pub(crate) fn consume(mut self) -> Result<NativeFacadeHandoff, BootstrapError> {
+        let receipt =
+            present_direct_cli_capability(&mut self.stream, self.capability, &self.context)?;
+        Ok(NativeFacadeHandoff {
+            receipt,
+            tty: self.tty,
+        })
+    }
+}
+
+/// The authenticated native launch result together with the caller's original terminal authority.
+///
+/// The terminal witness remains owned until the later transparent relay consumes this handoff. A
+/// successful descriptor transfer therefore cannot accidentally discard the exact termios and
+/// file-status baseline needed to restore the caller's terminal.
+#[derive(Debug)]
+pub struct NativeFacadeHandoff {
+    receipt: NativeLaunchReceipt,
+    tty: ClientTtyWitness,
+}
+
+impl NativeFacadeHandoff {
+    #[allow(dead_code, reason = "consumed by the later transparent relay slice")]
+    pub(crate) fn into_parts(self) -> (NativeLaunchReceipt, ClientTtyWitness) {
+        (self.receipt, self.tty)
     }
 }
 
@@ -310,10 +341,21 @@ pub(crate) struct TerminalGeometry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct TerminalFingerprint {
+pub(crate) struct TerminalFingerprint {
     device: u64,
     inode: u64,
     special_device: u64,
+}
+
+impl TerminalFingerprint {
+    #[cfg(test)]
+    pub(crate) const fn new(device: u64, inode: u64, special_device: u64) -> Self {
+        Self {
+            device,
+            inode,
+            special_device,
+        }
+    }
 }
 
 /// A received stdin/stdout pair bound to one identity and a later terminal observation.
@@ -878,6 +920,39 @@ struct HandshakeDeadline {
     expires_at: Duration,
 }
 
+/// Separate budget for native preparation/publication and delivery of its launch receipt.
+///
+/// The bootstrap capability deadline ends when authorization is atomically consumed. A future
+/// native executor receives this distinct deadline so process preparation can never silently
+/// inherit Task 2's ten-second descriptor handshake budget.
+pub(crate) struct NativeLaunchDeadline(HandshakeDeadline);
+
+impl fmt::Debug for NativeLaunchDeadline {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeLaunchDeadline")
+            .field("expires_at", &self.0.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NativeLaunchDeadline {
+    fn new(clock: Arc<dyn MonotonicClock>, timeout: Duration) -> Result<Self, BootstrapError> {
+        HandshakeDeadline::new(clock, timeout).map(Self)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "the production native executor consumes this budget"
+    )]
+    pub(crate) fn require_remaining(&self) -> Result<Duration, BootstrapError> {
+        self.0.require_remaining().map_err(|error| match error {
+            BootstrapError::HandshakeExpired => BootstrapError::LaunchResultExpired,
+            error => error,
+        })
+    }
+}
+
 impl HandshakeDeadline {
     fn new(clock: Arc<dyn MonotonicClock>, timeout: Duration) -> Result<Self, BootstrapError> {
         let expires_at = clock
@@ -976,6 +1051,568 @@ pub struct DirectCliCapability([u8; 32]);
 impl DirectCliCapability {
     const fn wire_bytes(&self) -> [u8; 32] {
         self.0
+    }
+}
+
+/// Opaque single-use authority to claim the initiating native pane's writer slot.
+///
+/// This value cannot authorize a launch. It is minted only after launch authorization has already
+/// been consumed and is returned only with the exact [`AgentId`] whose pane reservation it names.
+#[derive(PartialEq, Eq)]
+pub(crate) struct NativeLaunchTicket([u8; 32]);
+
+impl NativeLaunchTicket {
+    pub(crate) fn from_reserved(bytes: [u8; 32]) -> Result<Self, BootstrapError> {
+        if bytes == [0; 32] {
+            return Err(BootstrapError::NativeWireProtocol);
+        }
+        Ok(Self(bytes))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(bytes: [u8; 32]) -> Self {
+        assert!(bytes != [0; 32]);
+        Self(bytes)
+    }
+
+    const fn wire_bytes(&self) -> [u8; 32] {
+        self.0
+    }
+}
+
+impl fmt::Debug for NativeLaunchTicket {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeLaunchTicket([REDACTED])")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeLaunchDescriptor {
+    vendor: String,
+    command: String,
+    adapter: String,
+}
+
+impl NativeLaunchDescriptor {
+    #[cfg(test)]
+    pub(crate) fn new(vendor: &str, command: &str, adapter: &str) -> Self {
+        Self {
+            vendor: vendor.into(),
+            command: command.into(),
+            adapter: adapter.into(),
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "dark until an authenticated native claim transport activates"
+    )]
+    fn from_selected(selected: &SelectedNativeFacade<'_>) -> Self {
+        let descriptor = selected.descriptor();
+        let adapter = descriptor
+            .native
+            .expect("selected native launch contains a native lane")
+            .adapter()
+            .as_str();
+        Self {
+            vendor: descriptor.identity.as_str().into(),
+            command: descriptor.command.into(),
+            adapter: adapter.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeLaunchBinding {
+    agent_id: AgentId,
+    project: PathBuf,
+    principal: PeerIdentity,
+    bootstrap_conn: ConnId,
+    terminal: TerminalFingerprint,
+    initial_geometry: TerminalGeometry,
+    descriptor: NativeLaunchDescriptor,
+    context_hash: ContextHash,
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeLaunchBindingSeed {
+    project: PathBuf,
+    principal: PeerIdentity,
+    bootstrap_conn: ConnId,
+    terminal: TerminalFingerprint,
+    initial_geometry: TerminalGeometry,
+    context_hash: ContextHash,
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+pub(crate) struct SelectedNativeLaunch<'registry> {
+    selected: SelectedNativeFacade<'registry>,
+    terminal: ControllingTtyWitness,
+    binding: NativeLaunchBindingSeed,
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+impl<'registry> SelectedNativeLaunch<'registry> {
+    pub(crate) fn into_parts(
+        self,
+        agent_id: AgentId,
+    ) -> (
+        SelectedNativeFacade<'registry>,
+        ControllingTtyWitness,
+        NativeLaunchBinding,
+    ) {
+        let descriptor = NativeLaunchDescriptor::from_selected(&self.selected);
+        let binding = NativeLaunchBinding {
+            agent_id,
+            project: self.binding.project,
+            principal: self.binding.principal,
+            bootstrap_conn: self.binding.bootstrap_conn,
+            terminal: self.binding.terminal,
+            initial_geometry: self.binding.initial_geometry,
+            descriptor,
+            context_hash: self.binding.context_hash,
+        };
+        (self.selected, self.terminal, binding)
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+pub(crate) fn select_authenticated_native_launch<'registry>(
+    registry: &'registry marion_core::NativeFacadeRegistry<'_>,
+    consumed: ConsumedNativeRequest<'_>,
+) -> Option<SelectedNativeLaunch<'registry>> {
+    let (context, hash, terminal, authorization) = consumed.into_parts().into_components();
+    let binding = NativeLaunchBindingSeed {
+        project: context.canonical_project.clone(),
+        principal: terminal.peer,
+        bootstrap_conn: terminal.connection,
+        terminal: terminal.fingerprint,
+        initial_geometry: terminal.geometry,
+        context_hash: hash,
+    };
+    let selected = select_consumed_native(registry, authorization)?;
+    let terminal = terminal.into_controlling_tty_witness()?;
+    #[cfg(test)]
+    observe_native_route_test_stage(NativeRouteTestStage::SelectorSelected);
+    Some(SelectedNativeLaunch {
+        selected,
+        terminal,
+        binding,
+    })
+}
+
+impl NativeLaunchBinding {
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        agent_id: AgentId,
+        project: PathBuf,
+        principal: PeerIdentity,
+        bootstrap_conn: ConnId,
+        terminal: TerminalFingerprint,
+        initial_geometry: TerminalGeometry,
+        descriptor: NativeLaunchDescriptor,
+        context_hash: ContextHash,
+    ) -> Self {
+        Self {
+            agent_id,
+            project,
+            principal,
+            bootstrap_conn,
+            terminal,
+            initial_geometry,
+            descriptor,
+            context_hash,
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "dark until an authenticated native claim transport activates"
+    )]
+    pub(crate) const fn agent_id(&self) -> &AgentId {
+        &self.agent_id
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeLaunchClaim {
+    agent_id: AgentId,
+    host_generation: u64,
+    conn: ConnId,
+}
+
+/// Sealed identity of a future ticket-presenting attach connection.
+///
+/// There is intentionally no production constructor yet. Activation requires a claim transport
+/// that derives both uid and pid from kernel credentials and calls `gone(conn)` on departure; the
+/// ordinary JSON-RPC socket currently authenticates uid only and cannot mint this value.
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeClaimant {
+    conn: ConnId,
+    principal: PeerIdentity,
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+impl NativeClaimant {
+    #[cfg(test)]
+    pub(crate) const fn new(conn: ConnId, principal: PeerIdentity) -> Self {
+        Self { conn, principal }
+    }
+
+    pub(crate) const fn conn(self) -> ConnId {
+        self.conn
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+impl NativeLaunchClaim {
+    pub(crate) const fn agent_id(&self) -> &AgentId {
+        &self.agent_id
+    }
+
+    pub(crate) const fn conn(&self) -> ConnId {
+        self.conn
+    }
+
+    pub(crate) const fn host_generation(&self) -> u64 {
+        self.host_generation
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum NativeLaunchReservationError {
+    #[error("native launch ticket entropy was exhausted")]
+    TicketGenerationExhausted,
+    #[error("native launch clock overflowed")]
+    ClockOverflow,
+    #[error("native launch receipt was not reserved here")]
+    UnknownTicket,
+    #[error("native launch reservation was already published")]
+    AlreadyPublished,
+    #[error("native launch pane is not live")]
+    HostUnavailable,
+    #[error("native launch pane is already visible")]
+    HostAlreadyVisible,
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum NativeLaunchClaimError {
+    #[error("native launch ticket is unknown or already consumed")]
+    UnknownTicket,
+    #[error("native launch reservation has not been published")]
+    Unpublished,
+    #[error("native launch ticket binding does not match")]
+    WrongBinding,
+    #[error("native launch ticket expired")]
+    Expired,
+    #[error("native pane writer is already held")]
+    WriterBusy,
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+struct PendingNativeLaunch {
+    binding: NativeLaunchBinding,
+    host_generation: Option<u64>,
+    expires_at: Option<Duration>,
+}
+
+struct PendingNativeLaunchState {
+    tickets: HashMap<[u8; 32], PendingNativeLaunch>,
+    agents: HashMap<AgentId, [u8; 32]>,
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+pub(crate) struct PendingNativeLaunches {
+    state: Mutex<PendingNativeLaunchState>,
+    rng: Arc<dyn CapabilityRng>,
+    clock: Arc<dyn MonotonicClock>,
+    ttl: Duration,
+}
+
+#[allow(
+    dead_code,
+    reason = "dark until an authenticated native claim transport activates"
+)]
+impl PendingNativeLaunches {
+    const TICKET_ATTEMPTS: usize = 8;
+
+    #[cfg(test)]
+    pub(crate) fn with_sources(
+        rng: Arc<dyn CapabilityRng>,
+        clock: Arc<dyn MonotonicClock>,
+        ttl: Duration,
+    ) -> Self {
+        Self {
+            state: Mutex::new(PendingNativeLaunchState {
+                tickets: HashMap::new(),
+                agents: HashMap::new(),
+            }),
+            rng,
+            clock,
+            ttl,
+        }
+    }
+
+    pub(crate) fn reserve(
+        self: &Arc<Self>,
+        binding: NativeLaunchBinding,
+    ) -> Result<PendingNativeLaunchReceipt, NativeLaunchReservationError> {
+        let mut state = lock(&self.state);
+        let mut ticket = None;
+        for _ in 0..Self::TICKET_ATTEMPTS {
+            let mut candidate = [0; 32];
+            if self.rng.fill(&mut candidate).is_err() {
+                continue;
+            }
+            if candidate != [0; 32] && !state.tickets.contains_key(&candidate) {
+                ticket = Some(candidate);
+                break;
+            }
+        }
+        let ticket = ticket.ok_or(NativeLaunchReservationError::TicketGenerationExhausted)?;
+        if let Some(old) = state.agents.insert(binding.agent_id.clone(), ticket) {
+            state.tickets.remove(&old);
+        }
+        state.tickets.insert(
+            ticket,
+            PendingNativeLaunch {
+                binding: binding.clone(),
+                host_generation: None,
+                expires_at: None,
+            },
+        );
+        let receipt = NativeLaunchReceipt::new(
+            binding.agent_id,
+            NativeLaunchTicket::from_reserved(ticket)
+                .expect("ticket generation rejects the reserved all-zero value"),
+        );
+        let authority = Arc::clone(self);
+        Ok(PendingNativeLaunchReceipt::new(receipt, move || {
+            authority.revoke_ticket(ticket);
+        }))
+    }
+
+    pub(crate) fn publish(
+        &self,
+        receipt: &NativeLaunchReceipt,
+        host_generation: u64,
+    ) -> Result<(), NativeLaunchReservationError> {
+        let expires_at = self
+            .clock
+            .now()
+            .checked_add(self.ttl)
+            .ok_or(NativeLaunchReservationError::ClockOverflow)?;
+        let mut state = lock(&self.state);
+        let pending = state
+            .tickets
+            .get_mut(&receipt.ticket().wire_bytes())
+            .filter(|pending| pending.binding.agent_id() == receipt.agent_id())
+            .ok_or(NativeLaunchReservationError::UnknownTicket)?;
+        if pending.host_generation.is_some() || pending.expires_at.is_some() {
+            return Err(NativeLaunchReservationError::AlreadyPublished);
+        }
+        pending.host_generation = Some(host_generation);
+        pending.expires_at = Some(expires_at);
+        Ok(())
+    }
+
+    pub(crate) fn has_pending(&self, agent: &AgentId) -> bool {
+        let now = self.clock.now();
+        let mut state = lock(&self.state);
+        let Some(ticket) = state.agents.get(agent).copied() else {
+            return false;
+        };
+        let expired = state
+            .tickets
+            .get(&ticket)
+            .and_then(|pending| pending.expires_at)
+            .is_some_and(|expires_at| now >= expires_at);
+        if expired {
+            state.agents.remove(agent);
+            state.tickets.remove(&ticket);
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn consume(
+        &self,
+        ticket: &NativeLaunchTicket,
+        agent_id: &AgentId,
+        host_generation: u64,
+        claimant: NativeClaimant,
+    ) -> Result<NativeLaunchClaim, NativeLaunchClaimError> {
+        self.claim_with(ticket, agent_id, host_generation, claimant, || Ok(()))
+            .map(|(claim, ())| claim)
+    }
+
+    pub(crate) fn claim_with<T>(
+        &self,
+        ticket: &NativeLaunchTicket,
+        agent_id: &AgentId,
+        host_generation: u64,
+        claimant: NativeClaimant,
+        claim: impl FnOnce() -> Result<T, NativeLaunchClaimError>,
+    ) -> Result<(NativeLaunchClaim, T), NativeLaunchClaimError> {
+        let key = ticket.wire_bytes();
+        let now = self.clock.now();
+        let mut state = lock(&self.state);
+        let pending = state
+            .tickets
+            .get(&key)
+            .ok_or(NativeLaunchClaimError::UnknownTicket)?;
+        let Some(expires_at) = pending.expires_at else {
+            return Err(NativeLaunchClaimError::Unpublished);
+        };
+        if now >= expires_at {
+            let expired = state.tickets.remove(&key).expect("looked up above");
+            state.agents.remove(expired.binding.agent_id());
+            return Err(NativeLaunchClaimError::Expired);
+        }
+        if pending.binding.agent_id() != agent_id
+            || pending.host_generation != Some(host_generation)
+            || pending.binding.principal != claimant.principal
+        {
+            return Err(NativeLaunchClaimError::WrongBinding);
+        }
+        let value = claim()?;
+        let consumed = state.tickets.remove(&key).expect("looked up above");
+        state.agents.remove(consumed.binding.agent_id());
+        Ok((
+            NativeLaunchClaim {
+                agent_id: consumed.binding.agent_id,
+                host_generation,
+                conn: claimant.conn,
+            },
+            value,
+        ))
+    }
+
+    pub(crate) fn revoke_agent(&self, agent: &AgentId) {
+        let mut state = lock(&self.state);
+        if let Some(ticket) = state.agents.remove(agent) {
+            state.tickets.remove(&ticket);
+        }
+    }
+
+    fn revoke_ticket(&self, ticket: [u8; 32]) {
+        let mut state = lock(&self.state);
+        if let Some(pending) = state.tickets.remove(&ticket)
+            && state.agents.get(pending.binding.agent_id()) == Some(&ticket)
+        {
+            state.agents.remove(pending.binding.agent_id());
+        }
+    }
+}
+
+/// Successful native bootstrap output. Identity and writer priority always travel together.
+#[derive(Debug)]
+pub struct NativeLaunchReceipt {
+    agent_id: AgentId,
+    ticket: NativeLaunchTicket,
+}
+
+impl NativeLaunchReceipt {
+    pub(crate) const fn new(agent_id: AgentId, ticket: NativeLaunchTicket) -> Self {
+        Self { agent_id, ticket }
+    }
+
+    pub const fn agent_id(&self) -> &AgentId {
+        &self.agent_id
+    }
+
+    pub(crate) const fn ticket(&self) -> &NativeLaunchTicket {
+        &self.ticket
+    }
+}
+
+/// Receipt whose pane reservation is revoked unless the complete response reaches the client.
+pub(crate) struct PendingNativeLaunchReceipt {
+    receipt: NativeLaunchReceipt,
+    cancel: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl PendingNativeLaunchReceipt {
+    #[allow(
+        dead_code,
+        reason = "dark until an authenticated native claim transport activates"
+    )]
+    pub(crate) fn new(
+        receipt: NativeLaunchReceipt,
+        cancel: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            receipt,
+            cancel: Some(Box::new(cancel)),
+        }
+    }
+
+    pub(crate) const fn receipt(&self) -> &NativeLaunchReceipt {
+        &self.receipt
+    }
+
+    fn commit(mut self) {
+        self.cancel.take();
+    }
+}
+
+impl fmt::Debug for PendingNativeLaunchReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PendingNativeLaunchReceipt")
+            .field("receipt", &self.receipt)
+            .field("cancel", &self.cancel.as_ref().map(|_| "armed"))
+            .finish()
+    }
+}
+
+impl Drop for PendingNativeLaunchReceipt {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel();
+        }
     }
 }
 
@@ -1135,7 +1772,7 @@ pub fn present_direct_cli_capability(
     stream: &mut UnixStream,
     capability: DirectCliCapability,
     context: &DirectNativeRequestContext,
-) -> Result<(), BootstrapError> {
+) -> Result<NativeLaunchReceipt, BootstrapError> {
     write_wire_request(
         stream,
         &WireRequest::Consume {
@@ -1148,11 +1785,57 @@ pub fn present_direct_cli_capability(
     stream
         .read_exact(&mut status)
         .map_err(BootstrapError::NativeTransportIo)?;
-    if status[0] == WIRE_OK {
-        Ok(())
-    } else {
-        Err(BootstrapError::AuthorizationRefused)
+    if status[0] != WIRE_OK {
+        return Err(BootstrapError::AuthorizationRefused);
     }
+    let mut length = [0u8; 2];
+    stream
+        .read_exact(&mut length)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    let length = usize::from(u16::from_be_bytes(length));
+    if length != UUID_LEN {
+        return Err(BootstrapError::NativeWireProtocol);
+    }
+    let mut agent_id = vec![0u8; length];
+    stream
+        .read_exact(&mut agent_id)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    let agent_id = String::from_utf8(agent_id).map_err(|_| BootstrapError::NativeWireProtocol)?;
+    if !is_uuid_v7(&agent_id) {
+        return Err(BootstrapError::NativeWireProtocol);
+    }
+    let mut ticket = [0u8; 32];
+    stream
+        .read_exact(&mut ticket)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    Ok(NativeLaunchReceipt::new(
+        AgentId(agent_id),
+        NativeLaunchTicket::from_reserved(ticket)?,
+    ))
+}
+
+fn write_native_launch_receipt(
+    stream: &mut impl Write,
+    receipt: &NativeLaunchReceipt,
+) -> Result<(), BootstrapError> {
+    let agent_id = receipt.agent_id().0.as_bytes();
+    if !is_uuid_v7(&receipt.agent_id().0) {
+        return Err(BootstrapError::NativeWireProtocol);
+    }
+    let length = u16::try_from(UUID_LEN).expect("UUID length fits the wire field");
+    stream
+        .write_all(&[WIRE_OK])
+        .map_err(BootstrapError::NativeTransportIo)?;
+    stream
+        .write_all(&length.to_be_bytes())
+        .map_err(BootstrapError::NativeTransportIo)?;
+    stream
+        .write_all(agent_id)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    stream
+        .write_all(&receipt.ticket().wire_bytes())
+        .map_err(BootstrapError::NativeTransportIo)?;
+    stream.flush().map_err(BootstrapError::NativeTransportIo)
 }
 
 fn write_wire_request(
@@ -1460,7 +2143,11 @@ pub(crate) trait NativeBootstrapHandler: Send + Sync + 'static {
         stdout: BorrowedFd<'_>,
     ) -> Result<TerminalGeometryObservation, BootstrapError>;
 
-    fn authorized(&self, request: ConsumedNativeRequest<'_>) -> Result<(), BootstrapError>;
+    fn authorized(
+        &self,
+        request: ConsumedNativeRequest<'_>,
+        deadline: &NativeLaunchDeadline,
+    ) -> Result<PendingNativeLaunchReceipt, BootstrapError>;
 }
 
 struct DisabledNativeBootstrapHandler;
@@ -1475,7 +2162,11 @@ impl NativeBootstrapHandler for DisabledNativeBootstrapHandler {
         Err(BootstrapError::AuthorizationRefused)
     }
 
-    fn authorized(&self, request: ConsumedNativeRequest<'_>) -> Result<(), BootstrapError> {
+    fn authorized(
+        &self,
+        request: ConsumedNativeRequest<'_>,
+        _deadline: &NativeLaunchDeadline,
+    ) -> Result<PendingNativeLaunchReceipt, BootstrapError> {
         let registry = production_native_facades();
         let (_selected, _terminal) = select_consumed_direct_cli(&registry, request)
             .ok_or(BootstrapError::AuthorizationRefused)?;
@@ -1492,6 +2183,12 @@ pub(crate) struct NativeBootstrapService {
     handshake_clock: Arc<dyn MonotonicClock>,
     handshake_timeout: Duration,
     verify_received_terminal: bool,
+}
+
+#[derive(Debug)]
+struct NativeLaunchOutcome {
+    deadline: NativeLaunchDeadline,
+    pending: Result<PendingNativeLaunchReceipt, BootstrapError>,
 }
 
 impl NativeBootstrapService {
@@ -1564,6 +2261,25 @@ impl NativeBootstrapService {
         }
     }
 
+    #[cfg(test)]
+    fn with_clock_without_terminal_verification_for_tests(
+        expected_project: PathBuf,
+        supported_wire_version: u32,
+        handler: Arc<dyn NativeBootstrapHandler>,
+        handshake_clock: Arc<dyn MonotonicClock>,
+    ) -> Self {
+        Self {
+            authority: CapabilityAuthority::default(),
+            handler,
+            expected_project,
+            supported_wire_version,
+            active_connections: Arc::new(AtomicUsize::new(0)),
+            handshake_clock,
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+            verify_received_terminal: false,
+        }
+    }
+
     pub(crate) fn try_acquire_connection(&self) -> Result<ActiveNativeConnection, BootstrapError> {
         ActiveNativeConnection::acquire(&self.active_connections)
     }
@@ -1595,14 +2311,33 @@ impl NativeBootstrapService {
             return;
         };
         let result = self.serve_authenticated(id, &stream, &deadline);
-        let status = if result.is_ok() {
-            WIRE_OK
-        } else {
-            WIRE_REFUSED
-        };
-        let mut transport = DeadlineIo::new(&stream, &deadline);
-        let _ = transport.write_all(&[status]);
-        let _ = transport.flush();
+        match result {
+            Ok(NativeLaunchOutcome {
+                deadline: result_deadline,
+                pending: Ok(pending),
+            }) => {
+                // Capability authentication has finished. Launch preparation and response delivery
+                // deliberately start a fresh budget rather than inheriting whatever remained of
+                // the descriptor handshake's ten seconds.
+                let mut transport = DeadlineIo::new(&stream, &result_deadline.0);
+                if write_native_launch_receipt(&mut transport, pending.receipt()).is_ok() {
+                    pending.commit();
+                }
+            }
+            Ok(NativeLaunchOutcome {
+                deadline: result_deadline,
+                pending: Err(_),
+            }) => {
+                let mut transport = DeadlineIo::new(&stream, &result_deadline.0);
+                let _ = transport.write_all(&[WIRE_REFUSED]);
+                let _ = transport.flush();
+            }
+            Err(_) => {
+                let mut transport = DeadlineIo::new(&stream, &deadline);
+                let _ = transport.write_all(&[WIRE_REFUSED]);
+                let _ = transport.flush();
+            }
+        }
         self.authority.revoke_connection(id);
     }
 
@@ -1611,7 +2346,7 @@ impl NativeBootstrapService {
         id: ConnId,
         stream: &UnixStream,
         deadline: &HandshakeDeadline,
-    ) -> Result<(), BootstrapError> {
+    ) -> Result<NativeLaunchOutcome, BootstrapError> {
         self.serve_authenticated_with_receiver(
             id,
             stream,
@@ -1629,7 +2364,7 @@ impl NativeBootstrapService {
             &UnixStream,
             &HandshakeDeadline,
         ) -> Result<[OwnedFd; 2], BootstrapError>,
-    ) -> Result<(), BootstrapError> {
+    ) -> Result<NativeLaunchOutcome, BootstrapError> {
         let connection = NativeBootstrapConnection::authenticate(
             id,
             stream
@@ -1692,11 +2427,20 @@ impl NativeBootstrapService {
         #[cfg(test)]
         observe_native_route_test_stage(NativeRouteTestStage::CapabilityConsumed);
         deadline.require_remaining()?;
-        self.handler.authorized(ConsumedNativeRequest {
-            context: &consume.context,
-            hash: consume.hash,
-            terminal,
-            authorization,
+        let launch_deadline =
+            NativeLaunchDeadline::new(Arc::clone(&self.handshake_clock), LAUNCH_RESULT_TIMEOUT)?;
+        let pending = self.handler.authorized(
+            ConsumedNativeRequest {
+                context: &consume.context,
+                hash: consume.hash,
+                terminal,
+                authorization,
+            },
+            &launch_deadline,
+        );
+        Ok(NativeLaunchOutcome {
+            deadline: launch_deadline,
+            pending,
         })
     }
 
@@ -1926,6 +2670,8 @@ pub enum BootstrapError {
     NativeConnectionLimit,
     #[error("native bootstrap handshake deadline expired")]
     HandshakeExpired,
+    #[error("native launch result deadline expired")]
+    LaunchResultExpired,
     #[error("native bootstrap authorization was refused")]
     AuthorizationRefused,
     #[error("native bootstrap terminal verification failed: {0}")]

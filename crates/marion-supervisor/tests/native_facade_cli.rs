@@ -41,6 +41,7 @@ fn a_synthetic_ready_facade_requires_foreground_stdio_before_the_legacy_cli_runs
         [OsString::from("atlas"), OsString::from("--help")],
         &registry,
         || unreachable!("non-TTY test process must refuse before bootstrap"),
+        |_| unreachable!("non-TTY test process cannot produce a native handoff"),
         &mut stderr,
         || {
             legacy_called.set(true);
@@ -83,6 +84,7 @@ fn registered_selector_without_foreground_stdio_refuses_before_bootstrap_connect
             bootstrap_connections.set(bootstrap_connections.get() + 1);
             unreachable!("client TTY refusal must precede bootstrap connection")
         },
+        |_| unreachable!("client TTY refusal cannot produce a native handoff"),
         &mut stderr,
         || {
             legacy_called.set(true);
@@ -136,6 +138,7 @@ fn registered_disabled_or_native_absent_facades_never_fall_through_to_legacy() {
             [OsString::from(selector)],
             &registry,
             || unreachable!("non-TTY test process must refuse before bootstrap"),
+            |_| unreachable!("non-TTY test process cannot produce a native handoff"),
             &mut stderr,
             || {
                 legacy_called.set(true);
@@ -524,6 +527,7 @@ fn nested_tty_dispatch_probe() {
             eprintln!("TTY_CAPTURE_CONNECTOR");
             Err(marion_supervisor::native_bootstrap::BootstrapError::AuthorizationRefused)
         },
+        |_| panic!("a refused bootstrap cannot produce a native handoff"),
         std::io::stderr(),
         || panic!("registered selector reached legacy"),
     );

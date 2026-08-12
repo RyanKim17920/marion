@@ -307,13 +307,21 @@ impl ControllingTtyWitness {
 }
 
 impl ClientTtyWitness {
+    pub(crate) fn stdin(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.stdin.as_fd()
+    }
+
+    pub(crate) fn stdout(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.stdout.as_fd()
+    }
+
     /// The witness's only descriptor-bearing operation: hand the owned duplicates to Task 2.
     pub(crate) fn bootstrap(
         self,
         connection: NativeBootstrapClient,
         context: DirectNativeRequestContext,
     ) -> Result<NativeBootstrapClientSession, BootstrapError> {
-        connection.request(self.stdin.as_fd(), self.stdout.as_fd(), context)
+        connection.request(self, context)
     }
 }
 

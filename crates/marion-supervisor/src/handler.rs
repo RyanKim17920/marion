@@ -292,6 +292,9 @@ struct Panes {
     /// would let one unread node stall every other client's attach. The lease still releases the
     /// node's writer slot when the last `Arc` drops, which is the entry leaving this map.
     leases: HashMap<ConnId, Vec<(AgentId, Arc<crate::pty::WriteLease>)>>,
+    native_launches: Option<Arc<crate::native_bootstrap::PendingNativeLaunches>>,
+    host_generations: HashMap<AgentId, u64>,
+    next_host_generation: u64,
     completed_count: usize,
     completed_bytes: usize,
     next_completed_order: u64,
@@ -521,6 +524,20 @@ impl Panes {
 
     fn has_live(&self, id: &AgentId) -> bool {
         self.hosts.get(id).is_some_and(PaneEntry::is_live)
+    }
+
+    fn assign_host_generation(&mut self, id: &AgentId) -> Option<u64> {
+        let generation = self.next_host_generation.checked_add(1)?;
+        self.next_host_generation = generation;
+        self.host_generations.insert(id.clone(), generation);
+        Some(generation)
+    }
+
+    fn revoke_native_launch(&mut self, id: &AgentId) {
+        self.host_generations.remove(id);
+        if let Some(launches) = self.native_launches.as_ref() {
+            launches.revoke_agent(id);
+        }
     }
 }
 
@@ -1610,7 +1627,13 @@ impl RegistryHandle {
             .master()
             .size()
             .unwrap_or_else(|_| host.master().intended_size());
-        let (writable, held_by) = if panes.lease(out.conn(), id).is_some() {
+        let native_reserved = panes
+            .native_launches
+            .as_ref()
+            .is_some_and(|launches| launches.has_pending(id));
+        let (writable, held_by) = if native_reserved {
+            (false, None)
+        } else if panes.lease(out.conn(), id).is_some() {
             (true, None)
         } else {
             match host.lease_writer(out.conn()) {
@@ -1678,7 +1701,11 @@ impl RegistryHandle {
                     id.0
                 )),
             })?;
-        let (writable, held_by) = if !is_live {
+        let native_reserved = panes
+            .native_launches
+            .as_ref()
+            .is_some_and(|launches| launches.has_pending(id));
+        let (writable, held_by) = if !is_live || native_reserved {
             (false, None)
         } else if panes.lease(out.conn(), id).is_some() {
             (true, None)
@@ -1748,8 +1775,10 @@ impl RegistryHandle {
                 }
             } else {
                 panes.hosts.insert(id.clone(), PaneEntry::Live(host));
+                let _ = panes.assign_host_generation(id);
                 return;
             }
+            panes.revoke_native_launch(id);
             let old = panes.replace(id.clone(), PaneEntry::Replacing(Arc::clone(&replacement)));
             let mut revoked = Vec::new();
             for leases in panes.leases.values_mut() {
@@ -1780,6 +1809,7 @@ impl RegistryHandle {
             );
             if matching {
                 panes.replace(id.clone(), PaneEntry::Live(Arc::clone(&replacement)));
+                let _ = panes.assign_host_generation(id);
             }
             matching
         };
@@ -1787,6 +1817,120 @@ impl RegistryHandle {
             replacement.clear_legacy_listeners();
             replacement.invalidate_pane_streams();
         }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "dark until an authenticated native claim transport activates"
+    )]
+    pub(crate) fn install_pending_native_launches(
+        &self,
+        launches: Arc<crate::native_bootstrap::PendingNativeLaunches>,
+    ) -> Result<(), Arc<crate::native_bootstrap::PendingNativeLaunches>> {
+        let mut panes = lock(&self.panes);
+        if panes.native_launches.is_some() {
+            return Err(launches);
+        }
+        panes.native_launches = Some(launches);
+        Ok(())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "dark until an authenticated native claim transport activates"
+    )]
+    pub(crate) fn reserve_pending_native_launch(
+        self: &Arc<Self>,
+        binding: crate::native_bootstrap::NativeLaunchBinding,
+    ) -> Result<
+        crate::native_bootstrap::PendingNativeLaunchReceipt,
+        crate::native_bootstrap::NativeLaunchReservationError,
+    > {
+        let panes = lock(&self.panes);
+        if panes.hosts.contains_key(binding.agent_id()) {
+            return Err(crate::native_bootstrap::NativeLaunchReservationError::HostAlreadyVisible);
+        }
+        let launches = panes
+            .native_launches
+            .as_ref()
+            .ok_or(crate::native_bootstrap::NativeLaunchReservationError::UnknownTicket)?;
+        launches.reserve(binding)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "dark until an authenticated native claim transport activates"
+    )]
+    pub(crate) fn publish_pending_native_launch(
+        &self,
+        receipt: &crate::native_bootstrap::NativeLaunchReceipt,
+    ) -> Result<u64, crate::native_bootstrap::NativeLaunchReservationError> {
+        let panes = lock(&self.panes);
+        if !matches!(
+            panes.hosts.get(receipt.agent_id()),
+            Some(PaneEntry::Live(_))
+        ) {
+            return Err(crate::native_bootstrap::NativeLaunchReservationError::HostUnavailable);
+        }
+        let generation = panes
+            .host_generations
+            .get(receipt.agent_id())
+            .copied()
+            .ok_or(crate::native_bootstrap::NativeLaunchReservationError::HostUnavailable)?;
+        let launches = panes
+            .native_launches
+            .as_ref()
+            .ok_or(crate::native_bootstrap::NativeLaunchReservationError::UnknownTicket)?;
+        launches.publish(receipt, generation)?;
+        Ok(generation)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "dark until an authenticated native claim transport activates"
+    )]
+    pub(crate) fn claim_pending_native_writer(
+        &self,
+        ticket: &crate::native_bootstrap::NativeLaunchTicket,
+        agent_id: &AgentId,
+        claimant: crate::native_bootstrap::NativeClaimant,
+    ) -> Result<
+        crate::native_bootstrap::NativeLaunchClaim,
+        crate::native_bootstrap::NativeLaunchClaimError,
+    > {
+        // Dark internal seam only: `NativeClaimant` has no production issuer and no public wire
+        // vocabulary carries a launch ticket. Production NativeBootstrapService remains disabled.
+        let mut panes = lock(&self.panes);
+        let host = panes
+            .hosts
+            .get(agent_id)
+            .and_then(PaneEntry::live_host)
+            .cloned()
+            .ok_or(crate::native_bootstrap::NativeLaunchClaimError::WrongBinding)?;
+        let host_generation = panes
+            .host_generations
+            .get(agent_id)
+            .copied()
+            .ok_or(crate::native_bootstrap::NativeLaunchClaimError::WrongBinding)?;
+        let launches = panes
+            .native_launches
+            .as_ref()
+            .cloned()
+            .ok_or(crate::native_bootstrap::NativeLaunchClaimError::UnknownTicket)?;
+        // Panes stays held from exact ticket consumption through writer publication. An ordinary
+        // attach therefore sees either the pending gate or the completed lease, never the seam.
+        let conn = claimant.conn();
+        let (claim, lease) =
+            launches.claim_with(ticket, agent_id, host_generation, claimant, || {
+                host.lease_writer(conn)
+                    .map_err(|_| crate::native_bootstrap::NativeLaunchClaimError::WriterBusy)
+            })?;
+        panes
+            .leases
+            .entry(conn)
+            .or_default()
+            .push((agent_id.clone(), Arc::new(lease)));
+        Ok(claim)
     }
 
     /// Stop admitting new live-pane operations while keeping the exact host registered through
@@ -1798,13 +1942,14 @@ impl RegistryHandle {
         // instead of being discarded and later overwritten by Live.
         let _replacement = lock(&self.pane_replacement);
         let mut panes = lock(&self.panes);
-        let Some(entry) = panes.hosts.get_mut(id) else {
-            return;
-        };
-        if !matches!(entry, PaneEntry::Live(current) if Arc::ptr_eq(current, host)) {
+        if !matches!(panes.hosts.get(id), Some(PaneEntry::Live(current)) if Arc::ptr_eq(current, host))
+        {
             return;
         }
-        *entry = PaneEntry::Closing(Arc::clone(host));
+        panes.revoke_native_launch(id);
+        panes
+            .hosts
+            .insert(id.clone(), PaneEntry::Closing(Arc::clone(host)));
         host.seal_controls();
         for leases in panes.leases.values_mut() {
             leases.retain(|(agent_id, _)| agent_id != id);
@@ -1849,6 +1994,7 @@ impl RegistryHandle {
                 .get(id)
                 .is_some_and(|entry| Arc::ptr_eq(entry.host(), host));
             if matching {
+                panes.revoke_native_launch(id);
                 for leases in panes.leases.values_mut() {
                     leases.retain(|(agent_id, _)| agent_id != id);
                 }
@@ -1868,6 +2014,7 @@ impl RegistryHandle {
     pub fn forget_pane(&self, id: &AgentId) {
         let host = {
             let mut panes = lock(&self.panes);
+            panes.revoke_native_launch(id);
             let host = panes.remove(id).map(|entry| Arc::clone(entry.host()));
             for leases in panes.leases.values_mut() {
                 leases.retain(|(a, _)| a != id);
@@ -3560,6 +3707,7 @@ mod tests {
     use marion_testsupport::scratch;
     use std::io::Write;
     use std::path::Path;
+    use std::time::Duration;
 
     fn id(s: &str) -> AgentId {
         AgentId(s.into())
@@ -5839,6 +5987,211 @@ mod tests {
         host.completed_replay_charge()
             .expect("the zero-output host retained its End");
         host
+    }
+
+    fn native_launch_binding(agent: &str) -> crate::native_bootstrap::NativeLaunchBinding {
+        crate::native_bootstrap::NativeLaunchBinding::new(
+            id(agent),
+            PathBuf::from("/project"),
+            crate::native_bootstrap::PeerIdentity::current_for_tty_test(),
+            ConnId(500),
+            crate::native_bootstrap::TerminalFingerprint::new(1, 2, 3),
+            crate::native_bootstrap::TerminalGeometry {
+                cols: 80,
+                rows: 24,
+                xpixel: 0,
+                ypixel: 0,
+            },
+            crate::native_bootstrap::NativeLaunchDescriptor::new("atlas", "atlas", "atlas-native"),
+            crate::native_bootstrap::context_hash(
+                &crate::native_bootstrap::DirectNativeRequestContext::new(
+                    PathBuf::from("/project"),
+                    "atlas".into(),
+                    Vec::new(),
+                    "xterm".into(),
+                    1,
+                ),
+            ),
+        )
+    }
+
+    fn native_claimant(conn: ConnId) -> crate::native_bootstrap::NativeClaimant {
+        crate::native_bootstrap::NativeClaimant::new(
+            conn,
+            crate::native_bootstrap::PeerIdentity::current_for_tty_test(),
+        )
+    }
+
+    #[test]
+    fn pending_native_reservation_gates_both_attach_modes_until_atomic_ticket_claim() {
+        #[derive(Default)]
+        struct TestClock;
+        impl crate::native_bootstrap::MonotonicClock for TestClock {
+            fn now(&self) -> Duration {
+                Duration::ZERO
+            }
+        }
+        #[derive(Default)]
+        struct TestRng(std::sync::atomic::AtomicU64);
+        impl crate::native_bootstrap::CapabilityRng for TestRng {
+            fn fill(
+                &self,
+                bytes: &mut [u8],
+            ) -> Result<(), crate::native_bootstrap::BootstrapError> {
+                let value = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+                bytes.fill(0);
+                bytes[..8].copy_from_slice(&value.to_be_bytes());
+                Ok(())
+            }
+        }
+        let w = Wired::new("handler-native-writer-priority");
+        let host = unregistered_pane(&w, "root", "sleep 30");
+        let launches = Arc::new(
+            crate::native_bootstrap::PendingNativeLaunches::with_sources(
+                Arc::new(TestRng::default()),
+                Arc::new(TestClock),
+                Duration::from_secs(60),
+            ),
+        );
+        w.fx.handle
+            .install_pending_native_launches(Arc::clone(&launches))
+            .unwrap_or_else(|_| panic!("native launch authority installs once"));
+        let binding = native_launch_binding("root");
+        let pending =
+            w.fx.handle
+                .reserve_pending_native_launch(binding.clone())
+                .unwrap();
+        w.fx.handle.register_pane(&id("root"), Arc::clone(&host));
+        let generation =
+            w.fx.handle
+                .publish_pending_native_launch(pending.receipt())
+                .unwrap();
+
+        for pane_stream_v1 in [false, true] {
+            let (out, _rx) = crate::serve::capture(ConnId(601 + u64::from(pane_stream_v1)));
+            let attach = if pane_stream_v1 {
+                w.fx.handle
+                    .attach_pane_v1(&id("root"), &out)
+                    .unwrap()
+                    .0
+                    .expect("pane exists")
+            } else {
+                w.fx.handle
+                    .attach_pane(&id("root"), &out)
+                    .expect("pane exists")
+            };
+            assert!(!attach.writable);
+            assert_eq!(host.writer(), None);
+        }
+
+        let claim =
+            w.fx.handle
+                .claim_pending_native_writer(
+                    pending.receipt().ticket(),
+                    binding.agent_id(),
+                    native_claimant(ConnId(700)),
+                )
+                .unwrap();
+        assert_eq!(claim.host_generation(), generation);
+        assert_eq!(claim.conn(), ConnId(700));
+        assert_eq!(host.writer(), Some(ConnId(700)));
+        assert_eq!(
+            w.fx.handle.claim_pending_native_writer(
+                pending.receipt().ticket(),
+                binding.agent_id(),
+                native_claimant(ConnId(701)),
+            ),
+            Err(crate::native_bootstrap::NativeLaunchClaimError::UnknownTicket)
+        );
+        w.fx.handle
+            .gone(ConnId(700), &ClientGone::SocketClosed, &Departure::Eof);
+        assert_eq!(
+            host.writer(),
+            None,
+            "claim lease leaked after claimant departure"
+        );
+        host.shutdown().unwrap();
+    }
+
+    #[test]
+    fn native_ticket_is_revoked_by_replacement_and_terminal_lifecycle() {
+        #[derive(Default)]
+        struct TestClock;
+        impl crate::native_bootstrap::MonotonicClock for TestClock {
+            fn now(&self) -> Duration {
+                Duration::ZERO
+            }
+        }
+        struct TestRng(std::sync::atomic::AtomicU64);
+        impl crate::native_bootstrap::CapabilityRng for TestRng {
+            fn fill(
+                &self,
+                bytes: &mut [u8],
+            ) -> Result<(), crate::native_bootstrap::BootstrapError> {
+                let value = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+                bytes.fill(value as u8);
+                Ok(())
+            }
+        }
+        let w = Wired::new("handler-native-writer-replacement");
+        let launches = Arc::new(
+            crate::native_bootstrap::PendingNativeLaunches::with_sources(
+                Arc::new(TestRng(std::sync::atomic::AtomicU64::new(0))),
+                Arc::new(TestClock),
+                Duration::from_secs(60),
+            ),
+        );
+        w.fx.handle
+            .install_pending_native_launches(Arc::clone(&launches))
+            .unwrap_or_else(|_| panic!("native launch authority installs once"));
+        let binding = native_launch_binding("root");
+
+        let old = unregistered_pane(&w, "root", "sleep 30");
+        let pending =
+            w.fx.handle
+                .reserve_pending_native_launch(binding.clone())
+                .unwrap();
+        w.fx.handle.register_pane(&id("root"), Arc::clone(&old));
+        w.fx.handle
+            .publish_pending_native_launch(pending.receipt())
+            .unwrap();
+        let replacement = unregistered_pane(&w, "root", "sleep 30");
+        w.fx.handle
+            .register_pane(&id("root"), Arc::clone(&replacement));
+        assert_eq!(
+            w.fx.handle.claim_pending_native_writer(
+                pending.receipt().ticket(),
+                binding.agent_id(),
+                native_claimant(ConnId(800))
+            ),
+            Err(crate::native_bootstrap::NativeLaunchClaimError::UnknownTicket)
+        );
+        assert_eq!(replacement.writer(), None);
+
+        w.fx.handle.forget_pane(&id("root"));
+        let closing_host = unregistered_pane(&w, "root", "sleep 30");
+        let closing =
+            w.fx.handle
+                .reserve_pending_native_launch(binding.clone())
+                .unwrap();
+        w.fx.handle
+            .register_pane(&id("root"), Arc::clone(&closing_host));
+        w.fx.handle
+            .publish_pending_native_launch(closing.receipt())
+            .unwrap();
+        w.fx.handle.closing_pane(&id("root"), &closing_host);
+        assert_eq!(
+            w.fx.handle.claim_pending_native_writer(
+                closing.receipt().ticket(),
+                binding.agent_id(),
+                native_claimant(ConnId(801)),
+            ),
+            Err(crate::native_bootstrap::NativeLaunchClaimError::WrongBinding)
+        );
+        assert_eq!(closing_host.writer(), None);
+        closing_host.shutdown().unwrap();
+        replacement.shutdown().unwrap();
+        old.shutdown().unwrap();
     }
 
     fn write_keys(s: &mut std::os::unix::net::UnixStream, agent: &str, bytes: &str) {

@@ -12,6 +12,7 @@ use marion_proto::{NativeEnvVarV1, NativeLaunchContextV2, OpaqueOsValueV1, Termi
 use crate::native_binding::{NativeBindingError, resolve_declared_executable};
 use crate::native_bootstrap::{
     BootstrapError, DirectNativeRequestContext, NATIVE_WIRE_VERSION, NativeBootstrapClient,
+    NativeFacadeHandoff,
 };
 use crate::native_intent::SelectedNativeFacade;
 use crate::native_tty::capture_process_stdio;
@@ -100,6 +101,7 @@ pub fn dispatch_native_facade_or_legacy<'a>(
     argv: impl IntoIterator<Item = OsString>,
     registry: &'a NativeFacadeRegistry<'a>,
     connect_native: impl FnOnce() -> Result<NativeBootstrapClient, BootstrapError>,
+    authorized_native: impl FnOnce(NativeFacadeHandoff) -> ExitCode,
     mut stderr: impl Write,
     legacy: impl FnOnce() -> ExitCode,
 ) -> ExitCode {
@@ -142,16 +144,17 @@ pub fn dispatch_native_facade_or_legacy<'a>(
     let authorized = witness
         .bootstrap(connection, context)
         .and_then(|session| session.consume());
-    if authorized.is_err() {
-        writeln!(
-            stderr,
-            "marion: native facade bootstrap authorization was refused"
-        )
-        .expect("write native facade refusal to stderr");
-        return ExitCode::FAILURE;
+    match authorized {
+        Ok(handoff) => authorized_native(handoff),
+        Err(_) => {
+            writeln!(
+                stderr,
+                "marion: native facade bootstrap authorization was refused"
+            )
+            .expect("write native facade refusal to stderr");
+            ExitCode::FAILURE
+        }
     }
-
-    ExitCode::SUCCESS
 }
 
 #[cfg(all(test, unix))]

@@ -1995,9 +1995,19 @@ mod tests {
         fn authorized(
             &self,
             _request: crate::native_bootstrap::ConsumedNativeRequest<'_>,
-        ) -> Result<(), crate::native_bootstrap::BootstrapError> {
+            _deadline: &crate::native_bootstrap::NativeLaunchDeadline,
+        ) -> Result<
+            crate::native_bootstrap::PendingNativeLaunchReceipt,
+            crate::native_bootstrap::BootstrapError,
+        > {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(crate::native_bootstrap::PendingNativeLaunchReceipt::new(
+                crate::native_bootstrap::NativeLaunchReceipt::new(
+                    AgentId("019f0000-0000-7000-8000-000000000002".into()),
+                    crate::native_bootstrap::NativeLaunchTicket::for_test([0x31; 32]),
+                ),
+                || {},
+            ))
         }
     }
 
