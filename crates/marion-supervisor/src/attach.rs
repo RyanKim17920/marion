@@ -63,14 +63,17 @@
 //! the closed socket produces. Nothing here has to ask for that, and this module deliberately sends
 //! no `node/kill` and no `session/quit` on the way out.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use marion_core::contract::AgentId;
-use marion_proto::{Call, ClientNotification, Event, Frame, Input, MethodResult, RequestId};
+use marion_proto::{
+    Call, ClientNotification, Event, Frame, Input, MethodResult, NodePaneReadyV1, PaneFrameKindV1,
+    RequestId,
+};
 use marion_term::Term;
 use marion_tui::{Action, Keys, Pane, Redraw, Screen, ScreenBackend, Sticky};
 use ratatui::Terminal;
@@ -87,7 +90,7 @@ const POLL: std::time::Duration = std::time::Duration::from_millis(50);
 /// A `static` and an `AtomicBool` because a signal handler may do essentially nothing: a store to a
 /// lock-free atomic is async-signal-safe, and anything that allocates, locks or writes a socket is
 /// not. The size is read *in the loop*, where a syscall is allowed.
-static RESIZED: AtomicBool = AtomicBool::new(true);
+static RESIZED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
     fn signal(sig: std::ffi::c_int, handler: usize) -> usize;
@@ -98,6 +101,11 @@ const SIGWINCH: std::ffi::c_int = 28;
 
 extern "C" fn on_winch(_sig: std::ffi::c_int) {
     RESIZED.store(true, Ordering::SeqCst);
+}
+
+fn arm_resize_tracking(resized: &AtomicBool, install: impl FnOnce()) {
+    resized.store(false, Ordering::SeqCst);
+    install();
 }
 
 /// This user's real uid, which §2's `/tmp` fallback keys on. The same three lines `marion run`
@@ -154,16 +162,81 @@ pub fn run(agent: &str, repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
 /// One attach, from the `node/attach` response to the operator leaving.
 struct Session {
     stream: UnixStream,
-    lines: BufReader<UnixStream>,
+    writer: Arc<std::sync::Mutex<UnixStream>>,
+    inbound: Vec<u8>,
+    legacy_prefix: String,
     id: AgentId,
+    input_fd: std::os::fd::RawFd,
     /// The grid, the backend and the guard, in one value. `None` until `node/attach` has answered
     /// with a pane — the refusals above it must leave the operator's shell exactly as it was.
     view: Option<View>,
     /// Whether this client holds the node's write half. A read-only attach still renders; it just
     /// sends nothing, and the operator was told which connection has the keyboard.
     writable: bool,
+    pane_stream: PaneStream,
     /// Set by the stdin thread when the operator types `^] d`.
     leaving: Arc<AtomicBool>,
+    keyboard_failure: Arc<std::sync::Mutex<Option<String>>>,
+    keyboard: Option<std::thread::JoinHandle<()>>,
+}
+
+/// The display protocol selected by the attach response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneStream {
+    Negotiating,
+    Legacy,
+    V1 { next_seq: u64, cut: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneProgress {
+    Continue,
+    End,
+}
+
+fn write_serialized<W: Write>(
+    writer: &Arc<std::sync::Mutex<W>>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    let mut writer = writer.lock().unwrap_or_else(|e| e.into_inner());
+    writer.write_all(bytes)?;
+    writer.flush()
+}
+
+/// Incremental UTF-8 for `node/pty-write`. Raw tty reads are not character boundaries; keeping
+/// the incomplete suffix is what prevents a split paste from turning one scalar into U+FFFD.
+#[derive(Default)]
+struct KeyboardUtf8 {
+    pending: Vec<u8>,
+}
+
+impl KeyboardUtf8 {
+    fn push(&mut self, bytes: &[u8]) -> Result<Option<String>, Refusal> {
+        self.pending.extend_from_slice(bytes);
+        match std::str::from_utf8(&self.pending) {
+            Ok(text) => {
+                let text = text.to_owned();
+                self.pending.clear();
+                Ok((!text.is_empty()).then_some(text))
+            }
+            Err(error) if error.error_len().is_none() => {
+                let valid = error.valid_up_to();
+                let suffix = self.pending.split_off(valid);
+                if suffix.len() > 3 {
+                    return Err(
+                        "pane keyboard input contains an overlong incomplete UTF-8 scalar".into(),
+                    );
+                }
+                let prefix = String::from_utf8(std::mem::replace(&mut self.pending, suffix))
+                    .expect("from_utf8 identified this exact prefix as valid");
+                Ok((!prefix.is_empty()).then_some(prefix))
+            }
+            Err(error) => Err(format!(
+                "pane keyboard input is not valid UTF-8 at byte {}",
+                error.valid_up_to()
+            )),
+        }
+    }
 }
 
 /// One pane's emulator and its painter.
@@ -200,12 +273,21 @@ struct View {
 }
 
 impl View {
-    fn enter(screen: Screen, cols: u16, rows: u16) -> Result<Self, Refusal> {
+    /// Build the node's grid and the operator's viewport independently. Pane-v1 replays ordered
+    /// node resizes into the first pair; a local `SIGWINCH` changes only the second pair until the
+    /// resulting `node/resize` comes back through that ordered stream.
+    fn enter_split(
+        screen: Screen,
+        grid_cols: u16,
+        grid_rows: u16,
+        viewport_cols: u16,
+        viewport_rows: u16,
+    ) -> Result<Self, Refusal> {
         let term = Term::with_options(
-            marion_term::Size::new(cols.max(1) as usize, rows.max(1) as usize),
+            marion_term::Size::new(grid_cols.max(1) as usize, grid_rows.max(1) as usize),
             marion_tui::grid_options(),
         );
-        let terminal = Terminal::new(ScreenBackend::new(screen, cols, rows))
+        let terminal = Terminal::new(ScreenBackend::new(screen, viewport_cols, viewport_rows))
             .map_err(|e| format!("starting the pane's renderer: {e}"))?;
         Ok(Self {
             term,
@@ -214,7 +296,7 @@ impl View {
             // The same value the preamble was just written from, so the first delta is measured
             // against what the operator's terminal was actually put into rather than against a
             // second guess at it.
-            modes: Sticky::initial(cols, rows),
+            modes: Sticky::initial(grid_cols, grid_rows),
         })
     }
 
@@ -230,115 +312,173 @@ impl View {
     /// terminal already reporting when that paint lands. Nothing downstream depends on it, so this
     /// is a preference rather than a correctness argument — stated so a later reader does not
     /// reorder it wondering whether it mattered.
-    fn feed(&mut self, text: &str) {
-        self.mirror_modes(text);
-        self.term.advance(text.as_bytes());
-        if self.redraw.on_feed(&self.term, text.len()) {
-            self.paint();
+    fn feed(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Refusal> {
+        let bytes = bytes.as_ref();
+        self.mirror_modes(&String::from_utf8_lossy(bytes))?;
+        self.term.advance(bytes);
+        if self.redraw.on_feed(&self.term, bytes.len()) {
+            self.paint()?;
         }
+        Ok(())
     }
 
     /// Put the operator's terminal into whatever tracking modes the node has asked for.
     ///
-    /// A failed write is dropped for [`Self::paint`]'s reason: the operator's terminal going away
-    /// is reported by the loop noticing the socket or the node, not by an error raised from inside
-    /// a byte feed with a half-painted screen.
+    /// A failed mirror write is terminal for the attach. Continuing would hold a write lease while
+    /// the operator can neither see the node's mode nor produce the matching mouse reports.
     ///
     /// **The chunk-boundary caveat is [`Sticky::absorb`]'s and is inherited rather than repaired.**
     /// A `?1000h` split across two `node/pty` notifications is not seen. `marion-tui`'s
     /// `no_tracked_sequence_straddles_a_record_boundary_in_any_capture` measures that no committed
     /// capture splits one; the failure if a future one does is a mouse that does not work, which is
     /// the same failure this whole method exists to fix and not a new class of it.
-    fn mirror_modes(&mut self, text: &str) {
+    fn mirror_modes(&mut self, text: &str) -> Result<(), Refusal> {
         let was = self.modes;
         self.modes.absorb(text);
         if was != self.modes {
-            let _ = self.terminal.backend().screen().mirror(&was, &self.modes);
+            self.terminal
+                .backend()
+                .screen()
+                .mirror(&was, &self.modes)
+                .map_err(|e| format!("mirroring the node's terminal modes: {e}"))?;
         }
+        Ok(())
     }
 
     /// The unsynchronized straggler: a node that wrote something and opened no frame bracket.
-    fn idle(&mut self) {
+    fn idle(&mut self) -> Result<(), Refusal> {
         if self.redraw.on_idle(&self.term) {
-            self.paint();
+            self.paint()?;
         }
+        Ok(())
     }
 
-    fn paint(&mut self) {
-        // A paint that fails is a terminal that has gone — reported by the loop noticing the socket
-        // or the node, never by this returning an error nobody can act on with the screen already
-        // half-written.
+    fn end(&mut self) -> Result<(), Refusal> {
+        if self.redraw.on_end() {
+            self.paint()?;
+        }
+        Ok(())
+    }
+
+    fn paint(&mut self) -> Result<(), Refusal> {
         let term = &self.term;
-        let _ = self
-            .terminal
-            .draw(|f| f.render_widget(Pane(term), f.area()));
+        self.terminal
+            .draw(|f| f.render_widget(Pane(term), f.area()))
+            .map(|_| ())
+            .map_err(|e| format!("painting the pane on the operator's terminal: {e}"))
     }
 
-    /// The operator's window changed. **The grid is resized as well as the backend**, and both
-    /// before the repaint: a `Terminal` whose backend reports a size its buffer does not have
-    /// draws the old geometry into the new one, and `Pane` clips rather than scaling, so the
-    /// mismatch shows as a pane that has stopped filling its window.
-    fn resize(&mut self, cols: u16, rows: u16) {
+    /// Apply one ordered node-grid resize. Pane-v1 keeps this independent from the local viewport:
+    /// a SIGWINCH resizes the backend immediately, but the emulator changes only when this record
+    /// arrives in the node's dense stream.
+    fn resize_grid(&mut self, cols: u16, rows: u16) -> Result<(), Refusal> {
         self.term.resize(marion_term::Size::new(
             cols.max(1) as usize,
             rows.max(1) as usize,
         ));
+        self.paint()
+    }
+
+    fn resize_viewport(&mut self, cols: u16, rows: u16) -> Result<(), Refusal> {
         self.terminal.backend_mut().set_size(cols, rows);
-        let _ = self.terminal.autoresize();
-        self.paint();
+        self.terminal
+            .autoresize()
+            .map_err(|e| format!("resizing the pane's local viewport: {e}"))?;
+        self.paint()
+    }
+
+    fn resize_legacy(&mut self, cols: u16, rows: u16) -> Result<(), Refusal> {
+        self.term.resize(marion_term::Size::new(
+            cols.max(1) as usize,
+            rows.max(1) as usize,
+        ));
+        self.resize_viewport(cols, rows)
     }
 }
 
 impl Session {
     fn open(stream: UnixStream, id: AgentId) -> Result<Session, Refusal> {
-        let lines = BufReader::new(
-            stream
-                .try_clone()
-                .map_err(|e| format!("cloning the supervisor socket: {e}"))?,
-        );
+        Self::open_with_terminal(stream, id, std::io::stdout(), 0, None)
+    }
+
+    fn open_with_terminal<S: Write + Send + 'static>(
+        stream: UnixStream,
+        id: AgentId,
+        output: S,
+        input_fd: std::os::fd::RawFd,
+        geometry: Option<(u16, u16)>,
+    ) -> Result<Session, Refusal> {
+        stream
+            .set_read_timeout(Some(POLL))
+            .map_err(|e| format!("bounding supervisor socket reads: {e}"))?;
+        let writer_stream = stream
+            .try_clone()
+            .map_err(|e| format!("cloning the supervisor socket writer: {e}"))?;
+        writer_stream
+            .set_write_timeout(Some(POLL))
+            .map_err(|e| format!("bounding supervisor socket writes: {e}"))?;
+        let writer = Arc::new(std::sync::Mutex::new(writer_stream));
         let mut s = Session {
             stream,
-            lines,
+            writer,
+            inbound: Vec::new(),
+            legacy_prefix: String::new(),
             id,
+            input_fd,
             view: None,
             writable: false,
+            pane_stream: PaneStream::Negotiating,
             leaving: Arc::new(AtomicBool::new(false)),
+            keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
+            keyboard: None,
         };
-        s.attach()?;
+        s.attach(output, geometry)?;
         Ok(s)
+    }
+
+    #[cfg(test)]
+    fn open_for_test<S: Write + Send + 'static>(
+        stream: UnixStream,
+        id: AgentId,
+        output: S,
+        input_fd: std::os::fd::RawFd,
+        geometry: (u16, u16),
+    ) -> Result<Session, Refusal> {
+        Self::open_with_terminal(stream, id, output, input_fd, Some(geometry))
     }
 
     /// `node/attach`, and everything that has to be true before a byte is painted.
     ///
-    /// **The replay notifications arrive before the response**, by the handler's construction, so
-    /// this reads frames until the response rather than expecting it first. They are discarded
-    /// here: they are `node/event` records of what the node *said*, which is the transcript
-    /// surface, and this client draws a terminal.
-    fn attach(&mut self) -> Result<(), Refusal> {
-        let frame = Frame::Request(marion_proto::Request::new(
-            RequestId::Number(1),
-            Call::NodeAttach(marion_proto::params::NodeAttachParams {
-                agent_id: self.id.clone(),
-                pane_stream: None,
-            }),
-        ));
-        self.stream
-            .write_all(frame.to_line().as_bytes())
-            .and_then(|()| self.stream.flush())
-            .map_err(|e| format!("sending node/attach: {e}"))?;
+    /// Durable `node/event` replay may precede the response and is intentionally ignored by this
+    /// terminal client. Pane-v1 may not: its Ready token has not been advertised yet, and accepting
+    /// an early pane frame would silently create a hole the server cannot replay afterwards.
+    fn attach<S: Write + Send + 'static>(
+        &mut self,
+        output: S,
+        geometry: Option<(u16, u16)>,
+    ) -> Result<(), Refusal> {
+        self.send_attach(RequestId::Number(1), true)?;
+        let mut response = self.await_attach_response(RequestId::Number(1), true)?;
+        let mut requested_v1 = true;
+        if matches!(&response.outcome, marion_proto::Outcome::Error(e)
+            if e.code == marion_proto::error::INVALID_PARAMS)
+        {
+            // An older supervisor rejects the additive capability at parameter decoding. That is
+            // the one safe downgrade: the rejected request had no side effects. Every classified
+            // refusal and every internal failure remains visible instead of being retried through
+            // a weaker protocol.
+            requested_v1 = false;
+            self.send_attach(RequestId::Number(2), false)?;
+            response = self.await_attach_response(RequestId::Number(2), false)?;
+        }
 
-        let result = loop {
-            match self.next_frame()? {
-                Some(Frame::Response(r)) => break r,
-                // Replay, and anything else the supervisor says while answering.
-                Some(_) => continue,
-                None => continue,
-            }
-        };
-        let body = match result.outcome {
-            marion_proto::Outcome::Result(b) => b,
-            marion_proto::Outcome::Error(e) => {
-                return Err(format!("the supervisor refused the attach: {}", e.message));
+        let body = match response.outcome {
+            marion_proto::Outcome::Result(body) => body,
+            marion_proto::Outcome::Error(error) => {
+                return Err(format!(
+                    "the supervisor refused the attach: {}",
+                    error.message
+                ));
             }
         };
         let MethodResult::NodeAttach(attached) = marion_proto::Method::NodeAttach
@@ -357,39 +497,184 @@ impl Session {
             ));
         };
         self.writable = pane.writable;
+        let ready = pane.pane_ready.clone();
+        self.pane_stream = match (requested_v1, ready.is_some()) {
+            (true, true) => PaneStream::V1 {
+                next_seq: 0,
+                cut: ready.as_ref().expect("checked above").cut,
+            },
+            (false, false) => PaneStream::Legacy,
+            (true, false) => {
+                return Err(format!(
+                    "the supervisor accepted pane-stream v1 for node `{}` but omitted its Ready \
+                     descriptor; refusing an ambiguous display stream",
+                    self.id.0
+                ));
+            }
+            (false, true) => {
+                return Err(format!(
+                    "the supervisor answered node `{}`'s explicit legacy retry with an unsolicited \
+                     pane-v1 Ready descriptor",
+                    self.id.0
+                ));
+            }
+        };
 
-        // The terminal is entered **after** the refusals above, so an attach that cannot happen
-        // leaves the operator's shell exactly as it was rather than flashing an alternate screen.
-        //
-        // `Sticky::default()` is the honest starting assumption: this client has replayed nothing,
-        // so it knows none of the node's modes yet, and the preamble it writes is the neutral one.
-        // The node's own sequences arrive in the byte stream and set the rest.
-        // The client's own geometry, or the pty's if this terminal has none to report — a pipe
-        // has no size, and inventing 80x24 for it would put a wrong number in the preamble rather
-        // than the node's real one.
-        let (cols, rows) =
-            marion_tui::guard::window_size(0).unwrap_or((pane.cols.max(1), pane.rows.max(1)));
-        let screen = Screen::enter(std::io::stdout(), 0, &Sticky::initial(cols, rows))
-            .map_err(|e| format!("entering the terminal: {e}"))?;
+        // Clear, install, then take the authoritative size. A signal before installation is
+        // reflected by the size read; one after installation remains set for the pump. Reversing
+        // the first two steps would erase an edge arriving between them.
+        arm_resize_tracking(&RESIZED, || unsafe {
+            signal(SIGWINCH, on_winch as *const () as usize);
+        });
+        let (viewport_cols, viewport_rows) = geometry
+            .or_else(|| marion_tui::guard::window_size(self.input_fd))
+            .unwrap_or((pane.cols.max(1), pane.rows.max(1)));
+        let screen = Screen::enter(
+            output,
+            self.input_fd,
+            &Sticky::initial(viewport_cols, viewport_rows),
+        )
+        .map_err(|e| format!("entering the terminal: {e}"))?;
         if !pane.writable {
-            let _ = screen.write(
-                format!(
-                    "\r\nmarion: read-only — connection {} is typing into this node.\r\n",
-                    pane.held_by.unwrap_or_default()
-                )
-                .as_bytes(),
+            let banner = pane.held_by.map_or_else(
+                || "\r\nmarion: read-only — this retained pane has no live keyboard.\r\n".into(),
+                |holder| {
+                    format!(
+                        "\r\nmarion: read-only — connection {holder} is typing into this node.\r\n"
+                    )
+                },
             );
+            screen
+                .write(banner.as_bytes())
+                .map_err(|e| format!("showing the pane's read-only status: {e}"))?;
         }
-        self.view = Some(View::enter(screen, cols, rows)?);
+        self.view = Some(match self.pane_stream {
+            PaneStream::V1 { .. } => {
+                View::enter_split(screen, pane.cols, pane.rows, viewport_cols, viewport_rows)?
+            }
+            PaneStream::Legacy => {
+                View::enter_split(screen, pane.cols, pane.rows, viewport_cols, viewport_rows)?
+            }
+            PaneStream::Negotiating => unreachable!("the response selected a pane protocol"),
+        });
+        if matches!(self.pane_stream, PaneStream::Legacy) {
+            let prefix = std::mem::take(&mut self.legacy_prefix);
+            if !prefix.is_empty() {
+                self.view_mut()?.feed(prefix.as_bytes())?;
+            }
+        }
 
+        if let Some(descriptor) = ready {
+            let frame = Frame::Input(ClientNotification::new(Input::NodePaneReady(
+                NodePaneReadyV1 {
+                    agent_id: self.id.clone(),
+                    token: descriptor.token,
+                    cut: descriptor.cut,
+                },
+            )));
+            self.write_frame(&frame, "sending node/pane-ready")?;
+        }
         if self.writable {
-            // SAFETY: installing a handler whose whole body is one atomic store. Done after the
-            // screen guard so a failure above cannot leave a handler pointing into a torn-down
-            // process.
-            unsafe { signal(SIGWINCH, on_winch as *const () as usize) };
-            self.start_keyboard();
+            // Per-session, not process-global: every attach announces its initial local geometry
+            // even if a prior attach consumed the last SIGWINCH edge.
+            self.send_size(viewport_cols, viewport_rows)?;
+            if matches!(self.pane_stream, PaneStream::Legacy) {
+                self.view_mut()?.resize_grid(viewport_cols, viewport_rows)?;
+            }
+            self.start_keyboard()?;
         }
         Ok(())
+    }
+
+    fn send_attach(&mut self, id: RequestId, pane_v1: bool) -> Result<(), Refusal> {
+        let frame = Frame::Request(marion_proto::Request::new(
+            id,
+            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+                agent_id: self.id.clone(),
+                pane_stream: pane_v1.then(marion_proto::params::PaneStreamCapabilityV1::new),
+            }),
+        ));
+        self.write_frame(&frame, "sending node/attach")
+    }
+
+    fn await_attach_response(
+        &mut self,
+        expected: RequestId,
+        pane_v1: bool,
+    ) -> Result<marion_proto::Response, Refusal> {
+        loop {
+            match self.next_frame()? {
+                Some(Frame::Response(response)) if response.id == expected => return Ok(response),
+                Some(Frame::Response(response)) => {
+                    return Err(format!(
+                        "the supervisor answered node/attach with unrelated response id {:?}",
+                        response.id
+                    ));
+                }
+                Some(Frame::Notification(note))
+                    if pane_v1
+                        && match &note.event {
+                            Event::NodePaneFrame(frame) => frame.agent_id == self.id,
+                            Event::NodePty { agent_id, .. } => agent_id == &self.id,
+                            _ => false,
+                        } =>
+                {
+                    return Err(format!(
+                        "the supervisor sent node `{}` a pane frame before its node/attach \
+                         response advertised the Ready boundary",
+                        self.id.0
+                    ));
+                }
+                Some(Frame::Notification(note))
+                    if !pane_v1
+                        && matches!(&note.event, Event::NodePty { agent_id, .. }
+                            if agent_id == &self.id) =>
+                {
+                    let Event::NodePty { bytes, .. } = note.event else {
+                        unreachable!("the guard selected node/pty")
+                    };
+                    let next = self
+                        .legacy_prefix
+                        .len()
+                        .checked_add(bytes.len())
+                        .ok_or_else(|| "legacy pane prefix byte count overflowed".to_string())?;
+                    if next > crate::serve::MAX_FRAME_BYTES {
+                        return Err(format!(
+                            "legacy pane output exceeded the {}-byte attach prefix bound before \
+                             its response",
+                            crate::serve::MAX_FRAME_BYTES
+                        ));
+                    }
+                    self.legacy_prefix.push_str(&bytes);
+                }
+                Some(Frame::Notification(note))
+                    if !pane_v1
+                        && matches!(&note.event, Event::NodePaneFrame(frame)
+                            if frame.agent_id == self.id) =>
+                {
+                    return Err(format!(
+                        "the supervisor sent node `{}` a pane-v1 frame while answering its \
+                         explicit legacy attach",
+                        self.id.0
+                    ));
+                }
+                // Durable transcript replay and unrelated notifications may precede an attach
+                // response. This command renders only the display plane.
+                Some(Frame::Notification(_)) => continue,
+                Some(other) => {
+                    return Err(format!(
+                        "the supervisor sent an unexpected frame while answering node/attach: \
+                         {other:?}"
+                    ));
+                }
+                None => continue,
+            }
+        }
+    }
+
+    fn write_frame(&mut self, frame: &Frame, action: &str) -> Result<(), Refusal> {
+        write_serialized(&self.writer, frame.to_line().as_bytes())
+            .map_err(|e| format!("{action}: {e}"))
     }
 
     /// The stdin reader. A thread, because there is no portable way to select on a tty and a socket
@@ -398,72 +683,159 @@ impl Session {
     /// It ends by setting `leaving` rather than by exiting the process, so the terminal is restored
     /// by the `Screen` guard on the main thread's normal return — a `std::process::exit` here would
     /// skip every destructor and leave the operator's terminal in raw mode.
-    fn start_keyboard(&self) {
+    fn start_keyboard(&mut self) -> Result<(), Refusal> {
         let leaving = Arc::clone(&self.leaving);
+        let failure = Arc::clone(&self.keyboard_failure);
         let id = self.id.clone();
-        let Ok(mut sock) = self.stream.try_clone() else {
-            return;
-        };
-        std::thread::Builder::new()
+        let input_fd = self.input_fd;
+        let writer = Arc::clone(&self.writer);
+        writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_write_timeout(Some(POLL))
+            .map_err(|e| format!("bounding pane keyboard writes: {e}"))?;
+        self.keyboard = Some(
+            std::thread::Builder::new()
             .name("marion-attach-keys".into())
             .spawn(move || {
                 let mut keys = Keys::new();
+                let mut utf8 = KeyboardUtf8::default();
                 let mut buf = [0u8; 4096];
-                let mut stdin = std::io::stdin();
+                let mut stdin = marion_tui::guard::NonBlocking::set(input_fd);
+                if !stdin.engaged() {
+                    *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some("making pane keyboard input nonblocking: the terminal refused".into());
+                    leaving.store(true, Ordering::SeqCst);
+                    return;
+                }
                 while !leaving.load(Ordering::SeqCst) {
                     let n = match stdin.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => {
+                            *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+                                if utf8.pending.is_empty() {
+                                    "pane keyboard input closed while this attach held the write \
+                                     lease"
+                                        .into()
+                                } else {
+                                    "pane keyboard input closed in the middle of a UTF-8 scalar"
+                                        .into()
+                                },
+                            );
+                            leaving.store(true, Ordering::SeqCst);
+                            return;
+                        }
                         Ok(n) => n,
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                            ) =>
+                        {
+                            std::thread::sleep(POLL);
+                            continue;
+                        }
+                        Err(error) => {
+                            *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some(format!("reading pane keyboard input: {error}"));
+                            leaving.store(true, Ordering::SeqCst);
+                            return;
+                        }
                     };
                     for action in keys.feed(&buf[..n]) {
                         match action {
                             Action::Detach => {
+                                if !utf8.pending.is_empty() {
+                                    *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+                                        "pane detach arrived in the middle of a UTF-8 scalar".into(),
+                                    );
+                                }
                                 leaving.store(true, Ordering::SeqCst);
                                 return;
                             }
                             Action::Forward(bytes) => {
-                                // **Lossy, and that is the right conversion here.** A keystroke
-                                // that is not valid UTF-8 is a byte the operator's terminal
-                                // produced under some encoding marion does not speak; passing it
-                                // through as a replacement character is wrong in the same small
-                                // way for every terminal, whereas dropping the whole chunk would
-                                // lose the ordinary keys around it.
-                                let text = String::from_utf8_lossy(&bytes).into_owned();
+                                let text = match utf8.push(&bytes) {
+                                    Ok(Some(text)) => text,
+                                    Ok(None) => continue,
+                                    Err(error) => {
+                                        *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+                                            Some(error);
+                                        leaving.store(true, Ordering::SeqCst);
+                                        return;
+                                    }
+                                };
                                 let f =
                                     Frame::Input(ClientNotification::new(Input::NodePtyWrite {
                                         agent_id: id.clone(),
                                         bytes: text,
                                     }));
-                                if sock.write_all(f.to_line().as_bytes()).is_err() {
+                                if let Err(error) =
+                                    write_serialized(&writer, f.to_line().as_bytes())
+                                {
+                                    *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+                                        format!("sending node/pty-write from the keyboard: {error}"),
+                                    );
+                                    leaving.store(true, Ordering::SeqCst);
                                     return;
                                 }
-                                let _ = sock.flush();
                             }
                         }
                     }
                 }
             })
-            .ok();
+            .map_err(|e| format!("starting the pane keyboard reader: {e}"))?,
+        );
+        Ok(())
     }
 
     /// One frame, or `None` if the read timed out. A timeout is not an error: it is the loop's
     /// chance to notice a `SIGWINCH` or a detach.
     fn next_frame(&mut self) -> Result<Option<Frame>, Refusal> {
-        let mut line = String::new();
-        match self.lines.read_line(&mut line) {
-            Ok(0) => Err("the supervisor closed the connection".into()),
-            Ok(_) => Frame::from_line(&line)
-                .map(Some)
-                .map_err(|e| format!("the supervisor sent a frame marion cannot read: {e}")),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(None)
+        loop {
+            if let Some(end) = self.inbound.iter().position(|byte| *byte == b'\n') {
+                if end > crate::serve::MAX_FRAME_BYTES {
+                    return Err(format!(
+                        "the supervisor sent a frame larger than {} bytes",
+                        crate::serve::MAX_FRAME_BYTES
+                    ));
+                }
+                let mut line = self.inbound.drain(..=end).collect::<Vec<_>>();
+                line.pop();
+                let line = std::str::from_utf8(&line)
+                    .map_err(|_| "the supervisor sent a non-UTF-8 protocol frame".to_string())?;
+                return Frame::from_line(line)
+                    .map(Some)
+                    .map_err(|e| format!("the supervisor sent a frame marion cannot read: {e}"));
             }
-            Err(e) => Err(format!("reading from the supervisor: {e}")),
+            if self.inbound.len() > crate::serve::MAX_FRAME_BYTES {
+                return Err(format!(
+                    "the supervisor sent an unterminated frame larger than {} bytes",
+                    crate::serve::MAX_FRAME_BYTES
+                ));
+            }
+            let mut chunk = [0u8; 8192];
+            match self.stream.read(&mut chunk) {
+                Ok(0) if self.inbound.is_empty() => {
+                    return Err("the supervisor closed the connection".into());
+                }
+                Ok(0) => {
+                    return Err(format!(
+                        "the supervisor closed the connection with {} bytes of an unfinished \
+                         frame",
+                        self.inbound.len()
+                    ));
+                }
+                Ok(n) => self.inbound.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Ok(None);
+                }
+                Err(e) => return Err(format!("reading from the supervisor: {e}")),
+            }
         }
     }
 
@@ -471,78 +843,187 @@ impl Session {
     fn pump(&mut self) -> Result<(), Refusal> {
         loop {
             if self.leaving.load(Ordering::SeqCst) {
+                if let Some(error) = self
+                    .keyboard_failure
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    return Err(error);
+                }
                 return Ok(());
             }
-            self.forward_size();
+            self.forward_size()?;
             match self.next_frame() {
-                Ok(Some(Frame::Notification(n))) => match n.event {
-                    Event::NodePty {
-                        agent_id, bytes, ..
-                    } if agent_id == self.id => {
-                        if let Some(v) = &mut self.view {
-                            v.feed(&bytes);
-                        }
-                    }
-                    // The node reached a terminal state. Leaving is the honest response: there is
-                    // nothing more to paint, and a client that stayed would look like a hung pane.
-                    Event::NodeState {
-                        agent_id, state, ..
-                    } if agent_id == self.id && state.is_exited() => {
+                Ok(Some(Frame::Notification(note))) => {
+                    if self.consume_pane_event(note.event)? == PaneProgress::End {
                         return Ok(());
                     }
-                    _ => {}
-                },
-                // A read timeout, or a frame for some other node. Either way it is the one moment
-                // the loop knows the stream is quiet, which is exactly when an unbracketed
-                // straggler must be painted — a node that wrote and opened no DECSET 2026 frame
+                }
+                // A read timeout is the one moment the loop knows the stream is quiet. That is
+                // exactly when an unbracketed straggler must be painted — a node that wrote and
+                // opened no DECSET 2026 frame
                 // would otherwise sit unpainted until its next byte.
-                Ok(_) => {
+                Ok(None) => {
                     if let Some(v) = &mut self.view {
-                        v.idle();
+                        v.idle()?;
                     }
                 }
-                // The supervisor going away ends the attach and is not a failure of it: the node
-                // was never this client's to keep.
-                Err(_) => return Ok(()),
+                Ok(Some(other)) => {
+                    return Err(format!(
+                        "the supervisor sent an unexpected frame during pane display: {other:?}"
+                    ));
+                }
+                Err(error) => match self.pane_stream {
+                    PaneStream::V1 { .. } => {
+                        return Err(format!(
+                            "the pane stream ended before its terminal End frame: {error}"
+                        ));
+                    }
+                    // Legacy has no display-plane terminal marker. Preserve its historical
+                    // treatment of connection loss as the end of a view.
+                    PaneStream::Legacy => return Ok(()),
+                    PaneStream::Negotiating => {
+                        return Err(format!("the attach ended before negotiation: {error}"));
+                    }
+                },
             }
         }
     }
 
+    fn consume_pane_event(&mut self, event: Event) -> Result<PaneProgress, Refusal> {
+        match self.pane_stream {
+            PaneStream::Legacy => match event {
+                Event::NodePty {
+                    agent_id, bytes, ..
+                } if agent_id == self.id => {
+                    self.view_mut()?.feed(bytes.as_bytes())?;
+                    Ok(PaneProgress::Continue)
+                }
+                Event::NodeState {
+                    agent_id, state, ..
+                } if agent_id == self.id && state.is_exited() => {
+                    self.view_mut()?.end()?;
+                    Ok(PaneProgress::End)
+                }
+                Event::NodePaneFrame(frame) if frame.agent_id == self.id => Err(format!(
+                    "the supervisor mixed node/pane-frame into node `{}`'s explicit legacy pane \
+                     stream",
+                    self.id.0
+                )),
+                _ => Ok(PaneProgress::Continue),
+            },
+            PaneStream::V1 { next_seq, cut } => match event {
+                Event::NodePaneFrame(frame) if frame.agent_id == self.id => {
+                    if frame.seq != next_seq {
+                        return Err(format!(
+                            "node `{}`'s pane stream is not dense: expected sequence {next_seq}, \
+                             received {}",
+                            self.id.0, frame.seq
+                        ));
+                    }
+                    let following = next_seq.checked_add(1).ok_or_else(|| {
+                        format!("node `{}` exhausted its pane sequence", self.id.0)
+                    })?;
+                    let progress = match frame.frame {
+                        PaneFrameKindV1::Output { bytes } => {
+                            self.view_mut()?.feed(bytes.as_bytes())?;
+                            PaneProgress::Continue
+                        }
+                        PaneFrameKindV1::Resize { cols, rows } => {
+                            self.view_mut()?.resize_grid(cols, rows)?;
+                            PaneProgress::Continue
+                        }
+                        PaneFrameKindV1::End {} => {
+                            if following < cut {
+                                return Err(format!(
+                                    "node `{}` ended its pane stream at sequence {} before the \
+                                     advertised replay cut {cut}",
+                                    self.id.0, frame.seq
+                                ));
+                            }
+                            // End is the quiet edge too: paint a final unbracketed tail before the
+                            // screen guard is restored.
+                            self.view_mut()?.end()?;
+                            PaneProgress::End
+                        }
+                    };
+                    self.pane_stream = PaneStream::V1 {
+                        next_seq: following,
+                        cut,
+                    };
+                    Ok(progress)
+                }
+                Event::NodePty { agent_id, .. } if agent_id == self.id => Err(format!(
+                    "the supervisor mixed legacy node/pty into node `{}`'s negotiated pane-v1 \
+                     stream",
+                    self.id.0
+                )),
+                // The journal's terminal state can precede the retained PTY tail. End alone says
+                // the byte stream is complete.
+                Event::NodeState { agent_id, .. } if agent_id == self.id => {
+                    Ok(PaneProgress::Continue)
+                }
+                _ => Ok(PaneProgress::Continue),
+            },
+            PaneStream::Negotiating => {
+                Err("a pane event arrived before attach negotiation completed".into())
+            }
+        }
+    }
+
+    fn view_mut(&mut self) -> Result<&mut View, Refusal> {
+        self.view
+            .as_mut()
+            .ok_or_else(|| "the pane stream arrived before its grid was initialized".into())
+    }
+
     /// Tell the supervisor this terminal's size, if it has changed.
     ///
-    /// Runs once at startup too — `RESIZED` starts `true` — because the master's size was fixed
-    /// before the child existed, by a supervisor that could not know what terminal would attach.
-    /// A client that only spoke on `SIGWINCH` would render a node painted at somebody else's
-    /// geometry until the operator happened to drag a window edge.
-    fn forward_size(&mut self) {
-        if !self.writable || !RESIZED.swap(false, Ordering::SeqCst) {
-            return;
+    /// Initial geometry is sent explicitly by [`Self::attach`]; this consumes only later signal
+    /// edges. That makes a second in-process attach independent of what the first consumed.
+    fn forward_size(&mut self) -> Result<(), Refusal> {
+        if !RESIZED.swap(false, Ordering::SeqCst) {
+            return Ok(());
         }
-        let Some((cols, rows)) = marion_tui::guard::window_size(0) else {
-            return;
+        let Some((cols, rows)) = marion_tui::guard::window_size(self.input_fd) else {
+            return Ok(());
         };
-        // **This client's own grid first, and the node second.** The two are independent: the
-        // supervisor's `TIOCSWINSZ` decides what the *node* paints at, and the grid here decides
-        // what this operator sees. Resizing only the node would leave the pane rendering the new
-        // output into the old geometry until something else happened to repaint.
-        if let Some(v) = &mut self.view {
-            v.resize(cols, rows);
+        match self.pane_stream {
+            PaneStream::V1 { .. } => self.view_mut()?.resize_viewport(cols, rows)?,
+            PaneStream::Legacy if self.writable => self.view_mut()?.resize_legacy(cols, rows)?,
+            PaneStream::Legacy => self.view_mut()?.resize_viewport(cols, rows)?,
+            PaneStream::Negotiating => {
+                return Err("the terminal resized before attach negotiation completed".into());
+            }
         }
+        if self.writable {
+            self.send_size(cols, rows)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn send_size(&mut self, cols: u16, rows: u16) -> Result<(), Refusal> {
         let f = Frame::Input(ClientNotification::new(Input::NodeResize {
             agent_id: self.id.clone(),
             cols,
             rows,
         }));
-        let _ = self
-            .stream
-            .write_all(f.to_line().as_bytes())
-            .and_then(|()| self.stream.flush());
+        self.write_frame(&f, "sending node/resize")
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         self.leaving.store(true, Ordering::SeqCst);
+        // The reader polls nonblocking stdin, so this join is bounded by `POLL`. It must finish
+        // before the screen leaves raw mode or the detached thread could steal the first key from
+        // the tree/shell that resumes afterwards. Dropping its NonBlocking guard also restores the
+        // descriptor flags before terminal restoration.
+        if let Some(keyboard) = self.keyboard.take() {
+            let _ = keyboard.join();
+        }
         // Explicit, though `Screen`'s own `Drop` would do it: the order matters on the way out.
         // The terminal must be restored before this process's last words are printed, or an error
         // message lands on the alternate screen and disappears with it.
@@ -555,7 +1036,57 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
     use std::sync::Mutex;
+
+    /// Mutation: install first and clear second. An edge delivered by the newly installed handler
+    /// would then be erased before the authoritative size read reaches the pump.
+    #[test]
+    fn a_resize_edge_after_handler_install_is_not_erased() {
+        let resized = AtomicBool::new(true);
+        arm_resize_tracking(&resized, || {
+            assert!(
+                !resized.load(Ordering::SeqCst),
+                "the stale resize bit was not cleared before handler installation"
+            );
+            resized.store(true, Ordering::SeqCst);
+        });
+        assert!(
+            resized.load(Ordering::SeqCst),
+            "a resize edge after handler installation was erased"
+        );
+    }
+
+    /// Mutation: replace the interactive attach's pane capability with `None`. The paired server
+    /// sees the exact request the shipping client wrote, rather than a separately constructed
+    /// value that could drift from it.
+    #[test]
+    fn an_interactive_attach_explicitly_requests_pane_stream_v1() {
+        let (client, server) = UnixStream::pair().expect("an attach socket pair");
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server);
+            let mut line = String::new();
+            lines.read_line(&mut line).expect("the attach request");
+            let Frame::Request(request) = Frame::from_line(&line).expect("a protocol frame") else {
+                panic!("interactive attach sent something other than a request")
+            };
+            let Call::NodeAttach(params) = request.call else {
+                panic!("interactive attach sent another method")
+            };
+            seen_tx
+                .send(params.pane_stream.is_some())
+                .expect("the observation is delivered");
+        });
+
+        let opened = Session::open(client, AgentId("root".into()));
+        assert!(opened.is_err(), "the fixture deliberately sends no answer");
+        server.join().expect("the paired server did not panic");
+        assert!(
+            seen_rx.recv().expect("the request was observed"),
+            "the interactive client silently selected the legacy lossy pane stream"
+        );
+    }
 
     /// A sink that records what marion wrote to the operator's terminal, so the assertions are
     /// about bytes rather than about a mock's expectations.
@@ -572,6 +1103,854 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FailAfter {
+        writes_left: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self
+                .writes_left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_err()
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "test terminal is gone",
+                ));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rendering_failure_is_visible_to_the_pane_loop() {
+        let sink = FailAfter {
+            // Screen::enter consumes one write for its preamble. The first paint then fails.
+            writes_left: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+        };
+        let screen = Screen::enter(sink, -1, &Sticky::initial(80, 24)).unwrap();
+        let v = View::enter_split(screen, 80, 24, 80, 24).unwrap();
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let mut session = bare_session(
+            stream,
+            PaneStream::V1 {
+                next_seq: 0,
+                cut: 0,
+            },
+            Some(v),
+        );
+        session
+            .consume_pane_event(pane_event(
+                0,
+                PaneFrameKindV1::Output {
+                    bytes: marion_proto::OpaquePaneBytesV1::new(b"unbracketed tail"),
+                },
+            ))
+            .unwrap();
+        let error = session
+            .consume_pane_event(pane_event(1, PaneFrameKindV1::End {}))
+            .unwrap_err();
+        assert!(error.contains("painting the pane"), "{error}");
+    }
+
+    #[test]
+    fn writable_attach_reports_keyboard_setup_failure_instead_of_hanging() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            server
+                .write_all(
+                    pane_attach_response(marion_proto::result::PaneAttach {
+                        cols: 80,
+                        rows: 24,
+                        writable: true,
+                        held_by: None,
+                        pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                            token: pane_token(),
+                            cut: 0,
+                        }),
+                    })
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+            // Ready and the explicit initial NodeResize are both flushed before keyboard starts.
+            for _ in 0..2 {
+                line.clear();
+                lines.read_line(&mut line).unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        let mut session = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            -1,
+            (80, 24),
+        )
+        .unwrap();
+        let error = session.pump().unwrap_err();
+        assert!(error.contains("nonblocking"), "{error}");
+        server_thread.join().unwrap();
+    }
+
+    fn pane_token() -> marion_proto::PaneReadyTokenV1 {
+        marion_proto::PaneReadyTokenV1::new([0x5a; 32])
+    }
+
+    fn pane_attach_response(pane: marion_proto::result::PaneAttach) -> Frame {
+        pane_attach_response_with_id(RequestId::Number(1), pane)
+    }
+
+    fn pane_attach_response_with_id(
+        id: RequestId,
+        pane: marion_proto::result::PaneAttach,
+    ) -> Frame {
+        use marion_core::encoding::Duration;
+        use marion_core::harness::Harness;
+        use marion_core::node::{NodeState, ReapState};
+        use marion_proto::model::{AttachMode, NodeSummary, ReplayPoint};
+
+        Frame::Response(marion_proto::Response::ok(
+            id,
+            &MethodResult::NodeAttach(marion_proto::result::NodeAttachResult {
+                node: NodeSummary {
+                    agent_id: AgentId("root".into()),
+                    parent_id: None,
+                    name: None,
+                    agent_type: "codex-impl".into(),
+                    harness: Harness::Codex,
+                    harness_version: None,
+                    depth: 0,
+                    state: NodeState::Running,
+                    reap_state: ReapState::Live,
+                    timeout: Duration::from_secs(900),
+                    pane: true,
+                },
+                mode: AttachMode::ResubscribeFrom(ReplayPoint {
+                    records: 0,
+                    src_seq: None,
+                }),
+                pane: Some(pane),
+            }),
+        ))
+    }
+
+    fn bare_session(stream: UnixStream, pane_stream: PaneStream, view: Option<View>) -> Session {
+        stream.set_read_timeout(Some(POLL)).unwrap();
+        let writer = stream.try_clone().unwrap();
+        writer.set_write_timeout(Some(POLL)).unwrap();
+        Session {
+            stream,
+            writer: Arc::new(std::sync::Mutex::new(writer)),
+            inbound: Vec::new(),
+            legacy_prefix: String::new(),
+            id: AgentId("root".into()),
+            input_fd: -1,
+            view,
+            writable: false,
+            pane_stream,
+            leaving: Arc::new(AtomicBool::new(false)),
+            keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
+            keyboard: None,
+        }
+    }
+
+    fn pane_event(seq: u64, frame: PaneFrameKindV1) -> Event {
+        Event::NodePaneFrame(marion_proto::PaneFrameV1::new(
+            AgentId("root".into()),
+            seq,
+            frame,
+        ))
+    }
+
+    #[test]
+    fn keyboard_utf8_emits_valid_prefixes_and_retains_only_the_split_scalar() {
+        let mut utf8 = KeyboardUtf8::default();
+        let mut emitted = String::new();
+        for chunk in [
+            b"a\xf0".as_slice(),
+            b"\x9f".as_slice(),
+            b"\x98".as_slice(),
+            b"\x80b",
+        ] {
+            if let Some(prefix) = utf8.push(chunk).unwrap() {
+                emitted.push_str(&prefix);
+            }
+            assert!(utf8.pending.len() <= 3, "the pending suffix grew unbounded");
+        }
+        assert_eq!(emitted, "a😀b");
+        assert!(utf8.pending.is_empty());
+        assert!(KeyboardUtf8::default().push(&[0xff]).is_err());
+    }
+
+    #[test]
+    fn pane_v1_consumes_binary_output_dense_resize_and_end_in_order() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (v, _sink) = view(80, 24);
+        let mut session = bare_session(
+            stream,
+            PaneStream::V1 {
+                next_seq: 0,
+                cut: 0,
+            },
+            Some(v),
+        );
+        // C1 CSI is a raw terminal control byte. Lossy UTF-8 turns it into a printable replacement
+        // glyph, so this fixture catches the exact corruption the byte-native path prevents.
+        let raw = [0x9b, b'3', b'1', b'm', b'A'];
+        assert_eq!(
+            session
+                .consume_pane_event(pane_event(
+                    0,
+                    PaneFrameKindV1::Output {
+                        bytes: marion_proto::OpaquePaneBytesV1::new(raw),
+                    },
+                ))
+                .unwrap(),
+            PaneProgress::Continue
+        );
+        session
+            .consume_pane_event(pane_event(
+                1,
+                PaneFrameKindV1::Resize {
+                    cols: 100,
+                    rows: 40,
+                },
+            ))
+            .unwrap();
+        let mut reference =
+            Term::with_options(marion_term::Size::new(80, 24), marion_tui::grid_options());
+        reference.advance(&raw);
+        reference.resize(marion_term::Size::new(100, 40));
+        let mut lossy =
+            Term::with_options(marion_term::Size::new(80, 24), marion_tui::grid_options());
+        lossy.advance(String::from_utf8_lossy(&raw).as_bytes());
+        lossy.resize(marion_term::Size::new(100, 40));
+        assert_ne!(
+            reference.viewport_lines(),
+            lossy.viewport_lines(),
+            "the fixture would not catch a lossy UTF-8 conversion"
+        );
+        assert_eq!(
+            session.view.as_ref().unwrap().term.viewport_lines(),
+            reference.viewport_lines(),
+            "pane output took a lossy text conversion before the grid"
+        );
+        assert_eq!(session.view.as_ref().unwrap().term.size().cols, 100);
+        assert_eq!(session.view.as_ref().unwrap().term.size().rows, 40);
+        assert_eq!(
+            session
+                .consume_pane_event(pane_event(2, PaneFrameKindV1::End {}))
+                .unwrap(),
+            PaneProgress::End
+        );
+        assert!(matches!(
+            session.pane_stream,
+            PaneStream::V1 {
+                next_seq: 3,
+                cut: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn pane_v1_rejects_sequence_gaps_duplicates_and_legacy_pty() {
+        for seq in [0, 2] {
+            let (stream, _peer) = UnixStream::pair().unwrap();
+            let (v, _sink) = view(80, 24);
+            let mut session = bare_session(
+                stream,
+                PaneStream::V1 {
+                    next_seq: 1,
+                    cut: 0,
+                },
+                Some(v),
+            );
+            let error = session
+                .consume_pane_event(pane_event(seq, PaneFrameKindV1::End {}))
+                .unwrap_err();
+            assert!(error.contains("not dense"));
+        }
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (v, _sink) = view(80, 24);
+        let mut session = bare_session(
+            stream,
+            PaneStream::V1 {
+                next_seq: 0,
+                cut: 0,
+            },
+            Some(v),
+        );
+        let error = session
+            .consume_pane_event(Event::NodePty {
+                agent_id: AgentId("root".into()),
+                seq: 0,
+                mono_ns: 0,
+                bytes: "wrong stream".into(),
+            })
+            .unwrap_err();
+        assert!(error.contains("mixed legacy"));
+    }
+
+    #[test]
+    fn pane_v1_refuses_end_before_the_advertised_replay_cut() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (v, _sink) = view(80, 24);
+        let mut session = bare_session(
+            stream,
+            PaneStream::V1 {
+                next_seq: 0,
+                cut: 4,
+            },
+            Some(v),
+        );
+        let error = session
+            .consume_pane_event(pane_event(0, PaneFrameKindV1::End {}))
+            .unwrap_err();
+        assert!(
+            error.contains("before the advertised replay cut 4"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_terminal_node_state_does_not_truncate_pane_v1_before_end() {
+        use marion_core::contract::ExitStatus;
+        use marion_core::node::{NodeState, ReapState};
+
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (v, _sink) = view(80, 24);
+        let mut session = bare_session(
+            stream,
+            PaneStream::V1 {
+                next_seq: 0,
+                cut: 0,
+            },
+            Some(v),
+        );
+        assert_eq!(
+            session
+                .consume_pane_event(Event::NodeState {
+                    agent_id: AgentId("root".into()),
+                    state: NodeState::Exited(ExitStatus::Ok),
+                    reap_state: ReapState::Live,
+                    ts: marion_core::encoding::SystemTime::from_unix_millis(1),
+                })
+                .unwrap(),
+            PaneProgress::Continue
+        );
+    }
+
+    #[test]
+    fn a_frame_split_across_a_socket_timeout_is_retained_and_decoded_once() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (v, _sink) = view(80, 24);
+        let mut session = bare_session(
+            client,
+            PaneStream::V1 {
+                next_seq: 0,
+                cut: 0,
+            },
+            Some(v),
+        );
+        let bytes = vec![0x00, 0xff, 0x80, b'x'];
+        let frame = Frame::Notification(marion_proto::Notification::new(pane_event(
+            0,
+            PaneFrameKindV1::Output {
+                bytes: marion_proto::OpaquePaneBytesV1::new(bytes.clone()),
+            },
+        )));
+        let line = frame.to_line().into_bytes();
+        let middle = line.len() / 2;
+        server.write_all(&line[..middle]).unwrap();
+        server.flush().unwrap();
+        assert!(session.next_frame().unwrap().is_none());
+        server.write_all(&line[middle..]).unwrap();
+        server.flush().unwrap();
+        let Some(Frame::Notification(note)) = session.next_frame().unwrap() else {
+            panic!("the completed frame was not decoded")
+        };
+        let Event::NodePaneFrame(frame) = note.event else {
+            panic!("wrong event")
+        };
+        let PaneFrameKindV1::Output { bytes: got } = frame.frame else {
+            panic!("wrong pane frame")
+        };
+        assert_eq!(got.as_bytes(), bytes);
+        assert!(session.inbound.is_empty());
+    }
+
+    #[test]
+    fn inbound_frame_bound_rejects_one_over_even_when_newline_is_present() {
+        for (bytes, rejected) in [
+            (crate::serve::MAX_FRAME_BYTES, false),
+            (crate::serve::MAX_FRAME_BYTES + 1, true),
+        ] {
+            let (client, server) = UnixStream::pair().unwrap();
+            let mut session = bare_session(client, PaneStream::Negotiating, None);
+            session.inbound = vec![b'x'; bytes];
+            session.inbound.push(b'\n');
+            if rejected {
+                assert!(session.next_frame().unwrap_err().contains("larger"));
+            } else {
+                // Exactly at the transport limit reaches parsing; it is invalid JSON, not oversize.
+                let error = session.next_frame().unwrap_err();
+                assert!(
+                    !error.contains("larger"),
+                    "exact boundary was rejected: {error}"
+                );
+            }
+            let _ = server.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    #[test]
+    fn ready_is_written_only_after_the_attach_response_and_uses_its_exact_boundary() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Request(request) = Frame::from_line(&line).unwrap() else {
+                panic!("expected attach request")
+            };
+            let Call::NodeAttach(params) = request.call else {
+                panic!("expected node/attach")
+            };
+            assert!(params.pane_stream.is_some());
+            server
+                .write_all(
+                    pane_attach_response(marion_proto::result::PaneAttach {
+                        cols: 80,
+                        rows: 24,
+                        writable: false,
+                        held_by: Some(7),
+                        pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                            token: pane_token(),
+                            cut: 4,
+                        }),
+                    })
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Input(input) = Frame::from_line(&line).unwrap() else {
+                panic!("first post-response frame was not Ready")
+            };
+            let Input::NodePaneReady(ready) = input.input else {
+                panic!("first post-response frame was not node/pane-ready")
+            };
+            assert_eq!(ready.agent_id, AgentId("root".into()));
+            assert_eq!(ready.token, pane_token());
+            assert_eq!(ready.cut, 4);
+        });
+        let session = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            -1,
+            (80, 24),
+        )
+        .unwrap();
+        assert!(matches!(
+            session.pane_stream,
+            PaneStream::V1 {
+                next_seq: 0,
+                cut: 4
+            }
+        ));
+        drop(session);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn invalid_params_is_the_only_legacy_retry_and_uses_a_new_response_id() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Request(first) = Frame::from_line(&line).unwrap() else {
+                panic!("expected first attach")
+            };
+            assert_eq!(first.id, RequestId::Number(1));
+            server
+                .write_all(
+                    Frame::Response(marion_proto::Response::err(
+                        RequestId::Number(1),
+                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                    ))
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Request(second) = Frame::from_line(&line).unwrap() else {
+                panic!("expected legacy retry")
+            };
+            assert_eq!(second.id, RequestId::Number(2));
+            let Call::NodeAttach(params) = second.call else {
+                panic!("expected node/attach")
+            };
+            assert!(params.pane_stream.is_none());
+            server
+                .write_all(
+                    pane_attach_response_with_id(
+                        RequestId::Number(2),
+                        marion_proto::result::PaneAttach {
+                            cols: 80,
+                            rows: 24,
+                            writable: false,
+                            held_by: Some(7),
+                            pane_ready: None,
+                        },
+                    )
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+        });
+        let session = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            -1,
+            (80, 24),
+        )
+        .unwrap();
+        assert_eq!(session.pane_stream, PaneStream::Legacy);
+        drop(session);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_retry_refuses_an_unsolicited_v1_ready_descriptor() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            server
+                .write_all(
+                    Frame::Response(marion_proto::Response::err(
+                        RequestId::Number(1),
+                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                    ))
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            server
+                .write_all(
+                    pane_attach_response_with_id(
+                        RequestId::Number(2),
+                        marion_proto::result::PaneAttach {
+                            cols: 80,
+                            rows: 24,
+                            writable: false,
+                            held_by: Some(7),
+                            pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                                token: pane_token(),
+                                cut: 0,
+                            }),
+                        },
+                    )
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+        });
+        let error = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            -1,
+            (80, 24),
+        )
+        .err()
+        .expect("an unsolicited v1 descriptor must be refused");
+        assert!(error.contains("unsolicited"), "{error}");
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_retry_preserves_same_agent_pty_that_precedes_its_response() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            server
+                .write_all(
+                    Frame::Response(marion_proto::Response::err(
+                        RequestId::Number(1),
+                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                    ))
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let prefix = Frame::Notification(marion_proto::Notification::new(Event::NodePty {
+                agent_id: AgentId("root".into()),
+                seq: 0,
+                mono_ns: 0,
+                bytes: "legacy-prefix".into(),
+            }));
+            let response = pane_attach_response_with_id(
+                RequestId::Number(2),
+                marion_proto::result::PaneAttach {
+                    cols: 80,
+                    rows: 24,
+                    writable: false,
+                    held_by: Some(7),
+                    pane_ready: None,
+                },
+            );
+            server
+                .write_all(format!("{}{}", prefix.to_line(), response.to_line()).as_bytes())
+                .unwrap();
+            server.flush().unwrap();
+        });
+        let session = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            -1,
+            (80, 24),
+        )
+        .unwrap();
+        assert_eq!(
+            session.view.as_ref().unwrap().term.viewport_lines()[0],
+            "legacy-prefix"
+        );
+        assert!(session.legacy_prefix.is_empty());
+        drop(session);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_retry_refuses_a_pane_v1_frame_before_its_response() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            server
+                .write_all(
+                    Frame::Response(marion_proto::Response::err(
+                        RequestId::Number(1),
+                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                    ))
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            server
+                .write_all(
+                    Frame::Notification(marion_proto::Notification::new(pane_event(
+                        0,
+                        PaneFrameKindV1::End {},
+                    )))
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+        });
+        let error = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            -1,
+            (80, 24),
+        )
+        .err()
+        .expect("hybrid legacy/v1 response prefix must be refused");
+        assert!(error.contains("explicit legacy"), "{error}");
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn pane_v1_transport_loss_before_end_is_visible() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let (v, _sink) = view(80, 24);
+        let mut session = bare_session(
+            client,
+            PaneStream::V1 {
+                next_seq: 0,
+                cut: 0,
+            },
+            Some(v),
+        );
+        drop(server);
+        let error = session.pump().unwrap_err();
+        assert!(error.contains("before its terminal End"), "{error}");
+    }
+
+    #[test]
+    fn legacy_terminal_state_flushes_the_final_dirty_output() {
+        use marion_core::contract::ExitStatus;
+        use marion_core::node::{NodeState, ReapState};
+
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (v, sink) = view(80, 24);
+        let mut session = bare_session(stream, PaneStream::Legacy, Some(v));
+        session
+            .consume_pane_event(Event::NodePty {
+                agent_id: AgentId("root".into()),
+                seq: 0,
+                mono_ns: 0,
+                bytes: "final-dirty-tail".into(),
+            })
+            .unwrap();
+        assert!(written(&sink).is_empty(), "output painted before an edge");
+        assert_eq!(
+            session
+                .consume_pane_event(Event::NodeState {
+                    agent_id: AgentId("root".into()),
+                    state: NodeState::Exited(ExitStatus::Ok),
+                    reap_state: ReapState::Live,
+                    ts: marion_core::encoding::SystemTime::from_unix_millis(1),
+                })
+                .unwrap(),
+            PaneProgress::End
+        );
+        assert!(
+            !written(&sink).is_empty(),
+            "terminal state dropped the final paint"
+        );
+    }
+
+    #[test]
+    fn serialized_writer_holds_one_whole_frame_until_flush() {
+        #[derive(Clone, Default)]
+        struct YieldingWriter(Arc<Mutex<Vec<u8>>>);
+        impl Write for YieldingWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let n = bytes.len().min(7);
+                self.0.lock().unwrap().extend_from_slice(&bytes[..n]);
+                std::thread::yield_now();
+                Ok(n)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let sink = YieldingWriter::default();
+        let bytes = Arc::clone(&sink.0);
+        let writer = Arc::new(std::sync::Mutex::new(sink));
+        let lines = (0..2)
+            .map(|n| {
+                Frame::Input(ClientNotification::new(Input::NodeResize {
+                    agent_id: AgentId(format!("agent-{n}")),
+                    cols: 80 + n,
+                    rows: 24,
+                }))
+                .to_line()
+            })
+            .collect::<Vec<_>>();
+        let threads = lines
+            .clone()
+            .into_iter()
+            .map(|line| {
+                let writer = Arc::clone(&writer);
+                std::thread::spawn(move || write_serialized(&writer, line.as_bytes()).unwrap())
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        let decoded = output
+            .lines()
+            .map(|line| Frame::from_line(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decoded.len(),
+            2,
+            "whole JSON frames interleaved: {output:?}"
+        );
+        for expected in lines {
+            assert!(output.contains(expected.trim_end()));
+        }
+    }
+
+    /// Mutation: accept or discard a pane frame while waiting for the response that advertises
+    /// its token. Such a frame can never be replayed after Ready, so continuing would turn a
+    /// protocol-order violation into silent terminal-byte loss.
+    #[test]
+    fn a_same_agent_pane_frame_before_the_attach_response_is_rejected() {
+        let (client, mut server) = UnixStream::pair().expect("an attach socket pair");
+        let server_thread = std::thread::spawn(move || {
+            let mut request = String::new();
+            BufReader::new(server.try_clone().unwrap())
+                .read_line(&mut request)
+                .expect("the attach request");
+            let early = Frame::Notification(marion_proto::Notification::new(Event::NodePaneFrame(
+                marion_proto::PaneFrameV1::new(
+                    AgentId("root".into()),
+                    0,
+                    marion_proto::PaneFrameKindV1::Output {
+                        bytes: marion_proto::OpaquePaneBytesV1::new(b"lost"),
+                    },
+                ),
+            )));
+            let response = pane_attach_response(marion_proto::result::PaneAttach {
+                cols: 80,
+                rows: 24,
+                writable: false,
+                held_by: Some(9),
+                pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                    token: pane_token(),
+                    cut: 1,
+                }),
+            });
+            server
+                .write_all(format!("{}{}", early.to_line(), response.to_line()).as_bytes())
+                .unwrap();
+            server.flush().unwrap();
+        });
+
+        let error = Session::open(client, AgentId("root".into()))
+            .err()
+            .expect("pre-response pane bytes must refuse the attach");
+        assert!(
+            error.contains("before") && error.contains("node/attach"),
+            "the refusal did not name the broken order: {error}"
+        );
+        server_thread
+            .join()
+            .expect("the paired server did not panic");
+    }
+
     /// A `View` over a sink, with the guard's terminal side inert: `Screen::enter` on a non-tty fd
     /// installs no raw mode, which is exactly the state a test wants. The preamble is discarded so
     /// each assertion is about this view's own later writes.
@@ -579,7 +1958,7 @@ mod tests {
         let sink = Sink::default();
         let screen = Screen::enter(sink.clone(), -1, &Sticky::initial(cols, rows))
             .expect("a sink is always enterable");
-        let v = View::enter(screen, cols, rows).expect("a view over a sink");
+        let v = View::enter_split(screen, cols, rows, cols, rows).expect("a view over a sink");
         sink.0.lock().unwrap().clear();
         (v, sink)
     }
@@ -602,7 +1981,8 @@ mod tests {
     #[test]
     fn the_nodes_mouse_modes_are_mirrored_onto_the_operators_terminal() {
         let (mut v, sink) = view(80, 24);
-        v.feed("\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1006h");
+        v.feed("\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1006h")
+            .unwrap();
         let out = written(&sink);
         for m in ["?1000h", "?1002h", "?1003h", "?1006h"] {
             assert!(
@@ -627,24 +2007,25 @@ mod tests {
     #[test]
     fn the_mirror_sends_only_what_changed() {
         let (mut v, sink) = view(80, 24);
-        v.feed("\u{1b}[?1006h");
+        v.feed("\u{1b}[?1006h").unwrap();
         sink.0.lock().unwrap().clear();
 
-        v.feed("some ordinary output with no private modes in it");
+        v.feed("some ordinary output with no private modes in it")
+            .unwrap();
         assert_eq!(
             written(&sink),
             "",
             "a plain paint put mode sequences on the operator's terminal"
         );
 
-        v.feed("\u{1b}[?1006h");
+        v.feed("\u{1b}[?1006h").unwrap();
         assert_eq!(
             written(&sink),
             "",
             "a mode the operator's terminal is already in was re-asserted"
         );
 
-        v.feed("\u{1b}[?1006l");
+        v.feed("\u{1b}[?1006l").unwrap();
         assert_eq!(
             written(&sink),
             "\u{1b}[?1006l",

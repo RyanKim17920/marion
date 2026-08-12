@@ -331,11 +331,12 @@ impl Restore {
 
 /// `O_NONBLOCK` on one descriptor, restored on drop.
 ///
-/// # Why a screen that polls needs this, and an attach does not
+/// # Why every screen that polls needs this
 ///
-/// `marion attach` reads stdin on a dedicated thread and forwards every byte, so a blocking read is
-/// exactly right there. [`crate::tree`]'s screen has two inputs — the supervisor's socket and the
-/// keyboard — and only one thread, because the thread is what makes handing stdin to an attach
+/// `marion attach` reads stdin on a dedicated thread, but it still polls so shutdown can join that
+/// reader before restoring the terminal instead of leaving a detached blocking read to steal the
+/// next key. [`crate::tree`]'s screen has two inputs — the supervisor's socket and the keyboard —
+/// and only one thread, because another thread would make handing stdin to an attach
 /// dangerous: a reader blocked in `read(2)` on fd 0 would consume the operator's first keystroke
 /// into the pane it just opened. One thread that polls both needs the keyboard read to return
 /// rather than block, and that is this.

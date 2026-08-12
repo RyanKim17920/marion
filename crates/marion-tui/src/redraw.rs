@@ -95,6 +95,17 @@ impl Redraw {
         false
     }
 
+    /// The stream proved no later closing bracket can arrive. Flush any dirty tail exactly once,
+    /// including a child that died while synchronized output was open.
+    pub fn on_end(&mut self) -> bool {
+        if !self.dirty {
+            return false;
+        }
+        self.dirty = false;
+        self.painted += 1;
+        true
+    }
+
     /// Completed brackets observed. The number §5.3's per-capture figures are about.
     pub fn frames(&self) -> usize {
         self.seen_frames
@@ -152,6 +163,22 @@ mod tests {
         );
         assert_eq!(r.frames(), 1);
         assert_eq!(r.paints(), 1, "one bracket, one paint");
+    }
+
+    /// Mutation: treat a terminal stream `End` as an ordinary idle edge. A child that dies with
+    /// synchronized output open can never send the closing DECSET, so its final dirty bytes would
+    /// remain invisible even though the durable stream has proved there is no later frame.
+    #[test]
+    fn terminal_end_flushes_dirty_output_even_when_a_frame_was_cut_open() {
+        let (mut t, mut r) = (term(), Redraw::new());
+        assert!(!feed(&mut t, &mut r, b"\x1b[?2026hfinal partial frame"));
+        assert!(
+            !r.on_idle(&t),
+            "ordinary quiet must still withhold an open frame"
+        );
+        assert!(r.on_end(), "terminal End is the final paint edge");
+        assert!(!r.on_end(), "a second End cannot repaint the same bytes");
+        assert_eq!(r.paints(), 1);
     }
 
     /// §5.3 measured frames with no CUP; keying on cursor movement would never paint them.
