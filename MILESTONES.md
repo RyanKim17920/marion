@@ -288,7 +288,7 @@ round-tripping, and accurate token counts.
 
 | Area | Pick | Version |
 |---|---|---|
-| PTY (Unix, async) | `pty-process` (`features = ["async"]`) | 0.5.3 |
+| PTY (Unix, blocking thread-per-host) | hand-rolled `posix_openpt`/`ioctl` implementation in `marion-supervisor::pty` | macOS + Linux |
 | VT emulator | `alacritty_terminal` (+ `vte` `ansi`) | 0.26.0 / 0.15.0 |
 | VT differential oracle | `avt` | 0.18.0 |
 | TUI snapshot tests | `ratatui::backend::TestBackend` + `insta` | 0.30.2 / 1.48.0 |
@@ -741,6 +741,27 @@ how much code exists.
     *description* changed above, because the gate grew a target; C3's *status* did not, because it
     was already MET. **M3 stays `[partial]`, blocked on exactly what it was blocked on before: C1's
     recorded 10-minute manual session, which needs a person.**
+
+    **Implementation reconciliation, 2026-08-12 — no milestone marker moves.**
+    Commits `1bc8874`, `e9563c8`, `558a716`, `fd94284`, `d4ecd92`, `a3d86f7`,
+    `8698e51`, and `edc366d` add the production-dark durable stream format and the
+    committed pane-v1 foundation: bounded retained replay, response-first Ready
+    negotiation, completed-pane history, exact ordered End delivery, and client-side
+    lossless adoption. Commits `634dabf` and `ffba595` add native launch authority and
+    an authenticated, same-connection pane claim. The causal evidence includes
+    `pane_replay_delivers_end_retained_during_the_ready_handoff`,
+    `pane_stream_capability_reserves_response_first_replay`,
+    `pane_v1_consumes_binary_output_dense_resize_and_end_in_order`,
+    `pending_native_reservation_gates_both_attach_modes_until_atomic_ticket_claim`,
+    and `unacknowledged_native_claim_releases_lease_and_preserves_ticket_for_retry`.
+
+    These are foundations, not native-runtime completion. Production serving still
+    installs a disabled native bootstrap service, and the shipped CLI still refuses
+    the native facade relay. The command-execution/transparent-relay composition,
+    terminal and signal restoration through real exit paths, visible input-failure
+    semantics, and a real authenticated native-command E2E remain activation work.
+    The current uncommitted runtime/stream implementation is not milestone evidence.
+    M3 therefore remains `[partial]`; C1's recorded manual session remains outstanding.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
@@ -1458,4 +1479,5 @@ completely by the time you want your own execution semantics.
   separate product, would consume this one. The task contract is shaped so it can attach later.
 - Arbitrary agent-to-agent mesh routing.
 - Remote hosting. Local-first; remote falls out of the supervisor split later.
-- Windows. `pty-process` is Unix-only and `portable-pty` has no async.
+- Windows. The current hand-rolled PTY supports macOS and Linux only; a Windows
+  ConPTY/`portable-pty` bridge remains deferred.
