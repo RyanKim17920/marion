@@ -152,6 +152,192 @@ fn claimant(conn: ConnId, peer: PeerIdentity) -> NativeClaimant {
 }
 
 #[test]
+fn native_claim_wire_presents_the_exact_agent_and_opaque_ticket() {
+    let receipt = NativeLaunchReceipt::new(
+        AgentId(NATIVE_TEST_AGENT.into()),
+        NativeLaunchTicket::for_test([0x80; 32]),
+    );
+    let mut wire = Vec::new();
+    write_native_claim_request(&mut wire, &receipt).unwrap();
+    assert_eq!(&wire[..4], b"MNC1");
+    let claim = read_native_claim_request(&mut wire.as_slice()).unwrap();
+    assert_eq!(claim.agent_id, *receipt.agent_id());
+    assert_eq!(claim.ticket, NativeLaunchTicket::for_test([0x80; 32]));
+
+    let mut wrong_magic = wire.clone();
+    wrong_magic[0] = b'X';
+    assert!(matches!(
+        read_native_claim_request(&mut wrong_magic.as_slice()),
+        Err(BootstrapError::NativeWireProtocol)
+    ));
+}
+
+#[test]
+fn claim_ack_timeout_is_bounded_by_the_absolute_launch_deadline() {
+    let clock = Arc::new(ManualClock::default());
+    let deadline = NativeLaunchDeadline::new(
+        Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        LAUNCH_RESULT_TIMEOUT,
+    )
+    .unwrap();
+    assert_eq!(claim_ack_timeout(&deadline).unwrap(), CLAIM_ACK_TIMEOUT);
+    clock.set(LAUNCH_RESULT_TIMEOUT - Duration::from_millis(125));
+    assert_eq!(
+        claim_ack_timeout(&deadline).unwrap(),
+        Duration::from_millis(125)
+    );
+    clock.set(LAUNCH_RESULT_TIMEOUT);
+    assert!(matches!(
+        claim_ack_timeout(&deadline),
+        Err(BootstrapError::LaunchResultExpired)
+    ));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Default)]
+struct ClaimLifecycleHandle {
+    connected: Mutex<Vec<ConnId>>,
+    gone: Mutex<Vec<ConnId>>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl crate::serve::Handle for ClaimLifecycleHandle {
+    fn connected(&self, conn: ConnId) {
+        lock(&self.connected).push(conn);
+    }
+
+    fn call(
+        &self,
+        _conn: ConnId,
+        call: &marion_proto::Call,
+        _out: &crate::serve::Outbound,
+    ) -> Result<marion_proto::MethodResult, marion_proto::RpcError> {
+        Err(marion_proto::RpcError::unimplemented(
+            call.method().as_str(),
+            "claim lifecycle fixture accepts no calls",
+            "native claim test",
+        ))
+    }
+
+    fn gone(&self, conn: ConnId, _gone: &marion_proto::ClientGone, _why: &crate::serve::Departure) {
+        lock(&self.gone).push(conn);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct ClaimLifecyclePrepared {
+    handle: Arc<ClaimLifecycleHandle>,
+    commits: Arc<AtomicU64>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl PreparedNativeRelay for ClaimLifecyclePrepared {
+    fn commit(self: Box<Self>) -> Result<Arc<dyn crate::serve::Handle>, BootstrapError> {
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        Ok(self.handle)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct ClaimLifecycleHandler {
+    claimant: Mutex<Option<NativeClaimant>>,
+    handle: Arc<ClaimLifecycleHandle>,
+    commits: Arc<AtomicU64>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl NativeBootstrapHandler for ClaimLifecycleHandler {
+    fn verify_terminal(
+        &self,
+        _peer: PeerIdentity,
+        _stdin: BorrowedFd<'_>,
+        _stdout: BorrowedFd<'_>,
+    ) -> Result<TerminalGeometryObservation, BootstrapError> {
+        Ok(TerminalGeometryObservation::new(geometry()))
+    }
+
+    fn authorized(
+        &self,
+        _request: ConsumedNativeRequest<'_>,
+        _deadline: &NativeLaunchDeadline,
+    ) -> Result<PendingNativeLaunchReceipt, BootstrapError> {
+        Ok(pending_receipt(NATIVE_TEST_AGENT))
+    }
+
+    fn requires_claim_transport(&self) -> bool {
+        true
+    }
+
+    fn prepare_native_claim(
+        &self,
+        ticket: &NativeLaunchTicket,
+        agent_id: &AgentId,
+        claimant: NativeClaimant,
+    ) -> Result<Box<dyn PreparedNativeRelay>, BootstrapError> {
+        assert_eq!(agent_id, &AgentId(NATIVE_TEST_AGENT.into()));
+        assert_eq!(ticket, &NativeLaunchTicket::for_test([0x5a; 32]));
+        *lock(&self.claimant) = Some(claimant);
+        Ok(Box::new(ClaimLifecyclePrepared {
+            handle: Arc::clone(&self.handle),
+            commits: Arc::clone(&self.commits),
+        }))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn same_authenticated_socket_claims_and_owns_the_exact_conn_lifecycle() {
+    let handle = Arc::new(ClaimLifecycleHandle::default());
+    let commits = Arc::new(AtomicU64::new(0));
+    let handler = Arc::new(ClaimLifecycleHandler {
+        claimant: Mutex::new(None),
+        handle: Arc::clone(&handle),
+        commits: Arc::clone(&commits),
+    });
+    let context = request_context();
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let conn = ConnId(4_201);
+    let worker = {
+        let service = Arc::clone(&service);
+        let active = service.try_acquire_connection().unwrap();
+        std::thread::spawn(move || service.serve_connection(conn, server, active))
+    };
+    let input = std::fs::File::open("/dev/null").unwrap();
+    let output = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .unwrap();
+    let capability =
+        request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), &context)
+            .unwrap();
+    let receipt = present_direct_cli_capability(&mut client, capability, &context).unwrap();
+    write_native_claim_request(&mut client, &receipt).unwrap();
+    let mut status = [WIRE_REFUSED];
+    client.read_exact(&mut status).unwrap();
+    assert_eq!(status, [WIRE_OK]);
+    drop(client);
+    worker.join().unwrap();
+
+    let claimant = lock(&handler.claimant).expect("claim reached the handler");
+    assert_eq!(claimant.conn, conn);
+    assert_eq!(claimant.principal.uid, own_uid());
+    assert_eq!(claimant.principal.pid, std::process::id());
+    assert_eq!(commits.load(Ordering::SeqCst), 1);
+    assert_eq!(&*lock(&handle.connected), &[conn]);
+    assert_eq!(&*lock(&handle.gone), &[conn]);
+}
+
+#[test]
 fn pending_native_launch_is_exact_single_use_and_expires_from_publish() {
     let clock = Arc::new(ManualClock::default());
     let launches = Arc::new(PendingNativeLaunches::with_sources(

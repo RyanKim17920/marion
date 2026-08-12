@@ -276,9 +276,11 @@ impl Frame {
                         .map(Frame::Notification)
                         .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
                 } else if Input::METHODS.contains(&method.as_str()) {
-                    let input = if method == "node/pane-ready" {
-                        // Readiness is strict typed state. Preserve duplicate-key evidence that
-                        // the classification `Value` above has necessarily collapsed.
+                    let input = if matches!(method.as_str(), "node/pane-ready" | "node/pane-write")
+                    {
+                        // Pane readiness and opaque input are strict typed state. Preserve
+                        // duplicate-key evidence that classification through `Value` necessarily
+                        // collapsed.
                         serde_json::from_str::<ClientNotification>(line)
                     } else {
                         serde_json::from_value::<ClientNotification>(value)
@@ -366,6 +368,13 @@ mod tests {
         }))
     }
 
+    fn input_pane_write() -> ClientNotification {
+        ClientNotification::new(Input::NodePaneWrite(crate::NodePaneWriteV1 {
+            agent_id: AgentId("a".into()),
+            bytes: OpaquePaneBytesV1::new([0x00, 0x80, 0xff]),
+        }))
+    }
+
     fn pane_frame(seq: u64, kind: PaneFrameKindV1) -> Frame {
         Frame::Notification(Notification::new(Event::NodePaneFrame(PaneFrameV1::new(
             AgentId("a".into()),
@@ -390,6 +399,7 @@ mod tests {
                 },
             ),
             Frame::Input(input_write()),
+            Frame::Input(input_pane_write()),
             Frame::Input(ClientNotification::new(Input::NodeResize {
                 agent_id: AgentId("a".into()),
                 cols: 140,

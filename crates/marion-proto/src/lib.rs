@@ -73,7 +73,7 @@ pub use envelope::{
     ClientNotification, Frame, JsonRpcVersion, Notification, Outcome, Request, RequestId, Response,
 };
 pub use error::{ErrorData, FailureKind, RpcError};
-pub use input::{Input, NodePaneReadyV1};
+pub use input::{Input, NodePaneReadyV1, NodePaneWriteV1};
 pub use method::{Call, Method, MethodResult};
 pub use model::{
     AttachMode, ClientGone, Delivery, DetachGuidance, ElicitationRequestId, ElicitationResponse,

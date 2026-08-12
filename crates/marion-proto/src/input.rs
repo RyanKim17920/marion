@@ -51,7 +51,36 @@
 use marion_core::contract::AgentId;
 use serde::{Deserialize, Serialize};
 
-use crate::PaneReadyTokenV1;
+use crate::{OpaquePaneBytesV1, PaneReadyTokenV1};
+
+/// Maximum decoded payload accepted from one interactive terminal read.
+pub const MAX_PANE_INPUT_BYTES: usize = 16 * 1024;
+
+fn deserialize_pane_input_bytes<'de, D>(deserializer: D) -> Result<OpaquePaneBytesV1, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let bytes = OpaquePaneBytesV1::deserialize(deserializer)?;
+    if bytes.as_bytes().len() > MAX_PANE_INPUT_BYTES {
+        return Err(serde::de::Error::custom(format!(
+            "pane input exceeds {MAX_PANE_INPUT_BYTES} decoded bytes"
+        )));
+    }
+    Ok(bytes)
+}
+
+/// Byte-exact terminal input for a negotiated pane writer.
+///
+/// This is deliberately separate from legacy [`Input::NodePtyWrite`]. Structured callers keep
+/// their UTF-8 text contract, while an interactive terminal may forward every byte its tty
+/// produced without inventing replacement characters or buffering for a Unicode boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodePaneWriteV1 {
+    pub agent_id: AgentId,
+    #[serde(deserialize_with = "deserialize_pane_input_bytes")]
+    pub bytes: OpaquePaneBytesV1,
+}
 
 /// Strict parameters for the version-one pane replay readiness notification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +114,10 @@ pub enum Input {
     #[serde(rename = "node/pty-write")]
     NodePtyWrite { agent_id: AgentId, bytes: String },
 
+    /// Opaque bytes from an interactive terminal holding a pane's write lease.
+    #[serde(rename = "node/pane-write")]
+    NodePaneWrite(NodePaneWriteV1),
+
     /// The attached client's window changed size, or has just announced its size for the first
     /// time.
     ///
@@ -115,6 +148,7 @@ impl Input {
     pub const fn method(&self) -> &'static str {
         match self {
             Input::NodePtyWrite { .. } => "node/pty-write",
+            Input::NodePaneWrite(_) => "node/pane-write",
             Input::NodeResize { .. } => "node/resize",
             Input::NodePaneReady(_) => "node/pane-ready",
         }
@@ -126,13 +160,19 @@ impl Input {
     pub const fn agent_id(&self) -> &AgentId {
         match self {
             Input::NodePtyWrite { agent_id, .. } | Input::NodeResize { agent_id, .. } => agent_id,
+            Input::NodePaneWrite(params) => &params.agent_id,
             Input::NodePaneReady(params) => &params.agent_id,
         }
     }
 
     /// Every inbound notification name, for the frame reader — so an unknown one is refused **by
     /// name** rather than as an anonymous parse failure.
-    pub const METHODS: [&'static str; 3] = ["node/pty-write", "node/resize", "node/pane-ready"];
+    pub const METHODS: [&'static str; 4] = [
+        "node/pty-write",
+        "node/pane-write",
+        "node/resize",
+        "node/pane-ready",
+    ];
 }
 
 #[cfg(test)]
@@ -157,6 +197,10 @@ mod tests {
                 // against one hazard rather than two.
                 bytes: "\u{1b}[A\u{256d}".into(),
             },
+            Input::NodePaneWrite(NodePaneWriteV1 {
+                agent_id: AgentId("a".into()),
+                bytes: OpaquePaneBytesV1::new([0x00, 0x80, 0xff]),
+            }),
             Input::NodeResize {
                 agent_id: AgentId("a".into()),
                 cols: 140,
@@ -219,6 +263,30 @@ mod tests {
             .unwrap(),
             r#"{"method":"node/pane-ready","params":{"agent_id":"a","token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","cut":9}}"#
         );
+    }
+
+    #[test]
+    fn pane_write_preserves_arbitrary_terminal_bytes() {
+        let input = Input::NodePaneWrite(NodePaneWriteV1 {
+            agent_id: AgentId("a".into()),
+            bytes: crate::OpaquePaneBytesV1::new([0x00, 0x80, 0xff, b'\n']),
+        });
+        let wire = serde_json::to_string(&input).unwrap();
+        assert_eq!(
+            wire,
+            r#"{"method":"node/pane-write","params":{"agent_id":"a","bytes":"AID/Cg=="}}"#
+        );
+        assert_eq!(serde_json::from_str::<Input>(&wire).unwrap(), input);
+    }
+
+    #[test]
+    fn pane_write_rejects_a_decoded_payload_over_the_named_bound() {
+        let oversized = Input::NodePaneWrite(NodePaneWriteV1 {
+            agent_id: AgentId("a".into()),
+            bytes: OpaquePaneBytesV1::new(vec![0; MAX_PANE_INPUT_BYTES + 1]),
+        });
+        let wire = serde_json::to_string(&oversized).unwrap();
+        assert!(serde_json::from_str::<Input>(&wire).is_err());
     }
 
     #[test]

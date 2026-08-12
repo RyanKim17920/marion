@@ -71,8 +71,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use marion_core::contract::AgentId;
 use marion_proto::{
-    Call, ClientNotification, Event, Frame, Input, MethodResult, NodePaneReadyV1, PaneFrameKindV1,
-    RequestId,
+    Call, ClientNotification, Event, Frame, Input, MethodResult, NodePaneReadyV1, NodePaneWriteV1,
+    PaneFrameKindV1, RequestId,
 };
 use marion_term::Term;
 use marion_tui::{Action, Keys, Pane, Redraw, Screen, ScreenBackend, Sticky};
@@ -203,8 +203,9 @@ fn write_serialized<W: Write>(
     writer.flush()
 }
 
-/// Incremental UTF-8 for `node/pty-write`. Raw tty reads are not character boundaries; keeping
-/// the incomplete suffix is what prevents a split paste from turning one scalar into U+FFFD.
+/// Incremental UTF-8 for legacy `node/pty-write`. Raw tty reads are not character boundaries;
+/// keeping the incomplete suffix is what prevents a split paste from turning one scalar into
+/// U+FFFD.
 #[derive(Default)]
 struct KeyboardUtf8 {
     pending: Vec<u8>,
@@ -236,6 +237,46 @@ impl KeyboardUtf8 {
                 error.valid_up_to()
             )),
         }
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+}
+
+/// The attach response selects how the keyboard is represented on the wire. Pane-v1 is byte
+/// native; the legacy notification can carry only complete UTF-8 prefixes.
+enum KeyboardEncoder {
+    Legacy(KeyboardUtf8),
+    V1,
+}
+
+impl KeyboardEncoder {
+    fn for_stream(stream: PaneStream) -> Result<Self, Refusal> {
+        match stream {
+            PaneStream::Legacy => Ok(Self::Legacy(KeyboardUtf8::default())),
+            PaneStream::V1 { .. } => Ok(Self::V1),
+            PaneStream::Negotiating => {
+                Err("cannot start the keyboard before the pane protocol is selected".into())
+            }
+        }
+    }
+
+    fn encode(&mut self, id: &AgentId, bytes: Vec<u8>) -> Result<Option<Input>, Refusal> {
+        match self {
+            Self::Legacy(utf8) => Ok(utf8.push(&bytes)?.map(|bytes| Input::NodePtyWrite {
+                agent_id: id.clone(),
+                bytes,
+            })),
+            Self::V1 => Ok(Some(Input::NodePaneWrite(NodePaneWriteV1 {
+                agent_id: id.clone(),
+                bytes: marion_proto::OpaquePaneBytesV1::new(bytes),
+            }))),
+        }
+    }
+
+    fn has_pending_utf8(&self) -> bool {
+        matches!(self, Self::Legacy(utf8) if utf8.has_pending())
     }
 }
 
@@ -689,6 +730,7 @@ impl Session {
         let id = self.id.clone();
         let input_fd = self.input_fd;
         let writer = Arc::clone(&self.writer);
+        let mut encoder = KeyboardEncoder::for_stream(self.pane_stream)?;
         writer
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -699,7 +741,6 @@ impl Session {
             .name("marion-attach-keys".into())
             .spawn(move || {
                 let mut keys = Keys::new();
-                let mut utf8 = KeyboardUtf8::default();
                 let mut buf = [0u8; 4096];
                 let mut stdin = marion_tui::guard::NonBlocking::set(input_fd);
                 if !stdin.engaged() {
@@ -712,12 +753,12 @@ impl Session {
                     let n = match stdin.read(&mut buf) {
                         Ok(0) => {
                             *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                                if utf8.pending.is_empty() {
-                                    "pane keyboard input closed while this attach held the write \
-                                     lease"
+                                if encoder.has_pending_utf8() {
+                                    "pane keyboard input closed in the middle of a UTF-8 scalar"
                                         .into()
                                 } else {
-                                    "pane keyboard input closed in the middle of a UTF-8 scalar"
+                                    "pane keyboard input closed while this attach held the write \
+                                     lease"
                                         .into()
                                 },
                             );
@@ -744,7 +785,7 @@ impl Session {
                     for action in keys.feed(&buf[..n]) {
                         match action {
                             Action::Detach => {
-                                if !utf8.pending.is_empty() {
+                                if encoder.has_pending_utf8() {
                                     *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
                                         "pane detach arrived in the middle of a UTF-8 scalar".into(),
                                     );
@@ -753,8 +794,8 @@ impl Session {
                                 return;
                             }
                             Action::Forward(bytes) => {
-                                let text = match utf8.push(&bytes) {
-                                    Ok(Some(text)) => text,
+                                let input = match encoder.encode(&id, bytes) {
+                                    Ok(Some(input)) => input,
                                     Ok(None) => continue,
                                     Err(error) => {
                                         *failure.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -763,16 +804,13 @@ impl Session {
                                         return;
                                     }
                                 };
-                                let f =
-                                    Frame::Input(ClientNotification::new(Input::NodePtyWrite {
-                                        agent_id: id.clone(),
-                                        bytes: text,
-                                    }));
+                                let method = input.method();
+                                let f = Frame::Input(ClientNotification::new(input));
                                 if let Err(error) =
                                     write_serialized(&writer, f.to_line().as_bytes())
                                 {
                                     *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                                        format!("sending node/pty-write from the keyboard: {error}"),
+                                        format!("sending {method} from the keyboard: {error}"),
                                     );
                                     leaving.store(true, Ordering::SeqCst);
                                     return;
@@ -1037,6 +1075,7 @@ impl Drop for Session {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+    use std::os::fd::AsRawFd;
     use std::sync::Mutex;
 
     /// Mutation: install first and clear second. An edge delivered by the newly installed handler
@@ -1272,26 +1311,6 @@ mod tests {
             seq,
             frame,
         ))
-    }
-
-    #[test]
-    fn keyboard_utf8_emits_valid_prefixes_and_retains_only_the_split_scalar() {
-        let mut utf8 = KeyboardUtf8::default();
-        let mut emitted = String::new();
-        for chunk in [
-            b"a\xf0".as_slice(),
-            b"\x9f".as_slice(),
-            b"\x98".as_slice(),
-            b"\x80b",
-        ] {
-            if let Some(prefix) = utf8.push(chunk).unwrap() {
-                emitted.push_str(&prefix);
-            }
-            assert!(utf8.pending.len() <= 3, "the pending suffix grew unbounded");
-        }
-        assert_eq!(emitted, "a😀b");
-        assert!(utf8.pending.is_empty());
-        assert!(KeyboardUtf8::default().push(&[0xff]).is_err());
     }
 
     #[test]
@@ -1638,6 +1657,197 @@ mod tests {
         assert_eq!(session.pane_stream, PaneStream::Legacy);
         drop(session);
         server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn writable_legacy_retry_keeps_incremental_utf8_on_node_pty_write() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (keyboard_input, mut keyboard_writer) = UnixStream::pair().unwrap();
+        let (attached_tx, attached_rx) = std::sync::mpsc::channel();
+        let (prefix_tx, prefix_rx) = std::sync::mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+
+            lines.read_line(&mut line).unwrap();
+            let Frame::Request(first) = Frame::from_line(&line).unwrap() else {
+                panic!("expected pane-v1 attach request")
+            };
+            let Call::NodeAttach(first_params) = first.call else {
+                panic!("expected node/attach")
+            };
+            assert!(first_params.pane_stream.is_some());
+            server
+                .write_all(
+                    Frame::Response(marion_proto::Response::err(
+                        RequestId::Number(1),
+                        marion_proto::RpcError::invalid_params("unknown field pane_stream"),
+                    ))
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Request(second) = Frame::from_line(&line).unwrap() else {
+                panic!("expected legacy attach retry")
+            };
+            let Call::NodeAttach(second_params) = second.call else {
+                panic!("expected node/attach")
+            };
+            assert_eq!(second.id, RequestId::Number(2));
+            assert!(second_params.pane_stream.is_none());
+            server
+                .write_all(
+                    pane_attach_response_with_id(
+                        RequestId::Number(2),
+                        marion_proto::result::PaneAttach {
+                            cols: 80,
+                            rows: 24,
+                            writable: true,
+                            held_by: None,
+                            pane_ready: None,
+                        },
+                    )
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Input(initial) = Frame::from_line(&line).unwrap() else {
+                panic!("expected initial geometry")
+            };
+            assert!(matches!(initial.input, Input::NodeResize { .. }));
+            attached_tx.send(()).unwrap();
+
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Input(prefix) = Frame::from_line(&line).unwrap() else {
+                panic!("expected legacy keyboard input")
+            };
+            let Input::NodePtyWrite { agent_id, bytes } = prefix.input else {
+                panic!("legacy keyboard input used node/pane-write")
+            };
+            assert_eq!(agent_id, AgentId("root".into()));
+            assert_eq!(bytes, "a");
+            prefix_tx.send(()).unwrap();
+
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Input(suffix) = Frame::from_line(&line).unwrap() else {
+                panic!("expected the completed UTF-8 scalar")
+            };
+            let Input::NodePtyWrite { agent_id, bytes } = suffix.input else {
+                panic!("legacy keyboard input used node/pane-write")
+            };
+            assert_eq!(agent_id, AgentId("root".into()));
+            assert_eq!(bytes, "😀b");
+        });
+
+        let session = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            keyboard_input.as_raw_fd(),
+            (80, 24),
+        )
+        .unwrap();
+        attached_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        keyboard_writer.write_all(b"a\xf0").unwrap();
+        keyboard_writer.flush().unwrap();
+        prefix_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        keyboard_writer.write_all(b"\x9f\x98\x80b").unwrap();
+        keyboard_writer.flush().unwrap();
+        server_thread.join().unwrap();
+        drop(session);
+    }
+
+    #[test]
+    fn writable_pane_v1_sends_arbitrary_keyboard_bytes_on_node_pane_write() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (keyboard_input, mut keyboard_writer) = UnixStream::pair().unwrap();
+        let (attached_tx, attached_rx) = std::sync::mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Request(request) = Frame::from_line(&line).unwrap() else {
+                panic!("expected pane-v1 attach request")
+            };
+            let Call::NodeAttach(params) = request.call else {
+                panic!("expected node/attach")
+            };
+            assert!(params.pane_stream.is_some());
+            server
+                .write_all(
+                    pane_attach_response(marion_proto::result::PaneAttach {
+                        cols: 80,
+                        rows: 24,
+                        writable: true,
+                        held_by: None,
+                        pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                            token: pane_token(),
+                            cut: 0,
+                        }),
+                    })
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Input(ready) = Frame::from_line(&line).unwrap() else {
+                panic!("expected pane Ready")
+            };
+            assert!(matches!(ready.input, Input::NodePaneReady(_)));
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Input(initial) = Frame::from_line(&line).unwrap() else {
+                panic!("expected initial geometry")
+            };
+            assert!(matches!(initial.input, Input::NodeResize { .. }));
+            attached_tx.send(()).unwrap();
+
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            let Frame::Input(input) = Frame::from_line(&line).unwrap() else {
+                panic!("expected pane-v1 keyboard input")
+            };
+            let Input::NodePaneWrite(write) = input.input else {
+                panic!("pane-v1 keyboard input did not use node/pane-write")
+            };
+            assert_eq!(write.agent_id, AgentId("root".into()));
+            assert_eq!(write.bytes.as_bytes(), [0x00, 0xff, 0x80, b'x']);
+        });
+
+        let session = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            Sink::default(),
+            keyboard_input.as_raw_fd(),
+            (80, 24),
+        )
+        .unwrap();
+        attached_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        keyboard_writer
+            .write_all(&[0x00, 0xff, 0x80, b'x'])
+            .unwrap();
+        keyboard_writer.flush().unwrap();
+        server_thread.join().unwrap();
+        drop(session);
     }
 
     #[test]

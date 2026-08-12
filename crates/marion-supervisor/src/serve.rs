@@ -919,6 +919,22 @@ fn serve_conn(
     serve_conn_with_frame_timeout(id, stream, handle, stopping, OUTBOUND_FRAME_WRITE_TIMEOUT);
 }
 
+/// Continue an authenticated native-bootstrap socket as an ordinary pane protocol connection.
+///
+/// The bootstrap accept loop already owns this `ConnId` and the server-wide socket duplicate.
+/// Calling `connected` here, after the ticket was atomically claimed, makes the ensuing
+/// `serve_conn`/`gone` pair the complete lifetime of the writer lease. Server shutdown closes the
+/// duplicate and therefore still interrupts this otherwise blocking relay.
+pub(crate) fn serve_claimed_conn(
+    id: ConnId,
+    stream: std::os::unix::net::UnixStream,
+    handle: Arc<dyn Handle>,
+) {
+    handle.connected(id);
+    let stopping = AtomicBool::new(false);
+    serve_conn(id, stream, handle, &stopping);
+}
+
 fn serve_conn_with_frame_timeout(
     id: ConnId,
     stream: std::os::unix::net::UnixStream,

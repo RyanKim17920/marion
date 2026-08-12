@@ -97,9 +97,11 @@ use crate::socket;
 
 const CONTEXT_DOMAIN: &[u8] = b"marion/direct-native-context/v1\0";
 const DESCRIPTOR_MESSAGE: &[u8] = b"MNB1";
+const CLAIM_MESSAGE: &[u8] = b"MNC1";
 const CAPABILITY_TTL: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const LAUNCH_RESULT_TIMEOUT: Duration = Duration::from_secs(60);
+const CLAIM_ACK_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_ACTIVE_NATIVE_CONNECTIONS: usize = 32;
 const MAX_CONTEXT_FIELD_BYTES: usize = 64 * 1024;
 const MAX_CONTEXT_ARGUMENTS: usize = 4096;
@@ -212,6 +214,7 @@ impl NativeBootstrapClientSession {
         Ok(NativeFacadeHandoff {
             receipt,
             tty: self.tty,
+            stream: self.stream,
         })
     }
 }
@@ -225,12 +228,61 @@ impl NativeBootstrapClientSession {
 pub struct NativeFacadeHandoff {
     receipt: NativeLaunchReceipt,
     tty: ClientTtyWitness,
+    stream: UnixStream,
 }
 
 impl NativeFacadeHandoff {
     #[allow(dead_code, reason = "consumed by the later transparent relay slice")]
     pub(crate) fn into_parts(self) -> (NativeLaunchReceipt, ClientTtyWitness) {
         (self.receipt, self.tty)
+    }
+
+    #[expect(
+        dead_code,
+        reason = "production-dark until the transparent native relay consumes this handoff"
+    )]
+    pub(crate) fn claim(mut self) -> Result<ClaimedNativeFacade, BootstrapError> {
+        self.stream
+            .set_read_timeout(Some(LAUNCH_RESULT_TIMEOUT))
+            .and_then(|()| self.stream.set_write_timeout(Some(LAUNCH_RESULT_TIMEOUT)))
+            .map_err(BootstrapError::NativeTransportIo)?;
+        write_native_claim_request(&mut self.stream, &self.receipt)?;
+        let mut status = [0];
+        self.stream
+            .read_exact(&mut status)
+            .map_err(BootstrapError::NativeTransportIo)?;
+        if status != [WIRE_OK] {
+            return Err(BootstrapError::AuthorizationRefused);
+        }
+        self.stream
+            .set_read_timeout(None)
+            .and_then(|()| self.stream.set_write_timeout(None))
+            .map_err(BootstrapError::NativeTransportIo)?;
+        let NativeLaunchReceipt {
+            agent_id,
+            ticket: _,
+        } = self.receipt;
+        Ok(ClaimedNativeFacade {
+            agent_id,
+            tty: self.tty,
+            stream: self.stream,
+        })
+    }
+}
+
+pub(crate) struct ClaimedNativeFacade {
+    agent_id: AgentId,
+    tty: ClientTtyWitness,
+    stream: UnixStream,
+}
+
+impl ClaimedNativeFacade {
+    #[expect(
+        dead_code,
+        reason = "production-dark until the transparent native relay consumes this handoff"
+    )]
+    pub(crate) fn into_parts(self) -> (AgentId, ClientTtyWitness, UnixStream) {
+        (self.agent_id, self.tty, self.stream)
     }
 }
 
@@ -953,6 +1005,12 @@ impl NativeLaunchDeadline {
     }
 }
 
+fn claim_ack_timeout(deadline: &NativeLaunchDeadline) -> Result<Duration, BootstrapError> {
+    deadline
+        .require_remaining()
+        .map(|remaining| remaining.min(CLAIM_ACK_TIMEOUT))
+}
+
 impl HandshakeDeadline {
     fn new(clock: Arc<dyn MonotonicClock>, timeout: Duration) -> Result<Self, BootstrapError> {
         let expires_at = clock
@@ -1287,6 +1345,10 @@ impl NativeClaimant {
     pub(crate) const fn conn(self) -> ConnId {
         self.conn
     }
+
+    const fn from_authenticated_connection(conn: ConnId, principal: PeerIdentity) -> Self {
+        Self { conn, principal }
+    }
 }
 
 #[allow(
@@ -1357,6 +1419,7 @@ struct PendingNativeLaunch {
 
 struct PendingNativeLaunchState {
     tickets: HashMap<[u8; 32], PendingNativeLaunch>,
+    claiming: HashMap<[u8; 32], PendingNativeLaunch>,
     agents: HashMap<AgentId, [u8; 32]>,
 }
 
@@ -1387,6 +1450,7 @@ impl PendingNativeLaunches {
         Self {
             state: Mutex::new(PendingNativeLaunchState {
                 tickets: HashMap::new(),
+                claiming: HashMap::new(),
                 agents: HashMap::new(),
             }),
             rng,
@@ -1406,7 +1470,10 @@ impl PendingNativeLaunches {
             if self.rng.fill(&mut candidate).is_err() {
                 continue;
             }
-            if candidate != [0; 32] && !state.tickets.contains_key(&candidate) {
+            if candidate != [0; 32]
+                && !state.tickets.contains_key(&candidate)
+                && !state.claiming.contains_key(&candidate)
+            {
                 ticket = Some(candidate);
                 break;
             }
@@ -1414,6 +1481,7 @@ impl PendingNativeLaunches {
         let ticket = ticket.ok_or(NativeLaunchReservationError::TicketGenerationExhausted)?;
         if let Some(old) = state.agents.insert(binding.agent_id.clone(), ticket) {
             state.tickets.remove(&old);
+            state.claiming.remove(&old);
         }
         state.tickets.insert(
             ticket,
@@ -1478,7 +1546,7 @@ impl PendingNativeLaunches {
     }
 
     pub(crate) fn consume(
-        &self,
+        self: &Arc<Self>,
         ticket: &NativeLaunchTicket,
         agent_id: &AgentId,
         host_generation: u64,
@@ -1489,13 +1557,26 @@ impl PendingNativeLaunches {
     }
 
     pub(crate) fn claim_with<T>(
-        &self,
+        self: &Arc<Self>,
         ticket: &NativeLaunchTicket,
         agent_id: &AgentId,
         host_generation: u64,
         claimant: NativeClaimant,
         claim: impl FnOnce() -> Result<T, NativeLaunchClaimError>,
     ) -> Result<(NativeLaunchClaim, T), NativeLaunchClaimError> {
+        let pending = self.prepare_claim(ticket, agent_id, host_generation, claimant)?;
+        let value = claim()?;
+        let claim = pending.commit()?;
+        Ok((claim, value))
+    }
+
+    pub(crate) fn prepare_claim(
+        self: &Arc<Self>,
+        ticket: &NativeLaunchTicket,
+        agent_id: &AgentId,
+        host_generation: u64,
+        claimant: NativeClaimant,
+    ) -> Result<PreparedNativeLaunchClaim, NativeLaunchClaimError> {
         let key = ticket.wire_bytes();
         let now = self.clock.now();
         let mut state = lock(&self.state);
@@ -1517,23 +1598,23 @@ impl PendingNativeLaunches {
         {
             return Err(NativeLaunchClaimError::WrongBinding);
         }
-        let value = claim()?;
-        let consumed = state.tickets.remove(&key).expect("looked up above");
-        state.agents.remove(consumed.binding.agent_id());
-        Ok((
-            NativeLaunchClaim {
-                agent_id: consumed.binding.agent_id,
-                host_generation,
-                conn: claimant.conn,
-            },
-            value,
-        ))
+        let claiming = state.tickets.remove(&key).expect("looked up above");
+        assert!(state.claiming.insert(key, claiming).is_none());
+        Ok(PreparedNativeLaunchClaim {
+            authority: Arc::clone(self),
+            key,
+            agent_id: agent_id.clone(),
+            host_generation,
+            conn: claimant.conn,
+            finished: false,
+        })
     }
 
     pub(crate) fn revoke_agent(&self, agent: &AgentId) {
         let mut state = lock(&self.state);
         if let Some(ticket) = state.agents.remove(agent) {
             state.tickets.remove(&ticket);
+            state.claiming.remove(&ticket);
         }
     }
 
@@ -1543,6 +1624,62 @@ impl PendingNativeLaunches {
             && state.agents.get(pending.binding.agent_id()) == Some(&ticket)
         {
             state.agents.remove(pending.binding.agent_id());
+        }
+        if let Some(pending) = state.claiming.remove(&ticket)
+            && state.agents.get(pending.binding.agent_id()) == Some(&ticket)
+        {
+            state.agents.remove(pending.binding.agent_id());
+        }
+    }
+}
+
+pub(crate) struct PreparedNativeLaunchClaim {
+    authority: Arc<PendingNativeLaunches>,
+    key: [u8; 32],
+    agent_id: AgentId,
+    host_generation: u64,
+    conn: ConnId,
+    finished: bool,
+}
+
+impl PreparedNativeLaunchClaim {
+    pub(crate) fn commit(mut self) -> Result<NativeLaunchClaim, NativeLaunchClaimError> {
+        let mut state = lock(&self.authority.state);
+        let pending = state
+            .claiming
+            .get(&self.key)
+            .ok_or(NativeLaunchClaimError::WrongBinding)?;
+        if pending.binding.agent_id() != &self.agent_id
+            || pending.host_generation != Some(self.host_generation)
+            || state.agents.get(&self.agent_id) != Some(&self.key)
+        {
+            return Err(NativeLaunchClaimError::WrongBinding);
+        }
+        let pending = state
+            .claiming
+            .remove(&self.key)
+            .expect("validated claiming reservation remains under the same lock");
+        state.agents.remove(&self.agent_id);
+        self.finished = true;
+        Ok(NativeLaunchClaim {
+            agent_id: pending.binding.agent_id,
+            host_generation: self.host_generation,
+            conn: self.conn,
+        })
+    }
+}
+
+impl Drop for PreparedNativeLaunchClaim {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut state = lock(&self.authority.state);
+        let Some(pending) = state.claiming.remove(&self.key) else {
+            return;
+        };
+        if state.agents.get(&self.agent_id) == Some(&self.key) {
+            state.tickets.insert(self.key, pending);
         }
     }
 }
@@ -1836,6 +1973,54 @@ fn write_native_launch_receipt(
         .write_all(&receipt.ticket().wire_bytes())
         .map_err(BootstrapError::NativeTransportIo)?;
     stream.flush().map_err(BootstrapError::NativeTransportIo)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NativeClaimRequest {
+    agent_id: AgentId,
+    ticket: NativeLaunchTicket,
+}
+
+fn write_native_claim_request(
+    stream: &mut impl Write,
+    receipt: &NativeLaunchReceipt,
+) -> Result<(), BootstrapError> {
+    if !is_uuid_v7(&receipt.agent_id().0) {
+        return Err(BootstrapError::NativeWireProtocol);
+    }
+    stream
+        .write_all(CLAIM_MESSAGE)
+        .and_then(|()| stream.write_all(receipt.agent_id().0.as_bytes()))
+        .and_then(|()| stream.write_all(&receipt.ticket().wire_bytes()))
+        .and_then(|()| stream.flush())
+        .map_err(BootstrapError::NativeTransportIo)
+}
+
+fn read_native_claim_request(stream: &mut impl Read) -> Result<NativeClaimRequest, BootstrapError> {
+    let mut magic = [0; CLAIM_MESSAGE.len()];
+    stream
+        .read_exact(&mut magic)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    if magic != CLAIM_MESSAGE {
+        return Err(BootstrapError::NativeWireProtocol);
+    }
+    let mut agent_id = [0; UUID_LEN];
+    stream
+        .read_exact(&mut agent_id)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    let agent_id =
+        String::from_utf8(agent_id.to_vec()).map_err(|_| BootstrapError::NativeWireProtocol)?;
+    if !is_uuid_v7(&agent_id) {
+        return Err(BootstrapError::NativeWireProtocol);
+    }
+    let mut ticket = [0; 32];
+    stream
+        .read_exact(&mut ticket)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    Ok(NativeClaimRequest {
+        agent_id: AgentId(agent_id),
+        ticket: NativeLaunchTicket::from_reserved(ticket)?,
+    })
 }
 
 fn write_wire_request(
@@ -2148,6 +2333,23 @@ pub(crate) trait NativeBootstrapHandler: Send + Sync + 'static {
         request: ConsumedNativeRequest<'_>,
         deadline: &NativeLaunchDeadline,
     ) -> Result<PendingNativeLaunchReceipt, BootstrapError>;
+
+    fn requires_claim_transport(&self) -> bool {
+        false
+    }
+
+    fn prepare_native_claim(
+        &self,
+        _ticket: &NativeLaunchTicket,
+        _agent_id: &AgentId,
+        _claimant: NativeClaimant,
+    ) -> Result<Box<dyn PreparedNativeRelay>, BootstrapError> {
+        Err(BootstrapError::AuthorizationRefused)
+    }
+}
+
+pub(crate) trait PreparedNativeRelay: Send {
+    fn commit(self: Box<Self>) -> Result<Arc<dyn crate::serve::Handle>, BootstrapError>;
 }
 
 struct DisabledNativeBootstrapHandler;
@@ -2189,6 +2391,7 @@ pub(crate) struct NativeBootstrapService {
 struct NativeLaunchOutcome {
     deadline: NativeLaunchDeadline,
     pending: Result<PendingNativeLaunchReceipt, BootstrapError>,
+    claimant: NativeClaimant,
 }
 
 impl NativeBootstrapService {
@@ -2315,18 +2518,74 @@ impl NativeBootstrapService {
             Ok(NativeLaunchOutcome {
                 deadline: result_deadline,
                 pending: Ok(pending),
+                claimant,
             }) => {
                 // Capability authentication has finished. Launch preparation and response delivery
                 // deliberately start a fresh budget rather than inheriting whatever remained of
                 // the descriptor handshake's ten seconds.
-                let mut transport = DeadlineIo::new(&stream, &result_deadline.0);
-                if write_native_launch_receipt(&mut transport, pending.receipt()).is_ok() {
-                    pending.commit();
+                let prepared = {
+                    let mut transport = DeadlineIo::new(&stream, &result_deadline.0);
+                    if write_native_launch_receipt(&mut transport, pending.receipt()).is_err() {
+                        self.authority.revoke_connection(id);
+                        return;
+                    }
+                    if !self.handler.requires_claim_transport() {
+                        pending.commit();
+                        self.authority.revoke_connection(id);
+                        return;
+                    }
+                    let claimed = read_native_claim_request(&mut transport).and_then(|claim| {
+                        self.handler
+                            .prepare_native_claim(&claim.ticket, &claim.agent_id, claimant)
+                    });
+                    let Ok(prepared) = claimed else {
+                        let _ = transport.write_all(&[WIRE_REFUSED]);
+                        let _ = transport.flush();
+                        self.authority.revoke_connection(id);
+                        return;
+                    };
+                    prepared
+                };
+                let ack_timeout = match claim_ack_timeout(&result_deadline) {
+                    Ok(timeout) => timeout,
+                    Err(_) => {
+                        self.authority.revoke_connection(id);
+                        return;
+                    }
+                };
+                if stream.set_write_timeout(Some(ack_timeout)).is_err()
+                    || (&stream)
+                        .write_all(&[WIRE_OK])
+                        .and_then(|()| (&stream).flush())
+                        .is_err()
+                {
+                    self.authority.revoke_connection(id);
+                    return;
                 }
+                let Ok(relay) = prepared.commit() else {
+                    self.authority.revoke_connection(id);
+                    return;
+                };
+                pending.commit();
+                self.authority.revoke_connection(id);
+                if stream.set_read_timeout(None).is_err() || stream.set_write_timeout(None).is_err()
+                {
+                    relay.gone(
+                        id,
+                        &marion_proto::ClientGone::SocketClosed,
+                        &crate::serve::Departure::ReadFailed(
+                            "native claim relay could not clear bootstrap deadlines".into(),
+                        ),
+                    );
+                    return;
+                }
+                crate::serve::serve_claimed_conn(id, stream, relay);
+                return;
             }
             Ok(NativeLaunchOutcome {
                 deadline: result_deadline,
                 pending: Err(_),
+                claimant: _,
             }) => {
                 let mut transport = DeadlineIo::new(&stream, &result_deadline.0);
                 let _ = transport.write_all(&[WIRE_REFUSED]);
@@ -2441,6 +2700,7 @@ impl NativeBootstrapService {
         Ok(NativeLaunchOutcome {
             deadline: launch_deadline,
             pending,
+            claimant: NativeClaimant::from_authenticated_connection(connection.id, connection.peer),
         })
     }
 
@@ -2676,6 +2936,8 @@ pub enum BootstrapError {
     AuthorizationRefused,
     #[error("native bootstrap terminal verification failed: {0}")]
     TerminalVerification(String),
+    #[error("native pane claim failed: {0}")]
+    NativeClaim(String),
 }
 
 fn io_error(error: rustix::io::Errno) -> BootstrapError {

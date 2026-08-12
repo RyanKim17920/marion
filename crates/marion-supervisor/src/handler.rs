@@ -305,6 +305,70 @@ struct Panes {
     completed_scan_count: usize,
 }
 
+/// A native ticket and writer slot validated together, but not made durable until the claim ACK.
+///
+/// The authority guard keeps ordinary attaches behind the pending gate, while `lease` reserves the
+/// host's one writer slot. Neither requires holding `Panes` during socket I/O. Dropping this value
+/// restores the ticket and releases the slot, which makes a failed acknowledgement safely
+/// retryable on the still-live launch.
+pub(crate) struct PreparedNativeWriter {
+    handle: Arc<RegistryHandle>,
+    authority: Arc<crate::native_bootstrap::PendingNativeLaunches>,
+    claim: Option<crate::native_bootstrap::PreparedNativeLaunchClaim>,
+    agent_id: AgentId,
+    host: Arc<crate::pty::PtyHost>,
+    host_generation: u64,
+    conn: ConnId,
+    lease: Option<Arc<crate::pty::WriteLease>>,
+}
+
+impl PreparedNativeWriter {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "production-dark until the native launch adapter activates claim relay"
+        )
+    )]
+    pub(crate) fn commit(
+        mut self,
+    ) -> Result<
+        crate::native_bootstrap::NativeLaunchClaim,
+        crate::native_bootstrap::NativeLaunchClaimError,
+    > {
+        let mut panes = lock(&self.handle.panes);
+        let exact_host = panes
+            .hosts
+            .get(&self.agent_id)
+            .is_some_and(|entry| entry.is_live() && Arc::ptr_eq(entry.host(), &self.host));
+        let exact_generation =
+            panes.host_generations.get(&self.agent_id) == Some(&self.host_generation);
+        let exact_authority = panes
+            .native_launches
+            .as_ref()
+            .is_some_and(|authority| Arc::ptr_eq(authority, &self.authority));
+        if !exact_host
+            || !exact_generation
+            || !exact_authority
+            || self.host.writer() != Some(self.conn)
+        {
+            return Err(crate::native_bootstrap::NativeLaunchClaimError::WrongBinding);
+        }
+        let claim = self
+            .claim
+            .take()
+            .expect("a prepared native writer commits once")
+            .commit()?;
+        panes.leases.entry(self.conn).or_default().push((
+            self.agent_id.clone(),
+            self.lease
+                .take()
+                .expect("a prepared native writer owns its lease"),
+        ));
+        Ok(claim)
+    }
+}
+
 enum PaneEntry {
     Live(Arc<crate::pty::PtyHost>),
     Closing(Arc<crate::pty::PtyHost>),
@@ -1933,6 +1997,56 @@ impl RegistryHandle {
         Ok(claim)
     }
 
+    /// Validate a same-socket native claim and reserve its exact writer slot without consuming the
+    /// ticket. The returned guard performs the final, non-I/O commit only after the service has
+    /// delivered the claim acknowledgement.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "production-dark until the native launch adapter activates claim relay"
+        )
+    )]
+    pub(crate) fn prepare_pending_native_writer(
+        self: &Arc<Self>,
+        ticket: &crate::native_bootstrap::NativeLaunchTicket,
+        agent_id: &AgentId,
+        claimant: crate::native_bootstrap::NativeClaimant,
+    ) -> Result<PreparedNativeWriter, crate::native_bootstrap::NativeLaunchClaimError> {
+        let panes = lock(&self.panes);
+        let host = panes
+            .hosts
+            .get(agent_id)
+            .and_then(PaneEntry::live_host)
+            .cloned()
+            .ok_or(crate::native_bootstrap::NativeLaunchClaimError::WrongBinding)?;
+        let host_generation = panes
+            .host_generations
+            .get(agent_id)
+            .copied()
+            .ok_or(crate::native_bootstrap::NativeLaunchClaimError::WrongBinding)?;
+        let authority = panes
+            .native_launches
+            .as_ref()
+            .cloned()
+            .ok_or(crate::native_bootstrap::NativeLaunchClaimError::UnknownTicket)?;
+        let claim = authority.prepare_claim(ticket, agent_id, host_generation, claimant)?;
+        let conn = claimant.conn();
+        let lease = host
+            .lease_writer(conn)
+            .map_err(|_| crate::native_bootstrap::NativeLaunchClaimError::WriterBusy)?;
+        Ok(PreparedNativeWriter {
+            handle: Arc::clone(self),
+            authority,
+            claim: Some(claim),
+            agent_id: agent_id.clone(),
+            host,
+            host_generation,
+            conn,
+            lease: Some(Arc::new(lease)),
+        })
+    }
+
     /// Stop admitting new live-pane operations while keeping the exact host registered through
     /// reader drain. A stale close callback cannot transition a replacement host with the same id.
     pub fn closing_pane(&self, id: &AgentId, host: &Arc<crate::pty::PtyHost>) {
@@ -2074,6 +2188,10 @@ impl RegistryHandle {
             marion_proto::Input::NodePtyWrite {
                 agent_id, bytes, ..
             } => (agent_id, PaneDelivery::Write(bytes.as_bytes())),
+            marion_proto::Input::NodePaneWrite(params) => (
+                &params.agent_id,
+                PaneDelivery::Write(params.bytes.as_bytes()),
+            ),
             marion_proto::Input::NodeResize {
                 agent_id,
                 cols,
@@ -6111,6 +6229,182 @@ mod tests {
             "claim lease leaked after claimant departure"
         );
         host.shutdown().unwrap();
+    }
+
+    #[test]
+    fn unacknowledged_native_claim_releases_lease_and_preserves_ticket_for_retry() {
+        #[derive(Default)]
+        struct TestClock;
+        impl crate::native_bootstrap::MonotonicClock for TestClock {
+            fn now(&self) -> Duration {
+                Duration::ZERO
+            }
+        }
+        #[derive(Default)]
+        struct TestRng(std::sync::atomic::AtomicU64);
+        impl crate::native_bootstrap::CapabilityRng for TestRng {
+            fn fill(
+                &self,
+                bytes: &mut [u8],
+            ) -> Result<(), crate::native_bootstrap::BootstrapError> {
+                let value = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+                bytes.fill(0);
+                bytes[..8].copy_from_slice(&value.to_be_bytes());
+                Ok(())
+            }
+        }
+
+        let w = Wired::new("handler-native-claim-ack-rollback");
+        let host = unregistered_pane(&w, "root", "sleep 30");
+        let launches = Arc::new(
+            crate::native_bootstrap::PendingNativeLaunches::with_sources(
+                Arc::new(TestRng::default()),
+                Arc::new(TestClock),
+                Duration::from_secs(60),
+            ),
+        );
+        w.fx.handle
+            .install_pending_native_launches(Arc::clone(&launches))
+            .unwrap_or_else(|_| panic!("native launch authority installs once"));
+        let binding = native_launch_binding("root");
+        let pending =
+            w.fx.handle
+                .reserve_pending_native_launch(binding.clone())
+                .unwrap();
+        let ticket = crate::native_bootstrap::NativeLaunchTicket::for_test([
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ]);
+        w.fx.handle.register_pane(&id("root"), Arc::clone(&host));
+        w.fx.handle
+            .publish_pending_native_launch(pending.receipt())
+            .unwrap();
+
+        let prepared =
+            w.fx.handle
+                .prepare_pending_native_writer(
+                    &ticket,
+                    binding.agent_id(),
+                    native_claimant(ConnId(710)),
+                )
+                .unwrap();
+        assert_eq!(host.writer(), Some(ConnId(710)));
+        drop(prepared);
+        assert_eq!(host.writer(), None, "failed acknowledgement leaked lease");
+        assert!(launches.has_pending(binding.agent_id()));
+
+        let prepared =
+            w.fx.handle
+                .prepare_pending_native_writer(
+                    &ticket,
+                    binding.agent_id(),
+                    native_claimant(ConnId(711)),
+                )
+                .unwrap();
+        let claim = prepared.commit().unwrap();
+        assert_eq!(claim.conn(), ConnId(711));
+        assert_eq!(host.writer(), Some(ConnId(711)));
+        w.fx.handle
+            .gone(ConnId(711), &ClientGone::SocketClosed, &Departure::Eof);
+        assert_eq!(host.writer(), None);
+        host.shutdown().unwrap();
+    }
+
+    #[test]
+    fn blocked_native_claim_ack_does_not_block_an_unrelated_pane_attach() {
+        #[derive(Default)]
+        struct TestClock;
+        impl crate::native_bootstrap::MonotonicClock for TestClock {
+            fn now(&self) -> Duration {
+                Duration::ZERO
+            }
+        }
+        #[derive(Default)]
+        struct TestRng(std::sync::atomic::AtomicU64);
+        impl crate::native_bootstrap::CapabilityRng for TestRng {
+            fn fill(
+                &self,
+                bytes: &mut [u8],
+            ) -> Result<(), crate::native_bootstrap::BootstrapError> {
+                let value = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+                bytes.fill(0);
+                bytes[..8].copy_from_slice(&value.to_be_bytes());
+                Ok(())
+            }
+        }
+
+        let w = Wired::new("handler-native-blocked-claim-ack");
+        let root = unregistered_pane(&w, "root", "sleep 30");
+        let other = unregistered_pane(&w, "other", "sleep 30");
+        w.fx.handle.register_pane(&id("other"), Arc::clone(&other));
+        let launches = Arc::new(
+            crate::native_bootstrap::PendingNativeLaunches::with_sources(
+                Arc::new(TestRng::default()),
+                Arc::new(TestClock),
+                Duration::from_secs(60),
+            ),
+        );
+        w.fx.handle
+            .install_pending_native_launches(Arc::clone(&launches))
+            .unwrap_or_else(|_| panic!("native launch authority installs once"));
+        let binding = native_launch_binding("root");
+        let pending =
+            w.fx.handle
+                .reserve_pending_native_launch(binding.clone())
+                .unwrap();
+        let ticket = crate::native_bootstrap::NativeLaunchTicket::for_test([
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ]);
+        w.fx.handle.register_pane(&id("root"), Arc::clone(&root));
+        w.fx.handle
+            .publish_pending_native_launch(pending.receipt())
+            .unwrap();
+        let prepared =
+            w.fx.handle
+                .prepare_pending_native_writer(
+                    &ticket,
+                    binding.agent_id(),
+                    native_claimant(ConnId(720)),
+                )
+                .unwrap();
+
+        let (ack_waiting_tx, ack_waiting_rx) = std::sync::mpsc::sync_channel(1);
+        let (ack_release_tx, ack_release_rx) = std::sync::mpsc::sync_channel(1);
+        let blocked_ack = std::thread::spawn(move || {
+            ack_waiting_tx.send(()).unwrap();
+            ack_release_rx.recv().unwrap();
+            drop(prepared);
+        });
+        ack_waiting_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("claim reached its blocked acknowledgement");
+
+        let attach_handle = Arc::clone(&w.fx.handle);
+        let (attach_done_tx, attach_done_rx) = std::sync::mpsc::sync_channel(1);
+        let attach = std::thread::spawn(move || {
+            let (out, _rx) = crate::serve::capture(ConnId(721));
+            let writable = attach_handle
+                .attach_pane(&id("other"), &out)
+                .expect("unrelated pane stays visible")
+                .writable;
+            attach_done_tx.send(writable).unwrap();
+        });
+        let unrelated_writable = attach_done_rx.recv_timeout(Duration::from_millis(250));
+        ack_release_tx.send(()).unwrap();
+        blocked_ack.join().unwrap();
+        attach.join().unwrap();
+        assert_eq!(
+            unrelated_writable,
+            Ok(true),
+            "claim acknowledgement held the global Panes lock"
+        );
+        assert_eq!(root.writer(), None);
+        assert!(launches.has_pending(binding.agent_id()));
+        w.fx.handle
+            .gone(ConnId(721), &ClientGone::SocketClosed, &Departure::Eof);
+        root.shutdown().unwrap();
+        other.shutdown().unwrap();
     }
 
     #[test]
