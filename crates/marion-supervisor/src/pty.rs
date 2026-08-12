@@ -2059,15 +2059,28 @@ impl Shared {
     }
 
     fn invalidate_pane_streams(&self) {
-        let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
-        streams.generation = streams.generation.wrapping_add(1);
-        streams.valid = false;
-        for slot in streams.slots.values() {
-            slot.cancellation.cancel();
+        let outbounds = {
+            let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+            streams.generation = streams.generation.wrapping_add(1);
+            streams.valid = false;
+            let outbounds = streams
+                .slots
+                .values()
+                .map(|slot| {
+                    slot.cancellation.cancel();
+                    slot.out.clone()
+                })
+                .collect::<Vec<_>>();
+            streams
+                .slots
+                .retain(|_, slot| matches!(slot.phase, PanePhase::Transitioning { .. }));
+            outbounds
+        };
+        for out in outbounds {
+            out.fail(crate::serve::Departure::PaneReplayEvicted {
+                agent_id: self.agent_id.0.clone(),
+            });
         }
-        streams
-            .slots
-            .retain(|_, slot| matches!(slot.phase, PanePhase::Transitioning { .. }));
     }
 
     fn emit(&self, text: &str) {
@@ -2108,8 +2121,9 @@ fn pane_frame(agent_id: &AgentId, record: splice::DisplayRecord) -> PaneFrameV1 
         splice::DisplayKind::Resize { rows, cols } => PaneFrameKindV1::Resize { cols, rows },
         splice::DisplayKind::End => PaneFrameKindV1::End {},
     };
-    // The splice cursor is one-origin internally; the versioned wire stream is dense from zero.
-    PaneFrameV1::new(agent_id.clone(), record.seq - 1, frame)
+    // Host splices synthesize initial geometry at zero; retained records remain one-origin, making
+    // the combined versioned wire stream dense without consuming a configured retained slot.
+    PaneFrameV1::new(agent_id.clone(), record.seq, frame)
 }
 
 /// One node's pty, its recording, and the thread that reads it.
@@ -2144,6 +2158,16 @@ pub struct PtyHost {
     reader_drain_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     invalidation_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PaneReplayReservationError {
+    #[error("the pane replay stream is unavailable: {0}")]
+    Unavailable(String),
+    #[error("this connection already has a pane replay transition in flight")]
+    Busy,
+    #[error("the pane replay could not mint a readiness token")]
+    Entropy,
 }
 
 struct PtyHostStart {
@@ -2243,7 +2267,11 @@ impl PtyHost {
             seq: AtomicU64::new(0),
             probes: AtomicU64::new(0),
             bytes: Arc::new(AtomicU64::new(0)),
-            splice: splice::PtySplice::new(options.splice_limits),
+            splice: splice::PtySplice::new_with_initial_resize(
+                options.splice_limits,
+                size.rows,
+                size.cols,
+            ),
             splice_error: Mutex::new(None),
             splice_disabled: AtomicBool::new(false),
             pane_streams: Mutex::new(PaneStreams {
@@ -2628,18 +2656,31 @@ impl PtyHost {
         conn: ConnId,
         out: Outbound,
     ) -> Option<marion_proto::result::PaneReadyDescriptorV1> {
+        self.reserve_pane_replay(conn, out).ok()
+    }
+
+    pub(crate) fn reserve_pane_replay(
+        &self,
+        conn: ConnId,
+        out: Outbound,
+    ) -> Result<marion_proto::result::PaneReadyDescriptorV1, PaneReplayReservationError> {
         self.shared.prune_expired_pane_replays();
         if self.shared.splice_disabled.load(Ordering::SeqCst) {
-            return None;
+            let error = self
+                .shared
+                .splice_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .unwrap_or_else(|| "retention is disabled".into());
+            return Err(PaneReplayReservationError::Unavailable(error));
         }
         let pending_since = self.shared.pane_now();
         // Entropy is the only external fallible operation. Do it before taking any state lock so
         // a failure leaves the connection's existing legacy or pane subscription byte-for-byte
         // unchanged.
         let mut token = [0u8; 32];
-        if getrandom::fill(&mut token).is_err() {
-            return None;
-        }
+        getrandom::fill(&mut token).map_err(|_| PaneReplayReservationError::Entropy)?;
         // Commit order: legacy listeners, pane registry, then splice. Emitters release the splice
         // lock before consulting the pane registry, so no reverse nested acquisition exists.
         let mut listeners = self
@@ -2654,16 +2695,26 @@ impl PtyHost {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if !streams.valid {
-            return None;
+            return Err(PaneReplayReservationError::Unavailable(
+                "this pane generation was invalidated".into(),
+            ));
         }
         if let Some(existing) = streams.slots.get(&conn)
             && matches!(existing.phase, PanePhase::Transitioning { .. })
         {
-            return None;
+            return Err(PaneReplayReservationError::Busy);
         }
         // Register the replacement before touching the old slot. If the splice bound or terminal
         // state refuses, dropping this temporary is a no-op and the old stream stays authoritative.
-        let replay = self.shared.splice.begin_replay().ok()?;
+        let replay = self
+            .shared
+            .splice
+            .begin_replay()
+            .map_err(|error| match error {
+                splice::SpliceError::SubscriberLimitExceeded { .. }
+                | splice::SpliceError::WrongSubscriberPhase => PaneReplayReservationError::Busy,
+                error => PaneReplayReservationError::Unavailable(error.to_string()),
+            })?;
         let cut = replay.cut();
         let generation = streams.generation;
         if let Some(existing) = streams.slots.remove(&conn) {
@@ -2684,7 +2735,7 @@ impl PtyHost {
                 phase: PanePhase::Pending(replay),
             },
         );
-        Some(marion_proto::result::PaneReadyDescriptorV1 {
+        Ok(marion_proto::result::PaneReadyDescriptorV1 {
             token: PaneReadyTokenV1::new(token),
             cut,
         })
@@ -2744,6 +2795,27 @@ impl PtyHost {
             replay,
         );
         out.start_flow(move || flow.next_frame());
+    }
+
+    pub(crate) fn pane_replay_reserved(
+        &self,
+        conn: ConnId,
+        token: &PaneReadyTokenV1,
+        cut: u64,
+    ) -> bool {
+        let streams = self
+            .shared
+            .pane_streams
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        streams.valid
+            && streams.slots.get(&conn).is_some_and(|slot| {
+                slot.generation == streams.generation
+                    && slot.token == *token.as_bytes()
+                    && slot.cut == cut
+                    && matches!(slot.phase, PanePhase::Pending(_))
+                    && !slot.cancellation.is_cancelled()
+            })
     }
 
     /// Permanently disable this host's pane stream registrations and cancel every delivery that

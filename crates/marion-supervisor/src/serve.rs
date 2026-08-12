@@ -159,6 +159,9 @@ pub enum Departure {
     PaneRetentionFailed { agent_id: String, error: String },
     /// A client never completed the response-first pane handshake within its bounded lifetime.
     PaneReplayExpired { agent_id: String },
+    /// A retained pane generation became unavailable after negotiation (replacement, failure, or
+    /// completed-cache eviction). The connection ends rather than hanging without a terminal End.
+    PaneReplayEvicted { agent_id: String },
     /// An internal paced producer panicked while the connection writer pulled its next frame.
     OutboundFlowPanicked,
     /// A `session/quit` completed and its response was queued, so marion closed this connection on

@@ -180,6 +180,65 @@ impl Loopback {
     }
 }
 
+/// A replay must describe the geometry in which its first output was produced without relying on
+/// the attach-time master size. The host therefore synthesizes one cursor-prefix Resize before its
+/// bounded retained records, and that record becomes dense wire sequence zero.
+#[test]
+fn pane_replay_starts_with_the_initial_geometry() {
+    let mut lb = Loopback::without_reader("pty-pane-initial-geometry", WinSize::new(80, 24));
+    assert!(lb.host.retention_snapshot().is_empty());
+
+    let conn = crate::serve::ConnId(1_200);
+    let (out, captured) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out)
+        .expect("the initial geometry is replayable");
+    assert_eq!(descriptor.cut, 1);
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+
+    let line = captured
+        .try_recv()
+        .expect("the initial Resize is delivered");
+    let frame = marion_proto::Frame::from_line(std::str::from_utf8(&line).unwrap()).unwrap();
+    let marion_proto::Frame::Notification(note) = frame else {
+        panic!("the replay emitted a non-notification")
+    };
+    let marion_proto::Event::NodePaneFrame(frame) = note.event else {
+        panic!("the replay emitted a non-pane event")
+    };
+    assert_eq!(frame.seq, 0);
+    assert_eq!(
+        frame.frame,
+        marion_proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }
+    );
+    lb.host.unlisten(conn);
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+}
+
+/// Initial geometry is cursor metadata, not one of the caller-configured retained record slots.
+/// A one-record stream can still retain one Output before the next record reaches its bound.
+#[test]
+fn initial_geometry_does_not_consume_retained_record_capacity() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-pane-initial-geometry-capacity",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing(16, 1),
+    );
+
+    lb.host.shared.retain_output(b"one");
+
+    assert!(lb.host.retention_error().is_none());
+    assert_eq!(lb.host.retention_snapshot().len(), 1);
+    assert!(matches!(
+        &lb.host.retention_snapshot()[0].kind,
+        super::splice::DisplayKind::Output(bytes) if bytes.as_ref() == b"one"
+    ));
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+}
+
 // ---------------------------------------------------------------------------------------------
 // S11 MUST #2: two holes, two closures
 // ---------------------------------------------------------------------------------------------
@@ -1638,18 +1697,25 @@ fn pane_replay_delivers_end_retained_during_the_ready_handoff() {
         .collect::<Vec<_>>();
     assert_eq!(
         frames.len(),
-        2,
+        3,
         "the handoff dropped the end wake: {frames:?}"
     );
     assert!(matches!(
         &frames[0],
         marion_proto::Frame::Notification(note)
             if matches!(&note.event, Event::NodePaneFrame(frame)
+                if frame.seq == 0
+                    && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+    ));
+    assert!(matches!(
+        &frames[1],
+        marion_proto::Frame::Notification(note)
+            if matches!(&note.event, Event::NodePaneFrame(frame)
                 if matches!(&frame.frame, PaneFrameKindV1::Output { bytes }
                     if bytes.as_bytes() == b"prefix"))
     ));
     assert!(matches!(
-        &frames[1],
+        &frames[2],
         marion_proto::Frame::Notification(note)
             if matches!(&note.event, Event::NodePaneFrame(frame)
                 if matches!(frame.frame, PaneFrameKindV1::End {}))
@@ -1669,9 +1735,17 @@ fn pane_resize_delivery_runs_after_the_cast_lock_is_released() {
         .expect("the replay is reserved");
     lb.host
         .pane_ready(crate::serve::ConnId(102), &descriptor.token, descriptor.cut);
+    let initial = rx.try_recv().expect("initial geometry is replayed");
+    assert!(matches!(
+        Frame::from_line(std::str::from_utf8(&initial).unwrap()).unwrap(),
+        Frame::Notification(note)
+            if matches!(note.event, Event::NodePaneFrame(ref frame)
+                if frame.seq == 0
+                    && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+    ));
     assert!(
         rx.try_iter().next().is_none(),
-        "an empty replay installs the live cursor without emitting a frame"
+        "initial replay reaches Ready"
     );
 
     let (observed_tx, observed_rx) = std::sync::mpsc::channel();
@@ -1746,7 +1820,7 @@ fn failed_replay_replacement_preserves_the_existing_subscription() {
     );
     assert_eq!(
         frames.len(),
-        2,
+        3,
         "the failed replacement cancelled the old live stream"
     );
 }
@@ -1808,15 +1882,19 @@ fn retained_replay_larger_than_the_outbound_queue_does_not_depart_a_healthy_clie
     );
     assert_eq!(
         pane.len(),
-        1_025,
+        1_026,
         "the writer must drain the complete prefix"
     );
     assert_eq!(
         pane.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
-        (0..1_025).collect::<Vec<_>>(),
+        (0..1_026).collect::<Vec<_>>(),
         "replay remains dense and ordered"
     );
-    assert!(pane.iter().all(|frame| {
+    assert!(matches!(
+        &pane[0].frame,
+        PaneFrameKindV1::Resize { cols: 80, rows: 24 }
+    ));
+    assert!(pane[1..].iter().all(|frame| {
         matches!(&frame.frame, PaneFrameKindV1::Output { bytes } if bytes.as_bytes() == b"x")
     }));
     assert!(
@@ -1914,9 +1992,17 @@ fn ready_pane_overflow_visibly_departs_its_connection() {
         .begin_pane_replay(conn, out.clone())
         .expect("the replay is reserved");
     lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+    let initial = captured.try_recv().expect("initial geometry is replayed");
+    assert!(matches!(
+        Frame::from_line(std::str::from_utf8(&initial).unwrap()).unwrap(),
+        Frame::Notification(note)
+            if matches!(note.event, Event::NodePaneFrame(ref frame)
+                if frame.seq == 0
+                    && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+    ));
     assert!(
         captured.try_iter().next().is_none(),
-        "empty replay installs Ready"
+        "initial replay reaches Ready"
     );
 
     lb.host.shared.retain_output(b"a");
@@ -1953,9 +2039,17 @@ fn transitioning_flow_overflow_departs_when_it_consumes_the_tombstone_first() {
         .begin_pane_replay(conn, out.clone())
         .expect("the replay is reserved");
     lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+    let initial = captured.try_recv().expect("initial geometry is replayed");
+    assert!(matches!(
+        Frame::from_line(std::str::from_utf8(&initial).unwrap()).unwrap(),
+        Frame::Notification(note)
+            if matches!(note.event, Event::NodePaneFrame(ref frame)
+                if frame.seq == 0
+                    && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+    ));
     assert!(
         captured.try_iter().next().is_none(),
-        "empty replay installs Ready"
+        "initial replay reaches Ready"
     );
 
     lb.host.shared.retain_output(b"a");
@@ -2186,6 +2280,14 @@ fn global_pane_retention_failure_departs_only_opted_in_connections() {
         .begin_pane_replay(ready_conn, ready_out.clone())
         .expect("ready replay");
     lb.host.pane_ready(ready_conn, &ready.token, ready.cut);
+    let initial = ready_rx.try_recv().expect("initial geometry is replayed");
+    assert!(matches!(
+        Frame::from_line(std::str::from_utf8(&initial).unwrap()).unwrap(),
+        Frame::Notification(note)
+            if matches!(note.event, Event::NodePaneFrame(ref frame)
+                if frame.seq == 0
+                    && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+    ));
     assert!(ready_rx.try_iter().next().is_none());
     lb.host.listen(legacy_out.clone());
 

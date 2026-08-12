@@ -99,6 +99,9 @@ struct Inner {
 }
 
 struct State {
+    /// Optional synthetic record emitted before the bounded retained-record vector. The host uses
+    /// this for initial geometry, so replay is self-contained without consuming output capacity.
+    initial: Option<DisplayRecord>,
     records: Vec<DisplayRecord>,
     retained_bytes: usize,
     next_seq: u64,
@@ -323,6 +326,16 @@ fn replay_prefix_record(
     if index >= prefix_end {
         return Err(SpliceError::WrongSubscriberPhase);
     }
+    if let Some(initial) = &state.initial {
+        if index == 0 {
+            return Ok(initial.clone());
+        }
+        return state
+            .records
+            .get(index - 1)
+            .cloned()
+            .ok_or(SpliceError::WrongSubscriberPhase);
+    }
     state
         .records
         .get(index)
@@ -362,11 +375,27 @@ impl Drop for ReplaySubscription {
 }
 
 impl PtySplice {
+    #[cfg(test)]
     pub(super) fn new(limits: SpliceLimits) -> Self {
+        Self::new_inner(limits, None)
+    }
+
+    pub(super) fn new_with_initial_resize(limits: SpliceLimits, rows: u16, cols: u16) -> Self {
+        Self::new_inner(
+            limits,
+            Some(DisplayRecord {
+                seq: 0,
+                kind: DisplayKind::Resize { rows, cols },
+            }),
+        )
+    }
+
+    fn new_inner(limits: SpliceLimits, initial: Option<DisplayRecord>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 limits,
                 state: Mutex::new(State {
+                    initial,
                     records: Vec::new(),
                     retained_bytes: 0,
                     next_seq: 1,
@@ -479,8 +508,21 @@ impl PtySplice {
             .next_subscriber
             .checked_add(1)
             .ok_or(SpliceError::SubscriberIdExhausted)?;
-        let prefix_end = state.records.len();
-        let cut = state.records.last().map_or(0, |record| record.seq);
+        let prefix_end = state
+            .records
+            .len()
+            .checked_add(usize::from(state.initial.is_some()))
+            .ok_or(SpliceError::RetainedRecordsExceeded {
+                limit: self.inner.limits.max_retained_records,
+            })?;
+        // `cut` is the count of dense wire frames frozen into the prefix. With a synthetic
+        // geometry record this is exactly the next internal retained-record sequence.
+        let cut = state
+            .records
+            .last()
+            .map_or(u64::from(state.initial.is_some()), |record| {
+                record.seq + u64::from(state.initial.is_some())
+            });
         state.subscribers.insert(
             id,
             SubscriberState {
