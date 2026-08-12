@@ -5,6 +5,31 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use thiserror::Error;
 
+const BTREE_SLOT_OVERHEAD_BYTES: usize = 3 * std::mem::size_of::<usize>();
+const SUBSCRIBER_SLOT_RESERVE_BYTES: usize = std::mem::size_of::<SubscriberId>()
+    + std::mem::size_of::<SubscriberState>()
+    + BTREE_SLOT_OVERHEAD_BYTES;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub(super) enum CompletionChargeError {
+    #[error("PTY completed replay memory charge overflowed usize")]
+    Overflow,
+}
+
+fn add_storage_charge(
+    total: &mut usize,
+    count: usize,
+    bytes_each: usize,
+) -> Result<(), CompletionChargeError> {
+    let bytes = count
+        .checked_mul(bytes_each)
+        .ok_or(CompletionChargeError::Overflow)?;
+    *total = total
+        .checked_add(bytes)
+        .ok_or(CompletionChargeError::Overflow)?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DisplayKind {
     Output(Arc<[u8]>),
@@ -370,6 +395,78 @@ impl PtySplice {
         lock_recover(&self.inner.state).records.clone()
     }
 
+    pub(super) fn completion_charge(&self) -> Result<Option<usize>, CompletionChargeError> {
+        self.completion_charge_from(0)
+    }
+
+    fn completion_charge_from(
+        &self,
+        initial_charge: usize,
+    ) -> Result<Option<usize>, CompletionChargeError> {
+        let state = lock_recover(&self.inner.state);
+        if !state.ended {
+            return Ok(None);
+        }
+
+        // The Arc header and `Inner` allocation own the mutex, State, and collection headers.
+        // Heap storage owned through those headers is charged separately at actual capacity.
+        let mut charge = initial_charge;
+        add_storage_charge(&mut charge, 1, std::mem::size_of::<Inner>())?;
+        add_storage_charge(&mut charge, 2, std::mem::size_of::<usize>())?;
+        add_storage_charge(
+            &mut charge,
+            state.records.capacity(),
+            std::mem::size_of::<DisplayRecord>(),
+        )?;
+        charge = charge
+            .checked_add(state.retained_bytes)
+            .ok_or(CompletionChargeError::Overflow)?;
+
+        let output_records = state
+            .records
+            .iter()
+            .filter(|record| matches!(record.kind, DisplayKind::Output(_)))
+            .count();
+        // Each output payload is a distinct Arc allocation in production. Its two reference-count
+        // words live outside the payload counted by `retained_bytes`.
+        add_storage_charge(
+            &mut charge,
+            output_records,
+            2 * std::mem::size_of::<usize>(),
+        )?;
+
+        // Ended streams still admit late replay reservations. Reserve every configured BTree slot
+        // now so registering one cannot silently grow a Completed pane beyond its cache charge.
+        add_storage_charge(
+            &mut charge,
+            self.inner.limits.subscribers,
+            SUBSCRIBER_SLOT_RESERVE_BYTES,
+        )?;
+
+        for subscriber in state.subscribers.values() {
+            // The slot itself is reserved above; active queue backing storage is actual additional
+            // allocation and remains charged at capacity.
+            add_storage_charge(
+                &mut charge,
+                subscriber.phase.queue().capacity(),
+                std::mem::size_of::<DisplayRecord>(),
+            )?;
+        }
+        Ok(Some(charge))
+    }
+
+    #[cfg(test)]
+    fn completion_charge_from_for_test(
+        &self,
+        initial_charge: usize,
+    ) -> Result<Option<usize>, CompletionChargeError> {
+        self.completion_charge_from(initial_charge)
+    }
+
+    pub(super) fn subscriber_limit(&self) -> usize {
+        self.inner.limits.subscribers
+    }
+
     pub(super) fn begin_replay(&self) -> Result<ReplaySubscription, SpliceError> {
         let mut state = lock_recover(&self.inner.state);
         if state.subscribers.len() >= self.inner.limits.subscribers {
@@ -557,6 +654,80 @@ mod tests {
             DisplayKind::Resize { rows: 24, cols: 80 }
         );
         assert_eq!(state.records[2].kind, DisplayKind::End);
+    }
+
+    /// A completed pane retains allocations even when it emitted no output payload. Record-vector
+    /// capacity, subscriber slots, and their reserved queues all count toward the global byte cap;
+    /// charging only `retained_bytes` makes a million Resize records or 64 queued cursors free.
+    #[test]
+    fn completion_charge_counts_metadata_and_subscriber_queue_reserve() {
+        let no_slots = PtySplice::new(SpliceLimits {
+            retained_bytes: 0,
+            max_retained_records: 4,
+            subscribers: 0,
+            queued_records_per_subscriber: 4,
+        });
+        no_slots.emit_resize(24, 80).unwrap();
+        no_slots.emit_end().unwrap();
+        let no_slots_charge = no_slots
+            .completion_charge()
+            .expect("the charge fits")
+            .expect("the stream ended");
+
+        let plain = PtySplice::new(SpliceLimits {
+            retained_bytes: 0,
+            max_retained_records: 4,
+            subscribers: 1,
+            queued_records_per_subscriber: 4,
+        });
+        plain.emit_resize(24, 80).unwrap();
+        plain.emit_end().unwrap();
+        let plain_charge = plain
+            .completion_charge()
+            .expect("the charge fits")
+            .expect("the stream ended");
+        assert!(plain_charge > 0, "Resize + End metadata cannot be free");
+        assert!(
+            plain_charge > no_slots_charge,
+            "a completed stream must reserve its configured future subscriber slots even before \
+             any late subscriber arrives: no_slots={no_slots_charge}, reserved={plain_charge}"
+        );
+
+        let queued = PtySplice::new(SpliceLimits {
+            retained_bytes: 0,
+            max_retained_records: 4,
+            subscribers: 1,
+            queued_records_per_subscriber: 4,
+        });
+        let _subscriber = queued.begin_replay().unwrap();
+        queued.emit_resize(24, 80).unwrap();
+        queued.emit_end().unwrap();
+        let queued_charge = queued
+            .completion_charge()
+            .expect("the charge fits")
+            .expect("the stream ended");
+        assert!(
+            queued_charge > plain_charge,
+            "an active subscriber slot and its queue reserve must increase the charge: \
+             plain={plain_charge}, queued={queued_charge}"
+        );
+    }
+
+    #[test]
+    fn completion_charge_overflow_is_a_typed_refusal() {
+        let splice = PtySplice::new(SpliceLimits {
+            retained_bytes: 0,
+            max_retained_records: 1,
+            subscribers: 0,
+            queued_records_per_subscriber: 0,
+        });
+        splice.emit_end().unwrap();
+
+        assert_eq!(
+            splice.completion_charge_from_for_test(usize::MAX),
+            Err(CompletionChargeError::Overflow),
+            "checked accounting must refuse overflow rather than wrap or panic"
+        );
     }
 
     /// Reserving a replay cursor must be O(1) in the retained prefix. The production change that

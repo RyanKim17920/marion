@@ -531,6 +531,27 @@ impl PtyChild {
         Ok(status)
     }
 
+    /// Observe that this child exited without consuming its wait status.
+    ///
+    /// The waitable zombie pins the pid and process-group identity until [`Self::kill_and_reap`]
+    /// has swept descendants. A `Child::try_wait` here would reap first and make the later group
+    /// signal vulnerable to pid reuse.
+    pub fn poll_exited_unreaped(&self) -> io::Result<bool> {
+        if self.reaped.is_some() {
+            return Ok(true);
+        }
+        let pid = rustix::process::Pid::from_raw(self.pid)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zero child pid"))?;
+        rustix::process::waitid(
+            rustix::process::WaitId::Pid(pid),
+            rustix::process::WaitIdOptions::EXITED
+                | rustix::process::WaitIdOptions::NOHANG
+                | rustix::process::WaitIdOptions::NOWAIT,
+        )
+        .map(|status| status.is_some())
+        .map_err(Into::into)
+    }
+
     /// **Kill this node's whole tree and reap it. Idempotent, and callable from an unwind.**
     ///
     /// The one place the two owners of a pty child agree: [`PtyHost::shutdown`] calls it to get the
@@ -920,6 +941,13 @@ const READ_CHUNK: usize = 65536;
 /// interactive and a viewer feels 50 ms of added latency on every keystroke echo.
 const POLL: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// Maximum time shutdown waits for a cast-recorded input's master-write outcome.
+///
+/// A write to a terminal whose peer stopped reading can remain blocked independently of process
+/// teardown. Completion waits for the ordinary post-kill result, then fails replay closed rather
+/// than letting one client hold shutdown forever.
+const CONTROL_DELIVERY_GRACE: Duration = Duration::from_millis(100);
+
 // ---------------------------------------------------------------------------------------------
 // One writer, and the type that says so
 // ---------------------------------------------------------------------------------------------
@@ -1000,13 +1028,338 @@ impl std::fmt::Display for WriterBusy {
 
 impl std::error::Error for WriterBusy {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlPhase {
+    Live,
+    Closing,
+    Ended,
+}
+
+#[derive(Debug)]
+struct ControlState {
+    phase: ControlPhase,
+    admitted: usize,
+    input_deliveries: usize,
+    input_delivery_failure: Option<String>,
+}
+
+#[derive(Debug)]
+struct ControlGate {
+    state: Mutex<ControlState>,
+    drained: Condvar,
+}
+
+struct LegacyListeners {
+    state: Mutex<LegacyListenerState>,
+    drained: Condvar,
+    #[cfg(test)]
+    delivery_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+}
+
+struct LegacyListenerState {
+    open: bool,
+    delivering: usize,
+    listeners: Vec<Outbound>,
+}
+
+impl LegacyListeners {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(LegacyListenerState {
+                open: true,
+                delivering: 0,
+                listeners: Vec::new(),
+            }),
+            drained: Condvar::new(),
+            #[cfg(test)]
+            delivery_hook: Mutex::new(None),
+        }
+    }
+
+    fn add(&self, out: Outbound) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.open {
+            state.listeners.push(out);
+        }
+    }
+
+    fn remove(&self, conn: ConnId) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .listeners
+            .retain(|out| out.conn() != conn);
+    }
+
+    fn begin_delivery(&self) -> Option<Vec<Outbound>> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.open {
+            return None;
+        }
+        state.delivering += 1;
+        Some(state.listeners.clone())
+    }
+
+    fn finish_delivery(&self, alive: &[ConnId]) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.listeners.retain(|out| alive.contains(&out.conn()));
+        state.delivering -= 1;
+        if state.delivering == 0 {
+            self.drained.notify_all();
+        }
+    }
+
+    fn close_and_clear(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.open = false;
+        while state.delivering != 0 {
+            state = self.drained.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        state.listeners.clear();
+    }
+
+    fn len(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .listeners
+            .len()
+    }
+
+    #[cfg(test)]
+    fn set_delivery_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self.delivery_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    fn observe_delivery(&self) {
+        #[cfg(test)]
+        if let Some(hook) = self
+            .delivery_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            hook();
+        }
+    }
+}
+
+impl ControlGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(ControlState {
+                phase: ControlPhase::Live,
+                admitted: 0,
+                input_deliveries: 0,
+                input_delivery_failure: None,
+            }),
+            drained: Condvar::new(),
+        })
+    }
+
+    fn admit_write(self: &Arc<Self>) -> io::Result<(ControlPermit, InputDelivery)> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match state.phase {
+            ControlPhase::Live => {
+                state.admitted += 1;
+                state.input_deliveries += 1;
+                Ok((
+                    ControlPermit {
+                        gate: Arc::clone(self),
+                    },
+                    InputDelivery {
+                        gate: Arc::clone(self),
+                        finished: false,
+                    },
+                ))
+            }
+            ControlPhase::Closing => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "pty control arrived after closing began",
+            )),
+            ControlPhase::Ended => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "pty input arrived after shutdown",
+            )),
+        }
+    }
+
+    fn admit_resize(self: &Arc<Self>) -> io::Result<Option<ControlPermit>> {
+        self.admit(true)
+    }
+
+    fn admit(self: &Arc<Self>, ended_is_noop: bool) -> io::Result<Option<ControlPermit>> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match state.phase {
+            ControlPhase::Live => {
+                state.admitted += 1;
+                Ok(Some(ControlPermit {
+                    gate: Arc::clone(self),
+                }))
+            }
+            ControlPhase::Closing => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "pty control arrived after closing began",
+            )),
+            ControlPhase::Ended if ended_is_noop => Ok(None),
+            ControlPhase::Ended => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "pty input arrived after shutdown",
+            )),
+        }
+    }
+
+    fn seal(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.phase == ControlPhase::Live {
+            state.phase = ControlPhase::Closing;
+        }
+    }
+
+    fn wait_drained(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while state.admitted != 0 {
+            state = self.drained.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn wait_input_deliveries(&self, deadline: Instant) -> Option<String> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while state.input_deliveries != 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                return Some(format!(
+                    "{} pty input delivery attempt(s) remained unresolved at shutdown",
+                    state.input_deliveries
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let (next, timed_out) = self
+                .drained
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|e| e.into_inner());
+            state = next;
+            if timed_out.timed_out() && state.input_deliveries != 0 {
+                return Some(format!(
+                    "{} pty input delivery attempt(s) remained unresolved at shutdown",
+                    state.input_deliveries
+                ));
+            }
+        }
+        state.input_delivery_failure.clone()
+    }
+
+    fn finish_input_delivery(&self, failure: Option<String>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.input_delivery_failure.is_none() {
+            state.input_delivery_failure = failure;
+        }
+        state.input_deliveries = state
+            .input_deliveries
+            .checked_sub(1)
+            .expect("an input delivery is resolved exactly once");
+        self.drained.notify_all();
+    }
+
+    fn mark_ended(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).phase = ControlPhase::Ended;
+        self.drained.notify_all();
+    }
+}
+
+struct ControlPermit {
+    gate: Arc<ControlGate>,
+}
+
+impl Drop for ControlPermit {
+    fn drop(&mut self) {
+        let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.admitted = state
+            .admitted
+            .checked_sub(1)
+            .expect("a control permit is released exactly once");
+        if state.admitted == 0 {
+            self.gate.drained.notify_all();
+        }
+    }
+}
+
+struct InputDelivery {
+    gate: Arc<ControlGate>,
+    finished: bool,
+}
+
+#[derive(Debug)]
+struct ReaderCompletion {
+    finished: Mutex<bool>,
+    ready: Condvar,
+}
+
+impl ReaderCompletion {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            finished: Mutex::new(false),
+            ready: Condvar::new(),
+        })
+    }
+
+    fn finish(&self) {
+        *self.finished.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.ready.notify_all();
+    }
+
+    fn wait_until(&self, deadline: Instant) -> bool {
+        let mut finished = self.finished.lock().unwrap_or_else(|e| e.into_inner());
+        while !*finished {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next, timeout) = self
+                .ready
+                .wait_timeout(finished, deadline.saturating_duration_since(now))
+                .unwrap_or_else(|e| e.into_inner());
+            finished = next;
+            if timeout.timed_out() && !*finished {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+struct ReaderFinished(Arc<ReaderCompletion>);
+
+impl Drop for ReaderFinished {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
+}
+
+impl InputDelivery {
+    fn finish(mut self, failure: Option<String>) {
+        self.gate.finish_input_delivery(failure);
+        self.finished = true;
+    }
+}
+
+impl Drop for InputDelivery {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.gate.finish_input_delivery(Some(
+                "pty input delivery ended without a master-write outcome".to_string(),
+            ));
+        }
+    }
+}
+
 /// Shared between the host and its reader thread.
 struct Shared {
     self_weak: Weak<Shared>,
     agent_id: AgentId,
     cast: Mutex<CastWriter>,
     /// Clients receiving [`Event::NodePty`]. **Listeners, not owners** — see the module doc.
-    listeners: Mutex<Vec<Outbound>>,
+    listeners: LegacyListeners,
     /// The one connection allowed to type. See [`WriteLease`].
     writer: Arc<WriterSlot>,
     seq: AtomicU64,
@@ -1027,6 +1380,8 @@ struct Shared {
     pane_pre_pull_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     pane_guarded_pull_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    reader_would_block_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Resizes handed to the reader thread, and the answer coming back. See [`PtyHost::resize`].
     resize: Mutex<ResizeQueue>,
     resize_done: Condvar,
@@ -1055,6 +1410,45 @@ struct PaneSlot {
     cancellation: Arc<PaneCancellation>,
     pending_since: Instant,
     phase: PanePhase,
+}
+
+const PANE_STREAM_BTREE_SLOT_OVERHEAD_BYTES: usize = 3 * std::mem::size_of::<usize>();
+const COMPLETED_PANE_HASHMAP_SLOT_OVERHEAD_BYTES: usize = 4 * std::mem::size_of::<usize>();
+const ARC_ALLOCATION_HEADER_BYTES: usize = 2 * std::mem::size_of::<usize>();
+const PANE_CANCELLATION_ARC_RESERVE_BYTES: usize =
+    ARC_ALLOCATION_HEADER_BYTES + std::mem::size_of::<PaneCancellation>();
+const PANE_STREAM_SLOT_RESERVE_BYTES: usize = std::mem::size_of::<ConnId>()
+    + std::mem::size_of::<PaneSlot>()
+    + PANE_STREAM_BTREE_SLOT_OVERHEAD_BYTES;
+/// Conservative fixed charge for the two cache-owned Arc allocations and one completed-map slot.
+/// `Shared` includes the inline `PaneStreams` registry header; its future BTree storage is reserved
+/// per configured slot below. This is a stable ownership charge, not a claim about allocator RSS.
+const COMPLETED_HOST_FIXED_RESERVE_BYTES: usize = ARC_ALLOCATION_HEADER_BYTES
+    + std::mem::size_of::<PtyHost>()
+    + ARC_ALLOCATION_HEADER_BYTES
+    + std::mem::size_of::<Shared>()
+    + std::mem::size_of::<AgentId>()
+    + std::mem::size_of::<Arc<PtyHost>>()
+    + COMPLETED_PANE_HASHMAP_SLOT_OVERHEAD_BYTES;
+
+fn completed_host_charge_from(splice_charge: usize, subscriber_limit: usize) -> Option<usize> {
+    subscriber_limit
+        .checked_mul(
+            PANE_STREAM_SLOT_RESERVE_BYTES.checked_add(PANE_CANCELLATION_ARC_RESERVE_BYTES)?,
+        )
+        .and_then(|pane_slots| {
+            splice_charge
+                .checked_add(COMPLETED_HOST_FIXED_RESERVE_BYTES)?
+                .checked_add(pane_slots)
+        })
+}
+
+#[cfg(test)]
+fn completed_host_charge_from_for_test(
+    splice_charge: usize,
+    subscriber_limit: usize,
+) -> Option<usize> {
+    completed_host_charge_from(splice_charge, subscriber_limit)
 }
 
 const PANE_PENDING_TTL: Duration = Duration::from_secs(10);
@@ -1685,15 +2079,24 @@ impl Shared {
             let cast = self.cast.lock().unwrap_or_else(|e| e.into_inner());
             cast.origin.elapsed().as_nanos() as u64
         };
-        let mut ls = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
-        ls.retain(|l| {
-            l.notify(Event::NodePty {
-                agent_id: self.agent_id.clone(),
-                seq,
-                mono_ns,
-                bytes: text.to_string(),
+        let Some(listeners) = self.listeners.begin_delivery() else {
+            return;
+        };
+        self.listeners.observe_delivery();
+        let alive = listeners
+            .iter()
+            .filter_map(|listener| {
+                listener
+                    .notify(Event::NodePty {
+                        agent_id: self.agent_id.clone(),
+                        seq,
+                        mono_ns,
+                        bytes: text.to_string(),
+                    })
+                    .then_some(listener.conn())
             })
-        });
+            .collect::<Vec<_>>();
+        self.listeners.finish_delivery(&alive);
     }
 }
 
@@ -1724,8 +2127,23 @@ pub struct PtyHost {
     master: Arc<PtyMaster>,
     shared: Arc<Shared>,
     child: Mutex<Option<PtyChild>>,
-    reader: Mutex<Option<std::thread::JoinHandle<()>>>,
+    reader: Mutex<Option<std::thread::JoinHandle<io::Result<()>>>>,
+    reader_completion: Arc<ReaderCompletion>,
     stopped: Arc<AtomicBool>,
+    replay_completion: Mutex<Option<Result<usize, String>>>,
+    control: Arc<ControlGate>,
+    #[cfg(test)]
+    control_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    post_cast_input_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    before_child_sweep_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    before_reader_stop_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    reader_drain_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    invalidation_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 struct PtyHostStart {
@@ -1820,7 +2238,7 @@ impl PtyHost {
             self_weak: self_weak.clone(),
             agent_id,
             cast: Mutex::new(cast),
-            listeners: Mutex::new(Vec::new()),
+            listeners: LegacyListeners::new(),
             writer: Arc::new(Mutex::new(None)),
             seq: AtomicU64::new(0),
             probes: AtomicU64::new(0),
@@ -1844,6 +2262,8 @@ impl PtyHost {
             pane_pre_pull_hook: Mutex::new(None),
             #[cfg(test)]
             pane_guarded_pull_hook: Mutex::new(None),
+            #[cfg(test)]
+            reader_would_block_hook: Mutex::new(None),
             resize: Mutex::new(ResizeQueue {
                 pending: None,
                 requested: 0,
@@ -1861,14 +2281,19 @@ impl PtyHost {
         });
         let master = Arc::new(master);
         let stopped = Arc::new(AtomicBool::new(false));
+        let reader_completion = ReaderCompletion::new();
         let reader = if options.start_reader {
             let master = Arc::clone(&master);
             let shared = Arc::clone(&shared);
             let stopped = Arc::clone(&stopped);
+            let completion = Arc::clone(&reader_completion);
             Some(
                 std::thread::Builder::new()
                     .name("marion-pty".into())
-                    .spawn(move || read_loop(&master, &shared, &stopped))?,
+                    .spawn(move || {
+                        let _finished = ReaderFinished(completion);
+                        read_loop(&master, &shared, &stopped)
+                    })?,
             )
         } else {
             None
@@ -1878,7 +2303,22 @@ impl PtyHost {
             shared,
             child: Mutex::new(None),
             reader: Mutex::new(reader),
+            reader_completion,
             stopped,
+            replay_completion: Mutex::new(None),
+            control: ControlGate::new(),
+            #[cfg(test)]
+            control_hook: Mutex::new(None),
+            #[cfg(test)]
+            post_cast_input_hook: Mutex::new(None),
+            #[cfg(test)]
+            before_child_sweep_hook: Mutex::new(None),
+            #[cfg(test)]
+            before_reader_stop_hook: Mutex::new(None),
+            #[cfg(test)]
+            reader_drain_hook: Mutex::new(None),
+            #[cfg(test)]
+            invalidation_hook: Mutex::new(None),
         })
     }
 
@@ -1943,14 +2383,29 @@ impl PtyHost {
         &self.master
     }
 
-    /// Has the adopted child exited yet? `None` means *not yet* **and** *there is none* — the
-    /// launcher that calls this in a loop adopted one two statements earlier, so the distinction
-    /// it would draw is one it cannot be in.
+    /// Has the adopted child exited, without reaping it?
     ///
-    /// The reaping is real, not a peek: `PtyChild::try_wait` records the status the moment it sees
-    /// it, which is what lets [`Self::shutdown`] report the child's own exit rather than signalling
-    /// a pid the kernel is free to have reissued.
-    pub fn try_wait(&self) -> io::Result<Option<std::process::ExitStatus>> {
+    /// The launcher polls this after adoption, so `false` also covers the structurally impossible
+    /// no-child case. Leaving an exited leader waitable pins its pid/process group until shutdown
+    /// has swept same-group descendants; [`Self::shutdown`] then reaps and reports the exact status.
+    pub fn poll_exited_unreaped(&self) -> io::Result<bool> {
+        match self
+            .child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            None => Ok(false),
+            Some(child) => child.poll_exited_unreaped(),
+        }
+    }
+
+    /// Reap an exited child if one is ready.
+    ///
+    /// Production pane waiting uses [`Self::poll_exited_unreaped`]; this consuming probe remains
+    /// for tests that own teardown immediately and need the status at the observation point.
+    #[cfg(test)]
+    pub(crate) fn try_wait(&self) -> io::Result<Option<std::process::ExitStatus>> {
         match self
             .child
             .lock()
@@ -1994,6 +2449,153 @@ impl PtyHost {
             .clone()
     }
 
+    /// The memory charge for a completed replay, available only after the reader has drained.
+    /// Eligibility is separate from legacy shutdown success: production-dark retention failure
+    /// evicts the replay cache entry without changing the node's outcome or its cast.
+    pub(crate) fn completed_replay_charge(&self) -> io::Result<usize> {
+        match self
+            .replay_completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            Some(Ok(charge)) => Ok(charge),
+            Some(Err(error)) => Err(io::Error::other(error)),
+            None => Err(io::Error::other(
+                "pty replay completion was requested before shutdown",
+            )),
+        }
+    }
+
+    fn mark_replay_ineligible(&self, reason: String) {
+        let mut completion = self
+            .replay_completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !matches!(&*completion, Some(Err(_))) {
+            *completion = Some(Err(reason));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_control_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self.control_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn observe_control_hook(&self) {
+        if let Some(hook) = self
+            .control_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_post_cast_input_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self
+            .post_cast_input_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn observe_post_cast_input_hook(&self) {
+        if let Some(hook) = self
+            .post_cast_input_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_before_child_sweep_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self
+            .before_child_sweep_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn observe_before_child_sweep_hook(&self) {
+        if let Some(hook) = self
+            .before_child_sweep_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_reader_would_block_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self
+            .shared
+            .reader_would_block_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_before_reader_stop_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self
+            .before_reader_stop_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn observe_before_reader_stop_hook(&self) {
+        if let Some(hook) = self
+            .before_reader_stop_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_reader_drain_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self
+            .reader_drain_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn observe_reader_drain_hook(&self) {
+        if let Some(hook) = self
+            .reader_drain_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stopped_for_test(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_invalidation_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self
+            .invalidation_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
     /// The ordinal the next [`Event::NodePty`] will carry.
     pub fn next_seq(&self) -> u64 {
         self.shared.seq.load(Ordering::SeqCst)
@@ -2004,6 +2606,11 @@ impl PtyHost {
         self.shared.emit(text);
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_legacy_delivery_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        self.shared.listeners.set_delivery_hook(hook);
+    }
+
     /// Subscribe a client. It receives bytes from **now**; replay is I4's problem.
     ///
     /// (A note for I4, since it is the thing a reader will get wrong: a bare tail of `pty.cast` is
@@ -2011,11 +2618,7 @@ impl PtyHost {
     /// and never leaves it. A replay that starts anywhere after that byte hands the emulator a
     /// stream whose buffer state it cannot know.)
     pub fn listen(&self, out: Outbound) {
-        self.shared
-            .listeners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(out);
+        self.shared.listeners.add(out);
     }
 
     /// Reserve the exact retained prefix now, but deliberately send nothing until the caller has
@@ -2042,6 +2645,7 @@ impl PtyHost {
         let mut listeners = self
             .shared
             .listeners
+            .state
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let mut streams = self
@@ -2065,7 +2669,9 @@ impl PtyHost {
         if let Some(existing) = streams.slots.remove(&conn) {
             existing.cancellation.cancel();
         }
-        listeners.retain(|listener| listener.conn() != conn);
+        listeners
+            .listeners
+            .retain(|listener| listener.conn() != conn);
         streams.slots.insert(
             conn,
             PaneSlot {
@@ -2143,6 +2749,15 @@ impl PtyHost {
     /// Permanently disable this host's pane stream registrations and cancel every delivery that
     /// was already in flight. The pty, cast, legacy listeners, and write lease are untouched.
     pub fn invalidate_pane_streams(&self) {
+        #[cfg(test)]
+        if let Some(hook) = self
+            .invalidation_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            hook();
+        }
         self.shared.invalidate_pane_streams();
     }
 
@@ -2154,11 +2769,7 @@ impl PtyHost {
     /// another would otherwise go on being sent bytes for a pane it is no longer drawing, and the
     /// self-pruning cannot see the difference because those sends succeed.
     pub fn unlisten(&self, conn: ConnId) {
-        self.shared
-            .listeners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|l| l.conn() != conn);
+        self.shared.listeners.remove(conn);
         let mut streams = self
             .shared
             .pane_streams
@@ -2174,11 +2785,11 @@ impl PtyHost {
     }
 
     pub fn listeners(&self) -> usize {
-        self.shared
-            .listeners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.shared.listeners.len()
+    }
+
+    pub(crate) fn clear_legacy_listeners(&self) {
+        self.shared.listeners.close_and_clear();
     }
 
     /// Claim the write half for `conn`.
@@ -2265,6 +2876,9 @@ impl PtyHost {
                 ),
             )
         })?;
+        let (permit, delivery) = self.control.admit_write()?;
+        #[cfg(test)]
+        self.observe_control_hook();
         // Recorded **before** the write, for the same asymmetry the resize order is chosen on, and
         // now recorded as exactly the bytes about to go out rather than as a lossy rendering of
         // them.
@@ -2273,7 +2887,20 @@ impl PtyHost {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .input(text)?;
-        self.master.write_all(bytes)
+        // Closing needs to order cast mutation before terminal `x`, not wait on a kernel write to
+        // a harness that may never read again. The gate therefore ends at the durable record.
+        drop(permit);
+        #[cfg(test)]
+        self.observe_post_cast_input_hook();
+        let outcome = self.master.write_all(bytes);
+        let delivery_failure = outcome.as_ref().err().map(|error| {
+            format!("pty input was recorded but delivery failed before completion: {error}")
+        });
+        delivery.finish(delivery_failure.clone());
+        if let Some(error) = delivery_failure {
+            self.mark_replay_ineligible(error);
+        }
+        outcome
     }
 
     /// **The reader thread performs the resize, and that is what makes the `r` record true.**
@@ -2321,6 +2948,9 @@ impl PtyHost {
     /// — an optimisation paid for in evidence. It is sent after the record for the same reason
     /// everything else is: the repaint it provokes must not be recorded ahead of the new geometry.
     pub fn resize(&self, size: WinSize) -> io::Result<()> {
+        let Some(_permit) = self.control.admit_resize()? else {
+            return Ok(());
+        };
         let ticket = {
             let mut q = self.shared.resize.lock().unwrap_or_else(|e| e.into_inner());
             q.requested += 1;
@@ -2385,6 +3015,7 @@ impl PtyHost {
     /// which is why the caller is `launch_terminal`'s single exit path rather than every owner of
     /// the `Arc`.
     pub fn shutdown(&self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.control.seal();
         // **Taken out, not borrowed.** Holding the lock across `wait` would park a concurrent
         // `resize` from an attached client behind however long the child takes to die, and the
         // client cannot know that is what it is waiting for.
@@ -2394,16 +3025,95 @@ impl PtyHost {
             // Through `PtyChild`'s own idempotent call, so this and the `Drop` net below cannot
             // drift — and so the `Drop` that runs when the local below goes out of scope finds the
             // process already reaped instead of signalling a pid the kernel may have reissued.
-            Some(child) => Some(child.kill_and_reap()?),
+            Some(child) => {
+                #[cfg(test)]
+                self.observe_before_child_sweep_hook();
+                Some(child.kill_and_reap()?)
+            }
         };
-        self.stopped.store(true, Ordering::SeqCst);
-        let reader = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(t) = reader {
-            let _ = t.join();
+        // Killing/reaping closes the slave first, which unblocks an already-admitted master write.
+        // The wait is host-local and never runs under the global pane registry lock. Once it
+        // returns, no admitted input or resize can append cast/splice state ahead of End and `x`.
+        self.control.wait_drained();
+        let input_delivery_failure = self
+            .control
+            .wait_input_deliveries(Instant::now() + CONTROL_DELIVERY_GRACE);
+        #[cfg(test)]
+        self.observe_before_reader_stop_hook();
+        let has_reader = self
+            .reader
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
+        let reader_finished = if has_reader {
+            #[cfg(test)]
+            self.observe_reader_drain_hook();
+            self.reader_completion
+                .wait_until(Instant::now() + crate::run::DRAIN_GRACE)
+        } else {
+            false
+        };
+        if !reader_finished {
+            self.stopped.store(true, Ordering::SeqCst);
         }
+        let reader = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let reader_failure = match reader {
+            Some(t) => match t.join() {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(format!("pty reader failed before terminal End: {error}")),
+                Err(_) => Some("pty reader thread panicked before terminal End".to_string()),
+            },
+            None => Some("pty host had no reader completion proof".to_string()),
+        };
         let mut cast = self.shared.cast.lock().unwrap_or_else(|e| e.into_inner());
         cast.exit(&exit_word(status))?;
+        drop(cast);
+
+        let completion_failure = reader_failure.or(input_delivery_failure);
+        let eligibility = completion_failure.map_or_else(
+            || {
+                if let Some(error) = self
+                    .shared
+                    .splice_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                {
+                    Err(format!("pty retention failed before completion: {error}"))
+                } else {
+                    match self.shared.splice.completion_charge() {
+                        Err(error) => Err(format!(
+                            "pty retention completion charge failed: {error}"
+                        )),
+                        Ok(None) => Err(
+                            "pty retention ended without a terminal End record".to_string(),
+                        ),
+                        Ok(Some(splice_charge)) => completed_host_charge_from(
+                            splice_charge,
+                            self.shared.splice.subscriber_limit(),
+                        )
+                        .ok_or_else(|| {
+                            "pty retention completion charge overflowed conservative host, registry, or PaneStreams reserve"
+                                .to_string()
+                        }),
+                    }
+                }
+            },
+            Err,
+        );
+        let mut completion = self
+            .replay_completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if completion.is_none() {
+            *completion = Some(eligibility);
+        }
+        self.control.mark_ended();
         Ok(status)
+    }
+
+    pub(crate) fn seal_controls(&self) {
+        self.control.seal();
     }
 }
 
@@ -2450,37 +3160,47 @@ impl Drop for PtyHost {
     }
 }
 
-fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) {
+fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) -> io::Result<()> {
     let _gone = ReaderGone(shared);
     let mut buf = vec![0u8; READ_CHUNK];
     let mut utf8 = Utf8Stream::default();
     let mut probes = ProbeScan::default();
-    loop {
+    let reached_eof = loop {
         // **At the top, and it drains before it resizes.** See [`apply_pending_resize`]: the whole
         // of the labelling fix is that everything the node emitted at the old geometry is in the
         // file before the `r` that ends it.
         apply_pending_resize(master, shared, &mut buf, &mut utf8, &mut probes);
         let n = match master.read(&mut buf) {
             // EOF: the last slave closed. `PtyMaster::read` reports Linux's `EIO` this way too.
-            Ok(0) => break,
+            Ok(0) => break true,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                // **Drained, and only then may we stop.** `shutdown` reaps the child before it sets
-                // this flag, so everything the child ever wrote is already in the pty buffer and has
-                // been read by the arm above; an empty read is the proof there is nothing left.
+                #[cfg(test)]
+                if let Some(hook) = shared
+                    .reader_would_block_hook
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    hook();
+                }
+                // A stop request bounds teardown, but it is not terminal-stream evidence. A
+                // descendant may still hold the slave open and write later, so leave without End
+                // and report the replay as incomplete. Only the `Ok(0)` arm above proves EOF (and
+                // includes the terminal `EIO` normalized by `PtyMaster::read`).
                 if stopped.load(Ordering::SeqCst) {
-                    break;
+                    break false;
                 }
                 std::thread::sleep(POLL);
                 continue;
             }
             Err(e) => {
                 eprintln!("marion: pty read failed: {e}");
-                break;
+                return Err(e);
             }
         };
         record_chunk(shared, &mut utf8, &mut probes, &buf[..n]);
-    }
+    };
     let tail = utf8.finish();
     if !tail.is_empty() {
         let _ = shared
@@ -2490,7 +3210,15 @@ fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) {
             .output(&tail);
         shared.emit(&tail);
     }
-    shared.retain_end();
+    if reached_eof {
+        shared.retain_end();
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "pty reader stopped before kernel EOF",
+        ))
+    }
 }
 
 /// **Hands the resize job back when the reader leaves, however it leaves.**

@@ -438,6 +438,204 @@ fn the_parent_closes_its_own_slave_copies() {
     drop(cmd);
 }
 
+/// Polling for a pane exit must leave the leader waitable. The zombie pins its pid/process group
+/// until teardown has swept descendants, and the eventual `wait` must still return the child's
+/// exact status rather than a synthesized readiness bit.
+#[test]
+fn poll_exited_unreaped_preserves_the_exact_wait_status() {
+    let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
+    let mut child = spawn_pty(
+        witness(),
+        &mut sh("exit 37"),
+        &master,
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap();
+
+    assert!(
+        until(|| child
+            .poll_exited_unreaped()
+            .expect("non-consuming exit poll")),
+        "the exited child was never observed"
+    );
+    assert_eq!(
+        child
+            .wait()
+            .expect("the observed zombie remains waitable")
+            .code(),
+        Some(37),
+        "non-consuming observation must preserve the exact wait status"
+    );
+}
+
+/// A naturally exited pane leader must remain waitable until shutdown has signalled its process
+/// group. The background holder ignores HUP and inherits the slave, so reaping the leader during
+/// the poll strands both the holder and the reader; a non-consuming poll lets shutdown kill the
+/// still-identifiable group, preserve exit 37, observe real EOF, and retain one terminal End.
+#[test]
+fn unreaped_leader_keeps_the_same_pgid_slave_holder_sweepable() {
+    const MARKER_LIMIT: u64 = 128;
+
+    fn read_marker(path: &Path) -> io::Result<String> {
+        let file = std::fs::File::open(path)?;
+        let mut value = String::new();
+        file.take(MARKER_LIMIT).read_to_string(&mut value)?;
+        Ok(value)
+    }
+
+    struct KillCandidatesOnDrop {
+        pid_files: [PathBuf; 2],
+        armed: bool,
+    }
+
+    impl KillCandidatesOnDrop {
+        fn new(holder: &Path, spawned: &Path) -> Self {
+            Self {
+                pid_files: [holder.to_owned(), spawned.to_owned()],
+                armed: true,
+            }
+        }
+
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+
+    impl Drop for KillCandidatesOnDrop {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+            for path in &self.pid_files {
+                let Ok(raw) = read_marker(path) else {
+                    continue;
+                };
+                let Ok(pid) = raw.parse::<i32>() else {
+                    continue;
+                };
+                if pid > 1 {
+                    // SAFETY: SIGKILL targets only a pid written by this fixture's shell.
+                    let _ = unsafe { kill(pid, 9) };
+                }
+            }
+        }
+    }
+
+    let dir = marion_testsupport::scratch("pty-unreaped-pgid-holder");
+    let holder_file = dir.join("holder.pid");
+    let leader_marker = dir.join("leader.started");
+    let spawned_pid_file = dir.join("holder.spawned-pid");
+    let entered_marker = dir.join("holder.entered");
+    let trapped_marker = dir.join("holder.trapped");
+    let written_marker = dir.join("holder.pid-written");
+    let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
+    let host = PtyHost::start(
+        AgentId("unreaped-pgid-holder".into()),
+        master,
+        &dir.join("pty.cast"),
+        WinSize::new(80, 24),
+        "xterm-256color",
+        Instant::now(),
+    )
+    .unwrap();
+    let mut command = sh("printf 'started' >\"$LEADER_MARKER\"; \
+         (printf 'entered' >\"$ENTERED_MARKER\"; trap '' HUP TERM; \
+          printf 'trapped' >\"$TRAPPED_MARKER\"; \
+          while [ ! -s \"$HOLDER_FILE\" ]; do :; done; \
+          printf 'written' >\"$WRITTEN_MARKER\"; exec sleep 30) & \
+         holder_pid=$!; printf '%s' \"$holder_pid\" >\"$SPAWNED_PID_FILE\"; \
+         printf '%s' \"$holder_pid\" >\"$HOLDER_FILE\"; \
+         while [ ! -s \"$TRAPPED_MARKER\" ] || [ ! -s \"$WRITTEN_MARKER\" ]; do :; done; \
+         printf 'leader-tail'; exit 37");
+    command
+        .env("HOLDER_FILE", &holder_file)
+        .env("LEADER_MARKER", &leader_marker)
+        .env("SPAWNED_PID_FILE", &spawned_pid_file)
+        .env("ENTERED_MARKER", &entered_marker)
+        .env("TRAPPED_MARKER", &trapped_marker)
+        .env("WRITTEN_MARKER", &written_marker);
+    let child = spawn_pty(
+        witness(),
+        &mut command,
+        host.master(),
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap();
+    // Installed before adoption, so either published pid is still swept if anything below unwinds.
+    let mut cleanup = KillCandidatesOnDrop::new(&holder_file, &spawned_pid_file);
+    host.adopt(child);
+
+    let holder_ready = until(|| {
+        matches!(read_marker(&trapped_marker).as_deref(), Ok("trapped"))
+            && matches!(read_marker(&written_marker).as_deref(), Ok("written"))
+            && read_marker(&holder_file)
+                .ok()
+                .and_then(|pid| pid.parse::<i32>().ok())
+                .is_some_and(|pid| pid > 1)
+    });
+    if !holder_ready {
+        panic!(
+            "the slave holder never became ready; dir={}; leader={:?}; spawned_pid={:?}; entered={:?}; trapped={:?}; holder_pid={:?}; pid_written={:?}",
+            dir.display(),
+            read_marker(&leader_marker),
+            read_marker(&spawned_pid_file),
+            read_marker(&entered_marker),
+            read_marker(&trapped_marker),
+            read_marker(&holder_file),
+            read_marker(&written_marker),
+        );
+    }
+    let holder_pid: i32 = read_marker(&holder_file).unwrap().parse().unwrap();
+    assert!(
+        until(|| host
+            .poll_exited_unreaped()
+            .expect("non-consuming host poll")),
+        "the leader never exited"
+    );
+    assert!(
+        alive(holder_pid),
+        "the same-group slave holder is the fixture"
+    );
+
+    let status = host.shutdown().unwrap().expect("the leader is reaped once");
+    assert_eq!(
+        status.code(),
+        Some(37),
+        "the leader's exact status survives"
+    );
+    assert!(
+        until(|| !alive(holder_pid)),
+        "the same-group slave holder survived shutdown"
+    );
+    let retained = host.retention_snapshot();
+    let output: Vec<u8> = retained
+        .iter()
+        .filter_map(|record| match &record.kind {
+            super::splice::DisplayKind::Output(bytes) => Some(bytes.as_ref()),
+            _ => None,
+        })
+        .flatten()
+        .copied()
+        .collect();
+    assert_eq!(output, b"leader-tail");
+    assert_eq!(
+        retained
+            .iter()
+            .filter(|record| matches!(record.kind, super::splice::DisplayKind::End))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        retained.last().map(|r| &r.kind),
+        Some(super::splice::DisplayKind::End)
+    ));
+    host.completed_replay_charge()
+        .expect("real EOF after the group sweep is completion-eligible");
+    cleanup.disarm();
+}
+
 /// The other half of point 6, and of point 8: once the child is gone and nobody holds a slave, the
 /// master reports end of stream. On Linux that arrives as `EIO`, which [`PtyMaster::read`] maps to
 /// `Ok(0)`; on macOS the kernel returns 0 directly.
@@ -737,6 +935,30 @@ fn the_cast_records_i_and_r_not_only_o() {
         WinSize::new(100, 24),
         "and the kernel really was resized, so the record is not a lie"
     );
+}
+
+#[test]
+fn resolved_input_delivery_keeps_completed_replay_eligible() {
+    let mut lb = Loopback::new("pty-input-delivery-completed", WinSize::new(80, 24));
+    let lease = lb.host.lease_writer(ConnId(85)).unwrap();
+
+    lb.host
+        .write_input(&lease, b"delivered\r")
+        .expect("the master accepts the admitted input");
+    lb.hang_up();
+    lb.host.shutdown().expect("legacy shutdown succeeds");
+
+    assert!(
+        lb.host.completed_replay_charge().is_ok(),
+        "a resolved successful delivery must not poison completion"
+    );
+    let (_, records) = read_cast(&lb.cast);
+    let codes = records
+        .iter()
+        .map(|(_, code, _)| code.as_str())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"i"), "{codes:?}");
+    assert_eq!(codes.last(), Some(&"x"), "{codes:?}");
 }
 
 /// **Every `o` record replays at the geometry the node actually emitted it at.**
@@ -1122,6 +1344,259 @@ fn pty_retention_ends_once_and_accepts_no_later_record() {
     lb.host.resize(WinSize::new(100, 40)).unwrap();
     lb.host.shutdown().unwrap();
     assert_eq!(lb.host.retention_snapshot(), ended);
+}
+
+/// A reader panic makes replay ineligible without changing the legacy node outcome. The production
+/// change that must make this fail is either publishing from `join` alone or returning before the
+/// cast's exit record: one lies about replay, the other changes production-dark core behavior.
+#[test]
+fn reader_panic_keeps_core_shutdown_but_refuses_completed_replay() {
+    let mut lb = Loopback::new("pty-reader-panic-no-end", WinSize::new(80, 24));
+    *lb.host
+        .shared
+        .pane_splice_outcome_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(Box::new(|| panic!("controlled reader panic")));
+    lb.slave
+        .as_mut()
+        .expect("still attached")
+        .write_all(b"partial")
+        .expect("the slave accepts the panic trigger");
+    assert!(
+        until(|| !lb
+            .host
+            .shared
+            .resize
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reader),
+        "the controlled reader did not unwind"
+    );
+    lb.hang_up();
+
+    lb.host
+        .shutdown()
+        .expect("dark replay cannot change legacy shutdown success");
+    let error = lb
+        .host
+        .completed_replay_charge()
+        .expect_err("a panicked reader without End is not a completed pane");
+    assert!(error.to_string().contains("reader"), "{error}");
+    let (_, cast) = read_cast(&lb.cast);
+    assert!(cast.iter().any(|(_, code, _)| code == "x"));
+    assert!(
+        !lb.host
+            .retention_snapshot()
+            .iter()
+            .any(|record| matches!(record.kind, super::splice::DisplayKind::End)),
+        "the panic fixture must genuinely lack End"
+    );
+}
+
+/// Setting the host's stop flag is not evidence that the terminal stream ended. This fixture keeps
+/// a real slave fd open while shutdown asks the non-blocking reader to leave, so the reader can
+/// only observe `WouldBlock`, never kernel EOF. The legacy shutdown and cast exit still complete,
+/// but a replay without a terminal EOF must not grow a synthetic End or become cacheable.
+#[test]
+fn stopped_reader_without_kernel_eof_never_forges_end() {
+    let lb = Loopback::new("pty-stopped-without-eof", WinSize::new(80, 24));
+    assert!(lb.slave.is_some(), "the kernel slave must remain open");
+
+    lb.host
+        .shutdown()
+        .expect("forced reader stop stays dark to legacy shutdown");
+
+    assert!(
+        !lb.host
+            .retention_snapshot()
+            .iter()
+            .any(|record| matches!(record.kind, super::splice::DisplayKind::End)),
+        "stopped plus WouldBlock forged a terminal End without kernel EOF"
+    );
+    let error = lb
+        .host
+        .completed_replay_charge()
+        .expect_err("a reader stopped before kernel EOF is not a completed pane");
+    assert!(error.to_string().contains("reader"), "{error}");
+    let (_, cast) = read_cast(&lb.cast);
+    assert_eq!(
+        cast.last().map(|(_, code, _)| code.as_str()),
+        Some("x"),
+        "legacy cast exit must still be the final record"
+    );
+}
+
+/// Shutdown gives the kernel a bounded opportunity to report the real EOF produced by teardown.
+/// The reader is parked on `WouldBlock` until shutdown has completed its process sweep; closing
+/// the last slave then must yield the real terminal End instead of losing it to an eager stop flag.
+#[test]
+fn shutdown_grace_retains_real_eof_that_arrives_after_process_sweep() {
+    let dir = marion_testsupport::scratch("pty-shutdown-eof-grace");
+    let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
+    let slave = std::fs::File::from(master.open_slave().unwrap());
+    let host = Arc::new(
+        PtyHost::start(
+            AgentId("shutdown-eof-grace".into()),
+            master,
+            &dir.join("pty.cast"),
+            WinSize::new(80, 24),
+            "xterm-256color",
+            Instant::now(),
+        )
+        .unwrap(),
+    );
+    let (reader_tx, reader_rx) = std::sync::mpsc::sync_channel(1);
+    let (reader_release_tx, reader_release_rx) = std::sync::mpsc::sync_channel(1);
+    let reader_release_rx = Mutex::new(reader_release_rx);
+    host.set_reader_would_block_hook(Box::new(move || {
+        reader_tx.send(()).expect("the assertion side is alive");
+        reader_release_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the reader hook was not released");
+    }));
+    reader_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the reader never reached WouldBlock");
+
+    let (before_stop_tx, before_stop_rx) = std::sync::mpsc::sync_channel(1);
+    let (allow_stop_tx, allow_stop_rx) = std::sync::mpsc::sync_channel(1);
+    let allow_stop_rx = Mutex::new(allow_stop_rx);
+    host.set_before_reader_stop_hook(Box::new(move || {
+        before_stop_tx
+            .send(())
+            .expect("the assertion side is alive");
+        allow_stop_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the shutdown stop boundary was not released");
+    }));
+    let (drain_tx, drain_rx) = std::sync::mpsc::sync_channel(1);
+    host.set_reader_drain_hook(Box::new(move || {
+        drain_tx.send(()).expect("the assertion side is alive");
+    }));
+    let shutdown_host = Arc::clone(&host);
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    let shutdown = std::thread::spawn(move || {
+        done_tx
+            .send(shutdown_host.shutdown())
+            .expect("the assertion side is alive");
+    });
+    before_stop_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("shutdown never reached its post-sweep stop boundary");
+
+    drop(slave);
+    allow_stop_tx
+        .send(())
+        .expect("the shutdown thread is alive");
+    drain_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("shutdown never entered its bounded real-EOF drain");
+    assert!(
+        !host.stopped_for_test(),
+        "shutdown stopped the reader before giving real EOF its drain grace"
+    );
+    reader_release_tx
+        .send(())
+        .expect("the reader thread is alive");
+    done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("shutdown did not finish within its EOF grace")
+        .expect("legacy shutdown succeeds");
+    shutdown.join().unwrap();
+
+    assert!(
+        host.completed_replay_charge().is_ok(),
+        "real EOF within the drain grace must qualify completion"
+    );
+    assert_eq!(
+        host.retention_snapshot()
+            .iter()
+            .filter(|record| matches!(record.kind, super::splice::DisplayKind::End))
+            .count(),
+        1,
+        "real EOF appends exactly one End"
+    );
+}
+
+/// A retention cap is dark to the legacy node but disqualifies the completed replay. The production
+/// change that must make this fail is propagating the latch through core shutdown, or ignoring it
+/// and publishing a permanently truncated, non-terminal prefix.
+#[test]
+fn retention_latch_keeps_core_shutdown_but_refuses_completed_replay() {
+    let mut lb = Loopback::with_splice_limits(
+        "pty-retention-latch-no-end",
+        WinSize::new(80, 24),
+        super::splice::SpliceLimits::testing(3, 16),
+    );
+    lb.child_writes(b"too-large");
+    lb.hang_up();
+
+    lb.host
+        .shutdown()
+        .expect("dark replay cannot change legacy shutdown success");
+    let error = lb
+        .host
+        .completed_replay_charge()
+        .expect_err("a latched retention failure cannot become Completed");
+    assert!(error.to_string().contains("retention"), "{error}");
+    let (_, cast) = read_cast(&lb.cast);
+    assert!(cast.iter().any(|(_, code, _)| code == "x"));
+    assert!(lb.host.retention_error().is_some());
+    assert!(
+        !lb.host
+            .retention_snapshot()
+            .iter()
+            .any(|record| matches!(record.kind, super::splice::DisplayKind::End)),
+        "disabled retention must not forge End"
+    );
+}
+
+/// `PtySplice` reserves its own subscriber records, but every late internal replay also grows the
+/// host's `PaneStreams::slots` map. The Completed charge must reserve those outer slots at the
+/// configured maximum before any late client arrives.
+#[test]
+fn completed_host_charge_reserves_future_pane_stream_slots() {
+    fn outer_reserve(subscribers: usize) -> usize {
+        let mut lb = Loopback::with_splice_limits(
+            "pty-completion-pane-slot-reserve",
+            WinSize::new(80, 24),
+            super::splice::SpliceLimits::testing_with_subscribers(0, 2, subscribers, 0),
+        );
+        lb.hang_up();
+        lb.host.shutdown().unwrap();
+        let splice = lb
+            .host
+            .shared
+            .splice
+            .completion_charge()
+            .expect("the charge fits")
+            .expect("kernel EOF retained End");
+        lb.host.completed_replay_charge().unwrap() - splice
+    }
+
+    let no_slots = outer_reserve(0);
+    let four_slots = outer_reserve(4);
+    assert!(
+        no_slots >= COMPLETED_HOST_FIXED_RESERVE_BYTES,
+        "the charge omits fixed cache-owned host/registry allocations: {no_slots}"
+    );
+    assert_eq!(
+        four_slots - no_slots,
+        4 * (PANE_STREAM_SLOT_RESERVE_BYTES + PANE_CANCELLATION_ARC_RESERVE_BYTES),
+        "each future pane slot needs its map entry and separately allocated cancellation Arc"
+    );
+    assert!(
+        completed_host_charge_from_for_test(usize::MAX, 0).is_none(),
+        "fixed host accounting overflow must refuse completion, not wrap or panic"
+    );
+    assert!(
+        completed_host_charge_from_for_test(0, usize::MAX).is_none(),
+        "future cancellation/slot reserve overflow must refuse completion"
+    );
 }
 
 /// A subscriber must be reachable by an emitter for the whole replay-to-ready handoff. The

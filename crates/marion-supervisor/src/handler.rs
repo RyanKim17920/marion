@@ -281,7 +281,7 @@ struct Panes {
     /// `Arc` because a keystroke is delivered outside the map's lock: the host is cloned out, the
     /// lock is released, and only then is the byte written. A `&PtyHost` would hold the map for
     /// the duration of the write.
-    hosts: HashMap<AgentId, Arc<crate::pty::PtyHost>>,
+    hosts: HashMap<AgentId, PaneEntry>,
     /// Write leases, **keyed by the connection**, which is what makes §7.3.1 automatic here.
     /// `WriteLease` releases the node's writer slot on `Drop`, so a client that was SIGKILLed hands
     /// its keyboard back when `gone` removes this entry — nobody has to write the cleanup, and a
@@ -292,9 +292,216 @@ struct Panes {
     /// would let one unread node stall every other client's attach. The lease still releases the
     /// node's writer slot when the last `Arc` drops, which is the entry leaving this map.
     leases: HashMap<ConnId, Vec<(AgentId, Arc<crate::pty::WriteLease>)>>,
+    completed_count: usize,
+    completed_bytes: usize,
+    next_completed_order: u64,
+    next_completed_expiry: Option<std::time::Instant>,
+    #[cfg(test)]
+    completed_limit: Option<usize>,
+    #[cfg(test)]
+    completed_scan_count: usize,
+}
+
+enum PaneEntry {
+    Live(Arc<crate::pty::PtyHost>),
+    Closing(Arc<crate::pty::PtyHost>),
+    Completed {
+        host: Arc<crate::pty::PtyHost>,
+        charged_bytes: usize,
+        completed_at: std::time::Instant,
+        order: u64,
+    },
+    Replacing(Arc<crate::pty::PtyHost>),
+}
+
+impl PaneEntry {
+    fn host(&self) -> &Arc<crate::pty::PtyHost> {
+        match self {
+            Self::Live(host) | Self::Closing(host) | Self::Replacing(host) => host,
+            Self::Completed { host, .. } => host,
+        }
+    }
+
+    fn live_host(&self) -> Option<&Arc<crate::pty::PtyHost>> {
+        match self {
+            Self::Live(host) => Some(host),
+            Self::Closing(_) | Self::Completed { .. } | Self::Replacing(_) => None,
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        matches!(self, Self::Live(_))
+    }
 }
 
 impl Panes {
+    const MAX_COMPLETED: usize = 64;
+    /// Cap on conservative cache-owned replay charge, not literal allocator/process RSS.
+    const MAX_COMPLETED_BYTES: usize = 256 * 1024 * 1024;
+    const COMPLETED_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+    fn completed_limit(&self) -> usize {
+        #[cfg(test)]
+        if let Some(limit) = self.completed_limit {
+            return limit;
+        }
+        Self::MAX_COMPLETED
+    }
+
+    fn debit_completed(&mut self, entry: &PaneEntry) {
+        let PaneEntry::Completed { charged_bytes, .. } = entry else {
+            return;
+        };
+        self.completed_count = self
+            .completed_count
+            .checked_sub(1)
+            .expect("every Completed insertion is debited exactly once");
+        self.completed_bytes = self
+            .completed_bytes
+            .checked_sub(*charged_bytes)
+            .expect("completed bytes are debited by their exact stored charge");
+    }
+
+    fn recompute_next_completed_expiry(&mut self) {
+        self.next_completed_expiry = self
+            .hosts
+            .values()
+            .filter_map(|entry| match entry {
+                PaneEntry::Completed { completed_at, .. } => {
+                    completed_at.checked_add(Self::COMPLETED_TTL)
+                }
+                _ => None,
+            })
+            .min();
+    }
+
+    fn remove_accounted(&mut self, id: &AgentId) -> Option<PaneEntry> {
+        let entry = self.hosts.remove(id)?;
+        self.debit_completed(&entry);
+        Some(entry)
+    }
+
+    fn remove(&mut self, id: &AgentId) -> Option<PaneEntry> {
+        let entry = self.remove_accounted(id)?;
+        if matches!(entry, PaneEntry::Completed { .. }) {
+            self.recompute_next_completed_expiry();
+        }
+        Some(entry)
+    }
+
+    fn replace(&mut self, id: AgentId, entry: PaneEntry) -> Option<PaneEntry> {
+        let old = self.hosts.insert(id, entry);
+        if let Some(old) = old.as_ref() {
+            self.debit_completed(old);
+        }
+        self.recompute_next_completed_expiry();
+        old
+    }
+
+    fn complete(
+        &mut self,
+        id: &AgentId,
+        host: &Arc<crate::pty::PtyHost>,
+        charged_bytes: usize,
+        completed_at: std::time::Instant,
+    ) -> bool {
+        if !matches!(self.hosts.get(id), Some(PaneEntry::Closing(current)) if Arc::ptr_eq(current, host))
+        {
+            return false;
+        }
+        // A candidate that cannot fit by itself must not evict valid older completions merely to
+        // discover that it still cannot fit.
+        if charged_bytes > Self::MAX_COMPLETED_BYTES {
+            return false;
+        }
+        let Some(completed_count) = self.completed_count.checked_add(1) else {
+            return false;
+        };
+        let Some(completed_bytes) = self.completed_bytes.checked_add(charged_bytes) else {
+            return false;
+        };
+        let Some(next_order) = self.next_completed_order.checked_add(1) else {
+            return false;
+        };
+        let order = self.next_completed_order;
+        self.next_completed_order = next_order;
+        self.completed_count = completed_count;
+        self.completed_bytes = completed_bytes;
+        self.hosts.insert(
+            id.clone(),
+            PaneEntry::Completed {
+                host: Arc::clone(host),
+                charged_bytes,
+                completed_at,
+                order,
+            },
+        );
+        if let Some(expiry) = completed_at.checked_add(Self::COMPLETED_TTL)
+            && self
+                .next_completed_expiry
+                .is_none_or(|next_expiry| expiry < next_expiry)
+        {
+            self.next_completed_expiry = Some(expiry);
+        }
+        true
+    }
+
+    fn take_completed_victims(&mut self, now: std::time::Instant) -> Vec<Arc<crate::pty::PtyHost>> {
+        if self.completed_count == 0 {
+            return Vec::new();
+        }
+        if self
+            .next_completed_expiry
+            .is_some_and(|next_expiry| now < next_expiry)
+            && self.completed_count <= self.completed_limit()
+            && self.completed_bytes <= Self::MAX_COMPLETED_BYTES
+        {
+            return Vec::new();
+        }
+        #[cfg(test)]
+        {
+            self.completed_scan_count += 1;
+        }
+        let expired = self
+            .hosts
+            .iter()
+            .filter_map(|(id, entry)| match entry {
+                PaneEntry::Completed { completed_at, .. }
+                    if now.saturating_duration_since(*completed_at) >= Self::COMPLETED_TTL =>
+                {
+                    Some(id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut victims = expired
+            .into_iter()
+            .filter_map(|id| self.remove_accounted(&id))
+            .map(|entry| Arc::clone(entry.host()))
+            .collect::<Vec<_>>();
+        while self.completed_count > self.completed_limit()
+            || self.completed_bytes > Self::MAX_COMPLETED_BYTES
+        {
+            let Some(oldest) = self
+                .hosts
+                .iter()
+                .filter_map(|(id, entry)| match entry {
+                    PaneEntry::Completed { order, .. } => Some((id.clone(), *order)),
+                    _ => None,
+                })
+                .min_by_key(|(_, order)| *order)
+                .map(|(id, _)| id)
+            else {
+                break;
+            };
+            if let Some(entry) = self.remove_accounted(&oldest) {
+                victims.push(Arc::clone(entry.host()));
+            }
+        }
+        self.recompute_next_completed_expiry();
+        victims
+    }
+
     /// `conn`'s lease on `id`, if it holds one. The lease **is** the permission — there is no
     /// separate boolean to disagree with it — so a caller that gets `None` here has been refused.
     fn lease(&self, conn: ConnId, id: &AgentId) -> Option<Arc<crate::pty::WriteLease>> {
@@ -303,6 +510,10 @@ impl Panes {
             .iter()
             .find(|(a, _)| a == id)
             .map(|(_, l)| Arc::clone(l))
+    }
+
+    fn has_live(&self, id: &AgentId) -> bool {
+        self.hosts.get(id).is_some_and(PaneEntry::is_live)
     }
 }
 
@@ -653,12 +864,17 @@ impl crate::root::PaneOwner for NodeOwner {
         self.handle.register_pane(agent_id, host);
     }
 
-    /// **The only production caller of `forget_pane`.** Without it the entry outlives the node's
-    /// pty, and a later `node/attach` is answered with a pane onto a master whose child marion has
-    /// already reaped — a client that attaches successfully and then waits for ever on a terminal
-    /// nothing is on.
-    fn closed(&self, agent_id: &AgentId) {
-        self.handle.forget_pane(agent_id);
+    fn closing(&self, agent_id: &AgentId, host: &Arc<crate::pty::PtyHost>) {
+        self.handle.closing_pane(agent_id, host);
+    }
+
+    fn completed(&self, agent_id: &AgentId, host: &Arc<crate::pty::PtyHost>, charged_bytes: usize) {
+        self.handle.completed_pane(agent_id, host, charged_bytes);
+    }
+
+    /// Permanent invalidation is the failure/removal path; ordinary completion keeps replay state.
+    fn failed(&self, agent_id: &AgentId, host: &Arc<crate::pty::PtyHost>) {
+        self.handle.failed_pane(agent_id, host);
     }
 }
 
@@ -883,8 +1099,17 @@ pub struct RegistryHandle {
     nodes: Mutex<HashMap<AgentId, NodeHandle>>,
     /// §3.4's display plane, per node. See [`Panes`] for why this is not in `shared`.
     panes: Mutex<Panes>,
+    /// Completion-based monotonic time for the bounded pane replay cache. Cloned before invoking
+    /// it so an injected clock never runs under the global Panes lock.
+    pane_clock: Mutex<Arc<dyn Fn() -> std::time::Instant + Send + Sync>>,
+    /// Serializes same-id replacement cleanup without holding the global pane registry lock.
+    pane_replacement: Mutex<()>,
     #[cfg(test)]
     pane_listener_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    pane_delivery_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    pane_attach_selection_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// **What `agent/spawn` runs a node in**, or `None` for a supervisor that cannot spawn.
     ///
     /// **Production fills this.** `detach.rs`'s stage 3 builds [`RegistryHandle::owning`] from what
@@ -993,8 +1218,14 @@ impl RegistryHandle {
             nodes: Mutex::new(HashMap::new()),
             spawn_env,
             panes: Mutex::new(Panes::default()),
+            pane_clock: Mutex::new(Arc::new(std::time::Instant::now)),
+            pane_replacement: Mutex::new(()),
             #[cfg(test)]
             pane_listener_hook: Mutex::new(None),
+            #[cfg(test)]
+            pane_delivery_hook: Mutex::new(None),
+            #[cfg(test)]
+            pane_attach_selection_hook: Mutex::new(None),
             spawn_decision: Mutex::new(()),
             quit: Mutex::new(()),
             quit_waived_grace: AtomicBool::new(false),
@@ -1006,6 +1237,55 @@ impl RegistryHandle {
     #[cfg(test)]
     fn with_runtime(live: Arc<LiveRegistry>, runtime: Arc<dyn QuitRuntime>) -> Arc<RegistryHandle> {
         Self::build(live, runtime, None)
+    }
+
+    fn pane_now(&self) -> std::time::Instant {
+        let clock = Arc::clone(&lock(&self.pane_clock));
+        clock()
+    }
+
+    fn retire_pane_hosts(hosts: Vec<Arc<crate::pty::PtyHost>>) {
+        for host in hosts {
+            host.clear_legacy_listeners();
+            host.invalidate_pane_streams();
+        }
+    }
+
+    fn prune_completed_panes(&self) {
+        let now = self.pane_now();
+        let victims = lock(&self.panes).take_completed_victims(now);
+        Self::retire_pane_hosts(victims);
+    }
+
+    #[cfg(test)]
+    fn set_pane_clock_for_test(&self, clock: Arc<dyn Fn() -> std::time::Instant + Send + Sync>) {
+        *lock(&self.pane_clock) = clock;
+    }
+
+    #[cfg(test)]
+    fn completed_usage_for_test(&self) -> (usize, usize) {
+        let panes = lock(&self.panes);
+        (panes.completed_count, panes.completed_bytes)
+    }
+
+    #[cfg(test)]
+    fn next_completed_order_for_test(&self) -> u64 {
+        lock(&self.panes).next_completed_order
+    }
+
+    #[cfg(test)]
+    fn completed_scan_count_for_test(&self) -> usize {
+        lock(&self.panes).completed_scan_count
+    }
+
+    #[cfg(test)]
+    fn reset_completed_scan_count_for_test(&self) {
+        lock(&self.panes).completed_scan_count = 0;
+    }
+
+    #[cfg(test)]
+    fn set_completed_limit_for_test(&self, limit: usize) {
+        lock(&self.panes).completed_limit = Some(limit);
     }
 
     /// How many nodes the journal knows about that marion could not describe to a client.
@@ -1043,7 +1323,11 @@ impl RegistryHandle {
     /// The window that opens — a pane created between this read and the projection — resolves at
     /// the next flush, and the alternative is the lock coupling [`Panes`] exists to avoid.
     fn pane_ids(&self) -> HashSet<AgentId> {
-        lock(&self.panes).hosts.keys().cloned().collect()
+        lock(&self.panes)
+            .hosts
+            .iter()
+            .filter_map(|(id, entry)| entry.is_live().then_some(id.clone()))
+            .collect()
     }
 
     /// §2's `tree/subscribe`: the snapshot, and the point live notifications begin from.
@@ -1065,7 +1349,7 @@ impl RegistryHandle {
     }
 
     fn node_get(&self, id: &AgentId) -> Result<NodeGetResult, RpcError> {
-        let pane = lock(&self.panes).hosts.contains_key(id);
+        let pane = lock(&self.panes).has_live(id);
         self.live.read(|r| match r.tree().get(id) {
             None => Err(RpcError::not_found(
                 &id.0,
@@ -1114,8 +1398,7 @@ impl RegistryHandle {
     /// would lose precisely the record that separates a node that finished from one cut mid-turn.
     /// A cursor on a file nobody will append to costs one `stat` per tick and delivers nothing.
     fn node_attach(&self, id: &AgentId, out: &Outbound) -> Result<NodeAttachResult, RpcError> {
-        let has_pane = lock(&self.panes).hosts.contains_key(id);
-        let (summary, state, reap_state, project) = self.live.read(|r| {
+        let (mut summary, state, reap_state, project) = self.live.read(|r| {
             let Some(node) = r.tree().get(id) else {
                 return Err(RpcError::not_found(
                     &id.0,
@@ -1130,7 +1413,7 @@ impl RegistryHandle {
                     "§3.2",
                 ));
             };
-            let summary = summarize(node, has_pane).map_err(|e| e.as_error(id))?;
+            let summary = summarize(node, false).map_err(|e| e.as_error(id))?;
             Ok((summary, node.state, node.reap_state, r.project()))
         })?;
 
@@ -1183,10 +1466,15 @@ impl RegistryHandle {
                 out: out.clone(),
             });
         }
+        #[cfg(test)]
+        if let Some(hook) = lock(&self.pane_attach_selection_hook).take() {
+            hook();
+        }
         // The pane-v1 wire arm remains dark until completed-host lifecycle retention is safe.
         // Preserve the legacy contract: durable NodeEvents and their live cursor are committed
         // before this live-only PTY listener can enqueue bytes.
         let pane = self.attach_pane(id, out);
+        summary.pane = pane.is_some();
         Ok(NodeAttachResult {
             node: summary,
             mode,
@@ -1220,11 +1508,12 @@ impl RegistryHandle {
         id: &AgentId,
         out: &Outbound,
     ) -> Option<marion_proto::result::PaneAttach> {
+        self.prune_completed_panes();
         // Held through listener and lease commit. `forget_pane` cannot invalidate a host between
         // those two halves, and neither host operation performs a delivery callback while this
         // global registry lock is held.
         let mut panes = lock(&self.panes);
-        let host = panes.hosts.get(id).cloned()?;
+        let host = panes.hosts.get(id)?.live_host().cloned()?;
         host.unlisten(out.conn());
         host.listen(out.clone());
         #[cfg(test)]
@@ -1269,7 +1558,125 @@ impl RegistryHandle {
     /// resolves the node from the registry *before* it looks here, so the journal stays the
     /// authority on what exists.
     pub fn register_pane(&self, id: &AgentId, host: Arc<crate::pty::PtyHost>) {
-        lock(&self.panes).hosts.insert(id.clone(), host);
+        self.prune_completed_panes();
+        let _replacement = lock(&self.pane_replacement);
+        let replacement = Arc::clone(&host);
+        let (old, revoked_leases) = {
+            let mut panes = lock(&self.panes);
+            if let Some(existing) = panes.hosts.get(id) {
+                if Arc::ptr_eq(existing.host(), &replacement) {
+                    // Live is idempotent; lifecycle states never move backwards through register.
+                    return;
+                }
+            } else {
+                panes.hosts.insert(id.clone(), PaneEntry::Live(host));
+                return;
+            }
+            let old = panes.replace(id.clone(), PaneEntry::Replacing(Arc::clone(&replacement)));
+            let mut revoked = Vec::new();
+            for leases in panes.leases.values_mut() {
+                let mut kept = Vec::with_capacity(leases.len());
+                for (agent_id, lease) in std::mem::take(leases) {
+                    if &agent_id == id {
+                        revoked.push(lease);
+                    } else {
+                        kept.push((agent_id, lease));
+                    }
+                }
+                *leases = kept;
+            }
+            panes.leases.retain(|_, leases| !leases.is_empty());
+            (old, revoked)
+        };
+        drop(revoked_leases);
+        let old = old.expect("an existing generation was replaced above");
+        let old_host = Arc::clone(old.host());
+        old_host.clear_legacy_listeners();
+        old_host.invalidate_pane_streams();
+        drop(old);
+
+        let published = {
+            let mut panes = lock(&self.panes);
+            let matching = panes.hosts.get(id).is_some_and(
+                |entry| matches!(entry, PaneEntry::Replacing(current) if Arc::ptr_eq(current, &replacement)),
+            );
+            if matching {
+                panes.replace(id.clone(), PaneEntry::Live(Arc::clone(&replacement)));
+            }
+            matching
+        };
+        if !published {
+            replacement.clear_legacy_listeners();
+            replacement.invalidate_pane_streams();
+        }
+    }
+
+    /// Stop admitting new live-pane operations while keeping the exact host registered through
+    /// reader drain. A stale close callback cannot transition a replacement host with the same id.
+    pub fn closing_pane(&self, id: &AgentId, host: &Arc<crate::pty::PtyHost>) {
+        let mut panes = lock(&self.panes);
+        let Some(entry) = panes.hosts.get_mut(id) else {
+            return;
+        };
+        if !matches!(entry, PaneEntry::Live(current) if Arc::ptr_eq(current, host)) {
+            return;
+        }
+        *entry = PaneEntry::Closing(Arc::clone(host));
+        host.seal_controls();
+        for leases in panes.leases.values_mut() {
+            leases.retain(|(agent_id, _)| agent_id != id);
+        }
+    }
+
+    /// Publish a drained host as read-only replay state. Only the matching closing generation can
+    /// complete, so an old launcher cannot overwrite a newly registered pane with the same id.
+    pub fn completed_pane(
+        &self,
+        id: &AgentId,
+        host: &Arc<crate::pty::PtyHost>,
+        charged_bytes: usize,
+    ) {
+        let now = self.pane_now();
+        let (completed, victims) = {
+            let mut panes = lock(&self.panes);
+            let matching = matches!(panes.hosts.get(id), Some(PaneEntry::Closing(current)) if Arc::ptr_eq(current, host));
+            if !matching {
+                return;
+            }
+            let completed = panes.complete(id, host, charged_bytes, now);
+            let mut victims = panes.take_completed_victims(now);
+            if !completed && let Some(refused) = panes.remove(id) {
+                victims.push(Arc::clone(refused.host()));
+            }
+            (completed, victims)
+        };
+        if completed {
+            host.clear_legacy_listeners();
+        }
+        Self::retire_pane_hosts(victims);
+    }
+
+    /// Permanently invalidate one failed host generation without touching a replacement that now
+    /// owns the same agent id.
+    pub fn failed_pane(&self, id: &AgentId, host: &Arc<crate::pty::PtyHost>) {
+        let removed = {
+            let mut panes = lock(&self.panes);
+            let matching = panes
+                .hosts
+                .get(id)
+                .is_some_and(|entry| Arc::ptr_eq(entry.host(), host));
+            if matching {
+                for leases in panes.leases.values_mut() {
+                    leases.retain(|(agent_id, _)| agent_id != id);
+                }
+                panes.remove(id)
+            } else {
+                None
+            }
+        };
+        host.clear_legacy_listeners();
+        host.invalidate_pane_streams();
+        drop(removed);
     }
 
     /// Forget a node's pty. Called when the node ends: the host is dropped by its owner, and
@@ -1278,13 +1685,14 @@ impl RegistryHandle {
     pub fn forget_pane(&self, id: &AgentId) {
         let host = {
             let mut panes = lock(&self.panes);
-            let host = panes.hosts.remove(id);
+            let host = panes.remove(id).map(|entry| Arc::clone(entry.host()));
             for leases in panes.leases.values_mut() {
                 leases.retain(|(a, _)| a != id);
             }
             host
         };
         if let Some(host) = host {
+            host.clear_legacy_listeners();
             host.invalidate_pane_streams();
         }
     }
@@ -1340,11 +1748,15 @@ impl RegistryHandle {
             let Some(lease) = panes.lease(conn, id) else {
                 return;
             };
-            match panes.hosts.get(id) {
+            match panes.hosts.get(id).and_then(PaneEntry::live_host) {
                 Some(h) => (Arc::clone(h), lease),
                 None => return,
             }
         };
+        #[cfg(test)]
+        if let Some(hook) = lock(&self.pane_delivery_hook).take() {
+            hook();
+        }
         let outcome = match delivery {
             PaneDelivery::Write(bytes) => host.write_input(&lease, bytes),
             PaneDelivery::Resize { cols, rows } => {
@@ -2678,8 +3090,8 @@ impl Handle for RegistryHandle {
         // pty, its recording and its size are exactly as they were.
         let mut panes = lock(&self.panes);
         panes.leases.remove(&conn);
-        for host in panes.hosts.values() {
-            host.unlisten(conn);
+        for entry in panes.hosts.values() {
+            entry.host().unlisten(conn);
         }
     }
 
@@ -2697,6 +3109,7 @@ impl Handle for RegistryHandle {
     /// that learns of an event on a node it has not been told exists has to hold it, and §2 puts
     /// `tree/node-added` before anything else about a node for exactly that reason.
     fn tick(&self) {
+        self.prune_completed_panes();
         self.flush();
         self.pump_attached();
     }
@@ -5172,13 +5585,13 @@ mod tests {
     // §5.3's display plane, end to end over the socket
     // -----------------------------------------------------------------------------------------
 
-    /// A real pty running `script`, registered as `agent`'s pane.
+    /// A real pty running `script`, not yet registered as `agent`'s pane.
     ///
     /// A **real child on a real pty**, not a fake: everything these tests are about — that a
     /// keystroke reaches the process, that a resize reaches it as a `SIGWINCH`, that detaching
     /// leaves it running — is a claim about a process, and a stub would let all four pass while
     /// none of them was true.
-    fn pane(w: &Wired, agent: &str, script: &str) -> Arc<crate::pty::PtyHost> {
+    fn unregistered_pane(w: &Wired, agent: &str, script: &str) -> Arc<crate::pty::PtyHost> {
         use crate::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
         let size = WinSize::new(80, 24);
         let master = PtyMaster::open(size).expect("a pty");
@@ -5206,8 +5619,25 @@ mod tests {
         )
         .expect("the child starts");
         host.adopt(child);
-        let host = Arc::new(host);
+        Arc::new(host)
+    }
+
+    fn pane(w: &Wired, agent: &str, script: &str) -> Arc<crate::pty::PtyHost> {
+        let host = unregistered_pane(w, agent, script);
         w.fx.handle.register_pane(&id(agent), Arc::clone(&host));
+        host
+    }
+
+    fn drained_zero_output_pane(w: &Wired, agent: &str) -> Arc<crate::pty::PtyHost> {
+        let host = pane(w, agent, "exit 0");
+        assert!(
+            until(|| host.poll_exited_unreaped().unwrap()),
+            "the zero-output child did not exit"
+        );
+        w.fx.handle.closing_pane(&id(agent), &host);
+        host.shutdown().unwrap();
+        host.completed_replay_charge()
+            .expect("the zero-output host retained its End");
         host
     }
 
@@ -5301,6 +5731,1101 @@ mod tests {
             "a cloned forgotten host minted a new replay generation"
         );
         host.shutdown().unwrap();
+    }
+
+    /// A process may exit before its owner reaches the close callback. The production change that
+    /// must make this fail is removing or invalidating the host before `shutdown` joins the reader:
+    /// the late retained tail and terminal `End` then cannot be replayed from the completed pane.
+    #[test]
+    fn a_fast_exit_keeps_its_tail_and_end_available_for_late_internal_replay() {
+        let w = Wired::new("handler-pane-fast-exit-retention");
+        let host = pane(&w, "root", "printf 'fast-tail'");
+        assert!(
+            until(|| matches!(host.try_wait(), Ok(Some(_)))),
+            "the controlled child did not exit"
+        );
+
+        let (progress, _progress_rx) = std::sync::mpsc::channel();
+        let owner = NodeOwner {
+            handle: Arc::clone(&w.fx.handle),
+            task_id: None,
+            repo: w.dir.clone(),
+            tx: progress,
+            identified: Mutex::new(None),
+        };
+        <NodeOwner as crate::root::PaneOwner>::closing(&owner, &id("root"), &host);
+        host.shutdown().expect("the exited child and reader join");
+        let charge = host
+            .completed_replay_charge()
+            .expect("the drained replay is eligible");
+        <NodeOwner as crate::root::PaneOwner>::completed(&owner, &id("root"), &host, charge);
+        assert_eq!(w.fx.handle.panes(), 1, "the completed pane stays retained");
+
+        let conn = ConnId(1_106);
+        let (out, rx) = crate::serve::capture(conn);
+        let descriptor = host
+            .begin_pane_replay(conn, out)
+            .expect("the completed host remains available for a late internal replay");
+        host.pane_ready(conn, &descriptor.token, descriptor.cut);
+
+        let frames = rx
+            .try_iter()
+            .map(|line| {
+                Frame::from_line(std::str::from_utf8(&line).expect("outbound is NDJSON"))
+                    .expect("outbound frame decodes")
+            })
+            .collect::<Vec<_>>();
+        let mut output = Vec::new();
+        let mut ends = 0;
+        for (seq, frame) in frames.iter().enumerate() {
+            let Frame::Notification(note) = frame else {
+                panic!("captured outbound item is not a notification: {frame:?}")
+            };
+            let Event::NodePaneFrame(frame) = &note.event else {
+                panic!("captured outbound item is not a pane frame: {frame:?}")
+            };
+            assert_eq!(frame.seq, seq as u64, "the replay sequence stays dense");
+            match &frame.frame {
+                marion_proto::PaneFrameKindV1::Output { bytes } => {
+                    output.extend_from_slice(bytes.as_bytes());
+                }
+                marion_proto::PaneFrameKindV1::End {} => ends += 1,
+                other => panic!("the fast-exit fixture did not resize: {other:?}"),
+            }
+        }
+        assert_eq!(output, b"fast-tail");
+        assert_eq!(ends, 1, "completion emits exactly one End: {frames:?}");
+        assert!(matches!(
+            frames.last(),
+            Some(Frame::Notification(note))
+                if matches!(&note.event, Event::NodePaneFrame(frame)
+                    if matches!(frame.frame, marion_proto::PaneFrameKindV1::End {}))
+        ));
+    }
+
+    /// Completed retention expires from the completion instant, not the last replay. The exact
+    /// 300-second boundary is expired, and eviction must invalidate the host only after releasing
+    /// the global Panes lock so callbacks cannot deadlock the supervisor.
+    #[test]
+    fn completed_pane_ttl_is_exact_and_never_refreshed_by_replay() {
+        let w = Wired::new("handler-pane-completed-ttl");
+        let now = Arc::new(Mutex::new(std::time::Instant::now()));
+        let clock_now = Arc::clone(&now);
+        w.fx.handle
+            .set_pane_clock_for_test(Arc::new(move || *lock(&clock_now)));
+        let completed_at = *lock(&now);
+
+        let host = pane(&w, "root", "printf 'ttl-tail'");
+        assert!(
+            until(|| host.poll_exited_unreaped().unwrap()),
+            "the controlled child did not exit"
+        );
+        w.fx.handle.closing_pane(&id("root"), &host);
+        host.shutdown().unwrap();
+        let charge = host.completed_replay_charge().unwrap();
+        w.fx.handle.completed_pane(&id("root"), &host, charge);
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (1, charge));
+
+        *lock(&now) = completed_at + std::time::Duration::from_secs(299);
+        let conn = ConnId(1_122);
+        let (out, _rx) = crate::serve::capture(conn);
+        assert!(
+            host.begin_pane_replay(conn, out).is_some(),
+            "the completed pane remains replayable before its TTL"
+        );
+
+        *lock(&now) = completed_at + std::time::Duration::from_secs(300);
+        let invalidated_outside_panes = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&invalidated_outside_panes);
+        let handle = Arc::clone(&w.fx.handle);
+        host.set_invalidation_hook(Box::new(move || {
+            observed.store(handle.panes.try_lock().is_ok(), Ordering::SeqCst);
+        }));
+        crate::serve::Handle::tick(w.fx.handle.as_ref());
+
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (0, 0));
+        assert_eq!(w.fx.handle.panes(), 0);
+        assert!(
+            invalidated_outside_panes.load(Ordering::SeqCst),
+            "TTL victim invalidation ran under the Panes lock"
+        );
+        let (out, _rx) = crate::serve::capture(ConnId(1_123));
+        assert!(
+            host.begin_pane_replay(ConnId(1_123), out).is_none(),
+            "TTL eviction left a cloned completed host replayable"
+        );
+    }
+
+    #[test]
+    fn pane_ticks_with_no_completed_entries_do_not_scan_the_pane_map() {
+        let w = Wired::new("handler-pane-empty-tick-fast-path");
+        w.fx.handle.reset_completed_scan_count_for_test();
+
+        for _ in 0..32 {
+            crate::serve::Handle::tick(w.fx.handle.as_ref());
+        }
+
+        assert_eq!(
+            w.fx.handle.completed_scan_count_for_test(),
+            0,
+            "the 5ms heartbeat scanned/allocated for an empty completed cache"
+        );
+    }
+
+    #[test]
+    fn pane_ticks_scan_once_at_the_cached_completion_expiry() {
+        let mut w = Wired::new("handler-pane-tick-expiry-deadline");
+        w.server.take().expect("test server").stop();
+        let now = Arc::new(Mutex::new(std::time::Instant::now()));
+        let clock_now = Arc::clone(&now);
+        w.fx.handle
+            .set_pane_clock_for_test(Arc::new(move || *lock(&clock_now)));
+        let completed_at = *lock(&now);
+        let host = drained_zero_output_pane(&w, "root");
+        w.fx.handle.completed_pane(&id("root"), &host, 1_024);
+        w.fx.handle.reset_completed_scan_count_for_test();
+
+        *lock(&now) = completed_at + std::time::Duration::from_secs(299);
+        for _ in 0..32 {
+            crate::serve::Handle::tick(w.fx.handle.as_ref());
+        }
+        assert_eq!(
+            w.fx.handle.completed_scan_count_for_test(),
+            0,
+            "pre-expiry heartbeats scanned the completed cache"
+        );
+
+        *lock(&now) = completed_at + std::time::Duration::from_secs(300);
+        crate::serve::Handle::tick(w.fx.handle.as_ref());
+        assert_eq!(
+            w.fx.handle.completed_scan_count_for_test(),
+            1,
+            "the exact deadline should perform one expiration scan"
+        );
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (0, 0));
+    }
+
+    #[test]
+    fn completed_pane_count_cap_evicts_the_oldest_zero_output_entry() {
+        let w = Wired::new("handler-pane-completed-count-cap");
+        let now = std::time::Instant::now();
+        w.fx.handle.set_pane_clock_for_test(Arc::new(move || now));
+        w.fx.handle.set_completed_limit_for_test(2);
+        let mut first = None;
+        let mut charge_each = None;
+
+        for index in 0..3 {
+            let agent = format!("completed-{index:02}");
+            let host = pane(&w, &agent, "exit 0");
+            assert!(until(|| host.poll_exited_unreaped().unwrap()));
+            w.fx.handle.closing_pane(&id(&agent), &host);
+            host.shutdown().unwrap();
+            let charge = host.completed_replay_charge().unwrap();
+            assert!(charge > 0, "End-only completion must carry a real charge");
+            if let Some(expected) = charge_each {
+                assert_eq!(
+                    charge, expected,
+                    "identical zero-output hosts charge equally"
+                );
+            } else {
+                charge_each = Some(charge);
+            }
+            if index == 0 {
+                first = Some(Arc::clone(&host));
+            }
+            if index == 2 {
+                let invalidated_outside_panes = Arc::new(AtomicBool::new(false));
+                let observed = Arc::clone(&invalidated_outside_panes);
+                let handle = Arc::clone(&w.fx.handle);
+                first
+                    .as_ref()
+                    .unwrap()
+                    .set_invalidation_hook(Box::new(move || {
+                        observed.store(handle.panes.try_lock().is_ok(), Ordering::SeqCst);
+                    }));
+                w.fx.handle.completed_pane(&id(&agent), &host, charge);
+                assert!(
+                    invalidated_outside_panes.load(Ordering::SeqCst),
+                    "oldest count victim was invalidated under Panes"
+                );
+            } else {
+                w.fx.handle.completed_pane(&id(&agent), &host, charge);
+            }
+        }
+
+        let charge_each = charge_each.unwrap();
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (2, 2 * charge_each));
+        let panes = lock(&w.fx.handle.panes);
+        assert!(
+            !panes.hosts.contains_key(&id("completed-00")),
+            "the oldest completion survived insertion past the injected cap"
+        );
+        assert!(panes.hosts.contains_key(&id("completed-02")));
+        drop(panes);
+        let first = first.unwrap();
+        let (out, _rx) = crate::serve::capture(ConnId(1_124));
+        assert!(
+            first.begin_pane_replay(ConnId(1_124), out).is_none(),
+            "the count victim remained replayable through a stale Arc"
+        );
+    }
+
+    #[test]
+    fn individually_oversized_completion_preserves_the_existing_cache() {
+        const BYTE_CAP: usize = 256 * 1024 * 1024;
+        let w = Wired::new("handler-pane-completed-oversized");
+        let now = std::time::Instant::now();
+        w.fx.handle.set_pane_clock_for_test(Arc::new(move || now));
+
+        let existing = drained_zero_output_pane(&w, "existing");
+        w.fx.handle.completed_pane(&id("existing"), &existing, 1024);
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (1, 1024));
+
+        let oversized = drained_zero_output_pane(&w, "oversized");
+        let invalidated_outside_panes = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&invalidated_outside_panes);
+        let handle = Arc::clone(&w.fx.handle);
+        oversized.set_invalidation_hook(Box::new(move || {
+            observed.store(handle.panes.try_lock().is_ok(), Ordering::SeqCst);
+        }));
+        w.fx.handle
+            .completed_pane(&id("oversized"), &oversized, BYTE_CAP + 1);
+
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (1, 1024));
+        let panes = lock(&w.fx.handle.panes);
+        assert!(matches!(
+            panes.hosts.get(&id("existing")),
+            Some(PaneEntry::Completed { host, .. }) if Arc::ptr_eq(host, &existing)
+        ));
+        assert!(!panes.hosts.contains_key(&id("oversized")));
+        drop(panes);
+        assert!(
+            invalidated_outside_panes.load(Ordering::SeqCst),
+            "the oversized candidate was invalidated under Panes"
+        );
+        let (out, _rx) = crate::serve::capture(ConnId(1_125));
+        assert!(
+            oversized.begin_pane_replay(ConnId(1_125), out).is_none(),
+            "the rejected oversized host remained replayable"
+        );
+    }
+
+    #[test]
+    fn completed_byte_cap_evicts_oldest_until_the_exact_sum_fits() {
+        const HUNDRED_MIB: usize = 100 * 1024 * 1024;
+        let w = Wired::new("handler-pane-completed-byte-cap");
+        let now = std::time::Instant::now();
+        w.fx.handle.set_pane_clock_for_test(Arc::new(move || now));
+
+        let oldest = drained_zero_output_pane(&w, "bytes-0");
+        w.fx.handle
+            .completed_pane(&id("bytes-0"), &oldest, HUNDRED_MIB);
+        let middle = drained_zero_output_pane(&w, "bytes-1");
+        w.fx.handle
+            .completed_pane(&id("bytes-1"), &middle, HUNDRED_MIB);
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (2, 2 * HUNDRED_MIB));
+
+        let invalidated_outside_panes = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&invalidated_outside_panes);
+        let handle = Arc::clone(&w.fx.handle);
+        oldest.set_invalidation_hook(Box::new(move || {
+            observed.store(handle.panes.try_lock().is_ok(), Ordering::SeqCst);
+        }));
+        let newest = drained_zero_output_pane(&w, "bytes-2");
+        w.fx.handle
+            .completed_pane(&id("bytes-2"), &newest, HUNDRED_MIB);
+
+        assert_eq!(
+            w.fx.handle.completed_usage_for_test(),
+            (2, 2 * HUNDRED_MIB),
+            "one oldest 100MiB entry is exactly enough to restore the 256MiB cap"
+        );
+        let panes = lock(&w.fx.handle.panes);
+        assert!(!panes.hosts.contains_key(&id("bytes-0")));
+        assert!(panes.hosts.contains_key(&id("bytes-1")));
+        assert!(panes.hosts.contains_key(&id("bytes-2")));
+        drop(panes);
+        assert!(
+            invalidated_outside_panes.load(Ordering::SeqCst),
+            "the byte-cap victim was invalidated under Panes"
+        );
+    }
+
+    #[test]
+    fn completed_order_exhaustion_rejects_only_the_new_candidate() {
+        let w = Wired::new("handler-pane-completed-order-exhaustion");
+        let existing = drained_zero_output_pane(&w, "order-existing");
+        w.fx.handle
+            .completed_pane(&id("order-existing"), &existing, 1024);
+        {
+            let mut panes = lock(&w.fx.handle.panes);
+            panes.next_completed_order = u64::MAX;
+        }
+
+        let candidate = drained_zero_output_pane(&w, "order-candidate");
+        let invalidated_outside_panes = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&invalidated_outside_panes);
+        let handle = Arc::clone(&w.fx.handle);
+        candidate.set_invalidation_hook(Box::new(move || {
+            observed.store(handle.panes.try_lock().is_ok(), Ordering::SeqCst);
+        }));
+        w.fx.handle
+            .completed_pane(&id("order-candidate"), &candidate, 2048);
+
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (1, 1024));
+        assert_eq!(w.fx.handle.next_completed_order_for_test(), u64::MAX);
+        let panes = lock(&w.fx.handle.panes);
+        assert!(matches!(
+            panes.hosts.get(&id("order-existing")),
+            Some(PaneEntry::Completed { host, .. }) if Arc::ptr_eq(host, &existing)
+        ));
+        assert!(!panes.hosts.contains_key(&id("order-candidate")));
+        drop(panes);
+        assert!(
+            invalidated_outside_panes.load(Ordering::SeqCst),
+            "the refused order-exhausted candidate was invalidated under Panes"
+        );
+    }
+
+    /// A failed close belongs to one host generation, not to the agent id forever. The production
+    /// change that must make this fail is routing failure through id-only `forget_pane`: a stale
+    /// old host then removes and invalidates the replacement that already owns the same id.
+    #[test]
+    fn a_stale_failed_close_cannot_remove_a_replacement_pane() {
+        let w = Wired::new("handler-pane-stale-close-failure");
+        let old = pane(&w, "root", "sleep 30");
+        let (progress, _progress_rx) = std::sync::mpsc::channel();
+        let owner = NodeOwner {
+            handle: Arc::clone(&w.fx.handle),
+            task_id: None,
+            repo: w.dir.clone(),
+            tx: progress,
+            identified: Mutex::new(None),
+        };
+        <NodeOwner as crate::root::PaneOwner>::closing(&owner, &id("root"), &old);
+        let replacement = pane(&w, "root", "sleep 30");
+
+        <NodeOwner as crate::root::PaneOwner>::failed(&owner, &id("root"), &old);
+
+        let panes = lock(&w.fx.handle.panes);
+        let current = panes.hosts.get(&id("root")).expect("replacement remains");
+        assert!(Arc::ptr_eq(current.host(), &replacement));
+        drop(panes);
+        let conn = ConnId(1_107);
+        let (out, _captured) = crate::serve::capture(conn);
+        assert!(
+            old.begin_pane_replay(conn, out).is_none(),
+            "the failed old generation remains replayable"
+        );
+
+        w.fx.handle.forget_pane(&id("root"));
+        old.shutdown().unwrap();
+        replacement.shutdown().unwrap();
+    }
+
+    #[test]
+    fn stale_generation_callbacks_cannot_change_completed_accounting_or_replacement() {
+        let w = Wired::new("handler-pane-stale-completed-accounting");
+        let old = pane(&w, "root", "printf old");
+        assert!(until(|| old.poll_exited_unreaped().unwrap()));
+        w.fx.handle.closing_pane(&id("root"), &old);
+        old.shutdown().unwrap();
+        let old_charge = old.completed_replay_charge().unwrap();
+        w.fx.handle.completed_pane(&id("root"), &old, old_charge);
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (1, old_charge));
+        assert_eq!(w.fx.handle.next_completed_order_for_test(), 1);
+
+        let replacement = pane(&w, "root", "sleep 30");
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (0, 0));
+        let order_after_replacement = w.fx.handle.next_completed_order_for_test();
+
+        w.fx.handle.completed_pane(&id("root"), &old, old_charge);
+        w.fx.handle.failed_pane(&id("root"), &old);
+
+        assert_eq!(w.fx.handle.completed_usage_for_test(), (0, 0));
+        assert_eq!(
+            w.fx.handle.next_completed_order_for_test(),
+            order_after_replacement,
+            "a stale completion must not consume cache order"
+        );
+        let panes = lock(&w.fx.handle.panes);
+        let current = panes.hosts.get(&id("root")).expect("replacement remains");
+        assert!(matches!(current, PaneEntry::Live(host) if Arc::ptr_eq(host, &replacement)));
+        drop(panes);
+
+        w.fx.handle.forget_pane(&id("root"));
+        replacement.shutdown().unwrap();
+    }
+
+    /// A handler clone is not permission to cross the close boundary. The production change that
+    /// must make this fail is checking `Panes::Live` only before cloning the host and lease: a
+    /// paused resize can then resume after shutdown, append `r` after cast `x`, mutate the master,
+    /// and poison an otherwise eligible completed replay with a post-End retention error.
+    #[test]
+    fn a_resize_cloned_before_close_cannot_run_after_shutdown() {
+        let w = Wired::new("handler-pane-stale-resize");
+        let host = pane(&w, "root", "sleep 30");
+        let conn = ConnId(1_108);
+        let (out, _captured) = crate::serve::capture(conn);
+        assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+
+        let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        *lock(&w.fx.handle.pane_delivery_hook) = Some(Box::new(move || {
+            reached_tx.send(()).expect("the assertion side is alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("the stale delivery was not released");
+        }));
+        let handle = Arc::clone(&w.fx.handle);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let delivery = std::thread::spawn(move || {
+            handle.deliver_input(
+                conn,
+                &marion_proto::Input::NodeResize {
+                    agent_id: id("root"),
+                    cols: 140,
+                    rows: 50,
+                },
+            );
+            done_tx.send(()).expect("the assertion side is alive");
+        });
+        reached_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("delivery did not reach the post-clone seam");
+
+        w.fx.handle.closing_pane(&id("root"), &host);
+        host.shutdown().expect("legacy shutdown succeeds");
+        let charge_before = host
+            .completed_replay_charge()
+            .expect("the drained replay is eligible");
+        w.fx.handle
+            .completed_pane(&id("root"), &host, charge_before);
+        release_tx.send(()).expect("the delivery thread is alive");
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the stale delivery did not return");
+        delivery.join().unwrap();
+
+        assert_eq!(
+            host.master().size().unwrap(),
+            crate::pty::WinSize::new(80, 24)
+        );
+        assert_eq!(
+            host.completed_replay_charge().unwrap(),
+            charge_before,
+            "late control cannot invalidate cached completion eligibility"
+        );
+        let cast = std::fs::read_to_string(w.dir.join("root.cast")).unwrap();
+        let codes = cast
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<(f64, String, String)>(line)
+                    .unwrap()
+                    .1
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
+        assert!(!codes.iter().any(|code| code == "r"), "{codes:?}");
+    }
+
+    /// Keystrokes obey the same close boundary as resize. The production change that must make
+    /// this fail is omitting the host gate from `write_input`: a handler clone paused before that
+    /// call can resume after shutdown and append an `i` record after the cast's terminal `x`.
+    #[test]
+    fn input_cloned_before_close_cannot_append_after_shutdown() {
+        let w = Wired::new("handler-pane-stale-input");
+        let host = pane(&w, "root", "sleep 30");
+        let conn = ConnId(1_109);
+        let (out, _captured) = crate::serve::capture(conn);
+        assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+
+        let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        *lock(&w.fx.handle.pane_delivery_hook) = Some(Box::new(move || {
+            reached_tx.send(()).expect("the assertion side is alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("the stale delivery was not released");
+        }));
+        let handle = Arc::clone(&w.fx.handle);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let delivery = std::thread::spawn(move || {
+            handle.deliver_input(
+                conn,
+                &marion_proto::Input::NodePtyWrite {
+                    agent_id: id("root"),
+                    bytes: "late-input".into(),
+                },
+            );
+            done_tx.send(()).expect("the assertion side is alive");
+        });
+        reached_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("delivery did not reach the post-clone seam");
+
+        w.fx.handle.closing_pane(&id("root"), &host);
+        host.shutdown().expect("legacy shutdown succeeds");
+        let charge_before = host
+            .completed_replay_charge()
+            .expect("the drained replay is eligible");
+        w.fx.handle
+            .completed_pane(&id("root"), &host, charge_before);
+        release_tx.send(()).expect("the delivery thread is alive");
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the stale delivery did not return");
+        delivery.join().unwrap();
+
+        assert_eq!(host.completed_replay_charge().unwrap(), charge_before);
+        let cast = std::fs::read_to_string(w.dir.join("root.cast")).unwrap();
+        let codes = cast
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<(f64, String, String)>(line)
+                    .unwrap()
+                    .1
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
+        assert!(!codes.iter().any(|code| code == "i"), "{codes:?}");
+    }
+
+    /// Sealing is a nonblocking registry transition; draining is shutdown's host-local barrier.
+    /// The production change that must make this fail is waiting for admitted control while the
+    /// global `Panes` lock is held, or writing cast `x` before that admitted mutation completes.
+    #[test]
+    fn closing_releases_the_registry_before_shutdown_drains_admitted_control() {
+        let w = Wired::new("handler-pane-control-drain");
+        let host = pane(&w, "root", "sleep 30");
+        let conn = ConnId(1_110);
+        let (out, _captured) = crate::serve::capture(conn);
+        assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+
+        let (admitted_tx, admitted_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        host.set_control_hook(Box::new(move || {
+            admitted_tx.send(()).expect("the assertion side is alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("the admitted control was not released");
+        }));
+        let handle = Arc::clone(&w.fx.handle);
+        let (delivery_done_tx, delivery_done_rx) = std::sync::mpsc::sync_channel(1);
+        let delivery = std::thread::spawn(move || {
+            handle.deliver_input(
+                conn,
+                &marion_proto::Input::NodePtyWrite {
+                    agent_id: id("root"),
+                    bytes: "admitted".into(),
+                },
+            );
+            delivery_done_tx
+                .send(())
+                .expect("the assertion side is alive");
+        });
+        admitted_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("input was not admitted at the host boundary");
+
+        let closing_handle = Arc::clone(&w.fx.handle);
+        let closing_host = Arc::clone(&host);
+        let (closing_done_tx, closing_done_rx) = std::sync::mpsc::sync_channel(1);
+        let closing = std::thread::spawn(move || {
+            closing_handle.closing_pane(&id("root"), &closing_host);
+            closing_done_tx
+                .send(())
+                .expect("the assertion side is alive");
+        });
+
+        let shutdown_host = Arc::clone(&host);
+        let (shutdown_done_tx, shutdown_done_rx) = std::sync::mpsc::sync_channel(1);
+        let shutdown = std::thread::spawn(move || {
+            shutdown_done_tx
+                .send(shutdown_host.shutdown())
+                .expect("the assertion side is alive");
+        });
+        let registry = Arc::clone(&w.fx.handle);
+        let (lookup_done_tx, lookup_done_rx) = std::sync::mpsc::sync_channel(1);
+        let lookup = std::thread::spawn(move || {
+            lookup_done_tx
+                .send(registry.panes())
+                .expect("the assertion side is alive");
+        });
+
+        let closing_was_nonblocking = closing_done_rx
+            .recv_timeout(std::time::Duration::from_millis(250))
+            .is_ok();
+        let registry_was_released = lookup_done_rx
+            .recv_timeout(std::time::Duration::from_millis(250))
+            .is_ok();
+        let shutdown_early = shutdown_done_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .ok();
+        let shutdown_skipped_drain = shutdown_early.is_some();
+        release_tx.send(()).expect("the delivery thread is alive");
+
+        delivery_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("admitted input did not finish");
+        let shutdown_result = match shutdown_early {
+            Some(result) => result,
+            None => shutdown_done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("shutdown did not finish after control drained"),
+        };
+        shutdown_result.expect("legacy shutdown succeeds");
+        closing.join().unwrap();
+        lookup.join().unwrap();
+        delivery.join().unwrap();
+        shutdown.join().unwrap();
+
+        assert!(
+            closing_was_nonblocking,
+            "Closing waited for admitted control"
+        );
+        assert!(
+            registry_was_released,
+            "Closing held the global pane registry while control was parked"
+        );
+        assert!(
+            !shutdown_skipped_drain,
+            "shutdown skipped the control drain"
+        );
+        assert!(
+            host.completed_replay_charge().is_err(),
+            "a cast-recorded input that failed delivery remained cache-eligible"
+        );
+        let cast = std::fs::read_to_string(w.dir.join("root.cast")).unwrap();
+        let codes = cast
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<(f64, String, String)>(line)
+                    .unwrap()
+                    .1
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
+        assert!(codes.iter().any(|code| code == "i"), "{codes:?}");
+    }
+
+    /// A cast-recorded input remains part of the completion decision until its master write has
+    /// either succeeded or failed. A permit that ends at the cast record lets shutdown cache an
+    /// eligible replay while the write is still parked; its later failure then arrives too late to
+    /// retract the registry's Completed entry.
+    #[test]
+    fn unresolved_input_delivery_cannot_be_published_as_completed() {
+        let w = Wired::new("handler-pane-input-delivery-completion");
+        let host = pane(&w, "root", "sleep 30");
+        let conn = ConnId(1_116);
+        let (out, _captured) = crate::serve::capture(conn);
+        assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+
+        let (recorded_tx, recorded_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        host.set_post_cast_input_hook(Box::new(move || {
+            recorded_tx.send(()).expect("the assertion side is alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("the parked input delivery was not released");
+        }));
+
+        let handle = Arc::clone(&w.fx.handle);
+        let delivery = std::thread::spawn(move || {
+            handle.deliver_input(
+                conn,
+                &marion_proto::Input::NodePtyWrite {
+                    agent_id: id("root"),
+                    bytes: "recorded-but-undelivered".into(),
+                },
+            );
+        });
+        recorded_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("input never reached the post-cast delivery seam");
+
+        w.fx.handle.closing_pane(&id("root"), &host);
+        let shutdown_host = Arc::clone(&host);
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::sync_channel(1);
+        let shutdown = std::thread::spawn(move || {
+            shutdown_tx
+                .send(shutdown_host.shutdown())
+                .expect("the assertion side is alive");
+        });
+        let shutdown_result = shutdown_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("bounded shutdown waited indefinitely for an input write");
+        shutdown_result.expect("legacy shutdown remains successful");
+        let charge_before_release = host.completed_replay_charge();
+        if let Ok(charge) = charge_before_release {
+            w.fx.handle.completed_pane(&id("root"), &host, charge);
+        } else {
+            w.fx.handle.failed_pane(&id("root"), &host);
+        }
+
+        release_tx.send(()).expect("the delivery thread is alive");
+        delivery.join().unwrap();
+        shutdown.join().unwrap();
+
+        assert!(
+            charge_before_release.is_err(),
+            "shutdown qualified replay while an input delivery outcome was unresolved"
+        );
+        assert_eq!(
+            w.fx.handle.panes(),
+            0,
+            "an unresolved delivery was published into the completed-pane cache"
+        );
+        let (out, _rx) = crate::serve::capture(ConnId(1_117));
+        assert!(
+            host.begin_pane_replay(ConnId(1_117), out).is_none(),
+            "the failed host remained available for internal replay"
+        );
+        let cast = std::fs::read_to_string(w.dir.join("root.cast")).unwrap();
+        let codes = cast
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<(f64, String, String)>(line)
+                    .unwrap()
+                    .1
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(codes.last().map(String::as_str), Some("x"), "{codes:?}");
+        assert!(codes.iter().any(|code| code == "i"), "{codes:?}");
+    }
+
+    /// Legacy pane presence means a live, attachable terminal—not retained replay state. The
+    /// production change that must make this fail is projecting every `Panes` key: Closing and
+    /// Completed then advertise `pane: true` while legacy attach returns no pane or listener.
+    #[test]
+    fn only_live_panes_are_visible_on_legacy_projection_and_attach() {
+        let w = Wired::new("handler-pane-live-projection");
+        let host = pane(&w, "root", "sleep 30");
+        say(&events_of(&w.fx, "root"), "root", &["ready"]);
+        assert!(w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(w.fx.handle.pane_ids().contains(&id("root")));
+
+        w.fx.handle.closing_pane(&id("root"), &host);
+        assert!(!w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(!w.fx.handle.pane_ids().contains(&id("root")));
+        let (closing_out, _closing_rx) = crate::serve::capture(ConnId(1_111));
+        let closing = w.fx.handle.node_attach(&id("root"), &closing_out).unwrap();
+        assert!(!closing.node.pane);
+        assert!(closing.pane.is_none());
+        assert_eq!(host.listeners(), 0, "Closing installed a dead listener");
+
+        host.shutdown().expect("legacy shutdown succeeds");
+        let charge = host.completed_replay_charge().expect("replay is eligible");
+        w.fx.handle.completed_pane(&id("root"), &host, charge);
+        assert!(!w.fx.handle.node_get(&id("root")).unwrap().node.pane);
+        assert!(!w.fx.handle.pane_ids().contains(&id("root")));
+        let (completed_out, _completed_rx) = crate::serve::capture(ConnId(1_112));
+        let completed =
+            w.fx.handle
+                .node_attach(&id("root"), &completed_out)
+                .unwrap();
+        assert!(!completed.node.pane);
+        assert!(completed.pane.is_none());
+        assert_eq!(host.listeners(), 0, "Completed installed a dead listener");
+    }
+
+    #[test]
+    fn completed_commit_preserves_final_legacy_tail_then_clears_listener() {
+        let w = Wired::new("handler-pane-completed-legacy-tail");
+        let host = pane(&w, "root", "sleep 0.05; printf 'final-tail'");
+        let conn = ConnId(1_126);
+        let (out, rx) = crate::serve::capture(conn);
+        host.listen(out);
+        let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let first = AtomicBool::new(true);
+        host.set_legacy_delivery_hook(Box::new(move || {
+            if first.swap(false, Ordering::SeqCst) {
+                reached_tx.send(()).expect("the assertion side is alive");
+                release_rx
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("the final legacy delivery was not released");
+            }
+        }));
+        reached_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the final tail never reserved its legacy delivery");
+
+        w.fx.handle.closing_pane(&id("root"), &host);
+        assert_eq!(
+            host.listeners(),
+            1,
+            "Closing cleared the listener before the reader drained its final tail"
+        );
+        release_tx.send(()).unwrap();
+        assert!(until(|| host.bytes_read() >= b"final-tail".len() as u64));
+        host.shutdown().unwrap();
+        let mut tail = String::new();
+        assert!(
+            until(|| {
+                tail.extend(rx.try_iter().filter_map(|line| {
+                    let frame = Frame::from_line(std::str::from_utf8(&line).unwrap()).unwrap();
+                    match frame {
+                        Frame::Notification(note) => match note.event {
+                            Event::NodePty { bytes, .. } => Some(bytes),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }));
+                tail == "final-tail"
+            }),
+            "shutdown joined before the final legacy tail was observable: {tail:?}"
+        );
+
+        let charge = host.completed_replay_charge().unwrap();
+        w.fx.handle.completed_pane(&id("root"), &host, charge);
+        assert_eq!(host.listeners(), 0, "Completed retained a legacy listener");
+
+        // `emit_for_test` delivers synchronously; an empty queue immediately afterwards is the
+        // causal refusal, with no scheduler delay standing in for correctness.
+        host.emit_for_test("post-completion");
+        assert!(
+            rx.try_recv().is_err(),
+            "a completed pane kept delivering legacy NodePty frames"
+        );
+    }
+
+    /// The response's `node.pane` bit describes the exact attach committed by this call, not a
+    /// registry snapshot from before event replay. The production change that must make this fail
+    /// is summarizing first and selecting the pane later: Closing in that seam yields
+    /// `node.pane=true` alongside `pane=None`.
+    #[test]
+    fn node_attach_summary_matches_the_post_replay_pane_selection() {
+        let w = Wired::new("handler-pane-attach-selection");
+        let host = pane(&w, "root", "sleep 30");
+        say(&events_of(&w.fx, "root"), "root", &["before-selection"]);
+        let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        *lock(&w.fx.handle.pane_attach_selection_hook) = Some(Box::new(move || {
+            reached_tx.send(()).expect("the assertion side is alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("attach selection was not released");
+        }));
+        let conn = ConnId(1_117);
+        let (out, captured) = crate::serve::capture(conn);
+        let handle = Arc::clone(&w.fx.handle);
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        let attaching = std::thread::spawn(move || {
+            result_tx
+                .send(handle.node_attach(&id("root"), &out))
+                .expect("the assertion side is alive");
+        });
+        reached_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("event replay did not reach final pane selection");
+        w.fx.handle.closing_pane(&id("root"), &host);
+        release_tx.send(()).expect("the attach worker is alive");
+        let attached = result_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("attach did not finish")
+            .expect("node attach succeeds");
+        attaching.join().unwrap();
+
+        assert_eq!(
+            attached.node.pane,
+            attached.pane.is_some(),
+            "response summary disagrees with exact pane selection"
+        );
+        let frames = captured
+            .try_iter()
+            .map(|bytes| Frame::from_line(std::str::from_utf8(&bytes).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            frames.first(),
+            Some(Frame::Notification(note)) if matches!(note.event, Event::NodeEvent { .. })
+        ));
+        assert_eq!(host.listeners(), 0, "Closing gained a legacy listener");
+        host.shutdown().unwrap();
+    }
+
+    /// Same-id registration is a generation replacement, not a map overwrite. The production
+    /// change that must make this fail is leaving old leases/listeners/replay valid, or invalidating
+    /// the old host while `Panes` is locked: the stale lease can resize the new terminal and a
+    /// blocking last-host drop can freeze every pane operation.
+    #[test]
+    fn replacing_a_pane_revokes_the_old_generation_outside_the_registry_lock() {
+        let w = Wired::new("handler-pane-replacement");
+        let old = pane(&w, "root", "printf 'old-prefix'; sleep 30");
+        assert!(until(|| old.bytes_read() >= b"old-prefix".len() as u64));
+        let conn = ConnId(1_113);
+        let (out, _legacy_rx) = crate::serve::capture(conn);
+        assert!(w.fx.handle.attach_pane(&id("root"), &out).unwrap().writable);
+        let replay_conn = ConnId(1_114);
+        let (replay_out, replay_rx) = crate::serve::capture(replay_conn);
+        let descriptor = old
+            .begin_pane_replay(replay_conn, replay_out.clone())
+            .expect("old replay is reserved");
+
+        let handle = Arc::downgrade(&w.fx.handle);
+        let (invalidated_tx, invalidated_rx) = std::sync::mpsc::sync_channel(1);
+        old.set_invalidation_hook(Box::new(move || {
+            let handle = handle.upgrade().expect("the registry is alive");
+            invalidated_tx
+                .send(handle.panes.try_lock().is_ok())
+                .expect("the assertion side is alive");
+        }));
+        let replacement = pane(&w, "root", "sleep 30");
+        assert!(
+            invalidated_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("replacement did not invalidate the old generation"),
+            "old generation was invalidated while Panes was locked"
+        );
+
+        w.fx.handle.deliver_input(
+            conn,
+            &marion_proto::Input::NodeResize {
+                agent_id: id("root"),
+                cols: 140,
+                rows: 50,
+            },
+        );
+        assert_eq!(
+            replacement.master().size().unwrap(),
+            crate::pty::WinSize::new(80, 24),
+            "the old lease resized the replacement"
+        );
+        assert_eq!(
+            old.listeners(),
+            0,
+            "old legacy listener survived replacement"
+        );
+        assert_eq!(old.writer(), None, "old writer lease survived replacement");
+        old.pane_ready(replay_conn, &descriptor.token, descriptor.cut);
+        assert!(
+            replay_rx.try_iter().next().is_none(),
+            "old retained replay activated after replacement"
+        );
+        assert!(old.begin_pane_replay(replay_conn, replay_out).is_none());
+
+        let attached = w.fx.handle.attach_pane(&id("root"), &out).unwrap();
+        assert!(attached.writable, "replacement did not issue a fresh lease");
+        assert_eq!(replacement.writer(), Some(conn));
+        w.fx.handle.forget_pane(&id("root"));
+        old.shutdown().unwrap();
+        replacement.shutdown().unwrap();
+    }
+
+    /// Replacement has one strict legacy cut: no old NodePty delivery can emerge after the new
+    /// Live generation is visible. The production change that must make this fail is publishing
+    /// the map swap before synchronizing old listener delivery, or allowing same-Arc lifecycle
+    /// regression from Closing/Completed back to Live.
+    #[test]
+    fn replacement_cuts_old_legacy_delivery_before_publishing_new_live_generation() {
+        let w = Wired::new("handler-pane-replacement-cutoff");
+        let old = pane(&w, "root", "sleep 30");
+        let (old_out, old_rx) = crate::serve::capture(ConnId(1_115));
+        old.listen(old_out);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        old.set_legacy_delivery_hook(Box::new(move || {
+            entered_tx.send(()).expect("the assertion side is alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("old delivery was not released");
+        }));
+        let emitting_old = Arc::clone(&old);
+        let emit = std::thread::spawn(move || emitting_old.emit_for_test("old-after-cut"));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("old delivery did not reach the cutoff seam");
+
+        let replacement = unregistered_pane(&w, "root", "sleep 30");
+        let registering = Arc::clone(&w.fx.handle);
+        let registering_host = Arc::clone(&replacement);
+        let (registered_tx, registered_rx) = std::sync::mpsc::sync_channel(1);
+        let register = std::thread::spawn(move || {
+            registering.register_pane(&id("root"), registering_host);
+            registered_tx.send(()).expect("the assertion side is alive");
+        });
+        assert!(
+            until(|| {
+                matches!(
+                    lock(&w.fx.handle.panes).hosts.get(&id("root")),
+                    Some(PaneEntry::Replacing(current)) if Arc::ptr_eq(current, &replacement)
+                )
+            }),
+            "replacement did not enter its non-live cutoff phase"
+        );
+        assert!(
+            !lock(&w.fx.handle.panes).has_live(&id("root")),
+            "replacement became Live before old delivery was cut"
+        );
+        release_tx.send(()).expect("the emitter is alive");
+        emit.join().unwrap();
+        registered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("replacement was not published after cutoff");
+        register.join().unwrap();
+        assert!(
+            lock(&w.fx.handle.panes)
+                .hosts
+                .get(&id("root"))
+                .is_some_and(|entry| Arc::ptr_eq(entry.host(), &replacement)),
+            "replacement was not published"
+        );
+        let before_cut = old_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            before_cut.len(),
+            1,
+            "the one delivery reserved before cutoff completes before publication"
+        );
+        old.emit_for_test("old-definitely-after-cut");
+        assert!(
+            old_rx.try_iter().next().is_none(),
+            "old NodePty was admitted after replacement visibility"
+        );
+
+        w.fx.handle.closing_pane(&id("root"), &replacement);
+        w.fx.handle
+            .register_pane(&id("root"), Arc::clone(&replacement));
+        assert!(
+            !lock(&w.fx.handle.panes).has_live(&id("root")),
+            "same Arc resurrected Closing as Live"
+        );
+
+        let (forgotten_out, _forgotten_rx) = crate::serve::capture(ConnId(1_116));
+        replacement.listen(forgotten_out);
+        w.fx.handle.failed_pane(&id("root"), &replacement);
+        assert_eq!(
+            replacement.listeners(),
+            0,
+            "failed cleanup retained listeners"
+        );
+        old.shutdown().unwrap();
+        replacement.shutdown().unwrap();
     }
 
     /// Dark wire behavior cannot accidentally depend on the internal replay engine being enabled.

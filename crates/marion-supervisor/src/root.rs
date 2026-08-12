@@ -994,8 +994,17 @@ pub fn launch_watched(
 pub trait PaneOwner: Sync {
     /// This node now owns a pty, and a client may attach to it.
     fn opened(&self, agent_id: &AgentId, host: std::sync::Arc<crate::pty::PtyHost>);
-    /// It no longer does.
-    fn closed(&self, agent_id: &AgentId);
+    /// Stop admitting live operations while the launcher drains this exact host.
+    fn closing(&self, agent_id: &AgentId, host: &std::sync::Arc<crate::pty::PtyHost>);
+    /// Publish this exact, successfully drained host for read-only replay.
+    fn completed(
+        &self,
+        agent_id: &AgentId,
+        host: &std::sync::Arc<crate::pty::PtyHost>,
+        charged_bytes: usize,
+    );
+    /// Permanently forget and invalidate the pane after a failed close or explicit removal.
+    fn failed(&self, agent_id: &AgentId, host: &std::sync::Arc<crate::pty::PtyHost>);
 }
 
 /// [`launch_watched`], with the node's **owner** told the instant a process exists.
@@ -1682,19 +1691,20 @@ const PANE_TERM: &str = "xterm-256color";
 
 /// Block until the node exits or `bound` expires, whichever comes first.
 ///
-/// `(exit status, timed out)`. Split out of [`launch_terminal`] so its one fallible step can be
-/// held as a value across the un-advertisement — see the call site.
+/// Whether the wait timed out. Split out of [`launch_terminal`] so its one fallible step can be
+/// held as a value across the un-advertisement — see the call site. Exit observation deliberately
+/// does not reap: shutdown must sweep the still-pinned process group before consuming the status.
 fn wait_for_the_pane_to_end(
     host: &crate::pty::PtyHost,
     bound: StdDuration,
-) -> std::io::Result<(Option<std::process::ExitStatus>, bool)> {
+) -> std::io::Result<bool> {
     let deadline = std::time::Instant::now() + bound;
     loop {
-        if let Some(status) = host.try_wait()? {
-            return Ok((Some(status), false));
+        if host.poll_exited_unreaped()? {
+            return Ok(false);
         }
         if std::time::Instant::now() >= deadline {
-            return Ok((None, true));
+            return Ok(true);
         }
         std::thread::sleep(PANE_POLL);
     }
@@ -1702,6 +1712,58 @@ fn wait_for_the_pane_to_end(
 
 /// How often the launcher asks whether the node has exited. See [`launch_terminal`].
 const PANE_POLL: StdDuration = StdDuration::from_millis(25);
+
+/// Finish one advertised terminal without letting any fallible teardown step strand it live.
+///
+/// The closures keep the lifecycle decision in one place while [`launch_terminal`] retains the
+/// concrete host operations: core shutdown success is independent of whether the drained replay
+/// is safe to cache.
+fn finish_terminal_pane<Shutdown, ReplayCharge>(
+    pane: Option<&dyn PaneOwner>,
+    agent_id: &AgentId,
+    host: &std::sync::Arc<crate::pty::PtyHost>,
+    waited: std::io::Result<bool>,
+    shutdown: Shutdown,
+    replay_charge: ReplayCharge,
+) -> Result<(Option<std::process::ExitStatus>, bool), RootError>
+where
+    Shutdown: FnOnce() -> std::io::Result<Option<std::process::ExitStatus>>,
+    ReplayCharge: FnOnce() -> std::io::Result<usize>,
+{
+    if let Some(owner) = pane {
+        owner.closing(agent_id, host);
+    }
+
+    let timed_out = match waited {
+        Ok(waited) => waited,
+        Err(error) => {
+            let _ = shutdown();
+            if let Some(owner) = pane {
+                owner.failed(agent_id, host);
+            }
+            return Err(error.into());
+        }
+    };
+
+    let status = match shutdown() {
+        Ok(status) => status,
+        Err(error) => {
+            if let Some(owner) = pane {
+                owner.failed(agent_id, host);
+            }
+            return Err(error.into());
+        }
+    };
+
+    if let Some(owner) = pane {
+        match replay_charge() {
+            Ok(charged_bytes) => owner.completed(agent_id, host, charged_bytes),
+            Err(_) => owner.failed(agent_id, host),
+        }
+    }
+
+    Ok((status, timed_out))
+}
 
 /// **§9's M3 criterion C1: the root, in a terminal marion owns.**
 ///
@@ -1819,18 +1881,17 @@ fn launch_terminal(
     // *carried* past the un-advertisement rather than thrown through it.
     let waited = wait_for_the_pane_to_end(&host, bound);
 
-    // **Un-advertised before the teardown, so no client attaches to a pty marion is closing.** The
-    // owner's `Arc` is released here; this frame's keeps the host alive through the shutdown below.
-    if let Some(owner) = pane {
-        owner.closed(&node.agent_id);
-    }
-    let (exited, timed_out) = waited?;
-    // Kill and reap, join the reader, write the `x` record, and only then let the master close.
-    // Idempotent against the loop above: a child that exited on its own was already reaped there,
-    // and `PtyChild::kill_and_reap` returns that status rather than signalling its pid again.
-    let status = host.shutdown()?;
-    let status = exited.or(status);
-
+    // Stop admitting live attaches and control before teardown, but retain the same host while the
+    // reader drains its final bytes and terminal End. The polling loop deliberately left even a
+    // naturally exited leader waitable, so shutdown sweeps while its process identity is pinned.
+    let (status, timed_out) = finish_terminal_pane(
+        pane,
+        &node.agent_id,
+        &host,
+        waited,
+        || host.shutdown(),
+        || host.completed_replay_charge(),
+    )?;
     Ok(RootOutcome {
         exit_code: status.and_then(|s| s.code()),
         // Empty, deliberately. See this function's doc.
@@ -2018,8 +2079,474 @@ fn root_error(e: DuplexError, mcp_ready_timeout: StdDuration) -> RootError {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     use serde_json::json;
+
+    struct RecordingPaneOwner {
+        host: usize,
+        events: Mutex<Vec<&'static str>>,
+    }
+
+    impl RecordingPaneOwner {
+        fn record(&self, host: &Arc<crate::pty::PtyHost>, event: &'static str) {
+            assert_eq!(Arc::as_ptr(host) as usize, self.host);
+            self.events
+                .lock()
+                .expect("pane lifecycle events")
+                .push(event);
+        }
+    }
+
+    impl PaneOwner for RecordingPaneOwner {
+        fn opened(&self, _: &AgentId, _: Arc<crate::pty::PtyHost>) {
+            panic!("the finish seam must not re-open a pane");
+        }
+
+        fn closing(&self, _: &AgentId, host: &Arc<crate::pty::PtyHost>) {
+            self.record(host, "closing");
+        }
+
+        fn completed(&self, _: &AgentId, host: &Arc<crate::pty::PtyHost>, charge: usize) {
+            assert!(
+                charge > 0,
+                "a completed replay has a nonzero retained charge"
+            );
+            self.record(host, "completed");
+        }
+
+        fn failed(&self, _: &AgentId, _: &Arc<crate::pty::PtyHost>) {
+            panic!("an eligible pane must not be failed");
+        }
+    }
+
+    struct FailingPaneOwner {
+        host: usize,
+        events: Mutex<Vec<&'static str>>,
+    }
+
+    impl FailingPaneOwner {
+        fn record(&self, host: &Arc<crate::pty::PtyHost>, event: &'static str) {
+            assert_eq!(Arc::as_ptr(host) as usize, self.host);
+            self.events
+                .lock()
+                .expect("pane lifecycle events")
+                .push(event);
+        }
+    }
+
+    impl PaneOwner for FailingPaneOwner {
+        fn opened(&self, _: &AgentId, _: Arc<crate::pty::PtyHost>) {
+            panic!("the finish seam must not re-open a pane");
+        }
+
+        fn closing(&self, _: &AgentId, host: &Arc<crate::pty::PtyHost>) {
+            self.record(host, "closing");
+        }
+
+        fn completed(&self, _: &AgentId, _: &Arc<crate::pty::PtyHost>, _: usize) {
+            panic!("a failed or ineligible pane must never be completed");
+        }
+
+        fn failed(&self, _: &AgentId, host: &Arc<crate::pty::PtyHost>) {
+            self.record(host, "failed");
+        }
+    }
+
+    /// Root exit polling must observe without reaping: shutdown needs the waitable leader to pin
+    /// its process-group identity while it sweeps a same-group slave holder. This fixture calls
+    /// the production wait and finish helpers; a direct `PtyHost::shutdown` test cannot catch a
+    /// consuming root poll.
+    #[test]
+    fn root_wait_keeps_the_leader_waitable_until_the_same_group_sweep() {
+        use std::io::Read;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct KillHolderOnDrop {
+            pid_file: PathBuf,
+            armed: bool,
+        }
+
+        impl Drop for KillHolderOnDrop {
+            fn drop(&mut self) {
+                if !self.armed {
+                    return;
+                }
+                let Ok(raw) = std::fs::read_to_string(&self.pid_file) else {
+                    return;
+                };
+                let Ok(pid) = raw.parse::<i32>() else {
+                    return;
+                };
+                if let Some(pid) = rustix::process::Pid::from_raw(pid)
+                    .filter(|pid| *pid != rustix::process::Pid::INIT)
+                {
+                    let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+                }
+            }
+        }
+
+        fn alive(pid: i32) -> bool {
+            let Some(pid) = rustix::process::Pid::from_raw(pid) else {
+                return false;
+            };
+            match rustix::process::test_kill_process(pid) {
+                Ok(()) => true,
+                Err(rustix::io::Errno::SRCH) => false,
+                Err(_) => true,
+            }
+        }
+
+        let dir = marion_testsupport::scratch("root-wait-unreaped-pgid-holder");
+        let holder_file = dir.join("holder.pid");
+        let ready_file = dir.join("holder.ready");
+        let id = AgentId("root-wait-unreaped-pgid-holder".into());
+        let host = Arc::new(
+            crate::pty::PtyHost::start(
+                id.clone(),
+                crate::pty::PtyMaster::open(PANE_SIZE).expect("open pty"),
+                &dir.join("pty.cast"),
+                PANE_SIZE,
+                PANE_TERM,
+                std::time::Instant::now(),
+            )
+            .expect("start pane host"),
+        );
+        let witness = marion_harness::ExecutionSurfaces::opaque()
+            .display_plane()
+            .expect("opaque execution owns a pty");
+        let mut command = SysCommand::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(
+                "(trap '' HUP TERM; printf ready >\"$READY_FILE\"; exec sleep 30) & \
+                 holder=$!; printf '%s' \"$holder\" >\"$HOLDER_FILE\"; \
+                 while [ ! -s \"$READY_FILE\" ]; do :; done; \
+                 printf 'leader-tail'; exit 37",
+            )
+            .env("HOLDER_FILE", &holder_file)
+            .env("READY_FILE", &ready_file);
+        host.adopt(
+            crate::pty::spawn_pty(
+                witness,
+                &mut command,
+                host.master(),
+                crate::pty::StdinPlan::TerminalSlave,
+                None,
+            )
+            .expect("spawn fast leader and same-group holder"),
+        );
+        let mut cleanup = KillHolderOnDrop {
+            pid_file: holder_file.clone(),
+            armed: true,
+        };
+
+        let marker_deadline = std::time::Instant::now() + StdDuration::from_secs(2);
+        let holder_pid = loop {
+            if let Ok(file) = std::fs::File::open(&holder_file) {
+                let mut raw = String::new();
+                file.take(64)
+                    .read_to_string(&mut raw)
+                    .expect("read holder pid");
+                if let Ok(pid) = raw.parse::<i32>() {
+                    break pid;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < marker_deadline,
+                "the same-group holder never published its pid"
+            );
+            std::thread::yield_now();
+        };
+        let leader_pid = host.child_pid().expect("the leader is adopted");
+        let leader = rustix::process::Pid::from_raw(leader_pid).expect("positive leader pid");
+        let saw_waitable_leader = Arc::new(AtomicBool::new(false));
+        let saw_waitable_leader_in_hook = Arc::clone(&saw_waitable_leader);
+        host.set_before_child_sweep_hook(Box::new(move || {
+            let observed = rustix::process::waitid(
+                rustix::process::WaitId::Pid(leader),
+                rustix::process::WaitIdOptions::EXITED
+                    | rustix::process::WaitIdOptions::NOHANG
+                    | rustix::process::WaitIdOptions::NOWAIT,
+            )
+            .expect("root polling must leave the leader waitable until the sweep");
+            assert!(
+                observed.is_some(),
+                "the sweep boundary must observe the exited leader as a waitable zombie"
+            );
+            saw_waitable_leader_in_hook.store(true, Ordering::SeqCst);
+        }));
+
+        let waited = wait_for_the_pane_to_end(&host, StdDuration::from_secs(5));
+        let (status, timed_out) = finish_terminal_pane(
+            None,
+            &id,
+            &host,
+            waited,
+            || host.shutdown(),
+            || unreachable!("an unadvertised test pane requests no replay charge"),
+        )
+        .expect("root wait and shutdown succeed");
+        assert!(!timed_out);
+        assert_eq!(status.and_then(|status| status.code()), Some(37));
+        assert!(
+            saw_waitable_leader.load(Ordering::SeqCst),
+            "shutdown reached the pre-sweep waitability assertion"
+        );
+        assert!(
+            matches!(
+                rustix::process::waitid(
+                    rustix::process::WaitId::Pid(leader),
+                    rustix::process::WaitIdOptions::EXITED
+                        | rustix::process::WaitIdOptions::NOHANG
+                        | rustix::process::WaitIdOptions::NOWAIT,
+                ),
+                Err(rustix::io::Errno::CHILD)
+            ),
+            "the sole shutdown wait must consume the leader status"
+        );
+        let holder_deadline = std::time::Instant::now() + StdDuration::from_secs(2);
+        while alive(holder_pid) && std::time::Instant::now() < holder_deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            !alive(holder_pid),
+            "the same-group holder survived the sweep"
+        );
+        cleanup.armed = false;
+    }
+
+    #[test]
+    fn terminal_pane_completes_only_after_shutdown_and_replay_proof() {
+        let id = AgentId("root-pane-finish".into());
+        let cast = std::env::temp_dir().join(format!(
+            "marion-root-pane-finish-{}-{}.cast",
+            std::process::id(),
+            crate::run::unix_millis()
+        ));
+        let host = Arc::new(
+            crate::pty::PtyHost::start(
+                id.clone(),
+                crate::pty::PtyMaster::open(PANE_SIZE).expect("open pty"),
+                &cast,
+                PANE_SIZE,
+                PANE_TERM,
+                std::time::Instant::now(),
+            )
+            .expect("start pane host"),
+        );
+        let witness = marion_harness::ExecutionSurfaces::opaque()
+            .display_plane()
+            .expect("opaque execution owns a pty");
+        let mut command = SysCommand::new("/bin/sh");
+        command.arg("-c").arg("printf 'fast-tail'; exit 37");
+        host.adopt(
+            crate::pty::spawn_pty(
+                witness,
+                &mut command,
+                host.master(),
+                crate::pty::StdinPlan::TerminalSlave,
+                None,
+            )
+            .expect("spawn fast pane"),
+        );
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+        while !host
+            .poll_exited_unreaped()
+            .expect("non-consuming exit poll")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fast pane did not exit within the bounded fixture"
+            );
+            std::thread::yield_now();
+        }
+        let owner = RecordingPaneOwner {
+            host: Arc::as_ptr(&host) as usize,
+            events: Mutex::new(Vec::new()),
+        };
+
+        let (status, timed_out) = finish_terminal_pane(
+            Some(&owner),
+            &id,
+            &host,
+            Ok(false),
+            || {
+                owner
+                    .events
+                    .lock()
+                    .expect("pane lifecycle events")
+                    .push("shutdown");
+                host.shutdown()
+            },
+            || {
+                owner
+                    .events
+                    .lock()
+                    .expect("pane lifecycle events")
+                    .push("replay-proof");
+                host.completed_replay_charge()
+            },
+        )
+        .expect("eligible pane finish");
+
+        assert_eq!(status.and_then(|status| status.code()), Some(37));
+        assert!(!timed_out);
+        assert_eq!(
+            *owner.events.lock().expect("pane lifecycle events"),
+            ["closing", "shutdown", "replay-proof", "completed"]
+        );
+
+        let lines = std::fs::read_to_string(&cast).expect("read cast after shutdown");
+        let exit = lines.lines().last().expect("cast has an exit record");
+        let exit: Value = serde_json::from_str(exit).expect("exit record is JSON");
+        assert_eq!(exit[1], "x", "the completed callback follows the cast exit");
+        assert_eq!(exit[2], "37", "the cast preserves the exact process status");
+
+        let conn = crate::serve::ConnId(9_001);
+        let (out, rx) = crate::serve::capture(conn);
+        let descriptor = host
+            .begin_pane_replay(conn, out)
+            .expect("eligible completed replay");
+        host.pane_ready(conn, &descriptor.token, descriptor.cut);
+        let frames = rx
+            .try_iter()
+            .map(|line| {
+                marion_proto::Frame::from_line(
+                    std::str::from_utf8(&line).expect("outbound replay is UTF-8"),
+                )
+                .expect("outbound replay frame")
+            })
+            .collect::<Vec<_>>();
+        let mut output = Vec::new();
+        let mut ends = 0;
+        for frame in frames {
+            let marion_proto::Frame::Notification(note) = frame else {
+                panic!("pane replay emitted a non-notification")
+            };
+            let marion_proto::Event::NodePaneFrame(frame) = note.event else {
+                panic!("pane replay emitted another event")
+            };
+            match frame.frame {
+                marion_proto::PaneFrameKindV1::Output { bytes } => {
+                    output.extend_from_slice(bytes.as_bytes());
+                }
+                marion_proto::PaneFrameKindV1::End {} => ends += 1,
+                marion_proto::PaneFrameKindV1::Resize { .. } => {}
+            }
+        }
+        assert_eq!(output, b"fast-tail");
+        assert_eq!(ends, 1, "the late replay has one terminal End");
+        drop(host);
+        let _ = std::fs::remove_file(cast);
+    }
+
+    #[test]
+    fn terminal_pane_wait_shutdown_and_replay_failures_are_permanently_failed() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let id = AgentId("root-pane-failures".into());
+        let cast = std::env::temp_dir().join(format!(
+            "marion-root-pane-failures-{}-{}.cast",
+            std::process::id(),
+            crate::run::unix_millis()
+        ));
+        let host = Arc::new(
+            crate::pty::PtyHost::start(
+                id.clone(),
+                crate::pty::PtyMaster::open(PANE_SIZE).expect("open pty"),
+                &cast,
+                PANE_SIZE,
+                PANE_TERM,
+                std::time::Instant::now(),
+            )
+            .expect("start pane host"),
+        );
+        let owner = FailingPaneOwner {
+            host: Arc::as_ptr(&host) as usize,
+            events: Mutex::new(Vec::new()),
+        };
+
+        let error = finish_terminal_pane(
+            Some(&owner),
+            &id,
+            &host,
+            Err(std::io::Error::other("wait failed")),
+            || {
+                owner
+                    .events
+                    .lock()
+                    .expect("pane lifecycle events")
+                    .push("shutdown");
+                Ok(None)
+            },
+            || -> std::io::Result<usize> { panic!("wait failure cannot publish replay") },
+        )
+        .expect_err("wait failure stays a root error");
+        assert!(error.to_string().contains("wait failed"));
+        assert_eq!(
+            *owner.events.lock().expect("pane lifecycle events"),
+            ["closing", "shutdown", "failed"]
+        );
+
+        owner.events.lock().expect("pane lifecycle events").clear();
+        let error = finish_terminal_pane(
+            Some(&owner),
+            &id,
+            &host,
+            Ok(false),
+            || {
+                owner
+                    .events
+                    .lock()
+                    .expect("pane lifecycle events")
+                    .push("shutdown");
+                Err(std::io::Error::other("shutdown failed"))
+            },
+            || -> std::io::Result<usize> { panic!("shutdown failure cannot publish replay") },
+        )
+        .expect_err("shutdown failure stays a root error");
+        assert!(error.to_string().contains("shutdown failed"));
+        assert_eq!(
+            *owner.events.lock().expect("pane lifecycle events"),
+            ["closing", "shutdown", "failed"]
+        );
+
+        owner.events.lock().expect("pane lifecycle events").clear();
+        let (status, timed_out) = finish_terminal_pane(
+            Some(&owner),
+            &id,
+            &host,
+            Ok(true),
+            || {
+                owner
+                    .events
+                    .lock()
+                    .expect("pane lifecycle events")
+                    .push("shutdown");
+                Ok(Some(std::process::ExitStatus::from_raw(37 << 8)))
+            },
+            || {
+                owner
+                    .events
+                    .lock()
+                    .expect("pane lifecycle events")
+                    .push("replay-proof");
+                Err(std::io::Error::other("replay ineligible"))
+            },
+        )
+        .expect("replay ineligibility must not change core shutdown success");
+        assert_eq!(status.and_then(|status| status.code()), Some(37));
+        assert!(timed_out);
+        assert_eq!(
+            *owner.events.lock().expect("pane lifecycle events"),
+            ["closing", "shutdown", "replay-proof", "failed"]
+        );
+
+        host.shutdown().expect("shut down fixture host");
+        drop(host);
+        let _ = std::fs::remove_file(cast);
+    }
 
     fn env() -> McpEnv {
         McpEnv {
