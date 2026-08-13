@@ -806,6 +806,13 @@ how much code exists.
     shipped by this refactor. M3 therefore stays `[partial]`, with C1's recorded manual session
     still outstanding.
 
+    **PTY stream repair diagnostic hardening in this commit moves no milestone marker.** A single
+    default-parallel run failed before preserving the assertion operands; the exact test and 1,024
+    concurrent stress repetitions then passed. The test now reports the actual stream error and
+    whether its injected fault was reached, so a recurrence distinguishes recovery logic from a
+    pre-injection open/lock failure. The root cause remains unconfirmed, production behavior is
+    unchanged, and M3 remains `[partial]` pending C1's recorded manual session.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

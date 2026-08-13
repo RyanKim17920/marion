@@ -2884,12 +2884,14 @@ mod tests {
             let session_id = [0x38; SESSION_ID_BYTES];
             drop(SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap());
 
+            let injection_entered = std::cell::Cell::new(false);
             let first = SessionWriter::reopen_prepared(
                 &cast_path,
                 &agent,
                 size,
                 session_id,
                 |file, offset, marker| {
+                    injection_entered.set(true);
                     file.seek(SeekFrom::Start(offset))?;
                     match failure {
                         "no-bytes" => {}
@@ -2902,7 +2904,12 @@ mod tests {
                     )))
                 },
             );
-            assert!(matches!(first, Err(StreamError::Storage(error)) if error.contains(failure)));
+            assert!(
+                matches!(&first, Err(StreamError::Storage(error)) if error.contains(failure)),
+                "{failure}: injection_entered={}; actual={:?}",
+                injection_entered.get(),
+                first.as_ref().err()
+            );
 
             SessionWriter::reopen(&cast_path, &agent, size, session_id)
                 .unwrap()
