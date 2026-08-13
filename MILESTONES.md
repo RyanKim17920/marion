@@ -763,6 +763,15 @@ how much code exists.
     The current uncommitted runtime/stream implementation is not milestone evidence.
     M3 therefore remains `[partial]`; C1's recorded manual session remains outstanding.
 
+    **Versioned-session hardening in this commit moves no milestone marker.** The production-dark
+    `pty::stream` module now writes privacy-preserving v3 sessions, reads committed v2 history,
+    validates typed terminal outcomes, bounds and repairs recovery, and pins one private writer to
+    the intended stream path. Its evidence is the 45 focused `pty::stream::tests` plus a clean
+    `marion-supervisor` library check. At this commit boundary HEAD `pty.rs` has no `stream::*`
+    production callsite, so none of that storage is yet emitted or consumed by the runtime. It
+    therefore hardens the foundation without satisfying M3 C1 or the remaining native-runtime
+    activation work; M3 stays `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
