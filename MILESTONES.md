@@ -440,6 +440,11 @@ the rest named; **[open]** not started. A milestone is never **[done]** while a 
 is unmet — including the evidence criteria. Statuses are claims about *verified* state, not about
 how much code exists.
 
+**README status reconciliation in this commit moves no milestone marker.** The README now mirrors
+the existing M1/M2/M4 `[done]` and M3/M5 `[partial]` markers and removes stale M1 work instructions
+and debts that this ledger already records as paid. This documentation-only correction adds no
+acceptance evidence, so every marker remains unchanged.
+
 - **M1 [done]** — one real cross-harness hop over the direct-MCP path, returning a task contract,
   driven entirely by the canned provider. Preceded by S6. **All seven of design doc §9's
   acceptance criteria are met**: the six functional ones, and the seventh — the evidence line —

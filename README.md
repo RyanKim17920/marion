@@ -8,12 +8,13 @@ Agent(harness, model, tools, prompt, …) -> handle
 handle: observe · steer · interrupt · result
 ```
 
-**Status:** design complete, **spikes S1–S6 all resolved**, **M1 in progress.** The delegation hop
-runs end to end: `spawn` creates a git worktree, launches a real `codex exec` against the canned
-provider, the child edits a file and calls `report` through marion's own stdio MCP bridge, and
-marion returns a task contract derived from git — with detective scope enforcement demonstrated on
-an out-of-scope write. Still owed for M1: a real `claude` root driving `spawn`, contract
-persistence, and the three debts in design §11 items 1, 2 and 14. Start at *First task*.
+**Status:** design complete, **spikes S1–S6 all resolved**, **M1, M2 and M4 [done]**, and
+**M3 and M5 [partial]**. The delegation hop runs end to end: `spawn` creates a git worktree,
+launches a real `codex exec` against the canned provider, the child edits a file and calls `report`
+through marion's own stdio MCP bridge, and marion returns a task contract derived from git — with
+detective scope enforcement demonstrated on an out-of-scope write. Native command execution is not
+yet activated by the shipped CLI, and M3's recorded 10-minute manual session remains outstanding.
+Start at the milestone ledger for criterion-by-criterion evidence and remaining work.
 
 ---
 
@@ -97,19 +98,13 @@ The most consequential finding was incidental: **`CLAUDE_CONFIG_DIR` isolation b
 because the Keychain entry is keyed to the real config dir. Config isolation and subscription auth
 are mutually exclusive for Claude Code children.
 
-## First task: the M1 vertical slice
+## Current milestone status
 
-S6 is done, so the return channel is settled — marion's `report` tool over MCP. Now: a real `claude` root calls `mcp__marion__spawn`; a real
-`codex` child edits a file in a worktree and reports; the parent receives a **structured task
-contract** — driven entirely by the canned provider so it costs nothing and repeats. Acceptance
-criteria and the concrete M1 decisions (marion launches the root node itself, blocking `spawn`,
-three-way contract field ownership, detective scope enforcement, `codex exec --json` as the child
-surface, and the canned-provider wiring for both processes): design doc §9. Repo layout: §10.
-
-**Build it disposably.** The independent Codex review argued persuasively that the delegation core
-should be proven before anything that displays it: no *detached* daemon (the registry, the task
-audit trail and the control MCP run in-process), no VT emulator, no model proxy. Only once that hop
-works do the supervisor split (M2) and the tree UI (M3) go in.
+M1's disposable vertical slice is complete: a real `claude` root calls
+`mcp__marion__spawn`, a real `codex` child edits a file in a worktree and reports, and the parent
+receives the structured task contract through marion's `report` tool over MCP. M2's supervisor
+split and M4's fan-in criteria are also complete. M3 and M5 remain partial; their exact remaining
+criteria and evidence live in `MILESTONES.md` and are deliberately not duplicated here.
 
 Three debts fell due in M1, all of them designed on decompilation rather than measurement, and all
 three are now paid: the pty re-confirmation of S1's protocol (**S11**, `tests/fixtures/s11/`), a
