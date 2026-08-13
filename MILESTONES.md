@@ -846,6 +846,17 @@ acceptance evidence, so every marker remains unchanged.
     activation remain outstanding. These compiled foundations satisfy no activation criterion, so
     no marker advances and M3 remains `[partial]`.
 
+    **Synchronous native-relay signal design recorded on 2026-08-13 moves no milestone marker.**
+    The production-dark process-global guard foundation already committed in `a4c065b` remains, but
+    v5 narrows and replaces its activation model: attach precedes signal and raw activation; only
+    default, unblocked termination and job-control signals are owned; ignored or blocked signals are
+    untouched; `SIGTSTP` is never synthesized; terminal output is bounded and nonblocking; and exact
+    terminal, action, and mask cleanup is required. A later termination/redelivery/lifecycle expansion
+    was experimental and remains uncommitted: its multithreaded publication/teardown race and PTY
+    flake evidence caused its rejection. This is design rationale only, with no production activation
+    or runtime-test claim; M3 remains `[partial]`. macOS/Linux runtime, INT/HUP/TSTP/CONT, and
+    socket/lease/node-survival end-to-end evidence remain outstanding.
+
     **Authenticated native command lifecycle in this commit moves no milestone marker.** Native
     selection can now launch a supervisor-owned PTY process, reserve its exact pending writer, and
     pre-create both lifecycle and claimed-connection workers behind abortable gates before the
