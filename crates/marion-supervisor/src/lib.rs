@@ -70,6 +70,8 @@ pub mod native_intent;
     )
 )]
 pub(crate) mod native_launch;
+/// Transparent pane-v1 relay for an authenticated native facade claim.
+pub(crate) mod native_relay;
 mod native_tty;
 mod pane_client;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather

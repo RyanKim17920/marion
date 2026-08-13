@@ -814,6 +814,21 @@ how much code exists.
     delivery. Production behavior is unchanged, so M3 remains `[partial]` pending C1's recorded
     manual session.
 
+    **Native relay foundation and terminal restoration in this commit move no milestone marker.**
+    The compiled, production-dark raw pane-v1 relay preserves opaque input and output, enforces
+    attach/Ready, replay-cut, dense-sequence, and End boundaries, and forwards resize under
+    exclusively owned, restored SIGWINCH handling. Its retained terminal guard arms before the first
+    termios or file-status mutation, retries interrupted syscalls, independently restores stdin
+    flags, stdout flags, and termios, preserves queued input, retains retry ownership after partial
+    cleanup, and appends cleanup failure without replacing the primary failure. Tests cover raw
+    protocol boundaries, SIGWINCH restoration, contention, and reset across relay exits, terminal
+    entry rollback and partial restoration, Drop retry, and production-path open-failure composition.
+    Compiling that relay also retires stale dead-code expectations on the claim decomposition methods
+    it now consumes. No non-SIGWINCH signal lifecycle is implemented: job control,
+    SIGINT/SIGTERM/SIGHUP handling, panic and passive cleanup, nested-PTY end-to-end evidence,
+    production descriptors, service enablement, and CLI activation remain outstanding. M3 stays
+    `[partial]` pending C1's recorded manual session.
+
     **Authenticated native command lifecycle in this commit moves no milestone marker.** Native
     selection can now launch a supervisor-owned PTY process, reserve its exact pending writer, and
     pre-create both lifecycle and claimed-connection workers behind abortable gates before the

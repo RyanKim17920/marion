@@ -240,10 +240,6 @@ impl NativeFacadeHandoff {
         (self.receipt, self.tty)
     }
 
-    #[expect(
-        dead_code,
-        reason = "production-dark until the transparent native relay consumes this handoff"
-    )]
     pub(crate) fn claim(mut self) -> Result<ClaimedNativeFacade, BootstrapError> {
         exchange_native_claim(&mut self.stream, &self.receipt, |stream| {
             stream.set_read_timeout(None)?;
@@ -371,10 +367,6 @@ pub(crate) struct ClaimedNativeFacade {
 }
 
 impl ClaimedNativeFacade {
-    #[expect(
-        dead_code,
-        reason = "production-dark until the transparent native relay consumes this handoff"
-    )]
     pub(crate) fn into_parts(self) -> (AgentId, ClientTtyWitness, UnixStream) {
         (self.agent_id, self.tty, self.stream)
     }
