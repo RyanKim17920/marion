@@ -50,8 +50,26 @@ pub mod mcp;
 pub mod native_binding;
 /// Native-only fd bootstrap authentication and direct-CLI capability issuance.
 pub mod native_bootstrap;
+/// Supervisor-owned execution of an authenticated, assembled native command.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "production-dark until a verified native facade installs the lifecycle"
+    )
+)]
+pub(crate) mod native_exec;
 /// Closed native-versus-structured launch provenance and descriptor-owned lane selection.
 pub mod native_intent;
+/// Production-dark composition of authenticated selection, reservation, PTY launch, and claim.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "production-dark until a verified native facade installs the lifecycle"
+    )
+)]
+pub(crate) mod native_launch;
 mod native_tty;
 mod pane_client;
 /// §4.3's registry, running: `marion_core::registry::replay` as a boot path plus a tail, rather

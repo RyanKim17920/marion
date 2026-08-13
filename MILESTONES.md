@@ -814,6 +814,29 @@ how much code exists.
     delivery. Production behavior is unchanged, so M3 remains `[partial]` pending C1's recorded
     manual session.
 
+    **Authenticated native command lifecycle in this commit moves no milestone marker.** Native
+    selection can now launch a supervisor-owned PTY process, reserve its exact pending writer, and
+    pre-create both lifecycle and claimed-connection workers behind abortable gates before the
+    decisive claim acknowledgement. Timeout reset, bounded SIGPIPE-safe acknowledgement, rollback,
+    child reaping, and ticket/lease retry are covered by
+    `lifecycle_spawn_failure_preserves_launch_for_retry_without_lifecycle_effects`,
+    `real_claim_preparation_reserves_writer_and_abort_reaps_without_starting_lifecycle`,
+    `lifecycle_thread_spawn_failure_precedes_claim_ack_and_keeps_retry_available`,
+    `client_timeout_reset_failure_sends_no_native_claim`,
+    `claim_ack_deadline_is_bounded_by_the_absolute_launch_deadline`,
+    `blocked_claim_ack_flush_does_not_start_the_prepared_relay`,
+    `interrupted_claim_ack_send_retries_before_relay_start`,
+    `claim_ack_write_failure_aborts_prepared_relay_without_starting_or_connecting`,
+    `claim_timeout_reset_failure_precedes_ack_and_relay_start`,
+    `claimed_connection_preflight_failure_precedes_ack_and_relay_start`,
+    `launch_deadline_expiring_during_real_preflight_refuses_without_starting`, and
+    `panicking_request_cancel_still_revokes_real_pending_authority`, while
+    `ordinary_connection_is_announced_exactly_once` and
+    `prepared_connection_abort_cannot_lose_its_writer_wakeup` protect the shared connection path.
+    Production serving still installs the disabled native bootstrap service, the shipped CLI still
+    refuses the native facade relay, and terminal/signal relay restoration is intentionally outside
+    this commit. M3 therefore remains `[partial]` pending C1's recorded manual session.
+
     **PTY stream repair diagnostic hardening in this commit moves no milestone marker.** A single
     default-parallel run failed before preserving the assertion operands; the exact test and 1,024
     concurrent stress repetitions then passed. The test now reports the actual stream error and

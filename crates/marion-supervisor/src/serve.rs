@@ -107,7 +107,7 @@ pub const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const OUTBOUND_CAPACITY: usize = 1024;
 
 /// Maximum wall-clock time one serialized frame may occupy the connection writer.
-const OUTBOUND_FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const OUTBOUND_FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long the accept loop sleeps between polls when idle.
 ///
@@ -929,7 +929,15 @@ fn serve_conn(
     handle: Arc<dyn Handle>,
     stopping: &AtomicBool,
 ) {
-    serve_conn_with_frame_timeout(id, stream, handle, stopping, OUTBOUND_FRAME_WRITE_TIMEOUT);
+    match PreparedClaimedConn::prepare(id, &stream, handle, OUTBOUND_FRAME_WRITE_TIMEOUT) {
+        Ok(prepared) => {
+            drop(stream);
+            prepared.run_already_connected(stopping);
+        }
+        Err((handle, departure)) => {
+            handle.gone(id, &ClientGone::SocketClosed, &departure);
+        }
+    }
 }
 
 /// Continue an authenticated native-bootstrap socket as an ordinary pane protocol connection.
@@ -938,16 +946,263 @@ fn serve_conn(
 /// Calling `connected` here, after the ticket was atomically claimed, makes the ensuing
 /// `serve_conn`/`gone` pair the complete lifetime of the writer lease. Server shutdown closes the
 /// duplicate and therefore still interrupts this otherwise blocking relay.
-pub(crate) fn serve_claimed_conn(
+pub(crate) struct PreparedClaimedConn {
     id: ConnId,
-    stream: std::os::unix::net::UnixStream,
+    lines: Lines<std::os::unix::net::UnixStream>,
     handle: Arc<dyn Handle>,
-) {
-    handle.connected(id);
-    let stopping = AtomicBool::new(false);
-    serve_conn(id, stream, handle, &stopping);
+    out: Option<Outbound>,
+    writer: Option<std::thread::JoinHandle<()>>,
+    writer_gate: Arc<(Mutex<PreparedConnGate>, std::sync::Condvar)>,
+    departed: Arc<Mutex<Option<Departure>>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreparedConnGate {
+    Pending,
+    Start,
+    Abort,
+}
+
+impl PreparedClaimedConn {
+    pub(crate) fn prepare(
+        id: ConnId,
+        stream: &std::os::unix::net::UnixStream,
+        handle: Arc<dyn Handle>,
+        frame_write_timeout: Duration,
+    ) -> Result<Self, (Arc<dyn Handle>, Departure)> {
+        Self::prepare_with_writer_spawner(
+            id,
+            stream,
+            handle,
+            frame_write_timeout,
+            |name, task| std::thread::Builder::new().name(name).spawn(task),
+            || {},
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepare_with_test_writer_spawner(
+        id: ConnId,
+        stream: &std::os::unix::net::UnixStream,
+        handle: Arc<dyn Handle>,
+        frame_write_timeout: Duration,
+        spawn: impl FnOnce(
+            String,
+            Box<dyn FnOnce() + Send + 'static>,
+        ) -> std::io::Result<std::thread::JoinHandle<()>>,
+    ) -> Result<Self, (Arc<dyn Handle>, Departure)> {
+        Self::prepare_with_writer_spawner(id, stream, handle, frame_write_timeout, spawn, || {})
+    }
+
+    #[cfg(test)]
+    fn prepare_with_test_wait_hook(
+        id: ConnId,
+        stream: &std::os::unix::net::UnixStream,
+        handle: Arc<dyn Handle>,
+        frame_write_timeout: Duration,
+        before_wait: impl FnOnce() + Send + 'static,
+    ) -> Result<Self, (Arc<dyn Handle>, Departure)> {
+        Self::prepare_with_writer_spawner(
+            id,
+            stream,
+            handle,
+            frame_write_timeout,
+            |name, task| std::thread::Builder::new().name(name).spawn(task),
+            before_wait,
+        )
+    }
+
+    fn prepare_with_writer_spawner(
+        id: ConnId,
+        stream: &std::os::unix::net::UnixStream,
+        handle: Arc<dyn Handle>,
+        frame_write_timeout: Duration,
+        spawn: impl FnOnce(
+            String,
+            Box<dyn FnOnce() + Send + 'static>,
+        ) -> std::io::Result<std::thread::JoinHandle<()>>,
+        before_wait: impl FnOnce() + Send + 'static,
+    ) -> Result<Self, (Arc<dyn Handle>, Departure)> {
+        let read_half = stream.try_clone().map_err(|_| {
+            (
+                Arc::clone(&handle),
+                Departure::ReadFailed("the connection could not be split for reading".into()),
+            )
+        })?;
+        let write_half = stream.try_clone().map_err(|_| {
+            (
+                Arc::clone(&handle),
+                Departure::ReadFailed("the connection could not be split for writing".into()),
+            )
+        })?;
+        let shutdown_half = stream.try_clone().map_err(|_| {
+            (
+                Arc::clone(&handle),
+                Departure::ReadFailed(
+                    "the connection could not retain a cancellation handle".into(),
+                ),
+            )
+        })?;
+        let departed = Arc::new(Mutex::new(None));
+        let (tx, rx) = sync_channel::<OutboundItem>(OUTBOUND_CAPACITY);
+        let out = Outbound {
+            conn: id,
+            peer: peer_of(stream),
+            tx,
+            departed: Arc::clone(&departed),
+            shutdown: Some(Arc::new(shutdown_half)),
+        };
+        let writer_gate = Arc::new((
+            Mutex::new(PreparedConnGate::Pending),
+            std::sync::Condvar::new(),
+        ));
+        let worker_gate = Arc::clone(&writer_gate);
+        let writer_out = out.clone();
+        let mut before_wait = Some(before_wait);
+        let writer = spawn(
+            format!("marion-conn-writer-{}", id.0),
+            Box::new(move || {
+                let (gate, changed) = &*worker_gate;
+                let mut state = gate.lock().unwrap_or_else(|error| error.into_inner());
+                while *state == PreparedConnGate::Pending {
+                    if let Some(before_wait) = before_wait.take() {
+                        before_wait();
+                    }
+                    state = changed
+                        .wait(state)
+                        .unwrap_or_else(|error| error.into_inner());
+                }
+                let start = *state == PreparedConnGate::Start;
+                drop(state);
+                if !start {
+                    return;
+                }
+                run_conn_writer(write_half, rx, writer_out, frame_write_timeout);
+            }),
+        )
+        .map_err(|error| {
+            (
+                Arc::clone(&handle),
+                Departure::ReadFailed(format!(
+                    "the connection writer could not be started: {error}"
+                )),
+            )
+        })?;
+        Ok(Self {
+            id,
+            lines: Lines::new(read_half),
+            handle,
+            out: Some(out),
+            writer: Some(writer),
+            writer_gate,
+            departed,
+        })
+    }
+
+    /// Start a fully allocated connection. This is the post-ACK boundary and is infallible.
+    pub(crate) fn run(mut self, stopping: &AtomicBool) {
+        self.run_inner(stopping, true);
+    }
+
+    fn run_already_connected(mut self, stopping: &AtomicBool) {
+        self.run_inner(stopping, false);
+    }
+
+    fn run_inner(&mut self, stopping: &AtomicBool, announce_connected: bool) {
+        if announce_connected {
+            self.handle.connected(self.id);
+        }
+        {
+            let (gate, changed) = &*self.writer_gate;
+            *gate.lock().unwrap_or_else(|error| error.into_inner()) = PreparedConnGate::Start;
+            changed.notify_one();
+        }
+        let out = self.out.take().expect("prepared connection owns outbound");
+        run_conn_reader(
+            self.id,
+            &mut self.lines,
+            Arc::clone(&self.handle),
+            stopping,
+            out,
+            self.writer.take().expect("prepared connection owns writer"),
+            Arc::clone(&self.departed),
+        );
+    }
+}
+
+impl Drop for PreparedClaimedConn {
+    fn drop(&mut self) {
+        let out = self.out.take();
+        if let Some(out) = out.as_ref() {
+            out.depart(Departure::ReadFailed(
+                "prepared claimed connection was aborted before acknowledgement".into(),
+            ));
+        }
+        {
+            let (gate, changed) = &*self.writer_gate;
+            let mut state = gate.lock().unwrap_or_else(|error| error.into_inner());
+            if *state == PreparedConnGate::Pending {
+                *state = PreparedConnGate::Abort;
+            }
+            changed.notify_one();
+        }
+        drop(out);
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
+fn run_conn_writer(
+    mut write_half: std::os::unix::net::UnixStream,
+    rx: std::sync::mpsc::Receiver<OutboundItem>,
+    out: Outbound,
+    frame_write_timeout: Duration,
+) {
+    loop {
+        match rx.recv_timeout(WRITER_POLL) {
+            Ok(item) => {
+                let Some((frame, flow)) = prepare_outbound_item(&out, item) else {
+                    continue;
+                };
+                if let Err(e) =
+                    write_frame_before(&mut write_half, &frame, frame_write_timeout, Instant::now)
+                {
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) {
+                        out.fail(Departure::TooSlow {
+                            queued: OUTBOUND_CAPACITY,
+                        });
+                    } else {
+                        out.fail(Departure::WriteFailed(e.to_string()));
+                    }
+                    break;
+                }
+                if let Some(flow) = flow
+                    && matches!(requeue_flow(&out, flow), FlowRequeue::Fatal)
+                {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if out.departed().is_some() {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the generic native connection runner is exercised before production routing"
+    )
+)]
 fn serve_conn_with_frame_timeout(
     id: ConnId,
     stream: std::os::unix::net::UnixStream,
@@ -955,85 +1210,27 @@ fn serve_conn_with_frame_timeout(
     stopping: &AtomicBool,
     frame_write_timeout: Duration,
 ) {
-    let Ok(write_half) = stream.try_clone() else {
-        handle.gone(
-            id,
-            &ClientGone::SocketClosed,
-            &Departure::ReadFailed("the connection could not be split for writing".into()),
-        );
-        return;
-    };
-    let Ok(shutdown_half) = stream.try_clone() else {
-        handle.gone(
-            id,
-            &ClientGone::SocketClosed,
-            &Departure::ReadFailed("the connection could not retain a cancellation handle".into()),
-        );
-        return;
-    };
-    let departed = Arc::new(Mutex::new(None));
-    let (tx, rx) = sync_channel::<OutboundItem>(OUTBOUND_CAPACITY);
-    let out = Outbound {
-        conn: id,
-        // **Once, here, from the kernel.** Not per call and not from any frame — see [`Peer`].
-        peer: peer_of(&stream),
-        tx,
-        departed: Arc::clone(&departed),
-        shutdown: Some(Arc::new(shutdown_half)),
-    };
-    let writer = {
-        let out = out.clone();
-        std::thread::spawn(move || {
-            let mut w = write_half;
-            loop {
-                match rx.recv_timeout(WRITER_POLL) {
-                    Ok(item) => {
-                        let Some((frame, flow)) = prepare_outbound_item(&out, item) else {
-                            continue;
-                        };
-                        if let Err(e) =
-                            write_frame_before(&mut w, &frame, frame_write_timeout, Instant::now)
-                        {
-                            if matches!(
-                                e.kind(),
-                                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                            ) {
-                                out.fail(Departure::TooSlow {
-                                    queued: OUTBOUND_CAPACITY,
-                                });
-                            } else {
-                                out.fail(Departure::WriteFailed(e.to_string()));
-                            }
-                            break;
-                        }
-                        if let Some(flow) = flow
-                            && matches!(requeue_flow(&out, flow), FlowRequeue::Fatal)
-                        {
-                            break;
-                        }
-                    }
-                    // **The end of a connection is a departure, not a closed channel.** A
-                    // subscriber list holding a clone of this `Outbound` keeps the sender alive
-                    // indefinitely — which is the point of a clone — so waiting for the channel to
-                    // close would leave one thread per dead client for the supervisor's whole life.
-                    // `departed` is the authority on whether this connection is over, and
-                    // [`Outbound::send`] already refuses on the strength of it, so a stale clone is
-                    // inert rather than dangerous.
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        if out.departed().is_some() {
-                            break;
-                        }
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            }
-        })
-    };
+    match PreparedClaimedConn::prepare(id, &stream, handle, frame_write_timeout) {
+        Ok(prepared) => {
+            drop(stream);
+            prepared.run_already_connected(stopping);
+        }
+        Err((handle, departure)) => handle.gone(id, &ClientGone::SocketClosed, &departure),
+    }
+}
 
+fn run_conn_reader(
+    id: ConnId,
+    lines: &mut Lines<std::os::unix::net::UnixStream>,
+    handle: Arc<dyn Handle>,
+    stopping: &AtomicBool,
+    out: Outbound,
+    writer: std::thread::JoinHandle<()>,
+    departed: Arc<Mutex<Option<Departure>>>,
+) {
     // §7.3.1's only evidence of intent. Set when a `session/quit` **parses**, independently of what
     // the handler answers — the client said what it wanted whether or not marion could do it.
     let mut stated: Option<QuitDisposition> = None;
-    let mut lines = Lines::new(stream);
     let departure = loop {
         if stopping.load(Ordering::SeqCst) {
             break Departure::ServerStopping;
@@ -1593,6 +1790,7 @@ mod tests {
     /// state would make every failure ambiguous between the two.
     #[derive(Default)]
     struct Recorder {
+        connected: Mutex<Vec<ConnId>>,
         calls: Mutex<Vec<(ConnId, Method)>>,
         gone: Mutex<Vec<(ConnId, ClientGone, Departure)>>,
         subs: Mutex<Vec<Outbound>>,
@@ -1619,6 +1817,10 @@ mod tests {
     }
 
     impl Handle for Recorder {
+        fn connected(&self, conn: ConnId) {
+            lock(&self.connected).push(conn);
+        }
+
         fn call(
             &self,
             conn: ConnId,
@@ -1941,6 +2143,58 @@ mod tests {
         let n = r.read_line(&mut line).expect("a frame arrives");
         assert!(n > 0, "the supervisor closed instead of answering");
         Frame::from_line(&line).expect("the supervisor emits well-formed frames")
+    }
+
+    #[test]
+    fn ordinary_connection_is_announced_exactly_once() {
+        let fx = Fixture::new("connected-once");
+        let mut client = fx.dial();
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        send(&mut client, node_get("a"), 1);
+        assert!(matches!(read_frame(&mut reader), Frame::Response(_)));
+        assert_eq!(
+            lock(&fx.rec.connected).as_slice(),
+            &[ConnId(1)],
+            "ordinary accept and prepared relay both announced the same connection"
+        );
+    }
+
+    #[test]
+    fn prepared_connection_abort_cannot_lose_its_writer_wakeup() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let rec = Arc::new(Recorder::default());
+        let (waiting_tx, waiting_rx) = sync_channel(1);
+        let (release_tx, release_rx) = sync_channel(1);
+        let prepared = PreparedClaimedConn::prepare_with_test_wait_hook(
+            ConnId(8_701),
+            &server,
+            Arc::clone(&rec) as Arc<dyn Handle>,
+            OUTBOUND_FRAME_WRITE_TIMEOUT,
+            move || {
+                waiting_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            },
+        )
+        .unwrap_or_else(|(_, departure)| panic!("connection preparation failed: {departure:?}"));
+        let departure = prepared.out.as_ref().unwrap().clone();
+        waiting_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("writer reached its gated wait");
+        let (dropped_tx, dropped_rx) = sync_channel(1);
+        std::thread::spawn(move || {
+            drop(prepared);
+            let _ = dropped_tx.send(());
+        });
+        assert!(
+            until(|| departure.departed().is_some()),
+            "prepared drop did not begin aborting the writer"
+        );
+        release_tx.send(()).unwrap();
+        dropped_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("abort notification was lost before the writer waited");
+        drop(client);
+        drop(server);
     }
 
     #[test]

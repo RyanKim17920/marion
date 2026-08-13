@@ -991,7 +991,7 @@ pub fn launch_watched(
 /// `node/attach` with a pane onto a pty whose child marion reaped. `launch_terminal` calls it
 /// **before** it shuts the host down, so the node stops being advertised at the instant marion
 /// decides to stop rather than at the instant the fd closes.
-pub trait PaneOwner: Sync {
+pub trait PaneOwner: Send + Sync {
     /// This node now owns a pty, and a client may attach to it.
     fn opened(&self, agent_id: &AgentId, host: std::sync::Arc<crate::pty::PtyHost>);
     /// Stop admitting live operations while the launcher drains this exact host.
@@ -1694,16 +1694,16 @@ const PANE_TERM: &str = "xterm-256color";
 /// Whether the wait timed out. Split out of [`launch_terminal`] so its one fallible step can be
 /// held as a value across the un-advertisement — see the call site. Exit observation deliberately
 /// does not reap: shutdown must sweep the still-pinned process group before consuming the status.
-fn wait_for_the_pane_to_end(
+pub(crate) fn wait_for_the_pane_to_end(
     host: &crate::pty::PtyHost,
-    bound: StdDuration,
+    bound: Option<StdDuration>,
 ) -> std::io::Result<bool> {
-    let deadline = std::time::Instant::now() + bound;
+    let deadline = bound.map(|bound| std::time::Instant::now() + bound);
     loop {
         if host.poll_exited_unreaped()? {
             return Ok(false);
         }
-        if std::time::Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Ok(true);
         }
         std::thread::sleep(PANE_POLL);
@@ -1718,14 +1718,14 @@ const PANE_POLL: StdDuration = StdDuration::from_millis(25);
 /// The closures keep the lifecycle decision in one place while [`launch_terminal`] retains the
 /// concrete host operations: core shutdown success is independent of whether the drained replay
 /// is safe to cache.
-fn finish_terminal_pane<Shutdown, ReplayCharge>(
+pub(crate) fn finish_terminal_pane<Shutdown, ReplayCharge>(
     pane: Option<&dyn PaneOwner>,
     agent_id: &AgentId,
     host: &std::sync::Arc<crate::pty::PtyHost>,
     waited: std::io::Result<bool>,
     shutdown: Shutdown,
     replay_charge: ReplayCharge,
-) -> Result<(Option<std::process::ExitStatus>, bool), RootError>
+) -> std::io::Result<(Option<std::process::ExitStatus>, bool)>
 where
     Shutdown: FnOnce(bool) -> std::io::Result<Option<std::process::ExitStatus>>,
     ReplayCharge: FnOnce() -> std::io::Result<usize>,
@@ -1741,7 +1741,7 @@ where
             if let Some(owner) = pane {
                 owner.failed(agent_id, host);
             }
-            return Err(error.into());
+            return Err(error);
         }
     };
 
@@ -1751,7 +1751,7 @@ where
             if let Some(owner) = pane {
                 owner.failed(agent_id, host);
             }
-            return Err(error.into());
+            return Err(error);
         }
     };
 
@@ -1879,7 +1879,7 @@ fn launch_terminal(
     // leave it there — answering a later `node/attach` with a pane onto a master that is about to
     // close, which is precisely what `forget_pane` exists to prevent. So the wait's failure is
     // *carried* past the un-advertisement rather than thrown through it.
-    let waited = wait_for_the_pane_to_end(&host, bound);
+    let waited = wait_for_the_pane_to_end(&host, Some(bound));
 
     // Stop admitting live attaches and control before teardown, but retain the same host while the
     // reader drains its final bytes and terminal End. The polling loop deliberately left even a
@@ -2277,7 +2277,7 @@ mod tests {
             saw_waitable_leader_in_hook.store(true, Ordering::SeqCst);
         }));
 
-        let waited = wait_for_the_pane_to_end(&host, StdDuration::from_secs(5));
+        let waited = wait_for_the_pane_to_end(&host, Some(StdDuration::from_secs(5)));
         let (status, timed_out) = finish_terminal_pane(
             None,
             &id,
@@ -2353,7 +2353,7 @@ mod tests {
             .expect("spawn bounded pane"),
         );
 
-        let waited = wait_for_the_pane_to_end(&host, StdDuration::from_millis(25));
+        let waited = wait_for_the_pane_to_end(&host, Some(StdDuration::from_millis(25)));
         let (status, timed_out) = finish_terminal_pane(
             None,
             &id,

@@ -66,7 +66,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -81,7 +81,10 @@ use rustix::io::fcntl_getfd;
 use rustix::io::{FdFlags, fcntl_setfd};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
-use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
+use rustix::net::{
+    RecvFlags as SocketRecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags, recv, send,
+    sendmsg,
+};
 
 use marion_core::contract::AgentId;
 use marion_core::ids::{UUID_LEN, is_uuid_v7};
@@ -242,22 +245,10 @@ impl NativeFacadeHandoff {
         reason = "production-dark until the transparent native relay consumes this handoff"
     )]
     pub(crate) fn claim(mut self) -> Result<ClaimedNativeFacade, BootstrapError> {
-        self.stream
-            .set_read_timeout(Some(LAUNCH_RESULT_TIMEOUT))
-            .and_then(|()| self.stream.set_write_timeout(Some(LAUNCH_RESULT_TIMEOUT)))
-            .map_err(BootstrapError::NativeTransportIo)?;
-        write_native_claim_request(&mut self.stream, &self.receipt)?;
-        let mut status = [0];
-        self.stream
-            .read_exact(&mut status)
-            .map_err(BootstrapError::NativeTransportIo)?;
-        if status != [WIRE_OK] {
-            return Err(BootstrapError::AuthorizationRefused);
-        }
-        self.stream
-            .set_read_timeout(None)
-            .and_then(|()| self.stream.set_write_timeout(None))
-            .map_err(BootstrapError::NativeTransportIo)?;
+        exchange_native_claim(&mut self.stream, &self.receipt, |stream| {
+            stream.set_read_timeout(None)?;
+            stream.set_write_timeout(None)
+        })?;
         let NativeLaunchReceipt {
             agent_id,
             ticket: _,
@@ -267,6 +258,109 @@ impl NativeFacadeHandoff {
             tty: self.tty,
             stream: self.stream,
         })
+    }
+}
+
+fn exchange_native_claim(
+    stream: &mut UnixStream,
+    receipt: &NativeLaunchReceipt,
+    reset_timeouts: impl FnOnce(&UnixStream) -> std::io::Result<()>,
+) -> Result<(), BootstrapError> {
+    stream
+        .set_read_timeout(Some(LAUNCH_RESULT_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(LAUNCH_RESULT_TIMEOUT)))
+        .map_err(BootstrapError::NativeTransportIo)?;
+    reset_timeouts(stream).map_err(BootstrapError::NativeTransportIo)?;
+    #[cfg(target_os = "macos")]
+    rustix::net::sockopt::set_socket_nosigpipe(&*stream, true)
+        .map_err(|error| BootstrapError::NativeTransportIo(error.into()))?;
+    let deadline = Instant::now()
+        .checked_add(LAUNCH_RESULT_TIMEOUT)
+        .ok_or(BootstrapError::ClockOverflow)?;
+    let claim = native_claim_request_bytes(receipt)?;
+    send_native_claim_before(stream, &claim, deadline)?;
+    let status = recv_native_claim_status_before(stream, deadline)?;
+    if status != [WIRE_OK] {
+        return Err(BootstrapError::AuthorizationRefused);
+    }
+    Ok(())
+}
+
+fn native_claim_request_bytes(receipt: &NativeLaunchReceipt) -> Result<Vec<u8>, BootstrapError> {
+    let mut claim = Vec::with_capacity(CLAIM_MESSAGE.len() + 2 + UUID_LEN + 32);
+    write_native_claim_request(&mut claim, receipt)?;
+    Ok(claim)
+}
+
+fn wait_native_claim_io(
+    stream: &UnixStream,
+    flags: rustix::event::PollFlags,
+    deadline: Instant,
+) -> Result<(), BootstrapError> {
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(BootstrapError::LaunchResultExpired)?;
+        let timeout = rustix::event::Timespec {
+            tv_sec: i64::try_from(remaining.as_secs()).unwrap_or(i64::MAX),
+            tv_nsec: remaining.subsec_nanos().into(),
+        };
+        let mut fds = [rustix::event::PollFd::new(stream, flags)];
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(0) => return Err(BootstrapError::LaunchResultExpired),
+            Ok(_) => return Ok(()),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(BootstrapError::NativeTransportIo(error.into())),
+        }
+    }
+}
+
+fn send_native_claim_before(
+    stream: &UnixStream,
+    claim: &[u8],
+    deadline: Instant,
+) -> Result<(), BootstrapError> {
+    let mut unwritten = claim;
+    while !unwritten.is_empty() {
+        #[allow(
+            unused_mut,
+            reason = "Linux adds MSG_NOSIGNAL below; macOS uses SO_NOSIGPIPE"
+        )]
+        let mut flags = SendFlags::DONTWAIT;
+        #[cfg(target_os = "linux")]
+        {
+            flags |= SendFlags::NOSIGNAL;
+        }
+        match send(stream, unwritten, flags) {
+            Ok(0) => return Err(BootstrapError::NativeWireProtocol),
+            Ok(written) => unwritten = &unwritten[written..],
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) if error == rustix::io::Errno::AGAIN => {
+                wait_native_claim_io(stream, rustix::event::PollFlags::OUT, deadline)?;
+            }
+            Err(error) => return Err(BootstrapError::NativeTransportIo(error.into())),
+        }
+    }
+    Ok(())
+}
+
+fn recv_native_claim_status_before(
+    stream: &UnixStream,
+    deadline: Instant,
+) -> Result<[u8; 1], BootstrapError> {
+    let mut status = [0xff];
+    loop {
+        match recv(stream, &mut status, SocketRecvFlags::DONTWAIT) {
+            Ok((_, 0)) => return Err(BootstrapError::NativeWireProtocol),
+            Ok((_, 1)) => return Ok(status),
+            Ok(_) => return Err(BootstrapError::NativeWireProtocol),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) if error == rustix::io::Errno::AGAIN => {
+                wait_native_claim_io(stream, rustix::event::PollFlags::IN, deadline)?;
+            }
+            Err(error) => return Err(BootstrapError::NativeTransportIo(error.into())),
+        }
     }
 }
 
@@ -324,6 +418,22 @@ impl DirectNativeRequestContext {
 
     pub(crate) const fn native_wire_version(&self) -> u32 {
         self.native_wire_version
+    }
+
+    #[expect(
+        dead_code,
+        reason = "reserved for the first verified native command factory"
+    )]
+    pub(crate) fn opaque_tail(&self) -> &[OsString] {
+        &self.opaque_tail
+    }
+
+    #[expect(
+        dead_code,
+        reason = "reserved for the first verified native command factory"
+    )]
+    pub(crate) fn terminal_profile(&self) -> &OsStr {
+        &self.terminal_profile
     }
 }
 
@@ -1005,10 +1115,21 @@ impl NativeLaunchDeadline {
     }
 }
 
-fn claim_ack_timeout(deadline: &NativeLaunchDeadline) -> Result<Duration, BootstrapError> {
-    deadline
-        .require_remaining()
-        .map(|remaining| remaining.min(CLAIM_ACK_TIMEOUT))
+fn claim_ack_deadline(
+    deadline: &NativeLaunchDeadline,
+) -> Result<HandshakeDeadline, BootstrapError> {
+    let now = deadline.0.clock.now();
+    let capped = now
+        .checked_add(CLAIM_ACK_TIMEOUT)
+        .ok_or(BootstrapError::ClockOverflow)?;
+    let expires_at = deadline.0.expires_at.min(capped);
+    if expires_at <= now {
+        return Err(BootstrapError::LaunchResultExpired);
+    }
+    Ok(HandshakeDeadline {
+        clock: Arc::clone(&deadline.0.clock),
+        expires_at,
+    })
 }
 
 impl HandshakeDeadline {
@@ -1730,6 +1851,18 @@ impl PendingNativeLaunchReceipt {
         &self.receipt
     }
 
+    /// Add request-local rollback to the ticket's existing authority revocation. The service
+    /// disarms both only after claim acknowledgement and relay commit.
+    pub(crate) fn on_cancel(&mut self, cancel: impl FnOnce() + Send + 'static) {
+        let authority = self.cancel.take();
+        self.cancel = Some(Box::new(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(cancel));
+            if let Some(authority) = authority {
+                authority();
+            }
+        }));
+    }
+
     fn commit(mut self) {
         self.cancel.take();
     }
@@ -1748,7 +1881,7 @@ impl fmt::Debug for PendingNativeLaunchReceipt {
 impl Drop for PendingNativeLaunchReceipt {
     fn drop(&mut self) {
         if let Some(cancel) = self.cancel.take() {
-            cancel();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(cancel));
         }
     }
 }
@@ -2349,7 +2482,10 @@ pub(crate) trait NativeBootstrapHandler: Send + Sync + 'static {
 }
 
 pub(crate) trait PreparedNativeRelay: Send {
-    fn commit(self: Box<Self>) -> Result<Arc<dyn crate::serve::Handle>, BootstrapError>;
+    fn handle(&self) -> Arc<dyn crate::serve::Handle>;
+
+    /// Release a relay whose complete fallible preparation finished before the wire ACK.
+    fn commit(self: Box<Self>);
 }
 
 struct DisabledNativeBootstrapHandler;
@@ -2385,7 +2521,30 @@ pub(crate) struct NativeBootstrapService {
     handshake_clock: Arc<dyn MonotonicClock>,
     handshake_timeout: Duration,
     verify_received_terminal: bool,
+    #[cfg(test)]
+    claim_ack_sender: Mutex<Option<ClaimAckSender>>,
+    #[cfg(test)]
+    claim_timeout_reset: Mutex<Option<ClaimTimeoutReset>>,
+    #[cfg(test)]
+    claimed_conn_writer_spawner: Mutex<Option<ClaimedConnWriterSpawner>>,
 }
+
+#[cfg(test)]
+type ClaimAckSender =
+    Box<dyn FnMut(&UnixStream, &[u8], SendFlags) -> rustix::io::Result<usize> + Send + 'static>;
+
+#[cfg(test)]
+type ClaimTimeoutReset = Box<dyn FnOnce(&UnixStream) -> std::io::Result<()> + Send + 'static>;
+
+#[cfg(test)]
+type ClaimedConnWriterSpawner = Box<
+    dyn FnOnce(
+            String,
+            Box<dyn FnOnce() + Send + 'static>,
+        ) -> std::io::Result<std::thread::JoinHandle<()>>
+        + Send
+        + 'static,
+>;
 
 #[derive(Debug)]
 struct NativeLaunchOutcome {
@@ -2405,6 +2564,12 @@ impl NativeBootstrapService {
             handshake_clock: Arc::new(SystemClock::default()),
             handshake_timeout: HANDSHAKE_TIMEOUT,
             verify_received_terminal: true,
+            #[cfg(test)]
+            claim_ack_sender: Mutex::new(None),
+            #[cfg(test)]
+            claim_timeout_reset: Mutex::new(None),
+            #[cfg(test)]
+            claimed_conn_writer_spawner: Mutex::new(None),
         }
     }
 
@@ -2423,6 +2588,12 @@ impl NativeBootstrapService {
             handshake_clock: Arc::new(SystemClock::default()),
             handshake_timeout: HANDSHAKE_TIMEOUT,
             verify_received_terminal: true,
+            #[cfg(test)]
+            claim_ack_sender: Mutex::new(None),
+            #[cfg(test)]
+            claim_timeout_reset: Mutex::new(None),
+            #[cfg(test)]
+            claimed_conn_writer_spawner: Mutex::new(None),
         }
     }
 
@@ -2441,6 +2612,9 @@ impl NativeBootstrapService {
             handshake_clock: Arc::new(SystemClock::default()),
             handshake_timeout: HANDSHAKE_TIMEOUT,
             verify_received_terminal: false,
+            claim_ack_sender: Mutex::new(None),
+            claim_timeout_reset: Mutex::new(None),
+            claimed_conn_writer_spawner: Mutex::new(None),
         }
     }
 
@@ -2461,6 +2635,9 @@ impl NativeBootstrapService {
             handshake_clock,
             handshake_timeout,
             verify_received_terminal: true,
+            claim_ack_sender: Mutex::new(None),
+            claim_timeout_reset: Mutex::new(None),
+            claimed_conn_writer_spawner: Mutex::new(None),
         }
     }
 
@@ -2480,6 +2657,146 @@ impl NativeBootstrapService {
             handshake_clock,
             handshake_timeout: HANDSHAKE_TIMEOUT,
             verify_received_terminal: false,
+            claim_ack_sender: Mutex::new(None),
+            claim_timeout_reset: Mutex::new(None),
+            claimed_conn_writer_spawner: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_claim_ack_sender_for_tests(
+        &self,
+        sender: impl FnMut(&UnixStream, &[u8], SendFlags) -> rustix::io::Result<usize> + Send + 'static,
+    ) {
+        assert!(
+            lock(&self.claim_ack_sender)
+                .replace(Box::new(sender))
+                .is_none()
+        );
+    }
+
+    #[cfg(test)]
+    fn set_claim_timeout_reset_for_tests(
+        &self,
+        reset: impl FnOnce(&UnixStream) -> std::io::Result<()> + Send + 'static,
+    ) {
+        assert!(
+            lock(&self.claim_timeout_reset)
+                .replace(Box::new(reset))
+                .is_none()
+        );
+    }
+
+    #[cfg(test)]
+    fn set_claimed_conn_writer_spawner_for_tests(
+        &self,
+        spawner: impl FnOnce(
+            String,
+            Box<dyn FnOnce() + Send + 'static>,
+        ) -> std::io::Result<std::thread::JoinHandle<()>>
+        + Send
+        + 'static,
+    ) {
+        assert!(
+            lock(&self.claimed_conn_writer_spawner)
+                .replace(Box::new(spawner))
+                .is_none()
+        );
+    }
+
+    fn clear_claim_timeouts(&self, stream: &UnixStream) -> std::io::Result<()> {
+        #[cfg(test)]
+        if let Some(reset) = lock(&self.claim_timeout_reset).take() {
+            reset(stream)?;
+        } else {
+            stream.set_read_timeout(None)?;
+            stream.set_write_timeout(None)?;
+        }
+        #[cfg(not(test))]
+        {
+            stream.set_read_timeout(None)?;
+            stream.set_write_timeout(None)?;
+        }
+        #[cfg(target_os = "macos")]
+        rustix::net::sockopt::set_socket_nosigpipe(stream, true).map_err(std::io::Error::from)?;
+        Ok(())
+    }
+
+    fn prepare_claimed_conn(
+        &self,
+        id: ConnId,
+        stream: &UnixStream,
+        handle: Arc<dyn crate::serve::Handle>,
+    ) -> Result<
+        crate::serve::PreparedClaimedConn,
+        (Arc<dyn crate::serve::Handle>, crate::serve::Departure),
+    > {
+        #[cfg(test)]
+        if let Some(spawner) = lock(&self.claimed_conn_writer_spawner).take() {
+            return crate::serve::PreparedClaimedConn::prepare_with_test_writer_spawner(
+                id,
+                stream,
+                handle,
+                crate::serve::OUTBOUND_FRAME_WRITE_TIMEOUT,
+                spawner,
+            );
+        }
+        crate::serve::PreparedClaimedConn::prepare(
+            id,
+            stream,
+            handle,
+            crate::serve::OUTBOUND_FRAME_WRITE_TIMEOUT,
+        )
+    }
+
+    fn send_claim_ack_attempt(
+        &self,
+        stream: &UnixStream,
+        flags: SendFlags,
+    ) -> rustix::io::Result<usize> {
+        #[cfg(test)]
+        if let Some(sender) = lock(&self.claim_ack_sender).as_mut() {
+            return sender(stream, &[WIRE_OK], flags);
+        }
+        send(stream, &[WIRE_OK], flags)
+    }
+
+    fn write_claim_ack(
+        &self,
+        stream: &UnixStream,
+        deadline: &HandshakeDeadline,
+    ) -> Result<(), BootstrapError> {
+        // The claimed relay must inherit a blocking socket with no bootstrap deadlines, and
+        // resetting either option after success would be a new fallible step behind WIRE_OK.
+        // MSG_DONTWAIT bounds this one-byte acknowledgement without mutating the socket state the
+        // relay inherits. A full buffer is a refusal; no lifecycle has started yet.
+        #[allow(
+            unused_mut,
+            reason = "Linux adds MSG_NOSIGNAL; macOS uses SO_NOSIGPIPE"
+        )]
+        let mut flags = SendFlags::DONTWAIT;
+        #[cfg(target_os = "linux")]
+        {
+            flags |= SendFlags::NOSIGNAL;
+        }
+        loop {
+            deadline.require_remaining().map_err(|error| match error {
+                BootstrapError::HandshakeExpired => BootstrapError::LaunchResultExpired,
+                error => error,
+            })?;
+            match self.send_claim_ack_attempt(stream, flags) {
+                Ok(1) => return Ok(()),
+                Ok(_) => {
+                    return Err(BootstrapError::NativeTransportIo(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "native claim acknowledgement was not written atomically",
+                    )));
+                }
+                Err(rustix::io::Errno::INTR) => {}
+                Err(error) => {
+                    return Err(BootstrapError::NativeTransportIo(error.into()));
+                }
+            }
         }
     }
 
@@ -2546,40 +2863,39 @@ impl NativeBootstrapService {
                     };
                     prepared
                 };
-                let ack_timeout = match claim_ack_timeout(&result_deadline) {
-                    Ok(timeout) => timeout,
-                    Err(_) => {
+                if self.clear_claim_timeouts(&stream).is_err() {
+                    let _ = (&stream).write_all(&[WIRE_REFUSED]);
+                    let _ = (&stream).flush();
+                    self.authority.revoke_connection(id);
+                    return;
+                }
+                let relay = prepared.handle();
+                let claimed = match self.prepare_claimed_conn(id, &stream, Arc::clone(&relay)) {
+                    Ok(claimed) => claimed,
+                    Err((_relay, _departure)) => {
+                        let _ = send(&stream, &[WIRE_REFUSED], SendFlags::DONTWAIT);
                         self.authority.revoke_connection(id);
                         return;
                     }
                 };
-                if stream.set_write_timeout(Some(ack_timeout)).is_err()
-                    || (&stream)
-                        .write_all(&[WIRE_OK])
-                        .and_then(|()| (&stream).flush())
-                        .is_err()
-                {
+                let ack_deadline = match claim_ack_deadline(&result_deadline) {
+                    Ok(deadline) => deadline,
+                    Err(_) => {
+                        let _ = send(&stream, &[WIRE_REFUSED], SendFlags::DONTWAIT);
+                        self.authority.revoke_connection(id);
+                        return;
+                    }
+                };
+                if self.write_claim_ack(&stream, &ack_deadline).is_err() {
                     self.authority.revoke_connection(id);
                     return;
                 }
-                let Ok(relay) = prepared.commit() else {
-                    self.authority.revoke_connection(id);
-                    return;
-                };
+                prepared.commit();
                 pending.commit();
                 self.authority.revoke_connection(id);
-                if stream.set_read_timeout(None).is_err() || stream.set_write_timeout(None).is_err()
-                {
-                    relay.gone(
-                        id,
-                        &marion_proto::ClientGone::SocketClosed,
-                        &crate::serve::Departure::ReadFailed(
-                            "native claim relay could not clear bootstrap deadlines".into(),
-                        ),
-                    );
-                    return;
-                }
-                crate::serve::serve_claimed_conn(id, stream, relay);
+                drop(stream);
+                let stopping = AtomicBool::new(false);
+                claimed.run(&stopping);
                 return;
             }
             Ok(NativeLaunchOutcome {

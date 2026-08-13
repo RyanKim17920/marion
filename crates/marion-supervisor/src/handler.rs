@@ -305,12 +305,14 @@ struct Panes {
     completed_scan_count: usize,
 }
 
-/// A native ticket and writer slot validated together, but not made durable until the claim ACK.
+/// A native ticket and writer slot validated together before the claim ACK.
 ///
 /// The authority guard keeps ordinary attaches behind the pending gate, while `lease` reserves the
 /// host's one writer slot. Neither requires holding `Panes` during socket I/O. Dropping this value
-/// restores the ticket and releases the slot, which makes a failed acknowledgement safely
-/// retryable on the still-live launch.
+/// before commit restores the ticket and releases the slot, which makes any fallible relay
+/// preparation (including lifecycle-thread creation) retryable. Commit is itself the final
+/// fallible preparation step; a later acknowledgement failure rolls the whole launch back through
+/// its prepared lifecycle rather than trying to resurrect a ticket whose writer was published.
 pub(crate) struct PreparedNativeWriter {
     handle: Arc<RegistryHandle>,
     authority: Arc<crate::native_bootstrap::PendingNativeLaunches>,
@@ -323,13 +325,6 @@ pub(crate) struct PreparedNativeWriter {
 }
 
 impl PreparedNativeWriter {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "production-dark until the native launch adapter activates claim relay"
-        )
-    )]
     pub(crate) fn commit(
         mut self,
     ) -> Result<
@@ -1998,15 +1993,9 @@ impl RegistryHandle {
     }
 
     /// Validate a same-socket native claim and reserve its exact writer slot without consuming the
-    /// ticket. The returned guard performs the final, non-I/O commit only after the service has
-    /// delivered the claim acknowledgement.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "production-dark until the native launch adapter activates claim relay"
-        )
-    )]
+    /// ticket. The returned guard performs the final, non-I/O writer commit only after every other
+    /// fallible relay resource is ready and before the service delivers the claim acknowledgement;
+    /// post-acknowledgement relay start is therefore infallible.
     pub(crate) fn prepare_pending_native_writer(
         self: &Arc<Self>,
         ticket: &crate::native_bootstrap::NativeLaunchTicket,

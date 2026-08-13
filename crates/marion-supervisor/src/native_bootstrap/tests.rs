@@ -172,23 +172,66 @@ fn native_claim_wire_presents_the_exact_agent_and_opaque_ticket() {
     ));
 }
 
+/// Mutation: reset client socket timeouts after emitting the native claim. The server can consume
+/// and prepare that claim before the local reset fails, leaving a success race the client cannot
+/// safely enter. Reset failure must therefore produce zero claim bytes.
 #[test]
-fn claim_ack_timeout_is_bounded_by_the_absolute_launch_deadline() {
+fn client_timeout_reset_failure_sends_no_native_claim() {
+    let receipt = NativeLaunchReceipt::new(
+        AgentId(NATIVE_TEST_AGENT.into()),
+        NativeLaunchTicket::for_test([0x81; 32]),
+    );
+    let (mut client, mut server) = UnixStream::pair().unwrap();
+    server
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let observed = std::thread::spawn(move || {
+        let claim = read_native_claim_request(&mut server).is_ok();
+        if claim {
+            server.write_all(&[WIRE_OK]).unwrap();
+        }
+        claim
+    });
+
+    let result = exchange_native_claim(&mut client, &receipt, |_| {
+        Err(std::io::Error::other(
+            "injected client timeout reset failure",
+        ))
+    });
+    drop(client);
+    assert!(matches!(result, Err(BootstrapError::NativeTransportIo(_))));
+    assert!(
+        !observed.join().unwrap(),
+        "server received claim bytes before client timeout reset completed"
+    );
+}
+
+#[test]
+fn claim_ack_deadline_is_bounded_by_the_absolute_launch_deadline() {
     let clock = Arc::new(ManualClock::default());
     let deadline = NativeLaunchDeadline::new(
         Arc::clone(&clock) as Arc<dyn MonotonicClock>,
         LAUNCH_RESULT_TIMEOUT,
     )
     .unwrap();
-    assert_eq!(claim_ack_timeout(&deadline).unwrap(), CLAIM_ACK_TIMEOUT);
+    assert_eq!(
+        claim_ack_deadline(&deadline)
+            .unwrap()
+            .require_remaining()
+            .unwrap(),
+        CLAIM_ACK_TIMEOUT
+    );
     clock.set(LAUNCH_RESULT_TIMEOUT - Duration::from_millis(125));
     assert_eq!(
-        claim_ack_timeout(&deadline).unwrap(),
+        claim_ack_deadline(&deadline)
+            .unwrap()
+            .require_remaining()
+            .unwrap(),
         Duration::from_millis(125)
     );
     clock.set(LAUNCH_RESULT_TIMEOUT);
     assert!(matches!(
-        claim_ack_timeout(&deadline),
+        claim_ack_deadline(&deadline),
         Err(BootstrapError::LaunchResultExpired)
     ));
 }
@@ -228,13 +271,28 @@ impl crate::serve::Handle for ClaimLifecycleHandle {
 struct ClaimLifecyclePrepared {
     handle: Arc<ClaimLifecycleHandle>,
     commits: Arc<AtomicU64>,
+    aborts: Arc<AtomicU64>,
+    committed: bool,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl PreparedNativeRelay for ClaimLifecyclePrepared {
-    fn commit(self: Box<Self>) -> Result<Arc<dyn crate::serve::Handle>, BootstrapError> {
+    fn handle(&self) -> Arc<dyn crate::serve::Handle> {
+        self.handle.clone()
+    }
+
+    fn commit(mut self: Box<Self>) {
+        self.committed = true;
         self.commits.fetch_add(1, Ordering::SeqCst);
-        Ok(self.handle)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Drop for ClaimLifecyclePrepared {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.aborts.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -243,6 +301,8 @@ struct ClaimLifecycleHandler {
     claimant: Mutex<Option<NativeClaimant>>,
     handle: Arc<ClaimLifecycleHandle>,
     commits: Arc<AtomicU64>,
+    aborts: Arc<AtomicU64>,
+    fail_preparations: Arc<AtomicU64>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -276,12 +336,364 @@ impl NativeBootstrapHandler for ClaimLifecycleHandler {
     ) -> Result<Box<dyn PreparedNativeRelay>, BootstrapError> {
         assert_eq!(agent_id, &AgentId(NATIVE_TEST_AGENT.into()));
         assert_eq!(ticket, &NativeLaunchTicket::for_test([0x5a; 32]));
+        if self
+            .fail_preparations
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(BootstrapError::NativeClaim(
+                "injected lifecycle thread spawn failure".into(),
+            ));
+        }
         *lock(&self.claimant) = Some(claimant);
         Ok(Box::new(ClaimLifecyclePrepared {
             handle: Arc::clone(&self.handle),
             commits: Arc::clone(&self.commits),
+            aborts: Arc::clone(&self.aborts),
+            committed: false,
         }))
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn start_claim_lifecycle_roundtrip(
+    service: &Arc<NativeBootstrapService>,
+    context: &DirectNativeRequestContext,
+    conn: ConnId,
+) -> (UnixStream, std::thread::JoinHandle<()>) {
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let worker = {
+        let service = Arc::clone(service);
+        let active = service.try_acquire_connection().unwrap();
+        std::thread::spawn(move || service.serve_connection(conn, server, active))
+    };
+    let input = std::fs::File::open("/dev/null").unwrap();
+    let output = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .unwrap();
+    let capability =
+        request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), context).unwrap();
+    let receipt = present_direct_cli_capability(&mut client, capability, context).unwrap();
+    write_native_claim_request(&mut client, &receipt).unwrap();
+    (client, worker)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn claim_lifecycle_roundtrip(
+    service: &Arc<NativeBootstrapService>,
+    context: &DirectNativeRequestContext,
+    conn: ConnId,
+) -> u8 {
+    let (mut client, worker) = start_claim_lifecycle_roundtrip(service, context, conn);
+    let mut status = [0xff];
+    client.read_exact(&mut status).unwrap();
+    drop(client);
+    worker.join().unwrap();
+    status[0]
+}
+
+/// Mutation: leave lifecycle-thread creation in the post-acknowledgement `commit`. The first
+/// round trip then observes `WIRE_OK` even though the injected spawn refusal means no relay can
+/// ever own that socket. A second authenticated claim proves the failure did not start a lifecycle
+/// or poison preparation for a retry.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn lifecycle_thread_spawn_failure_precedes_claim_ack_and_keeps_retry_available() {
+    let handle = Arc::new(ClaimLifecycleHandle::default());
+    let commits = Arc::new(AtomicU64::new(0));
+    let aborts = Arc::new(AtomicU64::new(0));
+    let handler = Arc::new(ClaimLifecycleHandler {
+        claimant: Mutex::new(None),
+        handle: Arc::clone(&handle),
+        commits: Arc::clone(&commits),
+        aborts: Arc::clone(&aborts),
+        fail_preparations: Arc::new(AtomicU64::new(1)),
+    });
+    let context = request_context();
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            handler as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
+
+    assert_eq!(
+        claim_lifecycle_roundtrip(&service, &context, ConnId(4_211)),
+        WIRE_REFUSED,
+        "a lifecycle spawn failure was acknowledged as a usable relay"
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    assert!(lock(&handle.connected).is_empty());
+    assert!(lock(&handle.gone).is_empty());
+
+    assert_eq!(
+        claim_lifecycle_roundtrip(&service, &context, ConnId(4_212)),
+        WIRE_OK,
+        "the failed preparation poisoned the next authenticated claim"
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 1);
+    assert_eq!(aborts.load(Ordering::SeqCst), 0);
+}
+
+/// Mutation: release the prepared relay before the acknowledgement flush completes. The commit
+/// counter would become observable while the injected flush remains blocked.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn blocked_claim_ack_flush_does_not_start_the_prepared_relay() {
+    let handle = Arc::new(ClaimLifecycleHandle::default());
+    let commits = Arc::new(AtomicU64::new(0));
+    let aborts = Arc::new(AtomicU64::new(0));
+    let handler = Arc::new(ClaimLifecycleHandler {
+        claimant: Mutex::new(None),
+        handle: Arc::clone(&handle),
+        commits: Arc::clone(&commits),
+        aborts: Arc::clone(&aborts),
+        fail_preparations: Arc::new(AtomicU64::new(0)),
+    });
+    let context = request_context();
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            handler as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
+    let (at_flush_tx, at_flush_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    service.set_claim_ack_sender_for_tests(move |stream, bytes, flags| {
+        let written = send(stream, bytes, flags)?;
+        at_flush_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        Ok(written)
+    });
+
+    let (mut client, worker) = start_claim_lifecycle_roundtrip(&service, &context, ConnId(4_213));
+    at_flush_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("claim acknowledgement reached the blocked flush");
+    assert_eq!(
+        commits.load(Ordering::SeqCst),
+        0,
+        "prepared relay started before claim acknowledgement flush"
+    );
+    release_tx.send(()).unwrap();
+    let mut status = [0xff];
+    client.read_exact(&mut status).unwrap();
+    assert_eq!(status, [WIRE_OK]);
+    drop(client);
+    worker.join().unwrap();
+    assert_eq!(commits.load(Ordering::SeqCst), 1);
+    assert_eq!(aborts.load(Ordering::SeqCst), 0);
+}
+
+/// Mutation: return a transport failure on the first interrupted ACK send instead of retrying the
+/// same one-byte decisive write against its absolute deadline.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn interrupted_claim_ack_send_retries_before_relay_start() {
+    let handle = Arc::new(ClaimLifecycleHandle::default());
+    let commits = Arc::new(AtomicU64::new(0));
+    let aborts = Arc::new(AtomicU64::new(0));
+    let handler = Arc::new(ClaimLifecycleHandler {
+        claimant: Mutex::new(None),
+        handle: Arc::clone(&handle),
+        commits: Arc::clone(&commits),
+        aborts: Arc::clone(&aborts),
+        fail_preparations: Arc::new(AtomicU64::new(0)),
+    });
+    let context = request_context();
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            handler as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
+    let attempts = Arc::new(AtomicU64::new(0));
+    let observed_attempts = Arc::clone(&attempts);
+    service.set_claim_ack_sender_for_tests(move |stream, bytes, flags| {
+        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(rustix::io::Errno::INTR)
+        } else {
+            send(stream, bytes, flags)
+        }
+    });
+
+    assert_eq!(
+        claim_lifecycle_roundtrip(&service, &context, ConnId(4_214)),
+        WIRE_OK
+    );
+    assert_eq!(observed_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(commits.load(Ordering::SeqCst), 1);
+    assert_eq!(aborts.load(Ordering::SeqCst), 0);
+}
+
+/// Mutation: forget to drop the prepared relay when acknowledgement output fails. That leaks its
+/// pre-spawned worker and request-owned lifecycle instead of synchronously aborting preparation.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn claim_ack_write_failure_aborts_prepared_relay_without_starting_or_connecting() {
+    let handle = Arc::new(ClaimLifecycleHandle::default());
+    let commits = Arc::new(AtomicU64::new(0));
+    let aborts = Arc::new(AtomicU64::new(0));
+    let handler = Arc::new(ClaimLifecycleHandler {
+        claimant: Mutex::new(None),
+        handle: Arc::clone(&handle),
+        commits: Arc::clone(&commits),
+        aborts: Arc::clone(&aborts),
+        fail_preparations: Arc::new(AtomicU64::new(0)),
+    });
+    let context = request_context();
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            handler as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
+    service.set_claim_ack_sender_for_tests(|_, _, _| Err(rustix::io::Errno::PIPE));
+
+    let (client, worker) = start_claim_lifecycle_roundtrip(&service, &context, ConnId(4_214));
+    worker.join().unwrap();
+    drop(client);
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    assert_eq!(aborts.load(Ordering::SeqCst), 1);
+    assert!(lock(&handle.connected).is_empty());
+    assert!(lock(&handle.gone).is_empty());
+}
+
+/// Mutation: clear bootstrap socket deadlines after emitting `WIRE_OK`. An injected reset failure
+/// then exposes success for a relay the service immediately kills instead of refusing before
+/// release; a later clean round trip also proves failure did not poison preparation globally.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn claim_timeout_reset_failure_precedes_ack_and_relay_start() {
+    let handle = Arc::new(ClaimLifecycleHandle::default());
+    let commits = Arc::new(AtomicU64::new(0));
+    let aborts = Arc::new(AtomicU64::new(0));
+    let handler = Arc::new(ClaimLifecycleHandler {
+        claimant: Mutex::new(None),
+        handle: Arc::clone(&handle),
+        commits: Arc::clone(&commits),
+        aborts: Arc::clone(&aborts),
+        fail_preparations: Arc::new(AtomicU64::new(0)),
+    });
+    let context = request_context();
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            handler as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
+    service.set_claim_timeout_reset_for_tests(|_| {
+        Err(std::io::Error::other(
+            "injected claim socket timeout reset failure",
+        ))
+    });
+
+    assert_eq!(
+        claim_lifecycle_roundtrip(&service, &context, ConnId(4_215)),
+        WIRE_REFUSED,
+        "timeout reset failure escaped behind WIRE_OK"
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    assert_eq!(aborts.load(Ordering::SeqCst), 1);
+    assert!(lock(&handle.connected).is_empty());
+
+    assert_eq!(
+        claim_lifecycle_roundtrip(&service, &context, ConnId(4_216)),
+        WIRE_OK,
+        "timeout reset failure poisoned the next claim preparation"
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 1);
+}
+
+/// Mutation: retain socket splitting or relay-worker creation after `WIRE_OK`. This injected
+/// preflight failure then exposes success even though the prepared relay is immediately aborted.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn claimed_connection_preflight_failure_precedes_ack_and_relay_start() {
+    let handle = Arc::new(ClaimLifecycleHandle::default());
+    let commits = Arc::new(AtomicU64::new(0));
+    let aborts = Arc::new(AtomicU64::new(0));
+    let handler = Arc::new(ClaimLifecycleHandler {
+        claimant: Mutex::new(None),
+        handle: Arc::clone(&handle),
+        commits: Arc::clone(&commits),
+        aborts: Arc::clone(&aborts),
+        fail_preparations: Arc::new(AtomicU64::new(0)),
+    });
+    let context = request_context();
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            handler as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
+    service.set_claimed_conn_writer_spawner_for_tests(|_, _| {
+        Err(std::io::Error::other(
+            "injected claimed-connection writer spawn failure",
+        ))
+    });
+
+    assert_eq!(
+        claim_lifecycle_roundtrip(&service, &context, ConnId(4_217)),
+        WIRE_REFUSED,
+        "claimed-connection preflight failure escaped behind WIRE_OK"
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    assert_eq!(aborts.load(Ordering::SeqCst), 1);
+    assert!(lock(&handle.connected).is_empty());
+}
+
+/// Mutation: check the launch deadline before relay transport preflight but not immediately
+/// before the decisive ACK. The injected real writer spawn advances the shared monotonic clock
+/// through expiry after all transport allocation succeeds.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn launch_deadline_expiring_during_real_preflight_refuses_without_starting() {
+    let handle = Arc::new(ClaimLifecycleHandle::default());
+    let commits = Arc::new(AtomicU64::new(0));
+    let aborts = Arc::new(AtomicU64::new(0));
+    let handler = Arc::new(ClaimLifecycleHandler {
+        claimant: Mutex::new(None),
+        handle: Arc::clone(&handle),
+        commits: Arc::clone(&commits),
+        aborts: Arc::clone(&aborts),
+        fail_preparations: Arc::new(AtomicU64::new(0)),
+    });
+    let clock = Arc::new(ManualClock::default());
+    let context = request_context();
+    let service = Arc::new(
+        NativeBootstrapService::with_clock_without_terminal_verification_for_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            handler as Arc<dyn NativeBootstrapHandler>,
+            Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        ),
+    );
+    service.set_claimed_conn_writer_spawner_for_tests(move |name, task| {
+        clock.set(LAUNCH_RESULT_TIMEOUT);
+        std::thread::Builder::new().name(name).spawn(task)
+    });
+
+    assert_eq!(
+        claim_lifecycle_roundtrip(&service, &context, ConnId(4_218)),
+        WIRE_REFUSED,
+        "deadline expiry during real preflight escaped behind WIRE_OK"
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    assert_eq!(aborts.load(Ordering::SeqCst), 1);
+    assert!(lock(&handle.connected).is_empty());
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -293,6 +705,8 @@ fn same_authenticated_socket_claims_and_owns_the_exact_conn_lifecycle() {
         claimant: Mutex::new(None),
         handle: Arc::clone(&handle),
         commits: Arc::clone(&commits),
+        aborts: Arc::new(AtomicU64::new(0)),
+        fail_preparations: Arc::new(AtomicU64::new(0)),
     });
     let context = request_context();
     let service = Arc::new(
@@ -450,6 +864,27 @@ fn pending_native_launch_is_exact_single_use_and_expires_from_publish() {
     pruned.commit();
     clock.set(Duration::from_secs(225));
     assert!(!launches.has_pending(binding.agent_id()));
+}
+
+#[test]
+fn panicking_request_cancel_still_revokes_real_pending_authority() {
+    let clock = Arc::new(ManualClock::default());
+    let launches = Arc::new(PendingNativeLaunches::with_sources(
+        Arc::new(SequenceRng::default()),
+        clock as Arc<dyn MonotonicClock>,
+        Duration::from_secs(60),
+    ));
+    let binding = launch_binding(PeerIdentity {
+        uid: 501,
+        pid: 7_001,
+    });
+    let mut pending = launches.reserve(binding.clone()).unwrap();
+    pending.on_cancel(|| panic!("injected request-local cancellation panic"));
+    drop(pending);
+    assert!(
+        !launches.has_pending(binding.agent_id()),
+        "request-local panic skipped the real ticket-authority revocation"
+    );
 }
 
 #[test]
