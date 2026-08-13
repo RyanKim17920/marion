@@ -806,6 +806,14 @@ how much code exists.
     shipped by this refactor. M3 therefore stays `[partial]`, with C1's recorded manual session
     still outstanding.
 
+    **The causal pane-drain test correction in this commit moves no milestone marker.**
+    `closing_releases_the_registry_before_shutdown_drains_admitted_control` now waits for a
+    test-only signal that shutdown observed the exact unresolved input-delivery barrier instead of
+    treating a timeout equal to the production grace period as proof of ordering. It then proves
+    `Closing` released the global pane registry, injects the master-write failure, and releases the
+    delivery. Production behavior is unchanged, so M3 remains `[partial]` pending C1's recorded
+    manual session.
+
     **PTY stream repair diagnostic hardening in this commit moves no milestone marker.** A single
     default-parallel run failed before preserving the assertion operands; the exact test and 1,024
     concurrent stress repetitions then passed. The test now reports the actual stream error and

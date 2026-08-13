@@ -1063,6 +1063,8 @@ impl InputFailureTarget {
 struct ControlGate {
     state: Mutex<ControlState>,
     drained: Condvar,
+    #[cfg(test)]
+    input_delivery_wait_signal: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 struct LegacyListeners {
@@ -1171,7 +1173,17 @@ impl ControlGate {
                 input_delivery_failure: None,
             }),
             drained: Condvar::new(),
+            #[cfg(test)]
+            input_delivery_wait_signal: Mutex::new(None),
         })
+    }
+
+    #[cfg(test)]
+    fn set_input_delivery_wait_signal(&self, signal: std::sync::mpsc::Sender<()>) {
+        *self
+            .input_delivery_wait_signal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(signal);
     }
 
     fn admit_write(
@@ -1252,6 +1264,16 @@ impl ControlGate {
 
     fn wait_input_deliveries(&self, deadline: Instant) -> Option<String> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        if !state.input_deliveries.is_empty()
+            && let Some(signal) = self
+                .input_delivery_wait_signal
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+        {
+            let _ = signal.send(());
+        }
         while !state.input_deliveries.is_empty() {
             let now = Instant::now();
             if now >= deadline {
@@ -2804,6 +2826,11 @@ impl PtyHost {
             .post_cast_input_hook
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_input_delivery_wait_signal(&self, signal: std::sync::mpsc::Sender<()>) {
+        self.control.set_input_delivery_wait_signal(signal);
     }
 
     #[cfg(test)]

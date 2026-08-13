@@ -7275,6 +7275,8 @@ mod tests {
                 .recv_timeout(std::time::Duration::from_secs(2))
                 .expect("the admitted control was not released");
         }));
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+        host.set_input_delivery_wait_signal(waiting_tx);
         let handle = Arc::clone(&w.fx.handle);
         let (delivery_done_tx, delivery_done_rx) = std::sync::mpsc::sync_channel(1);
         let delivery = std::thread::spawn(move || {
@@ -7318,45 +7320,32 @@ mod tests {
                 .expect("the assertion side is alive");
         });
 
-        let closing_was_nonblocking = closing_done_rx
-            .recv_timeout(std::time::Duration::from_millis(250))
-            .is_ok();
-        let registry_was_released = lookup_done_rx
-            .recv_timeout(std::time::Duration::from_millis(250))
-            .is_ok();
-        let shutdown_early = shutdown_done_rx
-            .recv_timeout(std::time::Duration::from_millis(100))
-            .ok();
-        let shutdown_skipped_drain = shutdown_early.is_some();
+        waiting_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("shutdown did not observe the unresolved input delivery");
+        closing_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("Closing waited for admitted control");
+        lookup_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("Closing held the global pane registry while control was parked");
+        host.fail_next_master_input(
+            "injected delivery failure after shutdown observed the barrier",
+        );
         release_tx.send(()).expect("the delivery thread is alive");
 
         delivery_done_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("admitted input did not finish");
-        let shutdown_result = match shutdown_early {
-            Some(result) => result,
-            None => shutdown_done_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .expect("shutdown did not finish after control drained"),
-        };
+        let shutdown_result = shutdown_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("shutdown did not finish after control drained");
         shutdown_result.expect("legacy shutdown succeeds");
         closing.join().unwrap();
         lookup.join().unwrap();
         delivery.join().unwrap();
         shutdown.join().unwrap();
 
-        assert!(
-            closing_was_nonblocking,
-            "Closing waited for admitted control"
-        );
-        assert!(
-            registry_was_released,
-            "Closing held the global pane registry while control was parked"
-        );
-        assert!(
-            !shutdown_skipped_drain,
-            "shutdown skipped the control drain"
-        );
         assert!(
             host.completed_replay_charge().is_err(),
             "a cast-recorded input that failed delivery remained cache-eligible"
