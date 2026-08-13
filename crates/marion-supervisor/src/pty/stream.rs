@@ -1381,7 +1381,7 @@ impl SessionWriter {
         Self::create_prepared(
             cast_path,
             SessionHeader::new(agent_id, initial_size, session_id),
-            |file, encoded| Write::write_all(file, encoded),
+            Write::write_all,
         )
     }
 

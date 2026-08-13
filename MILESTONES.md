@@ -772,6 +772,10 @@ how much code exists.
     therefore hardens the foundation without satisfying M3 C1 or the remaining native-runtime
     activation work; M3 stays `[partial]`.
 
+    **The `b6f7773` stream lint cleanup moves no milestone marker.** Replacing a redundant closure
+    with the identical `Write::write_all` method item changes neither the v3 stream format nor its
+    production-dark reachability and adds no milestone evidence; M3 stays `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
