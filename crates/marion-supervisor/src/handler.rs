@@ -2155,13 +2155,24 @@ impl RegistryHandle {
     /// from under them, with no way for either to tell where it came from. §5.3 gives a node one
     /// writer; the geometry is part of what that means.
     ///
-    /// A refusal here is silent, and `input.rs` argues why: there is no frame to put it in, and
-    /// the client was already told at `node/attach` that it may not type. What is *not* silent is
-    /// a write that fails at the fd — that is a node whose pty has gone, and it is reported to the
-    /// supervisor's own stderr rather than to a client that cannot act on it.
+    /// Legacy refusals remain silent for compatibility: there is no response envelope, and the
+    /// client was already told at `node/attach` that it may not type. Pane-v1 opaque input is
+    /// stronger: it is accepted only from that connection's live negotiated slot, and any refusal
+    /// visibly ends that exact socket before a terminal `End` can claim success.
     fn deliver_input(&self, conn: ConnId, input: &marion_proto::Input) {
+        self.deliver_input_with_out(conn, input, None);
+    }
+
+    fn deliver_input_with_out(
+        &self,
+        conn: ConnId,
+        input: &marion_proto::Input,
+        wire_out: Option<&Outbound>,
+    ) {
+        #[derive(Clone, Copy)]
         enum PaneDelivery<'a> {
-            Write(&'a [u8]),
+            LegacyWrite(&'a [u8]),
+            OpaqueWrite(&'a [u8]),
             Resize { cols: u16, rows: u16 },
         }
 
@@ -2187,10 +2198,10 @@ impl RegistryHandle {
         let (id, delivery) = match input {
             marion_proto::Input::NodePtyWrite {
                 agent_id, bytes, ..
-            } => (agent_id, PaneDelivery::Write(bytes.as_bytes())),
+            } => (agent_id, PaneDelivery::LegacyWrite(bytes.as_bytes())),
             marion_proto::Input::NodePaneWrite(params) => (
                 &params.agent_id,
-                PaneDelivery::Write(params.bytes.as_bytes()),
+                PaneDelivery::OpaqueWrite(params.bytes.as_bytes()),
             ),
             marion_proto::Input::NodeResize {
                 agent_id,
@@ -2205,6 +2216,52 @@ impl RegistryHandle {
             ),
             marion_proto::Input::NodePaneReady(_) => unreachable!("handled above"),
         };
+        if let PaneDelivery::OpaqueWrite(bytes) = delivery {
+            // Selection, pane-v1 generation validation, and control admission are one registry
+            // transaction. The admission owns the exact slot outbound; durability and master I/O
+            // happen only after the global Panes lock is released.
+            let selected = {
+                let panes = lock(&self.panes);
+                let lease = panes.lease(conn, id).ok_or_else(|| {
+                    "opaque pane input requires this connection's live write lease".to_string()
+                });
+                lease.and_then(|lease| {
+                    let host = panes
+                        .hosts
+                        .get(id)
+                        .and_then(PaneEntry::live_host)
+                        .cloned()
+                        .ok_or_else(|| "opaque pane input requires a live pane".to_string())?;
+                    let admission = host
+                        .admit_opaque_input(&lease, conn)
+                        .map_err(|error| error.to_string())?;
+                    Ok((host, admission))
+                })
+            };
+            let (host, admission) = match selected {
+                Ok(selected) => selected,
+                Err(error) => {
+                    if let Some(out) = wire_out {
+                        out.fail(crate::serve::Departure::PaneInputFailed {
+                            agent_id: id.0.clone(),
+                            error: error.clone(),
+                        });
+                    }
+                    eprintln!("marion: {} on node {}: {error}", input.method(), id.0);
+                    return;
+                }
+            };
+            #[cfg(test)]
+            if let Some(hook) = lock(&self.pane_delivery_hook).take() {
+                hook();
+            }
+            if let Err(error) = host.write_opaque_input_admitted(admission, bytes) {
+                // The admission fails its authoritative slot outbound before releasing the input
+                // delivery barrier, including error and unwind paths.
+                eprintln!("marion: {} on node {}: {error}", input.method(), id.0);
+            }
+            return;
+        }
         // Both taken out from under the lock in one look, and the lock released before the write:
         // see `Panes::leases`. A harness that has stopped reading its stdin must stall one attach,
         // never the supervisor.
@@ -2223,7 +2280,8 @@ impl RegistryHandle {
             hook();
         }
         let outcome = match delivery {
-            PaneDelivery::Write(bytes) => host.write_input(&lease, bytes),
+            PaneDelivery::LegacyWrite(bytes) => host.write_input(&lease, bytes),
+            PaneDelivery::OpaqueWrite(_) => unreachable!("opaque input returned above"),
             PaneDelivery::Resize { cols, rows } => {
                 host.resize(crate::pty::WinSize::new(cols, rows))
             }
@@ -3560,10 +3618,15 @@ impl Handle for RegistryHandle {
         }
     }
 
-    /// §2's inbound table. See [`Self::deliver_input`] — everything about it, including why a
-    /// refusal here is silent, is argued there.
+    /// §2's inbound table. Direct in-process callers retain the original compatibility surface;
+    /// real transports use [`Self::input_with_out`] so pane-v1 failure is visible on the exact
+    /// connection.
     fn input(&self, conn: ConnId, input: &marion_proto::Input) {
         self.deliver_input(conn, input);
+    }
+
+    fn input_with_out(&self, conn: ConnId, input: &marion_proto::Input, out: &Outbound) {
+        self.deliver_input_with_out(conn, input, Some(out));
     }
 
     /// §2's notifications, driven by the accept loop's heartbeat — see [`Handle::tick`] for why
@@ -6499,6 +6562,17 @@ mod tests {
         s.flush().unwrap();
     }
 
+    fn write_opaque_keys(s: &mut std::os::unix::net::UnixStream, agent: &str, bytes: &[u8]) {
+        let f = Frame::Input(marion_proto::ClientNotification::new(
+            marion_proto::Input::NodePaneWrite(marion_proto::NodePaneWriteV1 {
+                agent_id: id(agent),
+                bytes: marion_proto::OpaquePaneBytesV1::new(bytes),
+            }),
+        ));
+        s.write_all(f.to_line().as_bytes()).unwrap();
+        s.flush().unwrap();
+    }
+
     fn send_resize(s: &mut std::os::unix::net::UnixStream, agent: &str, cols: u16, rows: u16) {
         let f = Frame::Input(marion_proto::ClientNotification::new(
             marion_proto::Input::NodeResize {
@@ -7193,7 +7267,7 @@ mod tests {
         let (admitted_tx, admitted_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
         let release_rx = std::sync::Mutex::new(release_rx);
-        host.set_control_hook(Box::new(move || {
+        host.set_post_cast_input_hook(Box::new(move || {
             admitted_tx.send(()).expect("the assertion side is alive");
             release_rx
                 .lock()
@@ -8328,6 +8402,411 @@ mod tests {
         assert!(
             pty_until(&mut r, "got:ping", std::time::Duration::from_secs(10)).is_some(),
             "the keystroke never reached the child"
+        );
+    }
+
+    /// A v1 input notification has no response envelope. If its durability evidence is refused,
+    /// keeping the socket open would tell the terminal that the bytes were accepted even though
+    /// the master was deliberately never written. The exact negotiated connection must therefore
+    /// close before any terminal `End`; ordinary node lifetime and the next writer remain intact.
+    #[test]
+    fn opaque_input_evidence_refusal_closes_only_that_pane_client_before_end() {
+        use std::io::BufRead;
+
+        let w = Wired::new("handler-pane-opaque-evidence-refusal");
+        let received = w.dir.join("received.txt");
+        let script = format!(
+            "stty -echo; printf ready; while IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; done",
+            received.display()
+        );
+        let host = pane(&w, "root", &script);
+        assert!(
+            until(|| host.bytes_read() >= b"ready".len() as u64),
+            "the child never entered its input loop"
+        );
+        let pid = host.child_pid().expect("the pane owns a live child");
+
+        let mut first = w.dial();
+        let mut first_reader = std::io::BufReader::new(first.try_clone().unwrap());
+        call(
+            &mut first,
+            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+                agent_id: id("root"),
+                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+            }),
+            1,
+        );
+        let attached = loop {
+            match next_frame(&mut first_reader) {
+                Frame::Response(response) => break attached_ok(response.outcome),
+                Frame::Notification(note) => assert!(
+                    !matches!(note.event, Event::NodePaneFrame(_)),
+                    "a pane frame preceded its attach response"
+                ),
+                other => panic!("unexpected attach frame: {other:?}"),
+            }
+        };
+        let pane = attached.pane.expect("the live pane is attachable");
+        assert!(pane.writable, "the v1 client must own the input lease");
+        let descriptor = pane.pane_ready.expect("v1 replay was reserved");
+        let ready = Frame::Input(marion_proto::ClientNotification::new(
+            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+                agent_id: id("root"),
+                token: descriptor.token,
+                cut: descriptor.cut,
+            }),
+        ));
+        first.write_all(ready.to_line().as_bytes()).unwrap();
+        first.flush().unwrap();
+        for expected in 0..descriptor.cut {
+            let Frame::Notification(note) = next_frame(&mut first_reader) else {
+                panic!("the advertised replay was not delivered")
+            };
+            let Event::NodePaneFrame(frame) = note.event else {
+                panic!("the replay emitted a non-pane notification")
+            };
+            assert_eq!(frame.seq, expected);
+            assert!(
+                !matches!(frame.frame, marion_proto::PaneFrameKindV1::End {}),
+                "a live pane ended during its retained prefix"
+            );
+        }
+
+        host.fail_next_durable_append("injected opaque input evidence refusal");
+        first_reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        write_opaque_keys(&mut first, "root", b"refused\r");
+        loop {
+            let mut line = String::new();
+            match first_reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let frame = Frame::from_line(&line).expect("outbound remains framed");
+                    assert!(
+                        !matches!(
+                            frame,
+                            Frame::Notification(note)
+                                if matches!(note.event, Event::NodePaneFrame(ref pane)
+                                    if matches!(pane.frame, marion_proto::PaneFrameKindV1::End {}))
+                        ),
+                        "the refusal was forged into a successful terminal End"
+                    );
+                }
+                Err(error) => panic!(
+                    "the opaque notification failed without visibly closing its socket: {error}"
+                ),
+            }
+        }
+        assert!(
+            until(|| w.fx.handle.attachments() == 0 && host.writer().is_none()),
+            "gone did not release the failed connection's event cursor and write lease"
+        );
+        assert!(alive(pid), "input evidence failure killed the node");
+
+        let mut second = w.dial();
+        let mut second_reader = std::io::BufReader::new(second.try_clone().unwrap());
+        let pane = attached_ok(attach(&mut second, &mut second_reader, "root", 2).1)
+            .pane
+            .expect("the node remains attachable");
+        assert!(
+            pane.writable,
+            "the next client did not receive the released lease"
+        );
+        write_keys(&mut second, "root", "accepted\r");
+        assert!(
+            until(|| std::fs::read_to_string(&received)
+                .is_ok_and(|contents| contents.contains("accepted\n"))),
+            "the surviving node did not receive the next writer's input"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&received).unwrap(),
+            "accepted\n",
+            "bytes refused before durable evidence still reached the child"
+        );
+    }
+
+    /// A pane `End` is a successful terminal-stream claim. It cannot overtake an opaque input
+    /// notification admitted from the real v1 socket: if that write later fails, the exact client
+    /// must depart visibly before an `End` can erase the failure as a clean finish.
+    #[test]
+    fn admitted_wire_opaque_input_failure_wins_over_terminal_end() {
+        use std::io::BufRead;
+
+        let w = Wired::new("handler-pane-opaque-close-race");
+        let host = pane(&w, "root", "sleep 30");
+        let mut client = w.dial();
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        call(
+            &mut client,
+            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+                agent_id: id("root"),
+                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+            }),
+            1,
+        );
+        let attached = loop {
+            match next_frame(&mut reader) {
+                Frame::Response(response) => break attached_ok(response.outcome),
+                Frame::Notification(note) => assert!(
+                    !matches!(note.event, Event::NodePaneFrame(_)),
+                    "a pane frame preceded its attach response"
+                ),
+                other => panic!("unexpected attach frame: {other:?}"),
+            }
+        };
+        let pane = attached.pane.expect("a live pane is negotiated");
+        assert!(pane.writable);
+        let descriptor = pane.pane_ready.expect("v1 replay was reserved");
+        let ready = Frame::Input(marion_proto::ClientNotification::new(
+            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+                agent_id: id("root"),
+                token: descriptor.token,
+                cut: descriptor.cut,
+            }),
+        ));
+        client.write_all(ready.to_line().as_bytes()).unwrap();
+        client.flush().unwrap();
+        for _ in 0..descriptor.cut {
+            let Frame::Notification(note) = next_frame(&mut reader) else {
+                panic!("the advertised replay was not delivered")
+            };
+            assert!(matches!(note.event, Event::NodePaneFrame(_)));
+        }
+
+        let (admitted_tx, admitted_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        host.set_control_hook(Box::new(move || {
+            admitted_tx.send(()).expect("the assertion side is alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv_timeout(Duration::from_secs(2))
+                .expect("the admitted opaque write was not released");
+        }));
+        host.fail_next_master_input("injected close-race master delivery refusal");
+        write_opaque_keys(&mut client, "root", b"late\r");
+        admitted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("wire opaque input was not admitted at the host boundary");
+
+        w.fx.handle.closing_pane(&id("root"), &host);
+        let closing = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.shutdown())
+        };
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => panic!("the socket closed before the admitted write reported its failure"),
+            Ok(_) => panic!("terminal output overtook the still-admitted opaque write: {line}"),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("reading the negotiated pane socket: {error}"),
+        }
+
+        release_tx.send(()).expect("the socket delivery is alive");
+        let _ = closing.join().unwrap();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let frame = Frame::from_line(&line).expect("outbound remains framed");
+                    assert!(
+                        !matches!(
+                            frame,
+                            Frame::Notification(note)
+                                if matches!(note.event, Event::NodePaneFrame(ref pane)
+                                    if matches!(pane.frame, marion_proto::PaneFrameKindV1::End {}))
+                        ),
+                        "a failed admitted input was followed by a successful End"
+                    );
+                }
+                Err(error) => {
+                    panic!("failed admitted input did not visibly close its exact socket: {error}")
+                }
+            }
+        }
+    }
+
+    /// Grace expiry is a terminal outcome for an admitted delivery, not permission to publish a
+    /// successful pane `End`. This uses a Pending v1 slot and blocks after evidence, when the
+    /// control permit has already dropped: shutdown must pass `wait_drained`, expire the delivery
+    /// grace, and close this exact socket before the master outcome is released.
+    #[test]
+    fn unresolved_pending_wire_input_is_visibly_failed_before_terminal_end() {
+        use std::io::BufRead;
+
+        let w = Wired::new("handler-pane-unresolved-input-grace");
+        let host = pane(&w, "root", "sleep 30");
+        let mut client = w.dial();
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        call(
+            &mut client,
+            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+                agent_id: id("root"),
+                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+            }),
+            1,
+        );
+        let attached = loop {
+            match next_frame(&mut reader) {
+                Frame::Response(response) => break attached_ok(response.outcome),
+                Frame::Notification(note) => assert!(
+                    !matches!(note.event, Event::NodePaneFrame(_)),
+                    "a pane frame preceded its attach response"
+                ),
+                other => panic!("unexpected attach frame: {other:?}"),
+            }
+        };
+        let pane = attached.pane.expect("a live pane is negotiated");
+        assert!(pane.writable);
+        assert!(pane.pane_ready.is_some(), "the v1 slot remains Pending");
+
+        let (admitted_tx, admitted_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        host.set_post_cast_input_hook(Box::new(move || {
+            admitted_tx
+                .send(())
+                .expect("the assertion side remains alive");
+            release_rx
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .recv_timeout(Duration::from_secs(2))
+                .expect("the unresolved master outcome was not released");
+        }));
+        write_opaque_keys(&mut client, "root", b"pending\r");
+        admitted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Pending wire input never reached the post-evidence seam");
+
+        w.fx.handle.closing_pane(&id("root"), &host);
+        let closing = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.shutdown())
+        };
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let before_release = loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break Ok(()),
+                Ok(_) => {
+                    let frame = Frame::from_line(&line).expect("outbound remains framed");
+                    if matches!(
+                        frame,
+                        Frame::Notification(note)
+                            if matches!(note.event, Event::NodePaneFrame(ref pane)
+                                if matches!(pane.frame, marion_proto::PaneFrameKindV1::End {}))
+                    ) {
+                        break Err("terminal End preceded the grace-expiry refusal".to_string());
+                    }
+                }
+                Err(error) => {
+                    break Err(format!(
+                        "the unresolved exact socket stayed open past delivery grace: {error}"
+                    ));
+                }
+            }
+        };
+
+        // Cleanup cannot cause the observation above: the socket outcome was read to completion
+        // while the delivery hook still held the unresolved master write.
+        release_tx
+            .send(())
+            .expect("the blocked delivery remains alive for cleanup");
+        let _ = closing.join().unwrap();
+        before_release.expect("grace expiry must visibly fail the exact socket before End");
+    }
+
+    /// `node/pane-write` is negotiated protocol, not an alternate spelling for legacy input. A
+    /// legacy writer has a keyboard lease but no pane stream slot; forged opaque bytes must reach
+    /// neither the master nor silence, so the exact legacy socket is visibly closed.
+    #[test]
+    fn legacy_attach_cannot_forge_opaque_pane_input() {
+        use std::io::BufRead;
+
+        let w = Wired::new("handler-pane-forged-opaque");
+        let received = w.dir.join("forged-received.txt");
+        let script = format!(
+            "stty -echo; printf ready; while IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; done",
+            received.display()
+        );
+        let host = pane(&w, "root", &script);
+        assert!(until(|| host.bytes_read() >= b"ready".len() as u64));
+        let mut client = w.dial();
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        assert!(
+            attached_ok(attach(&mut client, &mut reader, "root", 1).1)
+                .pane
+                .expect("the pane is live")
+                .writable
+        );
+
+        write_opaque_keys(&mut client, "root", b"forged\r");
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut line = String::new();
+        assert_eq!(
+            reader
+                .read_line(&mut line)
+                .expect("the socket read is bounded"),
+            0,
+            "unnegotiated opaque input was ignored instead of visibly refused"
+        );
+        assert!(
+            until(|| host.writer().is_none()),
+            "gone did not release the forged sender's lease"
+        );
+        assert!(
+            !received.exists() || std::fs::read(&received).unwrap().is_empty(),
+            "unnegotiated opaque input reached the child"
+        );
+    }
+
+    #[test]
+    fn legacy_input_keeps_its_compatibility_delivery_on_durable_evidence_failure() {
+        let w = Wired::new("handler-pane-legacy-evidence-failure");
+        let host = pane(
+            &w,
+            "root",
+            "stty -echo; while IFS= read -r line; do printf 'got:%s\\n' \"$line\"; done",
+        );
+        let mut client = w.dial();
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        let attached = attached_ok(attach(&mut client, &mut reader, "root", 1).1);
+        assert!(attached.pane.expect("the pane is live").writable);
+
+        host.fail_next_durable_append("injected legacy evidence failure");
+        write_keys(&mut client, "root", "accepted\r");
+        assert!(
+            pty_until(&mut reader, "got:accepted", Duration::from_secs(10)).is_some(),
+            "the legacy compatibility path stopped delivering after evidence failure"
+        );
+        call(
+            &mut client,
+            Call::NodeGet(marion_proto::params::NodeGetParams {
+                agent_id: id("root"),
+            }),
+            2,
+        );
+        assert!(
+            matches!(next_frame(&mut reader), Frame::Response(_)),
+            "legacy evidence failure closed the connection"
         );
     }
 

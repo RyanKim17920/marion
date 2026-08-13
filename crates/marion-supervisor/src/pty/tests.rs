@@ -97,6 +97,12 @@ fn read_cast(path: &Path) -> (serde_json::Value, Vec<(f64, String, String)>) {
     (header, records)
 }
 
+fn read_stream(path: &Path) -> super::stream::SessionRecovery {
+    let stream_path = super::stream::stream_path_for_cast(path).expect("a stream path");
+    let encoded = std::fs::read(stream_path).expect("pty.stream exists");
+    super::stream::recover_session_bytes(&encoded).expect("the incremental stream recovers")
+}
+
 /// A host with **no child**, whose slave the test drives by hand.
 ///
 /// Most of what is asserted here is about ordering and encoding, not about any harness, and a real
@@ -213,6 +219,103 @@ fn pane_replay_starts_with_the_initial_geometry() {
         marion_proto::PaneFrameKindV1::Resize { cols: 80, rows: 24 }
     );
     lb.host.unlisten(conn);
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+}
+
+/// Opaque input belongs to the negotiated pane slot, not to replay readiness. The exact valid,
+/// generation-matching slot remains writable while Pending, during the response-first handoff's
+/// Transitioning phase, and after it reaches Ready. Removing any phase from the admission match
+/// must reject that byte and fail this lifecycle at the phase named by the assertion.
+#[test]
+fn opaque_input_is_admitted_through_every_valid_pane_slot_phase() {
+    let mut lb = Loopback::without_reader("pty-pane-input-all-phases", WinSize::new(80, 24));
+    let conn = crate::serve::ConnId(1_201);
+    let lease = lb.host.lease_writer(conn).expect("the exact writer lease");
+    let (out, captured) = crate::serve::capture(conn);
+    let descriptor = lb
+        .host
+        .begin_pane_replay(conn, out.clone())
+        .expect("the pane-v1 slot is reserved");
+
+    let assert_phase = |expected: &str| {
+        let streams = lb
+            .host
+            .shared
+            .pane_streams
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let slot = streams
+            .slots
+            .get(&conn)
+            .expect("the exact slot remains live");
+        assert!(streams.valid);
+        assert_eq!(slot.generation, streams.generation);
+        assert!(!slot.cancellation.is_cancelled());
+        assert!(
+            matches!(
+                (&slot.phase, expected),
+                (PanePhase::Pending(_), "Pending")
+                    | (PanePhase::Transitioning { .. }, "Transitioning")
+                    | (PanePhase::Ready(_), "Ready")
+            ),
+            "expected {expected} pane slot"
+        );
+    };
+
+    assert_phase("Pending");
+    let pending = lb
+        .host
+        .admit_opaque_input(&lease, conn)
+        .expect("Pending pane-v1 input is admissible");
+    lb.host
+        .write_opaque_input_admitted(pending, b"P")
+        .expect("Pending pane-v1 input is delivered");
+
+    let (hook, reached, release) = bounded_hook_gate();
+    *lb.host
+        .shared
+        .pane_transition_hook
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(hook);
+    lb.host.pane_ready(conn, &descriptor.token, descriptor.cut);
+    let (captured, transitioning_result) = std::thread::scope(|scope| {
+        let driver = scope.spawn(move || {
+            let frames = captured.try_iter().collect::<Vec<_>>();
+            (captured, frames)
+        });
+        reached
+            .recv_timeout(Duration::from_secs(2))
+            .expect("replay reached Transitioning");
+        assert_phase("Transitioning");
+        let result = lb
+            .host
+            .admit_opaque_input(&lease, conn)
+            .and_then(|admission| lb.host.write_opaque_input_admitted(admission, b"T"));
+        release.send(()).expect("the replay driver remains alive");
+        let (captured, _frames) = driver.join().unwrap();
+        (captured, result)
+    });
+    *lb.host
+        .shared
+        .pane_transition_hook
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+    transitioning_result.expect("Transitioning pane-v1 input is admissible and delivered");
+
+    assert_phase("Ready");
+    let ready = lb
+        .host
+        .admit_opaque_input(&lease, conn)
+        .expect("Ready pane-v1 input is admissible");
+    lb.host
+        .write_opaque_input_admitted(ready, b"R")
+        .expect("Ready pane-v1 input is delivered");
+    assert_eq!(out.departed(), None);
+
+    lb.host.unlisten(conn);
+    drop(captured);
+    drop(lease);
     lb.hang_up();
     lb.host.shutdown().unwrap();
 }
@@ -994,6 +1097,12 @@ fn the_cast_records_i_and_r_not_only_o() {
         WinSize::new(100, 24),
         "and the kernel really was resized, so the record is not a lie"
     );
+
+    let stream = read_stream(&lb.cast);
+    assert!(stream.records.iter().any(|record| matches!(
+        record.kind,
+        super::stream::RecordKind::InputEvidence { byte_len: 6, .. }
+    )));
 }
 
 #[test]
@@ -1757,7 +1866,7 @@ fn pane_resize_delivery_runs_after_the_cast_lock_is_released() {
         .unwrap_or_else(|e| e.into_inner()) = Some(Box::new(move || {
         let shared = shared.upgrade().expect("the host still owns shared state");
         observed_tx
-            .send(shared.cast.try_lock().is_ok())
+            .send(shared.recorders.try_lock().is_ok())
             .expect("the assertion side is alive");
     }));
 
@@ -1972,6 +2081,141 @@ fn pending_pane_overflow_visibly_departs_its_connection() {
         captured.try_iter().next().is_none(),
         "overflow must not forge a terminal frame"
     );
+    lb.hang_up();
+}
+
+#[test]
+fn pane_input_failure_cancels_only_the_exact_pending_subscription() {
+    let mut lb = Loopback::without_reader("pty-pane-input-failure-pending", WinSize::new(80, 24));
+    let failed_conn = crate::serve::ConnId(1_130);
+    let healthy_conn = crate::serve::ConnId(1_131);
+    let (failed_out, failed_frames) = crate::serve::capture(failed_conn);
+    let (healthy_out, healthy_frames) = crate::serve::capture(healthy_conn);
+    let failed = lb
+        .host
+        .begin_pane_replay(failed_conn, failed_out.clone())
+        .expect("the failed connection reserves a response-first replay");
+    let healthy = lb
+        .host
+        .begin_pane_replay(healthy_conn, healthy_out)
+        .expect("the healthy connection reserves an independent replay");
+
+    lb.host
+        .fail_pane_connection(failed_conn, "injected opaque input evidence refusal".into());
+
+    assert_eq!(
+        failed_out.departed(),
+        Some(crate::serve::Departure::PaneInputFailed {
+            agent_id: "node-under-test".into(),
+            error: "injected opaque input evidence refusal".into(),
+        })
+    );
+    assert!(
+        !lb.host
+            .pane_replay_reserved(failed_conn, &failed.token, failed.cut),
+        "the failed Pending slot remained activatable"
+    );
+    assert!(
+        lb.host
+            .pane_replay_reserved(healthy_conn, &healthy.token, healthy.cut),
+        "failing one pane connection disturbed another Pending slot"
+    );
+    lb.host.pane_ready(failed_conn, &failed.token, failed.cut);
+    assert!(
+        failed_frames.try_iter().next().is_none(),
+        "a cancelled Pending slot forged replay after failure"
+    );
+    lb.host
+        .pane_ready(healthy_conn, &healthy.token, healthy.cut);
+    let initial = healthy_frames
+        .try_recv()
+        .expect("the independent Pending slot remains activatable");
+    assert!(matches!(
+        Frame::from_line(std::str::from_utf8(&initial).unwrap()).unwrap(),
+        Frame::Notification(note)
+            if matches!(note.event, Event::NodePaneFrame(ref frame)
+                if frame.seq == 0
+                    && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+    ));
+    lb.host.unlisten(healthy_conn);
+    lb.hang_up();
+}
+
+#[test]
+fn pane_input_failure_visibly_cancels_an_in_flight_transition() {
+    let mut lb =
+        Loopback::without_reader("pty-pane-input-failure-transitioning", WinSize::new(80, 24));
+    lb.host.shared.retain_output(b"prefix");
+    let failed_conn = crate::serve::ConnId(1_132);
+    let healthy_conn = crate::serve::ConnId(1_133);
+    let (failed_out, failed_frames) = crate::serve::capture(failed_conn);
+    let (healthy_out, healthy_frames) = crate::serve::capture(healthy_conn);
+    let failed = lb
+        .host
+        .begin_pane_replay(failed_conn, failed_out.clone())
+        .expect("the failed connection reserves replay");
+    let healthy = lb
+        .host
+        .begin_pane_replay(healthy_conn, healthy_out)
+        .expect("the healthy connection reserves replay");
+    let (hook, reached, release) = bounded_hook_gate();
+    *lb.host
+        .shared
+        .pane_transition_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    lb.host.pane_ready(failed_conn, &failed.token, failed.cut);
+
+    let failed_frames = std::thread::scope(|scope| {
+        let driver = scope.spawn(move || failed_frames.try_iter().collect::<Vec<_>>());
+        reached
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the replay reached its Transitioning seam");
+        lb.host
+            .fail_pane_connection(failed_conn, "injected opaque input delivery refusal".into());
+        assert_eq!(
+            failed_out.departed(),
+            Some(crate::serve::Departure::PaneInputFailed {
+                agent_id: "node-under-test".into(),
+                error: "injected opaque input delivery refusal".into(),
+            }),
+            "the in-flight transition was cancelled silently"
+        );
+        assert!(
+            lb.host
+                .pane_replay_reserved(healthy_conn, &healthy.token, healthy.cut),
+            "failing the transition disturbed another Pending slot"
+        );
+        release.send(()).expect("the replay driver remains alive");
+        driver.join().unwrap()
+    });
+    *lb.host
+        .shared
+        .pane_transition_hook
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    assert!(failed_frames.iter().all(|line| {
+        !matches!(
+            Frame::from_line(std::str::from_utf8(line).unwrap()).unwrap(),
+            Frame::Notification(note)
+                if matches!(note.event, Event::NodePaneFrame(ref frame)
+                    if matches!(frame.frame, PaneFrameKindV1::End {}))
+        )
+    }));
+
+    lb.host
+        .pane_ready(healthy_conn, &healthy.token, healthy.cut);
+    let initial = healthy_frames
+        .try_recv()
+        .expect("the independent subscription remains activatable");
+    assert!(matches!(
+        Frame::from_line(std::str::from_utf8(&initial).unwrap()).unwrap(),
+        Frame::Notification(note)
+            if matches!(note.event, Event::NodePaneFrame(ref frame)
+                if frame.seq == 0
+                    && matches!(frame.frame, PaneFrameKindV1::Resize { cols: 80, rows: 24 }))
+    ));
+    lb.host.unlisten(healthy_conn);
     lb.hang_up();
 }
 
@@ -3260,6 +3504,310 @@ fn input_the_cast_cannot_carry_is_refused_before_the_node_receives_it() {
             .any(|(_, c, d)| c == "i" && d.contains('\u{fffd}')),
         "a substitute character in an `i` record is the defect itself: {records:#?}"
     );
+}
+
+/// Opaque pane input is byte-exact even when asciicast cannot represent it. The authoritative
+/// binary stream persists only content-independent length and ordering evidence, while the
+/// compatibility cast deliberately has no fabricated `i` record for bytes it cannot spell.
+#[test]
+fn opaque_input_reaches_the_slave_exactly_without_a_legacy_i_record() {
+    let mut lb = Loopback::new("pty-opaque-input-bytes", WinSize::new(80, 24));
+    let slave = lb.slave.take().expect("attached");
+    nonblocking(slave.as_raw_fd());
+    let mut slave = slave;
+    let lease = lb.host.lease_writer(ConnId(91)).unwrap();
+    let opaque = [0x00, 0x80, 0xff, b'\n'];
+
+    lb.host
+        .write_opaque_input(&lease, &opaque)
+        .expect("the binary stream can evidence every byte");
+
+    let mut got = Vec::new();
+    assert!(
+        until(|| {
+            let mut buf = [0_u8; 32];
+            match slave.read(&mut buf) {
+                Ok(n) if n > 0 => got.extend_from_slice(&buf[..n]),
+                _ => {}
+            }
+            got.ends_with(b"\n")
+        }),
+        "opaque input did not reach the slave: {got:?}"
+    );
+    assert_eq!(got, opaque, "the master write must be byte-exact");
+
+    drop(slave);
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+
+    let (_, cast) = read_cast(&lb.cast);
+    assert!(
+        cast.iter().all(|(_, code, _)| code != "i"),
+        "opaque input must not fabricate a lossy legacy record: {cast:?}"
+    );
+    let recovery = read_stream(&lb.cast);
+    let evidence = recovery
+        .records
+        .iter()
+        .find_map(|record| match &record.kind {
+            super::stream::RecordKind::InputEvidence { byte_len, .. } => Some(*byte_len),
+            _ => None,
+        })
+        .expect("opaque input has durable evidence");
+    assert_eq!(evidence, opaque.len() as u32);
+    // The raw bytes may legitimately reappear later as terminal output (for example through echo).
+    // Privacy is therefore a property of InputEvidence's sequence/length-only representation,
+    // asserted in the stream codec tests, rather than a whole-file absence claim.
+}
+
+/// Mutation: treat aggregate output-capacity exhaustion as a fatal recorder failure and discard
+/// the writer. The next opaque key would then be refused even though its small evidence record and
+/// the terminal End still fit inside the bounded stream reserve.
+#[test]
+fn output_quota_exhaustion_does_not_disable_the_next_opaque_key() {
+    let mut lb = Loopback::new("pty-output-quota-keeps-input", WinSize::new(80, 24));
+    let child = spawn_pty(
+        witness(),
+        &mut sh("sleep 30"),
+        lb.host.master(),
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap();
+    lb.host.adopt(child);
+    let mut slave = lb.slave.take().expect("attached");
+    lb.host.limit_durable_output_for_test(128 * 1024);
+    let output = vec![b'Q'; 256 * 1024];
+    slave
+        .write_all(&output)
+        .expect("the real PTY reader drains output past its durable output budget");
+    assert!(
+        until(|| lb.host.bytes_read() >= output.len() as u64),
+        "the host did not finish recording output through the quota boundary"
+    );
+
+    nonblocking(slave.as_raw_fd());
+    let lease = lb.host.lease_writer(ConnId(94)).unwrap();
+    let opaque = [0xff, 0x80, 0x00, b'K', b'\n'];
+    lb.host
+        .write_opaque_input(&lease, &opaque)
+        .expect("output capacity must not permanently disable opaque input evidence");
+
+    let mut got = Vec::new();
+    assert!(until(|| {
+        let mut buf = [0_u8; 32];
+        match slave.read(&mut buf) {
+            Ok(n) if n > 0 => got.extend_from_slice(&buf[..n]),
+            _ => {}
+        }
+        got.windows(opaque.len()).any(|window| window == opaque)
+    }));
+
+    drop(slave);
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+    let recovery = read_stream(&lb.cast);
+    assert!(recovery.records.iter().any(|record| {
+        matches!(
+            record.kind,
+            super::stream::RecordKind::InputEvidence { byte_len, .. }
+                if byte_len == opaque.len() as u32
+        )
+    }));
+    assert!(matches!(
+        recovery.records.last().map(|record| &record.kind),
+        Some(super::stream::RecordKind::End(outcome)) if !outcome.stream_complete
+    ));
+    assert!(
+        lb.host.completed_replay_charge().is_err(),
+        "a stream whose output was truncated at its budget must never claim complete replay"
+    );
+}
+
+/// Mutation: report a failed master delivery only through the host-local completion error while
+/// sealing the authoritative End as stream-complete. Recovery would then contradict replay truth.
+#[test]
+fn input_evidence_followed_by_master_delivery_failure_seals_incomplete_end() {
+    let mut lb = Loopback::new("pty-input-delivery-failure-end", WinSize::new(80, 24));
+    let child = spawn_pty(
+        witness(),
+        &mut sh("sleep 30"),
+        lb.host.master(),
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap();
+    lb.host.adopt(child);
+    let lease = lb.host.lease_writer(ConnId(95)).unwrap();
+    lb.host
+        .fail_next_master_input("injected master delivery failure after evidence");
+
+    assert!(
+        lb.host
+            .write_opaque_input(&lease, b"recorded first")
+            .is_err(),
+        "the injected post-evidence master write must fail"
+    );
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+
+    let recovery = read_stream(&lb.cast);
+    assert!(recovery.records.iter().any(|record| {
+        matches!(
+            record.kind,
+            super::stream::RecordKind::InputEvidence { byte_len, .. }
+                if byte_len == b"recorded first".len() as u32
+        )
+    }));
+    assert!(matches!(
+        recovery.records.last().map(|record| &record.kind),
+        Some(super::stream::RecordKind::End(outcome)) if !outcome.stream_complete
+    ));
+}
+
+#[test]
+fn opaque_evidence_failure_refuses_master_delivery_and_completion() {
+    let mut lb = Loopback::new("pty-opaque-input-evidence-failure", WinSize::new(80, 24));
+    let slave = lb.slave.take().expect("attached");
+    nonblocking(slave.as_raw_fd());
+    let mut slave = slave;
+    let lease = lb.host.lease_writer(ConnId(92)).unwrap();
+    lb.host
+        .fail_next_durable_append("injected input evidence sync failure");
+
+    let refused = lb
+        .host
+        .write_opaque_input(&lease, &[0xff, 0x80, 0x00])
+        .expect_err("opaque bytes without durable evidence must be refused");
+    assert!(refused.to_string().contains("evidence sync failure"));
+
+    // A compatibility write remains available and is a positive sentinel proving that the
+    // nonblocking slave was observed after the refused delivery would have occurred.
+    lb.host.write_input(&lease, b"Z\r").unwrap();
+    let mut got = Vec::new();
+    assert!(until(|| {
+        let mut buf = [0_u8; 32];
+        match slave.read(&mut buf) {
+            Ok(n) if n > 0 => got.extend_from_slice(&buf[..n]),
+            _ => {}
+        }
+        got.contains(&b'Z')
+    }));
+    assert_eq!(
+        got.iter().filter(|byte| **byte == 0xff).count(),
+        0,
+        "{got:?}"
+    );
+    assert_eq!(
+        got.iter().filter(|byte| **byte == 0x80).count(),
+        0,
+        "{got:?}"
+    );
+
+    drop(slave);
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+    let error = lb.host.completed_replay_charge().unwrap_err();
+    assert!(
+        error.to_string().contains("evidence sync failure"),
+        "{error}"
+    );
+    assert!(
+        read_stream(&lb.cast)
+            .records
+            .iter()
+            .all(|record| !matches!(record.kind, super::stream::RecordKind::InputEvidence { .. })),
+        "the failed append must not advance the input cursor"
+    );
+}
+
+#[test]
+fn authoritative_stream_orders_output_resize_input_and_typed_end_densely() {
+    let dir = marion_testsupport::scratch("pty-authoritative-dense-order");
+    let cast = dir.join("pty.cast");
+    let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
+    let host = PtyHost::start(
+        AgentId("authoritative-dense-order".into()),
+        master,
+        &cast,
+        WinSize::new(80, 24),
+        "xterm-256color",
+        Instant::now(),
+    )
+    .unwrap();
+    let child = spawn_pty(
+        witness(),
+        &mut sh("printf before; IFS= read -r line; printf after"),
+        host.master(),
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap();
+    host.adopt(child);
+    assert!(until(|| host.bytes_read() >= b"before".len() as u64));
+    host.resize(WinSize::new(100, 31)).unwrap();
+    let lease = host.lease_writer(ConnId(93)).unwrap();
+    host.write_opaque_input(&lease, b"go\r").unwrap();
+    assert!(until(|| host.poll_exited_unreaped().unwrap()));
+    let status = host
+        .shutdown()
+        .unwrap()
+        .expect("the adopted child has a status");
+    assert_eq!(status.code(), Some(0), "{status:?}");
+
+    let stream = read_stream(&cast);
+    assert_eq!(
+        stream
+            .records
+            .iter()
+            .map(|record| record.record_seq)
+            .collect::<Vec<_>>(),
+        (1..=stream.records.len() as u64).collect::<Vec<_>>()
+    );
+    let output = stream
+        .records
+        .iter()
+        .position(|record| matches!(&record.kind, super::stream::RecordKind::Output(bytes) if bytes.starts_with(b"before")))
+        .expect("the initial raw output is durable");
+    let resize = stream
+        .records
+        .iter()
+        .position(|record| {
+            matches!(
+                record.kind,
+                super::stream::RecordKind::Resize {
+                    rows: 31,
+                    cols: 100
+                }
+            )
+        })
+        .expect("the geometry boundary is durable");
+    let input = stream
+        .records
+        .iter()
+        .position(|record| {
+            matches!(
+                record.kind,
+                super::stream::RecordKind::InputEvidence { byte_len: 3, .. }
+            )
+        })
+        .expect("the input boundary is durable");
+    let end = stream.records.len() - 1;
+    assert!(
+        output < resize && resize < input && input < end,
+        "{:?}",
+        stream.records
+    );
+    let super::stream::RecordKind::End(outcome) = stream.records[end].kind else {
+        panic!("the final authoritative record is a typed End")
+    };
+    assert_eq!(outcome.exit_code, Some(0));
+    assert_eq!(outcome.signal, None);
+    assert!(!outcome.timed_out);
+    assert_eq!(outcome.reader, super::stream::ReaderDisposition::CleanEof);
+    assert!(outcome.cast_complete);
+    assert!(outcome.replay_eligible());
+    assert!(host.completed_replay_charge().is_ok());
 }
 
 /// Put `fd` in non-blocking mode, so a test can poll the slave without risking a hang whose red

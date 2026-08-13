@@ -1039,8 +1039,24 @@ enum ControlPhase {
 struct ControlState {
     phase: ControlPhase,
     admitted: usize,
-    input_deliveries: usize,
+    next_input_delivery: u64,
+    input_deliveries: BTreeMap<u64, Option<InputFailureTarget>>,
     input_delivery_failure: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct InputFailureTarget {
+    out: Outbound,
+    agent_id: String,
+}
+
+impl InputFailureTarget {
+    fn fail(&self, error: String) {
+        self.out.fail(crate::serve::Departure::PaneInputFailed {
+            agent_id: self.agent_id.clone(),
+            error,
+        });
+    }
 }
 
 #[derive(Debug)]
@@ -1150,25 +1166,36 @@ impl ControlGate {
             state: Mutex::new(ControlState {
                 phase: ControlPhase::Live,
                 admitted: 0,
-                input_deliveries: 0,
+                next_input_delivery: 1,
+                input_deliveries: BTreeMap::new(),
                 input_delivery_failure: None,
             }),
             drained: Condvar::new(),
         })
     }
 
-    fn admit_write(self: &Arc<Self>) -> io::Result<(ControlPermit, InputDelivery)> {
+    fn admit_write(
+        self: &Arc<Self>,
+        target: Option<InputFailureTarget>,
+    ) -> io::Result<(ControlPermit, InputDelivery)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         match state.phase {
             ControlPhase::Live => {
                 state.admitted += 1;
-                state.input_deliveries += 1;
+                let delivery_id = state.next_input_delivery;
+                state.next_input_delivery = state
+                    .next_input_delivery
+                    .checked_add(1)
+                    .expect("pty input delivery ids do not wrap");
+                state.input_deliveries.insert(delivery_id, target.clone());
                 Ok((
                     ControlPermit {
                         gate: Arc::clone(self),
                     },
                     InputDelivery {
                         gate: Arc::clone(self),
+                        delivery_id,
+                        target,
                         finished: false,
                     },
                 ))
@@ -1225,13 +1252,10 @@ impl ControlGate {
 
     fn wait_input_deliveries(&self, deadline: Instant) -> Option<String> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        while state.input_deliveries != 0 {
+        while !state.input_deliveries.is_empty() {
             let now = Instant::now();
             if now >= deadline {
-                return Some(format!(
-                    "{} pty input delivery attempt(s) remained unresolved at shutdown",
-                    state.input_deliveries
-                ));
+                break;
             }
             let remaining = deadline.saturating_duration_since(now);
             let (next, timed_out) = self
@@ -1239,24 +1263,43 @@ impl ControlGate {
                 .wait_timeout(state, remaining)
                 .unwrap_or_else(|e| e.into_inner());
             state = next;
-            if timed_out.timed_out() && state.input_deliveries != 0 {
-                return Some(format!(
-                    "{} pty input delivery attempt(s) remained unresolved at shutdown",
-                    state.input_deliveries
-                ));
+            if timed_out.timed_out() && !state.input_deliveries.is_empty() {
+                break;
             }
         }
-        state.input_delivery_failure.clone()
+        if state.input_deliveries.is_empty() {
+            return state.input_delivery_failure.clone();
+        }
+        let failure = format!(
+            "{} pty input delivery attempt(s) remained unresolved at shutdown",
+            state.input_deliveries.len()
+        );
+        if state.input_delivery_failure.is_none() {
+            state.input_delivery_failure = Some(failure.clone());
+        }
+        let targets = state
+            .input_deliveries
+            .values()
+            .filter_map(Clone::clone)
+            .collect::<Vec<_>>();
+        let outcome = state.input_delivery_failure.clone();
+        drop(state);
+        // Socket shutdown is external I/O. It runs after the control lock is released and before
+        // shutdown is allowed to retain terminal End.
+        for target in targets {
+            target.fail(failure.clone());
+        }
+        outcome
     }
 
-    fn finish_input_delivery(&self, failure: Option<String>) {
+    fn finish_input_delivery(&self, delivery_id: u64, failure: Option<String>) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.input_delivery_failure.is_none() {
             state.input_delivery_failure = failure;
         }
-        state.input_deliveries = state
+        state
             .input_deliveries
-            .checked_sub(1)
+            .remove(&delivery_id)
             .expect("an input delivery is resolved exactly once");
         self.drained.notify_all();
     }
@@ -1286,6 +1329,8 @@ impl Drop for ControlPermit {
 
 struct InputDelivery {
     gate: Arc<ControlGate>,
+    delivery_id: u64,
+    target: Option<InputFailureTarget>,
     finished: bool,
 }
 
@@ -1338,7 +1383,10 @@ impl Drop for ReaderFinished {
 
 impl InputDelivery {
     fn finish(mut self, failure: Option<String>) {
-        self.gate.finish_input_delivery(failure);
+        if let (Some(target), Some(error)) = (&self.target, &failure) {
+            target.fail(error.clone());
+        }
+        self.gate.finish_input_delivery(self.delivery_id, failure);
         self.finished = true;
     }
 }
@@ -1346,18 +1394,29 @@ impl InputDelivery {
 impl Drop for InputDelivery {
     fn drop(&mut self) {
         if !self.finished {
-            self.gate.finish_input_delivery(Some(
-                "pty input delivery ended without a master-write outcome".to_string(),
-            ));
+            let failure = "pty input delivery ended without a master-write outcome".to_string();
+            if let Some(target) = &self.target {
+                target.fail(failure.clone());
+            }
+            self.gate
+                .finish_input_delivery(self.delivery_id, Some(failure));
         }
     }
+}
+
+pub(crate) struct OpaqueInputAdmission {
+    permit: ControlPermit,
+    delivery: InputDelivery,
 }
 
 /// Shared between the host and its reader thread.
 struct Shared {
     self_weak: Weak<Shared>,
     agent_id: AgentId,
-    cast: Mutex<CastWriter>,
+    /// The compatibility cast and authoritative byte stream share one per-host lock. This is the
+    /// linearization point for every durable PTY fact; no global registry or control-gate lock is
+    /// ever held while its `sync_data` runs.
+    recorders: Mutex<Recorders>,
     /// Clients receiving [`Event::NodePty`]. **Listeners, not owners** — see the module doc.
     listeners: LegacyListeners,
     /// The one connection allowed to type. See [`WriteLease`].
@@ -1394,6 +1453,171 @@ struct Shared {
     resize_ioctl_failure: Mutex<Option<String>>,
     #[cfg(test)]
     resize_cast_failure: Mutex<Option<String>>,
+}
+
+struct Recorders {
+    cast: CastWriter,
+    durable: DurableRecorder,
+    cast_failure: Option<String>,
+    #[cfg(test)]
+    next_durable_failure: Option<String>,
+}
+
+struct DurableRecorder {
+    writer: Option<stream::SessionWriter>,
+    failure: Option<String>,
+    sealed: Option<stream::TerminalOutcome>,
+    output_complete: bool,
+}
+
+impl DurableRecorder {
+    fn available(writer: stream::SessionWriter) -> Self {
+        Self {
+            writer: Some(writer),
+            failure: None,
+            sealed: None,
+            output_complete: true,
+        }
+    }
+
+    fn unavailable(error: stream::StreamError) -> Self {
+        Self {
+            writer: None,
+            failure: Some(format!("authoritative PTY stream is unavailable: {error}")),
+            sealed: None,
+            output_complete: false,
+        }
+    }
+
+    fn append_output(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if !self.output_complete {
+            return Ok(());
+        }
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        if self.sealed.is_some() {
+            return Err("authoritative PTY stream is already sealed".to_string());
+        }
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| "authoritative PTY stream has no active writer".to_string())?;
+        match writer.append_output(bytes) {
+            Ok(()) => Ok(()),
+            Err(stream::StreamError::OutputBudgetExhausted { .. }) => {
+                // Output truncation is a typed, non-fatal boundary. Keep the writer for ordered
+                // input evidence, resize facts, and End, but never claim the display is complete.
+                self.output_complete = false;
+                Ok(())
+            }
+            Err(error) => Err(self.fail(error.to_string())),
+        }
+    }
+
+    fn append_resize(&mut self, size: WinSize) -> Result<(), String> {
+        self.append_with(|writer| writer.append_resize(size))
+    }
+
+    fn append_input_evidence(&mut self, byte_len: usize) -> Result<(), String> {
+        self.append_with(|writer| writer.append_input_evidence(byte_len))
+    }
+
+    fn append_with(
+        &mut self,
+        append: impl FnOnce(&mut stream::SessionWriter) -> Result<(), stream::StreamError>,
+    ) -> Result<(), String> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        if self.sealed.is_some() {
+            return Err("authoritative PTY stream is already sealed".to_string());
+        }
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| "authoritative PTY stream has no active writer".to_string())?;
+        if let Err(error) = append(writer) {
+            let error = format!("authoritative PTY stream durability failed: {error}");
+            self.failure = Some(error.clone());
+            self.writer.take();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn fail(&mut self, error: String) -> String {
+        let error = format!("authoritative PTY stream durability failed: {error}");
+        if self.failure.is_none() {
+            self.failure = Some(error);
+            self.writer.take();
+        }
+        self.failure
+            .clone()
+            .expect("the failure was just installed")
+    }
+
+    fn seal(&mut self, mut outcome: stream::TerminalOutcome) -> Result<(), String> {
+        outcome = self.qualify_outcome(outcome);
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        if let Some(sealed) = self.sealed {
+            return if sealed == outcome {
+                Ok(())
+            } else {
+                Err("authoritative PTY stream was already sealed with another outcome".into())
+            };
+        }
+        let writer = self
+            .writer
+            .take()
+            .ok_or_else(|| "authoritative PTY stream has no active writer to seal".to_string())?;
+        match writer.seal(outcome) {
+            Ok(()) => {
+                self.sealed = Some(outcome);
+                Ok(())
+            }
+            Err(error) => {
+                let error = format!("authoritative PTY stream seal failed: {error}");
+                self.failure = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn qualify_outcome(&self, mut outcome: stream::TerminalOutcome) -> stream::TerminalOutcome {
+        outcome.stream_complete &= self.output_complete;
+        outcome
+    }
+
+    #[cfg(test)]
+    fn limit_output_for_test(&mut self, limit: usize) {
+        if let Some(writer) = self.writer.as_mut() {
+            writer.limit_output_for_test(limit);
+        }
+    }
+}
+
+impl Recorders {
+    fn note_cast_failure(&mut self, context: &str, error: &io::Error) {
+        if self.cast_failure.is_none() {
+            self.cast_failure = Some(format!("pty.cast {context} failed: {error}"));
+        }
+    }
+
+    #[cfg(test)]
+    fn inject_durable_failure(&mut self) -> Result<(), String> {
+        match self.next_durable_failure.take() {
+            Some(error) => Err(self.durable.fail(error)),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(not(test))]
+    fn inject_durable_failure(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 struct PaneStreams {
@@ -2083,14 +2307,30 @@ impl Shared {
         }
     }
 
+    #[cfg(test)]
+    fn fail_pane_connection(&self, conn: ConnId, error: String) {
+        let out = {
+            let mut streams = self.pane_streams.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(slot) = streams.slots.remove(&conn) else {
+                return;
+            };
+            slot.cancellation.cancel();
+            slot.out
+        };
+        out.fail(crate::serve::Departure::PaneInputFailed {
+            agent_id: self.agent_id.0.clone(),
+            error,
+        });
+    }
+
     fn emit(&self, text: &str) {
         if text.is_empty() {
             return;
         }
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let mono_ns = {
-            let cast = self.cast.lock().unwrap_or_else(|e| e.into_inner());
-            cast.origin.elapsed().as_nanos() as u64
+            let recorders = self.recorders.lock().unwrap_or_else(|e| e.into_inner());
+            recorders.cast.origin.elapsed().as_nanos() as u64
         };
         let Some(listeners) = self.listeners.begin_delivery() else {
             return;
@@ -2150,6 +2390,8 @@ pub struct PtyHost {
     control_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     post_cast_input_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    next_master_input_failure: Mutex<Option<String>>,
     #[cfg(test)]
     before_child_sweep_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
@@ -2258,10 +2500,23 @@ impl PtyHost {
         options: PtyHostStart,
     ) -> io::Result<Self> {
         let cast = CastWriter::create(cast_path, size, term, origin)?;
+        // The binary stream is an authoritative enhancement, not the compatibility launch gate.
+        // A secure-path or entropy failure leaves the legacy host usable, but opaque input and
+        // completed replay fail closed through the retained `Unavailable` state.
+        let durable = match stream::SessionWriter::create(cast_path, &agent_id, size) {
+            Ok(writer) => DurableRecorder::available(writer),
+            Err(error) => DurableRecorder::unavailable(error),
+        };
         let shared = Arc::new_cyclic(|self_weak| Shared {
             self_weak: self_weak.clone(),
             agent_id,
-            cast: Mutex::new(cast),
+            recorders: Mutex::new(Recorders {
+                cast,
+                durable,
+                cast_failure: None,
+                #[cfg(test)]
+                next_durable_failure: None,
+            }),
             listeners: LegacyListeners::new(),
             writer: Arc::new(Mutex::new(None)),
             seq: AtomicU64::new(0),
@@ -2340,6 +2595,8 @@ impl PtyHost {
             #[cfg(test)]
             post_cast_input_hook: Mutex::new(None),
             #[cfg(test)]
+            next_master_input_failure: Mutex::new(None),
+            #[cfg(test)]
             before_child_sweep_hook: Mutex::new(None),
             #[cfg(test)]
             before_reader_stop_hook: Mutex::new(None),
@@ -2393,6 +2650,25 @@ impl PtyHost {
             .resize_cast_failure
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_durable_append(&self, error: &str) {
+        self.shared
+            .recorders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .next_durable_failure = Some(error.to_string());
+    }
+
+    #[cfg(test)]
+    fn limit_durable_output_for_test(&self, limit: usize) {
+        self.shared
+            .recorders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .durable
+            .limit_output_for_test(limit);
     }
 
     /// The running byte count, shareable into a resize hook. See
@@ -2540,6 +2816,22 @@ impl PtyHost {
         {
             hook();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_master_input(&self, error: impl Into<String>) {
+        *self
+            .next_master_input_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(error.into());
+    }
+
+    #[cfg(test)]
+    fn take_master_input_failure(&self) -> Option<String> {
+        self.next_master_input_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     #[cfg(test)]
@@ -2856,6 +3148,14 @@ impl PtyHost {
         }
     }
 
+    /// End exactly one negotiated pane connection after an opaque input notification failed.
+    /// The slot lock is released before socket shutdown so the serve loop's `gone` cleanup may
+    /// immediately re-enter [`Self::unlisten`] without a lock cycle.
+    #[cfg(test)]
+    pub(crate) fn fail_pane_connection(&self, conn: ConnId, error: String) {
+        self.shared.fail_pane_connection(conn, error);
+    }
+
     pub fn listeners(&self) -> usize {
         self.shared.listeners.len()
     }
@@ -2928,12 +3228,7 @@ impl PtyHost {
     /// 8-bit input (a raw C1 `0x9b` CSI, a latin-1 paste), the change is a byte-exact cast encoding
     /// **and** a wire type that can express it — not a quieter version of this.
     pub fn write_input(&self, lease: &WriteLease, bytes: &[u8]) -> io::Result<()> {
-        if !Arc::ptr_eq(&lease.slot, &self.shared.writer) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "write lease belongs to a different node",
-            ));
-        }
+        self.validate_writer_lease(lease)?;
         let text = std::str::from_utf8(bytes).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2948,22 +3243,49 @@ impl PtyHost {
                 ),
             )
         })?;
-        let (permit, delivery) = self.control.admit_write()?;
+        let (permit, delivery) = self.control.admit_write(None)?;
         #[cfg(test)]
         self.observe_control_hook();
-        // Recorded **before** the write, for the same asymmetry the resize order is chosen on, and
-        // now recorded as exactly the bytes about to go out rather than as a lossy rendering of
-        // them.
-        self.shared
-            .cast
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .input(text)?;
+        // Both records are linearized before delivery. The binary evidence is best-effort on this
+        // compatibility path: a dark-stream failure must not break an existing UTF-8 client, but it
+        // does permanently disqualify completed replay.
+        let (durable_failure, cast_result) = {
+            let mut recorders = self
+                .shared
+                .recorders
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let durable_failure = recorders
+                .inject_durable_failure()
+                .and_then(|()| recorders.durable.append_input_evidence(bytes.len()))
+                .err();
+            let cast_result = recorders.cast.input(text);
+            if let Err(error) = &cast_result {
+                recorders.note_cast_failure("input", error);
+            }
+            (durable_failure, cast_result)
+        };
+        if let Some(error) = durable_failure {
+            self.mark_replay_ineligible(error);
+        }
+        if let Err(error) = cast_result {
+            let failure = format!("pty input recording failed before delivery: {error}");
+            drop(permit);
+            delivery.finish(Some(failure.clone()));
+            self.mark_replay_ineligible(failure);
+            return Err(error);
+        }
         // Closing needs to order cast mutation before terminal `x`, not wait on a kernel write to
         // a harness that may never read again. The gate therefore ends at the durable record.
         drop(permit);
         #[cfg(test)]
         self.observe_post_cast_input_hook();
+        #[cfg(test)]
+        let outcome = match self.take_master_input_failure() {
+            Some(error) => Err(io::Error::other(error)),
+            None => self.master.write_all(bytes),
+        };
+        #[cfg(not(test))]
         let outcome = self.master.write_all(bytes);
         let delivery_failure = outcome.as_ref().err().map(|error| {
             format!("pty input was recorded but delivery failed before completion: {error}")
@@ -2973,6 +3295,121 @@ impl PtyHost {
             self.mark_replay_ineligible(error);
         }
         outcome
+    }
+
+    /// Test-only low-level delivery of opaque bytes without pane-v1 negotiation.
+    ///
+    /// Unlike [`Self::write_input`], this path never invents a legacy asciicast `i` string. It
+    /// commits content-independent length and ordering evidence under the host's recorder lock,
+    /// releases every durability lock, and only then writes the original slice to the master.
+    /// Failure of that evidence step therefore means failure before delivery, not an unaudited
+    /// write. Production callers must use [`Self::admit_opaque_input`] so the exact negotiated
+    /// pane slot and failure channel are captured before delivery.
+    #[cfg(test)]
+    fn write_opaque_input(&self, lease: &WriteLease, bytes: &[u8]) -> io::Result<()> {
+        self.validate_writer_lease(lease)?;
+        let (permit, delivery) = self.control.admit_write(None)?;
+        self.write_opaque_input_admitted(OpaqueInputAdmission { permit, delivery }, bytes)
+    }
+
+    /// Select a negotiated pane input while the caller still holds the global pane registry lock.
+    /// The returned admission owns the control barrier and the slot's exact outbound channel; all
+    /// recorder and master I/O happens later through [`Self::write_opaque_input_admitted`].
+    pub(crate) fn admit_opaque_input(
+        &self,
+        lease: &WriteLease,
+        conn: ConnId,
+    ) -> io::Result<OpaqueInputAdmission> {
+        self.validate_writer_lease(lease)?;
+        let target = {
+            let streams = self
+                .shared
+                .pane_streams
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let slot = streams.slots.get(&conn).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "opaque pane input requires a negotiated pane-v1 stream",
+                )
+            })?;
+            let phase_is_admissible = matches!(
+                slot.phase,
+                PanePhase::Pending(_) | PanePhase::Transitioning { .. } | PanePhase::Ready(_)
+            );
+            if !streams.valid
+                || slot.generation != streams.generation
+                || slot.cancellation.is_cancelled()
+                || !phase_is_admissible
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "opaque pane input belongs to an invalidated pane-v1 stream",
+                ));
+            }
+            InputFailureTarget {
+                out: slot.out.clone(),
+                agent_id: self.shared.agent_id.0.clone(),
+            }
+        };
+        let (permit, delivery) = self.control.admit_write(Some(target))?;
+        Ok(OpaqueInputAdmission { permit, delivery })
+    }
+
+    /// Complete an opaque write selected by [`Self::admit_opaque_input`].
+    pub(crate) fn write_opaque_input_admitted(
+        &self,
+        admission: OpaqueInputAdmission,
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        let OpaqueInputAdmission { permit, delivery } = admission;
+        #[cfg(test)]
+        self.observe_control_hook();
+        let evidence = {
+            let mut recorders = self
+                .shared
+                .recorders
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            recorders
+                .inject_durable_failure()
+                .and_then(|()| recorders.durable.append_input_evidence(bytes.len()))
+        };
+        if let Err(error) = evidence {
+            drop(permit);
+            delivery.finish(Some(error.clone()));
+            self.mark_replay_ineligible(error.clone());
+            return Err(io::Error::other(error));
+        }
+        drop(permit);
+        #[cfg(test)]
+        self.observe_post_cast_input_hook();
+        #[cfg(test)]
+        let outcome = match self.take_master_input_failure() {
+            Some(error) => Err(io::Error::other(error)),
+            None => self.master.write_all(bytes),
+        };
+        #[cfg(not(test))]
+        let outcome = self.master.write_all(bytes);
+        let delivery_failure = outcome.as_ref().err().map(|error| {
+            format!("pty opaque input was evidenced but delivery failed before completion: {error}")
+        });
+        delivery.finish(delivery_failure.clone());
+        if let Some(error) = delivery_failure {
+            self.mark_replay_ineligible(error);
+        }
+        outcome
+    }
+
+    fn validate_writer_lease(&self, lease: &WriteLease) -> io::Result<()> {
+        if Arc::ptr_eq(&lease.slot, &self.shared.writer) {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "write lease belongs to a different node",
+            ))
+        }
     }
 
     /// **The reader thread performs the resize, and that is what makes the `r` record true.**
@@ -3043,11 +3480,25 @@ impl PtyHost {
             // order and under the same lock.
             let size = q.pending.take().unwrap_or(size);
             q.applied = q.requested;
-            let mut cast = self.shared.cast.lock().unwrap_or_else(|e| e.into_inner());
+            let mut recorders = self
+                .shared
+                .recorders
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             self.shared.set_size(&self.master, size)?;
+            let durable_failure = recorders
+                .inject_durable_failure()
+                .and_then(|()| recorders.durable.append_resize(size))
+                .err();
             let retention = self.shared.retain_resize(size);
-            let cast_result = self.shared.resize_cast(&mut cast, size);
-            drop(cast);
+            let cast_result = self.shared.resize_cast(&mut recorders.cast, size);
+            if let Err(error) = &cast_result {
+                recorders.note_cast_failure("resize", error);
+            }
+            drop(recorders);
+            if let Some(error) = durable_failure {
+                eprintln!("marion: {error}");
+            }
             self.shared.finish_resize_retention(retention);
             cast_result?;
         } else if let Some(failure) = q.failure.take() {
@@ -3087,6 +3538,16 @@ impl PtyHost {
     /// which is why the caller is `launch_terminal`'s single exit path rather than every owner of
     /// the `Arc`.
     pub fn shutdown(&self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.shutdown_with_timeout_outcome(false)
+    }
+
+    /// Shut down after the bounded root wait and preserve whether that wait expired in the typed
+    /// terminal End. All other shutdown callers use [`Self::shutdown`] and therefore cannot be
+    /// mislabeled as timeouts.
+    pub(crate) fn shutdown_with_timeout_outcome(
+        &self,
+        timed_out: bool,
+    ) -> io::Result<Option<std::process::ExitStatus>> {
         self.control.seal();
         // **Taken out, not borrowed.** Holding the lock across `wait` would park a concurrent
         // `resize` from an attached client behind however long the child takes to die, and the
@@ -3129,19 +3590,76 @@ impl PtyHost {
             self.stopped.store(true, Ordering::SeqCst);
         }
         let reader = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let reader_failure = match reader {
+        let (reader_disposition, reader_failure) = match reader {
             Some(t) => match t.join() {
-                Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(format!("pty reader failed before terminal End: {error}")),
-                Err(_) => Some("pty reader thread panicked before terminal End".to_string()),
+                Ok(Ok(())) => (stream::ReaderDisposition::CleanEof, None),
+                Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => (
+                    stream::ReaderDisposition::ForcedStop,
+                    Some(format!(
+                        "pty reader was forced before terminal End: {error}"
+                    )),
+                ),
+                Ok(Err(error)) => (
+                    stream::ReaderDisposition::ReadError,
+                    Some(format!("pty reader failed before terminal End: {error}")),
+                ),
+                Err(_) => (
+                    stream::ReaderDisposition::ReadError,
+                    Some("pty reader thread panicked before terminal End".to_string()),
+                ),
             },
-            None => Some("pty host had no reader completion proof".to_string()),
+            None => (
+                stream::ReaderDisposition::ForcedStop,
+                Some("pty host had no reader completion proof".to_string()),
+            ),
         };
-        let mut cast = self.shared.cast.lock().unwrap_or_else(|e| e.into_inner());
-        cast.exit(&exit_word(status))?;
-        drop(cast);
+        // Kernel EOF is necessary but no longer sufficient to publish pane End: an opaque input
+        // selected before closing may still be resolving outside the recorder lock. The delivery
+        // barrier above either observed its outcome or visibly failed its exact socket on grace
+        // expiry, so End can only become visible after both facts are settled.
+        if reader_disposition == stream::ReaderDisposition::CleanEof {
+            self.shared.retain_end();
+        }
+        // `x` is synced first. The typed End then records whether that compatibility write, the
+        // reader, and the child status collectively proved a replayable terminal outcome. Even an
+        // ineligible forced/read/cast outcome is sealed when storage remains healthy, so recovery
+        // can distinguish a known bad ending from a torn file.
+        let input_complete = input_delivery_failure.is_none();
+        let (cast_result, stream_completion) = {
+            let mut recorders = self
+                .shared
+                .recorders
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let cast_result = recorders.cast.exit(&exit_word(status));
+            if let Err(error) = &cast_result {
+                recorders.note_cast_failure("exit", error);
+            }
+            let cast_complete = recorders.cast_failure.is_none();
+            let stream_completion = status.as_ref().map(|status| {
+                let mut outcome = recorders.durable.qualify_outcome(terminal_outcome(
+                    status,
+                    timed_out,
+                    reader_disposition,
+                    cast_complete,
+                ));
+                outcome.stream_complete &= input_complete;
+                recorders.durable.seal(outcome).and_then(|()| {
+                    if outcome.replay_eligible() {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "authoritative PTY stream sealed with an ineligible terminal outcome: {outcome:?}"
+                        ))
+                    }
+                })
+            });
+            (cast_result, stream_completion)
+        };
 
-        let completion_failure = reader_failure.or(input_delivery_failure);
+        let completion_failure = reader_failure
+            .or(input_delivery_failure)
+            .or_else(|| stream_completion.and_then(Result::err));
         let eligibility = completion_failure.map_or_else(
             || {
                 if let Some(error) = self
@@ -3181,6 +3699,7 @@ impl PtyHost {
             *completion = Some(eligibility);
         }
         self.control.mark_ended();
+        cast_result?;
         Ok(status)
     }
 
@@ -3199,6 +3718,23 @@ fn exit_word(status: Option<std::process::ExitStatus>) -> String {
             (None, Some(sig)) => format!("signal {sig}"),
             (None, None) => "unknown".to_string(),
         },
+    }
+}
+
+fn terminal_outcome(
+    status: &std::process::ExitStatus,
+    timed_out: bool,
+    reader: stream::ReaderDisposition,
+    cast_complete: bool,
+) -> stream::TerminalOutcome {
+    use std::os::unix::process::ExitStatusExt;
+    stream::TerminalOutcome {
+        exit_code: status.code(),
+        signal: status.signal(),
+        timed_out,
+        reader,
+        cast_complete,
+        stream_complete: true,
     }
 }
 
@@ -3275,15 +3811,15 @@ fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) -> io::R
     };
     let tail = utf8.finish();
     if !tail.is_empty() {
-        let _ = shared
-            .cast
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .output(&tail);
+        let mut recorders = shared.recorders.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(error) = recorders.cast.output(&tail) {
+            recorders.note_cast_failure("output tail", &error);
+            eprintln!("marion: pty.cast write failed: {error}");
+        }
+        drop(recorders);
         shared.emit(&tail);
     }
     if reached_eof {
-        shared.retain_end();
         Ok(())
     } else {
         Err(io::Error::new(
@@ -3319,13 +3855,37 @@ impl Drop for ReaderGone<'_> {
 /// about the UTF-8 carry — which is S11's *"a `read()` is not a frame"* defect reintroduced by
 /// duplication rather than by ignorance.
 fn record_chunk(shared: &Shared, utf8: &mut Utf8Stream, probes: &mut ProbeScan, chunk: &[u8]) {
-    shared.retain_output(chunk);
-    shared.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);
     let seen = probes.count(chunk);
     if seen > 0 {
         shared.probes.fetch_add(seen, Ordering::SeqCst);
     }
     let text = utf8.push(chunk);
+    // Raw output is authoritative and is committed before either compatibility projection. The
+    // same per-host lock orders it against every resize and input-evidence record, but is released
+    // before listener delivery or any other subsystem lock is acquired.
+    let (durable_failure, cast_failure) = {
+        let mut recorders = shared.recorders.lock().unwrap_or_else(|e| e.into_inner());
+        let durable_failure = recorders
+            .inject_durable_failure()
+            .and_then(|()| recorders.durable.append_output(chunk))
+            .err();
+        let cast_failure = if text.is_empty() {
+            None
+        } else {
+            recorders.cast.output(&text).err()
+        };
+        if let Some(error) = &cast_failure {
+            recorders.note_cast_failure("output", error);
+        }
+        (durable_failure, cast_failure)
+    };
+    if let Some(error) = durable_failure {
+        eprintln!("marion: {error}");
+    }
+    shared.retain_output(chunk);
+    // Published last: tests and diagnostics use this counter as the completion witness for the
+    // whole recording step, not merely for the kernel read returning.
+    shared.bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst);
     if text.is_empty() {
         return;
     }
@@ -3336,13 +3896,8 @@ fn record_chunk(shared: &Shared, utf8: &mut Utf8Stream, probes: &mut ProbeScan, 
     // every attach to any node would pay for a megabyte of escape sequences; and `event.rs:40`
     // says `mono_ns` exists to **align** the two files rather than to merge them. §3.4 has been
     // updated.
-    if let Err(e) = shared
-        .cast
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .output(&text)
-    {
-        eprintln!("marion: pty.cast write failed: {e}");
+    if let Some(error) = cast_failure {
+        eprintln!("marion: pty.cast write failed: {error}");
     }
     shared.emit(&text);
 }
@@ -3413,16 +3968,27 @@ fn apply_pending_resize(
         }
     }
 
-    let (outcome, retention) = {
-        let mut cast = shared.cast.lock().unwrap_or_else(|e| e.into_inner());
+    let (outcome, retention, durable_failure) = {
+        let mut recorders = shared.recorders.lock().unwrap_or_else(|e| e.into_inner());
         match shared.set_size(master, size) {
             Ok(()) => {
+                let durable_failure = recorders
+                    .inject_durable_failure()
+                    .and_then(|()| recorders.durable.append_resize(size))
+                    .err();
                 let retention = shared.retain_resize(size);
-                (shared.resize_cast(&mut cast, size), Some(retention))
+                let outcome = shared.resize_cast(&mut recorders.cast, size);
+                if let Err(error) = &outcome {
+                    recorders.note_cast_failure("resize", error);
+                }
+                (outcome, Some(retention), durable_failure)
             }
-            Err(error) => (Err(error), None),
+            Err(error) => (Err(error), None, None),
         }
     };
+    if let Some(error) = durable_failure {
+        eprintln!("marion: {error}");
+    }
     if let Some(retention) = retention {
         shared.finish_resize_retention(retention);
     }

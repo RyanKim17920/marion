@@ -1727,7 +1727,7 @@ fn finish_terminal_pane<Shutdown, ReplayCharge>(
     replay_charge: ReplayCharge,
 ) -> Result<(Option<std::process::ExitStatus>, bool), RootError>
 where
-    Shutdown: FnOnce() -> std::io::Result<Option<std::process::ExitStatus>>,
+    Shutdown: FnOnce(bool) -> std::io::Result<Option<std::process::ExitStatus>>,
     ReplayCharge: FnOnce() -> std::io::Result<usize>,
 {
     if let Some(owner) = pane {
@@ -1737,7 +1737,7 @@ where
     let timed_out = match waited {
         Ok(waited) => waited,
         Err(error) => {
-            let _ = shutdown();
+            let _ = shutdown(false);
             if let Some(owner) = pane {
                 owner.failed(agent_id, host);
             }
@@ -1745,7 +1745,7 @@ where
         }
     };
 
-    let status = match shutdown() {
+    let status = match shutdown(timed_out) {
         Ok(status) => status,
         Err(error) => {
             if let Some(owner) = pane {
@@ -1889,7 +1889,7 @@ fn launch_terminal(
         &node.agent_id,
         &host,
         waited,
-        || host.shutdown(),
+        |timed_out| host.shutdown_with_timeout_outcome(timed_out),
         || host.completed_replay_charge(),
     )?;
     Ok(RootOutcome {
@@ -2283,7 +2283,7 @@ mod tests {
             &id,
             &host,
             waited,
-            || host.shutdown(),
+            |timed_out| host.shutdown_with_timeout_outcome(timed_out),
             || unreachable!("an unadvertised test pane requests no replay charge"),
         )
         .expect("root wait and shutdown succeed");
@@ -2314,6 +2314,75 @@ mod tests {
             "the same-group holder survived the sweep"
         );
         cleanup.armed = false;
+    }
+
+    /// Mutation: hard-code `timed_out: false` while sealing the authoritative PTY stream. The
+    /// root outcome can still report the wait timeout correctly, so only recovering the durable
+    /// terminal End proves that the recorded lifecycle agrees with the root result.
+    #[test]
+    fn bounded_terminal_timeout_is_recorded_in_the_recovered_session_end() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let dir = marion_testsupport::scratch("root-pane-timeout-outcome");
+        let cast = dir.join("pty.cast");
+        let id = AgentId("root-pane-timeout-outcome".into());
+        let host = Arc::new(
+            crate::pty::PtyHost::start(
+                id.clone(),
+                crate::pty::PtyMaster::open(PANE_SIZE).expect("open pty"),
+                &cast,
+                PANE_SIZE,
+                PANE_TERM,
+                std::time::Instant::now(),
+            )
+            .expect("start pane host"),
+        );
+        let witness = marion_harness::ExecutionSurfaces::opaque()
+            .display_plane()
+            .expect("opaque execution owns a pty");
+        let mut command = SysCommand::new("/bin/sleep");
+        command.arg("30");
+        host.adopt(
+            crate::pty::spawn_pty(
+                witness,
+                &mut command,
+                host.master(),
+                crate::pty::StdinPlan::TerminalSlave,
+                None,
+            )
+            .expect("spawn bounded pane"),
+        );
+
+        let waited = wait_for_the_pane_to_end(&host, StdDuration::from_millis(25));
+        let (status, timed_out) = finish_terminal_pane(
+            None,
+            &id,
+            &host,
+            waited,
+            |timed_out| host.shutdown_with_timeout_outcome(timed_out),
+            || unreachable!("an unadvertised test pane requests no replay charge"),
+        )
+        .expect("timed-out pane is killed and reaped");
+        let status = status.expect("the adopted child has an exact kill status");
+        assert_eq!(status.code(), None);
+        assert_eq!(status.signal(), Some(9));
+        assert!(timed_out);
+
+        let stream_path = crate::pty::stream::stream_path_for_cast(&cast).expect("stream path");
+        let encoded = std::fs::read(stream_path).expect("sealed authoritative stream");
+        let recovered = crate::pty::stream::recover_session_bytes(&encoded)
+            .expect("the sealed stream recovers");
+        let crate::pty::stream::RecordKind::End(outcome) = recovered
+            .records
+            .last()
+            .expect("the session has a terminal record")
+            .kind
+        else {
+            panic!("the final authoritative record is a typed End")
+        };
+        assert_eq!(outcome.exit_code, None);
+        assert_eq!(outcome.signal, Some(9));
+        assert!(outcome.timed_out);
     }
 
     #[test]
@@ -2371,13 +2440,13 @@ mod tests {
             &id,
             &host,
             Ok(false),
-            || {
+            |timed_out| {
                 owner
                     .events
                     .lock()
                     .expect("pane lifecycle events")
                     .push("shutdown");
-                host.shutdown()
+                host.shutdown_with_timeout_outcome(timed_out)
             },
             || {
                 owner
@@ -2472,7 +2541,7 @@ mod tests {
             &id,
             &host,
             Err(std::io::Error::other("wait failed")),
-            || {
+            |_| {
                 owner
                     .events
                     .lock()
@@ -2495,7 +2564,7 @@ mod tests {
             &id,
             &host,
             Ok(false),
-            || {
+            |_| {
                 owner
                     .events
                     .lock()
@@ -2518,7 +2587,7 @@ mod tests {
             &id,
             &host,
             Ok(true),
-            || {
+            |_| {
                 owner
                     .events
                     .lock()

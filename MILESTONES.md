@@ -776,6 +776,29 @@ how much code exists.
     with the identical `Write::write_all` method item changes neither the v3 stream format nor its
     production-dark reachability and adds no milestone evidence; M3 stays `[partial]`.
 
+    **Authoritative PTY lifecycle and input recording in this commit moves no milestone marker.**
+    The host now orders raw output, resize, content-independent input evidence, and typed terminal
+    End records in the versioned stream; propagates the bounded root wait's timeout truth; and
+    visibly fails only the exact negotiated pane-v1 connection when opaque input cannot be
+    evidenced or delivered. The causal evidence is
+    `opaque_input_is_admitted_through_every_valid_pane_slot_phase`,
+    `pane_input_failure_cancels_only_the_exact_pending_subscription`,
+    `pane_input_failure_visibly_cancels_an_in_flight_transition`,
+    `opaque_input_reaches_the_slave_exactly_without_a_legacy_i_record`,
+    `output_quota_exhaustion_does_not_disable_the_next_opaque_key`,
+    `input_evidence_followed_by_master_delivery_failure_seals_incomplete_end`,
+    `opaque_evidence_failure_refuses_master_delivery_and_completion`,
+    `authoritative_stream_orders_output_resize_input_and_typed_end_densely`,
+    `opaque_input_evidence_refusal_closes_only_that_pane_client_before_end`,
+    `admitted_wire_opaque_input_failure_wins_over_terminal_end`,
+    `unresolved_pending_wire_input_is_visibly_failed_before_terminal_end`,
+    `legacy_attach_cannot_forge_opaque_pane_input`,
+    `legacy_input_keeps_its_compatibility_delivery_on_durable_evidence_failure`, and
+    `bounded_terminal_timeout_is_recorded_in_the_recovered_session_end`. Production serving still
+    installs the disabled native bootstrap service and the shipped CLI still refuses the native
+    facade relay, so native command execution remains dark and M3 remains `[partial]` pending C1's
+    recorded manual session.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

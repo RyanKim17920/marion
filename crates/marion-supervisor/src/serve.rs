@@ -157,6 +157,10 @@ pub enum Departure {
     PaneOverflow { agent_id: String },
     /// The host-wide retained pane stream failed and can no longer support exact replay.
     PaneRetentionFailed { agent_id: String, error: String },
+    /// An opaque pane input could not be durably evidenced or delivered. Notifications have no
+    /// response envelope, so the exact negotiated connection closes rather than silently claiming
+    /// that the terminal bytes were accepted.
+    PaneInputFailed { agent_id: String, error: String },
     /// A client never completed the response-first pane handshake within its bounded lifetime.
     PaneReplayExpired { agent_id: String },
     /// A retained pane generation became unavailable after negotiation (replacement, failure, or
@@ -273,6 +277,15 @@ pub trait Handle: Send + Sync + 'static {
     /// same reason: a dropped keystroke on a node that has no pty is not a silent wrong answer, it
     /// is the only answer there is.
     fn input(&self, _conn: ConnId, _input: &marion_proto::Input) {}
+
+    /// Deliver an inbound notification with the exact connection's outbound failure channel.
+    ///
+    /// This additive method preserves implementations of the original [`Self::input`] surface.
+    /// Display-plane handlers override it when an id-less notification can fail only by visibly
+    /// ending the sender's connection.
+    fn input_with_out(&self, conn: ConnId, input: &marion_proto::Input, _out: &Outbound) {
+        self.input(conn, input);
+    }
 
     /// A connection ended. Both readings are supplied: §7.3.1's, which is what may act on nodes,
     /// and the transport's, which is what can be reported.
@@ -1124,7 +1137,7 @@ fn answer_one(
             // Caught for the same reason `call` is: a handler that panics on a malformed keystroke
             // must not take the connection, and through it the operator's whole attach, with it.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                handle.input(id, &n.input)
+                handle.input_with_out(id, &n.input, out)
             }));
             None
         }
@@ -1721,6 +1734,13 @@ mod tests {
             Departure::PaneRetentionFailed {
                 agent_id: "pane-retention".into(),
                 error: "retained pane stream exceeded its limit".into(),
+            },
+        );
+        assert_pane_failure_closes_connection(
+            ConnId(703),
+            Departure::PaneInputFailed {
+                agent_id: "pane-input".into(),
+                error: "opaque input evidence was refused".into(),
             },
         );
     }
