@@ -71,6 +71,19 @@ pub mod native_intent;
 )]
 pub(crate) mod native_launch;
 /// Transparent pane-v1 relay for an authenticated native facade claim.
+#[cfg(all(
+    target_has_atomic = "32",
+    any(
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )
+    )
+))]
 pub(crate) mod native_relay;
 mod native_tty;
 mod pane_client;

@@ -829,6 +829,18 @@ how much code exists.
     production descriptors, service enablement, and CLI activation remain outstanding. M3 stays
     `[partial]` pending C1's recorded manual session.
 
+    **Native relay suspend state and signal ownership in this commit move no milestone marker.**
+    `NativeRelayTerminal` now explicitly models `Raw`, `Restored`, and `RestorePending`, with
+    reviewed suspend restoration and raw-mode re-entry primitives that remain production-dark until
+    the relay event pump consumes them. One process-global guard now atomically captures,
+    installs, rolls back, and exactly restores WINCH/INT/TERM/HUP/TSTP actions on the supported
+    macOS/Linux aarch64/x86_64 targets; its handlers publish only lock-free atomic state, overlapping
+    owners are refused, and ownership is reacquirable after cleanup. External signal consumption and
+    same-signal redelivery, the TSTP/CONT lifecycle, passive terminal cleanup and panic restoration,
+    real nested-PTY end-to-end evidence, production descriptors, service enablement, and CLI
+    activation remain outstanding. These compiled foundations satisfy no activation criterion, so
+    no marker advances and M3 remains `[partial]`.
+
     **Authenticated native command lifecycle in this commit moves no milestone marker.** Native
     selection can now launch a supervisor-owned PTY process, reserve its exact pending writer, and
     pre-create both lifecycle and claimed-connection workers behind abortable gates before the

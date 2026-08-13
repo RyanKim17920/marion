@@ -1,8 +1,22 @@
 //! Transparent client relay for a claimed native facade.
 
+#![cfg(all(
+    target_has_atomic = "32",
+    any(
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )
+    )
+))]
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use marion_core::contract::AgentId;
@@ -16,9 +30,16 @@ type Refusal = String;
 
 const POLL: std::time::Duration = std::time::Duration::from_millis(50);
 static RESIZED: AtomicBool = AtomicBool::new(false);
-static RESIZE_SIGNAL_OWNER: Mutex<()> = Mutex::new(());
+static RELAY_SIGNAL_EVENTS: AtomicU32 = AtomicU32::new(0);
+static RELAY_SIGNAL_OWNER: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 static AFTER_RESIZE_SIGNAL_ACQUIRE: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+#[cfg(test)]
+static FAIL_RELAY_SIGNAL_INSTALL_AT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static RELAY_SIGNAL_INSTALL_ATTEMPT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 unsafe extern "C" {
     #[cfg(test)]
@@ -27,6 +48,19 @@ unsafe extern "C" {
 }
 
 const SIGWINCH: std::ffi::c_int = 28;
+const SIGHUP: std::ffi::c_int = 1;
+const SIGINT: std::ffi::c_int = 2;
+const SIGTERM: std::ffi::c_int = 15;
+#[cfg(target_os = "macos")]
+const SIGTSTP: std::ffi::c_int = 18;
+#[cfg(target_os = "linux")]
+const SIGTSTP: std::ffi::c_int = 20;
+const RELAY_SIGNALS: [std::ffi::c_int; 5] = [SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGTSTP];
+
+const INTERRUPTED: u32 = 1 << 0;
+const TERMINATED: u32 = 1 << 1;
+const HUNG_UP: u32 = 1 << 2;
+const SUSPENDED: u32 = 1 << 3;
 
 #[cfg(target_os = "macos")]
 type SigSet = u32;
@@ -70,9 +104,9 @@ impl Sigaction {
         }
     }
 
-    fn resize_handler() -> Self {
+    fn relay_handler() -> Self {
         Self {
-            handler: on_winch as *const () as usize,
+            handler: on_relay_signal as *const () as usize,
             mask: empty_sigset(),
             // The relay retries interrupted reads itself. Zero avoids importing a platform-specific
             // SA_RESTART value (Darwin and Linux deliberately assign different bits).
@@ -83,37 +117,66 @@ impl Sigaction {
     }
 }
 
-extern "C" fn on_winch(_: std::ffi::c_int) {
-    RESIZED.store(true, Ordering::SeqCst);
+extern "C" fn on_relay_signal(signal: std::ffi::c_int) {
+    match signal {
+        SIGWINCH => RESIZED.store(true, Ordering::SeqCst),
+        SIGINT => {
+            RELAY_SIGNAL_EVENTS.fetch_or(INTERRUPTED, Ordering::SeqCst);
+        }
+        SIGTERM => {
+            RELAY_SIGNAL_EVENTS.fetch_or(TERMINATED, Ordering::SeqCst);
+        }
+        SIGHUP => {
+            RELAY_SIGNAL_EVENTS.fetch_or(HUNG_UP, Ordering::SeqCst);
+        }
+        SIGTSTP => {
+            RELAY_SIGNAL_EVENTS.fetch_or(SUSPENDED, Ordering::SeqCst);
+        }
+        _ => {}
+    }
 }
 
-/// Exclusive ownership of marion's process-global resize handler for one native relay session.
-struct ResizeSignalGuard {
-    prior: Sigaction,
+struct PriorSignalAction {
+    signal: std::ffi::c_int,
+    action: Sigaction,
+}
+
+/// Exclusive ownership of marion's process-global relay handlers for one native relay session.
+struct RelaySignalGuard {
+    prior: Vec<PriorSignalAction>,
     _owner: MutexGuard<'static, ()>,
 }
 
-impl ResizeSignalGuard {
+impl RelaySignalGuard {
     fn acquire() -> Result<Self, Refusal> {
-        let owner = match RESIZE_SIGNAL_OWNER.try_lock() {
+        let owner = match RELAY_SIGNAL_OWNER.try_lock() {
             Ok(owner) => owner,
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
             Err(TryLockError::WouldBlock) => {
-                return Err("another native relay already owns SIGWINCH".into());
+                return Err("another native relay already owns SIGWINCH and relay signals".into());
             }
         };
-        // Each relay begins with only its explicit initial geometry. No resize edge from a prior
-        // owner may leak into this session.
+        // No signal edge from a prior owner may leak into this session.
         RESIZED.store(false, Ordering::SeqCst);
-        let action = Sigaction::resize_handler();
-        let mut prior = Sigaction::zeroed();
-        // SAFETY: both values exactly match libc's supported Darwin/Linux `struct sigaction`
-        // layout. This single call atomically installs marion's handler and captures the prior
-        // handler, mask, flags, and restorer, leaving no query/install clobber window.
-        if unsafe { sigaction(SIGWINCH, &action, &mut prior) } != 0 {
-            let error = std::io::Error::last_os_error();
-            RESIZED.store(false, Ordering::SeqCst);
-            return Err(format!("installing the process SIGWINCH action: {error}"));
+        RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
+        #[cfg(test)]
+        RELAY_SIGNAL_INSTALL_ATTEMPT.store(0, Ordering::SeqCst);
+        let action = Sigaction::relay_handler();
+        let mut prior = Vec::with_capacity(RELAY_SIGNALS.len());
+        for signal in RELAY_SIGNALS {
+            let mut prior_action = Sigaction::zeroed();
+            if let Err(error) = install_relay_signal_action(signal, &action, &mut prior_action) {
+                restore_signal_actions(&prior);
+                RESIZED.store(false, Ordering::SeqCst);
+                RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
+                return Err(format!(
+                    "installing process signal action {signal}: {error}"
+                ));
+            }
+            prior.push(PriorSignalAction {
+                signal,
+                action: prior_action,
+            });
         }
         Ok(Self {
             prior,
@@ -122,14 +185,55 @@ impl ResizeSignalGuard {
     }
 }
 
-impl Drop for ResizeSignalGuard {
+fn install_relay_signal_action(
+    signal: std::ffi::c_int,
+    action: &Sigaction,
+    prior: &mut Sigaction,
+) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        let attempt = RELAY_SIGNAL_INSTALL_ATTEMPT.fetch_add(1, Ordering::SeqCst) + 1;
+        if FAIL_RELAY_SIGNAL_INSTALL_AT
+            .compare_exchange(attempt, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Err(std::io::Error::other(
+                "injected signal action installation failure",
+            ));
+        }
+    }
+    // SAFETY: both values exactly match libc's supported Darwin/Linux `struct sigaction` layout.
+    // This one call atomically installs marion's action and captures every field of the prior
+    // action, leaving no query/install clobber window for this signal.
+    if unsafe { sigaction(signal, action, prior) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(test)]
+fn fail_relay_signal_install_at(attempt: usize) {
+    assert!((1..=RELAY_SIGNALS.len()).contains(&attempt));
+    RELAY_SIGNAL_INSTALL_ATTEMPT.store(0, Ordering::SeqCst);
+    FAIL_RELAY_SIGNAL_INSTALL_AT.store(attempt, Ordering::SeqCst);
+}
+
+fn restore_signal_actions(prior: &[PriorSignalAction]) {
+    for prior in prior.iter().rev() {
+        // SAFETY: each action is the unmodified value libc returned for this exact signal.
+        let _ = unsafe { sigaction(prior.signal, &prior.action, std::ptr::null_mut()) };
+    }
+}
+
+impl Drop for RelaySignalGuard {
     fn drop(&mut self) {
-        // SAFETY: `prior` is the unmodified action libc returned for this exact signal. Restoration
-        // happens while `_owner` still excludes another in-process native relay.
-        let _ = unsafe { sigaction(SIGWINCH, &self.prior, std::ptr::null_mut()) };
-        // Restore first, then clear: a later SIGWINCH can no longer set marion's flag, so no edge
-        // can appear between cleanup and the next session's acquisition.
+        // Restore in reverse installation order while `_owner` still excludes a later relay.
+        restore_signal_actions(&self.prior);
+        // Restore first, then clear: no later signal can set marion's flags between cleanup and the
+        // next session's acquisition.
         RESIZED.store(false, Ordering::SeqCst);
+        RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
     }
 }
 
@@ -241,7 +345,7 @@ struct RawPaneSession<W: Write> {
     next_seq: u64,
     cut: u64,
     input_fd: Option<std::os::fd::RawFd>,
-    resize_signal: Option<ResizeSignalGuard>,
+    resize_signal: Option<RelaySignalGuard>,
     leaving: Arc<AtomicBool>,
     keyboard_failure: Arc<std::sync::Mutex<Option<String>>>,
     keyboard: Option<std::thread::JoinHandle<()>>,
@@ -258,7 +362,7 @@ impl<W: Write> RawPaneSession<W> {
     ) -> Result<Self, Refusal> {
         let resize_signal = geometry
             .is_none()
-            .then(ResizeSignalGuard::acquire)
+            .then(RelaySignalGuard::acquire)
             .transpose()?;
         #[cfg(test)]
         if let Some(hook) = AFTER_RESIZE_SIGNAL_ACQUIRE
@@ -661,13 +765,32 @@ mod tests {
     use marion_core::contract::AgentId;
     use marion_proto::{Call, Event, Frame, Input, MethodResult, PaneFrameKindV1, RequestId};
 
-    use super::{AFTER_RESIZE_SIGNAL_ACQUIRE, RESIZED, RawPaneSession, SIGWINCH, signal};
+    use super::{
+        AFTER_RESIZE_SIGNAL_ACQUIRE, HUNG_UP, INTERRUPTED, RELAY_SIGNAL_EVENTS, RESIZED,
+        RawPaneSession, RelaySignalGuard, SIGWINCH, SUSPENDED, Sigaction, TERMINATED, empty_sigset,
+        fail_relay_signal_install_at, sigaction, signal,
+    };
 
     const SIGNAL_RESTORE_PROBE: &str = "MARION_NATIVE_SIGNAL_RESTORE_PROBE";
     const SIGNAL_CONTENTION_PROBE: &str = "MARION_NATIVE_SIGNAL_CONTENTION_PROBE";
     const SIGNAL_RESET_PROBE: &str = "MARION_NATIVE_SIGNAL_RESET_PROBE";
+    const SIGNAL_OWNER_PROBE: &str = "MARION_NATIVE_SIGNAL_OWNER_PROBE";
+    const SIGNAL_HANDLER_PROBE: &str = "MARION_NATIVE_SIGNAL_HANDLER_PROBE";
     const SIG_ERR: usize = usize::MAX;
     static SENTINEL_HITS: AtomicUsize = AtomicUsize::new(0);
+
+    const SIGHUP: std::ffi::c_int = 1;
+    const SIGINT: std::ffi::c_int = 2;
+    const SIGTERM: std::ffi::c_int = 15;
+    #[cfg(target_os = "macos")]
+    const SIGTSTP: std::ffi::c_int = 18;
+    #[cfg(target_os = "linux")]
+    const SIGTSTP: std::ffi::c_int = 20;
+    const RELAY_SIGNALS: [std::ffi::c_int; 5] = [SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGTSTP];
+    #[cfg(target_os = "macos")]
+    const TEST_SA_RESTART: i32 = 0x0002;
+    #[cfg(target_os = "linux")]
+    const TEST_SA_RESTART: i32 = 0x1000_0000;
 
     unsafe extern "C" {
         fn raise(signal: std::ffi::c_int) -> std::ffi::c_int;
@@ -694,10 +817,172 @@ mod tests {
         RestoreSignal(prior)
     }
 
+    struct RestoreActions(Vec<(std::ffi::c_int, Sigaction)>);
+
+    impl Drop for RestoreActions {
+        fn drop(&mut self) {
+            for (signal, prior) in self.0.iter().rev() {
+                // SAFETY: each action is the unmodified value returned by `sigaction` for the
+                // same signal, and the isolated probe has no concurrent signal owner.
+                let _ = unsafe { sigaction(*signal, prior, std::ptr::null_mut()) };
+            }
+        }
+    }
+
+    fn install_exact_sentinels() -> RestoreActions {
+        let mut priors = Vec::new();
+        for signal in RELAY_SIGNALS {
+            let action = Sigaction {
+                handler: sentinel_winch as *const () as usize,
+                mask: sentinel_sigset(),
+                flags: TEST_SA_RESTART,
+                #[cfg(target_os = "linux")]
+                restorer: 0,
+            };
+            let mut prior = Sigaction::zeroed();
+            // SAFETY: `action` and `prior` use libc's Darwin/Linux `struct sigaction` layout.
+            assert_eq!(unsafe { sigaction(signal, &action, &mut prior) }, 0);
+            priors.push((signal, prior));
+        }
+        RestoreActions(priors)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sentinel_sigset() -> super::SigSet {
+        1 << (SIGTERM - 1)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sentinel_sigset() -> super::SigSet {
+        let mut mask = empty_sigset();
+        let bit = usize::try_from(SIGTERM - 1).expect("SIGTERM is positive");
+        mask[bit / usize::BITS as usize] |= 1usize << (bit % usize::BITS as usize);
+        mask
+    }
+
+    fn snapshot_actions() -> Vec<Sigaction> {
+        RELAY_SIGNALS
+            .iter()
+            .map(|signal| {
+                let mut action = Sigaction::zeroed();
+                // SAFETY: a null replacement queries the current action into a valid out pointer.
+                assert_eq!(
+                    unsafe { sigaction(*signal, std::ptr::null(), &mut action) },
+                    0
+                );
+                action
+            })
+            .collect()
+    }
+
+    fn assert_same_actions(actual: &[Sigaction], expected: &[Sigaction]) {
+        assert_eq!(actual.len(), expected.len());
+        for (signal, (actual, expected)) in
+            RELAY_SIGNALS.iter().zip(actual.iter().zip(expected.iter()))
+        {
+            assert_eq!(actual.handler, expected.handler, "handler for {signal}");
+            assert_eq!(actual.mask, expected.mask, "mask for {signal}");
+            assert_eq!(actual.flags, expected.flags, "flags for {signal}");
+            #[cfg(target_os = "linux")]
+            assert_eq!(actual.restorer, expected.restorer, "restorer for {signal}");
+        }
+    }
+
     fn raise_winch() {
         // SAFETY: SIGWINCH is handled by either the relay's atomic-only handler or the test's
         // atomic-only sentinel throughout these isolated child probes.
         assert_eq!(unsafe { raise(SIGWINCH) }, 0);
+    }
+
+    #[test]
+    fn relay_signal_guard_restores_every_prior_action_and_reacquires() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "relay_signal_guard_restores_every_prior_action_and_reacquires",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        let sentinels = snapshot_actions();
+        assert!(
+            sentinels.iter().all(|action| action.mask != empty_sigset()),
+            "the exact-action oracle requires a non-default signal mask"
+        );
+        assert!(
+            sentinels
+                .iter()
+                .all(|action| action.flags & TEST_SA_RESTART != 0),
+            "the exact-action oracle requires a non-default action flag"
+        );
+
+        let first = RelaySignalGuard::acquire().expect("the first relay owns every signal");
+        assert!(
+            RelaySignalGuard::acquire().is_err(),
+            "overlapping process-global signal ownership was admitted"
+        );
+        drop(first);
+        assert_same_actions(&snapshot_actions(), &sentinels);
+
+        drop(RelaySignalGuard::acquire().expect("signal ownership is reacquirable after drop"));
+        assert_same_actions(&snapshot_actions(), &sentinels);
+    }
+
+    #[test]
+    fn relay_signal_guard_rolls_back_a_partial_install_and_reacquires() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "relay_signal_guard_rolls_back_a_partial_install_and_reacquires",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        let sentinels = snapshot_actions();
+        fail_relay_signal_install_at(3);
+
+        let error = RelaySignalGuard::acquire()
+            .err()
+            .expect("the injected third signal installation fails");
+        assert!(
+            error.contains("injected signal action installation failure"),
+            "{error}"
+        );
+        assert_same_actions(&snapshot_actions(), &sentinels);
+
+        drop(RelaySignalGuard::acquire().expect("ownership is reacquirable after rollback"));
+        assert_same_actions(&snapshot_actions(), &sentinels);
+    }
+
+    #[test]
+    fn relay_signal_handlers_only_publish_atomic_events() {
+        if !run_isolated_signal_probe(
+            SIGNAL_HANDLER_PROBE,
+            "relay_signal_handlers_only_publish_atomic_events",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        SENTINEL_HITS.store(0, Ordering::SeqCst);
+        RESIZED.store(false, Ordering::SeqCst);
+        RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
+        let guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
+
+        for signal in RELAY_SIGNALS {
+            // SAFETY: every signal has the relay's atomic-only handler throughout this loop.
+            assert_eq!(unsafe { raise(signal) }, 0, "raising signal {signal}");
+        }
+
+        assert!(RESIZED.load(Ordering::SeqCst), "SIGWINCH was not published");
+        assert_eq!(
+            RELAY_SIGNAL_EVENTS.load(Ordering::SeqCst),
+            INTERRUPTED | TERMINATED | HUNG_UP | SUSPENDED,
+            "relay signal handlers did not publish every event"
+        );
+        assert_eq!(
+            SENTINEL_HITS.load(Ordering::SeqCst),
+            0,
+            "a prior signal action ran while the relay owned the process actions"
+        );
+        drop(guard);
     }
 
     fn run_isolated_signal_probe(variable: &str, test: &str) -> bool {

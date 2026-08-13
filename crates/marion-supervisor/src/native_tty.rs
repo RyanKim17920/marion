@@ -115,7 +115,15 @@ pub(crate) struct NativeRelayTerminal {
     stdin: OwnedFd,
     stdout: OwnedFd,
     baseline: TerminalBaseline,
+    state: NativeRelayTerminalState,
     armed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeRelayTerminalState {
+    Raw,
+    Restored,
+    RestorePending,
 }
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]
@@ -153,6 +161,8 @@ pub(crate) enum NativeTtyError {
     InvalidDescriptorRoles,
     #[error("the authenticated peer pid was invalid")]
     InvalidPeer,
+    #[error("terminal restoration is pending before raw-mode re-entry")]
+    RestorationPending,
     #[error(
         "terminal relay entry failed: {entry}; cleanup stage `terminal restoration` also failed: {cleanup}"
     )]
@@ -406,21 +416,37 @@ impl NativeRelayTerminal {
             stdin,
             stdout,
             baseline,
-            armed: true,
+            state: NativeRelayTerminalState::Restored,
+            armed: false,
         };
-        let mut raw = terminal.baseline.termios.clone();
+        terminal.enter_raw()?;
+        Ok(terminal)
+    }
+
+    fn enter_raw(&mut self) -> Result<(), NativeTtyError> {
+        match self.state {
+            NativeRelayTerminalState::Raw => return Ok(()),
+            NativeRelayTerminalState::Restored => {}
+            NativeRelayTerminalState::RestorePending => {
+                return Err(NativeTtyError::RestorationPending);
+            }
+        }
+        // Arm restoration before the first mutation: even a syscall which partially changes the
+        // terminal and then reports failure must unwind through the retained baseline.
+        self.armed = true;
+        let mut raw = self.baseline.termios.clone();
         raw.make_raw();
         let entry =
-            retry_interrupted(|| set_terminal_attr(terminal.stdin.as_fd(), &raw)).and_then(|()| {
+            retry_interrupted(|| set_terminal_attr(self.stdin.as_fd(), &raw)).and_then(|()| {
                 retry_interrupted(|| {
                     set_status_flags(
-                        terminal.stdin.as_fd(),
-                        terminal.baseline.stdin_flags | OFlags::NONBLOCK,
+                        self.stdin.as_fd(),
+                        self.baseline.stdin_flags | OFlags::NONBLOCK,
                     )
                 })
             });
         if let Err(entry) = entry {
-            return match terminal.restore_result() {
+            return match self.restore_result() {
                 Ok(()) => Err(entry.into()),
                 Err(cleanup) => Err(NativeTtyError::EntryCleanup {
                     entry,
@@ -428,7 +454,30 @@ impl NativeRelayTerminal {
                 }),
             };
         }
-        Ok(terminal)
+        self.state = NativeRelayTerminalState::Raw;
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reviewed suspend transition stays dark until the relay signal pump consumes it"
+        )
+    )]
+    pub(crate) fn restore_for_suspend(&mut self) -> Result<(), NativeTtyRestoreError> {
+        self.restore_result()
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reviewed resume transition stays dark until the relay signal pump consumes it"
+        )
+    )]
+    pub(crate) fn reenter_after_continue(&mut self) -> Result<(), NativeTtyError> {
+        self.enter_raw()
     }
 
     pub(crate) fn stdin(&self) -> std::os::fd::BorrowedFd<'_> {
@@ -458,9 +507,11 @@ impl NativeRelayTerminal {
             }
         }
         if let Some(error) = first_error {
+            self.state = NativeRelayTerminalState::RestorePending;
             return Err(NativeTtyRestoreError(error));
         }
         self.armed = false;
+        self.state = NativeRelayTerminalState::Restored;
         Ok(())
     }
 }
@@ -478,6 +529,204 @@ mod tests {
 
     use super::*;
     use crate::pty::{PtyMaster, WinSize};
+
+    #[test]
+    fn native_relay_terminal_restores_for_suspend_and_reenters_raw_mode() {
+        let master = PtyMaster::open(WinSize::new(91, 29)).expect("suspend/resume PTY");
+        let stdin = master.open_slave().expect("relay stdin");
+        let stdout = master.open_slave().expect("relay stdout");
+        let baseline = tcgetattr(&stdin).expect("capture terminal baseline");
+        let baseline_stdin_flags = fcntl_getfl(&stdin).expect("capture stdin flags");
+        let baseline_stdout_flags = fcntl_getfl(&stdout).expect("capture stdout flags");
+        let witness = ClientTtyWitness {
+            stdin,
+            stdout,
+            fingerprint: TerminalFingerprint {
+                st_dev: 0,
+                st_ino: 0,
+                st_rdev: 0,
+            },
+            baseline: TerminalBaseline {
+                termios: baseline.clone(),
+                stdin_flags: baseline_stdin_flags,
+                stdout_flags: baseline_stdout_flags,
+            },
+            session_id: getpgrp(),
+            foreground_pgid: getpgrp(),
+            observed_geometry: TerminalGeometryV1 {
+                cols: 91,
+                rows: 29,
+                xpixel: 0,
+                ypixel: 0,
+            },
+        };
+        let mut terminal = witness.enter_native_relay().expect("enter raw relay mode");
+        assert_ne!(
+            tcgetattr(terminal.stdin()).unwrap().local_modes,
+            baseline.local_modes
+        );
+
+        terminal
+            .restore_for_suspend()
+            .expect("restore terminal before suspension");
+        let restored = tcgetattr(terminal.stdin()).unwrap();
+        assert_eq!(
+            restored.local_modes & !rustix::termios::LocalModes::PENDIN,
+            baseline.local_modes
+        );
+        assert_eq!(fcntl_getfl(terminal.stdin()).unwrap(), baseline_stdin_flags);
+
+        terminal
+            .reenter_after_continue()
+            .expect("re-enter raw relay mode after continuation");
+        assert_ne!(
+            tcgetattr(terminal.stdin()).unwrap().local_modes,
+            baseline.local_modes
+        );
+        assert!(
+            fcntl_getfl(terminal.stdin())
+                .unwrap()
+                .contains(OFlags::NONBLOCK)
+        );
+    }
+
+    #[test]
+    fn native_relay_terminal_rolls_back_a_failed_raw_reentry_after_continue() {
+        let master = PtyMaster::open(WinSize::new(91, 29)).expect("failed re-entry PTY");
+        let stdin = master.open_slave().expect("relay stdin");
+        let stdout = master.open_slave().expect("relay stdout");
+        let baseline = tcgetattr(&stdin).expect("capture terminal baseline");
+        let baseline_stdin_flags = fcntl_getfl(&stdin).expect("capture stdin flags");
+        let baseline_stdout_flags = fcntl_getfl(&stdout).expect("capture stdout flags");
+        let witness = ClientTtyWitness {
+            stdin,
+            stdout,
+            fingerprint: TerminalFingerprint {
+                st_dev: 0,
+                st_ino: 0,
+                st_rdev: 0,
+            },
+            baseline: TerminalBaseline {
+                termios: baseline.clone(),
+                stdin_flags: baseline_stdin_flags,
+                stdout_flags: baseline_stdout_flags,
+            },
+            session_id: getpgrp(),
+            foreground_pgid: getpgrp(),
+            observed_geometry: TerminalGeometryV1 {
+                cols: 91,
+                rows: 29,
+                xpixel: 0,
+                ypixel: 0,
+            },
+        };
+        let mut terminal = witness.enter_native_relay().expect("enter raw relay mode");
+        terminal
+            .restore_for_suspend()
+            .expect("restore terminal before suspension");
+        F_SETFL_RESULTS.with(|results| {
+            results
+                .borrow_mut()
+                .push_back(Some(rustix::io::Errno::BADF));
+        });
+
+        let error = terminal
+            .reenter_after_continue()
+            .expect_err("post-termios flag failure must refuse raw re-entry");
+        assert!(error.to_string().contains("Bad file descriptor"), "{error}");
+        let restored = tcgetattr(terminal.stdin()).unwrap();
+        assert_eq!(restored.input_modes, baseline.input_modes);
+        assert_eq!(restored.output_modes, baseline.output_modes);
+        assert_eq!(restored.control_modes, baseline.control_modes);
+        assert_eq!(
+            restored.local_modes & !rustix::termios::LocalModes::PENDIN,
+            baseline.local_modes
+        );
+        assert_eq!(fcntl_getfl(terminal.stdin()).unwrap(), baseline_stdin_flags);
+        assert_eq!(
+            fcntl_getfl(terminal.stdout()).unwrap(),
+            baseline_stdout_flags
+        );
+
+        terminal
+            .reenter_after_continue()
+            .expect("a rolled-back re-entry remains retryable");
+        assert_ne!(
+            tcgetattr(terminal.stdin()).unwrap().local_modes,
+            baseline.local_modes
+        );
+    }
+
+    #[test]
+    fn continue_refuses_while_suspend_restoration_is_pending_then_retries_cleanly() {
+        let master = PtyMaster::open(WinSize::new(91, 29)).expect("partial suspend PTY");
+        let stdin = master.open_slave().expect("relay stdin");
+        let stdout = master.open_slave().expect("relay stdout");
+        let baseline = tcgetattr(&stdin).expect("capture terminal baseline");
+        let baseline_stdin_flags = fcntl_getfl(&stdin).expect("capture stdin flags");
+        let baseline_stdout_flags = fcntl_getfl(&stdout).expect("capture stdout flags");
+        let witness = ClientTtyWitness {
+            stdin,
+            stdout,
+            fingerprint: TerminalFingerprint {
+                st_dev: 0,
+                st_ino: 0,
+                st_rdev: 0,
+            },
+            baseline: TerminalBaseline {
+                termios: baseline.clone(),
+                stdin_flags: baseline_stdin_flags,
+                stdout_flags: baseline_stdout_flags,
+            },
+            session_id: getpgrp(),
+            foreground_pgid: getpgrp(),
+            observed_geometry: TerminalGeometryV1 {
+                cols: 91,
+                rows: 29,
+                xpixel: 0,
+                ypixel: 0,
+            },
+        };
+        let mut terminal = witness.enter_native_relay().expect("enter raw relay mode");
+        F_SETFL_RESULTS.with(|results| {
+            results
+                .borrow_mut()
+                .extend([Some(rustix::io::Errno::BADF), None]);
+        });
+
+        terminal
+            .restore_for_suspend()
+            .expect_err("partial suspend restoration must remain pending");
+        let error = terminal
+            .reenter_after_continue()
+            .expect_err("continue cannot treat pending restoration as already raw");
+        assert!(
+            error.to_string().contains("restoration is pending"),
+            "{error}"
+        );
+
+        terminal
+            .restore_for_suspend()
+            .expect("retry completes pending suspend restoration");
+        terminal
+            .restore_for_suspend()
+            .expect("duplicate suspend restoration is idempotent");
+        terminal
+            .reenter_after_continue()
+            .expect("continue re-enters raw mode from fully restored state");
+        terminal
+            .reenter_after_continue()
+            .expect("duplicate continue is idempotent while already raw");
+        assert_ne!(
+            tcgetattr(terminal.stdin()).unwrap().local_modes,
+            baseline.local_modes
+        );
+        assert!(
+            fcntl_getfl(terminal.stdin())
+                .unwrap()
+                .contains(OFlags::NONBLOCK)
+        );
+    }
 
     #[test]
     fn production_verifier_refuses_swapped_or_insufficient_terminal_roles_before_session_detail() {
