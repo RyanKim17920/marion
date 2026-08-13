@@ -72,7 +72,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use marion_core::contract::AgentId;
 use marion_proto::{
     Call, ClientNotification, Event, Frame, Input, MethodResult, NodePaneReadyV1, NodePaneWriteV1,
-    PaneFrameKindV1, RequestId,
+    RequestId,
 };
 use marion_term::Term;
 use marion_tui::{Action, Keys, Pane, Redraw, Screen, ScreenBackend, Sticky};
@@ -951,59 +951,32 @@ impl Session {
                 )),
                 _ => Ok(PaneProgress::Continue),
             },
-            PaneStream::V1 { next_seq, cut } => match event {
-                Event::NodePaneFrame(frame) if frame.agent_id == self.id => {
-                    if frame.seq != next_seq {
-                        return Err(format!(
-                            "node `{}`'s pane stream is not dense: expected sequence {next_seq}, \
-                             received {}",
-                            self.id.0, frame.seq
-                        ));
+            PaneStream::V1 { next_seq, cut } => {
+                let decoded =
+                    crate::pane_client::decode_pane_v1_event(&self.id, next_seq, cut, event)?;
+                let progress = match decoded.action {
+                    crate::pane_client::PaneV1Action::Output(bytes) => {
+                        self.view_mut()?.feed(bytes.as_bytes())?;
+                        PaneProgress::Continue
                     }
-                    let following = next_seq.checked_add(1).ok_or_else(|| {
-                        format!("node `{}` exhausted its pane sequence", self.id.0)
-                    })?;
-                    let progress = match frame.frame {
-                        PaneFrameKindV1::Output { bytes } => {
-                            self.view_mut()?.feed(bytes.as_bytes())?;
-                            PaneProgress::Continue
-                        }
-                        PaneFrameKindV1::Resize { cols, rows } => {
-                            self.view_mut()?.resize_grid(cols, rows)?;
-                            PaneProgress::Continue
-                        }
-                        PaneFrameKindV1::End {} => {
-                            if following < cut {
-                                return Err(format!(
-                                    "node `{}` ended its pane stream at sequence {} before the \
-                                     advertised replay cut {cut}",
-                                    self.id.0, frame.seq
-                                ));
-                            }
-                            // End is the quiet edge too: paint a final unbracketed tail before the
-                            // screen guard is restored.
-                            self.view_mut()?.end()?;
-                            PaneProgress::End
-                        }
-                    };
-                    self.pane_stream = PaneStream::V1 {
-                        next_seq: following,
-                        cut,
-                    };
-                    Ok(progress)
-                }
-                Event::NodePty { agent_id, .. } if agent_id == self.id => Err(format!(
-                    "the supervisor mixed legacy node/pty into node `{}`'s negotiated pane-v1 \
-                     stream",
-                    self.id.0
-                )),
-                // The journal's terminal state can precede the retained PTY tail. End alone says
-                // the byte stream is complete.
-                Event::NodeState { agent_id, .. } if agent_id == self.id => {
-                    Ok(PaneProgress::Continue)
-                }
-                _ => Ok(PaneProgress::Continue),
-            },
+                    crate::pane_client::PaneV1Action::Resize { cols, rows } => {
+                        self.view_mut()?.resize_grid(cols, rows)?;
+                        PaneProgress::Continue
+                    }
+                    crate::pane_client::PaneV1Action::End => {
+                        // End is the quiet edge too: paint a final unbracketed tail before the
+                        // screen guard is restored.
+                        self.view_mut()?.end()?;
+                        PaneProgress::End
+                    }
+                    crate::pane_client::PaneV1Action::Ignore => PaneProgress::Continue,
+                };
+                self.pane_stream = PaneStream::V1 {
+                    next_seq: decoded.next_seq,
+                    cut,
+                };
+                Ok(progress)
+            }
             PaneStream::Negotiating => {
                 Err("a pane event arrived before attach negotiation completed".into())
             }
@@ -1074,6 +1047,7 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marion_proto::PaneFrameKindV1;
     use std::io::{BufRead, BufReader};
     use std::os::fd::AsRawFd;
     use std::sync::Mutex;

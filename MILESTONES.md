@@ -799,6 +799,13 @@ how much code exists.
     facade relay, so native command execution remains dark and M3 remains `[partial]` pending C1's
     recorded manual session.
 
+    **Sharing the pane-v1 client decoder in this commit moves no milestone marker.** The extraction
+    preserves rendered attach's byte-exact Output, Resize, dense sequence, replay-cut, and ordered
+    End behavior while making those already-committed client invariants reusable. Direct decoder
+    tests supplement the existing rendered-terminal evidence, but no native relay is activated or
+    shipped by this refactor. M3 therefore stays `[partial]`, with C1's recorded manual session
+    still outstanding.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
