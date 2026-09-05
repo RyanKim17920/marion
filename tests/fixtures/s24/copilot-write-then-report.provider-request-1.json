@@ -1,0 +1,98 @@
+{
+ "method": "POST",
+ "path": "/v1/chat/completions",
+ "headers": {
+  "x-stainless-runtime": "node",
+  "x-stainless-lang": "js",
+  "x-stainless-timeout": "600",
+  "x-stainless-helper-method": "stream",
+  "x-stainless-retry-count": "0",
+  "x-stainless-os": "MacOS",
+  "content-type": "application/json",
+  "user-agent": "OpenAI/JS 5.20.1",
+  "accept": "application/json",
+  "x-stainless-arch": "arm64",
+  "x-stainless-runtime-version": "unknown",
+  "authorization": "<redacted>",
+  "x-stainless-package-version": "5.20.1",
+  "x-initiator": "user",
+  "x-interaction-type": "conversation-user",
+  "accept-encoding": "zstd,gzip,deflate,br",
+  "host": "127.0.0.1:18985",
+  "content-length": "10181"
+ },
+ "body": {
+  "model": "canned-1",
+  "messages": [
+   {
+    "role": "system",
+    "content": "<SYSTEM-PROMPT elided, 8783 chars>"
+   },
+   {
+    "role": "user",
+    "content": "<current_datetime><TS></current_datetime>\n\nAdd the matrix marker file under src/ and report back through marion."
+   }
+  ],
+  "temperature": 0,
+  "top_p": 0.95,
+  "frequency_penalty": 0,
+  "presence_penalty": 0,
+  "snippy": {
+   "enabled": false
+  },
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "create",
+     "description": "Tool for creating new files.\n* Creates a new file with the specified content at the given path\n* Cannot be used if the specified path already exists\n* Parent directories must exist before creating the file\n* Path *MUST* be absolute",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "path": {
+        "type": "string",
+        "description": "Full absolute path to file to create. File MUST not exist before creating."
+       },
+       "file_text": {
+        "type": "string",
+        "description": "The content of the file to be created."
+       }
+      },
+      "required": [
+       "path",
+       "file_text"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "marion-report",
+     "description": "Report the result of the task back to marion.",
+     "parameters": {
+      "properties": {
+       "narrative": {
+        "type": "string"
+       },
+       "result_commits": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       }
+      },
+      "required": [
+       "narrative"
+      ],
+      "type": "object"
+     }
+    }
+   }
+  ],
+  "stream": true,
+  "stream_options": {
+   "include_usage": true
+  }
+ }
+}

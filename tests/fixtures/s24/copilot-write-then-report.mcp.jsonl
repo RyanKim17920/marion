@@ -1,0 +1,9 @@
+{"dir": "in", "msg": {"jsonrpc": "2.0", "id": 0, "method": "server/discover", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": {"name": "copilot-cli", "version": "0.0.0"}, "io.modelcontextprotocol/clientCapabilities": {"sampling": {}, "elicitation": {"form": {}, "url": {}}}}}}}
+{"dir": "out", "msg": {"jsonrpc": "2.0", "id": 0, "result": {}}}
+{"dir": "in", "msg": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {"sampling": {}, "elicitation": {"form": {}, "url": {}}}, "clientInfo": {"name": "copilot-cli", "version": "0.0.0"}}}}
+{"dir": "out", "msg": {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "marion", "version": "0.0.0"}}}}
+{"dir": "in", "msg": {"jsonrpc": "2.0", "method": "notifications/initialized"}}
+{"dir": "in", "msg": {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"_meta": {"progressToken": 0}}}}
+{"dir": "out", "msg": {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "report", "description": "Report the result of the task back to marion.", "inputSchema": {"type": "object", "properties": {"narrative": {"type": "string"}, "result_commits": {"type": "array", "items": {"type": "string"}}}, "required": ["narrative"]}}]}}}
+{"dir": "in", "msg": {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"_meta": {"progressToken": 1}, "arguments": {"narrative": "Wrote the matrix marker under src/ and reported back."}, "name": "report"}}}
+{"dir": "out", "msg": {"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "recorded"}], "isError": false}}}

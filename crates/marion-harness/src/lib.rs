@@ -14,6 +14,7 @@ pub(crate) mod auth;
 pub mod caps;
 pub mod claude_code;
 pub mod codex;
+pub mod copilot;
 pub mod gemini;
 pub mod invocation;
 pub mod mcp_bridge;
