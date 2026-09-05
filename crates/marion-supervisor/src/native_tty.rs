@@ -15,6 +15,7 @@ use crate::native_bootstrap::{
     BootstrapError, DirectNativeRequestContext, NativeBootstrapClient,
     NativeBootstrapClientSession, PeerIdentity,
 };
+use crate::procid::TerminalDevice;
 
 #[cfg(test)]
 thread_local! {
@@ -176,165 +177,26 @@ pub(crate) enum NativeTtyError {
     PeerTerminal(String),
 }
 
-/// A terminal device number as `(major, minor)`, so the process table's spelling and `fstat`'s
-/// spelling of the same device compare equal on every platform.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TerminalDevice {
-    major: u32,
-    minor: u32,
-}
-
-impl TerminalDevice {
-    fn from_rdev(rdev: u64) -> Self {
-        let dev = rdev as rustix::fs::Dev;
-        Self {
-            major: rustix::fs::major(dev),
-            minor: rustix::fs::minor(dev),
-        }
-    }
-}
-
-/// What the kernel's process table says about a peer's controlling terminal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PeerTerminal {
-    /// `None` when the peer has no controlling terminal at all.
-    device: Option<TerminalDevice>,
-    /// The terminal's foreground process group, as the process table records it for the peer.
-    foreground_pgid: Option<Pid>,
-}
-
-/// **macOS: `sysctl(KERN_PROC_PID)` → `kinfo_proc.kp_eproc.{e_tdev, e_tpgid}`.**
-///
-/// Offsets measured on this platform with `offsetof` rather than mirrored from a header:
-/// `e_tdev` at **572** (a 4-byte `dev_t`, `-1` for no terminal) and `e_tpgid` at **576** (a
-/// 4-byte `pid_t`), inside the measured **648**-byte struct. A shorter answer is refused rather
-/// than read past.
-#[cfg(target_os = "macos")]
-fn peer_controlling_terminal(peer_pid: Pid) -> Result<PeerTerminal, NativeTtyError> {
-    const CTL_KERN: i32 = 1;
-    const KERN_PROC: i32 = 14;
-    const KERN_PROC_PID: i32 = 1;
-    const CAP: usize = 4096;
-    const E_TDEV: usize = 572;
-    const E_TPGID: usize = 576;
-    const NEEDED: usize = E_TPGID + 4;
-
-    unsafe extern "C" {
-        fn sysctl(
-            name: *mut i32,
-            namelen: u32,
-            oldp: *mut core::ffi::c_void,
-            oldlenp: *mut usize,
-            newp: *mut core::ffi::c_void,
-            newlen: usize,
-        ) -> i32;
-    }
-
-    let mut mib = [
-        CTL_KERN,
-        KERN_PROC,
-        KERN_PROC_PID,
-        peer_pid.as_raw_nonzero().get(),
-    ];
-    let mut buf = [0u8; CAP];
-    let mut len = CAP;
-    // SAFETY: `mib` is four `i32`s and `namelen` says four; `buf` is `CAP` bytes and `len` says
-    // `CAP`; `newp`/`newlen` are the documented "reading, not writing" pair.
-    let rc = unsafe {
-        sysctl(
-            mib.as_mut_ptr(),
-            4,
-            buf.as_mut_ptr().cast(),
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc != 0 {
-        return Err(NativeTtyError::PeerTerminal(format!(
-            "the kernel refused to describe process {}: {}",
-            peer_pid.as_raw_nonzero(),
-            std::io::Error::last_os_error()
-        )));
-    }
-    if len < NEEDED {
-        return Err(NativeTtyError::PeerTerminal(format!(
-            "the kernel described process {} in {len} bytes, too few to hold its terminal",
-            peer_pid.as_raw_nonzero()
-        )));
-    }
-    let field = |at: usize| i32::from_ne_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]]);
-    let tdev = field(E_TDEV);
-    let tpgid = field(E_TPGID);
-    Ok(PeerTerminal {
-        device: (tdev != -1).then(|| TerminalDevice::from_rdev(i64::from(tdev) as u64)),
-        foreground_pgid: Pid::from_raw(tpgid),
-    })
-}
-
-/// **Linux: `/proc/<pid>/stat` fields `tty_nr` (7) and `tpgid` (8).**
-///
-/// Fields are counted after the last `)` so a `comm` containing spaces or parentheses cannot
-/// shift them. `tty_nr` uses the kernel's `new_encode_dev` layout, decoded here into the same
-/// `(major, minor)` pair `fstat` yields.
-#[cfg(target_os = "linux")]
-fn peer_controlling_terminal(peer_pid: Pid) -> Result<PeerTerminal, NativeTtyError> {
-    let pid = peer_pid.as_raw_nonzero().get();
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|error| {
-        NativeTtyError::PeerTerminal(format!("/proc/{pid}/stat could not be read: {error}"))
-    })?;
-    let after_comm = stat.rsplit_once(')').map(|(_, rest)| rest).ok_or_else(|| {
-        NativeTtyError::PeerTerminal(format!("/proc/{pid}/stat is not in the documented shape"))
-    })?;
-    let mut fields = after_comm.split_ascii_whitespace();
-    // state ppid pgrp session tty_nr tpgid
-    let tty_nr = fields.nth(4);
-    let tpgid = fields.next();
-    let (Some(tty_nr), Some(tpgid)) = (tty_nr, tpgid) else {
-        return Err(NativeTtyError::PeerTerminal(format!(
-            "/proc/{pid}/stat has too few fields"
-        )));
-    };
-    let tty_nr: u64 = tty_nr.parse().map_err(|_| {
-        NativeTtyError::PeerTerminal(format!("/proc/{pid}/stat tty_nr is not a number"))
-    })?;
-    let tpgid: i32 = tpgid.parse().map_err(|_| {
-        NativeTtyError::PeerTerminal(format!("/proc/{pid}/stat tpgid is not a number"))
-    })?;
-    let device = (tty_nr != 0).then(|| TerminalDevice {
-        major: ((tty_nr >> 8) & 0xfff) as u32,
-        minor: ((tty_nr & 0xff) | ((tty_nr >> 12) & 0xfff00)) as u32,
-    });
-    Ok(PeerTerminal {
-        device,
-        foreground_pgid: Pid::from_raw(tpgid),
-    })
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn peer_controlling_terminal(_peer_pid: Pid) -> Result<PeerTerminal, NativeTtyError> {
-    Err(NativeTtyError::PeerTerminal(
-        "this platform has no supported process-table terminal read".into(),
-    ))
-}
-
 /// Prove, from the kernel's process table rather than a terminal ioctl, that the terminal behind
 /// `fingerprint` is the peer's controlling terminal and that the peer sits in its foreground
 /// process group.
 ///
 /// `tcgetsid`/`tcgetpgrp` cannot do this from a detached supervisor: on Linux and macOS alike they
 /// answer `ENOTTY` unless the terminal is the **caller's** controlling terminal, and the supervisor
-/// lives in its own session. The process table records the same two facts about the peer.
+/// lives in its own session. The process table records the same two facts about the peer
+/// (`procid::controlling_terminal`, the one process-table read this crate has). Both
+/// `verify_bootstrap_tty` and `revalidate_peer` come through here, so the two cannot drift.
 fn verify_peer_terminal(
     peer_pid: Pid,
     fingerprint: TerminalFingerprint,
 ) -> Result<(Pid, Pid), NativeTtyError> {
-    let terminal = peer_controlling_terminal(peer_pid)?;
+    let terminal = crate::procid::controlling_terminal(peer_pid.as_raw_nonzero().get())
+        .map_err(NativeTtyError::PeerTerminal)?;
     if terminal.device != Some(TerminalDevice::from_rdev(fingerprint.st_rdev)) {
         return Err(NativeTtyError::NotControllingTerminal);
     }
     let peer_pgid = getpgid(Some(peer_pid))?;
-    if terminal.foreground_pgid != Some(peer_pgid) {
+    if terminal.foreground_pgid != Some(peer_pgid.as_raw_nonzero().get()) {
         return Err(NativeTtyError::BackgroundProcessGroup);
     }
     let peer_session_id = getsid(Some(peer_pid))?;
@@ -1093,6 +955,127 @@ mod tests {
         );
         detached.kill().unwrap();
         detached.wait().unwrap();
+    }
+
+    /// A shell that is the session leader on `master`, with job control on, holding one background
+    /// job whose pid it prints on its terminal. Returns the shell and the job's pid.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn leader_with_background_job(master: &PtyMaster) -> (std::process::Child, i32) {
+        use std::os::unix::process::CommandExt;
+        unsafe extern "C" {
+            fn setsid() -> i32;
+            fn ioctl(fd: i32, request: std::ffi::c_ulong, ...) -> i32;
+        }
+        let stdin = master.open_slave().expect("leader stdin");
+        let stdout = master.open_slave().expect("leader stdout");
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "set -m; sleep 30 & echo $!; wait"])
+            .stdin(std::process::Stdio::from(stdin))
+            .stdout(std::process::Stdio::from(stdout))
+            .stderr(std::process::Stdio::null());
+        // SAFETY: only async-signal-safe session/ioctl syscalls run between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                if setsid() < 0 || ioctl(0, TIOCSCTTY, 0_i32) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let leader = command.spawn().expect("spawn the job-control leader");
+        // The job's pid arrives on the terminal as `<digits>\r\n`; read until the line completes.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut line = Vec::new();
+        let mut byte = [0u8; 64];
+        let job = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the leader never printed its job's pid: {:?}",
+                String::from_utf8_lossy(&line)
+            );
+            match master.read(&mut byte) {
+                Ok(0) => panic!("the leader's terminal closed before it printed a pid"),
+                Ok(n) => line.extend_from_slice(&byte[..n]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("reading the leader's terminal: {error}"),
+            }
+            let text = String::from_utf8_lossy(&line);
+            if let Some((digits, _)) = text.split_once('\n') {
+                break digits.trim().parse::<i32>().unwrap_or_else(|_| {
+                    panic!("the leader printed something other than a pid: {text:?}")
+                });
+            }
+        };
+        (leader, job)
+    }
+
+    /// Two causal negatives for the production verifier, on real processes: descriptors from a
+    /// **different** terminal than the peer's controlling one are `NotControllingTerminal` even
+    /// though the peer is a foreground session leader on its own; and a process that shares the
+    /// peer's controlling terminal but sits in a **background** job's process group is
+    /// `BackgroundProcessGroup`.
+    ///
+    /// Mutation: compare the terminal by `fstat` of the descriptors alone (the first case passes),
+    /// or read `foreground_pgid` off the caller's own terminal (the second case passes).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn production_verifier_refuses_a_different_terminal_and_a_background_peer() {
+        let terminal_a = PtyMaster::open(WinSize::new(101, 37)).expect("terminal A");
+        let terminal_b = PtyMaster::open(WinSize::new(91, 29)).expect("terminal B");
+        let (mut leader, job) = leader_with_background_job(&terminal_a);
+        wait_for_session(&leader);
+        let leader_pid = Pid::from_raw(leader.id() as i32).unwrap();
+        let job_pid = Pid::from_raw(job).expect("a background job pid");
+        assert_ne!(
+            getpgid(Some(job_pid)).expect("the job's process group"),
+            leader_pid,
+            "`set -m` must give the background job its own process group"
+        );
+
+        let different = verify_bootstrap_tty(
+            PeerIdentity::child_for_tty_test(leader.id()),
+            [
+                terminal_b.open_slave().expect("B stdin"),
+                terminal_b.open_slave().expect("B stdout"),
+            ],
+        )
+        .expect_err("descriptors on another terminal are not the peer's controlling terminal");
+        assert!(
+            matches!(different, NativeTtyError::NotControllingTerminal),
+            "{different}"
+        );
+
+        let background = verify_bootstrap_tty(
+            PeerIdentity::child_for_tty_test(job as u32),
+            [
+                terminal_a.open_slave().expect("A stdin"),
+                terminal_a.open_slave().expect("A stdout"),
+            ],
+        )
+        .expect_err("a background job on the peer's terminal is not in its foreground group");
+        assert!(
+            matches!(background, NativeTtyError::BackgroundProcessGroup),
+            "{background}"
+        );
+
+        // And the positive control on the same fixture: the leader itself, on A, verifies.
+        let witness = verify_bootstrap_tty(
+            PeerIdentity::child_for_tty_test(leader.id()),
+            [
+                terminal_a.open_slave().expect("A stdin"),
+                terminal_a.open_slave().expect("A stdout"),
+            ],
+        )
+        .expect("the foreground leader on its own terminal verifies");
+        assert_eq!(witness.foreground_pgid, leader_pid);
+
+        leader.kill().unwrap();
+        leader.wait().unwrap();
+        // The job outlives its shell only until this; it is in its own group, so kill it directly.
+        let _ = rustix::process::kill_process(job_pid, rustix::process::Signal::KILL);
     }
 
     #[test]

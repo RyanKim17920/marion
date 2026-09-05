@@ -354,16 +354,55 @@ unsafe extern "C" {
 /// opaque and a byte string with no interpretation is exactly what that means.
 #[cfg(target_os = "macos")]
 fn read_impl(pid: i32) -> Read {
-    const CTL_KERN: i32 = 1;
-    const KERN_PROC: i32 = 14;
-    const KERN_PROC_PID: i32 = 1;
-    /// Comfortably over the measured 648, so the struct can grow without this refusing.
-    const CAP: usize = 4096;
     /// `sizeof(struct timeval)`, measured.
     const START: usize = 16;
 
+    let described = match kinfo_proc(pid) {
+        Ok(KinfoProc::Described(bytes)) => bytes,
+        Ok(KinfoProc::NoSuchProcess) => return Read::NoSuchProcess,
+        Err(why) => return Read::Unavailable(why),
+    };
+    if described.len() < START {
+        return Read::Unavailable(format!(
+            "the kernel described process {pid} in {} bytes, which is too few to hold the start \
+             time this build reads — marion will not guess at an identity it cannot read",
+            described.len()
+        ));
+    }
+    let hex: String = described[..START]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Read::Id(StartId(format!("darwin-p_starttime:{hex}")))
+}
+
+/// One `sysctl(KERN_PROC_PID)` answer, as the kernel gave it.
+#[cfg(target_os = "macos")]
+enum KinfoProc {
+    /// The process table's `struct kinfo_proc` for the pid, exactly as many bytes as the kernel
+    /// wrote. Each reader checks the length against the offset it needs, so a shorter struct is a
+    /// named refusal and never a read past the end.
+    Described(Vec<u8>),
+    /// A successful call that wrote nothing: no process wears the pid (measured).
+    NoSuchProcess,
+}
+
+/// **The one `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)` in this crate.**
+///
+/// Two readers share it — the start identity above and the controlling terminal below — because
+/// two copies of a raw `sysctl` call with two sets of measured constants is how one gets fixed and
+/// the other does not. The buffer is comfortably over the measured **648** bytes, so the struct can
+/// grow without this refusing; if a future OS grows it past `CAP`, the call fails with `ENOMEM`
+/// and that is an honest error rather than a truncated answer.
+#[cfg(target_os = "macos")]
+fn kinfo_proc(pid: i32) -> Result<KinfoProc, String> {
+    const CTL_KERN: i32 = 1;
+    const KERN_PROC: i32 = 14;
+    const KERN_PROC_PID: i32 = 1;
+    const CAP: usize = 4096;
+
     let mut mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid];
-    let mut buf = [0u8; CAP];
+    let mut buf = vec![0u8; CAP];
     let mut len = CAP;
     // SAFETY: `mib` is four `i32`s and `namelen` says four; `buf` is `CAP` bytes and `len` says
     // `CAP`; `newp`/`newlen` are the documented "reading, not writing" pair. The call writes at
@@ -379,22 +418,123 @@ fn read_impl(pid: i32) -> Read {
         )
     };
     if rc != 0 {
-        return Read::Unavailable(format!(
+        return Err(format!(
             "the kernel refused to describe process {pid}: {}",
             std::io::Error::last_os_error()
         ));
     }
     if len == 0 {
-        return Read::NoSuchProcess;
+        return Ok(KinfoProc::NoSuchProcess);
     }
-    if len < START {
-        return Read::Unavailable(format!(
-            "the kernel described process {pid} in {len} bytes, which is too few to hold the \
-             start time this build reads — marion will not guess at an identity it cannot read"
+    buf.truncate(len);
+    Ok(KinfoProc::Described(buf))
+}
+
+/// A terminal device number as `(major, minor)`, so the process table's spelling and `fstat`'s
+/// spelling of the same device compare equal on every platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TerminalDevice {
+    pub(crate) major: u32,
+    pub(crate) minor: u32,
+}
+
+impl TerminalDevice {
+    pub(crate) fn from_rdev(rdev: u64) -> Self {
+        let dev = rdev as rustix::fs::Dev;
+        Self {
+            major: rustix::fs::major(dev),
+            minor: rustix::fs::minor(dev),
+        }
+    }
+}
+
+/// What the kernel's process table says about a process's controlling terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ControllingTerminal {
+    /// `None` when the process has no controlling terminal at all.
+    pub(crate) device: Option<TerminalDevice>,
+    /// The terminal's foreground process group, as the process table records it for the process.
+    pub(crate) foreground_pgid: Option<i32>,
+}
+
+/// **macOS: `kinfo_proc.kp_eproc.{e_tdev, e_tpgid}`.**
+///
+/// Offsets measured on this platform with `offsetof` rather than mirrored from a header: `e_tdev`
+/// at **572** (a 4-byte `dev_t`, `-1` for no terminal) and `e_tpgid` at **576** (a 4-byte
+/// `pid_t`), inside the measured **648**-byte struct. A shorter answer is refused rather than read
+/// past, and a pid nobody wears is an error here — unlike [`read`], a terminal question has no
+/// definite answer about a process that does not exist.
+#[cfg(target_os = "macos")]
+pub(crate) fn controlling_terminal(pid: i32) -> Result<ControllingTerminal, String> {
+    const E_TDEV: usize = 572;
+    const E_TPGID: usize = 576;
+    const NEEDED: usize = E_TPGID + 4;
+
+    let described = match kinfo_proc(pid)? {
+        KinfoProc::Described(bytes) => bytes,
+        KinfoProc::NoSuchProcess => return Err(format!("no process wears pid {pid}")),
+    };
+    if described.len() < NEEDED {
+        return Err(format!(
+            "the kernel described process {pid} in {} bytes, too few to hold its terminal",
+            described.len()
         ));
     }
-    let hex: String = buf[..START].iter().map(|b| format!("{b:02x}")).collect();
-    Read::Id(StartId(format!("darwin-p_starttime:{hex}")))
+    let field = |at: usize| {
+        i32::from_ne_bytes([
+            described[at],
+            described[at + 1],
+            described[at + 2],
+            described[at + 3],
+        ])
+    };
+    let tdev = field(E_TDEV);
+    let tpgid = field(E_TPGID);
+    Ok(ControllingTerminal {
+        device: (tdev != -1).then(|| TerminalDevice::from_rdev(i64::from(tdev) as u64)),
+        foreground_pgid: (tpgid > 0).then_some(tpgid),
+    })
+}
+
+/// **Linux: `/proc/<pid>/stat` fields `tty_nr` (7) and `tpgid` (8).**
+///
+/// Fields are counted after the last `)` so a `comm` containing spaces or parentheses cannot
+/// shift them; every missing or non-numeric field is an error. `tty_nr` uses the kernel's
+/// `new_encode_dev` layout, decoded into the same `(major, minor)` pair `fstat` yields.
+#[cfg(target_os = "linux")]
+pub(crate) fn controlling_terminal(pid: i32) -> Result<ControllingTerminal, String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map_err(|error| format!("/proc/{pid}/stat could not be read: {error}"))?;
+    let after_comm = stat
+        .rsplit_once(')')
+        .map(|(_, rest)| rest)
+        .ok_or_else(|| format!("/proc/{pid}/stat is not in the documented shape"))?;
+    let mut fields = after_comm.split_ascii_whitespace();
+    // state ppid pgrp session tty_nr tpgid
+    let tty_nr = fields
+        .nth(4)
+        .ok_or_else(|| format!("/proc/{pid}/stat has no tty_nr field"))?;
+    let tpgid = fields
+        .next()
+        .ok_or_else(|| format!("/proc/{pid}/stat has no tpgid field"))?;
+    let tty_nr: u64 = tty_nr
+        .parse()
+        .map_err(|_| format!("/proc/{pid}/stat tty_nr is not a number"))?;
+    let tpgid: i32 = tpgid
+        .parse()
+        .map_err(|_| format!("/proc/{pid}/stat tpgid is not a number"))?;
+    Ok(ControllingTerminal {
+        device: (tty_nr != 0).then(|| TerminalDevice {
+            major: ((tty_nr >> 8) & 0xfff) as u32,
+            minor: ((tty_nr & 0xff) | ((tty_nr >> 12) & 0xfff00)) as u32,
+        }),
+        foreground_pgid: (tpgid > 0).then_some(tpgid),
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn controlling_terminal(_pid: i32) -> Result<ControllingTerminal, String> {
+    Err("this platform has no supported process-table terminal read".into())
 }
 
 /// **Every other platform: an explicit refusal, not a guess.**

@@ -1218,6 +1218,17 @@ acceptance evidence, so every marker remains unchanged.
     node with the intent, a pid, and `Exited{code: 37}`. Still unproven from the shipped binary
     itself; M3 remains `[partial]`.
 
+    **One process-table read in this commit moves no milestone marker.** The peer-terminal
+    verifier's second `sysctl(KERN_PROC_PID)` is gone: `procid::kinfo_proc` is the crate's one
+    such call, `procid::read` and the new `procid::controlling_terminal` (macOS `e_tdev`@572 /
+    `e_tpgid`@576, Linux `/proc/<pid>/stat` fields 7/8 with every missing field an error) both
+    read through it, and `native_tty` keeps a single `verify_peer_terminal` behind
+    `verify_bootstrap_tty` and `revalidate_peer`. Covered by the causal
+    `production_verifier_refuses_a_different_terminal_and_a_background_peer`: a job-control
+    leader on PTY A is `NotControllingTerminal` through descriptors on PTY B, and its background
+    job is `BackgroundProcessGroup` through descriptors on A; disabling either comparison fails
+    the test. M3 remains `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
