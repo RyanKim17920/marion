@@ -230,6 +230,26 @@ impl ReplayedNode {
     pub fn is_unresolved(&self) -> bool {
         self.reap_state == ReapState::Live && !self.fate_on_record()
     }
+
+    /// **Whether the journal shows marion deciding this node's fate** — an exit observed or a reap
+    /// confirmed. The observed half of `fate_on_record`: a reap *intent* or an abort says
+    /// what marion meant to do, not what it saw happen, so neither counts here.
+    ///
+    /// Exposed rather than restated, for the reason `fate_on_record` gives about itself: a second
+    /// copy of a clause is how two readers drift apart. Restart's partition takes this as its early
+    /// return, and a process audit asks it to tell a node marion recorded finished from one it is
+    /// merely no longer attached to. The audit asked it the wrong way first — by re-running the
+    /// restart pass and treating "no marking" as "decided", which is true before the pass writes
+    /// its verdicts and false after it, because [`Replay::mark_orphaned`] moves a node off `Live`
+    /// and `is_unresolved` then stops firing. That made every orphan read as decided the moment the
+    /// standard restart pass had run, which would have reported a fleet of healthy orphans as
+    /// leaks.
+    ///
+    /// This is stable across the marking: `Orphaned` is precisely marion saying it did **not**
+    /// decide.
+    pub fn fate_decided(&self) -> bool {
+        self.state.is_exited() || self.reap_state == ReapState::ReapedIdle
+    }
 }
 
 /// A per-writer ordinal gap: §4.2's `Ordinal` loss detection, applied to marion's own records.
@@ -995,6 +1015,58 @@ mod tests {
         ];
         let r = replay(&bytes(&j));
         assert!(!r.get(&id("a")).unwrap().is_unresolved());
+    }
+
+    /// **`fate_decided` is the observed half of `fate_on_record`, and it survives the `Orphaned`
+    /// marking.** An exit or a confirmed reap decides a fate; a bare reap intent, an abort, or a
+    /// live node does not — and marking a live node `Orphaned` is marion recording that it did
+    /// *not* decide, so the answer must not move when the marking lands.
+    #[test]
+    fn fate_decided_reads_observed_fates_and_is_stable_across_the_orphaned_marking() {
+        let mut j = m1_journal();
+        let r = replay(&bytes(&j));
+        assert!(
+            r.get(&id("root")).unwrap().fate_decided(),
+            "an observed exit"
+        );
+        assert!(r.get(&id("child")).unwrap().fate_decided());
+
+        j.retain(|r| !matches!(&r.kind, RecordKind::Exited(e) if e.agent_id == id("root")));
+        let mut r = replay(&bytes(&j));
+        assert!(
+            !r.get(&id("root")).unwrap().fate_decided(),
+            "live, nothing since"
+        );
+        assert!(r.mark_orphaned(&id("root")));
+        assert!(
+            !r.get(&id("root")).unwrap().fate_decided(),
+            "`Orphaned` is precisely marion saying it did not decide"
+        );
+
+        let seq = j.len() as u64;
+        j.push(record(
+            seq,
+            RecordKind::ReapIntent(ReapIntent {
+                agent_id: id("root"),
+                reason: "idle memory reclaim".into(),
+            }),
+        ));
+        let r = replay(&bytes(&j));
+        let root = r.get(&id("root")).unwrap();
+        assert!(root.fate_on_record(), "an intent is on the record...");
+        assert!(!root.fate_decided(), "...but is not yet a decided fate");
+
+        j.push(record(
+            seq + 1,
+            RecordKind::ReapConfirmed(ReapConfirmed {
+                agent_id: id("root"),
+            }),
+        ));
+        let r = replay(&bytes(&j));
+        assert!(
+            r.get(&id("root")).unwrap().fate_decided(),
+            "a confirmed reap is a decided fate"
+        );
     }
 
     /// **When a node appeared and when it last moved are two different records**, and a reader that

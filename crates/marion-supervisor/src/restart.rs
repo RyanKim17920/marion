@@ -169,7 +169,7 @@ pub fn mark(tree: &Replay) -> Vec<Marked> {
 /// A node whose fate is on the record needs no verdict from restart at all, which is what the
 /// early return says.
 fn classify(node: &ReplayedNode) -> Option<Marked> {
-    if fate_decided(node) {
+    if node.fate_decided() {
         return None;
     }
     let marking = if node.reap_intent.is_some() {
@@ -185,21 +185,6 @@ fn classify(node: &ReplayedNode) -> Option<Marked> {
         agent_id: node.agent_id.clone(),
         marking,
     })
-}
-
-/// **Whether the journal shows marion deciding this node's fate** — [`classify`]'s early return,
-/// as a predicate other modules can ask.
-///
-/// Exposed rather than restated, for the reason this module gives about its own partition: a second
-/// copy of a clause is how the two drift apart. [`crate::procid`] needs exactly this question and
-/// asked it the wrong way first — by re-running [`mark`] and treating "no marking" as "decided",
-/// which is true before [`apply`] and false after it, because `apply` moves a node to `Orphaned`
-/// and `is_unresolved` then stops firing. That made every orphan read as decided the moment the
-/// standard restart pass had run, which would have reported a fleet of healthy orphans as leaks.
-///
-/// This is stable across `apply`: `Orphaned` is precisely marion saying it did **not** decide.
-pub fn fate_decided(node: &ReplayedNode) -> bool {
-    node.state.is_exited() || node.reap_state == ReapState::ReapedIdle
 }
 
 /// Run the pass and **write its `Orphaned` verdicts into the tree**, answering everything it
@@ -244,8 +229,10 @@ mod tests {
         Exited, JournalRecord, KillConfirmed, ReapConfirmed, ReapIntent, RecordKind, SpawnAborted,
         SpawnIntent, Spawned, StateChanged, WriterId, encode,
     };
-    use marion_core::node::NodeState;
+    use marion_core::node::{NodeState, StartId};
     use marion_core::registry::replay;
+
+    use crate::procid::{Claim, Read, Resolution, Standing, Unprovable, audit_with};
 
     fn id(s: &str) -> AgentId {
         AgentId(s.into())
@@ -736,5 +723,89 @@ mod tests {
         let mut tree = replay(b"");
         assert!(apply(&mut tree).is_empty());
         assert!(resumable(&tree).is_empty());
+    }
+
+    /// An orphan with a pid (what a supervisor SIGKILL leaves behind) and, when asked, a node
+    /// marion watched exit, also with a pid — the two standings [`crate::procid`] tells apart.
+    fn orphan_and_finished(with_finished: bool) -> Replay {
+        let mut log = Log::default();
+        log.started("orphan", Some(4242));
+        if with_finished {
+            log.started("finished", Some(4243));
+            log.push(RecordKind::Exited(Exited {
+                agent_id: id("finished"),
+                status: ExitStatus::Ok,
+                exit: ProcessExit {
+                    code: Some(0),
+                    signal: None,
+                    description: "child exited with code 0".into(),
+                },
+            }));
+        }
+        log.tree()
+    }
+
+    fn standings(tree: &Replay) -> Vec<Standing> {
+        audit_with(tree, |_| Read::NoSuchProcess)
+            .resolved
+            .iter()
+            .map(|r| r.standing.clone())
+            .collect()
+    }
+
+    /// **Today, a supervisor SIGKILL leaves a node marion cannot decide** — the honest state of the
+    /// recording, and the regression test the start-identity change has to flip.
+    #[test]
+    fn an_orphaned_node_with_a_live_pid_is_cannot_tell_while_no_identity_is_recorded() {
+        let tree = orphan_and_finished(false);
+        assert_eq!(
+            mark(&tree)
+                .into_iter()
+                .map(|m| m.marking)
+                .collect::<Vec<_>>(),
+            vec![Marking::Orphaned],
+            "the premise: this is a node marion is not attached to"
+        );
+        let audit = audit_with(&tree, |_| Read::Id(StartId("darwin-p_starttime:aa".into())));
+        assert_eq!(audit.resolved.len(), 1);
+        assert_eq!(
+            audit.resolved[0].resolution,
+            Resolution::CannotTell(Unprovable::NoRecordedIdentity),
+            "`Spawned` carries no start identity, so a live pid proves nothing about this node"
+        );
+        assert!(
+            matches!(audit.claim(), Claim::CannotBeMade(_)),
+            "and §9's `no untracked live process` is therefore unproven, not true: {:?}",
+            audit.claim()
+        );
+    }
+
+    /// **The standing of a node does not change when the standard restart pass runs.**
+    ///
+    /// The regression this exists for was found by the end-to-end test, not by reasoning. `audit`
+    /// first derived standing by re-running [`mark`] and reading "no marking" as "marion decided" —
+    /// true before [`apply`], and **false after it**, because `apply` moves a node to `Orphaned`
+    /// and the unresolved clause then stops firing. Since §9's criterion is only ever evaluated
+    /// *after* the restart pass, that made every healthy orphan report as a leak: the criterion
+    /// would have failed loudly on a correct fleet, and the fix for that failure would very
+    /// plausibly have been to stop counting leaks at all.
+    #[test]
+    fn the_standing_of_a_node_survives_the_restart_pass_that_marks_it_orphaned() {
+        let mut tree = orphan_and_finished(true);
+        let before = standings(&tree);
+        assert_eq!(
+            before,
+            vec![Standing::NotAttached, Standing::MarionSaysFinished],
+            "the premise: one of each"
+        );
+
+        apply(&mut tree);
+        assert_eq!(
+            standings(&tree),
+            before,
+            "`apply` records that marion did *not* decide these fates; an audit that read that as \
+             a decision would call every orphan a leak, and would do so only in the order the \
+             criterion is actually evaluated in"
+        );
     }
 }
