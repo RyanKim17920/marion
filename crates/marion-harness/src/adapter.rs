@@ -1648,13 +1648,6 @@ impl HarnessAdapter for CopilotAdapter {
         }
     }
 
-    /// The exit code is not the verdict here either (s24: a denied or refused `report` exits 0), so
-    /// the stream decides and a non-zero exit with nothing in-stream is left to the supervisor's
-    /// exit-code rule, as on gemini.
-    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
-        copilot::parse_stream(stdout, &self.marion_tool_name("report"))
-    }
-
     fn marion_tool_name(&self, tool: &str) -> String {
         // `<server>-<tool>`, a hyphen — the fifth spelling of one tool (s24, in `tools[]` and
         // `toolName` alike). The permission pattern for the same tool is a *different* string;
@@ -1701,10 +1694,6 @@ impl HarnessAdapter for CopilotAdapter {
             .into_iter()
             .map(|pattern| format!("allow-tool:{pattern}"))
             .collect())
-    }
-
-    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
-        copilot::marion_calls(stdout, &self.marion_tool_name(""))
     }
 }
 

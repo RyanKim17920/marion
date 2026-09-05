@@ -28,7 +28,6 @@
 //!   marion's canned placeholder does not appear in anything a child prints; a live key is the
 //!   operator's own and is never placed by marion.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::AgentId;
@@ -45,9 +44,6 @@ use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
-use crate::stream::{
-    CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
-};
 
 /// `$COPILOT_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
 /// [`home`].
@@ -345,122 +341,6 @@ pub fn mcp_config_json(b: &BridgeEnv) -> Value {
     })
 }
 
-/// What one `tool.execution_complete` frame said, keyed by `toolCallId`.
-///
-/// `success: true` is the only answered shape measured; `success: false` always carried
-/// `error.message` and an `error.code` — `"denied"` for a call with no grant, `"failure"` for an
-/// `isError` MCP result and for a built-in that failed on its own terms.
-fn completions(frames: &[Value]) -> BTreeMap<String, CallOutcome> {
-    let mut out = BTreeMap::new();
-    for v in frames {
-        if v["type"].as_str() != Some("tool.execution_complete") {
-            continue;
-        }
-        let Some(id) = v["data"]["toolCallId"].as_str() else {
-            continue;
-        };
-        let outcome = match v["data"]["success"].as_bool() {
-            Some(true) => CallOutcome::Answered,
-            Some(false) => CallOutcome::Refused(
-                first_string(v, &["/data/error/message", "/data/error/code"])
-                    .unwrap_or_else(|| "the tool call failed without a message".into()),
-            ),
-            None => CallOutcome::Unknown,
-        };
-        out.insert(id.to_string(), outcome);
-    }
-    out
-}
-
-/// Parse a `copilot -p … --output-format json` stream.
-///
-/// The event set (`tests/fixtures/s24/`): `session.*`, `user.message`, `assistant.turn_start`,
-/// `model.call_start` / `model.call_finished` / `model.call_failure`, `assistant.message_start` /
-/// `assistant.message_delta` / `assistant.message`, `assistant.tool_call_delta`,
-/// `tool.execution_start` / `tool.execution_complete`, `assistant.turn_end`, `assistant.idle`,
-/// `session.error`, `result`. Every frame but `result` is `{type, data, id, timestamp, parentId}`;
-/// `result` carries `exitCode` and `usage` at the top level.
-///
-/// **A report is read off `tool.execution_start`, and its verdict off `tool.execution_complete`,
-/// paired by `toolCallId`.** The start frame is the one that says the harness dispatched the call
-/// (the `assistant.message.toolRequests[]` entry before it is only the model asking), and its
-/// `arguments` are the parsed object rather than the `inputDelta` fragments — the capture shows a
-/// path split mid-string across two deltas, which is why the deltas are not read.
-///
-/// **The exit code is not the verdict, and that is measured.** A `report` denied for want of a
-/// grant, and a `report` the bridge answered `isError: true`, both end the run at `exitCode: 0`
-/// with the model's closing text intact — §12's silent-success shape — so a failed report is a
-/// failure here whatever the process exited with. `session.error` is the CLI's own failure claim
-/// (measured on a provider 500 after five retries, beside `exitCode: 1`), and a non-zero
-/// `result.exitCode` is recorded when nothing more specific was.
-pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
-    let frames = json_frames(s);
-    let verdicts = completions(&frames);
-    let mut out = StreamOutcome::default();
-    for v in &frames {
-        match v["type"].as_str() {
-            Some("tool.execution_start") if v["data"]["toolName"].as_str() == Some(report_tool) => {
-                let args = &v["data"]["arguments"];
-                if let Some(n) = args["narrative"].as_str() {
-                    out.narrative = Some(n.to_string());
-                }
-                out.result_commits = report_commits(args);
-                if let Some(CallOutcome::Refused(why)) = v["data"]["toolCallId"]
-                    .as_str()
-                    .and_then(|id| verdicts.get(id))
-                {
-                    out.failure = Some(format!(
-                        "the child's {report_tool} call ended in error: {why}"
-                    ));
-                }
-            }
-            Some("session.error") => {
-                out.failure = out.failure.take().or_else(|| {
-                    first_string(v, &["/data/message", "/data/errorType"])
-                        .or_else(|| Some("the child's stream carried a session.error frame".into()))
-                });
-            }
-            Some("result") => {
-                if let Some(code) = v["exitCode"].as_i64()
-                    && code != 0
-                {
-                    out.failure = out.failure.take().or_else(|| {
-                        Some(format!("copilot's result frame reported exitCode {code}"))
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
-/// of each call.
-///
-/// The call is `tool.execution_start`'s `data.toolName`, in the `<alias>-` spelling, and the
-/// verdict is the `tool.execution_complete` with the same `data.toolCallId`. A start with no
-/// completion is [`CallOutcome::Unknown`] — a run killed mid-call — and never an answer.
-pub fn marion_calls(s: &str, prefix: &str) -> Vec<MarionCall> {
-    let frames = json_frames(s);
-    let verdicts = completions(&frames);
-    frames
-        .iter()
-        .filter(|v| v["type"].as_str() == Some("tool.execution_start"))
-        .filter_map(|v| {
-            let verb = v["data"]["toolName"]
-                .as_str()?
-                .strip_prefix(prefix)?
-                .to_string();
-            let outcome = v["data"]["toolCallId"]
-                .as_str()
-                .and_then(|id| verdicts.get(id).cloned())
-                .unwrap_or(CallOutcome::Unknown);
-            Some(MarionCall { verb, outcome })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +367,7 @@ mod tests {
         CopilotAdapter, Extras, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
     };
     use crate::invocation::Invocation;
+    use crate::stream::{CallOutcome, MarionCall, StreamOutcome};
     use marion_core::agent_type;
 
     fn ctx() -> SpawnCtx {
@@ -552,6 +433,15 @@ mod tests {
 
     fn env_of(inv: &Invocation, k: &str) -> Option<String> {
         inv.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
+    }
+
+    /// The row's grammar, read in copilot's own spelling of marion's tools.
+    fn parse_stream(s: &str) -> StreamOutcome {
+        crate::grammar::parse_stream(&STREAM, s, &model_tool_name(MCP_ALIAS, ""))
+    }
+
+    fn marion_calls(s: &str) -> Vec<MarionCall> {
+        crate::grammar::marion_calls(&STREAM, s, &model_tool_name(MCP_ALIAS, ""))
     }
 
     #[test]
@@ -778,7 +668,7 @@ mod tests {
     /// A real run: `create` granted through `write`, then `marion-report` answered `recorded`.
     #[test]
     fn a_report_is_read_off_the_execution_start_frame_in_copilots_own_spelling() {
-        let out = parse_stream(WRITE_THEN_REPORT, "marion-report");
+        let out = parse_stream(WRITE_THEN_REPORT);
         assert_eq!(
             out.narrative.as_deref(),
             Some("Wrote the matrix marker under src/ and reported back.")
@@ -812,7 +702,7 @@ mod tests {
                 stream.contains(r#""exitCode":0"#),
                 "{label}: the hazard's premise"
             );
-            let out = parse_stream(stream, "marion-report");
+            let out = parse_stream(stream);
             assert_eq!(
                 out.narrative.as_deref(),
                 Some("Wrote the matrix marker under src/ and reported back."),
@@ -828,7 +718,7 @@ mod tests {
     /// The CLI's own failure claim, and the exit code it comes with.
     #[test]
     fn a_provider_failure_is_read_off_session_error() {
-        let out = parse_stream(PROVIDER_500, "marion-report");
+        let out = parse_stream(PROVIDER_500);
         assert_eq!(out.narrative, None, "no call was ever made");
         let failure = out.failure.expect("session.error is a failure");
         assert!(failure.contains("retried 5 times"), "{failure}");
@@ -837,13 +727,13 @@ mod tests {
 
     #[test]
     fn a_nonzero_result_exit_code_is_a_failure_when_nothing_more_specific_was_said() {
-        let out = parse_stream(r#"{"type":"result","exitCode":1}"#, "marion-report");
+        let out = parse_stream(r#"{"type":"result","exitCode":1}"#);
         assert_eq!(
             out.failure.as_deref(),
             Some("copilot's result frame reported exitCode 1")
         );
         assert_eq!(
-            parse_stream(r#"{"type":"result","exitCode":0}"#, "marion-report").failure,
+            parse_stream(r#"{"type":"result","exitCode":0}"#).failure,
             None
         );
     }
@@ -853,7 +743,7 @@ mod tests {
     #[test]
     fn marion_calls_are_paired_to_their_completions_by_tool_call_id() {
         assert_eq!(
-            marion_calls(WRITE_THEN_REPORT, "marion-"),
+            marion_calls(WRITE_THEN_REPORT),
             vec![MarionCall {
                 verb: "report".into(),
                 outcome: CallOutcome::Answered,
@@ -861,7 +751,7 @@ mod tests {
             "the `create` call is copilot's own and is not counted"
         );
         assert_eq!(
-            marion_calls(REPORT_ISERROR, "marion-"),
+            marion_calls(REPORT_ISERROR),
             vec![MarionCall {
                 verb: "report".into(),
                 outcome: CallOutcome::Refused(
@@ -870,7 +760,7 @@ mod tests {
             }]
         );
         assert_eq!(
-            marion_calls(CREATE_DENIED, "marion-")[0].outcome,
+            marion_calls(CREATE_DENIED)[0].outcome,
             CallOutcome::Refused(
                 "Permission denied and could not request permission from user".into()
             )
@@ -881,12 +771,12 @@ mod tests {
     fn a_call_whose_completion_never_arrived_is_unknown() {
         let stream = r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}"#;
         assert_eq!(
-            marion_calls(stream, "marion-"),
+            marion_calls(stream),
             vec![MarionCall {
                 verb: "spawn".into(),
                 outcome: CallOutcome::Unknown,
             }]
         );
-        assert_eq!(marion_calls(PROVIDER_500, "marion-"), vec![]);
+        assert_eq!(marion_calls(PROVIDER_500), vec![]);
     }
 }

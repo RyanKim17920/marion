@@ -227,20 +227,6 @@ pub fn json_frames(stdout: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The first non-empty string among `pointers`, read out of `v`.
-///
-/// Harness error frames nest their message differently (opencode `error.data.message`, gemini
-/// `error.message` at two depths), and a reader that guessed one shape would record an empty
-/// failure string for the others — which reads as "no failure" downstream.
-pub(crate) fn first_string(v: &Value, pointers: &[&str]) -> Option<String> {
-    pointers
-        .iter()
-        .filter_map(|p| v.pointer(p).and_then(Value::as_str))
-        .map(str::trim)
-        .find(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,20 +338,5 @@ mod tests {
                 .collect();
             assert_eq!(parsed, json_frames(CORPUS), "split at {i}");
         }
-    }
-
-    #[test]
-    fn an_error_message_is_read_from_whichever_shape_carries_it() {
-        let v: Value = serde_json::json!({"error": {"data": {"message": "bad request"}}});
-        assert_eq!(
-            first_string(&v, &["/error/message", "/error/data/message"]).as_deref(),
-            Some("bad request")
-        );
-        // An empty string is not a message: it would read as "a failure with nothing to say".
-        let v: Value = serde_json::json!({"error": {"message": "  ", "name": "APIError"}});
-        assert_eq!(
-            first_string(&v, &["/error/message", "/error/name"]).as_deref(),
-            Some("APIError")
-        );
     }
 }

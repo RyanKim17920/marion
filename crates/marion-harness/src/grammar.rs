@@ -202,8 +202,12 @@ fn text(v: &Value, ptr: &str) -> Option<String> {
     }
 }
 
-/// The refusal's words: the first pointer holding a non-empty string, or a non-empty array of
+/// The words a unit carries: the first pointer holding a non-empty string, or a non-empty array of
 /// text blocks joined with a space (Claude Code's `tool_result.content`).
+///
+/// Harness error frames nest their message differently (opencode `error.data.message`, gemini
+/// `error.message` at two depths), and a reader that guessed one shape would record an empty
+/// failure string for the others — which reads as "no failure" downstream.
 fn words(v: &Value, ptrs: &[&str]) -> Option<String> {
     ptrs.iter().find_map(|p| match v.pointer(p)? {
         Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
@@ -459,5 +463,32 @@ impl Failure {
                     _ => None,
                 },
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_error_message_is_read_from_whichever_shape_carries_it() {
+        let v: Value = serde_json::json!({"error": {"data": {"message": "bad request"}}});
+        assert_eq!(
+            words(&v, &["/error/message", "/error/data/message"]).as_deref(),
+            Some("bad request")
+        );
+        // An empty string is not a message: it would read as "a failure with nothing to say".
+        let v: Value = serde_json::json!({"error": {"message": "  ", "name": "APIError"}});
+        assert_eq!(
+            words(&v, &["/error/message", "/error/name"]).as_deref(),
+            Some("APIError")
+        );
+        // Claude Code's `tool_result.content`: an array of typed blocks, or a bare string.
+        let v: Value = serde_json::json!({"content": [{"type": "text", "text": "no"}, {"type": "text", "text": "way"}]});
+        assert_eq!(words(&v, &["/content"]).as_deref(), Some("no way"));
+        let v: Value = serde_json::json!({"content": "refused"});
+        assert_eq!(words(&v, &["/content"]).as_deref(), Some("refused"));
+        let v: Value = serde_json::json!({"content": []});
+        assert_eq!(words(&v, &["/content"]), None);
     }
 }
