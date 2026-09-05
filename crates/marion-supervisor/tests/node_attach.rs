@@ -41,8 +41,6 @@
 //! Needs real `claude` and `codex` on `PATH` and does **not** skip when they are missing, for the
 //! reason `journal_wiring.rs` gives. Every model call is served by the CannedServer: no paid tokens.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::sync::Arc;
@@ -50,15 +48,13 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_proto::notify::Event as Note;
-use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script, TurnGate};
-use marion_supervisor::socket::{SocketPaths, read_identity, socket_paths};
+use marion_supervisor::socket::{SocketPaths, read_identity};
 use marion_testsupport::{fixture_repo, scratch, sweep};
 use serde_json::json;
 
-unsafe extern "C" {
-    fn getuid() -> u32;
-}
+mod common;
+use common::client::{Client, paths_for};
 
 /// How long anything in this file may take before it is a failure. Never a verdict: every
 /// assertion below is over an identity, an ordinal, a count or a payload — never over elapsed
@@ -184,112 +180,6 @@ fn start_run(dir: &Path, repo: &Path, state: &Path, base_url: &str, gate: &Arc<T
     }
 }
 
-// ------------------------------------------------------------------------------------------
-// A client of the supervisor: one connection, requests out, notifications in.
-// ------------------------------------------------------------------------------------------
-
-/// One client, on one connection. The point of the type is that **nothing here reads a file**:
-/// every event a test sees arrived through this socket.
-struct Client {
-    sock: UnixStream,
-    lines: BufReader<UnixStream>,
-    next_id: i64,
-}
-
-impl Client {
-    fn dial(paths: &SocketPaths) -> Client {
-        let sock = UnixStream::connect(paths.socket()).expect("the supervisor is listening");
-        sock.set_read_timeout(Some(BOUND)).unwrap();
-        let lines = BufReader::new(sock.try_clone().unwrap());
-        Client {
-            sock,
-            lines,
-            next_id: 1,
-        }
-    }
-
-    fn send(&mut self, call: Call) -> i64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        let f = Frame::Request(Request::new(RequestId::Number(id), call));
-        self.sock.write_all(f.to_line().as_bytes()).unwrap();
-        self.sock.flush().unwrap();
-        id
-    }
-
-    fn next_frame(&mut self) -> Frame {
-        let mut line = String::new();
-        let n = self.lines.read_line(&mut line).expect("a frame arrives");
-        assert!(n > 0, "the supervisor closed the connection");
-        Frame::from_line(&line).expect("the supervisor emits well-formed frames")
-    }
-
-    /// Read up to the response for `id`, returning the notifications that arrived first.
-    ///
-    /// The replay leg arrives **before** the answer, by construction — the handler sends it inside
-    /// the call — so this ordering is itself part of what is asserted: the `ReplayPoint` in the
-    /// answer is a statement about what has already been delivered.
-    fn read_to_response(&mut self, id: i64) -> (Vec<Note>, Outcome) {
-        let mut notes = Vec::new();
-        loop {
-            match self.next_frame() {
-                Frame::Notification(n) => notes.push(n.event),
-                Frame::Response(r) => {
-                    assert_eq!(r.id, RequestId::Number(id), "answers are correlated");
-                    return (notes, r.outcome);
-                }
-                other => panic!("unexpected frame: {other:?}"),
-            }
-        }
-    }
-
-    fn tree(&mut self) -> Vec<marion_proto::NodeSummary> {
-        let id = self.send(Call::TreeSubscribe(
-            marion_proto::params::TreeSubscribeParams {},
-        ));
-        let (_, outcome) = self.read_to_response(id);
-        let Outcome::Result(body) = outcome else {
-            panic!("tree/subscribe was refused: {outcome:?}")
-        };
-        let MethodResult::TreeSubscribe(s) = Method::TreeSubscribe.decode_result(&body).unwrap()
-        else {
-            panic!("wrong result")
-        };
-        s.nodes
-    }
-
-    fn attach(&mut self, agent: &AgentId) -> (Vec<Note>, marion_proto::result::NodeAttachResult) {
-        let id = self.send(Call::NodeAttach(marion_proto::params::NodeAttachParams {
-            agent_id: agent.clone(),
-            pane_stream: None,
-        }));
-        let (notes, outcome) = self.read_to_response(id);
-        let Outcome::Result(body) = outcome else {
-            panic!("node/attach was refused: {outcome:?}")
-        };
-        let MethodResult::NodeAttach(r) = Method::NodeAttach.decode_result(&body).unwrap() else {
-            panic!("wrong result")
-        };
-        (notes, r)
-    }
-
-    /// Read notifications until one satisfies `want`, or the read bound expires.
-    ///
-    /// **This is the only way this file learns what a node said after an attach**, and it is a
-    /// blocking read on the socket — there is no fallback to the file, so a supervisor that stops
-    /// sending is a failure here rather than a slower success.
-    fn wait_for_event(&mut self, mut want: impl FnMut(&Note) -> bool) -> (Vec<Note>, Note) {
-        let mut seen = Vec::new();
-        loop {
-            match self.next_frame() {
-                Frame::Notification(n) if want(&n.event) => return (seen, n.event),
-                Frame::Notification(n) => seen.push(n.event),
-                other => panic!("unexpected frame while following a node: {other:?}"),
-            }
-        }
-    }
-}
-
 /// `(agent_seq, payload)` for the `node/event` notifications in a run, in arrival order.
 ///
 /// A notification that is **not** a `node/event` is dropped rather than tolerated silently only
@@ -361,15 +251,6 @@ fn until(mut cond: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(5));
     }
     cond()
-}
-
-fn paths_for(state: &Path, repo: &Path) -> SocketPaths {
-    // SAFETY: reads the calling process's real uid and cannot fail.
-    socket_paths(
-        state,
-        &marion_supervisor::socket::project_root(repo),
-        unsafe { getuid() },
-    )
 }
 
 fn the_child(nodes: &[marion_proto::NodeSummary]) -> AgentId {

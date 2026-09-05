@@ -43,8 +43,6 @@
 //! Needs real `claude` and `codex` on `PATH` and does **not** skip when they are missing, for the
 //! reason `journal_wiring.rs` gives. Every model call is served by the CannedServer: no paid tokens.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Arc;
@@ -54,19 +52,20 @@ use marion_core::contract::AgentId;
 use marion_core::event::{Lifecycle, Payload};
 use marion_core::node::StartId;
 use marion_proto::notify::Event as Note;
-use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
 use marion_provider::script::classify_root;
 use marion_provider::{
     CannedServer, Config, RequestKind, RootScript, RootStep, RootTurn, Script, TurnGate,
     classify_anthropic,
 };
 use marion_supervisor::procid::{self, Resolution};
-use marion_supervisor::socket::{SocketPaths, read_identity, socket_paths};
+use marion_supervisor::socket::{SocketPaths, read_identity};
 use marion_testsupport::{Liveness, fixture_repo, liveness, scratch, sweep};
 use serde_json::json;
 
+mod common;
+use common::client::{Client, paths_for};
+
 unsafe extern "C" {
-    fn getuid() -> u32;
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
@@ -189,191 +188,6 @@ fn start_run(dir: &Path, repo: &Path, state: &Path, base_url: &str, gate: &Arc<T
         child: Some(child),
         gate: Arc::clone(gate),
         needle: dir.display().to_string(),
-    }
-}
-
-// ------------------------------------------------------------------------------------------
-// A client of the supervisor: one connection, requests out, notifications in.
-// ------------------------------------------------------------------------------------------
-
-/// One client, on one connection. The point of the type is that **nothing here reads a file**: every
-/// event a test sees through it arrived over this socket.
-struct Client {
-    sock: UnixStream,
-    lines: BufReader<UnixStream>,
-    next_id: i64,
-}
-
-impl Client {
-    fn dial(paths: &SocketPaths) -> Client {
-        let sock = UnixStream::connect(paths.socket()).expect("the supervisor is listening");
-        sock.set_read_timeout(Some(BOUND)).unwrap();
-        let lines = BufReader::new(sock.try_clone().unwrap());
-        Client {
-            sock,
-            lines,
-            next_id: 1,
-        }
-    }
-
-    fn send(&mut self, call: Call) -> i64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        let f = Frame::Request(Request::new(RequestId::Number(id), call));
-        self.sock.write_all(f.to_line().as_bytes()).unwrap();
-        self.sock.flush().unwrap();
-        id
-    }
-
-    fn next_frame(&mut self) -> Frame {
-        let mut line = String::new();
-        let n = self.lines.read_line(&mut line).expect("a frame arrives");
-        assert!(n > 0, "the supervisor closed the connection");
-        Frame::from_line(&line).expect("the supervisor emits well-formed frames")
-    }
-
-    fn read_to_response(&mut self, id: i64) -> (Vec<Note>, Outcome) {
-        let mut notes = Vec::new();
-        loop {
-            match self.next_frame() {
-                Frame::Notification(n) => notes.push(n.event),
-                Frame::Response(r) => {
-                    assert_eq!(r.id, RequestId::Number(id), "answers are correlated");
-                    return (notes, r.outcome);
-                }
-                other => panic!("unexpected frame: {other:?}"),
-            }
-        }
-    }
-
-    fn tree(&mut self) -> Vec<marion_proto::NodeSummary> {
-        self.tree_at().nodes
-    }
-
-    /// The snapshot **and the read point it is as of**, which the criterion-2 test needs together:
-    /// §7.3.3's seam is that a snapshot without its read point cannot be compared to anything, and
-    /// `TreeSubscribeResult` carries the two because the supervisor builds them under one lock from
-    /// one read (`handler::subscribe`). Splitting them here would re-introduce the race the
-    /// protocol removed.
-    fn tree_at(&mut self) -> marion_proto::result::TreeSubscribeResult {
-        let id = self.send(Call::TreeSubscribe(
-            marion_proto::params::TreeSubscribeParams {},
-        ));
-        let (_, outcome) = self.read_to_response(id);
-        let Outcome::Result(body) = outcome else {
-            panic!("tree/subscribe was refused: {outcome:?}")
-        };
-        let MethodResult::TreeSubscribe(s) = Method::TreeSubscribe.decode_result(&body).unwrap()
-        else {
-            panic!("wrong result")
-        };
-        s
-    }
-
-    fn attach(&mut self, agent: &AgentId) -> (Vec<Note>, marion_proto::result::NodeAttachResult) {
-        let id = self.send(Call::NodeAttach(marion_proto::params::NodeAttachParams {
-            agent_id: agent.clone(),
-            pane_stream: None,
-        }));
-        let (notes, outcome) = self.read_to_response(id);
-        let Outcome::Result(body) = outcome else {
-            panic!("node/attach was refused: {outcome:?}")
-        };
-        let MethodResult::NodeAttach(r) = Method::NodeAttach.decode_result(&body).unwrap() else {
-            panic!("wrong result")
-        };
-        (notes, r)
-    }
-
-    /// **Tighten this client's socket read timeout**, for the one wait whose expiry is itself the
-    /// defect report.
-    ///
-    /// [`BOUND`] is three minutes, which is right for a wait that should normally succeed and whose
-    /// failure means something is wrong somewhere unknown. It is wrong for clause (ii) of §9's
-    /// criterion 4: a supervisor whose attach serves replay only never sends the event, so the
-    /// wait's *expiry* is the finding, and at three minutes that finding arrives as a timeout
-    /// instead of as a sentence. The whole test runs in about two seconds, so a budget an order of
-    /// magnitude above that discriminates without being a race.
-    fn read_bound(&mut self, d: Duration) {
-        self.sock.set_read_timeout(Some(d)).unwrap();
-    }
-
-    /// [`Self::wait_for_event`], reporting an expiry **as the assertion it is**.
-    ///
-    /// `wait_for_event` panics with "a frame arrives" when the socket times out, which is true and
-    /// tells the reader nothing. Here the absence of the event is the whole result, so it is said
-    /// out loud.
-    fn expect_event(&mut self, why: &str, want: impl FnMut(&Note) -> bool) -> (Vec<Note>, Note) {
-        let r =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.wait_for_event(want)));
-        match r {
-            Ok(v) => v,
-            Err(_) => panic!("{why}"),
-        }
-    }
-
-    /// Read notifications until one satisfies `want`. **A blocking read on the socket**, with no
-    /// fallback to the file: a supervisor that stops sending is a failure here rather than a slower
-    /// success.
-    fn wait_for_event(&mut self, mut want: impl FnMut(&Note) -> bool) -> (Vec<Note>, Note) {
-        let mut seen = Vec::new();
-        loop {
-            match self.next_frame() {
-                Frame::Notification(n) if want(&n.event) => return (seen, n.event),
-                Frame::Notification(n) => seen.push(n.event),
-                other => panic!("unexpected frame while following a node: {other:?}"),
-            }
-        }
-    }
-
-    /// §11 item 28 step 6's `agent/spawn` with **no caller** — a client creating a root.
-    ///
-    /// The criterion-4 test needs the tree to be created by a client whose departure it controls,
-    /// which `marion run` is not: that process leaves when its root's turn is over, and the whole
-    /// criterion is about a client leaving while a node is still mid-turn.
-    fn spawn_root(&mut self, repo: &Path, prompt: &str) -> AgentId {
-        let id = self.send(Call::AgentSpawn(marion_proto::params::AgentSpawnParams {
-            agent_type: "claude".into(),
-            prompt: prompt.into(),
-            native_launch: None,
-            caller: None,
-            repo: Some(repo.to_path_buf()),
-            acceptance_criteria: vec![],
-            writable_scope: vec![],
-            timeout_secs: Some(ROOT_BLOCKED_SECS.parse().expect("a number")),
-            model: None,
-            no_change_record: None,
-            pane: None,
-            // A root: `isolation` and `allow_concurrent_writes` are child-only and refused
-            // beside `caller: None` (§6.6, §9).
-            isolation: None,
-            allow_concurrent_writes: None,
-        }));
-        let (_, outcome) = self.read_to_response(id);
-        let Outcome::Result(body) = outcome else {
-            panic!("agent/spawn was refused: {outcome:?}")
-        };
-        let MethodResult::AgentSpawn(r) = Method::AgentSpawn.decode_result(&body).unwrap() else {
-            panic!("wrong result")
-        };
-        r.agent_id
-    }
-
-    /// §7.3.2's voluntary departure. Sent so that a supervisor whose only other client was killed
-    /// does not wait out §5.7's full grace after the suite has finished with it — the same call
-    /// `marion run` makes on its way out.
-    fn quit(&mut self) -> marion_proto::QuitOutcome {
-        let id = self.send(Call::SessionQuit(marion_proto::params::SessionQuitParams {
-            disposition: marion_proto::QuitDisposition::DetachAll,
-        }));
-        let (_, outcome) = self.read_to_response(id);
-        let Outcome::Result(body) = outcome else {
-            panic!("session/quit was refused: {outcome:?}")
-        };
-        let MethodResult::SessionQuit(r) = Method::SessionQuit.decode_result(&body).unwrap() else {
-            panic!("wrong result")
-        };
-        r.outcome
     }
 }
 
@@ -551,15 +365,6 @@ fn while_the_supervisor_holds(
 
 fn project(state: &Path, repo: &Path) -> marion_core::paths::ProjectDir {
     marion_core::paths::ProjectDir::new(state, &marion_supervisor::socket::project_root(repo))
-}
-
-fn paths_for(state: &Path, repo: &Path) -> SocketPaths {
-    // SAFETY: reads the calling process's real uid and cannot fail.
-    socket_paths(
-        state,
-        &marion_supervisor::socket::project_root(repo),
-        unsafe { getuid() },
-    )
 }
 
 /// **The journal, read from a second process** — which is the whole point of every assertion that
@@ -1735,6 +1540,7 @@ fn a_client_that_quits_cleanly_leaves_the_supervisor_running_and_a_new_client_re
     let root = a.spawn_root(
         &repo,
         &format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
+        ROOT_BLOCKED_SECS.parse().expect("a number"),
     );
     assert!(
         until(|| journal_nodes(&state, &repo).len() == 2),

@@ -83,22 +83,17 @@
 //! missing, for the reason `journal_wiring.rs` gives. Every model call is served by the
 //! CannedServer: no paid tokens.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
-use marion_proto::{Call, Frame, Method, MethodResult, Outcome, Request, RequestId};
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
-use marion_supervisor::socket::{SocketPaths, socket_paths};
 use marion_testsupport::{fixture_repo, on_path, pinned_version, scratch, sweep};
 
-unsafe extern "C" {
-    fn getuid() -> u32;
-}
+mod common;
+use common::client::{Client, paths_for};
 
 /// How long anything here may take before it is a failure. Never a verdict: every assertion below
 /// is over a byte, a record or a node's state, and no failure may be repaired by widening this.
@@ -219,59 +214,10 @@ fn start_paned_run(
 // ---------------------------------------------------------------------------------------------
 // A client of the supervisor: used only to find the node and to ask whether it is still running
 // ---------------------------------------------------------------------------------------------
-
-/// **Deliberately never attaches.** `node/attach` leases the write half, and the whole point of
-/// this file is that the *real* client holds it. A helper that attached here would be competing
-/// with the process under test for the keyboard.
-struct Client {
-    sock: UnixStream,
-    lines: BufReader<UnixStream>,
-    next_id: i64,
-}
-
-impl Client {
-    fn dial(paths: &SocketPaths) -> Client {
-        let sock = UnixStream::connect(paths.socket()).expect("the supervisor is listening");
-        sock.set_read_timeout(Some(BOUND)).unwrap();
-        let lines = BufReader::new(sock.try_clone().unwrap());
-        Client {
-            sock,
-            lines,
-            next_id: 1,
-        }
-    }
-
-    fn tree(&mut self) -> Vec<marion_proto::NodeSummary> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let f = Frame::Request(Request::new(
-            RequestId::Number(id),
-            Call::TreeSubscribe(marion_proto::params::TreeSubscribeParams {}),
-        ));
-        self.sock.write_all(f.to_line().as_bytes()).unwrap();
-        self.sock.flush().unwrap();
-        loop {
-            let mut line = String::new();
-            let n = self.lines.read_line(&mut line).expect("a frame arrives");
-            assert!(n > 0, "the supervisor closed the connection");
-            match Frame::from_line(&line).expect("well-formed frames") {
-                Frame::Notification(_) => continue,
-                Frame::Response(r) => {
-                    let Outcome::Result(body) = r.outcome else {
-                        panic!("tree/subscribe was refused")
-                    };
-                    let MethodResult::TreeSubscribe(s) =
-                        Method::TreeSubscribe.decode_result(&body).unwrap()
-                    else {
-                        panic!("wrong result")
-                    };
-                    return s.nodes;
-                }
-                other => panic!("unexpected frame: {other:?}"),
-            }
-        }
-    }
-}
+//
+// `common::Client`, and **deliberately never `attach`ed.** `node/attach` leases the write half,
+// and the whole point of this file is that the *real* client holds it. A helper that attached
+// here would be competing with the process under test for the keyboard.
 
 // ---------------------------------------------------------------------------------------------
 // The operator's terminal
@@ -430,15 +376,6 @@ fn until(mut cond: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(50));
     }
     cond()
-}
-
-fn paths_for(state: &Path, repo: &Path) -> SocketPaths {
-    socket_paths(
-        state,
-        &marion_supervisor::socket::project_root(repo),
-        // SAFETY: no arguments, no pointers.
-        unsafe { getuid() },
-    )
 }
 
 /// **An empty script, and that is the design rather than an omission.**
