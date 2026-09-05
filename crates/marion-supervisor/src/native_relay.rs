@@ -87,6 +87,8 @@ const SIGTSTP: std::ffi::c_int = 20;
 /// is deliberately absent: an eligible stop is owned by keeping it blocked and observing it
 /// pending, so the terminal's original default stop is revealed rather than re-implemented.
 const HANDLED_SIGNALS: [std::ffi::c_int; 4] = [SIGWINCH, SIGINT, SIGTERM, SIGHUP];
+/// The handled signals whose first arrival ends the relay and is redelivered after restoration.
+const TERMINATION_SIGNALS: [std::ffi::c_int; 3] = [SIGINT, SIGTERM, SIGHUP];
 
 const INTERRUPTED: u32 = 1 << 0;
 const TERMINATED: u32 = 1 << 1;
@@ -354,6 +356,28 @@ impl RelaySignalGuard {
         self.stop_owned
     }
 
+    /// The cutoff before a stop: block Marion's termination handlers on the relay thread. Once the
+    /// keyboard worker is joined, no Marion handler can run until `unblock_terminations`.
+    fn block_terminations(&self) -> Result<(), Refusal> {
+        change_termination_mask(SIG_BLOCK)
+    }
+
+    fn unblock_terminations(&self) -> Result<(), Refusal> {
+        change_termination_mask(SIG_UNBLOCK)
+    }
+
+    /// Reveal the owned stop to its untouched default action. Returns only after `SIGCONT`, or at
+    /// once if `SIGCONT` already cancelled the pending stop; Marion never synthesizes one.
+    fn reveal_stop(&self) -> Result<(), Refusal> {
+        change_thread_signal_mask(SIG_UNBLOCK, SIGTSTP)
+            .map_err(|error| format!("revealing the pending SIGTSTP: {error}"))
+    }
+
+    fn reblock_stop(&self) -> Result<(), Refusal> {
+        change_thread_signal_mask(SIG_BLOCK, SIGTSTP)
+            .map_err(|error| format!("reblocking SIGTSTP after continue: {error}"))
+    }
+
     fn restore_result(&mut self) -> Result<Option<std::ffi::c_int>, RelaySignalRestoreError> {
         if self.prior.is_empty() && !self.stop_owned {
             return Ok(None);
@@ -407,6 +431,15 @@ fn owned_stop_pending() -> std::io::Result<bool> {
     pending_signals().map(|pending| signal_in_set(&pending, SIGTSTP))
 }
 
+fn change_termination_mask(how: std::ffi::c_int) -> Result<(), Refusal> {
+    for signal in TERMINATION_SIGNALS {
+        change_thread_signal_mask(how, signal).map_err(|error| {
+            format!("changing the relay thread mask for termination signal {signal}: {error}")
+        })?;
+    }
+    Ok(())
+}
+
 /// Decide `SIGTSTP` ownership from its current disposition, mutating nothing.
 ///
 /// Default and unblocked: owned by blocking, so the original stop can be revealed later. Ignored
@@ -432,7 +465,7 @@ fn stop_eligible(mask: &SigSet) -> Result<bool, Refusal> {
 }
 
 fn is_termination_signal(signal: std::ffi::c_int) -> bool {
-    matches!(signal, SIGINT | SIGTERM | SIGHUP)
+    TERMINATION_SIGNALS.contains(&signal)
 }
 
 fn install_relay_signal_action(
@@ -637,14 +670,12 @@ pub(crate) fn relay_claimed(
             use std::os::fd::AsRawFd;
             terminal.stdin().as_raw_fd()
         };
-        let stdin = rustix::io::fcntl_dupfd_cloexec(terminal.stdin(), 3)
-            .map_err(|error| format!("retaining native terminal input: {error}"))?;
         let stdout = rustix::io::fcntl_dupfd_cloexec(terminal.stdout(), 3)
             .map_err(|error| format!("retaining native terminal output: {error}"))?;
         let mut session = RawPaneSession::open_with_io(
             stream,
             agent_id,
-            OwnedFdReader(stdin),
+            retained_terminal_input(terminal)?,
             Some(input_fd),
             OwnedFdWriter(stdout),
             None,
@@ -653,11 +684,75 @@ pub(crate) fn relay_claimed(
         if std::env::var_os("MARION_NATIVE_RELAY_PROBE").is_some() {
             eprintln!("NATIVE_RELAY_READY");
         }
-        let result = session.pump();
+        let result = loop {
+            match session.pump() {
+                Ok(RelayStop::Suspend) => {
+                    suspend_until_continued(terminal, &mut session, &signals)?
+                }
+                other => break other,
+            }
+        };
         drop(session);
         result
     })();
     finish_claimed_relay(terminal, primary, signals)
+}
+
+fn retained_terminal_input(
+    terminal: &crate::native_tty::NativeRelayTerminal,
+) -> Result<OwnedFdReader, Refusal> {
+    rustix::io::fcntl_dupfd_cloexec(terminal.stdin(), 3)
+        .map(OwnedFdReader)
+        .map_err(|error| format!("retaining native terminal input: {error}"))
+}
+
+/// Stop under the terminal's own default `SIGTSTP` with the operator terminal restored, then
+/// resume the relay after `SIGCONT`.
+///
+/// The order follows the synchronous-signal design: block Marion's termination handlers (the
+/// cutoff), join the keyboard worker, write the passive cleanup bytes, restore termios and
+/// descriptor flags, let a termination that beat the cutoff win, and only then reveal the still
+/// pending stop to its untouched default action. After `SIGCONT` the stop is reblocked and the
+/// termination handlers exposed again before raw mode is re-entered, the keyboard worker
+/// restarted, and geometry reconciliation forced. Marion never raises or forwards the stop, and
+/// the supervisor's node child is not signalled: it keeps running behind the relay.
+fn suspend_until_continued<W: Write>(
+    terminal: &mut crate::native_tty::NativeRelayTerminal,
+    session: &mut RawPaneSession<W>,
+    signals: &RelaySignalGuard,
+) -> Result<(), Refusal> {
+    signals.block_terminations()?;
+    if !session.park_keyboard() {
+        // The operator detached or the worker failed before the stop; the pump reports that.
+        return signals.unblock_terminations();
+    }
+    let passive = write_passive_terminal_cleanup(terminal).map_err(|error| {
+        format!(
+            "native relay cleanup stage `passive terminal bytes` failed before the stop: {error}"
+        )
+    });
+    let restored = terminal
+        .restore_for_suspend()
+        .map_err(|error| format!("restoring the native terminal before the stop: {error}"));
+    if let Err(error) = passive.and(restored) {
+        let _ = signals.unblock_terminations();
+        return Err(error);
+    }
+    if FIRST_RELAY_SIGNAL.load(Ordering::SeqCst) != 0 {
+        // A termination reached its handler before the cutoff and dominates the stop.
+        return signals.unblock_terminations();
+    }
+    signals.reveal_stop()?;
+    // Execution continues here after SIGCONT, or at once if SIGCONT cancelled the stop first.
+    signals.reblock_stop()?;
+    signals.unblock_terminations()?;
+    terminal.reenter_after_continue().map_err(|error| {
+        format!("re-entering native terminal relay mode after continue: {error}")
+    })?;
+    session.resume_keyboard(retained_terminal_input(terminal)?)?;
+    // The terminal may have been resized while stopped; a resize is never inferred from a signal.
+    RESIZED.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 pub(crate) fn finish_claimed_relay(
@@ -991,6 +1086,23 @@ impl<W: Write> RawPaneSession<W> {
         Ok(())
     }
 
+    /// Join the keyboard worker before a terminal mode transition so no terminal read overlaps
+    /// it. Returns `false` when the worker had already left on its own (operator detach or a read
+    /// failure), which the pump must report instead of suspending.
+    fn park_keyboard(&mut self) -> bool {
+        let parked_by_us = !self.leaving.swap(true, Ordering::SeqCst);
+        if let Some(keyboard) = self.keyboard.take() {
+            let _ = keyboard.join();
+        }
+        parked_by_us
+    }
+
+    /// Restart the keyboard worker on a fresh terminal input after a parked stop.
+    fn resume_keyboard<R: Read + Send + 'static>(&mut self, input: R) -> Result<(), Refusal> {
+        self.leaving.store(false, Ordering::SeqCst);
+        self.start_keyboard(input)
+    }
+
     fn start_keyboard<R: Read + Send + 'static>(&mut self, mut input: R) -> Result<(), Refusal> {
         let leaving = Arc::clone(&self.leaving);
         let failure = Arc::clone(&self.keyboard_failure);
@@ -1226,10 +1338,11 @@ mod tests {
         fail_relay_signal_restore_at, fail_relay_signal_restore_at_attempts, finish_claimed_relay,
         on_relay_signal, owned_stop_pending, pthread_sigmask, raise, redeliver_signal,
         relay_claimed, resolve_relay_finish, setup_after_signal_acquire, sigaction, signal,
-        signal_in_set, signal_set, write_passive_terminal_cleanup_to,
+        signal_in_set, signal_set, suspend_until_continued, write_passive_terminal_cleanup_to,
     };
     use crate::native_tty::test_support::{
-        RawRelayTerminal, fail_next_stdin_flag_restore, raw_relay_terminal_on_test_pty,
+        RawRelayTerminal, fail_next_stdin_flag_restore, queue_status_flag_results,
+        raw_relay_terminal_on_test_pty,
     };
 
     const SIGNAL_RESTORE_PROBE: &str = "MARION_NATIVE_SIGNAL_RESTORE_PROBE";
@@ -1958,10 +2071,10 @@ mod tests {
             return;
         }
         let RawRelayTerminal {
-            master: _master,
             mut terminal,
             observed_stdin,
             baseline_stdin_flags,
+            ..
         } = raw_relay_terminal_on_test_pty();
         fail_next_stdin_flag_restore();
         let signals = RelaySignalGuard::acquire().expect("the probe owns relay signals");
@@ -1995,10 +2108,10 @@ mod tests {
             return;
         }
         let RawRelayTerminal {
-            master: _master,
             mut terminal,
             observed_stdin,
             baseline_stdin_flags,
+            ..
         } = raw_relay_terminal_on_test_pty();
         let (client, mut server) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || {
@@ -2602,6 +2715,135 @@ mod tests {
             pty_sigterm_outer_bound(),
         )
         .expect("the bounded SIGTERM lifecycle runner");
+    }
+
+    /// Drive one suspend/resume transition directly, standing in for the moment `pump` returns
+    /// `Suspend`. With no stop pending, `reveal_stop` is the spec's "SIGCONT cancelled the stop
+    /// before reveal" case: it unblocks and returns at once without parking this test process, so
+    /// the whole restore-then-reactivate sequence runs deterministically in one thread.
+    fn suspend_probe(
+        scripted_flag_results: &[Option<rustix::io::Errno>],
+    ) -> (
+        RawRelayTerminal,
+        rustix::termios::Termios,
+        bool,
+        Result<(), String>,
+    ) {
+        let mut raw = raw_relay_terminal_on_test_pty();
+        let cooked = raw.baseline_termios();
+        // Idle input keeps the keyboard worker alive so `park_keyboard` observes a live worker
+        // instead of the operator-detach short circuit; the socket is otherwise irrelevant here.
+        let (mut session, signals, _release, server_thread, _resize_tty) =
+            relay_for_signal_exit(SignalExit::ReadFailure);
+        assert!(
+            signals.owns_stop(),
+            "the isolated probe owns a default SIGTSTP"
+        );
+        RESIZED.store(false, Ordering::SeqCst);
+        queue_status_flag_results(scripted_flag_results.iter().copied());
+
+        let outcome = suspend_until_continued(&mut raw.terminal, &mut session, &signals);
+        // Read the forced-resize latch before the guard drop clears the process signal state.
+        let resized = RESIZED.load(Ordering::SeqCst);
+
+        drop(session);
+        drop(signals);
+        server_thread.join().unwrap();
+        (raw, cooked, resized, outcome)
+    }
+
+    #[test]
+    fn suspend_restores_the_terminal_then_reenters_raw_and_forces_a_resize() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "suspend_restores_the_terminal_then_reenters_raw_and_forces_a_resize",
+        ) {
+            return;
+        }
+        use rustix::fs::{OFlags, fcntl_getfl};
+        use rustix::termios::tcgetattr;
+
+        let (raw, cooked, resized, outcome) = suspend_probe(&[]);
+        outcome.expect("the suspend transition completes without a real stop");
+
+        let resumed = tcgetattr(raw.terminal.stdin()).unwrap();
+        assert_ne!(
+            resumed.local_modes & !rustix::termios::LocalModes::PENDIN,
+            cooked.local_modes,
+            "the relay did not re-enter raw mode after continue"
+        );
+        assert!(
+            fcntl_getfl(raw.terminal.stdin())
+                .unwrap()
+                .contains(OFlags::NONBLOCK),
+            "stdin was left blocking after resume"
+        );
+        assert!(resized, "resume did not force geometry reconciliation");
+    }
+
+    #[test]
+    fn suspend_writes_passive_cleanup_bytes_before_the_stop() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "suspend_writes_passive_cleanup_bytes_before_the_stop",
+        ) {
+            return;
+        }
+        let expected = {
+            let mut bytes = b"\x1b[?2004l".to_vec();
+            bytes.extend_from_slice(&marion_tui::guard::leave_bytes());
+            bytes
+        };
+        let (raw, _cooked, _resized, outcome) = suspend_probe(&[]);
+        outcome.expect("the suspend transition completes");
+
+        // The passive cleanup bytes were written to the PTY while the terminal was restored for
+        // the stop; they lead whatever the resumed relay later produced.
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 512];
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while seen.len() < expected.len() && Instant::now() < deadline {
+            match raw.master.read(&mut buf) {
+                Ok(0) => break,
+                Ok(count) => seen.extend_from_slice(&buf[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                Err(error) => panic!("reading the suspend probe pty: {error}"),
+            }
+        }
+        assert!(
+            seen.starts_with(&expected),
+            "passive cleanup bytes were not written before the stop: {:?}",
+            String::from_utf8_lossy(&seen)
+        );
+    }
+
+    #[test]
+    fn a_failed_raw_reentry_after_continue_rolls_back_to_the_cooked_baseline() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "a_failed_raw_reentry_after_continue_rolls_back_to_the_cooked_baseline",
+        ) {
+            return;
+        }
+        use rustix::termios::tcgetattr;
+        // restore_for_suspend changes the stdin and stdout flags (two calls); the raw re-entry's
+        // own stdin flag change is the third, and it is the one made to fail.
+        let (raw, cooked, _resized, outcome) =
+            suspend_probe(&[None, None, Some(rustix::io::Errno::BADF)]);
+
+        let error = outcome.expect_err("a failed raw re-entry ends the transition with an error");
+        assert!(
+            error.contains("re-entering native terminal relay mode after continue"),
+            "{error}"
+        );
+        let rolled_back = tcgetattr(raw.terminal.stdin()).unwrap();
+        assert_eq!(
+            rolled_back.local_modes & !rustix::termios::LocalModes::PENDIN,
+            cooked.local_modes,
+            "a failed raw re-entry must roll back to the cooked baseline"
+        );
     }
 
     #[derive(Clone, Default)]

@@ -1095,6 +1095,23 @@ acceptance evidence, so every marker remains unchanged.
     dark facade would finish the relay like a clean detach with the terminal restored. Covered by
     `pump_reports_a_pending_owned_stop_as_suspend_without_consuming_it`; M3 remains `[partial]`.
 
+    **The relay's Ctrl-Z suspend/resume transition in this commit moves no milestone marker.** When
+    the pump reports a pending stop, the relay blocks its termination handlers, joins the keyboard
+    worker, writes the passive cleanup bytes, restores termios and descriptor flags, lets a
+    termination that beat the cutoff win, and only then reveals the still-pending `SIGTSTP` to its
+    untouched default action. After `SIGCONT` it reblocks the stop, re-exposes the termination
+    handlers, re-enters raw mode, restarts the keyboard worker, and forces geometry reconciliation;
+    a failed raw re-entry rolls back to the cooked baseline and ends the relay with an error. The
+    supervisor's node child is never signalled, so it keeps running behind the relay. Covered in
+    process by `suspend_restores_the_terminal_then_reenters_raw_and_forces_a_resize`,
+    `suspend_writes_passive_cleanup_bytes_before_the_stop`, and
+    `a_failed_raw_reentry_after_continue_rolls_back_to_the_cooked_baseline`, which drive the
+    transition through its SIGCONT-cancelled-before-reveal path. A real kernel stop cannot be
+    observed from the existing PTY child probe because `spawn_pty` puts the child in an orphaned
+    process group, where the kernel discards `SIGTSTP`; the reveal/resume syscall sequence itself
+    was verified to stop and continue a non-orphaned process out of band. The production native
+    facade stays dark, so M3 remains `[partial]` pending C1's recorded manual session.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

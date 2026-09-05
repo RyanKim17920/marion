@@ -613,24 +613,10 @@ impl NativeRelayTerminal {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reviewed suspend transition stays dark until the relay signal pump consumes it"
-        )
-    )]
     pub(crate) fn restore_for_suspend(&mut self) -> Result<(), NativeTtyRestoreError> {
         self.restore_result()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reviewed resume transition stays dark until the relay signal pump consumes it"
-        )
-    )]
     pub(crate) fn reenter_after_continue(&mut self) -> Result<(), NativeTtyError> {
         self.enter_raw()
     }
@@ -699,13 +685,21 @@ pub(crate) mod test_support {
         pub(crate) terminal: NativeRelayTerminal,
         pub(crate) observed_stdin: std::os::fd::OwnedFd,
         pub(crate) baseline_stdin_flags: OFlags,
+        cooked_termios: rustix::termios::Termios,
+    }
+
+    impl RawRelayTerminal {
+        /// The cooked terminal attributes captured before the relay entered raw mode.
+        pub(crate) fn baseline_termios(&self) -> rustix::termios::Termios {
+            self.cooked_termios.clone()
+        }
     }
 
     pub(crate) fn raw_relay_terminal_on_test_pty() -> RawRelayTerminal {
         let master = PtyMaster::open(WinSize::new(91, 29)).expect("test PTY");
         let stdin = master.open_slave().expect("relay stdin");
         let stdout = master.open_slave().expect("relay stdout");
-        let baseline_termios = tcgetattr(&stdin).unwrap();
+        let cooked_termios = tcgetattr(&stdin).unwrap();
         let baseline_stdin_flags = fcntl_getfl(&stdin).unwrap();
         let baseline_stdout_flags = fcntl_getfl(&stdout).unwrap();
         let witness = ClientTtyWitness {
@@ -717,7 +711,7 @@ pub(crate) mod test_support {
                 st_rdev: 0,
             },
             baseline: TerminalBaseline {
-                termios: baseline_termios,
+                termios: cooked_termios.clone(),
                 stdin_flags: baseline_stdin_flags,
                 stdout_flags: baseline_stdout_flags,
             },
@@ -737,17 +731,22 @@ pub(crate) mod test_support {
             terminal,
             observed_stdin,
             baseline_stdin_flags,
+            cooked_termios,
         }
     }
 
     /// Make the next stdin status-flag restoration fail with `EBADF` on this thread; the retry
     /// after it succeeds.
     pub(crate) fn fail_next_stdin_flag_restore() {
-        F_SETFL_RESULTS.with(|results| {
-            results
-                .borrow_mut()
-                .extend([Some(rustix::io::Errno::BADF), None])
-        });
+        queue_status_flag_results([Some(rustix::io::Errno::BADF), None]);
+    }
+
+    /// Script the outcome of the next status-flag changes on this thread, in call order: `None`
+    /// runs the real `fcntl`, `Some(errno)` fails that one call instead.
+    pub(crate) fn queue_status_flag_results(
+        results: impl IntoIterator<Item = Option<rustix::io::Errno>>,
+    ) {
+        F_SETFL_RESULTS.with(|queue| queue.borrow_mut().extend(results));
     }
 }
 
