@@ -98,6 +98,7 @@ fn the_shipped_binary_relays_a_real_harness_help_screen_and_restores_the_termina
     let env = marion_supervisor::run::Env {
         project_dir: project_dir.clone(),
         state: state.clone(),
+        project_root: key.clone(),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         base_url: Some("http://127.0.0.1:8099/v1".into()),
         auth: marion_harness::Auth::Canned,
