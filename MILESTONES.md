@@ -1160,6 +1160,20 @@ acceptance evidence, so every marker remains unchanged.
       `the_no_supervisor_refusal_is_one_sentence_and_the_command_to_run`,
       `a_detach_with_nothing_at_a_gate_reports_in_one_line`.
 
+    **Row-derived native injection in this commit moves no milestone marker.** Every
+    `HarnessSpec` row now states its live MCP declaration channel in full (`LiveDeclaration`:
+    claude `--mcp-config <file>`, codex `-c mcp_servers.marion.*`, gemini
+    `GEMINI_CLI_SYSTEM_SETTINGS_PATH` document, opencode `OPENCODE_CONFIG_CONTENT`, copilot
+    `--additional-mcp-config @<file>`; ACP none), and one `SpecNativeAdapter` renders it — there
+    are no per-harness native impls, and `marion_harness::native_adapter(Harness)` is a table of
+    rows. `NativeNodeContext` now carries the typed `BridgeEnv` so the factory and every managed
+    document derive the bridge's variables from one place. Covered by
+    `every_native_row_injects_only_marions_mcp_server_and_no_managed_flags`, which holds each
+    harness's native injection byte-for-byte to what the managed live launch of the same row
+    writes and to nothing else. Still dark: the production factory is not yet handed this table,
+    the production descriptor slice is empty, and documents remain fail-closed; M3 remains
+    `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

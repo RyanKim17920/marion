@@ -17,10 +17,19 @@ pub use crate::mcp_bridge::{
     READY_FILE_ENV,
 };
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Resume, Spelling, Surfaces,
-    ToolSpelling, Val, When,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
+    Spelling, Surfaces, ToolSpelling, Val, When,
 };
 use crate::surfaces::TypedKind;
+
+/// The `--mcp-config` document's name under the node's own directory — one spelling for
+/// [`SPEC`]'s live declaration and `ClaudeCodeAdapter::config_files`.
+pub const MCP_CONFIG_FILE: &str = "mcp.json";
+
+/// [`mcp_config_json`] as the bytes `--mcp-config` reads: the live declaration's body.
+pub fn mcp_config_document(b: &BridgeEnv) -> String {
+    serde_json::to_string_pretty(&mcp_config_json(b)).expect("a Value always serialises")
+}
 
 /// Claude Code's row. Measured against 2.1.220 (S1, S9, S11) and re-measured on 2.1.222 for the
 /// two tool axes (`tests/fixtures/s14/`); every flag below carries its reason in the doc of the
@@ -115,6 +124,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         canned: McpRoute::Document,
         live: McpRoute::Document,
     },
+    // The same document the headless launch names, and the same flag, alone: `--strict-mcp-config`
+    // is deliberately **not** beside it here, because on a node whose settings are the operator's
+    // own it would drop every server they configured (§6.4).
+    live_declaration: Some(LiveDeclaration::ArgvDocument {
+        flag: "--mcp-config",
+        file: MCP_CONFIG_FILE,
+        prefix: "",
+        body: mcp_config_document,
+    }),
     // The one harness with a real per-tool allowlist: the record is the literal contents of
     // `--allowedTools`, which is the flag the CLI checks a call against.
     constraint: Constraint::Allowed { prefix: "" },

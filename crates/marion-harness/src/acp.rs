@@ -81,6 +81,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         canned: McpRoute::Session(MCP_SERVERS_KEY),
         live: McpRoute::Session(MCP_SERVERS_KEY),
     },
+    // No launch-time channel: the declaration is sent after launch, so there is nothing a native
+    // facade could inject, and no native adapter for this row.
+    live_declaration: None,
     constraint: Constraint::Fixed {
         prefix: "",
         value: NO_TOOL_AVAILABILITY_SURFACE,

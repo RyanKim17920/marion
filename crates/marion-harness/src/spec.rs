@@ -35,6 +35,7 @@ use marion_core::harness::Harness;
 use crate::auth::Auth;
 use crate::grammar::StreamGrammar;
 use crate::invocation::Invocation;
+use crate::mcp_bridge::BridgeEnv;
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
 /// The name marion gives its own MCP server in every declaration, and therefore half of every
@@ -75,6 +76,15 @@ pub struct HarnessSpec {
     pub spelling: Spelling,
     /// Which channel the MCP declaration travels on, under each auth mode.
     pub mcp: McpRoutes,
+    /// [`Self::mcp`]'s live route **in the detail a launch needs to take it**: the flag or
+    /// variable that carries marion's declaration onto a node whose configuration surface is the
+    /// operator's own, and the serialisation it carries. `None` where the row has no launch-time
+    /// channel — ACP, whose declaration is a `session/new` request after launch. The native
+    /// facade's whole injection is derived from this field ([`crate::native::native_adapter`]),
+    /// which is what keeps "marion in front of the operator's own harness" from becoming five
+    /// hand-written adapters; the spec sweep checks it agrees with `mcp.live` and with what the
+    /// managed live launch writes.
+    pub live_declaration: Option<LiveDeclaration>,
     /// §6.7's `TaskContract.allowed_tools`: what the audit record says this launch was constrained
     /// by, in this harness's own vocabulary.
     pub constraint: Constraint,
@@ -476,6 +486,62 @@ pub enum Spelling {
     /// answers for it — ACP, where one row serves agents that spell the same tool three ways.
     /// Nothing here defaults: an adapter that never binds an agent has no spelling and refuses.
     PerAgent,
+}
+
+/// How marion's MCP declaration is carried onto a node that keeps the operator's own
+/// configuration — [`McpRoutes::live`], spelled out.
+///
+/// [`McpRoute`] answers *"was the route taken?"* and so names only the kind of channel; this
+/// answers *"how is it taken?"* — the exact flag or variable, the file name where one is written,
+/// and the body — so that a launch that must inject **only** the declaration (the native facade,
+/// where every other flag belongs to the operator) can be rendered from the row alone. The body is
+/// a function of [`BridgeEnv`] rather than a string because the declaration names the node it
+/// serves; it is the same function the adapter's `config_files`/`fields` hook calls, so the two
+/// cannot drift, and the sweep proves it.
+#[derive(Debug, Clone, Copy)]
+pub enum LiveDeclaration {
+    /// `<flag> <prefix><path>` on argv, naming a document written to `file` under the node's own
+    /// directory — claude's `--mcp-config <path>`, copilot's `--additional-mcp-config @<path>`.
+    ArgvDocument {
+        flag: &'static str,
+        file: &'static str,
+        prefix: &'static str,
+        body: fn(&BridgeEnv) -> String,
+    },
+    /// A document written to `file` under the node's own directory whose path rides the
+    /// environment variable `key` — gemini's `GEMINI_CLI_SYSTEM_SETTINGS_PATH`.
+    EnvDocument {
+        key: &'static str,
+        file: &'static str,
+        body: fn(&BridgeEnv) -> String,
+    },
+    /// The document itself, inline in the environment variable `key`; nothing is written —
+    /// opencode's `OPENCODE_CONFIG_CONTENT`.
+    EnvInline {
+        key: &'static str,
+        body: fn(&BridgeEnv) -> String,
+    },
+    /// `<flag> <k>=<v>` once per pair on argv; nothing is written — codex's `-c`. `key` is the
+    /// config key every pair sits under, the needle [`McpRoute::Argv`] checks argv for.
+    ArgvPairs {
+        flag: &'static str,
+        key: &'static str,
+        pairs: fn(&BridgeEnv) -> Vec<(String, String)>,
+    },
+}
+
+impl LiveDeclaration {
+    /// The [`McpRoute`] this channel is an instance of — what `mcp.live` must say of a row that
+    /// carries it.
+    pub fn route(self) -> McpRoute {
+        match self {
+            LiveDeclaration::ArgvDocument { .. } | LiveDeclaration::EnvDocument { .. } => {
+                McpRoute::Document
+            }
+            LiveDeclaration::EnvInline { key, .. } => McpRoute::Environment(key),
+            LiveDeclaration::ArgvPairs { key, .. } => McpRoute::Argv(key),
+        }
+    }
 }
 
 /// **How** the MCP declaration reaches the node, under each auth mode.

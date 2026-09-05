@@ -39,9 +39,18 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Resume, Spelling, Surfaces,
-    ToolSpelling, Val, When,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
+    Spelling, Surfaces, ToolSpelling, Val, When,
 };
+
+/// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
+/// live declaration and [`mcp_config_path`].
+pub const MCP_CONFIG_FILE: &str = "mcp.json";
+
+/// [`mcp_config_json`] as the bytes `--additional-mcp-config @<path>` reads.
+pub fn mcp_config_document(b: &BridgeEnv) -> String {
+    serde_json::to_string_pretty(&mcp_config_json(b)).expect("a Value always serialises")
+}
 
 /// `$COPILOT_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
 /// [`home`].
@@ -145,6 +154,12 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         canned: McpRoute::Document,
         live: McpRoute::Document,
     },
+    live_declaration: Some(LiveDeclaration::ArgvDocument {
+        flag: "--additional-mcp-config",
+        file: MCP_CONFIG_FILE,
+        prefix: "@",
+        body: mcp_config_document,
+    }),
     // The `--allow-tool` patterns are what `-p` mode checks a call against — not the
     // `--available-tools` list, which only decides what the model sees. The prefix is load-bearing:
     // copilot's grant kind for the file tools is spelled `write`, the same six letters as marion's
@@ -305,7 +320,7 @@ pub fn home(config_dir: &Path) -> PathBuf {
 
 /// Where [`mcp_config_json`] is written, named by `--additional-mcp-config @<path>`.
 pub fn mcp_config_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("mcp.json")
+    config_dir.join(MCP_CONFIG_FILE)
 }
 
 /// The `--additional-mcp-config` document: the same shape as `~/.copilot/mcp-config.json`, which

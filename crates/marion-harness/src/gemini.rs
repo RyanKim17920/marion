@@ -18,9 +18,17 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
-    ToolSpelling, Val, When,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Spelling,
+    Surfaces, ToolSpelling, Val, When,
 };
+
+/// The live node's system-settings document, as bytes: [`settings_json_with_auth`] under the
+/// operator's own [`live_auth_type`], which is what `GeminiAdapter::config_files` writes for an
+/// [`Auth::Inherited`] launch.
+pub fn live_settings_document(b: &BridgeEnv) -> String {
+    serde_json::to_string_pretty(&settings_json_with_auth(Some(b), &live_auth_type()))
+        .expect("a Value always serialises")
+}
 
 /// The settings document's name under the node's config dir — named by [`SYSTEM_SETTINGS_PATH_ENV`]
 /// in [`SPEC`]'s env and written by `GeminiAdapter::config_files`, one spelling for both.
@@ -105,6 +113,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         canned: McpRoute::Document,
         live: McpRoute::Document,
     },
+    // The system-settings layer, which **outranks the operator's own** — see
+    // [`settings_json_with_auth`]'s unresolved merge-granularity question. That is why the native
+    // lane for this harness ships disabled until the merge is measured.
+    live_declaration: Some(LiveDeclaration::EnvDocument {
+        key: SYSTEM_SETTINGS_PATH_ENV,
+        file: SETTINGS_FILE,
+        body: live_settings_document,
+    }),
     // On this harness the mode **is** the constraint: under `default` the mutating tools are
     // withheld from `functionDeclarations` entirely. Recorded in both states.
     constraint: Constraint::Mode {

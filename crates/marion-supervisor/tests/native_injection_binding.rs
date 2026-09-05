@@ -6,7 +6,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use marion_core::PRODUCTION_NATIVE_FACADES;
-use marion_harness::mcp_bridge::MarionMcpBridge;
+use marion_core::contract::AgentId;
+use marion_harness::mcp_bridge::BridgeEnv;
 use marion_harness::{
     NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
     NativeInjectionError, NativeNodeContext, NativeProcessBase, NativeTerminalGeometry,
@@ -68,11 +69,19 @@ fn v2_context(
     ))
 }
 
-fn bridge() -> MarionMcpBridge {
-    MarionMcpBridge {
-        program: OsString::from("/synthetic/marion-supervisor"),
-        args: vec![OsString::from("mcp")],
-        env: vec![(OsString::from("MARION_AGENT_ID"), OsString::from("root"))],
+fn bridge() -> BridgeEnv {
+    BridgeEnv {
+        bridge: PathBuf::from("/synthetic/marion-supervisor"),
+        args: vec!["mcp".into()],
+        repo: PathBuf::from("/work/project"),
+        state: PathBuf::from("/work/state"),
+        base_url: None,
+        auth: marion_harness::Auth::Inherited,
+        agent_id: AgentId("root".into()),
+        agent_type: "claude".into(),
+        depth: 0,
+        node_token: None,
+        ready_file: None,
     }
 }
 
@@ -83,9 +92,12 @@ impl NativeInjectionAdapter for SyntheticAdapter {
         &self,
         context: &NativeNodeContext<'_>,
     ) -> Result<NativeInjection, NativeInjectionError> {
-        if context.bridge.program.as_os_str() != OsStr::new("/synthetic/marion-supervisor")
-            || context.bridge.args != [OsString::from("mcp")]
-            || context.bridge.env != [(OsString::from("MARION_AGENT_ID"), OsString::from("root"))]
+        if context.bridge.bridge != Path::new("/synthetic/marion-supervisor")
+            || context.bridge.args != ["mcp".to_string()]
+            || !context
+                .bridge
+                .pairs()
+                .contains(&("MARION_AGENT_ID".to_string(), "root".to_string()))
         {
             return Err(NativeInjectionError::Adapter(
                 "unexpected synthetic bridge declaration".into(),

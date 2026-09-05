@@ -1,7 +1,8 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use marion_harness::mcp_bridge::MarionMcpBridge;
+use marion_core::contract::AgentId;
+use marion_harness::mcp_bridge::BridgeEnv;
 use marion_harness::{
     NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
     NativeInjectionError, NativeNodeContext, NativeProcessBase, NativeTerminalGeometry,
@@ -54,7 +55,7 @@ impl NativeInjectionAdapter for PrefixAdapter {
                 "unexpected Marion tool policy".into(),
             ));
         }
-        if context.bridge.args != [OsString::from("mcp")] {
+        if context.bridge.args != ["mcp".to_string()] {
             return Err(NativeInjectionError::Adapter(
                 "unexpected MCP bridge declaration".into(),
             ));
@@ -89,10 +90,18 @@ fn adapter_prefix_precedes_boundary_tail_and_documents_remain_a_pure_handoff() {
         vec![(OsString::from("REPLACE"), OsString::from("old"))],
         "/work/project",
     );
-    let bridge = MarionMcpBridge {
-        program: OsString::from("/opt/bin/marion-supervisor"),
-        args: vec![OsString::from("mcp")],
-        env: vec![(OsString::from("MARION_AGENT_ID"), OsString::from("root"))],
+    let bridge = BridgeEnv {
+        bridge: PathBuf::from("/opt/bin/marion-supervisor"),
+        args: vec!["mcp".into()],
+        repo: PathBuf::from("/work/project"),
+        state: PathBuf::from("/work/state"),
+        base_url: None,
+        auth: marion_harness::Auth::Inherited,
+        agent_id: AgentId("root".into()),
+        agent_type: "claude".into(),
+        depth: 0,
+        node_token: None,
+        ready_file: None,
     };
     let allowed_marion_tools = ["spawn_agent", "send_message"];
     let injection = PrefixAdapter

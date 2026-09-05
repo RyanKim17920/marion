@@ -22,9 +22,15 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Resume, Spelling, Surfaces,
-    ToolSpelling, Val, When,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
+    Spelling, Surfaces, ToolSpelling, Val, When,
 };
+
+/// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
+/// declaration's body, and what `OpenCodeAdapter::fields` places in `Fields::inline_config`.
+pub fn live_config_document(b: &BridgeEnv) -> String {
+    serde_json::to_string(&live_config_json(Some(b))).expect("a Value always serialises")
+}
 
 /// `$XDG_CONFIG_HOME`'s name under the sandbox — one spelling for [`SPEC`]'s env row and for
 /// [`config_path`], so the document is written where the relocated root is read from.
@@ -184,6 +190,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         canned: McpRoute::Document,
         live: McpRoute::Environment(CONFIG_CONTENT_ENV),
     },
+    live_declaration: Some(LiveDeclaration::EnvInline {
+        key: CONFIG_CONTENT_ENV,
+        body: live_config_document,
+    }),
     constraint: Constraint::Fixed {
         prefix: "",
         value: NO_COMPILED_TOOL_CONSTRAINT,

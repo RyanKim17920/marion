@@ -39,7 +39,8 @@ pub use mcp_bridge::{AGENT_ID_ENV, AGENT_TYPE_ENV, BridgeEnv, DEPTH_ENV, READY_F
 pub use native::{
     NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
     NativeInjectionError, NativeInvocation, NativeNodeContext, NativeProcessBase,
-    NativeTerminalGeometry, PreparedNativeLaunch, assemble_native, validate_native_process_values,
+    NativeTerminalGeometry, PreparedNativeLaunch, SpecNativeAdapter, assemble_native,
+    native_adapter, validate_native_process_values,
 };
 // `gemini` and `opencode` are addressed by module path rather than flattened here. Both define an
 // `MCP_ALIAS` and both spell marion's tool names differently — a flattened emitter would make the

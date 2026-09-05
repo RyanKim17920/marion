@@ -1,7 +1,6 @@
 //! The bridge's contract: the variables `marion-supervisor mcp` reads, and the one value every
 //! harness's declaration of it is written from.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 use marion_core::contract::AgentId;
@@ -16,13 +15,6 @@ pub const BASE_URL_ENV: &str = "MARION_BASE_URL";
 pub const DEPTH_ENV: &str = "MARION_DEPTH";
 pub const NODE_TOKEN_ENV: &str = "MARION_NODE_TOKEN";
 pub const READY_FILE_ENV: &str = "MARION_READY_FILE";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarionMcpBridge {
-    pub program: OsString,
-    pub args: Vec<OsString>,
-    pub env: Vec<(OsString, OsString)>,
-}
 
 /// What every MCP declaration of marion's bridge carries — **one value, five documents**.
 ///

@@ -742,7 +742,7 @@ impl ClaudeCodeAdapter {
     /// The document `--mcp-config` names. Derived, not passed in, so `compile` and `config_files`
     /// cannot disagree about where it is.
     fn mcp_config_path(spec: &LaunchSpec) -> PathBuf {
-        spec.config_dir.join("mcp.json")
+        spec.config_dir.join(claude_code::MCP_CONFIG_FILE)
     }
 
     /// Whether this launch writes its prompt after the process is up.
@@ -839,10 +839,9 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         if spec.mcp == McpDeclaration::None {
             return Ok(Vec::new());
         }
-        let json = claude_code::mcp_config_json(&Self::mcp_env(spec, ctx)?);
         Ok(vec![(
             Self::mcp_config_path(spec),
-            serde_json::to_string_pretty(&json).expect("a Value always serialises"),
+            claude_code::mcp_config_document(&Self::mcp_env(spec, ctx)?),
         )])
     }
 }
@@ -1016,16 +1015,17 @@ impl HarnessAdapter for GeminiAdapter {
         // credential at all, and this document is the *system settings* layer, which outranks the
         // operator's own — so a hardcoded selection here would override a real `oauth-personal`
         // profile with a type that has no credential behind it and fail with S12's code 41.
-        let json = match spec.auth {
-            Auth::Canned => gemini::settings_json(bridge.as_ref()),
-            Auth::Inherited => {
-                gemini::settings_json_with_auth(bridge.as_ref(), &gemini::live_auth_type())
-            }
+        let document = match (spec.auth, bridge.as_ref()) {
+            (Auth::Canned, bridge) => serde_json::to_string_pretty(&gemini::settings_json(bridge))
+                .expect("a Value always serialises"),
+            // The row's live declaration, byte for byte: a native root gets exactly this file.
+            (Auth::Inherited, Some(bridge)) => gemini::live_settings_document(bridge),
+            (Auth::Inherited, None) => serde_json::to_string_pretty(
+                &gemini::settings_json_with_auth(None, &gemini::live_auth_type()),
+            )
+            .expect("a Value always serialises"),
         };
-        Ok(vec![(
-            Self::settings_path(spec),
-            serde_json::to_string_pretty(&json).expect("a Value always serialises"),
-        )])
+        Ok(vec![(Self::settings_path(spec), document)])
     }
 }
 
@@ -1095,10 +1095,8 @@ impl HarnessAdapter for OpenCodeAdapter {
         f.title = Some(format!("marion-{}", ctx.agent_id.0));
         f.inline_config = match spec.auth {
             Auth::Canned => None,
-            Auth::Inherited => (spec.mcp == McpDeclaration::Marion).then(|| {
-                serde_json::to_string(&opencode::live_config_json(Some(&bridge_env(spec, ctx))))
-                    .expect("a Value always serialises")
-            }),
+            Auth::Inherited => (spec.mcp == McpDeclaration::Marion)
+                .then(|| opencode::live_config_document(&bridge_env(spec, ctx))),
         };
         Ok(f)
     }
@@ -1273,8 +1271,7 @@ impl HarnessAdapter for CopilotAdapter {
         }
         Ok(vec![(
             copilot::mcp_config_path(&spec.config_dir),
-            serde_json::to_string_pretty(&copilot::mcp_config_json(&bridge_env(spec, ctx)))
-                .expect("a Value always serialises"),
+            copilot::mcp_config_document(&bridge_env(spec, ctx)),
         )])
     }
 }
@@ -5945,6 +5942,257 @@ mod tests {
             })
             .collect();
         assert_eq!(declared, bridge_env(&acp_spec(), &ctx()).pairs());
+    }
+
+    /// **A native node is the operator's own harness plus marion's MCP server, and nothing else**
+    /// — for every row, from the row alone.
+    ///
+    /// The native adapter sees only a `NativeNodeContext` and answers with a prefix, an overlay
+    /// and documents. This sweep holds that answer to the **managed live launch of the same row**:
+    /// whatever `config_files`/`compile` put on the live route under `Auth::Inherited` is exactly
+    /// what the native lane injects — same file name, same bytes, same `-c` pairs, same inline
+    /// value — and *only* that. Every argv token is the carrier flag or the value it carries; no
+    /// overlay key is one of the row's isolation rows; no document lands outside the node's own
+    /// directory; and the declaration names marion's server and the bridge program. Then the
+    /// negative: a row with no launch-time channel has no adapter, and that is ACP and only ACP.
+    ///
+    /// Mutation: add `--strict-mcp-config` to claude's declaration, relocate `HOME` in the
+    /// overlay, spell the file name differently from `config_files`, drop a `-c` pair, or return
+    /// an adapter for ACP.
+    #[test]
+    fn every_native_row_injects_only_marions_mcp_server_and_no_managed_flags() {
+        use std::ffi::OsString;
+
+        use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
+        use crate::spec::{LiveDeclaration, McpRoute, When};
+
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        let operator_env = vec![
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+            (OsString::from("HOME"), OsString::from("/home/operator")),
+        ];
+        // One context for both sides, so the comparison is of the *channel* and not of the node's
+        // identity: whatever `BridgeEnv` says, the native lane and the managed launch say it the
+        // same way. (The factory's own bridge for a native root — no readiness file, no minted
+        // token — is pinned in `marion-supervisor`'s factory tests.)
+        let ctx = ctx();
+        let mut covered = Vec::new();
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            let Some(adapter) = native_adapter(h) else {
+                assert!(
+                    row.live_declaration.is_none(),
+                    "{h}: the row states a launch-time declaration channel and has no native adapter"
+                );
+                assert!(
+                    matches!(row.mcp.live, McpRoute::Session(_)),
+                    "{h}: a row without a launch-time channel must declare over the session"
+                );
+                continue;
+            };
+            let declaration = row
+                .live_declaration
+                .unwrap_or_else(|| panic!("{h}: an adapter without a declaration"));
+            assert_eq!(
+                declaration.route(),
+                row.mcp.live,
+                "{h}: the row disagrees with itself"
+            );
+            covered.push(h);
+
+            let live = LaunchSpec {
+                auth: Auth::Inherited,
+                base_url: None,
+                api_key: None,
+                model: match h {
+                    Harness::OpenCode => Some("anthropic/claude-sonnet-4-5".into()),
+                    _ => spec_for(h).model,
+                },
+                config_dir: document_dir.clone(),
+                ..spec_for(h)
+            };
+            let bridge = bridge_env(&live, &ctx);
+            let injection = adapter
+                .prepare_native(&NativeNodeContext {
+                    bridge: &bridge,
+                    document_dir: &document_dir,
+                    allowed_marion_tools: &["spawn", "wait", "status"],
+                    environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
+                })
+                .unwrap_or_else(|e| panic!("{h}: {e}"));
+
+            let managed = launch_adapter(h).unwrap();
+            // The TUI shape where the row has one: that is the launch a native node is a peer of.
+            let inv = match row.pane {
+                Some(_) => managed.compile_pane(&live, &ctx),
+                None => managed.compile(&live, &ctx),
+            }
+            .unwrap_or_else(|e| panic!("{h}: {e}"));
+            let files = managed.config_files(&live, &ctx).unwrap();
+            let lossy = |v: &OsString| v.to_string_lossy().into_owned();
+            let prefix: Vec<String> = injection.argv_prefix.iter().map(lossy).collect();
+            let overlay: Vec<(String, String)> = injection
+                .env_overlay
+                .iter()
+                .map(|(k, v)| (lossy(k), lossy(v)))
+                .collect();
+
+            // 1. The injection is the live launch's declaration, byte for byte.
+            match declaration {
+                LiveDeclaration::ArgvDocument {
+                    flag,
+                    file,
+                    prefix: at,
+                    ..
+                } => {
+                    let path = document_dir.join(file);
+                    assert_eq!(
+                        files,
+                        vec![(
+                            path.clone(),
+                            String::from_utf8(injection.documents[0].contents.clone()).unwrap()
+                        )],
+                        "{h}: the native document is not the live launch's"
+                    );
+                    assert_eq!(injection.documents.len(), 1, "{h}");
+                    assert_eq!(injection.documents[0].path, path, "{h}");
+                    assert_eq!(
+                        prefix,
+                        vec![flag.to_string(), format!("{at}{}", path.display())],
+                        "{h}"
+                    );
+                    assert!(
+                        overlay.is_empty(),
+                        "{h}: a document carried on argv sets no variable"
+                    );
+                    assert!(
+                        inv.args.windows(2).any(|w| w == prefix.as_slice()),
+                        "{h}: the live launch does not carry `{flag}` the same way: {:?}",
+                        inv.args
+                    );
+                }
+                LiveDeclaration::EnvDocument { key, file, .. } => {
+                    let path = document_dir.join(file);
+                    assert_eq!(
+                        files,
+                        vec![(
+                            path.clone(),
+                            String::from_utf8(injection.documents[0].contents.clone()).unwrap()
+                        )],
+                        "{h}: the native document is not the live launch's"
+                    );
+                    assert_eq!(injection.documents.len(), 1, "{h}");
+                    assert_eq!(
+                        overlay,
+                        vec![(key.to_string(), path.display().to_string())],
+                        "{h}"
+                    );
+                    assert!(
+                        prefix.is_empty(),
+                        "{h}: a document carried by env adds no argv"
+                    );
+                    assert!(
+                        inv.env.contains(&overlay[0]),
+                        "{h}: the live launch's env differs: {:?}",
+                        inv.env
+                    );
+                }
+                LiveDeclaration::EnvInline { key, .. } => {
+                    assert!(files.is_empty() && injection.documents.is_empty(), "{h}");
+                    assert!(prefix.is_empty(), "{h}");
+                    let live_value = inv
+                        .env
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_else(|| panic!("{h}: the live launch sets no ${key}"));
+                    assert_eq!(overlay, vec![(key.to_string(), live_value)], "{h}");
+                }
+                LiveDeclaration::ArgvPairs { flag, key, .. } => {
+                    assert!(files.is_empty() && injection.documents.is_empty(), "{h}");
+                    assert!(overlay.is_empty(), "{h}");
+                    let live_pairs: Vec<String> = inv
+                        .args
+                        .windows(2)
+                        .filter(|w| w[0] == flag)
+                        .map(|w| w[1].clone())
+                        .collect();
+                    let native_pairs: Vec<String> = prefix
+                        .chunks(2)
+                        .map(|c| {
+                            assert_eq!(c[0], flag, "{h}: a token that is not `{flag} k=v`");
+                            c[1].clone()
+                        })
+                        .collect();
+                    assert!(!native_pairs.is_empty(), "{h}: no pairs at all");
+                    assert_eq!(
+                        native_pairs, live_pairs,
+                        "{h}: the pairs are not the live launch's"
+                    );
+                    assert!(
+                        native_pairs.iter().filter(|p| p.starts_with(key)).count() >= 3,
+                        "{h}: command, args and env must all sit under `{key}`: {native_pairs:?}"
+                    );
+                }
+            }
+
+            // 2. Nothing managed: no isolation row of this harness appears in the overlay, and
+            //    nothing reserved does either.
+            let isolation: Vec<&str> = row
+                .env
+                .iter()
+                .filter(|e| e.when == When::Canned)
+                .map(|e| e.key)
+                .collect();
+            for (k, _) in &overlay {
+                assert!(
+                    !isolation.contains(&k.as_str()),
+                    "{h}: isolation `{k}` reached a native node"
+                );
+                assert!(
+                    !k.starts_with("MARION_"),
+                    "{h}: reserved `{k}` in the overlay"
+                );
+            }
+            for doc in &injection.documents {
+                assert!(
+                    doc.path.starts_with(&document_dir),
+                    "{h}: {} escaped the node dir",
+                    doc.path.display()
+                );
+            }
+
+            // 3. It declares marion's server, by name, pointing at the bridge.
+            let body: String = injection
+                .documents
+                .iter()
+                .map(|d| String::from_utf8_lossy(&d.contents).into_owned())
+                .chain(overlay.iter().map(|(_, v)| v.clone()))
+                .chain(prefix.iter().cloned())
+                .collect();
+            assert!(
+                body.contains(crate::spec::MCP_ALIAS),
+                "{h}: no `marion` server in {body}"
+            );
+            assert!(
+                body.contains(&ctx.bridge.to_string_lossy().into_owned()),
+                "{h}: the bridge program is not named"
+            );
+            assert!(
+                body.contains(&ctx.agent_id.0),
+                "{h}: the node's identity is not on the declaration"
+            );
+        }
+        let mut expected: Vec<Harness> = Harness::ALL
+            .into_iter()
+            .filter(|h| *h != Harness::Acp)
+            .collect();
+        expected.sort();
+        covered.sort();
+        assert_eq!(
+            covered, expected,
+            "every harness but ACP has a native adapter"
+        );
     }
 
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to

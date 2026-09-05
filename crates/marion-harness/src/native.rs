@@ -1,8 +1,22 @@
+//! The native boundary: how marion stands in front of the operator's own harness.
+//!
+//! A native node is the harness the operator already runs — their login, their settings, their
+//! flags — with exactly one thing added: marion's MCP server. Everything here exists to make that
+//! "exactly one thing" structural. [`NativeInjectionAdapter`] sees only a [`NativeNodeContext`] and
+//! returns a [`NativeInjection`]; [`assemble_native`] alone sees the program and the operator's
+//! argv, and places `program + prefix + tail`. There is **one** adapter, [`SpecNativeAdapter`],
+//! and it is a reading of a [`HarnessSpec`] row's [`LiveDeclaration`]: a sixth harness gets a
+//! native lane by writing the row, not an impl.
+
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use crate::mcp_bridge::MarionMcpBridge;
+use marion_core::harness::Harness;
+
+use crate::adapter::harness_spec;
+use crate::mcp_bridge::BridgeEnv;
+use crate::spec::{HarnessSpec, LiveDeclaration};
 
 #[derive(Debug)]
 pub struct NativeProcessBase {
@@ -40,9 +54,16 @@ impl<'a> NativeEnvironmentView<'a> {
     }
 }
 
+/// Everything a native adapter is allowed to know about the node it is preparing.
+///
+/// Deliberately **not** the program, the operator's argv, or the geometry: those are the
+/// assembler's, and an adapter that could read the tail could also rewrite it.
 #[derive(Debug)]
 pub struct NativeNodeContext<'a> {
-    pub bridge: &'a MarionMcpBridge,
+    /// marion's own MCP server, as every harness's declaration of it is written
+    /// ([`BridgeEnv::pairs`]).
+    pub bridge: &'a BridgeEnv,
+    /// The node's own directory: the only place a document may be written.
     pub document_dir: &'a Path,
     pub allowed_marion_tools: &'a [&'a str],
     pub environment: NativeEnvironmentView<'a>,
@@ -92,6 +113,115 @@ pub trait NativeInjectionAdapter: Send + Sync {
         &self,
         context: &NativeNodeContext<'_>,
     ) -> Result<NativeInjection, NativeInjectionError>;
+}
+
+/// **The** native adapter: a row's [`LiveDeclaration`], rendered.
+///
+/// One type for every harness, because the injection a native node needs is a fact the row
+/// already states — which flag or variable carries marion's declaration, and what it says — and
+/// stating it a second time in an impl is how a lane drifts from the launch it is supposed to
+/// mirror. Nothing else from the row is read: not its argv (every other flag is the operator's),
+/// not its env (relocating `HOME` is isolation, and a native node is not isolated). The sweep
+/// `every_native_row_injects_only_marions_mcp_server_and_no_managed_flags` holds this to what the
+/// managed live launch of the same row writes.
+#[derive(Debug)]
+pub struct SpecNativeAdapter {
+    row: &'static HarnessSpec,
+}
+
+impl SpecNativeAdapter {
+    /// The adapter for a row, or `None` where the row has no launch-time declaration channel.
+    pub const fn for_row(row: &'static HarnessSpec) -> Option<Self> {
+        match row.live_declaration {
+            Some(_) => Some(Self { row }),
+            None => None,
+        }
+    }
+
+    pub const fn harness(&self) -> Harness {
+        self.row.harness
+    }
+}
+
+impl NativeInjectionAdapter for SpecNativeAdapter {
+    fn prepare_native(
+        &self,
+        context: &NativeNodeContext<'_>,
+    ) -> Result<NativeInjection, NativeInjectionError> {
+        let declaration = self.row.live_declaration.ok_or_else(|| {
+            NativeInjectionError::Adapter(format!(
+                "harness {} has no launch-time MCP declaration channel",
+                self.row.harness
+            ))
+        })?;
+        let mut injection = NativeInjection {
+            argv_prefix: Vec::new(),
+            env_overlay: Vec::new(),
+            documents: Vec::new(),
+        };
+        match declaration {
+            LiveDeclaration::ArgvDocument {
+                flag,
+                file,
+                prefix,
+                body,
+            } => {
+                let path = context.document_dir.join(file);
+                let mut named = OsString::from(prefix);
+                named.push(path.as_os_str());
+                injection.argv_prefix = vec![OsString::from(flag), named];
+                injection.documents.push(NativeDocument {
+                    path,
+                    contents: body(context.bridge).into_bytes(),
+                });
+            }
+            LiveDeclaration::EnvDocument { key, file, body } => {
+                let path = context.document_dir.join(file);
+                injection
+                    .env_overlay
+                    .push((OsString::from(key), path.as_os_str().to_owned()));
+                injection.documents.push(NativeDocument {
+                    path,
+                    contents: body(context.bridge).into_bytes(),
+                });
+            }
+            LiveDeclaration::EnvInline { key, body } => {
+                injection
+                    .env_overlay
+                    .push((OsString::from(key), OsString::from(body(context.bridge))));
+            }
+            LiveDeclaration::ArgvPairs { flag, pairs, .. } => {
+                for (k, v) in pairs(context.bridge) {
+                    injection.argv_prefix.push(OsString::from(flag));
+                    injection
+                        .argv_prefix
+                        .push(OsString::from(format!("{k}={v}")));
+                }
+            }
+        }
+        Ok(injection)
+    }
+}
+
+/// The native adapter for a harness — the registry's answer to "how does marion stand in front
+/// of this one?" — or `None` where the harness has no launch-time declaration channel (ACP) and a
+/// native launch on it must be refused by name.
+///
+/// A table of rows, not of impls: each entry is [`SpecNativeAdapter::for_row`] over
+/// [`harness_spec`], and a harness marion names is refused here only because its row says so.
+pub fn native_adapter(harness: Harness) -> Option<&'static dyn NativeInjectionAdapter> {
+    static ADAPTERS: std::sync::OnceLock<Vec<Option<SpecNativeAdapter>>> =
+        std::sync::OnceLock::new();
+    let adapters = ADAPTERS.get_or_init(|| {
+        Harness::ALL
+            .iter()
+            .map(|&h| SpecNativeAdapter::for_row(harness_spec(h)))
+            .collect()
+    });
+    let index = Harness::ALL.iter().position(|&h| h == harness)?;
+    adapters[index]
+        .as_ref()
+        .map(|adapter| adapter as &'static dyn NativeInjectionAdapter)
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -12,9 +12,7 @@ use std::sync::{Arc, Mutex};
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;
 use marion_core::{NativeFacadeDescriptor, contract::AgentId};
-use marion_harness::mcp_bridge::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, MarionMcpBridge,
-};
+use marion_harness::mcp_bridge::BridgeEnv;
 use marion_harness::{
     NativeEnvironmentView, NativeInjectionAdapter, NativeInvocation, NativeNodeContext,
     NativeProcessBase, NativeTerminalGeometry, assemble_native,
@@ -82,34 +80,20 @@ impl ProductionNativeCommandFactory {
         agent_id: &AgentId,
         agent_type: &AgentType,
         repo: &std::path::Path,
-    ) -> MarionMcpBridge {
-        let mut env = vec![
-            (OsString::from("MARION_REPO"), repo.as_os_str().to_owned()),
-            (
-                OsString::from("MARION_STATE_DIR"),
-                self.env.state.as_os_str().to_owned(),
-            ),
-            (
-                OsString::from(AUTH_ENV),
-                OsString::from(self.env.auth.as_wire()),
-            ),
-            (
-                OsString::from(AGENT_ID_ENV),
-                OsString::from(agent_id.0.as_str()),
-            ),
-            (
-                OsString::from(AGENT_TYPE_ENV),
-                OsString::from(agent_type.name.as_str()),
-            ),
-            (OsString::from(DEPTH_ENV), OsString::from("0")),
-        ];
-        if let Some(base_url) = &self.env.base_url {
-            env.push((OsString::from(BASE_URL_ENV), OsString::from(base_url)));
-        }
-        MarionMcpBridge {
-            program: self.env.bridge.as_os_str().to_owned(),
-            args: vec![OsString::from("mcp")],
-            env,
+    ) -> BridgeEnv {
+        BridgeEnv {
+            bridge: self.env.bridge.clone(),
+            args: vec!["mcp".into()],
+            repo: repo.to_path_buf(),
+            state: self.env.state.clone(),
+            base_url: self.env.base_url.clone(),
+            auth: self.env.auth,
+            agent_id: agent_id.clone(),
+            agent_type: agent_type.name.clone(),
+            // A native session is a root.
+            depth: 0,
+            node_token: None,
+            ready_file: None,
         }
     }
 }
@@ -568,23 +552,28 @@ mod tests {
                     .is_some(),
                 "the adapter must see the client's PATH through the validated view"
             );
+            let pairs = context.bridge.pairs();
             let declared = |name: &str| {
-                context
-                    .bridge
-                    .env
+                pairs
                     .iter()
                     .find(|(candidate, _)| candidate == name)
-                    .map(|(_, value)| value.clone())
+                    .map(|(_, value)| OsString::from(value))
                     .unwrap_or_else(|| panic!("the bridge declaration carries {name}"))
             };
-            assert_eq!(context.bridge.args, [OsString::from("mcp")]);
+            assert_eq!(context.bridge.args, ["mcp".to_string()]);
             assert_eq!(declared("MARION_DEPTH"), "0");
             assert_eq!(declared("MARION_AUTH"), "canned");
             assert_eq!(declared("MARION_BASE_URL"), "http://127.0.0.1:8099/v1");
+            assert!(
+                !pairs
+                    .iter()
+                    .any(|(name, _)| name == "MARION_READY_FILE" || name == "MARION_NODE_TOKEN"),
+                "a native root has no readiness file and no minted node token"
+            );
             Ok(NativeInjection {
                 argv_prefix: vec![
                     OsString::from("--marion-mcp"),
-                    context.bridge.program.clone(),
+                    context.bridge.bridge.as_os_str().to_owned(),
                     OsString::from("--marion-documents"),
                     context.document_dir.as_os_str().to_owned(),
                     OsString::from("--marion-agent"),

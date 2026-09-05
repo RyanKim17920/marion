@@ -18,8 +18,8 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Resume, Spelling, Surfaces,
-    ToolSpelling, Val, When,
+    Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
+    Spelling, Surfaces, ToolSpelling, Val, When,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -129,6 +129,11 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         canned: McpRoute::Document,
         live: McpRoute::Argv(MCP_SERVER_KEY),
     },
+    live_declaration: Some(LiveDeclaration::ArgvPairs {
+        flag: "-c",
+        key: MCP_SERVER_KEY,
+        pairs: live_config_overrides,
+    }),
     // §3.1's worked example, verbatim: it replaces a hardcoded `["apply_patch", "shell"]` that
     // named tools codex never checked a call against. Constant, because [`config_toml`] compiles
     // that one sandbox mode on every node.
