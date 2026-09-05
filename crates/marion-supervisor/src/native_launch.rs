@@ -1,8 +1,9 @@
 //! Authenticated native selection composed with the existing pane lifecycle.
 //!
-//! This module is intentionally not installed in the production server yet. It is the generic
-//! executor/claim substrate exercised by synthetic descriptors; the first real facade supplies
-//! its independently verified invocation factory and readiness contract in the next slice.
+//! The detached supervisor installs this handler through `serve::Server::start_with_native_launch`.
+//! The handler is generic over the descriptor slice and the command factory; the production
+//! factory below resolves and assembles, while vendor injection stays behind the opaque
+//! `NativeInjectionAdapter` boundary the factory is handed.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -187,13 +188,6 @@ pub(crate) struct NativeLaunchHandler {
 }
 
 impl NativeLaunchHandler {
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "unit tests construct the handler through their injected claim seam"
-        )
-    )]
     pub(crate) fn new(
         descriptors: &'static [NativeFacadeDescriptor],
         handle: Arc<crate::handler::RegistryHandle>,

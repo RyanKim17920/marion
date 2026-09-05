@@ -83,8 +83,23 @@ use marion_proto::{
     Response, RpcError,
 };
 
-use crate::native_bootstrap::NativeBootstrapService;
+use crate::native_bootstrap::{BootstrapError, NativeBootstrapService};
+pub use crate::native_launch::NativeAdapterLookup;
 use crate::socket::Serving;
+
+/// What the enabled native bootstrap service is composed from.
+///
+/// The descriptor slice and the adapter lookup are data the composition root supplies: production
+/// passes `PRODUCTION_NATIVE_FACADES` and its adapter table, an integration bed passes one
+/// test-registered facade and a fixture adapter, and both go through the same constructor so the
+/// production wiring is the wiring under test.
+pub struct NativeLaunchConfig {
+    pub descriptors: &'static [marion_core::NativeFacadeDescriptor],
+    pub adapter_for: NativeAdapterLookup,
+    /// The same spawn environment the handle owns; the native command factory needs the project
+    /// directory, state root, bridge binary, endpoint, and auth mode to declare a node's bridge.
+    pub env: crate::run::Env,
+}
 
 /// The longest single frame the supervisor will assemble, in bytes.
 ///
@@ -763,6 +778,49 @@ impl Server {
             Arc::new(NativeBootstrapService::disabled(expected_project)),
             idle_grace,
         )
+    }
+
+    /// Start with the **enabled** native bootstrap service: the detached supervisor's
+    /// configuration, and the only path that composes authenticated selection, reservation, PTY
+    /// launch, and claim onto the private native socket.
+    ///
+    /// Library callers that want a supervisor without a native lane keep
+    /// [`Self::start_with_idle_grace`], whose service refuses every native request.
+    pub fn start_with_native_launch(
+        serving: Serving,
+        handle: Arc<crate::handler::RegistryHandle>,
+        native: NativeLaunchConfig,
+        idle_grace: Duration,
+    ) -> Result<Server, BootstrapError> {
+        let expected_project = serving.canonical_project().to_path_buf();
+        let factory = Arc::new(crate::native_launch::ProductionNativeCommandFactory::new(
+            native.env,
+            native.adapter_for,
+        ));
+        let mint_agent = Arc::new(|| {
+            Ok(marion_core::new_agent_id(
+                crate::clock::unix_millis(),
+                crate::clock::entropy()?,
+            ))
+        });
+        let handler = crate::native_launch::NativeLaunchHandler::new(
+            native.descriptors,
+            Arc::clone(&handle),
+            Arc::new(crate::native_bootstrap::PendingNativeLaunches::new()),
+            factory,
+            mint_agent,
+        )?;
+        let service = NativeBootstrapService::new(
+            expected_project,
+            crate::native_bootstrap::NATIVE_WIRE_VERSION,
+            Arc::new(handler),
+        );
+        Ok(Self::start_with_native_handler(
+            serving,
+            handle as Arc<dyn Handle>,
+            Arc::new(service),
+            idle_grace,
+        ))
     }
 
     pub(crate) fn start_with_native_handler(

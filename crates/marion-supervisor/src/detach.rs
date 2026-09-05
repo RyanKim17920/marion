@@ -594,10 +594,19 @@ pub fn run_serve(program: PathBuf, argv: &[String]) -> Result<(), DetachError> {
 /// the lock — so this process never was one, has no clients, no nodes and no exit to record, and
 /// §5.7's *"exit MUST be journaled"* does not apply to it. Writing a `SupervisorExited` here would
 /// put a second supervisor's departure in a journal whose supervisor is still running.
+/// The production adapter table until the registry-driven native injection adapters land: every
+/// harness answers `None`, so the enabled service refuses a launch on any facade with a named
+/// reason rather than guessing vendor flags.
+fn no_native_adapters_yet(
+    _harness: marion_core::harness::Harness,
+) -> Option<&'static dyn marion_harness::NativeInjectionAdapter> {
+    None
+}
+
 pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
     use crate::handler::RegistryHandle;
     use crate::registry::{LiveRegistry, Registry};
-    use crate::serve::Server;
+    use crate::serve::{NativeLaunchConfig, Server};
     use crate::socket::{Acquired, acquire, socket_paths};
     use marion_core::paths::ProjectDir;
 
@@ -635,11 +644,26 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
         base_url: launch.base_url.clone(),
         auth: launch.auth,
     };
-    let server = Server::start_with_idle_grace(
+    // The enabled native bootstrap service, on the private sibling socket. Its descriptor slice is
+    // the production registry, which advertises no facade until one is independently verified, and
+    // its adapter table is empty until the registry-driven adapters land; every native request is
+    // therefore still refused here, through the same composition the integration bed exercises.
+    let server = Server::start_with_native_launch(
         serving,
-        RegistryHandle::owning(live, env),
+        RegistryHandle::owning(live, env.clone()),
+        NativeLaunchConfig {
+            descriptors: marion_core::PRODUCTION_NATIVE_FACADES,
+            adapter_for: no_native_adapters_yet,
+            env,
+        },
         launch.idle_grace,
-    );
+    )
+    .map_err(|source| DetachError::Spawn {
+        program: launch.program.clone(),
+        source: std::io::Error::other(format!(
+            "the supervisor could not install its native bootstrap service: {source}"
+        )),
+    })?;
     watch_entitlement(sentry);
     // §5.7: the supervisor's lifetime is not its client's. The only way out of this call is the
     // accept loop's own idle exit, which has already journaled the record by the time it returns.

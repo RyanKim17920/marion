@@ -53,24 +53,11 @@ pub mod native_binding;
 /// Native-only fd bootstrap authentication and direct-CLI capability issuance.
 pub mod native_bootstrap;
 /// Supervisor-owned execution of an authenticated, assembled native command.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "production-dark until a verified native facade installs the lifecycle"
-    )
-)]
 pub(crate) mod native_exec;
 /// Closed native-versus-structured launch provenance and descriptor-owned lane selection.
 pub mod native_intent;
-/// Production-dark composition of authenticated selection, reservation, PTY launch, and claim.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "production-dark until a verified native facade installs the lifecycle"
-    )
-)]
+/// Composition of authenticated selection, reservation, PTY launch, and claim, installed by the
+/// detached supervisor through `serve::Server::start_with_native_launch`.
 pub(crate) mod native_launch;
 /// Transparent pane-v1 relay for an authenticated native facade claim.
 #[cfg(all(

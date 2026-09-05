@@ -82,6 +82,15 @@ struct PendingNativeCommand {
 
 /// The supervisor-owned lifecycle after the bootstrap handoff committed.
 pub(crate) struct RunningNativeCommand {
+    /// Production detaches the lifecycle worker once the claim has committed; only tests join it
+    /// to read the exit status the pane-v1 relay otherwise delivers.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "joined only by tests; the committed lifecycle is detached in production"
+        )
+    )]
     lifecycle: std::thread::JoinHandle<std::io::Result<Option<ExitStatus>>>,
 }
 
@@ -154,8 +163,9 @@ impl NativeCommandLauncher {
 }
 
 impl LaunchedNativeCommand {
-    /// One-step handoff retained for callers which have no external acknowledgement boundary.
-    /// Native claim transport uses `prepare_lifecycle` directly so thread creation stays pre-ACK.
+    /// One-step handoff for tests which have no external acknowledgement boundary. Native claim
+    /// transport uses `prepare_lifecycle` directly so thread creation stays pre-ACK.
+    #[cfg(test)]
     pub(crate) fn commit(self) -> std::io::Result<RunningNativeCommand> {
         match self.prepare_lifecycle(&ThreadNativeLifecycleSpawner) {
             Ok(prepared) => Ok(prepared.commit()),

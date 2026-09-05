@@ -88,3 +88,330 @@ fn context_hash_is_byte_safe_and_preserves_argument_boundaries() {
     assert_ne!(context_hash(&separated), context_hash(&joined));
     assert_ne!(context_hash(&separated), context_hash(&other_selector));
 }
+
+/// The enabled native bootstrap service, wired the way the detached supervisor wires it, driven
+/// through the real private socket by the shipped client dispatch running on a real controlling
+/// terminal.
+///
+/// The production descriptor slice is still empty, so the supervisor here is composed in-process
+/// through the same public constructor `detach.rs` stage 3 calls, with one test-registered facade
+/// and a fixture adapter. The vendor process is a `claude` shim on the **client's** `PATH` that
+/// records its argv and environment byte-exact and exits 37.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod enabled_launch {
+    use std::ffi::OsString;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, ExitCode, Stdio};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use marion_core::harness::Harness;
+    use marion_core::paths::ProjectDir;
+    use marion_core::{
+        Lane, NativeAdapterId, NativeFacadeDescriptor, NativeFacadeRegistry, NativeLane,
+        VendorIdentity,
+    };
+    use marion_harness::{NativeInjection, NativeInjectionAdapter, NativeInjectionError};
+    use marion_supervisor::facade_cli::dispatch_native_facade_or_legacy;
+    use marion_supervisor::handler::RegistryHandle;
+    use marion_supervisor::native_bootstrap::NativeBootstrapClient;
+    use marion_supervisor::pty::{PtyMaster, WinSize};
+    use marion_supervisor::registry::{LiveRegistry, Registry};
+    use marion_supervisor::serve::{NativeLaunchConfig, Server, own_uid};
+    use marion_supervisor::socket::{Acquired, acquire, project_root, socket_paths};
+    use marion_testsupport::scratch;
+
+    const DESCRIPTORS: &[NativeFacadeDescriptor] = &[NativeFacadeDescriptor {
+        identity: VendorIdentity::new("claude"),
+        command: "claude",
+        aliases: &[],
+        native: Some(Lane::new(
+            true,
+            NativeLane::new("claude", "claude", NativeAdapterId::new("claude-native")),
+        )),
+        structured: None,
+    }];
+
+    const PROBE_ENV: &str = "MARION_NATIVE_LAUNCH_PROBE";
+    const MARKER_ENV: &str = "PROBE_MARKER";
+    const LEAK_ENV: &str = "MARION_PROBE_MUST_NOT_REACH_THE_VENDOR";
+    const PROBE_TAIL: &[&[u8]] = &[b"--", b"", b"\xff\x80x"];
+    const INJECTED_PREFIX: &str = "--marion-injected";
+
+    #[cfg(target_os = "linux")]
+    const TIOCSCTTY: usize = 0x540e;
+    #[cfg(target_os = "macos")]
+    const TIOCSCTTY: usize = 0x2000_7461;
+
+    struct ProbeAdapter;
+
+    impl NativeInjectionAdapter for ProbeAdapter {
+        fn prepare_native(
+            &self,
+            _context: &marion_harness::NativeNodeContext<'_>,
+        ) -> Result<NativeInjection, NativeInjectionError> {
+            Ok(NativeInjection {
+                argv_prefix: vec![OsString::from(INJECTED_PREFIX)],
+                env_overlay: vec![(OsString::from("PROBE_INJECTED"), OsString::from("1"))],
+                documents: vec![],
+            })
+        }
+    }
+
+    static PROBE_ADAPTER: ProbeAdapter = ProbeAdapter;
+
+    fn probe_adapter(harness: Harness) -> Option<&'static dyn NativeInjectionAdapter> {
+        (harness == Harness::ClaudeCode).then_some(&PROBE_ADAPTER)
+    }
+
+    fn shell_quote(path: &Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+    }
+
+    fn write_shim(bin: &Path, marker: &Path) {
+        std::fs::create_dir_all(bin).unwrap();
+        let shim = bin.join("claude");
+        // argv byte-exact with NUL separators, then the environment, then the completion marker
+        // last so a reader that sees the marker sees complete records.
+        std::fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\n\
+                 printf '%s\\0' \"$@\" > {marker}.argv\n\
+                 /usr/bin/env > {marker}.env\n\
+                 : > {marker}\n\
+                 exit 37\n",
+                marker = shell_quote(marker),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn wait_for(path: &Path, bound: Duration) -> bool {
+        let deadline = Instant::now() + bound;
+        loop {
+            match path.try_exists() {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(error) => panic!("could not inspect {}: {error}", path.display()),
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn reap_with_watchdog(
+        mut child: std::process::Child,
+        ceiling: Duration,
+    ) -> (std::process::ExitStatus, bool) {
+        let pid = child.id() as i32;
+        let (status_tx, status_rx) = std::sync::mpsc::sync_channel(1);
+        let waiter = std::thread::spawn(move || {
+            let _ = status_tx.send(child.wait());
+        });
+        let outcome = match status_rx.recv_timeout(ceiling) {
+            Ok(status) => (status.expect("wait for the probe"), false),
+            Err(_) => {
+                unsafe extern "C" {
+                    fn kill(pid: i32, signal: i32) -> i32;
+                }
+                // SAFETY: `pid` is the exact owned child; this is only the fixture ceiling.
+                assert_eq!(unsafe { kill(pid, 9) }, 0, "kill the timed-out probe");
+                let status = status_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("the killed probe was reaped")
+                    .expect("wait for the killed probe");
+                (status, true)
+            }
+        };
+        waiter.join().expect("join the probe waiter");
+        outcome
+    }
+
+    #[test]
+    fn a_detached_supervisor_authorizes_a_native_launch_for_a_registered_facade() {
+        let work = scratch("native-enabled-launch");
+        let state = work.join("state");
+        let project = work.join("project");
+        let bin = work.join("bin");
+        let marker = work.join("vendor-ran");
+        std::fs::create_dir_all(&project).unwrap();
+        write_shim(&bin, &marker);
+
+        let key = project_root(&project);
+        let paths = socket_paths(&state, &key, own_uid());
+        assert!(
+            paths.overflow().is_none(),
+            "this bed's socket must live under <state>; {:?} overflowed to /tmp",
+            paths.socket()
+        );
+        let Acquired::Serving(serving) = acquire(&paths).expect("bind both listeners") else {
+            panic!("fresh project unexpectedly dialed an existing supervisor")
+        };
+        let project_dir = ProjectDir::new(&state, paths.canonical_project());
+        let live = Arc::new(LiveRegistry::follow(
+            Registry::boot(&project_dir).expect("an absent journal is an empty tree"),
+            Duration::from_millis(10),
+        ));
+        let env = marion_supervisor::run::Env {
+            project_dir: project_dir.clone(),
+            state: state.clone(),
+            bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: marion_harness::Auth::Canned,
+        };
+        let handle = RegistryHandle::owning(live, env.clone());
+        let server = Server::start_with_native_launch(
+            serving,
+            Arc::clone(&handle),
+            NativeLaunchConfig {
+                descriptors: DESCRIPTORS,
+                adapter_for: probe_adapter,
+                env,
+            },
+            Duration::from_secs(300),
+        )
+        .expect("the enabled native bootstrap service installs once");
+
+        // The client runs on its own controlling terminal, from the project, with a PATH that
+        // names the shim and an environment the supervisor process does not have.
+        let terminal = PtyMaster::open(WinSize::new(117, 43)).expect("client PTY");
+        let stdin: OwnedFd = terminal.open_slave().expect("stdin slave");
+        let stdout: OwnedFd = terminal.open_slave().expect("stdout slave");
+        let mut command = Command::new(std::env::current_exe().expect("test binary"));
+        command
+            .args([
+                "--exact",
+                "enabled_launch::native_launch_probe",
+                "--nocapture",
+            ])
+            .current_dir(&project)
+            .env_clear()
+            .env(PROBE_ENV, "1")
+            .env(MARKER_ENV, &marker)
+            .env(LEAK_ENV, "leaked")
+            .env("MARION_STATE_DIR", &state)
+            .env("TERM", "xterm-256color")
+            .env("HOME", &*work)
+            .env("PATH", &bin)
+            .stdin(Stdio::from(stdin))
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::piped());
+        unsafe extern "C" {
+            fn setsid() -> i32;
+            fn ioctl(fd: i32, request: usize, ...) -> i32;
+        }
+        // SAFETY: runs after fork and before exec, performs only async-signal-safe session and
+        // ioctl syscalls, and reports refusal as the OS error.
+        unsafe {
+            command.pre_exec(|| {
+                if setsid() < 0 || ioctl(0, TIOCSCTTY, 0_i32) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().expect("spawn the native launch probe");
+        drop(command);
+        let stderr = child.stderr.take().expect("probe stderr pipe");
+        let reader = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut std::io::BufReader::new(stderr), &mut output);
+            output
+        });
+        let (status, timed_out) = reap_with_watchdog(child, Duration::from_secs(30));
+        let stderr =
+            String::from_utf8_lossy(&reader.join().expect("join stderr reader")).into_owned();
+        drop(terminal);
+        assert!(!timed_out, "the probe exceeded its watchdog: {stderr}");
+        assert!(status.success(), "the probe failed: {stderr}");
+        assert!(
+            stderr.contains("NATIVE_HANDOFF"),
+            "the client never received a native handoff: {stderr}"
+        );
+
+        assert!(
+            wait_for(&marker, Duration::from_secs(5)),
+            "the shim on the client's PATH never ran: {stderr}"
+        );
+        let mut expected_argv = Vec::new();
+        expected_argv.extend_from_slice(INJECTED_PREFIX.as_bytes());
+        expected_argv.push(0);
+        for argument in PROBE_TAIL {
+            expected_argv.extend_from_slice(argument);
+            expected_argv.push(0);
+        }
+        assert_eq!(
+            std::fs::read(marker.with_extension("argv")).unwrap(),
+            expected_argv,
+            "the vendor argv is not program + prefix + opaque tail, byte for byte"
+        );
+        let vendor_env = std::fs::read_to_string(marker.with_extension("env")).unwrap();
+        assert!(
+            vendor_env
+                .lines()
+                .any(|line| line == format!("PATH={}", bin.display())),
+            "the vendor did not inherit the client's PATH: {vendor_env}"
+        );
+        assert!(
+            vendor_env.lines().any(|line| line == "PROBE_INJECTED=1"),
+            "the adapter overlay did not reach the vendor: {vendor_env}"
+        );
+        assert!(
+            !vendor_env.lines().any(|line| line.starts_with("MARION_")),
+            "reserved MARION_* identity reached the vendor process: {vendor_env}"
+        );
+        assert!(
+            project_dir.agents_dir().read_dir().unwrap().count() == 1,
+            "exactly one agent directory holds the native session's cast"
+        );
+
+        server.stop();
+    }
+
+    /// The re-executed client half of the test above; a no-op unless it was spawned as one.
+    #[test]
+    fn native_launch_probe() {
+        if std::env::var_os(PROBE_ENV).is_none() {
+            return;
+        }
+        unsafe extern "C" {
+            fn _exit(status: i32) -> !;
+        }
+        let marker = PathBuf::from(std::env::var_os(MARKER_ENV).expect("the marker path"));
+        let registry = NativeFacadeRegistry::new(DESCRIPTORS).expect("probe registry");
+        let mut argv = vec![OsString::from("claude")];
+        argv.extend(
+            PROBE_TAIL
+                .iter()
+                .map(|argument| OsString::from_vec(argument.to_vec())),
+        );
+        let status = dispatch_native_facade_or_legacy(
+            argv,
+            &registry,
+            NativeBootstrapClient::connect_for_cwd,
+            |_handoff| {
+                eprintln!("NATIVE_HANDOFF");
+                // Hold the authenticated connection until the vendor has provably run, so the
+                // supervisor cannot cancel the pending launch before the shim's records land.
+                if !wait_for(&marker, Duration::from_secs(10)) {
+                    eprintln!("VENDOR_NEVER_RAN");
+                    return ExitCode::FAILURE;
+                }
+                ExitCode::SUCCESS
+            },
+            std::io::stderr(),
+            || panic!("the registered selector reached the legacy CLI"),
+        );
+        let code = i32::from(status != ExitCode::SUCCESS);
+        // SAFETY: this re-exec helper has emitted its complete result and must not re-enter libtest.
+        unsafe { _exit(code) }
+    }
+}

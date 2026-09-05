@@ -1588,7 +1588,16 @@ pub(crate) struct PendingNativeLaunches {
 impl PendingNativeLaunches {
     const TICKET_ATTEMPTS: usize = 8;
 
-    #[cfg(test)]
+    /// The production authority: system entropy, a monotonic clock, and a published ticket that
+    /// lives as long as the launch result window the bootstrap connection is already bounded by.
+    pub(crate) fn new() -> Self {
+        Self::with_sources(
+            Arc::new(SystemRng),
+            Arc::new(SystemClock::default()),
+            LAUNCH_RESULT_TIMEOUT,
+        )
+    }
+
     pub(crate) fn with_sources(
         rng: Arc<dyn CapabilityRng>,
         clock: Arc<dyn MonotonicClock>,
@@ -2665,7 +2674,6 @@ impl NativeBootstrapService {
         }
     }
 
-    #[allow(dead_code, reason = "Task 3 installs the production terminal verifier")]
     pub(crate) fn new(
         expected_project: PathBuf,
         supported_wire_version: u32,

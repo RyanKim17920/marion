@@ -140,7 +140,10 @@ pub fn dispatch_native_facade_or_legacy<'a>(
         request.opaque_tail().to_vec(),
         std::env::var_os("TERM").unwrap_or_default(),
         NATIVE_WIRE_VERSION,
-    );
+    )
+    // The operator's environment is what the vendor process must see; the constructor strips
+    // marion's own reserved identity before it leaves this process.
+    .with_environment(std::env::vars_os());
     let authorized = witness
         .bootstrap(connection, context)
         .and_then(|session| session.consume());

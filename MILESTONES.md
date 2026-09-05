@@ -1042,6 +1042,26 @@ acceptance evidence, so every marker remains unchanged.
     that merely holds the descriptors. The Linux arm is written to the documented `/proc` layout
     and is unmeasured here. M3 remains `[partial]`.
 
+    **The enabled native bootstrap service in the detached supervisor in this commit moves no
+    milestone marker.** `detach.rs` stage 3 now starts the server through
+    `Server::start_with_native_launch`, which composes the production command factory,
+    `NativeLaunchHandler`, and the pending-launch authority onto the private native socket;
+    `start_with_idle_grace` keeps the disabled service for library callers. The shipped CLI
+    dispatch now carries the operator's environment in the bootstrap request. Covered end to end by
+    `a_detached_supervisor_authorizes_a_native_launch_for_a_registered_facade`: a supervisor
+    composed through the same public constructor, one test-registered `claude` facade with a
+    fixture adapter, the shipped `dispatch_native_facade_or_legacy` re-executed on its own
+    controlling PTY from another session, the real private socket, and a `claude` shim found only
+    on the client's `PATH` that recorded `--marion-injected`, `--`, an empty argument, and invalid
+    UTF-8 byte for byte, saw the client's `PATH` and the adapter overlay, saw no `MARION_*`
+    identity, and exited 37. What stays dark, deliberately: the production descriptor slice is
+    empty and the production adapter table answers `None` for every harness, so a real `marion
+    claude` still takes the legacy path and no vendor lane is reachable; the client does not yet
+    claim or relay (the pending launch is cancelled when the bootstrap connection closes); and the
+    vendor's cwd is the canonical project root rather than the operator's subdirectory. M3 remains
+    `[partial]` pending the registry-driven adapters, facade advertisement, the CLI relay, and
+    C1's recorded manual session.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
