@@ -55,8 +55,8 @@ pub const NATIVE_ROOT_MARION_TOOLS: &[&str] = &["spawn", "wait", "status"];
 /// Where the factory finds the vendor injection adapter for a selected harness.
 ///
 /// A plain function pointer rather than a registry method, so the lookup is data the composition
-/// root supplies: production hands in the registry-driven table once it exists, and `None` keeps
-/// every launch on that harness refused until then.
+/// root supplies: production hands in `marion_harness::native_adapter` (the row-derived table),
+/// the integration beds hand in a fixture, and `None` refuses every launch on that harness by name.
 pub type NativeAdapterLookup = fn(Harness) -> Option<&'static dyn NativeInjectionAdapter>;
 
 /// The production [`NativeCommandFactory`]: resolve the declared executable on the **client's**

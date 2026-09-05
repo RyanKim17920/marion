@@ -594,15 +594,6 @@ pub fn run_serve(program: PathBuf, argv: &[String]) -> Result<(), DetachError> {
 /// the lock — so this process never was one, has no clients, no nodes and no exit to record, and
 /// §5.7's *"exit MUST be journaled"* does not apply to it. Writing a `SupervisorExited` here would
 /// put a second supervisor's departure in a journal whose supervisor is still running.
-/// The production adapter table until the registry-driven native injection adapters land: every
-/// harness answers `None`, so the enabled service refuses a launch on any facade with a named
-/// reason rather than guessing vendor flags.
-fn no_native_adapters_yet(
-    _harness: marion_core::harness::Harness,
-) -> Option<&'static dyn marion_harness::NativeInjectionAdapter> {
-    None
-}
-
 pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
     use crate::handler::RegistryHandle;
     use crate::registry::{LiveRegistry, Registry};
@@ -645,15 +636,16 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
         auth: launch.auth,
     };
     // The enabled native bootstrap service, on the private sibling socket. Its descriptor slice is
-    // the production registry, which advertises no facade until one is independently verified, and
-    // its adapter table is empty until the registry-driven adapters land; every native request is
-    // therefore still refused here, through the same composition the integration bed exercises.
+    // the production registry and its adapter table is the harness registry's own
+    // (`marion_harness::native_adapter`: one row-derived adapter per harness that states a
+    // launch-time declaration channel, `None` for ACP), the same composition the integration bed
+    // exercises with a fixture table.
     let server = Server::start_with_native_launch(
         serving,
         RegistryHandle::owning(live, env.clone()),
         NativeLaunchConfig {
             descriptors: marion_core::PRODUCTION_NATIVE_FACADES,
-            adapter_for: no_native_adapters_yet,
+            adapter_for: marion_harness::native_adapter,
             env,
         },
         launch.idle_grace,

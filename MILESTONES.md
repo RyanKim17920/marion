@@ -1170,9 +1170,14 @@ acceptance evidence, so every marker remains unchanged.
     document derive the bridge's variables from one place. Covered by
     `every_native_row_injects_only_marions_mcp_server_and_no_managed_flags`, which holds each
     harness's native injection byte-for-byte to what the managed live launch of the same row
-    writes and to nothing else. Still dark: the production factory is not yet handed this table,
-    the production descriptor slice is empty, and documents remain fail-closed; M3 remains
-    `[partial]`.
+    writes and to nothing else. Still dark: the production descriptor slice is empty and documents
+    remain fail-closed; M3 remains `[partial]`.
+
+    **The detached supervisor's adapter table is the harness registry's, moving no milestone
+    marker.** `detach.rs` stage 3 hands `Server::start_with_native_launch` the row-derived
+    `marion_harness::native_adapter` in place of the always-`None` placeholder, so the production
+    composition and the integration bed differ only in which table they are handed. Nothing is
+    reachable yet: the production descriptor slice is still empty; M3 remains `[partial]`.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
