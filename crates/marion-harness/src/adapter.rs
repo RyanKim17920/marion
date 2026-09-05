@@ -643,7 +643,7 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
     match h {
         Harness::ClaudeCode => &claude_code::SPEC,
         Harness::Codex => todo!("step 4: the codex row"),
-        Harness::Gemini => todo!("step 4: the gemini row"),
+        Harness::Gemini => &gemini::SPEC,
         Harness::OpenCode => todo!("step 4: the opencode row"),
         Harness::Copilot => todo!("step 4: the copilot row"),
         Harness::Acp => todo!("step 4: the acp row"),
@@ -1133,31 +1133,23 @@ impl HarnessAdapter for CodexAdapter {
 pub struct GeminiAdapter;
 
 impl GeminiAdapter {
-    /// The settings document `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names. Derived here, so `compile`
-    /// and `config_files` cannot disagree about where it is — the same reason the Claude Code
-    /// adapter derives its `--mcp-config` path.
+    /// The settings document `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names — [`gemini::SETTINGS_FILE`]
+    /// under the config dir, which is exactly what [`gemini::SPEC`]'s env row renders, so `compile`
+    /// and `config_files` cannot disagree about where it is.
     ///
     /// It sits *beside* `$GEMINI_CLI_HOME`, not inside `<home>/.gemini/`: the whole point of the
     /// system-settings override is that marion writes nothing under the sandbox home the CLI owns.
     fn settings_path(spec: &LaunchSpec) -> PathBuf {
-        spec.config_dir.join("marion-settings.json")
+        spec.config_dir.join(gemini::SETTINGS_FILE)
     }
 
-    /// The approval mode this launch runs under — the whole of gemini's tool constraint.
-    ///
-    /// One derivation, shared by `compile` and `compiled_permissions`, for the reason
-    /// `ClaudeCodeAdapter::permission_axis` gives: a second copy could put a mode in the audit
-    /// record that the argv never carried.
-    fn approval_mode(
-        adapter: &GeminiAdapter,
-        spec: &LaunchSpec,
-    ) -> Result<&'static str, HarnessError> {
-        let native = adapter.native_tools(spec)?;
-        Ok(if native.iter().any(|t| gemini::is_edit_tool(t)) {
-            gemini::AUTO_EDIT_APPROVAL_MODE
-        } else {
-            gemini::DEFAULT_APPROVAL_MODE
-        })
+    /// The approval mode this launch runs under — the whole of gemini's tool constraint — read
+    /// off [`HarnessAdapter::axes`] so the flag and the audit record derive from one answer.
+    fn approval_mode(&self, spec: &LaunchSpec) -> Result<String, HarnessError> {
+        Ok(self
+            .axes(spec)?
+            .mode
+            .unwrap_or_else(|| gemini::DEFAULT_APPROVAL_MODE.to_string()))
     }
 }
 
@@ -1172,17 +1164,42 @@ impl HarnessAdapter for GeminiAdapter {
         ExecutionSurfaces::launch_only_with_protocol_events()
     }
 
-    fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        // Refused rather than defaulted. A pinned id would be a guess marion has no basis for, and
-        // S12 measured 0.53.0 rewriting even an explicit `-m gemini-2.5-flash` to `gemini-3.5-flash`
-        // in the request path — so a "safe" default is not even reliably the model that runs. The
-        // failure it prevents is the expensive one: with model `auto` the CLI issues a classifier
-        // call to gemini-3.1-flash-lite over non-streaming `:generateContent` and hung on retry 5.
-        let model = spec.model.clone().ok_or(HarnessError::MissingInput {
-            harness: Harness::Gemini,
-            what: "an explicit -m is mandatory: with the default model `auto` the CLI first makes \
-                   a classifier call that retried 5x and hung, and marion will not guess a model",
-        })?;
+    /// §3.1's availability axis, in the only form this harness has one: **a mode, not a list.**
+    /// `mode` is `Some(auto_edit)` exactly when the declaration names an edit tool, and `None` —
+    /// the default mode, which [`gemini::SPEC`] then compiles no flag for — otherwise. The marion →
+    /// gemini mapping is [`Self::tool_name`]'s, and which *gemini* names need the mode is
+    /// [`gemini::is_edit_tool`]'s, so neither half is restated here.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let tools = self.native_tools(spec)?;
+        let relaxed = tools.iter().any(|t| gemini::is_edit_tool(t));
+        Ok(spec::Axes {
+            tools,
+            allowed: Vec::new(),
+            mode: relaxed.then(|| gemini::AUTO_EDIT_APPROVAL_MODE.to_string()),
+        })
+    }
+
+    /// The two refusals this harness owes, and the one derivation.
+    ///
+    /// **The model is refused rather than defaulted.** A pinned id would be a guess marion has no
+    /// basis for, and S12 measured 0.53.0 rewriting even an explicit `-m gemini-2.5-flash` to
+    /// `gemini-3.5-flash` in the request path — so a "safe" default is not even reliably the model
+    /// that runs. The failure it prevents is the expensive one: with model `auto` the CLI issues a
+    /// classifier call to gemini-3.1-flash-lite over non-streaming `:generateContent` and hung on
+    /// retry 5.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        if spec.model.is_none() {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Gemini,
+                what: "an explicit -m is mandatory: with the default model `auto` the CLI first makes \
+                       a classifier call that retried 5x and hung, and marion will not guess a model",
+            });
+        }
         if let Some(u) = &spec.base_url
             && !gemini::base_url_is_acceptable(u)
         {
@@ -1192,21 +1209,11 @@ impl HarnessAdapter for GeminiAdapter {
                        non-loopback plain-http endpoint is refused by the CLI",
             });
         }
-        // §3.1's availability axis, in the only form this harness has one: a mode, not a list. The
-        // marion → gemini mapping is `Self::tool_name`'s, and which *gemini* names need the mode is
-        // `gemini::is_edit_tool`'s, so neither half is restated here.
-        let auto_edit = Self::approval_mode(self, spec)? == gemini::AUTO_EDIT_APPROVAL_MODE;
-        Ok(gemini::compile_prompt(&gemini::PromptSpec {
-            cwd: spec.cwd.clone(),
-            model,
-            auto_edit,
-            prompt: spec.prompt.clone(),
-            cli_home: spec.config_dir.clone(),
-            settings: Self::settings_path(spec),
-            base_url: spec.base_url.clone(),
-            api_key: spec.api_key.clone(),
-            auth: spec.auth,
-        }))
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // The google-genai SDK appends its own `/v1beta/...`, so the `/v1` marion stores would be
+        // doubled; the derivation is this harness's ([`gemini::google_base_url`]).
+        f.base_url = f.base_url.as_deref().map(gemini::google_base_url);
+        Ok(f)
     }
 
     fn config_files(
@@ -1316,10 +1323,7 @@ impl HarnessAdapter for GeminiAdapter {
     ///
     /// Recorded in **both** states, not only the relaxed one — see [`gemini::DEFAULT_APPROVAL_MODE`].
     fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        Ok(vec![format!(
-            "approval-mode:{}",
-            Self::approval_mode(self, spec)?
-        )])
+        Ok(vec![format!("approval-mode:{}", self.approval_mode(spec)?)])
     }
 
     fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
@@ -6155,7 +6159,7 @@ mod tests {
     #[test]
     fn spec_render_matches_the_adapter_that_measured_it() {
         use crate::spec::{Shape, render};
-        const MIGRATED: &[Harness] = &[Harness::ClaudeCode];
+        const MIGRATED: &[Harness] = &[Harness::ClaudeCode, Harness::Gemini];
         for &h in MIGRATED {
             let a = launch_adapter(h).unwrap();
             let row = harness_spec(h);

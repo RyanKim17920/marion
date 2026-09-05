@@ -16,14 +16,84 @@ use serde_json::{Value, json};
 // These name the **bridge's** env contract rather than Claude Code's — the bridge reads
 // `MARION_AGENT_ID` whichever harness started it — so they are imported rather than respelled: a
 // second spelling would put a gemini child's `TaskContract.requester` back on "unattributed-root".
+use marion_core::harness::Harness;
+
 use crate::auth::Auth;
-use crate::invocation::Invocation;
 use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV as MARION_BASE_URL_ENV, DEPTH_ENV,
     NODE_TOKEN_ENV, READY_FILE_ENV,
 };
+use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 use crate::stream::{
     CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
+};
+
+/// The settings document's name under the node's config dir — named by [`SYSTEM_SETTINGS_PATH_ENV`]
+/// in [`SPEC`]'s env and written by `GeminiAdapter::config_files`, one spelling for both.
+pub const SETTINGS_FILE: &str = "marion-settings.json";
+
+/// Gemini CLI's row. Measured against 0.53.0 (`tests/fixtures/s12/`; §11 item 24 for the approval
+/// mode). `LaunchOnly`: the prompt is the argument to `-p` — not positional (a bare positional
+/// launches the interactive UI) and not stdin (which is *prepended as context* instead).
+pub const SPEC: HarnessSpec = HarnessSpec {
+    harness: Harness::Gemini,
+    program: Some("gemini"),
+    argv: &[
+        // Never omitted and never `auto`: the adapter refuses a launch without one.
+        Arg::Flag("-m", Field::Model),
+        Arg::Lit("--output-format"),
+        Arg::Lit("stream-json"),
+        // Ahead of `-p`, and only when the declaration names an edit tool, so a node that declares
+        // nothing compiles the argv it always compiled, in the order it always compiled it.
+        Arg::Flag("--approval-mode", Field::Mode),
+        Arg::Flag("-p", Field::Prompt),
+    ],
+    pane: None,
+    // **Live mode is a removal, and the two survivors are not part of the isolation.** S12's
+    // settings-precedence table resolves the *system settings* layer through
+    // `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and the *user* layer through `GEMINI_CLI_HOME` — two
+    // layers, two variables — so dropping the sandbox home leaves marion's MCP injection route
+    // untouched. `GEMINI_CLI_TRUST_WORKSPACE` answers the folder-trust gate on marion's worktree,
+    // which is a fresh directory under either auth mode.
+    env: &[
+        Env {
+            key: CLI_HOME_ENV,
+            val: Val::Under(""),
+            when: When::Canned,
+        },
+        Env {
+            key: SYSTEM_SETTINGS_PATH_ENV,
+            val: Val::Under(SETTINGS_FILE),
+            when: When::Always,
+        },
+        Env {
+            key: TRUST_WORKSPACE_ENV,
+            val: Val::Lit("true"),
+            when: When::Always,
+        },
+        // Never over a real `~/.gemini`: see [`FORCE_FILE_STORAGE_ENV`] — the migration it can
+        // trigger deletes the operator's own `oauth_creds.json` (`tests/fixtures/s12/`).
+        Env {
+            key: FORCE_FILE_STORAGE_ENV,
+            val: Val::Lit("true"),
+            when: When::Canned,
+        },
+        // Gated on the mode as well as on the value: a live spec handed an endpoint or a key gets
+        // neither pushed, rather than an overlay that quietly outranks the operator's own resolution.
+        Env {
+            key: BASE_URL_ENV,
+            val: Val::Field(Field::BaseUrl),
+            when: When::Canned,
+        },
+        Env {
+            key: API_KEY_ENV,
+            val: Val::Field(Field::ApiKey),
+            when: When::Canned,
+        },
+    ],
+    note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
+           system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
+           harness_matrix's gemini cell runs this row end to end",
 };
 
 /// Relocates the **entire** config and auth surface: `settings.json`, `oauth_creds.json`,
@@ -125,38 +195,6 @@ pub fn is_edit_tool(native: &str) -> bool {
 /// extra underscores is mis-parsed and **fails silently** (S12). `marion` is safe.
 pub const MCP_ALIAS: &str = "marion";
 
-/// What marion needs to compile a headless gemini invocation.
-#[derive(Debug, Clone)]
-pub struct PromptSpec {
-    pub cwd: PathBuf,
-    /// **Required, and always explicit.** With the default model `auto`, 0.53.0 first issues a
-    /// classifier call to `gemini-3.1-flash-lite` over non-streaming `:generateContent`; S12
-    /// measured a naive canned reply making it retry 5× and then hang. §6.4 states the MUST.
-    pub model: String,
-    pub prompt: String,
-    /// Whether this node's declaration contains an edit tool, and so needs
-    /// [`AUTO_EDIT_APPROVAL_MODE`] for that tool to exist at all.
-    ///
-    /// A resolved `bool` rather than the tool list itself: the mapping from marion's vocabulary to
-    /// gemini's names is the adapter's (§3.1), the rule about which of *gemini's* names need the
-    /// mode is [`is_edit_tool`] above, and a second copy of the list here could disagree with the
-    /// one the adapter compiled. `false` — the default — is the mode every gemini node has run in.
-    pub auto_edit: bool,
-    /// `$GEMINI_CLI_HOME`.
-    pub cli_home: PathBuf,
-    /// The file [`settings_json`] is written to, named by [`SYSTEM_SETTINGS_PATH_ENV`].
-    pub settings: PathBuf,
-    /// Provider base URL, in marion's canonical `…/v1` form. See [`google_base_url`].
-    pub base_url: Option<String>,
-    pub api_key: Option<String>,
-    /// Whether this node presents a credential marion minted or the operator's own login.
-    ///
-    /// Read rather than a pair of booleans beside it: the three variables live mode drops
-    /// ([`CLI_HOME_ENV`], [`FORCE_FILE_STORAGE_ENV`], and the base-URL/key pair) fall out of *one*
-    /// intent, and two flags could disagree about it.
-    pub auth: Auth,
-}
-
 /// The operator's own gemini settings document — the **user** layer, which marion never writes.
 ///
 /// `$HOME` rather than a home-directory crate: marion adds no dependency for this, and the CLI's own
@@ -238,73 +276,6 @@ pub fn base_url_is_acceptable(base_url: &str) -> bool {
         None => authority.split(':').next().unwrap_or("").to_string(),
     };
     matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
-}
-
-pub fn compile_prompt(spec: &PromptSpec) -> Invocation {
-    let mut args: Vec<String> = vec![
-        // Explicit model: see `PromptSpec::model`. Never omitted, never `auto`.
-        "-m".into(),
-        spec.model.clone(),
-        "--output-format".into(),
-        "stream-json".into(),
-    ];
-    // Ahead of `-p`, so a node that declares nothing compiles the argv it always compiled, in the
-    // order it always compiled it.
-    if spec.auto_edit {
-        args.push("--approval-mode".into());
-        args.push(AUTO_EDIT_APPROVAL_MODE.into());
-    }
-    // The prompt is the **argument to `-p`** — not positional (a bare positional query launches
-    // the interactive UI) and not stdin (which is *prepended as context* instead).
-    args.push("-p".into());
-    args.push(spec.prompt.clone());
-
-    // **Live mode is a removal, and the two survivors are not part of the isolation.** S12's
-    // settings-precedence table resolves the *system settings* layer through
-    // `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and the *user* layer through `GEMINI_CLI_HOME` — two layers,
-    // two variables — so dropping the sandbox home leaves marion's MCP injection route untouched.
-    // `GEMINI_CLI_TRUST_WORKSPACE` answers the folder-trust gate on marion's worktree, which is a
-    // fresh directory under either auth mode.
-    let mut env: Vec<(String, String)> = Vec::new();
-    if spec.auth == Auth::Canned {
-        env.push((
-            CLI_HOME_ENV.into(),
-            spec.cli_home.to_string_lossy().into_owned(),
-        ));
-    }
-    env.push((
-        SYSTEM_SETTINGS_PATH_ENV.into(),
-        spec.settings.to_string_lossy().into_owned(),
-    ));
-    env.push((TRUST_WORKSPACE_ENV.into(), "true".into()));
-    if spec.auth == Auth::Canned {
-        // Never over a real `~/.gemini`: see [`FORCE_FILE_STORAGE_ENV`] — the migration it can
-        // trigger deletes the operator's own `oauth_creds.json` (`tests/fixtures/s12/`).
-        env.push((FORCE_FILE_STORAGE_ENV.into(), "true".into()));
-    }
-    // Gated on the mode as well as on the value. The adapter already withholds both under
-    // `Inherited`, and this makes the guarantee local: a caller that hands a live spec an endpoint
-    // or a key gets neither pushed, rather than an overlay that quietly outranks the operator's own
-    // resolution.
-    if spec.auth == Auth::Canned {
-        if let Some(u) = &spec.base_url {
-            env.push((BASE_URL_ENV.into(), google_base_url(u)));
-        }
-        if let Some(k) = &spec.api_key {
-            env.push((API_KEY_ENV.into(), k.clone()));
-        }
-    }
-
-    Invocation {
-        program: "gemini".into(),
-        args,
-        env,
-        cwd: spec.cwd.clone(),
-        // What `-m` above carries. S12 measured the CLI remapping it in the request path
-        // (`gemini-2.5-flash` → `gemini-3.5-flash`), so this records what marion put on the wire,
-        // which is the last point at which marion knows anything for certain.
-        model: Some(spec.model.clone()),
-    }
 }
 
 /// Parse a `gemini --output-format stream-json` stream.
@@ -525,29 +496,53 @@ pub fn settings_json_with_auth(mcp: Option<&BridgeEnv>, selected_type: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{
+        Extras, GeminiAdapter, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
+    };
+    use crate::invocation::Invocation;
 
-    fn spec() -> PromptSpec {
-        PromptSpec {
+    fn ctx() -> SpawnCtx {
+        SpawnCtx {
+            agent_id: AgentId("019f-child".into()),
+            agent_type: "gemini".into(),
+            depth: 1,
+            node_token: None,
+            ready_file: None,
+            repo: "/repo".into(),
+            state_dir: "/state".into(),
+            bridge: "/bin/marion-supervisor".into(),
+            bridge_args: vec!["mcp".into()],
+        }
+    }
+
+    fn spec() -> LaunchSpec {
+        LaunchSpec {
             cwd: "/tmp/wt".into(),
-            model: "gemini-2.5-flash".into(),
-            auto_edit: false,
+            model: Some("gemini-2.5-flash".into()),
             prompt: "do the task".into(),
-            cli_home: "/tmp/cfg".into(),
-            settings: "/tmp/cfg/marion-settings.json".into(),
+            tools: vec![],
+            allowed_tools: vec![],
+            mcp: McpDeclaration::Marion,
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: Some("sk-fake".into()),
             auth: Auth::Canned,
+            config_dir: "/tmp/cfg".into(),
+            extra: Extras::default(),
         }
     }
 
     /// The same node under `--live`: marion names no endpoint and mints no credential.
-    fn live_spec() -> PromptSpec {
-        PromptSpec {
+    fn live_spec() -> LaunchSpec {
+        LaunchSpec {
             base_url: None,
             api_key: None,
             auth: Auth::Inherited,
             ..spec()
         }
+    }
+
+    fn compile_prompt(spec: &LaunchSpec) -> Invocation {
+        GeminiAdapter.compile(spec, &ctx()).unwrap()
     }
 
     fn bridge() -> BridgeEnv {
@@ -779,7 +774,7 @@ mod tests {
     /// authority, not the presence of a value.
     #[test]
     fn a_live_node_overlays_no_endpoint_even_if_one_was_handed_to_it() {
-        let inv = compile_prompt(&PromptSpec {
+        let inv = compile_prompt(&LaunchSpec {
             auth: Auth::Inherited,
             ..spec()
         });
