@@ -91,6 +91,9 @@ pub mod run;
 /// The serve loop over §2's socket: NDJSON framing, dispatch, and §7.3.1's rule that a dropped
 /// socket is not a quit.
 pub mod serve;
+/// The one producer of `SessionObserved`: a node's harness session id, read from its live stream
+/// through its row's grammar and journaled on first sighting.
+pub(crate) mod session_watch;
 /// §2's unix socket: where it lives, and §5.7's start race that decides who binds it. The path is
 /// the same one M2's detached supervisor will bind, which is what makes the split invisible (§10).
 pub mod socket;

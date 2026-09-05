@@ -1089,3 +1089,66 @@ fn o_opencode_root_journals_a_gemini_child_into_one_supervisors_journal() {
 fn p_opencode_root_journals_an_opencode_child_into_one_supervisors_journal() {
     assert_pairing(&OPENCODE, &OPENCODE);
 }
+
+/// **A real run journals the harness's own session id for every node it creates**
+/// (`plan-restart-resume.md` step 4) — the handle a `node/resume` hands back to the harness, read
+/// from each node's stream through its row's `StreamGrammar::session` and written as
+/// `SessionObserved` on first sighting. A codex root with an opencode child: two `LaunchOnly`
+/// harnesses, so the id has to be read off the live pipe rather than recovered from a capture after
+/// exit — a node killed mid-run is exactly the one a resume is for, and it never gets to a capture.
+/// No claude cell: the installed binary is ahead of the fixture pin on this machine.
+#[test]
+fn a_real_run_journals_the_harness_session_id_for_every_node() {
+    let ev = drive(&CODEX, &OPENCODE);
+    let replay = ev.replay.as_ref().unwrap_or_else(|| {
+        panic!(
+            "the run wrote no journal at {} (stderr: {})",
+            ev.journal_path.display(),
+            ev.stderr
+        )
+    });
+    assert_eq!(
+        replay.nodes().len(),
+        2,
+        "one root and one child: {:?} (stderr: {})",
+        replay.nodes(),
+        ev.stderr
+    );
+    for node in replay.nodes() {
+        let session = node.harness_session.as_deref().unwrap_or_else(|| {
+            panic!(
+                "{} ({}) replays with no harness session; kinds were {:?}",
+                node.agent_id.0,
+                node.harness().map(|h| h.to_string()).unwrap_or_default(),
+                ev.kinds
+            )
+        });
+        assert!(
+            !session.trim().is_empty(),
+            "{}: an empty id",
+            node.agent_id.0
+        );
+        // The id is the harness's own, in its own spelling: opencode's `ses_` + 26 chars, codex's
+        // UUID. Anything else would be marion inventing a session.
+        match node.harness() {
+            Some(Harness::OpenCode) => assert!(
+                session.starts_with("ses_"),
+                "{}: {session:?} is not an opencode session id",
+                node.agent_id.0
+            ),
+            Some(Harness::Codex) => assert_eq!(
+                session.len(),
+                36,
+                "{}: {session:?} is not a codex thread id",
+                node.agent_id.0
+            ),
+            other => panic!("{}: unexpected harness {other:?}", node.agent_id.0),
+        }
+    }
+    assert_eq!(
+        ev.kinds.iter().filter(|k| **k == "SessionObserved").count(),
+        2,
+        "one record per node, on first sighting and never again: {:?}",
+        ev.kinds
+    );
+}

@@ -1100,6 +1100,11 @@ fn launch_inner(
     if let Some(es) = &events {
         es.lifecycle(marion_core::event::Lifecycle::Opened);
     }
+    // The root's harness session, journaled on the frame that names it — what a later
+    // `node/resume` hands back to the harness. Beside `events` for the same reason it is on the
+    // child path: a root lost mid-run never reaches its capture.
+    let session =
+        crate::session_watch::SessionWatch::new(&node.project, &node.agent_id, node.harness);
     let result = match node.path {
         // Unreachable by `prepare`'s refusal, and stated as the refusal rather than as a panic: a
         // `Node` reaching here on this path would mean the guard had been removed, and an operator
@@ -1112,27 +1117,29 @@ fn launch_inner(
         // and renders nothing. Teeing rather than choosing, because a run watched by a person must
         // still be re-attachable afterwards — and a run nobody watched must be re-attachable too.
         RootPath::Duplex => {
-            let tee;
-            let sink = match &events {
-                Some(es) => {
-                    tee = move |ev: duplex::StreamEvent<'_>| {
-                        es.record(ev);
-                        if let Some(w) = watcher {
-                            w(ev);
-                        }
-                    };
-                    Some(&tee as duplex::StreamSink<'_>)
+            let tee = |ev: duplex::StreamEvent<'_>| {
+                if let Some(es) = &events {
+                    es.record(ev);
                 }
-                None => watcher,
+                session.observe_event(ev);
+                if let Some(w) = watcher {
+                    w(ev);
+                }
             };
-            launch_duplex(node, bound, mcp_ready_timeout, sink, &started)
+            launch_duplex(
+                node,
+                bound,
+                mcp_ready_timeout,
+                Some(&tee as duplex::StreamSink<'_>),
+                &started,
+            )
         }
         // No live seam at all on this path — `run_bounded` drains the pipe whole — so the stream is
         // recovered from the capture inside `launch_only`, where the raw stdout still exists.
         // Recovering it from `RootOutcome::transcript` out here would silently drop every non-JSON
         // line, which is the unexplained-silence failure `duplex::StreamEvent` has two variants to
         // prevent.
-        RootPath::LaunchOnly => launch_only(node, bound, events.as_mut(), &started),
+        RootPath::LaunchOnly => launch_only(node, bound, events.as_mut(), &started, &session),
         // §9's M3: a node in a terminal marion owns. No stream to tee — a TUI emits bytes, not
         // frames — so `events` gets only the lifecycle bookends `launch_inner` writes itself, and
         // the byte-level record is `AgentDir::pty_cast()`.
@@ -1617,6 +1624,7 @@ fn launch_only(
     bound: StdDuration,
     mut events: Option<&mut crate::events::EventSink>,
     on_started: &dyn Fn(i32),
+    session: &crate::session_watch::SessionWatch<'_>,
 ) -> Result<RootOutcome, RootError> {
     let inv = &node.invocation;
     let mut cmd = SysCommand::new(&inv.program);
@@ -1633,7 +1641,10 @@ fn launch_only(
         // put a placeholder credential beside the operator's real login.
         cmd.env("MARION_DUMMY_KEY", &node.token);
     }
-    let out = run_bounded_watched(&mut cmd, bound, on_started)?;
+    // The one live seam this path has, and the session watch is its one reader: the first frame
+    // names the session, and a root lost mid-run never reaches the capture below.
+    let on_line = |line: &str| session.observe_line(line);
+    let out = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     // Recorded **here**, because this is the last place the raw stdout exists: `RootOutcome`'s

@@ -319,13 +319,40 @@ pub(crate) struct Drain {
 }
 
 impl Drain {
-    pub(crate) fn start<R: Read + AsRawFd + Send + 'static>(mut pipe: R) -> Self {
+    pub(crate) fn start<R: Read + AsRawFd + Send + 'static>(pipe: R) -> Self {
+        Self::start_with_lines(pipe, None)
+    }
+
+    /// [`Self::start`], and every **complete line** forwarded on `lines` as it lands — the live
+    /// seam the `LaunchOnly` path otherwise lacks. The drain thread only forwards; whoever holds the
+    /// receiver reads it on its own thread, so nothing a caller does with a line has to be `Send`.
+    /// Bytes after the last newline are forwarded at EOF, so a stream whose final frame has no
+    /// trailing newline is not read one frame short. The whole capture is still returned by
+    /// [`Self::finish`]: the lines are a copy, not a diversion.
+    pub(crate) fn start_with_lines<R: Read + AsRawFd + Send + 'static>(
+        mut pipe: R,
+        lines: Option<std::sync::mpsc::Sender<String>>,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let handle = thread::spawn(move || {
             let fd = pipe.as_raw_fd();
             let mut bytes = Vec::new();
             let mut buf = [0u8; 8192];
+            // The start of the first byte not yet forwarded as part of a line.
+            let mut forwarded = 0usize;
+            let forward = |bytes: &[u8], forwarded: &mut usize, at_eof: bool| {
+                let Some(tx) = &lines else { return };
+                while let Some(nl) = bytes[*forwarded..].iter().position(|b| *b == b'\n') {
+                    let line = &bytes[*forwarded..*forwarded + nl];
+                    let _ = tx.send(String::from_utf8_lossy(line).into_owned());
+                    *forwarded += nl + 1;
+                }
+                if at_eof && *forwarded < bytes.len() {
+                    let _ = tx.send(String::from_utf8_lossy(&bytes[*forwarded..]).into_owned());
+                    *forwarded = bytes.len();
+                }
+            };
             loop {
                 if flag.load(Ordering::Relaxed) {
                     // Abandoned with the pipe still open: what we have is a prefix.
@@ -349,8 +376,15 @@ impl Drain {
                 // Readable, hung up, or errored. Only `read` can tell the three apart, and with a
                 // single reader it cannot block now.
                 match pipe.read(&mut buf) {
-                    Ok(0) => return (bytes, true), // EOF: every write end is closed.
-                    Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                    Ok(0) => {
+                        // EOF: every write end is closed.
+                        forward(&bytes, &mut forwarded, true);
+                        return (bytes, true);
+                    }
+                    Ok(n) => {
+                        bytes.extend_from_slice(&buf[..n]);
+                        forward(&bytes, &mut forwarded, false);
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(_) => return (bytes, false),
                 }
@@ -575,22 +609,35 @@ pub fn run_bounded(
     command: &mut SysCommand,
     timeout: StdDuration,
 ) -> Result<CommandOutput, SpawnError> {
-    run_bounded_with(command, timeout, kill_process_tree, None)
+    run_bounded_with(command, timeout, kill_process_tree, None, None)
 }
 
-/// [`run_bounded`], plus the pid of the process it started, handed over at the instant it exists.
+/// [`run_bounded`], plus the pid of the process it started, handed over at the instant it exists,
+/// and each stdout line as it lands.
 ///
 /// The counterpart of [`crate::duplex::DuplexSpec::on_started`], and it exists for exactly the same
 /// reason: §6.1 step 7's confirmation belongs to the caller, but only this function knows the pid
 /// and only this function knows when there is one. A separate entry point rather than a fourth
 /// parameter on [`run_bounded`] — that signature is public, has callers outside `run_spawn`, and
 /// widening it would make every one of them state an absence they have nothing to say about.
+///
+/// `on_line` is the `LaunchOnly` path's one live seam, and it exists for a node that never reaches
+/// its capture: the harness names its session in its first frame, and a node whose supervisor is
+/// lost mid-run is exactly the node a resume needs that name for. Called on the caller's thread,
+/// between polls of the child, so the capture returned afterwards is still whole.
 pub(crate) fn run_bounded_watched(
     command: &mut SysCommand,
     timeout: StdDuration,
     on_started: &dyn Fn(i32),
+    on_line: Option<&dyn Fn(&str)>,
 ) -> Result<CommandOutput, SpawnError> {
-    run_bounded_with(command, timeout, kill_process_tree, Some(on_started))
+    run_bounded_with(
+        command,
+        timeout,
+        kill_process_tree,
+        Some(on_started),
+        on_line,
+    )
 }
 
 /// `run_bounded` with the expiry kill injected, so tests can run the path where the sweep *fails*
@@ -600,6 +647,7 @@ fn run_bounded_with(
     timeout: StdDuration,
     kill_tree: fn(i32),
     on_started: Option<&dyn Fn(i32)>,
+    on_line: Option<&dyn Fn(&str)>,
 ) -> Result<CommandOutput, SpawnError> {
     command
         .process_group(0)
@@ -616,8 +664,24 @@ fn run_bounded_with(
     }
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
-    let stdout_drain = Drain::start(stdout);
+    // The line channel exists only when someone listens; a drain nobody reads would otherwise
+    // buffer the whole stream twice.
+    let (lines_tx, lines_rx) = match on_line {
+        Some(_) => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (Some(tx), Some(rx))
+        }
+        None => (None, None),
+    };
+    let stdout_drain = Drain::start_with_lines(stdout, lines_tx);
     let stderr_drain = Drain::start(stderr);
+    let deliver_lines = || {
+        if let (Some(hook), Some(rx)) = (on_line, &lines_rx) {
+            for line in rx.try_iter() {
+                hook(&line);
+            }
+        }
+    };
 
     // **`checked_add`, because the child is already running by this line.** `Instant + Duration`
     // panics on overflow, and every escape from this function from here on abandons the process
@@ -635,6 +699,7 @@ fn run_bounded_with(
         .checked_add(timeout)
         .unwrap_or_else(|| Instant::now() + StdDuration::from_secs(MAX_TIMEOUT_SECS));
     let (status, timed_out) = loop {
+        deliver_lines();
         if let Some(status) = child.try_wait()? {
             break (status, false);
         }
@@ -649,6 +714,9 @@ fn run_bounded_with(
     let drain_deadline = Instant::now() + DRAIN_GRACE;
     let (stdout, stdout_complete) = stdout_drain.finish(drain_deadline);
     let (stderr, stderr_complete) = stderr_drain.finish(drain_deadline);
+    // Whatever landed between the last poll and the drain's end, including a final unterminated
+    // line: the live view sees every line the capture does.
+    deliver_lines();
     Ok(CommandOutput {
         stdout,
         stderr,
@@ -842,6 +910,7 @@ fn launch_only_child(
     auth: Auth,
     bound: StdDuration,
     on_started: &dyn Fn(i32),
+    session: &crate::session_watch::SessionWatch<'_>,
 ) -> Result<ChildRun, SpawnError> {
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -850,7 +919,8 @@ fn launch_only_child(
     if auth == Auth::Canned {
         cmd.env("MARION_DUMMY_KEY", PLACEHOLDER_API_KEY);
     }
-    let output = run_bounded_watched(&mut cmd, bound, on_started)?;
+    let on_line = |line: &str| session.observe_line(line);
+    let output = run_bounded_watched(&mut cmd, bound, on_started, Some(&on_line))?;
     Ok(ChildRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -912,6 +982,8 @@ struct ChildDuplex<'a> {
     /// here the way it is on [`DuplexSpec`]: a child marion journals an intent for is a child
     /// marion must journal a confirmation for, so this path has nothing to say about an absence.
     on_started: &'a dyn Fn(i32),
+    /// The watch for the frame that names this node's harness session.
+    session: &'a crate::session_watch::SessionWatch<'a>,
 }
 
 fn duplex_child(
@@ -927,6 +999,7 @@ fn duplex_child(
         depth,
         events,
         on_started,
+        session,
     } = child;
     let mut cmd = SysCommand::new(&inv.program);
     cmd.args(&inv.args)
@@ -945,14 +1018,15 @@ fn duplex_child(
     // Live rather than recovered from `out.stdout` afterwards, because this path genuinely has a
     // live seam and §4.1's `observed_live` should be true only when it is. It also means a run
     // killed on its wall clock has already recorded everything it said before the kill.
-    let record;
-    let sink = match events {
-        Some(es) => {
-            record = |ev: duplex::StreamEvent<'_>| es.record(ev);
-            Some(&record as duplex::StreamSink<'_>)
+    // The session watch rides the same sink: a `SessionObserved` is a journal record, not a byte
+    // of the node's stream, so the stdout invariant above is untouched by it.
+    let record = |ev: duplex::StreamEvent<'_>| {
+        if let Some(es) = events {
+            es.record(ev);
         }
-        None => None,
+        session.observe_event(ev);
     };
+    let sink = Some(&record as duplex::StreamSink<'_>);
     let out = duplex::run_duplex(
         &mut cmd,
         &DuplexSpec {
@@ -1437,6 +1511,11 @@ pub fn run_spawn_watched(
     if let Some(es) = &events {
         es.lifecycle(marion_core::event::Lifecycle::Opened);
     }
+    // The node's harness session, journaled the moment its stream names one — the handle a later
+    // `node/resume` hands back. Beside `events` because both read the same live frames, and for
+    // the same reason: a node killed mid-run never reaches a capture.
+    let session =
+        crate::session_watch::SessionWatch::new(&env.project_dir, &agent_id, adapter.harness());
     // **§6.1 step 3's position, and it is a move rather than a new call.** The version used to be
     // asked for after the child had been run and reaped, which was the only place it *could* be
     // asked while `Spawned` was written there too. Step 7's confirmation now goes out at the
@@ -1553,7 +1632,9 @@ pub fn run_spawn_watched(
         LaunchPath::Terminal => {
             return Err(SpawnError::UnsupportedChildSurface(agent_type.harness));
         }
-        LaunchPath::LaunchOnly => launch_only_child(&inv, env.auth, bound, &announce_started),
+        LaunchPath::LaunchOnly => {
+            launch_only_child(&inv, env.auth, bound, &announce_started, &session)
+        }
         // **The fifth harness, as a child.** §9's M5 clause 1 asks for ACP agents running *as
         // children through the single ACP adapter*, and until this arm existed the only thing that
         // had ever driven one was `marion doctor --adapter` — a probe, which has no worktree, no
@@ -1597,6 +1678,7 @@ pub fn run_spawn_watched(
                 depth: ctx.depth,
                 events: events.as_ref(),
                 on_started: &announce_started,
+                session: &session,
             },
         ),
     };
@@ -2216,6 +2298,7 @@ mod tests {
                 StdDuration::from_millis(300),
                 kill_only_the_direct_child,
                 None,
+                None,
             );
             let _ = tx.send(out);
         });
@@ -2313,6 +2396,46 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.stdout.len(), 12800 * 41);
+        assert!(!out.capture_truncated);
+    }
+
+    /// The live line seam sees every line the capture does — **while the child still runs**, on
+    /// the caller's thread, and the final unterminated line at EOF — and the capture is still
+    /// whole afterwards. Line one is printed and flushed before a sleep, so its arrival before the
+    /// child exits is what proves the seam is live rather than a replay of the capture.
+    #[test]
+    fn stdout_lines_reach_the_hook_while_the_child_runs_and_the_capture_stays_whole() {
+        let seen: std::cell::RefCell<Vec<(String, bool)>> = std::cell::RefCell::new(Vec::new());
+        let marker = scratch("supervisor-live-lines").join("exited");
+        let script = format!(
+            "printf 'first\\n'; sleep 0.4; printf 'second\\nthird-no-newline'; touch {}",
+            marker.display()
+        );
+        let on_line = |line: &str| {
+            seen.borrow_mut().push((line.to_string(), marker.exists()));
+        };
+        let out = run_bounded_with(
+            SysCommand::new("sh").args(["-c", &script]),
+            StdDuration::from_secs(30),
+            kill_process_tree,
+            None,
+            Some(&on_line),
+        )
+        .unwrap();
+        let seen = seen.into_inner();
+        assert_eq!(
+            seen.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(),
+            ["first", "second", "third-no-newline"],
+            "every line, the last one without its newline"
+        );
+        assert!(
+            !seen[0].1,
+            "`first` was delivered before the child had exited: the seam is live"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "first\nsecond\nthird-no-newline"
+        );
         assert!(!out.capture_truncated);
     }
 

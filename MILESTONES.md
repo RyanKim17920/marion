@@ -1723,6 +1723,20 @@ grouping.
   honestly); ACP has no row. `each_harness_row_extracts_its_session_id_from_its_first_frame` is the
   test, RED with `no session_id in grammar` / `no field session` before the field existed. Still no
   producer journals it; that is the next commit.
+  **2026-09-05, later still — `SessionObserved` has its producer.** `session_watch::SessionWatch`
+  sits beside `events::EventSink` on both node paths (`run::run_spawn` for a child,
+  `root::launch_inner` for a root) and journals the id the first time a frame names one, through
+  `grammar::session_id` and nothing harness-specific. The `LaunchOnly` path — codex, gemini,
+  opencode, copilot — had no live seam at all (`run_bounded` drained the pipe whole), so
+  `Drain::start_with_lines` now forwards each complete stdout line to the caller's thread as it
+  lands and `run_bounded_watched` takes an `on_line` hook; the capture is still returned whole
+  (`stdout_lines_reach_the_hook_while_the_child_runs_and_the_capture_stays_whole`). A node lost
+  mid-run is exactly the one a resume needs the id for, and it never reaches a capture.
+  `journal_wiring::a_real_run_journals_the_harness_session_id_for_every_node` (codex root, opencode
+  child, both `LaunchOnly`) was RED with `(codex) replays with no harness session; kinds were
+  [SpawnIntent, RootGrantDecided, Spawned, SpawnIntent, Spawned, Exited, …]` and is GREEN with one
+  `SessionObserved` per node. Still no `node/resume`, and a pane (pty) root emits no frames, so a
+  pane node has no journaled session and its resume will be refused honestly.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.
