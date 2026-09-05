@@ -1433,8 +1433,10 @@ fn detach_report(
     }
     if detached.is_empty() {
         let _ = writeln!(out, "marion: no node was left running.");
-    } else if gate_exposed.is_empty() {
-        // The common case, on one line: the same five facts, without the warning nothing earns.
+    } else {
+        // One line for the fleet — what is running, how to get back with marion's own verbs, and
+        // how to stop it without getting back — and a second only for the cost §7.3.2 says must be
+        // stated: nodes that can be denied at a permission gate while nobody is attached.
         let _ = writeln!(
             out,
             "marion: still running, detached: {}; `marion tree` to watch, `marion attach {}` for a \
@@ -1443,17 +1445,15 @@ fn detach_report(
             detached[0].0,
             guidance.stop_fleet
         );
-    } else {
-        let _ = writeln!(out, "marion: still running, detached: {}", names(detached));
-        let _ = writeln!(
-            out,
-            "marion: unattended at a permission gate: {} — each one that asks burns its bound \
-             and is denied, and the far side sees an is_error tool_result rather than a \
-             question (§7.3.2, §11 item 22)",
-            names(gate_exposed)
-        );
-        let _ = writeln!(out, "marion: to re-attach: {}", guidance.reattach);
-        let _ = writeln!(out, "marion: to stop the fleet: {}", guidance.stop_fleet);
+        if !gate_exposed.is_empty() {
+            let _ = writeln!(
+                out,
+                "marion: unattended at a permission gate: {} — each one \
+                 that asks burns its bound and is denied, and the far side sees an is_error \
+                 tool_result rather than a question (§7.3.2, §11 item 22)",
+                names(gate_exposed)
+            );
+        }
     }
     Some((*supervisor, out))
 }
@@ -3506,20 +3506,24 @@ mod tests {
             "and cites where the cost is recorded: {report}"
         );
         assert!(
-            report.contains("to re-attach: Reconnect to /s/p/supervisor.sock"),
+            report.contains("`marion tree`") && report.contains("`marion attach root`"),
             "how to get back: {report}"
         );
         assert!(
             report.contains("to stop the fleet: Reconnect to /s/p/supervisor.sock"),
             "and how to stop it without getting back: {report}"
         );
+        assert_eq!(
+            report.lines().count(),
+            3,
+            "disposition, the fleet, and the gate warning — nothing more: {report}"
+        );
     }
 
-    /// **A detach with nothing at a gate is the common case, and it is one line.** §7.3.2's five
-    /// facts are all still there — what is running, how to get back, how to stop it — but a fleet
-    /// with nothing exposed does not need the permission-gate warning or a separate line per
-    /// instruction. The long form is kept for the case that earns it: a node that can be denied
-    /// unattended while nobody is watching.
+    /// **A detach with nothing at a gate is one line after the disposition.** §7.3.2's facts are
+    /// all still there — what is running, how to get back, how to stop it — on one line; the
+    /// permission-gate warning is a second line only for the fleet that earns it: a node that can
+    /// be denied unattended while nobody is watching.
     #[test]
     fn a_detach_with_nothing_at_a_gate_reports_in_one_line() {
         let (_, report) = detach_report(&marion_proto::QuitOutcome::Detached {

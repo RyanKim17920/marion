@@ -1154,8 +1154,9 @@ acceptance evidence, so every marker remains unchanged.
       with the row in the payload.
     - Entry prose trimmed: the no-supervisor refusal is one sentence plus the command, a paned
       root's `marion run` prints one line naming `marion attach`, `^] d` and `marion tree`, and
-      the §7.3.2 detach disclosure collapses to one line when no node is at a permission gate —
-      the long form stays for the case that earns it.
+      the §7.3.2 detach disclosure is one line for the fleet — running nodes, `marion tree` /
+      `marion attach`, the stop call — plus a second line only when a node is exposed at a
+      permission gate.
       `the_no_supervisor_refusal_is_one_sentence_and_the_command_to_run`,
       `a_detach_with_nothing_at_a_gate_reports_in_one_line`.
 
