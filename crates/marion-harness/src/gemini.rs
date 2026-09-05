@@ -436,45 +436,29 @@ mod tests {
     use super::*;
     use marion_core::contract::AgentId;
 
-    use crate::adapter::{
-        Extras, GeminiAdapter, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
-    };
     use crate::auth::Auth;
     use crate::invocation::Invocation;
+    use crate::spec::{Fields, Shape, render};
 
-    fn ctx() -> SpawnCtx {
-        SpawnCtx {
-            agent_id: AgentId("019f-child".into()),
-            agent_type: "gemini".into(),
-            depth: 1,
-            node_token: None,
-            ready_file: None,
-            repo: "/repo".into(),
-            state_dir: "/state".into(),
-            bridge: "/bin/marion-supervisor".into(),
-            bridge_args: vec!["mcp".into()],
-        }
-    }
-
-    fn spec() -> LaunchSpec {
-        LaunchSpec {
+    /// A canned node as the adapter's fields hook shapes it — model required and present, the base
+    /// URL already in [`google_base_url`]'s form. The hook's refusals are pinned in
+    /// `adapter::tests`; these tests pin **the row**.
+    fn spec() -> Fields {
+        Fields {
             cwd: "/tmp/wt".into(),
-            model: Some("gemini-2.5-flash".into()),
-            prompt: "do the task".into(),
-            tools: vec![],
-            allowed_tools: vec![],
-            mcp: McpDeclaration::Marion,
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
-            api_key: Some("sk-fake".into()),
-            auth: Auth::Canned,
             config_dir: "/tmp/cfg".into(),
-            extra: Extras::default(),
+            auth: Auth::Canned,
+            prompt: "do the task".into(),
+            model: Some("gemini-2.5-flash".into()),
+            base_url: Some("http://127.0.0.1:8099".into()),
+            api_key: Some("sk-fake".into()),
+            ..Fields::default()
         }
     }
 
     /// The same node under `--live`: marion names no endpoint and mints no credential.
-    fn live_spec() -> LaunchSpec {
-        LaunchSpec {
+    fn live_spec() -> Fields {
+        Fields {
             base_url: None,
             api_key: None,
             auth: Auth::Inherited,
@@ -482,8 +466,8 @@ mod tests {
         }
     }
 
-    fn compile_prompt(spec: &LaunchSpec) -> Invocation {
-        GeminiAdapter.compile(spec, &ctx()).unwrap()
+    fn compile_prompt(f: &Fields) -> Invocation {
+        render(&SPEC, Shape::Headless, f).unwrap()
     }
 
     fn bridge() -> BridgeEnv {
@@ -559,10 +543,11 @@ mod tests {
 
     #[test]
     fn a_missing_base_url_or_key_simply_omits_its_variable() {
-        let mut s = spec();
-        s.base_url = None;
-        s.api_key = None;
-        let inv = compile_prompt(&s);
+        let inv = compile_prompt(&Fields {
+            base_url: None,
+            api_key: None,
+            ..spec()
+        });
         assert!(
             !inv.env
                 .iter()
@@ -715,7 +700,7 @@ mod tests {
     /// authority, not the presence of a value.
     #[test]
     fn a_live_node_overlays_no_endpoint_even_if_one_was_handed_to_it() {
-        let inv = compile_prompt(&LaunchSpec {
+        let inv = compile_prompt(&Fields {
             auth: Auth::Inherited,
             ..spec()
         });

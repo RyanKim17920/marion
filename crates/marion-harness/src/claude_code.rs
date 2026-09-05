@@ -227,61 +227,51 @@ pub fn mcp_config_json(b: &BridgeEnv) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marion_core::contract::AgentId;
-
-    use crate::adapter::{
-        ClaudeCodeAdapter, Extras, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration,
-        SpawnCtx,
-    };
     use crate::auth::Auth;
     use crate::invocation::Invocation;
+    use crate::spec::{Axes, Fields, Shape, render};
 
-    fn ctx() -> SpawnCtx {
-        SpawnCtx {
-            agent_id: AgentId("019f-root".into()),
-            agent_type: "claude".into(),
-            depth: 0,
-            node_token: None,
-            ready_file: Some("/tmp/mcp-ready".into()),
-            repo: "/repo".into(),
-            state_dir: "/state".into(),
-            bridge: "/bin/marion-supervisor".into(),
-            bridge_args: vec!["mcp".into()],
-        }
-    }
-
-    /// A **root**: no credential of its own, because `marion run` mints a per-run token after
-    /// `compile` so that a request log attributes traffic to one run.
-    fn root() -> LaunchSpec {
-        LaunchSpec {
+    /// A **root**, as the adapter's fields hook shapes it: no credential of its own (`marion run`
+    /// mints a per-run token after `compile`, so a request log attributes traffic to one run), the
+    /// `/v1`-less base URL the hook derives, and the declaration document under the node's config
+    /// dir. The hook's own decisions — the argv-prompt refusal, the derivation — are pinned in
+    /// `adapter::tests`; these tests pin **the row**.
+    fn root() -> Fields {
+        Fields {
             cwd: "/tmp/wt".into(),
-            model: Some("haiku".into()),
-            prompt: String::new(),
-            tools: vec![],
-            allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
-            mcp: McpDeclaration::Marion,
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
-            api_key: None,
-            auth: Auth::Canned,
             config_dir: "/tmp".into(),
-            extra: Extras::default(),
+            auth: Auth::Canned,
+            prompt: String::new(),
+            model: Some("haiku".into()),
+            base_url: Some("http://127.0.0.1:8099".into()),
+            api_key: None,
+            axes: Axes {
+                tools: vec![],
+                allowed: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
+                mode: None,
+            },
+            mcp_config: Some("/tmp/mcp.json".into()),
+            ..Fields::default()
         }
     }
 
     /// A **child** differs from a root in exactly two compiled values — the permission axis it is
     /// given and the credential it presents — and in nothing else. Every flag is the root's,
     /// because a Claude Code node has one launch shape ([`SPEC`]).
-    fn child() -> LaunchSpec {
-        LaunchSpec {
+    fn child() -> Fields {
+        Fields {
             model: None,
-            allowed_tools: vec!["mcp__marion__report".into()],
+            axes: Axes {
+                allowed: vec!["mcp__marion__report".into()],
+                ..Axes::default()
+            },
             api_key: Some("dummy".into()),
             ..root()
         }
     }
 
-    fn compile(spec: &LaunchSpec) -> Invocation {
-        ClaudeCodeAdapter.compile(spec, &ctx()).unwrap()
+    fn compile(f: &Fields) -> Invocation {
+        render(&SPEC, Shape::Headless, f).unwrap()
     }
 
     #[test]
@@ -365,17 +355,8 @@ mod tests {
             Some("--output-format"),
             "`-p` takes no value here; a positional prompt is the toolless-turn bug"
         );
-        let with_prompt = LaunchSpec {
-            prompt: "do the task".into(),
-            ..child()
-        };
-        assert!(matches!(
-            ClaudeCodeAdapter.compile(&with_prompt, &ctx()),
-            Err(HarnessError::MissingInput {
-                harness: Harness::ClaudeCode,
-                ..
-            })
-        ));
+        // And a prompt that does arrive is refused before this row is rendered:
+        // `adapter::tests::a_claude_child_is_refused_if_its_prompt_was_compiled_into_argv`.
     }
 
     /// The permission axis is the one that decides whether the child's single load-bearing call
@@ -416,7 +397,7 @@ mod tests {
     #[test]
     fn a_node_records_the_model_it_was_given_and_nothing_when_it_was_given_none() {
         assert_eq!(compile(&child()).model, None);
-        let inv = compile(&LaunchSpec {
+        let inv = compile(&Fields {
             model: Some("haiku".into()),
             ..child()
         });

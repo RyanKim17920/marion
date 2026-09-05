@@ -427,60 +427,49 @@ mod tests {
     use super::*;
     use marion_core::contract::AgentId;
 
-    use crate::adapter::{
-        Extras, HarnessAdapter, LaunchSpec, McpDeclaration, OpenCodeAdapter, SpawnCtx,
-    };
     use crate::auth::Auth;
     use crate::invocation::Invocation;
+    use crate::spec::{Fields, Shape, render};
 
     fn model() -> ModelRef {
         ModelRef::parse("canned/canned-1").unwrap()
     }
 
-    fn ctx() -> SpawnCtx {
-        SpawnCtx {
-            agent_id: AgentId("019f-child".into()),
-            agent_type: "opencode".into(),
-            depth: 1,
-            node_token: None,
-            ready_file: None,
-            repo: "/repo".into(),
-            state_dir: "/state".into(),
-            bridge: "/bin/marion-supervisor".into(),
-            bridge_args: vec!["mcp".into()],
-        }
-    }
-
-    fn spec() -> LaunchSpec {
-        LaunchSpec {
+    /// A canned node as the adapter's fields hook shapes it: the `provider/model` pair parsed and
+    /// re-qualified, the title from the node's id. The hook's refusals are pinned in
+    /// `adapter::tests`; these tests pin **the row**.
+    fn spec() -> Fields {
+        Fields {
             cwd: "/tmp/wt".into(),
-            model: Some("canned/canned-1".into()),
-            prompt: "do the task".into(),
-            tools: vec![],
-            allowed_tools: vec![],
-            mcp: McpDeclaration::Marion,
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
-            api_key: Some("sk-fake".into()),
-            auth: Auth::Canned,
             config_dir: "/tmp/sb".into(),
-            extra: Extras::default(),
+            auth: Auth::Canned,
+            prompt: "do the task".into(),
+            model: Some(model().qualified()),
+            title: Some("marion-019f-child".into()),
+            ..Fields::default()
         }
     }
 
     /// The same node under `--live`: nothing relocated, the operator's own provider, and the MCP
     /// declaration inline.
-    fn live_spec() -> LaunchSpec {
-        LaunchSpec {
+    fn live_spec() -> Fields {
+        Fields {
             auth: Auth::Inherited,
             model: Some("anthropic/claude-sonnet-4-5".into()),
-            base_url: None,
-            api_key: None,
+            inline_config: Some(
+                serde_json::to_string(&live_config_json(Some(&BridgeEnv {
+                    auth: Auth::Inherited,
+                    base_url: None,
+                    ..bridge()
+                })))
+                .unwrap(),
+            ),
             ..spec()
         }
     }
 
-    fn compile_run(spec: &LaunchSpec) -> Invocation {
-        OpenCodeAdapter.compile(spec, &ctx()).unwrap()
+    fn compile_run(f: &Fields) -> Invocation {
+        render(&SPEC, Shape::Headless, f).unwrap()
     }
 
     fn bridge() -> BridgeEnv {

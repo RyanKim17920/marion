@@ -358,47 +358,35 @@ mod tests {
 
     use marion_core::contract::AgentId;
 
-    use crate::adapter::{
-        CopilotAdapter, Extras, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
-    };
     use crate::auth::Auth;
     use crate::invocation::Invocation;
+    use crate::spec::{Axes, Fields, Shape, render};
     use crate::stream::{CallOutcome, MarionCall, StreamOutcome};
 
-    fn ctx() -> SpawnCtx {
-        SpawnCtx {
-            agent_id: AgentId("019f-child".into()),
-            agent_type: "copilot".into(),
-            depth: 1,
-            node_token: None,
-            ready_file: None,
-            repo: "/repo".into(),
-            state_dir: "/state".into(),
-            bridge: "/bin/marion-supervisor".into(),
-            bridge_args: vec!["mcp".into()],
-        }
-    }
-
-    /// `allowed_tools` arrives in **this harness's** model-facing spelling, as `run_spawn` hands
-    /// it; the adapter turns it into both axes.
-    fn spec() -> LaunchSpec {
-        LaunchSpec {
+    /// A canned node as the adapter's axes and fields hooks shape it: marion's verb on both axes
+    /// in their two spellings, the declaration document as the `@`-prefixed reference the flag
+    /// reads. The hooks' refusals are pinned in `adapter::tests`; these tests pin **the row**.
+    fn spec() -> Fields {
+        Fields {
             cwd: "/tmp/wt".into(),
-            model: Some("canned-1".into()),
+            config_dir: "/tmp/cfg".into(),
+            auth: Auth::Canned,
             prompt: "do the task".into(),
-            tools: vec![],
-            allowed_tools: vec!["marion-report".into()],
-            mcp: McpDeclaration::Marion,
+            model: Some("canned-1".into()),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: Some("sk-fake".into()),
-            auth: Auth::Canned,
-            config_dir: "/tmp/cfg".into(),
-            extra: Extras::default(),
+            axes: Axes {
+                tools: vec!["marion-report".into()],
+                allowed: vec!["marion(report)".into()],
+                mode: None,
+            },
+            mcp_config: Some("@/tmp/cfg/mcp.json".into()),
+            ..Fields::default()
         }
     }
 
-    fn live_spec() -> LaunchSpec {
-        LaunchSpec {
+    fn live_spec() -> Fields {
+        Fields {
             base_url: None,
             api_key: None,
             auth: Auth::Inherited,
@@ -406,8 +394,8 @@ mod tests {
         }
     }
 
-    fn compile_prompt(spec: &LaunchSpec) -> Invocation {
-        CopilotAdapter.compile(spec, &ctx()).unwrap()
+    fn compile_prompt(f: &Fields) -> Invocation {
+        render(&SPEC, Shape::Headless, f).unwrap()
     }
 
     fn bridge() -> BridgeEnv {
@@ -462,8 +450,12 @@ mod tests {
         // A declared `write` is `create` on the availability axis and the kind `write` on the
         // permission axis; marion's own verb is `marion-report` on one and `marion(report)` on
         // the other.
-        let inv = compile_prompt(&LaunchSpec {
-            tools: vec![agent_type::TOOL_WRITE.into()],
+        let inv = compile_prompt(&Fields {
+            axes: Axes {
+                tools: vec!["marion-report".into(), "create".into()],
+                allowed: vec!["marion(report)".into(), "write".into()],
+                mode: None,
+            },
             ..spec()
         });
         assert!(
@@ -491,9 +483,8 @@ mod tests {
     /// compiles no flag rather than a flag that claims a constraint.
     #[test]
     fn an_empty_availability_list_compiles_no_flag_rather_than_an_empty_one() {
-        let inv = compile_prompt(&LaunchSpec {
-            tools: vec![],
-            allowed_tools: vec![],
+        let inv = compile_prompt(&Fields {
+            axes: Axes::default(),
             ..spec()
         });
         assert!(
@@ -513,8 +504,8 @@ mod tests {
             .position(|a| a == "--additional-mcp-config")
             .unwrap();
         assert_eq!(inv.args[i + 1], "@/tmp/cfg/mcp.json");
-        let none = compile_prompt(&LaunchSpec {
-            mcp: McpDeclaration::None,
+        let none = compile_prompt(&Fields {
+            mcp_config: None,
             ..spec()
         });
         assert!(!none.args.iter().any(|a| a == "--additional-mcp-config"));
@@ -580,7 +571,7 @@ mod tests {
     /// Gated on the mode, not only on the value: a live spec handed an endpoint pushes none.
     #[test]
     fn a_live_spec_that_carries_an_endpoint_still_pushes_none() {
-        let inv = compile_prompt(&LaunchSpec {
+        let inv = compile_prompt(&Fields {
             auth: Auth::Inherited,
             ..spec()
         });
@@ -595,7 +586,7 @@ mod tests {
         let i = inv.args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(inv.args[i + 1], "canned-1");
         assert_eq!(inv.model.as_deref(), Some("canned-1"));
-        let none = compile_prompt(&LaunchSpec {
+        let none = compile_prompt(&Fields {
             model: None,
             ..live_spec()
         });

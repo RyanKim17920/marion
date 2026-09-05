@@ -364,57 +364,43 @@ mod tests {
 
     use marion_core::contract::AgentId;
 
-    use crate::adapter::{
-        CodexAdapter, Extras, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
-    };
     use crate::auth::Auth;
     use crate::invocation::Invocation;
+    use crate::spec::{Fields, Shape, render};
 
-    fn ctx() -> SpawnCtx {
-        SpawnCtx {
-            agent_id: AgentId("019f-node".into()),
-            agent_type: "codex-impl".into(),
-            depth: 1,
-            node_token: None,
-            ready_file: None,
-            repo: "/repo".into(),
-            state_dir: "/state".into(),
-            bridge: "/bin/marion-supervisor".into(),
-            bridge_args: vec!["mcp".into()],
-        }
-    }
-
-    fn spec() -> LaunchSpec {
-        LaunchSpec {
+    /// A canned node as the adapter's fields hook shapes it: no model (a canned launch compiles
+    /// none whatever was asked for) and no `-c` pairs (the same settings are in the generated
+    /// `config.toml`). The hook's decisions are pinned in `adapter::tests`; these pin **the row**.
+    fn spec() -> Fields {
+        Fields {
             cwd: "/tmp/wt".into(),
-            model: None,
-            prompt: "do the task".into(),
-            tools: vec![],
-            allowed_tools: vec![],
-            mcp: McpDeclaration::Marion,
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
-            api_key: None,
-            auth: Auth::Canned,
             config_dir: "/tmp/ch".into(),
-            extra: Extras::default(),
+            auth: Auth::Canned,
+            prompt: "do the task".into(),
+            model: None,
+            ..Fields::default()
         }
     }
 
     /// What `--live` hands a codex node: no `CODEX_HOME`, and the declaration on `-c` flags.
-    fn live_spec() -> LaunchSpec {
-        LaunchSpec {
+    fn live_spec() -> Fields {
+        Fields {
             auth: Auth::Inherited,
-            base_url: None,
+            pairs: live_config_overrides(&BridgeEnv {
+                auth: Auth::Inherited,
+                base_url: None,
+                ..bridge_env()
+            }),
             ..spec()
         }
     }
 
-    fn compile_exec(spec: &LaunchSpec) -> Invocation {
-        CodexAdapter.compile(spec, &ctx()).unwrap()
+    fn compile_exec(f: &Fields) -> Invocation {
+        render(&SPEC, Shape::Headless, f).unwrap()
     }
 
-    fn compile_tui(spec: &LaunchSpec) -> Invocation {
-        CodexAdapter.compile_pane(spec, &ctx()).unwrap()
+    fn compile_tui(f: &Fields) -> Invocation {
+        render(&SPEC, Shape::Pane, f).unwrap()
     }
 
     /// The `-c` pairs an invocation carries, in order.
@@ -475,12 +461,9 @@ mod tests {
     /// finds out here rather than by watching a flag vanish.
     #[test]
     fn the_execs_output_files_are_ignored_on_the_tui_rather_than_silently_dropped_into_argv() {
-        let inv = compile_tui(&LaunchSpec {
-            extra: Extras {
-                output_schema: Some("/tmp/schema.json".into()),
-                output_last_message: Some("/tmp/last.txt".into()),
-                ..Extras::default()
-            },
+        let inv = compile_tui(&Fields {
+            output_schema: Some("/tmp/schema.json".into()),
+            output_last_message: Some("/tmp/last.txt".into()),
             ..spec()
         });
         assert!(
@@ -500,7 +483,7 @@ mod tests {
     fn the_tui_prompt_is_the_last_positional_and_an_empty_one_is_no_positional() {
         let inv = compile_tui(&spec());
         assert_eq!(inv.args.last().map(String::as_str), Some("do the task"));
-        let bare = compile_tui(&LaunchSpec {
+        let bare = compile_tui(&Fields {
             prompt: String::new(),
             ..spec()
         });
@@ -791,7 +774,7 @@ mod tests {
     #[test]
     fn exec_does_take_a_model_and_records_the_one_it_compiled() {
         // Under a real vendor: a canned launch compiles none whatever was asked for.
-        let inv = compile_exec(&LaunchSpec {
+        let inv = compile_exec(&Fields {
             model: Some("gpt-5-codex".into()),
             ..live_spec()
         });
@@ -819,12 +802,9 @@ mod tests {
 
     #[test]
     fn the_fallback_branch_still_compiles_when_asked() {
-        let inv = compile_exec(&LaunchSpec {
-            extra: Extras {
-                output_schema: Some("/tmp/schema.json".into()),
-                output_last_message: Some("/tmp/last.txt".into()),
-                ..Extras::default()
-            },
+        let inv = compile_exec(&Fields {
+            output_schema: Some("/tmp/schema.json".into()),
+            output_last_message: Some("/tmp/last.txt".into()),
             ..spec()
         });
         assert!(inv.args.iter().any(|a| a == "--output-schema"));
