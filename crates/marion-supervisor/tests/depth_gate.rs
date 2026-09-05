@@ -96,7 +96,7 @@ use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
 use marion_supervisor::journal::read_path;
 use marion_supervisor::socket::project_root;
 use marion_testsupport::{
-    fixture_repo, git, kill_hard, on_path, persisted_contracts, scratch, survivors,
+    carries, fixture_repo, git, kill_hard, on_path, persisted_contracts, scratch, survivors,
 };
 use serde_json::{Value, json};
 
@@ -133,17 +133,6 @@ fn agent_dirs(state: &Path) -> Vec<String> {
         .flatten()
         .filter_map(|a| a.file_name().into_string().ok())
         .collect()
-}
-
-/// Does any string anywhere in `v` contain `needle`? The same whole-body scan the provider uses to
-/// route a request, restated here so an assertion reads the log the way the server read it.
-fn carries(v: &Value, needle: &str) -> bool {
-    match v {
-        Value::String(s) => s.contains(needle),
-        Value::Array(a) => a.iter().any(|x| carries(x, needle)),
-        Value::Object(o) => o.values().any(|x| carries(x, needle)),
-        _ => false,
-    }
 }
 
 // --- the four harnesses, as data ---------------------------------------------------------------

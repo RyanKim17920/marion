@@ -129,7 +129,7 @@ use marion_supervisor::journal::read_path;
 use marion_supervisor::root::{RootPath, root_path};
 use marion_supervisor::run::run_bounded;
 use marion_testsupport::{
-    fixture_repo, judge, kill_hard, on_path, persisted_contracts, scratch, survivors,
+    carries, fixture_repo, judge, kill_hard, on_path, persisted_contracts, scratch, survivors,
 };
 use serde_json::{Value, json};
 
@@ -179,17 +179,6 @@ const CHILD_FILE: &str = "src/xprod-marker.txt";
 
 /// What that file contains. Distinctive, so a stray copy anywhere on the machine is attributable.
 const CHILD_FILE_CONTENT: &str = "marion cross-product marker\n";
-
-/// Does any string anywhere in `v` contain `needle`? The same whole-body scan the provider uses to
-/// decide a request's role, restated here so the assertions read the log the way the server read it.
-fn carries(v: &Value, needle: &str) -> bool {
-    match v {
-        Value::String(s) => s.contains(needle),
-        Value::Array(a) => a.iter().any(|x| carries(x, needle)),
-        Value::Object(o) => o.values().any(|x| carries(x, needle)),
-        _ => false,
-    }
-}
 
 // --- the five harnesses, as data ---------------------------------------------------------------
 

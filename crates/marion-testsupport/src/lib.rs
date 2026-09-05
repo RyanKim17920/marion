@@ -1056,9 +1056,42 @@ pub fn judge(contracts: &[PersistedContract]) -> Vec<(&Path, &Value)> {
         .collect()
 }
 
+/// Does any string anywhere in `v` contain `needle`?
+///
+/// The same whole-body scan the CannedServer uses to decide a request's role (`marion_provider`'s
+/// routing), restated for assertions so a test reads the provider's log the way the server read it.
+pub fn carries(v: &Value, needle: &str) -> bool {
+    match v {
+        Value::String(s) => s.contains(needle),
+        Value::Array(a) => a.iter().any(|x| carries(x, needle)),
+        Value::Object(o) => o.values().any(|x| carries(x, needle)),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn carries_scans_every_string_at_every_depth_and_nothing_else() {
+        let v = serde_json::json!({
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "MARK-1"}]}],
+            "n": 7,
+            "flag": true,
+        });
+        assert!(
+            carries(&v, "MARK-1"),
+            "a string nested in array-in-object-in-array"
+        );
+        assert!(carries(&v, "user"), "a string at depth two");
+        assert!(!carries(&v, "7"), "a number is not a string that spells it");
+        assert!(!carries(&v, "true"), "nor is a boolean");
+        assert!(
+            !carries(&v, "messages"),
+            "keys are not scanned, only values"
+        );
+    }
 
     /// **The property every `Scratch` in this repo was introduced for, and the one nobody had
     /// written down.** It has been proved by hand — forcing a failure, listing `$TMPDIR` — three
