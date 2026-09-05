@@ -102,6 +102,72 @@ fn native_command_error(error: impl std::fmt::Display) -> BootstrapError {
     BootstrapError::NativeCommand(error.to_string())
 }
 
+/// Write a native launch's declaration documents **under the node's own directory and nowhere
+/// else**.
+///
+/// Every path is checked to be a direct child of `agent_dir` before anything is created, and the
+/// write itself goes through a descriptor on that directory rather than the absolute path, so a
+/// component swapped underneath between check and open cannot redirect it (`O_NOFOLLOW` on both
+/// opens). `O_EXCL` because a declaration names one node: a name that already exists is a second
+/// launch under the same id, which is a refusal, not an overwrite. `0600` because the document
+/// carries the node's identity and, under a canned supervisor, its provider endpoint.
+fn materialize_documents(
+    agent_dir: &std::path::Path,
+    documents: &[marion_harness::NativeDocument],
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    use rustix::fs::{Mode, OFlags};
+
+    let mut names = Vec::with_capacity(documents.len());
+    for document in documents {
+        let name = document
+            .path
+            .strip_prefix(agent_dir)
+            .ok()
+            .filter(|rel| {
+                let mut components = rel.components();
+                matches!(
+                    (components.next(), components.next()),
+                    (Some(std::path::Component::Normal(_)), None)
+                )
+            })
+            .ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "native document {} is not a direct child of the node directory",
+                    document.path.display()
+                ))
+            })?;
+        names.push((name, &document.contents));
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(agent_dir)?;
+    let dir = rustix::fs::open(
+        agent_dir,
+        OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    for (name, contents) in names {
+        let fd = rustix::fs::openat(
+            &dir,
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )?;
+        let mut file = std::fs::File::from(fd);
+        file.write_all(contents)?;
+        file.sync_all()?;
+    }
+    rustix::fs::fsync(&dir)?;
+    Ok(())
+}
+
 impl NativeCommandFactory for ProductionNativeCommandFactory {
     fn prepare(
         &self,
@@ -146,14 +212,8 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
             injection,
         )
         .map_err(native_command_error)?;
-        if !prepared.documents.is_empty() {
-            // Fail closed rather than write anything: the dirfd-relative artifact executor the
-            // runtime design requires is not in this build, and an adapter that needs documents
-            // must not get a less careful writer by default.
-            return Err(native_command_error(
-                "native document materialization is not available in this build",
-            ));
-        }
+        materialize_documents(agent_dir.path(), &prepared.documents)
+            .map_err(native_command_error)?;
         Ok(PreparedNativeCommand {
             invocation: prepared.invocation,
             cast_path: agent_dir.pty_cast(),
@@ -768,6 +828,145 @@ mod tests {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound
             ),
             "a refused preparation created the agent directory"
+        );
+    }
+
+    /// An adapter whose row carries its declaration in a document: the file it names.
+    struct DocumentAdapter(fn(&std::path::Path) -> PathBuf);
+
+    impl marion_harness::NativeInjectionAdapter for DocumentAdapter {
+        fn prepare_native(
+            &self,
+            context: &marion_harness::NativeNodeContext<'_>,
+        ) -> Result<NativeInjection, marion_harness::NativeInjectionError> {
+            let path = (self.0)(context.document_dir);
+            Ok(NativeInjection {
+                argv_prefix: vec![OsString::from("--mcp-config"), path.as_os_str().to_owned()],
+                env_overlay: vec![],
+                documents: vec![marion_harness::NativeDocument {
+                    path,
+                    contents: b"{\"mcpServers\":{\"marion\":{}}}\n".to_vec(),
+                }],
+            })
+        }
+    }
+
+    static ROW_DOCUMENT: DocumentAdapter = DocumentAdapter(|dir| dir.join("mcp.json"));
+    static ESCAPING_DOCUMENT: DocumentAdapter = DocumentAdapter(|dir| dir.join("../escape.json"));
+    static NESTED_DOCUMENT: DocumentAdapter = DocumentAdapter(|dir| dir.join("nested/mcp.json"));
+
+    fn row_document_adapter(
+        _: marion_core::Harness,
+    ) -> Option<&'static dyn marion_harness::NativeInjectionAdapter> {
+        Some(&ROW_DOCUMENT)
+    }
+
+    fn escaping_document_adapter(
+        _: marion_core::Harness,
+    ) -> Option<&'static dyn marion_harness::NativeInjectionAdapter> {
+        Some(&ESCAPING_DOCUMENT)
+    }
+
+    fn nested_document_adapter(
+        _: marion_core::Harness,
+    ) -> Option<&'static dyn marion_harness::NativeInjectionAdapter> {
+        Some(&NESTED_DOCUMENT)
+    }
+
+    /// A declaration carried by a document is written **under the node's own directory, as a
+    /// direct child, private to the operator, never over an existing file** — and any other path
+    /// the adapter names is a refusal that writes nothing.
+    ///
+    /// Mutation: write through the absolute path instead of the directory descriptor, drop
+    /// `O_EXCL`, widen the mode, or accept a name with a parent component.
+    #[test]
+    fn production_factory_materializes_a_row_document_under_the_node_dir_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let work = marion_testsupport::scratch("native-factory-documents");
+        let (bin, _executable) = fixture_executable(&work);
+        let project = work.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let env = factory_env(&work);
+        let registry = marion_core::NativeFacadeRegistry::new(ATLAS_DESCRIPTORS).unwrap();
+        let selected = crate::native_intent::select_test_native(&registry, "atlas").unwrap();
+        let geometry = NativeTerminalGeometry {
+            cols: 80,
+            rows: 24,
+            xpixel: 0,
+            ypixel: 0,
+        };
+        let context = atlas_context(
+            &project,
+            vec![OsString::from("--help")],
+            vec![(OsString::from("PATH"), bin.as_os_str().to_owned())],
+        );
+
+        let agent_id = AgentId("019f81eb-36a4-7000-8000-000000000103".into());
+        let prepared = ProductionNativeCommandFactory::new(env.clone(), row_document_adapter)
+            .prepare(&selected, &context, geometry, &agent_id)
+            .expect("a direct-child document materializes");
+        let agent_dir = env.project_dir.agent(&agent_id);
+        let document = agent_dir.path().join("mcp.json");
+        assert_eq!(
+            prepared.invocation.args,
+            vec![
+                OsString::from("--mcp-config"),
+                document.as_os_str().to_owned(),
+                OsString::from("--help"),
+            ]
+        );
+        assert_eq!(
+            std::fs::read(&document).unwrap(),
+            b"{\"mcpServers\":{\"marion\":{}}}\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&document).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the declaration names the node and is the operator's alone"
+        );
+        assert!(
+            matches!(
+                ProductionNativeCommandFactory::new(env.clone(), row_document_adapter)
+                    .prepare(&selected, &context, geometry, &agent_id),
+                Err(BootstrapError::NativeCommand(_))
+            ),
+            "a second launch under the same node id must not overwrite the first's declaration"
+        );
+
+        for (label, table, id) in [
+            (
+                "escaping",
+                escaping_document_adapter as NativeAdapterLookup,
+                "019f81eb-36a4-7000-8000-000000000104",
+            ),
+            (
+                "nested",
+                nested_document_adapter as NativeAdapterLookup,
+                "019f81eb-36a4-7000-8000-000000000105",
+            ),
+        ] {
+            let agent_id = AgentId(id.into());
+            assert!(
+                matches!(
+                    ProductionNativeCommandFactory::new(env.clone(), table)
+                        .prepare(&selected, &context, geometry, &agent_id),
+                    Err(BootstrapError::NativeCommand(_))
+                ),
+                "{label}: a document outside the node's own directory was accepted"
+            );
+            assert!(
+                matches!(
+                    std::fs::metadata(env.project_dir.agent(&agent_id).path()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                ),
+                "{label}: a refused document created the agent directory"
+            );
+        }
+        assert!(
+            !env.project_dir.agents_dir().join("escape.json").exists()
+                && !work.join("escape.json").exists(),
+            "an escaping document was written"
         );
     }
 

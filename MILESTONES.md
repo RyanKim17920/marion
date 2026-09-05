@@ -1179,6 +1179,15 @@ acceptance evidence, so every marker remains unchanged.
     composition and the integration bed differ only in which table they are handed. Nothing is
     reachable yet: the production descriptor slice is still empty; M3 remains `[partial]`.
 
+    **Native declaration documents in this commit move no milestone marker.** The production
+    factory now writes a row's declaration document instead of refusing every document-carrying
+    harness: only a direct child of the node's own directory, opened through a descriptor on that
+    directory with `O_NOFOLLOW|O_CREAT|O_EXCL` at `0600`, fsynced, and refused by name — writing
+    nothing — for any other path or an existing name. Covered by
+    `production_factory_materializes_a_row_document_under_the_node_dir_only`. The claude, gemini
+    and copilot rows can therefore be assembled; the descriptor slice is still empty, so M3 remains
+    `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
