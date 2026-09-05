@@ -217,11 +217,9 @@ pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
     let key = crate::socket::project_root(repo);
     let paths = crate::socket::socket_paths(state_dir, &key, crate::attach::uid());
     if crate::socket::nobody_is_serving(&paths) {
+        // One line. Why marion will not start a supervisor here is this function's doc comment.
         return Err(format!(
-            "no supervisor is serving `{}`, so there is no tree to show. Starting one here would \
-             show an empty forest, which reads as \"no agents are running\" rather than as \
-             \"marion is not looking where you think\". Run `marion run <agent-type>` in this \
-             project first.",
+            "no supervisor is serving `{}`; run `marion run <agent-type> --pane` here first",
             key.display()
         ));
     }
@@ -1011,6 +1009,31 @@ mod tests {
         busy.state = NodeState::Running;
         assert_eq!(running(&[exited, orphan, idle, busy]), 2);
         assert_eq!(running(&[]), 0);
+    }
+
+    /// The refusal an operator meets first is one line: the fact and the command. The paragraph
+    /// it replaces explained why marion would not start a supervisor here, which is `run`'s doc
+    /// comment's job and not stderr's.
+    #[test]
+    fn the_no_supervisor_refusal_is_one_sentence_and_the_command_to_run() {
+        let dir = std::env::temp_dir().join(format!(
+            "marion-tree-refusal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        let refusal = run(&dir, &dir).expect_err("nobody is serving a fresh directory");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(refusal.lines().count(), 1, "{refusal}");
+        assert!(refusal.contains("no supervisor is serving"), "{refusal}");
+        assert!(refusal.contains("`marion run"), "{refusal}");
+        assert!(
+            refusal.len() < dir.display().to_string().len() + 100,
+            "{} chars is a paragraph, not a hint: {refusal}",
+            refusal.len()
+        );
     }
 
     /// A refresh must not move the cursor out from under the operator.

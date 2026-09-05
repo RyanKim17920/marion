@@ -1152,6 +1152,12 @@ acceptance evidence, so every marker remains unchanged.
       project and how big a forest each one is. `the_status_row_names_the_project_and_counts_the_forest`,
       `the_status_rows_running_count_is_the_non_terminal_nodes`, and the L4.5 snapshots re-accepted
       with the row in the payload.
+    - Entry prose trimmed: the no-supervisor refusal is one sentence plus the command, a paned
+      root's `marion run` prints one line naming `marion attach`, `^] d` and `marion tree`, and
+      the §7.3.2 detach disclosure collapses to one line when no node is at a permission gate —
+      the long form stays for the case that earns it.
+      `the_no_supervisor_refusal_is_one_sentence_and_the_command_to_run`,
+      `a_detach_with_nothing_at_a_gate_reports_in_one_line`.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance

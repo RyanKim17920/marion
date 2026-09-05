@@ -1433,17 +1433,25 @@ fn detach_report(
     }
     if detached.is_empty() {
         let _ = writeln!(out, "marion: no node was left running.");
+    } else if gate_exposed.is_empty() {
+        // The common case, on one line: the same five facts, without the warning nothing earns.
+        let _ = writeln!(
+            out,
+            "marion: still running, detached: {}; `marion tree` to watch, `marion attach {}` for a \
+             pane node; to stop the fleet: {}",
+            names(detached),
+            detached[0].0,
+            guidance.stop_fleet
+        );
     } else {
         let _ = writeln!(out, "marion: still running, detached: {}", names(detached));
-        if !gate_exposed.is_empty() {
-            let _ = writeln!(
-                out,
-                "marion: unattended at a permission gate: {} — each one that asks burns its bound \
-                 and is denied, and the far side sees an is_error tool_result rather than a \
-                 question (§7.3.2, §11 item 22)",
-                names(gate_exposed)
-            );
-        }
+        let _ = writeln!(
+            out,
+            "marion: unattended at a permission gate: {} — each one that asks burns its bound \
+             and is denied, and the far side sees an is_error tool_result rather than a \
+             question (§7.3.2, §11 item 22)",
+            names(gate_exposed)
+        );
         let _ = writeln!(out, "marion: to re-attach: {}", guidance.reattach);
         let _ = writeln!(out, "marion: to stop the fleet: {}", guidance.stop_fleet);
     }
@@ -1927,12 +1935,6 @@ fn legacy_main() -> ExitCode {
     };
     let root_id = spawned.agent_id.clone();
     let _ = poller_id.send(root_id.clone());
-    eprintln!(
-        "marion: root {} ({}) in {}",
-        root_id.0,
-        args.agent_type,
-        project.agent(&root_id).path().display()
-    );
 
     // **A paned root is started and then attached to, and this client does neither of the two
     // things `watch_the_root` exists to do.**
@@ -1952,9 +1954,20 @@ fn legacy_main() -> ExitCode {
     if args.pane {
         stop.store(true, Ordering::Relaxed);
         let _ = poller.join();
-        eprintln!("marion: attach with `marion attach {}`", root_id.0);
+        // One line: what started, and the three commands that matter next.
+        eprintln!(
+            "marion: root {} ({}, pane) started; `marion attach {}` to open, `^] d` to detach, \
+             `marion tree` for the forest",
+            root_id.0, args.agent_type, root_id.0
+        );
         return ExitCode::SUCCESS;
     }
+    eprintln!(
+        "marion: root {} ({}) in {}",
+        root_id.0,
+        args.agent_type,
+        project.agent(&root_id).path().display()
+    );
 
     // **§7.3.3's attach, and it is the whole of how this client sees the run.** One cursor over the
     // node's `events.jsonl`: the replay leg arrives as notifications *before* the answer, and the
@@ -3499,6 +3512,45 @@ mod tests {
         assert!(
             report.contains("to stop the fleet: Reconnect to /s/p/supervisor.sock"),
             "and how to stop it without getting back: {report}"
+        );
+    }
+
+    /// **A detach with nothing at a gate is the common case, and it is one line.** §7.3.2's five
+    /// facts are all still there — what is running, how to get back, how to stop it — but a fleet
+    /// with nothing exposed does not need the permission-gate warning or a separate line per
+    /// instruction. The long form is kept for the case that earns it: a node that can be denied
+    /// unattended while nobody is watching.
+    #[test]
+    fn a_detach_with_nothing_at_a_gate_reports_in_one_line() {
+        let (_, report) = detach_report(&marion_proto::QuitOutcome::Detached {
+            detached: ids(&["root"]),
+            gate_exposed: Vec::new(),
+            guidance: guidance(),
+            supervisor: marion_proto::SupervisorDisposition::Resident(
+                marion_proto::ResidentReason::NonTerminalNode,
+            ),
+        })
+        .expect("a detach renders");
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "disposition, then one line for the fleet: {report}"
+        );
+        let fleet = lines[1];
+        assert!(fleet.contains("still running, detached: root"), "{fleet}");
+        assert!(fleet.contains("`marion tree`"), "how to get back: {fleet}");
+        assert!(
+            fleet.contains("`marion attach root`"),
+            "how to get back: {fleet}"
+        );
+        assert!(
+            fleet.contains("/s/p/supervisor.sock"),
+            "how to stop it without getting back: {fleet}"
+        );
+        assert!(
+            !report.contains("permission gate"),
+            "nothing is exposed: {report}"
         );
     }
 
