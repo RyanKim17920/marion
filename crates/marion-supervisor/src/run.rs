@@ -2686,6 +2686,7 @@ mod tests {
             ("gemini-impl", Harness::Gemini),
             ("opencode", Harness::OpenCode),
             ("copilot", Harness::Copilot),
+            ("copilot-impl", Harness::Copilot),
         ] {
             let t = builtin(name).expect("built-in resolves");
             assert_eq!(t.harness, expected, "{name}");

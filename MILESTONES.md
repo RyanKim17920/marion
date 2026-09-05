@@ -254,12 +254,21 @@ other four would get wrong:
 - **`copilot --version` prints `GitHub Copilot CLI 1.0.83.`** — the version ends a sentence, and
   the pin parser had to learn to strip one trailing dot to identify the binary at all.
 
+**A copilot root works too, and that took one generalisation.** `cross_product` grew copilot's
+column and row — nine cells, `q`–`y`: each of the four roots spawning a `copilot-impl` child that
+writes through `create` and reports, and a `copilot` root spawning each of the five — and seven of
+the nine were driven green on this machine (the two that pair with claude are gated behind claude's
+version pin, which 2.1.261 does not satisfy). What made the root cells possible: `root::ROOT_ALLOWED_TOOLS`
+was four `mcp__marion__*` strings — Claude Code's spelling compiled into every root — and copilot
+is the first `LaunchOnly` adapter that reads `allowed_tools` into a flag, where that spelling names
+nothing and the root launches with none of marion's verbs, at exit 0. It is now `ROOT_VERBS`, marion's
+own vocabulary, spelled per harness by `HarnessAdapter::marion_tool_name` exactly as `run_spawn`
+already spells a child's `report`; a claude root's `--allowedTools` is byte-identical to before.
+
 Not measured, and so not claimed: `--acp` (it starts; no session has been driven, so `acp::AGENTS`
-has no row), `--resume`/`--session-id`, a copilot **root** (the adapter refuses a root whose
-`allowed_tools` arrive in another harness's spelling, which is why `root::ROOT_ALLOWED_TOOLS`
-became `ROOT_VERBS` spelled by the adapter; the root path itself has not been driven), and every
-`cross_product`/`journal_wiring`/`depth_gate` cell, whose matches name `copilot` as *not yet* a
-cell rather than omitting it.
+has no row), `--resume`/`--session-id`, and the `journal_wiring`, `depth_gate` and
+`launch_only_root` matrices, whose matches name `copilot` as *not yet* a cell rather than omitting
+it.
 
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 

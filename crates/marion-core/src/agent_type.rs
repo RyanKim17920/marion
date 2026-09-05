@@ -345,6 +345,18 @@ pub fn builtin(name: &str) -> Option<AgentType> {
                 Harness::Copilot,
             )
         }),
+        // The implementer flavour, for the same reason `claude-impl` and `gemini-impl` exist: the
+        // adapter withholds every built-in it is not told to declare (`--available-tools`), so a
+        // `copilot` child has no route to a file at all, and the grant has to live on a type.
+        "copilot-impl" => Some(AgentType {
+            model: Some(COPILOT_DEFAULT_MODEL.into()),
+            tools: vec![TOOL_READ.into(), TOOL_WRITE.into()],
+            ..AgentType::defaults(
+                "copilot-impl",
+                "Implements a well-specified change on the GitHub Copilot CLI.",
+                Harness::Copilot,
+            )
+        }),
         // **One built-in per ACP agent, and no built-in named `acp`.** The other four harnesses
         // get a type named after the harness because there the harness *is* the program. Here it
         // is not: a type named `acp` would have to pick an agent, and §6.4 says marion may not.
@@ -377,6 +389,7 @@ pub fn builtin_names() -> &'static [&'static str] {
         "codex",
         "codex-impl",
         "copilot",
+        "copilot-impl",
         "gemini",
         "gemini-impl",
         "opencode",
@@ -474,6 +487,7 @@ mod tests {
             ("codex", Harness::Codex),
             ("codex-impl", Harness::Codex),
             ("copilot", Harness::Copilot),
+            ("copilot-impl", Harness::Copilot),
             ("gemini", Harness::Gemini),
             ("gemini-impl", Harness::Gemini),
             ("opencode", Harness::OpenCode),
@@ -483,7 +497,7 @@ mod tests {
         }
         assert_eq!(
             builtin_names().len(),
-            9,
+            10,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
@@ -549,6 +563,16 @@ mod tests {
             Some(COPILOT_DEFAULT_MODEL),
             "BYOK refuses to start without a model, so the canned default must carry one"
         );
+        assert_eq!(
+            builtin("copilot-impl").unwrap().model.as_deref(),
+            Some(COPILOT_DEFAULT_MODEL),
+            "the -impl flavour launches on the same adapter, which refuses canned without a model"
+        );
+        assert_eq!(
+            builtin("copilot-impl").unwrap().tools,
+            vec![TOOL_READ.to_string(), TOOL_WRITE.to_string()],
+            "the implementer flavour declares both, as claude-impl and gemini-impl do (§11 item 24)"
+        );
         // opencode's `-m` accepts nothing else, and the generated provider block has to repeat it.
         assert!(
             OPENCODE_DEFAULT_MODEL
@@ -570,13 +594,16 @@ mod tests {
     /// `codex-impl` and `opencode` are the honest asymmetry: their harnesses grant writes
     /// unconditionally already (`sandbox_mode = "workspace-write"`; opencode's own default tool
     /// list), so a declaration there would be a no-op dressed as a grant. The vocabulary describes
-    /// what marion *compiles*, and on those two it compiles nothing.
+    /// what marion *compiles*, and on those two it compiles nothing. `copilot-impl` sits with the
+    /// first pair: its adapter withholds every built-in it is not told to declare.
     #[test]
     fn exactly_the_impl_types_that_need_a_grant_declare_one() {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude-impl" | "gemini-impl" => vec![TOOL_READ.into(), TOOL_WRITE.into()],
+                "claude-impl" | "gemini-impl" | "copilot-impl" => {
+                    vec![TOOL_READ.into(), TOOL_WRITE.into()]
+                }
                 _ => vec![],
             };
             assert_eq!(

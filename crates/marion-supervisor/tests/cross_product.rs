@@ -188,7 +188,7 @@ fn carries(v: &Value, needle: &str) -> bool {
     }
 }
 
-// --- the four harnesses, as data ---------------------------------------------------------------
+// --- the five harnesses, as data ---------------------------------------------------------------
 
 /// One harness, in both of the roles it can play.
 #[derive(Debug, Clone, Copy)]
@@ -283,6 +283,18 @@ const OPENCODE: Node = Node {
     child_model: Some("marion/canned-1"),
     wire: "openai",
     program: "opencode",
+};
+
+const COPILOT: Node = Node {
+    agent_type: "copilot",
+    child_agent_type: "copilot-impl",
+    harness: Harness::Copilot,
+    // Explicit: BYOK exits 1 without one (`BYOK providers require an explicit model`), and the
+    // adapter refuses first. `--model` is carried through verbatim; the canned provider ignores it.
+    model: "canned-1",
+    child_model: Some("canned-1"),
+    wire: "openai",
+    program: "copilot",
 };
 
 /// marion's `spawn`, in the spelling **this harness's wire** dispatches on.
@@ -403,7 +415,21 @@ fn script(root: &Node, child: &Node) -> Script {
         // mode at all: `AcpAdapter::compile` refuses `Auth::Canned` by name, because ACP has no
         // protocol-level way to point an agent at an endpoint. There is nothing to script, so this
         // says so rather than scripting something that would not be an ACP run.
-        Harness::Copilot => unreachable!("no cell of this matrix names `copilot` yet"),
+        // The copilot child writes before it reports, through the `create` that `copilot-impl`'s
+        // `tools: [read, write]` makes the adapter put in `--available-tools` and grant through
+        // `--allow-tool=write` — withheld and denied respectively without the grant (s24). Same
+        // wire and same `Script` fields as opencode, different tool name and different argument
+        // names (`{path, file_text}`, read off the live `tools[]` schema). The path is **relative**
+        // deliberately: copilot's own description demands an absolute one, and s24 measured a
+        // relative `create` resolving against `-C`, which is what proves where marion placed it.
+        Harness::Copilot => {
+            s.openai_report_tool = report;
+            s.openai_report_args = json!({ "narrative": NARRATIVE });
+            s.openai_edit = Some(EditTurn {
+                tool: "create".into(),
+                args: json!({ "path": CHILD_FILE, "file_text": CHILD_FILE_CONTENT }),
+            });
+        }
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s
@@ -572,7 +598,7 @@ fn marion_argv(
 
 /// **The regression this file's launch path can suffer without any cell being wrong.**
 ///
-/// Sixteen cells go through [`marion_argv`], and all sixteen fail identically — at argument
+/// Every cell goes through [`marion_argv`], and all of them fail identically — at argument
 /// parsing, before a provider or a harness is involved — if the builder ever emits a loopback
 /// `--base-url` without `--canned`. That is a property of the *harness*, not of any cell, and it is
 /// checkable in microseconds against the same gate `bin/marion.rs` enforces in seconds.
@@ -1203,10 +1229,12 @@ fn cell(root: &Node, child: &Node) {
     assert_cell(root, child, &ev);
 }
 
-// --- the sixteen cells --------------------------------------------------------------------------
+// --- the twenty-five cells ----------------------------------------------------------------------
 //
 // One `#[test]` each, named for its own pair. Never a loop: a loop reports the first failure and
-// hides the other fifteen.
+// hides the other twenty-four. Sixteen cells over the first four harnesses, then copilot's column
+// and row (q–y); every count of "sixteen" in the prose above predates the fifth harness and
+// describes the original square, whose properties the nine new cells inherit unchanged.
 
 #[test]
 fn a_claude_root_spawns_a_claude_child_and_receives_its_contract() {
@@ -1286,4 +1314,53 @@ fn o_opencode_root_spawns_a_gemini_child_and_receives_its_contract() {
 #[test]
 fn p_opencode_root_spawns_an_opencode_child_and_receives_its_contract() {
     cell(&OPENCODE, &OPENCODE);
+}
+
+// The copilot column and row: the fifth harness as a child of each of the four, and as a root
+// over each of the five. Same wire as opencode, so what these nine add is the fifth spelling of
+// marion's verbs on both of copilot's axes, driven by a real binary in both roles.
+
+#[test]
+fn q_claude_root_spawns_a_copilot_child_and_receives_its_contract() {
+    cell(&CLAUDE, &COPILOT);
+}
+
+#[test]
+fn r_codex_root_spawns_a_copilot_child_and_receives_its_contract() {
+    cell(&CODEX, &COPILOT);
+}
+
+#[test]
+fn s_gemini_root_spawns_a_copilot_child_and_receives_its_contract() {
+    cell(&GEMINI, &COPILOT);
+}
+
+#[test]
+fn t_opencode_root_spawns_a_copilot_child_and_receives_its_contract() {
+    cell(&OPENCODE, &COPILOT);
+}
+
+#[test]
+fn u_copilot_root_spawns_a_claude_child_and_receives_its_contract() {
+    cell(&COPILOT, &CLAUDE);
+}
+
+#[test]
+fn v_copilot_root_spawns_a_codex_child_and_receives_its_contract() {
+    cell(&COPILOT, &CODEX);
+}
+
+#[test]
+fn w_copilot_root_spawns_a_gemini_child_and_receives_its_contract() {
+    cell(&COPILOT, &GEMINI);
+}
+
+#[test]
+fn x_copilot_root_spawns_an_opencode_child_and_receives_its_contract() {
+    cell(&COPILOT, &OPENCODE);
+}
+
+#[test]
+fn y_copilot_root_spawns_a_copilot_child_and_receives_its_contract() {
+    cell(&COPILOT, &COPILOT);
 }
