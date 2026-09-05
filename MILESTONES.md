@@ -1077,6 +1077,18 @@ acceptance evidence, so every marker remains unchanged.
     `[partial]` pending the registry-driven adapters, facade advertisement, the CLI relay, and
     C1's recorded manual session.
 
+    **Mask-owned `SIGTSTP` in this commit moves no milestone marker.** Per the v5 synchronous-signal
+    design, the relay no longer installs a `SIGTSTP` handler. A default, unblocked `SIGTSTP` is
+    owned by blocking it on the relay thread and observing it pending without consuming it; an
+    ignored or already-blocked `SIGTSTP` is excluded and untouched; a custom `SIGTSTP` action
+    refuses acquisition before any mutation. Exact restoration unblocks it again. Covered by
+    `relay_signal_guard_blocks_a_default_sigtstp_instead_of_handling_it`,
+    `relay_signal_guard_leaves_an_ignored_sigtstp_untouched`,
+    `relay_signal_guard_excludes_an_already_blocked_sigtstp`, and
+    `relay_signal_guard_refuses_a_custom_sigtstp_disposition_without_side_effects`. The relay pump
+    does not yet act on a pending stop, so Ctrl-Z behavior in the dark facade is unchanged in
+    effect; M3 remains `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

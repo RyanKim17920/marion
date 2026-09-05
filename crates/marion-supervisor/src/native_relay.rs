@@ -58,6 +58,7 @@ unsafe extern "C" {
     fn signal(sig: std::ffi::c_int, handler: usize) -> usize;
     fn sigaction(sig: std::ffi::c_int, action: *const Sigaction, prior: *mut Sigaction) -> i32;
     fn pthread_sigmask(how: std::ffi::c_int, set: *const SigSet, old: *mut SigSet) -> i32;
+    fn sigpending(set: *mut SigSet) -> i32;
     fn raise(signal: std::ffi::c_int) -> std::ffi::c_int;
 }
 
@@ -65,6 +66,12 @@ unsafe extern "C" {
 const SIG_BLOCK: std::ffi::c_int = 1;
 #[cfg(target_os = "linux")]
 const SIG_BLOCK: std::ffi::c_int = 0;
+#[cfg(target_os = "macos")]
+const SIG_UNBLOCK: std::ffi::c_int = 2;
+#[cfg(target_os = "linux")]
+const SIG_UNBLOCK: std::ffi::c_int = 1;
+const SIG_DFL: usize = 0;
+const SIG_IGN: usize = 1;
 
 const SIGWINCH: std::ffi::c_int = 28;
 const SIGHUP: std::ffi::c_int = 1;
@@ -74,12 +81,14 @@ const SIGTERM: std::ffi::c_int = 15;
 const SIGTSTP: std::ffi::c_int = 18;
 #[cfg(target_os = "linux")]
 const SIGTSTP: std::ffi::c_int = 20;
-const RELAY_SIGNALS: [std::ffi::c_int; 5] = [SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGTSTP];
+/// Signals Marion replaces with its own atomic handler while a relay owns the process. `SIGTSTP`
+/// is deliberately absent: an eligible stop is owned by keeping it blocked and observing it
+/// pending, so the terminal's original default stop is revealed rather than re-implemented.
+const HANDLED_SIGNALS: [std::ffi::c_int; 4] = [SIGWINCH, SIGINT, SIGTERM, SIGHUP];
 
 const INTERRUPTED: u32 = 1 << 0;
 const TERMINATED: u32 = 1 << 1;
 const HUNG_UP: u32 = 1 << 2;
-const SUSPENDED: u32 = 1 << 3;
 
 #[cfg(target_os = "macos")]
 type SigSet = u32;
@@ -95,15 +104,29 @@ const fn empty_sigset() -> SigSet {
     [0; 128 / std::mem::size_of::<usize>()]
 }
 
-fn signal_is_blocked(mask: &SigSet, signal: std::ffi::c_int) -> bool {
+fn signal_in_set(set: &SigSet, signal: std::ffi::c_int) -> bool {
     #[cfg(target_os = "macos")]
     {
-        *mask & (1 << (signal - 1)) != 0
+        *set & (1 << (signal - 1)) != 0
     }
     #[cfg(target_os = "linux")]
     {
         let bit = usize::try_from(signal - 1).expect("relay signals are positive");
-        mask[bit / usize::BITS as usize] & (1usize << (bit % usize::BITS as usize)) != 0
+        set[bit / usize::BITS as usize] & (1usize << (bit % usize::BITS as usize)) != 0
+    }
+}
+
+fn signal_set(signal: std::ffi::c_int) -> SigSet {
+    #[cfg(target_os = "macos")]
+    {
+        1 << (signal - 1)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut set = empty_sigset();
+        let bit = usize::try_from(signal - 1).expect("relay signals are positive");
+        set[bit / usize::BITS as usize] |= 1usize << (bit % usize::BITS as usize);
+        set
     }
 }
 
@@ -116,6 +139,29 @@ fn current_thread_signal_mask() -> std::io::Result<SigSet> {
     } else {
         // `pthread_sigmask` returns the errno value directly instead of setting thread-local errno.
         Err(std::io::Error::from_raw_os_error(error))
+    }
+}
+
+/// Block or unblock one signal on the calling thread only.
+fn change_thread_signal_mask(how: std::ffi::c_int, signal: std::ffi::c_int) -> std::io::Result<()> {
+    let set = signal_set(signal);
+    // SAFETY: `set` is a valid platform `sigset_t`; a null old-mask pointer is permitted.
+    let error = unsafe { pthread_sigmask(how, &set, std::ptr::null_mut()) };
+    if error == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(error))
+    }
+}
+
+fn pending_signals() -> std::io::Result<SigSet> {
+    let mut pending = empty_sigset();
+    // SAFETY: `sigpending` writes the union of thread- and process-pending signals into a valid
+    // out pointer and never consumes any of them.
+    if unsafe { sigpending(&mut pending) } == 0 {
+        Ok(pending)
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -178,9 +224,6 @@ extern "C" fn on_relay_signal(signal: std::ffi::c_int) {
                 FIRST_RELAY_SIGNAL.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
             RELAY_SIGNAL_EVENTS.fetch_or(HUNG_UP, Ordering::SeqCst);
         }
-        SIGTSTP => {
-            RELAY_SIGNAL_EVENTS.fetch_or(SUSPENDED, Ordering::SeqCst);
-        }
         _ => {}
     }
 }
@@ -194,6 +237,8 @@ struct PriorSignalAction {
 pub(crate) struct RelaySignalGuard {
     /// Actions Marion's handler still replaces; each is removed the moment it is restored.
     prior: Vec<PriorSignalAction>,
+    /// An eligible default `SIGTSTP` is blocked on the relay thread for the life of the guard.
+    stop_owned: bool,
     captured_signal: Option<std::ffi::c_int>,
     _owner: MutexGuard<'static, ()>,
 }
@@ -233,16 +278,17 @@ impl RelaySignalGuard {
         }
         let mask = current_thread_signal_mask()
             .map_err(|error| format!("querying the native relay thread signal mask: {error}"))?;
-        let blocked: Vec<_> = RELAY_SIGNALS
+        let blocked: Vec<_> = HANDLED_SIGNALS
             .iter()
             .copied()
-            .filter(|signal| signal_is_blocked(&mask, *signal))
+            .filter(|signal| signal_in_set(&mask, *signal))
             .collect();
         if !blocked.is_empty() {
             return Err(format!(
                 "native relay thread blocked required signals {blocked:?}"
             ));
         }
+        let stop_owned = stop_eligible(&mask)?;
         // No signal edge from a prior owner may leak into this session.
         RESIZED.store(false, Ordering::SeqCst);
         RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
@@ -250,8 +296,8 @@ impl RelaySignalGuard {
         #[cfg(test)]
         RELAY_SIGNAL_INSTALL_ATTEMPT.store(0, Ordering::SeqCst);
         let action = Sigaction::relay_handler();
-        let mut prior = Vec::with_capacity(RELAY_SIGNALS.len());
-        for signal in RELAY_SIGNALS {
+        let mut prior = Vec::with_capacity(HANDLED_SIGNALS.len());
+        for signal in HANDLED_SIGNALS {
             let mut prior_action = Sigaction::zeroed();
             if let Err(error) = install_relay_signal_action(signal, &action, &mut prior_action) {
                 return match restore_signal_actions_matching(&mut prior, |_| true) {
@@ -274,15 +320,54 @@ impl RelaySignalGuard {
                 action: prior_action,
             });
         }
+        if stop_owned && let Err(error) = change_thread_signal_mask(SIG_BLOCK, SIGTSTP) {
+            return match restore_signal_actions_matching(&mut prior, |_| true) {
+                Ok(()) => {
+                    clear_relay_signal_state();
+                    Err(format!(
+                        "blocking SIGTSTP on the native relay thread: {error}"
+                    ))
+                }
+                Err(rollback) => {
+                    poison_relay_signal_ownership();
+                    Err(format!(
+                        "blocking SIGTSTP on the native relay thread: {error}; rolling back process signal actions failed: {rollback}"
+                    ))
+                }
+            };
+        }
         Ok(Self {
             prior,
+            stop_owned,
             captured_signal: None,
             _owner: owner,
         })
     }
 
+    /// Whether this relay owns the terminal's default stop: `SIGTSTP` was default and unblocked
+    /// at acquisition, so it now stays blocked and is only ever observed pending.
+    #[cfg(test)]
+    pub(crate) fn owns_stop(&self) -> bool {
+        self.stop_owned
+    }
+
+    /// Whether an owned `SIGTSTP` is pending. Observation never consumes it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the relay pump consumes the pending stop in the suspend transition"
+        )
+    )]
+    pub(crate) fn stop_pending(&self) -> std::io::Result<bool> {
+        if !self.stop_owned {
+            return Ok(false);
+        }
+        pending_signals().map(|pending| signal_in_set(&pending, SIGTSTP))
+    }
+
     fn restore_result(&mut self) -> Result<Option<std::ffi::c_int>, RelaySignalRestoreError> {
-        if self.prior.is_empty() {
+        if self.prior.is_empty() && !self.stop_owned {
             return Ok(None);
         }
         if let Err(error) = restore_signal_actions_matching(&mut self.prior, is_termination_signal)
@@ -307,8 +392,44 @@ impl RelaySignalGuard {
             poison_relay_signal_ownership();
             return Err(error);
         }
+        // The exact prior mask had SIGTSTP unblocked. A stop still pending now takes effect under
+        // its untouched default action, exactly as it would have without Marion.
+        if self.stop_owned {
+            if let Err(source) = change_thread_signal_mask(SIG_UNBLOCK, SIGTSTP) {
+                poison_relay_signal_ownership();
+                return Err(RelaySignalRestoreError {
+                    signal: SIGTSTP,
+                    source,
+                });
+            }
+            self.stop_owned = false;
+        }
         clear_relay_signal_state();
         Ok(self.captured_signal.take())
+    }
+}
+
+/// Decide `SIGTSTP` ownership from its current disposition, mutating nothing.
+///
+/// Default and unblocked: owned by blocking, so the original stop can be revealed later. Ignored
+/// or already blocked: excluded and left untouched. Custom: refused, because Marion neither
+/// chains nor replays foreign stop handlers.
+fn stop_eligible(mask: &SigSet) -> Result<bool, Refusal> {
+    let mut current = Sigaction::zeroed();
+    // SAFETY: a null replacement only queries the current action into a valid out pointer.
+    if unsafe { sigaction(SIGTSTP, std::ptr::null(), &mut current) } != 0 {
+        return Err(format!(
+            "querying the SIGTSTP disposition: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    match current.handler {
+        SIG_DFL => Ok(!signal_in_set(mask, SIGTSTP)),
+        SIG_IGN => Ok(false),
+        _ => Err(
+            "a custom SIGTSTP action is installed; the native relay reveals only the default stop"
+                .into(),
+        ),
     }
 }
 
@@ -345,7 +466,7 @@ fn install_relay_signal_action(
 
 #[cfg(test)]
 fn fail_relay_signal_install_at(attempt: usize) {
-    assert!((1..=RELAY_SIGNALS.len()).contains(&attempt));
+    assert!((1..=HANDLED_SIGNALS.len()).contains(&attempt));
     RELAY_SIGNAL_INSTALL_ATTEMPT.store(0, Ordering::SeqCst);
     FAIL_RELAY_SIGNAL_INSTALL_AT.store(attempt, Ordering::SeqCst);
 }
@@ -359,7 +480,7 @@ fn fail_relay_signal_restore_at(attempt: usize) {
 fn fail_relay_signal_restore_at_attempts(attempts: &[usize]) {
     let mut mask = 0;
     for &attempt in attempts {
-        assert!((1..=RELAY_SIGNALS.len()).contains(&attempt));
+        assert!((1..=HANDLED_SIGNALS.len()).contains(&attempt));
         mask |= 1 << (attempt - 1);
     }
     RELAY_SIGNAL_RESTORE_ATTEMPT.store(0, Ordering::SeqCst);
@@ -1093,14 +1214,14 @@ mod tests {
 
     use super::{
         AFTER_RELAY_SIGNAL_RESTORE, AFTER_RESIZE_SIGNAL_ACQUIRE,
-        BEFORE_REDELIVERY_WHILE_OWNER_HELD, FIRST_RELAY_SIGNAL, HUNG_UP, INTERRUPTED,
-        RELAY_SIGNAL_EVENTS, RELAY_SIGNALS, RESIZED, RawPaneSession, RelaySignalGuard, RelayStop,
-        SIG_BLOCK, SIGHUP, SIGINT, SIGTERM, SIGWINCH, SUSPENDED, SigSet, Sigaction, TERMINATED,
-        current_thread_signal_mask, empty_sigset, fail_relay_signal_install_at,
+        BEFORE_REDELIVERY_WHILE_OWNER_HELD, FIRST_RELAY_SIGNAL, HANDLED_SIGNALS, HUNG_UP,
+        INTERRUPTED, RELAY_SIGNAL_EVENTS, RESIZED, RawPaneSession, RelaySignalGuard, RelayStop,
+        SIG_BLOCK, SIG_DFL, SIG_IGN, SIGHUP, SIGINT, SIGTERM, SIGTSTP, SIGWINCH, SigSet, Sigaction,
+        TERMINATED, current_thread_signal_mask, empty_sigset, fail_relay_signal_install_at,
         fail_relay_signal_restore_at, fail_relay_signal_restore_at_attempts, finish_claimed_relay,
         on_relay_signal, pthread_sigmask, raise, redeliver_signal, relay_claimed,
-        resolve_relay_finish, setup_after_signal_acquire, sigaction, signal, signal_is_blocked,
-        write_passive_terminal_cleanup_to,
+        resolve_relay_finish, setup_after_signal_acquire, sigaction, signal, signal_in_set,
+        signal_set, write_passive_terminal_cleanup_to,
     };
     use crate::native_tty::test_support::{
         RawRelayTerminal, fail_next_stdin_flag_restore, raw_relay_terminal_on_test_pty,
@@ -1124,8 +1245,6 @@ mod tests {
     const PTY_SIGTERM_OBSERVED_BOUND: Duration = Duration::from_secs(3);
     const PTY_SIGTERM_NATURAL_EXIT_BOUND: Duration = Duration::from_millis(500);
     const SIG_ERR: usize = usize::MAX;
-    const SIG_DFL: usize = 0;
-    const SIG_IGN: usize = 1;
     static SENTINEL_HITS: AtomicUsize = AtomicUsize::new(0);
 
     #[cfg(target_os = "macos")]
@@ -1152,20 +1271,6 @@ mod tests {
     const SIG_SETMASK: std::ffi::c_int = 3;
     #[cfg(target_os = "linux")]
     const SIG_SETMASK: std::ffi::c_int = 2;
-
-    fn signal_set(signal: std::ffi::c_int) -> SigSet {
-        #[cfg(target_os = "macos")]
-        {
-            1 << (signal - 1)
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let mut set = empty_sigset();
-            let bit = usize::try_from(signal - 1).expect("signals are positive");
-            set[bit / usize::BITS as usize] |= 1usize << (bit % usize::BITS as usize);
-            set
-        }
-    }
 
     fn signal_added_to_set(mut set: SigSet, signal: std::ffi::c_int) -> SigSet {
         #[cfg(target_os = "macos")]
@@ -1237,7 +1342,7 @@ mod tests {
 
     fn install_exact_sentinels() -> RestoreActions {
         let mut priors = Vec::new();
-        for signal in RELAY_SIGNALS {
+        for signal in HANDLED_SIGNALS {
             let action = Sigaction {
                 handler: sentinel_winch as *const () as usize,
                 mask: sentinel_sigset(),
@@ -1281,7 +1386,7 @@ mod tests {
     }
 
     fn snapshot_actions() -> Vec<Sigaction> {
-        RELAY_SIGNALS
+        HANDLED_SIGNALS
             .iter()
             .map(|signal| {
                 let mut action = Sigaction::zeroed();
@@ -1307,8 +1412,9 @@ mod tests {
 
     fn assert_same_actions(actual: &[Sigaction], expected: &[Sigaction]) {
         assert_eq!(actual.len(), expected.len());
-        for (signal, (actual, expected)) in
-            RELAY_SIGNALS.iter().zip(actual.iter().zip(expected.iter()))
+        for (signal, (actual, expected)) in HANDLED_SIGNALS
+            .iter()
+            .zip(actual.iter().zip(expected.iter()))
         {
             assert_eq!(actual.handler, expected.handler, "handler for {signal}");
             assert_eq!(actual.mask, expected.mask, "mask for {signal}");
@@ -1425,7 +1531,7 @@ mod tests {
         RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
         let guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
 
-        for signal in RELAY_SIGNALS {
+        for signal in HANDLED_SIGNALS {
             // SAFETY: every signal has the relay's atomic-only handler throughout this loop.
             assert_eq!(unsafe { raise(signal) }, 0, "raising signal {signal}");
         }
@@ -1433,7 +1539,7 @@ mod tests {
         assert!(RESIZED.load(Ordering::SeqCst), "SIGWINCH was not published");
         assert_eq!(
             RELAY_SIGNAL_EVENTS.load(Ordering::SeqCst),
-            INTERRUPTED | TERMINATED | HUNG_UP | SUSPENDED,
+            INTERRUPTED | TERMINATED | HUNG_UP,
             "relay signal handlers did not publish every event"
         );
         assert_eq!(
@@ -1505,6 +1611,151 @@ mod tests {
     }
 
     #[test]
+    fn relay_signal_guard_blocks_a_default_sigtstp_instead_of_handling_it() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "relay_signal_guard_blocks_a_default_sigtstp_instead_of_handling_it",
+        ) {
+            return;
+        }
+        assert_eq!(snapshot_action(SIGTSTP).handler, SIG_DFL);
+        let original_mask = current_thread_signal_mask().expect("querying the thread signal mask");
+        assert!(!signal_in_set(&original_mask, SIGTSTP));
+
+        let guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
+
+        assert!(guard.owns_stop(), "a default unblocked SIGTSTP is eligible");
+        assert_eq!(
+            snapshot_action(SIGTSTP).handler,
+            SIG_DFL,
+            "Marion must never install a SIGTSTP action"
+        );
+        assert!(
+            signal_in_set(
+                &current_thread_signal_mask().expect("querying the thread signal mask"),
+                SIGTSTP
+            ),
+            "an eligible SIGTSTP stays blocked on the coordinator"
+        );
+        assert!(!guard.stop_pending().expect("querying pending signals"));
+        // SAFETY: SIGTSTP is blocked on this thread, so the raise only marks it pending.
+        assert_eq!(unsafe { raise(SIGTSTP) }, 0);
+        assert!(
+            guard.stop_pending().expect("querying pending signals"),
+            "a blocked default SIGTSTP is observed pending, never consumed"
+        );
+        assert!(
+            guard.stop_pending().expect("querying pending signals"),
+            "observing the pending stop must not consume it"
+        );
+
+        // Discard the pending stop before the mask is restored so this probe is not stopped.
+        let _ignored = install_ignored_action(SIGTSTP);
+        drop(guard);
+        assert_eq!(
+            current_thread_signal_mask().expect("querying the thread signal mask"),
+            original_mask,
+            "restoration returns the exact prior mask"
+        );
+    }
+
+    #[test]
+    fn relay_signal_guard_leaves_an_ignored_sigtstp_untouched() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "relay_signal_guard_leaves_an_ignored_sigtstp_untouched",
+        ) {
+            return;
+        }
+        let _ignored = install_ignored_action(SIGTSTP);
+        let original_mask = current_thread_signal_mask().expect("querying the thread signal mask");
+
+        let guard = RelaySignalGuard::acquire().expect("the relay owns every handled signal");
+
+        assert!(
+            !guard.owns_stop(),
+            "an ignored SIGTSTP is outside Marion ownership"
+        );
+        assert_eq!(snapshot_action(SIGTSTP).handler, SIG_IGN);
+        assert_eq!(
+            current_thread_signal_mask().expect("querying the thread signal mask"),
+            original_mask,
+            "an excluded SIGTSTP keeps its mask membership"
+        );
+        // SAFETY: the ignored disposition discards the raise.
+        assert_eq!(unsafe { raise(SIGTSTP) }, 0);
+        assert!(!guard.stop_pending().expect("querying pending signals"));
+        drop(guard);
+        assert_eq!(snapshot_action(SIGTSTP).handler, SIG_IGN);
+    }
+
+    #[test]
+    fn relay_signal_guard_excludes_an_already_blocked_sigtstp() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "relay_signal_guard_excludes_an_already_blocked_sigtstp",
+        ) {
+            return;
+        }
+        let _blocked = block_signal_on_current_thread(SIGTSTP);
+        let blocked_mask = current_thread_signal_mask().expect("querying the thread signal mask");
+
+        let guard = RelaySignalGuard::acquire().expect("an old-blocked SIGTSTP is not a refusal");
+
+        assert!(!guard.owns_stop());
+        assert_eq!(snapshot_action(SIGTSTP).handler, SIG_DFL);
+        assert!(!guard.stop_pending().expect("querying pending signals"));
+        drop(guard);
+        assert_eq!(
+            current_thread_signal_mask().expect("querying the thread signal mask"),
+            blocked_mask,
+            "Marion must not unblock a SIGTSTP it never blocked"
+        );
+    }
+
+    #[test]
+    fn relay_signal_guard_refuses_a_custom_sigtstp_disposition_without_side_effects() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "relay_signal_guard_refuses_a_custom_sigtstp_disposition_without_side_effects",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        let _restore_stop = RestoreActions(vec![(SIGTSTP, snapshot_action(SIGTSTP))]);
+        let sentinel = Sigaction {
+            handler: sentinel_winch as *const () as usize,
+            mask: empty_sigset(),
+            flags: 0,
+            #[cfg(target_os = "linux")]
+            restorer: 0,
+        };
+        // SAFETY: a valid action for one signal in this isolated probe.
+        assert_eq!(
+            unsafe { sigaction(SIGTSTP, &sentinel, std::ptr::null_mut()) },
+            0
+        );
+        let actions = snapshot_actions();
+        let original_mask = current_thread_signal_mask().expect("querying the thread signal mask");
+        RESIZED.store(true, Ordering::SeqCst);
+        FIRST_RELAY_SIGNAL.store(SIGINT, Ordering::SeqCst);
+
+        let error = RelaySignalGuard::acquire()
+            .err()
+            .expect("a custom SIGTSTP disposition refuses relay signal ownership");
+
+        assert!(error.contains("SIGTSTP"), "{error}");
+        assert_same_actions(&snapshot_actions(), &actions);
+        assert_eq!(snapshot_action(SIGTSTP).handler, sentinel.handler);
+        assert_eq!(
+            current_thread_signal_mask().expect("querying the thread signal mask"),
+            original_mask
+        );
+        assert!(RESIZED.load(Ordering::SeqCst));
+        assert_eq!(FIRST_RELAY_SIGNAL.load(Ordering::SeqCst), SIGINT);
+    }
+
+    #[test]
     fn relay_signal_guard_refuses_each_blocked_owned_signal_without_side_effects() {
         if !run_isolated_signal_probe(
             SIGNAL_SYNC_REDELIVERY_PROBE,
@@ -1515,7 +1766,7 @@ mod tests {
         let _restore_originals = install_exact_sentinels();
         let actions = snapshot_actions();
         let original_mask = current_thread_signal_mask().expect("querying the thread signal mask");
-        for signal in RELAY_SIGNALS {
+        for signal in HANDLED_SIGNALS {
             let blocked_mask = block_signal_on_current_thread(signal);
             let expected_blocked_mask = signal_added_to_set(original_mask, signal);
             RESIZED.store(true, Ordering::SeqCst);
@@ -2315,7 +2566,7 @@ mod tests {
             let inherited_mask =
                 current_thread_signal_mask().expect("querying the thread signal mask");
             assert!(
-                !signal_is_blocked(&inherited_mask, SIGTERM),
+                !signal_in_set(&inherited_mask, SIGTERM),
                 "the SIGTERM probe inherited SIGTERM blocked: {inherited_mask:?}"
             );
             let signals = RelaySignalGuard::acquire().expect("the probe owns relay signals");
