@@ -16,7 +16,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use marion_core::contract::AgentId;
@@ -31,7 +31,12 @@ type Refusal = String;
 const POLL: std::time::Duration = std::time::Duration::from_millis(50);
 static RESIZED: AtomicBool = AtomicBool::new(false);
 static RELAY_SIGNAL_EVENTS: AtomicU32 = AtomicU32::new(0);
+static FIRST_RELAY_SIGNAL: AtomicI32 = AtomicI32::new(0);
 static RELAY_SIGNAL_OWNER: Mutex<()> = Mutex::new(());
+static RELAY_SIGNAL_OWNERSHIP_POISONED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static BEFORE_REDELIVERY_WHILE_OWNER_HELD: Mutex<Option<Box<dyn FnOnce() + Send>>> =
+    Mutex::new(None);
 #[cfg(test)]
 static AFTER_RESIZE_SIGNAL_ACQUIRE: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 #[cfg(test)]
@@ -40,12 +45,26 @@ static FAIL_RELAY_SIGNAL_INSTALL_AT: std::sync::atomic::AtomicUsize =
 #[cfg(test)]
 static RELAY_SIGNAL_INSTALL_ATTEMPT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-
+#[cfg(test)]
+static FAIL_RELAY_SIGNAL_RESTORE_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static RELAY_SIGNAL_RESTORE_ATTEMPT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static AFTER_RELAY_SIGNAL_RESTORE: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 unsafe extern "C" {
     #[cfg(test)]
     fn signal(sig: std::ffi::c_int, handler: usize) -> usize;
     fn sigaction(sig: std::ffi::c_int, action: *const Sigaction, prior: *mut Sigaction) -> i32;
+    fn pthread_sigmask(how: std::ffi::c_int, set: *const SigSet, old: *mut SigSet) -> i32;
+    fn raise(signal: std::ffi::c_int) -> std::ffi::c_int;
 }
+
+#[cfg(target_os = "macos")]
+const SIG_BLOCK: std::ffi::c_int = 1;
+#[cfg(target_os = "linux")]
+const SIG_BLOCK: std::ffi::c_int = 0;
 
 const SIGWINCH: std::ffi::c_int = 28;
 const SIGHUP: std::ffi::c_int = 1;
@@ -74,6 +93,30 @@ type SigSet = [usize; 128 / std::mem::size_of::<usize>()];
 #[cfg(target_os = "linux")]
 const fn empty_sigset() -> SigSet {
     [0; 128 / std::mem::size_of::<usize>()]
+}
+
+fn signal_is_blocked(mask: &SigSet, signal: std::ffi::c_int) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        *mask & (1 << (signal - 1)) != 0
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let bit = usize::try_from(signal - 1).expect("relay signals are positive");
+        mask[bit / usize::BITS as usize] & (1usize << (bit % usize::BITS as usize)) != 0
+    }
+}
+
+fn current_thread_signal_mask() -> std::io::Result<SigSet> {
+    let mut mask = empty_sigset();
+    // SAFETY: a null replacement only queries the calling thread's mask into a valid out pointer.
+    let error = unsafe { pthread_sigmask(SIG_BLOCK, std::ptr::null(), &mut mask) };
+    if error == 0 {
+        Ok(mask)
+    } else {
+        // `pthread_sigmask` returns the errno value directly instead of setting thread-local errno.
+        Err(std::io::Error::from_raw_os_error(error))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -121,12 +164,18 @@ extern "C" fn on_relay_signal(signal: std::ffi::c_int) {
     match signal {
         SIGWINCH => RESIZED.store(true, Ordering::SeqCst),
         SIGINT => {
+            let _ =
+                FIRST_RELAY_SIGNAL.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
             RELAY_SIGNAL_EVENTS.fetch_or(INTERRUPTED, Ordering::SeqCst);
         }
         SIGTERM => {
+            let _ =
+                FIRST_RELAY_SIGNAL.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
             RELAY_SIGNAL_EVENTS.fetch_or(TERMINATED, Ordering::SeqCst);
         }
         SIGHUP => {
+            let _ =
+                FIRST_RELAY_SIGNAL.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
             RELAY_SIGNAL_EVENTS.fetch_or(HUNG_UP, Ordering::SeqCst);
         }
         SIGTSTP => {
@@ -139,16 +188,38 @@ extern "C" fn on_relay_signal(signal: std::ffi::c_int) {
 struct PriorSignalAction {
     signal: std::ffi::c_int,
     action: Sigaction,
+    relay_installed: bool,
 }
 
 /// Exclusive ownership of marion's process-global relay handlers for one native relay session.
-struct RelaySignalGuard {
+pub(crate) struct RelaySignalGuard {
     prior: Vec<PriorSignalAction>,
+    armed: bool,
+    captured_signal: Option<std::ffi::c_int>,
     _owner: MutexGuard<'static, ()>,
 }
 
+#[derive(Debug)]
+struct RelaySignalRestoreError {
+    signal: std::ffi::c_int,
+    source: std::io::Error,
+    captured_signal: Option<std::ffi::c_int>,
+}
+
+impl std::fmt::Display for RelaySignalRestoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "restoring process signal action {} failed: {}",
+            self.signal, self.source
+        )
+    }
+}
+
+impl std::error::Error for RelaySignalRestoreError {}
+
 impl RelaySignalGuard {
-    fn acquire() -> Result<Self, Refusal> {
+    pub(crate) fn acquire() -> Result<Self, Refusal> {
         let owner = match RELAY_SIGNAL_OWNER.try_lock() {
             Ok(owner) => owner,
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
@@ -156,9 +227,28 @@ impl RelaySignalGuard {
                 return Err("another native relay already owns SIGWINCH and relay signals".into());
             }
         };
+        if RELAY_SIGNAL_OWNERSHIP_POISONED.load(Ordering::SeqCst) {
+            return Err(
+                "process-global native relay signal ownership is poisoned after failed restoration"
+                    .into(),
+            );
+        }
+        let mask = current_thread_signal_mask()
+            .map_err(|error| format!("querying the native relay thread signal mask: {error}"))?;
+        let blocked: Vec<_> = RELAY_SIGNALS
+            .iter()
+            .copied()
+            .filter(|signal| signal_is_blocked(&mask, *signal))
+            .collect();
+        if !blocked.is_empty() {
+            return Err(format!(
+                "native relay thread blocked required signals {blocked:?}"
+            ));
+        }
         // No signal edge from a prior owner may leak into this session.
         RESIZED.store(false, Ordering::SeqCst);
         RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
+        FIRST_RELAY_SIGNAL.store(0, Ordering::SeqCst);
         #[cfg(test)]
         RELAY_SIGNAL_INSTALL_ATTEMPT.store(0, Ordering::SeqCst);
         let action = Sigaction::relay_handler();
@@ -166,23 +256,72 @@ impl RelaySignalGuard {
         for signal in RELAY_SIGNALS {
             let mut prior_action = Sigaction::zeroed();
             if let Err(error) = install_relay_signal_action(signal, &action, &mut prior_action) {
-                restore_signal_actions(&prior);
-                RESIZED.store(false, Ordering::SeqCst);
-                RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
-                return Err(format!(
-                    "installing process signal action {signal}: {error}"
-                ));
+                return match restore_signal_actions(&mut prior) {
+                    Ok(()) => {
+                        clear_relay_signal_state();
+                        Err(format!(
+                            "installing process signal action {signal}: {error}"
+                        ))
+                    }
+                    Err(rollback) => {
+                        RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+                        Err(format!(
+                            "installing process signal action {signal}: {error}; rolling back partially installed process signal actions failed: {rollback}"
+                        ))
+                    }
+                };
             }
             prior.push(PriorSignalAction {
                 signal,
                 action: prior_action,
+                relay_installed: true,
             });
         }
         Ok(Self {
             prior,
+            armed: true,
+            captured_signal: None,
             _owner: owner,
         })
     }
+
+    fn restore_result(&mut self) -> Result<Option<std::ffi::c_int>, RelaySignalRestoreError> {
+        if !self.armed {
+            return Ok(None);
+        }
+        if let Err(error) = restore_signal_actions_matching(&mut self.prior, is_termination_signal)
+        {
+            let _ = restore_signal_actions_matching(&mut self.prior, |signal| {
+                !is_termination_signal(signal)
+            });
+            RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
+        // All prior termination dispositions are live before this exchange. A signal handled
+        // before its restoration is represented here; one arriving after restoration invokes its
+        // prior disposition directly and cannot be erased by Marion.
+        let captured_signal = match FIRST_RELAY_SIGNAL.swap(0, Ordering::SeqCst) {
+            0 => None,
+            signal => Some(signal),
+        };
+        if self.captured_signal.is_none() {
+            self.captured_signal = captured_signal;
+        }
+        if let Err(mut error) = restore_signal_actions_matching(&mut self.prior, |signal| {
+            !is_termination_signal(signal)
+        }) {
+            error.captured_signal = self.captured_signal;
+            RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
+        self.armed = false;
+        clear_relay_signal_state();
+        Ok(self.captured_signal.take())
+    }
+}
+
+fn is_termination_signal(signal: std::ffi::c_int) -> bool {
+    matches!(signal, SIGINT | SIGTERM | SIGHUP)
 }
 
 fn install_relay_signal_action(
@@ -219,21 +358,156 @@ fn fail_relay_signal_install_at(attempt: usize) {
     FAIL_RELAY_SIGNAL_INSTALL_AT.store(attempt, Ordering::SeqCst);
 }
 
-fn restore_signal_actions(prior: &[PriorSignalAction]) {
-    for prior in prior.iter().rev() {
-        // SAFETY: each action is the unmodified value libc returned for this exact signal.
-        let _ = unsafe { sigaction(prior.signal, &prior.action, std::ptr::null_mut()) };
+#[cfg(test)]
+fn fail_relay_signal_restore_at(attempt: usize) {
+    fail_relay_signal_restore_at_attempts(&[attempt]);
+}
+
+#[cfg(test)]
+fn fail_relay_signal_restore_at_attempts(attempts: &[usize]) {
+    let mut mask = 0;
+    for &attempt in attempts {
+        assert!((1..=RELAY_SIGNALS.len()).contains(&attempt));
+        mask |= 1 << (attempt - 1);
     }
+    RELAY_SIGNAL_RESTORE_ATTEMPT.store(0, Ordering::SeqCst);
+    FAIL_RELAY_SIGNAL_RESTORE_ATTEMPTS.store(mask, Ordering::SeqCst);
+}
+
+fn restore_signal_action(prior: &PriorSignalAction) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        let attempt = RELAY_SIGNAL_RESTORE_ATTEMPT.fetch_add(1, Ordering::SeqCst) + 1;
+        let attempt_mask = 1 << (attempt - 1);
+        if FAIL_RELAY_SIGNAL_RESTORE_ATTEMPTS.fetch_and(!attempt_mask, Ordering::SeqCst)
+            & attempt_mask
+            != 0
+        {
+            return Err(std::io::Error::other(
+                "injected signal action restoration failure",
+            ));
+        }
+    }
+    // SAFETY: this action is the unmodified value libc returned for this exact signal.
+    if unsafe { sigaction(prior.signal, &prior.action, std::ptr::null_mut()) } == 0 {
+        #[cfg(test)]
+        if let Some(hook) = AFTER_RELAY_SIGNAL_RESTORE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            hook();
+        }
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn restore_signal_actions(prior: &mut [PriorSignalAction]) -> Result<(), RelaySignalRestoreError> {
+    let mut first_error = None;
+    for prior in prior.iter_mut().rev() {
+        if !prior.relay_installed {
+            continue;
+        }
+        match restore_signal_action(prior) {
+            Ok(()) => prior.relay_installed = false,
+            Err(source) if first_error.is_none() => {
+                first_error = Some(RelaySignalRestoreError {
+                    signal: prior.signal,
+                    source,
+                    captured_signal: None,
+                });
+            }
+            Err(_) => {}
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn restore_signal_actions_matching(
+    prior: &mut [PriorSignalAction],
+    matches: impl Fn(std::ffi::c_int) -> bool,
+) -> Result<(), RelaySignalRestoreError> {
+    let mut first_error = None;
+    for prior in prior
+        .iter_mut()
+        .rev()
+        .filter(|prior| prior.relay_installed && matches(prior.signal))
+    {
+        match restore_signal_action(prior) {
+            Ok(()) => prior.relay_installed = false,
+            Err(source) if first_error.is_none() => {
+                first_error = Some(RelaySignalRestoreError {
+                    signal: prior.signal,
+                    source,
+                    captured_signal: None,
+                });
+            }
+            Err(_) => {}
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn clear_relay_signal_state() {
+    RESIZED.store(false, Ordering::SeqCst);
+    RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
+    FIRST_RELAY_SIGNAL.store(0, Ordering::SeqCst);
 }
 
 impl Drop for RelaySignalGuard {
     fn drop(&mut self) {
         // Restore in reverse installation order while `_owner` still excludes a later relay.
-        restore_signal_actions(&self.prior);
-        // Restore first, then clear: no later signal can set marion's flags between cleanup and the
-        // next session's acquisition.
-        RESIZED.store(false, Ordering::SeqCst);
-        RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
+        if self.armed {
+            match self.restore_result() {
+                Ok(Some(signal)) => {
+                    let _ = redeliver_signal(signal);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+                    if let Some(signal) = error.captured_signal {
+                        let _ = redeliver_signal(signal);
+                    }
+                }
+            }
+        }
+        // Never clear FIRST while any Marion termination handler can still publish into it.
+        if self.prior.iter().all(|prior| !prior.relay_installed) {
+            clear_relay_signal_state();
+        } else {
+            RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelayStop {
+    Complete,
+    ExternalSignal(std::ffi::c_int),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RelayFinish {
+    Return(Result<(), Refusal>),
+    SignalRedelivered(std::ffi::c_int),
+}
+
+impl RelayFinish {
+    fn into_result(self) -> Result<(), Refusal> {
+        match self {
+            Self::Return(result) => result,
+            Self::SignalRedelivered(_) => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
+    fn signal_redelivered(&self) -> Option<std::ffi::c_int> {
+        match self {
+            Self::SignalRedelivered(signal) => Some(*signal),
+            Self::Return(_) => None,
+        }
     }
 }
 
@@ -268,16 +542,28 @@ pub(crate) fn run(handoff: crate::native_bootstrap::NativeFacadeHandoff) -> Resu
         .claim()
         .map_err(|error| format!("claiming the native launch: {error}"))?;
     let (agent_id, tty, stream) = claimed.into_parts();
-    let mut terminal = tty
-        .enter_native_relay()
-        .map_err(|error| format!("entering native terminal relay mode: {error}"))?;
-    relay_claimed(agent_id, &mut terminal, stream)
+    let (mut terminal, signals) = setup_after_signal_acquire(|| {
+        tty.enter_native_relay()
+            .map_err(|error| format!("entering native terminal relay mode: {error}"))
+    })?;
+    relay_claimed(agent_id, &mut terminal, stream, signals)
 }
 
+fn setup_after_signal_acquire<T>(
+    setup: impl FnOnce() -> Result<T, Refusal>,
+) -> Result<(T, RelaySignalGuard), Refusal> {
+    let signals = RelaySignalGuard::acquire()?;
+    let value = setup()?;
+    Ok((value, signals))
+}
+
+/// Relay the claimed pane over `stream` until End, detach, failure, or an owned termination
+/// signal, then restore the terminal and the prior signal actions in one finish stage.
 pub(crate) fn relay_claimed(
     agent_id: AgentId,
     terminal: &mut crate::native_tty::NativeRelayTerminal,
     stream: UnixStream,
+    signals: RelaySignalGuard,
 ) -> Result<(), Refusal> {
     let primary = (|| {
         let input_fd = {
@@ -288,7 +574,7 @@ pub(crate) fn relay_claimed(
             .map_err(|error| format!("retaining native terminal input: {error}"))?;
         let stdout = rustix::io::fcntl_dupfd_cloexec(terminal.stdout(), 3)
             .map_err(|error| format!("retaining native terminal output: {error}"))?;
-        let mut session = RawPaneSession::open_with_io(
+        let mut session = RawPaneSession::open_with_io_after_signal_acquire(
             stream,
             agent_id,
             OwnedFdReader(stdin),
@@ -304,22 +590,118 @@ pub(crate) fn relay_claimed(
         drop(session);
         result
     })();
-    finish_terminal_relay(terminal, primary)
+    finish_claimed_relay(terminal, primary, signals)
 }
 
-pub(crate) fn finish_terminal_relay(
+pub(crate) fn finish_claimed_relay(
     terminal: &mut crate::native_tty::NativeRelayTerminal,
-    primary: Result<(), Refusal>,
+    primary: Result<RelayStop, Refusal>,
+    mut signals: RelaySignalGuard,
 ) -> Result<(), Refusal> {
-    match (primary, terminal.restore_result()) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(primary), Ok(())) => Err(primary),
-        (Ok(()), Err(cleanup)) => Err(format!(
-            "native relay cleanup stage `terminal restoration` failed: {cleanup}"
-        )),
-        (Err(primary), Err(cleanup)) => Err(format!(
-            "{primary}; native relay cleanup stage `terminal restoration` failed: {cleanup}"
-        )),
+    let passive_cleanup =
+        write_passive_terminal_cleanup(terminal).map_err(|error| error.to_string());
+    let terminal_cleanup = terminal.restore_result().map_err(|error| error.to_string());
+    let signal_cleanup = signals.restore_result().map_err(|error| error.to_string());
+    let finish = resolve_relay_finish(
+        primary,
+        passive_cleanup,
+        terminal_cleanup,
+        signal_cleanup,
+        redeliver_signal,
+    );
+    // `restore_result` disarms the handlers but the guard deliberately retains exclusive signal
+    // ownership until synchronous redelivery has run the restored disposition. The relay thread
+    // never changes its mask, whose owned-signal invariant was checked during acquisition.
+    drop(signals);
+    finish.into_result()
+}
+
+fn resolve_relay_finish(
+    primary: Result<RelayStop, Refusal>,
+    passive_cleanup: Result<(), String>,
+    terminal_cleanup: Result<(), String>,
+    signal_cleanup: Result<Option<std::ffi::c_int>, String>,
+    mut redeliver: impl FnMut(std::ffi::c_int) -> Result<(), Refusal>,
+) -> RelayFinish {
+    let mut errors = Vec::new();
+    if let Err(primary) = primary {
+        errors.push(primary);
+    }
+    if let Err(error) = passive_cleanup {
+        errors.push(format!(
+            "native relay cleanup stage `passive terminal bytes` failed: {error}"
+        ));
+    }
+    if let Err(error) = terminal_cleanup {
+        errors.push(format!(
+            "native relay cleanup stage `terminal restoration` failed: {error}"
+        ));
+    }
+    let captured_signal = match signal_cleanup {
+        Ok(signal) => signal,
+        Err(error) => {
+            errors.push(format!(
+                "native relay cleanup stage `signal restoration` failed: {error}"
+            ));
+            None
+        }
+    };
+    if let Some(signal) = captured_signal {
+        #[cfg(test)]
+        if let Some(hook) = BEFORE_REDELIVERY_WHILE_OWNER_HELD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            hook();
+        }
+        match redeliver(signal) {
+            Ok(()) if errors.is_empty() => return RelayFinish::SignalRedelivered(signal),
+            Ok(()) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    RelayFinish::Return(if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    })
+}
+
+fn write_passive_terminal_cleanup(
+    terminal: &crate::native_tty::NativeRelayTerminal,
+) -> std::io::Result<()> {
+    struct BorrowedTerminalWriter<'a>(std::os::fd::BorrowedFd<'a>);
+    impl Write for BorrowedTerminalWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            rustix::io::write(self.0, bytes).map_err(Into::into)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    write_passive_terminal_cleanup_to(BorrowedTerminalWriter(terminal.stdout()))
+}
+
+fn write_passive_terminal_cleanup_to(mut output: impl Write) -> std::io::Result<()> {
+    let mut bytes = b"\x1b[?2004l".to_vec();
+    bytes.extend_from_slice(&marion_tui::guard::leave_bytes());
+    output.write_all(&bytes)
+}
+
+fn redeliver_signal(signal: std::ffi::c_int) -> Result<(), Refusal> {
+    // SAFETY: signal restoration completed before this call, so the current process observes the
+    // exact prior disposition. Acquisition proved this signal is unblocked on the relay thread,
+    // so `raise` invokes a caught disposition on this thread before returning, terminates for a
+    // default disposition, and returns normally only for a caught or ignored disposition.
+    let result = unsafe { raise(signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "native relay cleanup stage `signal redelivery` failed for {signal}: {}",
+            std::io::Error::last_os_error()
+        ))
     }
 }
 
@@ -345,13 +727,21 @@ struct RawPaneSession<W: Write> {
     next_seq: u64,
     cut: u64,
     input_fd: Option<std::os::fd::RawFd>,
-    resize_signal: Option<RelaySignalGuard>,
+    signal_guard: Option<RelaySignalGuard>,
+    relay_signals_armed: bool,
     leaving: Arc<AtomicBool>,
     keyboard_failure: Arc<std::sync::Mutex<Option<String>>>,
     keyboard: Option<std::thread::JoinHandle<()>>,
 }
 
 impl<W: Write> RawPaneSession<W> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "production acquires signal ownership before constructing the relay session"
+        )
+    )]
     fn open_with_io<R: Read + Send + 'static>(
         stream: UnixStream,
         id: AgentId,
@@ -360,10 +750,46 @@ impl<W: Write> RawPaneSession<W> {
         output: W,
         geometry: Option<(u16, u16)>,
     ) -> Result<Self, Refusal> {
-        let resize_signal = geometry
+        let signal_guard = geometry
             .is_none()
             .then(RelaySignalGuard::acquire)
             .transpose()?;
+        Self::open_with_io_and_signal_state(
+            stream,
+            id,
+            input,
+            input_fd,
+            output,
+            geometry,
+            signal_guard,
+            true,
+        )
+    }
+
+    fn open_with_io_after_signal_acquire<R: Read + Send + 'static>(
+        stream: UnixStream,
+        id: AgentId,
+        input: R,
+        input_fd: Option<std::os::fd::RawFd>,
+        output: W,
+        geometry: Option<(u16, u16)>,
+    ) -> Result<Self, Refusal> {
+        Self::open_with_io_and_signal_state(
+            stream, id, input, input_fd, output, geometry, None, true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_with_io_and_signal_state<R: Read + Send + 'static>(
+        stream: UnixStream,
+        id: AgentId,
+        input: R,
+        input_fd: Option<std::os::fd::RawFd>,
+        output: W,
+        geometry: Option<(u16, u16)>,
+        signal_guard: Option<RelaySignalGuard>,
+        relay_signals_armed: bool,
+    ) -> Result<Self, Refusal> {
         #[cfg(test)]
         if let Some(hook) = AFTER_RESIZE_SIGNAL_ACQUIRE
             .lock()
@@ -402,7 +828,8 @@ impl<W: Write> RawPaneSession<W> {
             next_seq: 0,
             cut: 0,
             input_fd,
-            resize_signal,
+            signal_guard,
+            relay_signals_armed,
             leaving: Arc::new(AtomicBool::new(false)),
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
             keyboard: None,
@@ -666,8 +1093,14 @@ impl<W: Write> RawPaneSession<W> {
         }
     }
 
-    fn pump(&mut self) -> Result<(), Refusal> {
+    fn pump(&mut self) -> Result<RelayStop, Refusal> {
         loop {
+            if self.relay_signals_armed {
+                let signal = FIRST_RELAY_SIGNAL.load(Ordering::SeqCst);
+                if signal != 0 {
+                    return Ok(RelayStop::ExternalSignal(signal));
+                }
+            }
             if self.leaving.load(Ordering::SeqCst) {
                 if let Some(error) = self
                     .keyboard_failure
@@ -677,7 +1110,7 @@ impl<W: Write> RawPaneSession<W> {
                 {
                     return Err(error);
                 }
-                return Ok(());
+                return Ok(RelayStop::Complete);
             }
             self.forward_resize()?;
             match self.next_frame()? {
@@ -700,7 +1133,7 @@ impl<W: Write> RawPaneSession<W> {
                         }
                         crate::pane_client::PaneV1Action::Resize { .. }
                         | crate::pane_client::PaneV1Action::Ignore => {}
-                        crate::pane_client::PaneV1Action::End => return Ok(()),
+                        crate::pane_client::PaneV1Action::End => return Ok(RelayStop::Complete),
                     }
                 }
                 Some(other) => {
@@ -749,7 +1182,7 @@ impl<W: Write> Drop for RawPaneSession<W> {
         if let Some(keyboard) = self.keyboard.take() {
             let _ = keyboard.join();
         }
-        drop(self.resize_signal.take());
+        drop(self.signal_guard.take());
     }
 }
 
@@ -766,9 +1199,14 @@ mod tests {
     use marion_proto::{Call, Event, Frame, Input, MethodResult, PaneFrameKindV1, RequestId};
 
     use super::{
-        AFTER_RESIZE_SIGNAL_ACQUIRE, HUNG_UP, INTERRUPTED, RELAY_SIGNAL_EVENTS, RESIZED,
-        RawPaneSession, RelaySignalGuard, SIGWINCH, SUSPENDED, Sigaction, TERMINATED, empty_sigset,
-        fail_relay_signal_install_at, sigaction, signal,
+        AFTER_RELAY_SIGNAL_RESTORE, AFTER_RESIZE_SIGNAL_ACQUIRE,
+        BEFORE_REDELIVERY_WHILE_OWNER_HELD, FIRST_RELAY_SIGNAL, HUNG_UP, INTERRUPTED,
+        RELAY_SIGNAL_EVENTS, RESIZED, RawPaneSession, RelaySignalGuard, RelayStop, SIGWINCH,
+        SUSPENDED, SigSet, Sigaction, TERMINATED, empty_sigset, fail_relay_signal_install_at,
+        fail_relay_signal_restore_at, fail_relay_signal_restore_at_attempts, finish_claimed_relay,
+        on_relay_signal, pthread_sigmask, redeliver_signal, resolve_relay_finish,
+        setup_after_signal_acquire, sigaction, signal, signal_is_blocked,
+        write_passive_terminal_cleanup_to,
     };
 
     const SIGNAL_RESTORE_PROBE: &str = "MARION_NATIVE_SIGNAL_RESTORE_PROBE";
@@ -776,7 +1214,21 @@ mod tests {
     const SIGNAL_RESET_PROBE: &str = "MARION_NATIVE_SIGNAL_RESET_PROBE";
     const SIGNAL_OWNER_PROBE: &str = "MARION_NATIVE_SIGNAL_OWNER_PROBE";
     const SIGNAL_HANDLER_PROBE: &str = "MARION_NATIVE_SIGNAL_HANDLER_PROBE";
+    const SIGNAL_IGNORED_PROBE: &str = "MARION_NATIVE_SIGNAL_IGNORED_PROBE";
+    const SIGNAL_SYNC_REDELIVERY_PROBE: &str = "MARION_NATIVE_SIGNAL_SYNC_REDELIVERY_PROBE";
+    const SIGNAL_TIMEOUT_PROBE: &str = "MARION_NATIVE_SIGNAL_TIMEOUT_PROBE";
+    const PTY_SMOKE_INNER: &str = "MARION_NATIVE_PTY_SMOKE_INNER";
+    const PTY_SMOKE_PROBE: &str = "MARION_NATIVE_PTY_SMOKE_PROBE";
+    const PTY_SIGTERM_INNER: &str = "MARION_NATIVE_PTY_SIGTERM_INNER";
+    const PTY_SIGTERM_PROBE: &str = "MARION_NATIVE_PTY_SIGTERM_PROBE";
+    const PTY_NESTED_RUNNER_STARTUP_BOUND: Duration = Duration::from_secs(3);
+    const PTY_SMOKE_LIFECYCLE_BOUND: Duration = Duration::from_secs(3);
+    const PTY_SIGTERM_READY_BOUND: Duration = Duration::from_secs(3);
+    const PTY_SIGTERM_OBSERVED_BOUND: Duration = Duration::from_secs(3);
+    const PTY_SIGTERM_NATURAL_EXIT_BOUND: Duration = Duration::from_millis(500);
     const SIG_ERR: usize = usize::MAX;
+    const SIG_DFL: usize = 0;
+    const SIG_IGN: usize = 1;
     static SENTINEL_HITS: AtomicUsize = AtomicUsize::new(0);
 
     const SIGHUP: std::ffi::c_int = 1;
@@ -792,8 +1244,88 @@ mod tests {
     #[cfg(target_os = "linux")]
     const TEST_SA_RESTART: i32 = 0x1000_0000;
 
+    fn pty_smoke_outer_bound() -> Duration {
+        PTY_NESTED_RUNNER_STARTUP_BOUND + PTY_SMOKE_LIFECYCLE_BOUND
+    }
+
+    fn pty_sigterm_outer_bound() -> Duration {
+        PTY_NESTED_RUNNER_STARTUP_BOUND
+            + PTY_SIGTERM_READY_BOUND
+            + PTY_SIGTERM_OBSERVED_BOUND
+            + PTY_SIGTERM_NATURAL_EXIT_BOUND
+    }
+
     unsafe extern "C" {
         fn raise(signal: std::ffi::c_int) -> std::ffi::c_int;
+        fn _exit(status: std::ffi::c_int) -> !;
+    }
+
+    #[cfg(target_os = "macos")]
+    const SIG_BLOCK: std::ffi::c_int = 1;
+    #[cfg(target_os = "linux")]
+    const SIG_BLOCK: std::ffi::c_int = 0;
+    #[cfg(target_os = "macos")]
+    const SIG_SETMASK: std::ffi::c_int = 3;
+    #[cfg(target_os = "linux")]
+    const SIG_SETMASK: std::ffi::c_int = 2;
+
+    fn signal_set(signal: std::ffi::c_int) -> SigSet {
+        #[cfg(target_os = "macos")]
+        {
+            1 << (signal - 1)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut set = empty_sigset();
+            let bit = usize::try_from(signal - 1).expect("signals are positive");
+            set[bit / usize::BITS as usize] |= 1usize << (bit % usize::BITS as usize);
+            set
+        }
+    }
+
+    fn signal_added_to_set(mut set: SigSet, signal: std::ffi::c_int) -> SigSet {
+        #[cfg(target_os = "macos")]
+        {
+            set |= signal_set(signal);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let signal = signal_set(signal);
+            for (word, signal_word) in set.iter_mut().zip(signal) {
+                *word |= signal_word;
+            }
+        }
+        set
+    }
+
+    fn current_thread_signal_mask() -> SigSet {
+        let mut mask = empty_sigset();
+        // SAFETY: a null replacement queries the calling thread's mask into a valid out pointer.
+        assert_eq!(
+            unsafe { pthread_sigmask(SIG_BLOCK, std::ptr::null(), &mut mask) },
+            0
+        );
+        mask
+    }
+
+    struct RestoreThreadSignalMask(SigSet);
+
+    impl Drop for RestoreThreadSignalMask {
+        fn drop(&mut self) {
+            // SAFETY: the saved mask was returned for this calling thread by pthread_sigmask.
+            let _ = unsafe { pthread_sigmask(SIG_SETMASK, &self.0, std::ptr::null_mut()) };
+        }
+    }
+
+    fn block_signal_on_current_thread(signal: std::ffi::c_int) -> RestoreThreadSignalMask {
+        let blocked = signal_set(signal);
+        let mut prior = empty_sigset();
+        // SAFETY: both pointers refer to valid platform `sigset_t` representations.
+        assert_eq!(
+            unsafe { pthread_sigmask(SIG_BLOCK, &blocked, &mut prior) },
+            0
+        );
+        RestoreThreadSignalMask(prior)
     }
 
     extern "C" fn sentinel_winch(_: std::ffi::c_int) {
@@ -847,6 +1379,20 @@ mod tests {
         RestoreActions(priors)
     }
 
+    fn install_ignored_action(signal: std::ffi::c_int) -> RestoreActions {
+        let action = Sigaction {
+            handler: SIG_IGN,
+            mask: empty_sigset(),
+            flags: 0,
+            #[cfg(target_os = "linux")]
+            restorer: 0,
+        };
+        let mut prior = Sigaction::zeroed();
+        // SAFETY: `action` and `prior` use libc's Darwin/Linux `struct sigaction` layout.
+        assert_eq!(unsafe { sigaction(signal, &action, &mut prior) }, 0);
+        RestoreActions(vec![(signal, prior)])
+    }
+
     #[cfg(target_os = "macos")]
     fn sentinel_sigset() -> super::SigSet {
         1 << (SIGTERM - 1)
@@ -873,6 +1419,16 @@ mod tests {
                 action
             })
             .collect()
+    }
+
+    fn snapshot_action(signal: std::ffi::c_int) -> Sigaction {
+        let mut action = Sigaction::zeroed();
+        // SAFETY: a null replacement queries the current action into a valid out pointer.
+        assert_eq!(
+            unsafe { sigaction(signal, std::ptr::null(), &mut action) },
+            0
+        );
+        action
     }
 
     fn assert_same_actions(actual: &[Sigaction], expected: &[Sigaction]) {
@@ -953,6 +1509,35 @@ mod tests {
     }
 
     #[test]
+    fn partial_install_and_rollback_failure_poison_signal_ownership() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "partial_install_and_rollback_failure_poison_signal_ownership",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        fail_relay_signal_install_at(3);
+        fail_relay_signal_restore_at(1);
+
+        let error = RelaySignalGuard::acquire()
+            .err()
+            .expect("installation and rollback both fail");
+        assert!(
+            error.contains("injected signal action installation failure"),
+            "the install failure was lost: {error}"
+        );
+        assert!(
+            error.contains("injected signal action restoration failure"),
+            "the rollback failure was lost: {error}"
+        );
+        let reacquire = RelaySignalGuard::acquire()
+            .err()
+            .expect("unsafe process-global ownership stays poisoned");
+        assert!(reacquire.contains("poisoned"), "{reacquire}");
+    }
+
+    #[test]
     fn relay_signal_handlers_only_publish_atomic_events() {
         if !run_isolated_signal_probe(
             SIGNAL_HANDLER_PROBE,
@@ -983,30 +1568,829 @@ mod tests {
             "a prior signal action ran while the relay owned the process actions"
         );
         drop(guard);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while SENTINEL_HITS.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            SENTINEL_HITS.load(Ordering::SeqCst),
+            1,
+            "the guard did not finish asynchronous first-signal redelivery before test teardown"
+        );
+    }
+
+    #[test]
+    fn relay_signal_handler_preserves_the_first_external_signal_and_guard_resets_it() {
+        if !run_isolated_signal_probe(
+            SIGNAL_HANDLER_PROBE,
+            "relay_signal_handler_preserves_the_first_external_signal_and_guard_resets_it",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        SENTINEL_HITS.store(0, Ordering::SeqCst);
+        let guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
+        on_relay_signal(SIGTERM);
+        on_relay_signal(SIGINT);
+        on_relay_signal(SIGHUP);
+        assert_eq!(FIRST_RELAY_SIGNAL.load(Ordering::SeqCst), SIGTERM);
+        drop(guard);
+        assert_eq!(FIRST_RELAY_SIGNAL.load(Ordering::SeqCst), 0);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while SENTINEL_HITS.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(SENTINEL_HITS.load(Ordering::SeqCst), 1);
+
+        let guard = RelaySignalGuard::acquire().expect("a later relay reacquires signals");
+        assert_eq!(FIRST_RELAY_SIGNAL.load(Ordering::SeqCst), 0);
+        drop(guard);
+        assert_eq!(SENTINEL_HITS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn relay_signal_guard_preserves_an_ignored_sigterm_disposition() {
+        if !run_isolated_signal_probe(
+            SIGNAL_IGNORED_PROBE,
+            "relay_signal_guard_preserves_an_ignored_sigterm_disposition",
+        ) {
+            return;
+        }
+        let _restore_original = install_ignored_action(SIGTERM);
+        let guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
+        on_relay_signal(SIGTERM);
+        drop(guard);
+
+        assert_eq!(FIRST_RELAY_SIGNAL.load(Ordering::SeqCst), 0);
+        let ignored = snapshot_action(SIGTERM);
+        assert_eq!(
+            ignored.handler, SIG_IGN,
+            "SIGTERM no longer remains ignored"
+        );
+        drop(RelaySignalGuard::acquire().expect("ignored SIGTERM permits reacquisition"));
+    }
+
+    #[test]
+    fn relay_signal_guard_refuses_each_blocked_owned_signal_without_side_effects() {
+        if !run_isolated_signal_probe(
+            SIGNAL_SYNC_REDELIVERY_PROBE,
+            "relay_signal_guard_refuses_each_blocked_owned_signal_without_side_effects",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        let actions = snapshot_actions();
+        let original_mask = current_thread_signal_mask();
+        for signal in RELAY_SIGNALS {
+            let blocked_mask = block_signal_on_current_thread(signal);
+            let expected_blocked_mask = signal_added_to_set(original_mask, signal);
+            RESIZED.store(true, Ordering::SeqCst);
+            RELAY_SIGNAL_EVENTS.store(0xa5, Ordering::SeqCst);
+            FIRST_RELAY_SIGNAL.store(SIGINT, Ordering::SeqCst);
+            let mut setup_ran = false;
+
+            let error = setup_after_signal_acquire(|| {
+                setup_ran = true;
+                Ok(())
+            })
+            .err()
+            .expect("a blocked owned signal prevents relay setup");
+
+            assert!(error.contains("blocked"), "{error}");
+            assert!(error.contains(&signal.to_string()), "{error}");
+            assert!(!setup_ran, "relay setup ran with signal {signal} blocked");
+            assert!(RESIZED.load(Ordering::SeqCst));
+            assert_eq!(RELAY_SIGNAL_EVENTS.load(Ordering::SeqCst), 0xa5);
+            assert_eq!(FIRST_RELAY_SIGNAL.load(Ordering::SeqCst), SIGINT);
+            assert_same_actions(&snapshot_actions(), &actions);
+            assert_eq!(
+                current_thread_signal_mask(),
+                expected_blocked_mask,
+                "relay admission changed the calling thread's mask for signal {signal}"
+            );
+            drop(blocked_mask);
+            assert_eq!(current_thread_signal_mask(), original_mask);
+        }
+    }
+
+    #[test]
+    fn finish_redelivers_synchronously_while_signal_owner_is_held() {
+        if !run_isolated_signal_probe(
+            SIGNAL_SYNC_REDELIVERY_PROBE,
+            "finish_redelivers_synchronously_while_signal_owner_is_held",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        SENTINEL_HITS.store(0, Ordering::SeqCst);
+        let mut owner_a = RelaySignalGuard::acquire().expect("relay A owns every signal");
+        on_relay_signal(SIGTERM);
+        let signal_cleanup = owner_a.restore_result().map_err(|error| error.to_string());
+        *BEFORE_REDELIVERY_WHILE_OWNER_HELD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(Box::new(|| {
+            let owner_b = RelaySignalGuard::acquire();
+            assert!(
+                owner_b.is_err(),
+                "relay B acquired signal ownership before redelivery"
+            );
+        }));
+
+        let finish = resolve_relay_finish(
+            Ok(RelayStop::ExternalSignal(SIGTERM)),
+            Ok(()),
+            Ok(()),
+            signal_cleanup,
+            redeliver_signal,
+        );
+
+        assert_eq!(finish.signal_redelivered(), Some(SIGTERM));
+        assert_eq!(
+            SENTINEL_HITS.load(Ordering::SeqCst),
+            1,
+            "finish returned before the restored sentinel ran"
+        );
+        drop(owner_a);
+        drop(RelaySignalGuard::acquire().expect("relay B reacquires ownership after finish"));
+    }
+
+    #[test]
+    fn explicit_signal_restore_failure_keeps_drop_fallback_armed() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "explicit_signal_restore_failure_keeps_drop_fallback_armed",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        let sentinels = snapshot_actions();
+        let mut guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
+        fail_relay_signal_restore_at(1);
+        let error = guard
+            .restore_result()
+            .expect_err("the injected explicit restoration fails");
+        assert!(
+            error
+                .to_string()
+                .contains("injected signal action restoration failure"),
+            "{error}"
+        );
+        drop(guard);
+        assert_same_actions(&snapshot_actions(), &sentinels);
+    }
+
+    #[test]
+    fn every_failed_signal_restoration_remains_armed_for_drop_retry() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "every_failed_signal_restoration_remains_armed_for_drop_retry",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        let sentinels = snapshot_actions();
+        let mut guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
+        fail_relay_signal_restore_at_attempts(&[1, 2]);
+
+        let error = guard
+            .restore_result()
+            .expect_err("two distinct action restorations fail in one pass");
+        assert!(
+            error
+                .to_string()
+                .contains("injected signal action restoration failure"),
+            "{error}"
+        );
+
+        drop(guard);
+        assert_same_actions(&snapshot_actions(), &sentinels);
+    }
+
+    #[test]
+    fn signal_published_during_action_restoration_is_not_cleared() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "signal_published_during_action_restoration_is_not_cleared",
+        ) {
+            return;
+        }
+        let _restore_originals = install_exact_sentinels();
+        let mut guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
+        *AFTER_RELAY_SIGNAL_RESTORE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(Box::new(|| on_relay_signal(SIGTERM)));
+
+        let captured = guard
+            .restore_result()
+            .expect("restoring the exact prior signal actions");
+
+        assert_eq!(
+            captured,
+            Some(SIGTERM),
+            "a termination published during action restoration was not drained for redelivery"
+        );
+        assert_eq!(FIRST_RELAY_SIGNAL.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn signal_ownership_is_acquired_before_relay_setup_runs() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "signal_ownership_is_acquired_before_relay_setup_runs",
+        ) {
+            return;
+        }
+        let result = setup_after_signal_acquire(|| {
+            let overlap = RelaySignalGuard::acquire()
+                .err()
+                .expect("setup runs while relay signal ownership is held");
+            assert!(overlap.contains("already owns"), "{overlap}");
+            Err::<(), _>("injected setup failure".to_string())
+        });
+        let error = match result {
+            Ok(_) => panic!("the injected setup failure unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "injected setup failure");
+        drop(RelaySignalGuard::acquire().expect("setup failure finalized signal ownership"));
+    }
+
+    #[test]
+    fn passive_cleanup_bytes_are_attempted_for_complete_and_error_outcomes() {
+        let expected = {
+            let mut bytes = b"\x1b[?2004l".to_vec();
+            bytes.extend_from_slice(&marion_tui::guard::leave_bytes());
+            bytes
+        };
+        for primary in [Ok(RelayStop::Complete), Err("primary failure".to_string())] {
+            let mut observed = Vec::new();
+            let passive =
+                write_passive_terminal_cleanup_to(&mut observed).map_err(|e| e.to_string());
+            let _ = resolve_relay_finish(primary, passive, Ok(()), Ok(None), |_| Ok(()));
+            assert_eq!(observed, expected);
+        }
+    }
+
+    #[test]
+    fn passive_cleanup_failure_composes_with_the_primary_error() {
+        let outcome = resolve_relay_finish(
+            Err("primary failure".to_string()),
+            Err("cleanup writer failed".to_string()),
+            Ok(()),
+            Ok(None),
+            |_| Ok(()),
+        );
+        let error = outcome.into_result().unwrap_err();
+        assert!(error.contains("primary failure"), "{error}");
+        assert!(error.contains("passive terminal bytes"), "{error}");
+        assert!(error.contains("cleanup writer failed"), "{error}");
+    }
+
+    #[test]
+    fn returning_signal_redelivery_preserves_a_primary_error() {
+        let outcome = resolve_relay_finish(
+            Err("primary failure".to_string()),
+            Ok(()),
+            Ok(()),
+            Ok(Some(SIGTERM)),
+            |signal| {
+                assert_eq!(signal, SIGTERM);
+                Ok(())
+            },
+        );
+        let error = outcome.into_result().unwrap_err();
+        assert_eq!(error, "primary failure");
+    }
+
+    #[test]
+    fn returning_signal_redelivery_preserves_a_passive_cleanup_error() {
+        let outcome = resolve_relay_finish(
+            Ok(RelayStop::ExternalSignal(SIGTERM)),
+            Err("cleanup writer failed".to_string()),
+            Ok(()),
+            Ok(Some(SIGTERM)),
+            |signal| {
+                assert_eq!(signal, SIGTERM);
+                Ok(())
+            },
+        );
+        let error = outcome.into_result().unwrap_err();
+        assert_eq!(
+            error,
+            "native relay cleanup stage `passive terminal bytes` failed: cleanup writer failed"
+        );
+    }
+
+    #[test]
+    fn returning_signal_redelivery_without_errors_detaches_cleanly() {
+        let outcome = resolve_relay_finish(
+            Ok(RelayStop::ExternalSignal(SIGTERM)),
+            Ok(()),
+            Ok(()),
+            Ok(Some(SIGTERM)),
+            |signal| {
+                assert_eq!(signal, SIGTERM);
+                Ok(())
+            },
+        );
+        assert_eq!(outcome.signal_redelivered(), Some(SIGTERM));
+        assert_eq!(outcome.into_result(), Ok(()));
+    }
+
+    #[test]
+    fn isolated_signal_probe_kills_and_reaps_a_blocked_child_at_its_deadline() {
+        if std::env::var_os(SIGNAL_TIMEOUT_PROBE).is_some() {
+            std::thread::park();
+            unreachable!("the blocked child must be killed by its direct owner");
+        }
+        let started = Instant::now();
+        let error = run_isolated_signal_probe_bounded(
+            SIGNAL_TIMEOUT_PROBE,
+            "isolated_signal_probe_kills_and_reaps_a_blocked_child_at_its_deadline",
+            Duration::from_millis(250),
+        )
+        .expect_err("the blocked isolated probe reaches its deadline");
+        assert!(error.contains("timed out"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the isolated child was not bounded: {:?}",
+            started.elapsed()
+        );
     }
 
     fn run_isolated_signal_probe(variable: &str, test: &str) -> bool {
         if std::env::var_os(variable).is_some() {
             return true;
         }
+        if let Err(error) =
+            run_isolated_signal_probe_bounded(variable, test, Duration::from_secs(5))
+        {
+            panic!("{error}");
+        }
+        false
+    }
+
+    fn run_isolated_signal_probe_bounded(
+        variable: &str,
+        test: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let mut probe = exact_native_relay_test_command(test);
+        probe.env(variable, "1");
+        let output = crate::run::run_bounded(&mut probe, timeout)
+            .map_err(|error| format!("running the bounded isolated probe: {error}"))?;
+        if !output.timed_out && output.code == Some(0) {
+            Ok(())
+        } else {
+            let disposition = if output.timed_out {
+                format!("timed out after {timeout:?}")
+            } else if let Some(code) = output.code {
+                format!("exited with code {code}")
+            } else if let Some(signal) = output.signal {
+                format!("exited from signal {signal}")
+            } else {
+                "exited without a code or signal".to_string()
+            };
+            let capture = if output.capture_truncated {
+                "output capture was truncated after the bounded drain"
+            } else {
+                "output capture completed"
+            };
+            Err(format!(
+                "the bounded isolated probe {disposition}; {capture}:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
+    fn exact_native_relay_test_command(test: &str) -> std::process::Command {
         let name = format!(
             "{}::{test}",
             module_path!().split_once("::").expect("crate::module").1
         );
-        let probe = std::process::Command::new(
+        let mut command = std::process::Command::new(
             std::env::current_exe().expect("the unit-test binary has a path"),
-        )
-        .args(["--exact", "--nocapture", "--test-threads", "1", &name])
-        .env(variable, "1")
-        .output()
-        .expect("the isolated signal probe runs");
-        assert!(
-            probe.status.success(),
-            "the isolated signal probe failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&probe.stdout),
-            String::from_utf8_lossy(&probe.stderr)
         );
-        false
+        command.args(["--exact", "--nocapture", "--test-threads", "1", &name]);
+        command
+    }
+
+    fn fixture_phase(marker: &str) {
+        let mut stderr = std::io::stderr().lock();
+        writeln!(stderr, "NATIVE_RELAY_FIXTURE_PHASE={marker}")
+            .expect("writing the native relay fixture phase");
+        stderr
+            .flush()
+            .expect("flushing the native relay fixture phase");
+    }
+
+    fn exit_after_successful_fixture(fixture: fn()) -> ! {
+        fixture();
+        // Only a successful fixture reaches this point; panics retain libtest's failure capture.
+        // SAFETY: the fixture completed and flushed its durable phase markers, while `_exit`
+        // prevents unrelated libtest teardown from keeping this isolated runner alive.
+        unsafe { _exit(0) }
+    }
+
+    fn read_pty_until(
+        master: &crate::pty::PtyMaster,
+        expected: &[u8],
+        deadline: Instant,
+    ) -> Result<Vec<u8>, String> {
+        let mut observed = Vec::new();
+        let mut bytes = [0u8; 1024];
+        loop {
+            match master.read(&mut bytes) {
+                Ok(0) => {
+                    return Err(format!(
+                        "the pty closed before {:?}; observed {:?}",
+                        String::from_utf8_lossy(expected),
+                        String::from_utf8_lossy(&observed)
+                    ));
+                }
+                Ok(count) => {
+                    observed.extend_from_slice(&bytes[..count]);
+                    if observed
+                        .windows(expected.len())
+                        .any(|window| window == expected)
+                    {
+                        return Ok(observed);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(format!("reading the relay probe pty: {error}")),
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for {:?}; observed {:?}",
+                    String::from_utf8_lossy(expected),
+                    String::from_utf8_lossy(&observed)
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn wait_pty_child(
+        child: &mut crate::pty::PtyChild,
+        deadline: Instant,
+    ) -> std::process::ExitStatus {
+        loop {
+            match child.try_wait().expect("polling the relay probe child") {
+                Some(status) => return status,
+                None if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                None => {
+                    let status = child
+                        .kill_and_reap()
+                        .expect("killing and reaping the timed-out relay probe");
+                    panic!("the relay probe did not exit naturally; killed with {status}");
+                }
+            }
+        }
+    }
+
+    fn assert_same_termios(actual: &rustix::termios::Termios, expected: &rustix::termios::Termios) {
+        assert_eq!(actual.input_modes, expected.input_modes, "input modes");
+        assert_eq!(actual.output_modes, expected.output_modes, "output modes");
+        assert_eq!(
+            actual.control_modes, expected.control_modes,
+            "control modes"
+        );
+        assert_eq!(
+            actual.local_modes & !rustix::termios::LocalModes::PENDIN,
+            expected.local_modes,
+            "local modes"
+        );
+        assert_eq!(actual.input_speed(), expected.input_speed(), "input speed");
+        assert_eq!(
+            actual.output_speed(),
+            expected.output_speed(),
+            "output speed"
+        );
+        assert_eq!(
+            format!("{:?}", actual.special_codes),
+            format!("{:?}", expected.special_codes),
+            "special codes"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            actual.line_discipline, expected.line_discipline,
+            "line discipline"
+        );
+    }
+
+    fn pty_master_termios(master: &crate::pty::PtyMaster) -> rustix::termios::Termios {
+        // SAFETY: `PtyMaster` retains this descriptor for the whole borrow and neither transfers
+        // nor closes it until `master` drops.
+        let master_fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(master.as_raw()) };
+        rustix::termios::tcgetattr(master_fd).expect("reading relay probe master termios")
+    }
+
+    fn run_native_pty_smoke_inner() {
+        fixture_phase("smoke-inner-start");
+        let master = crate::pty::PtyMaster::open(crate::pty::WinSize::new(91, 29))
+            .expect("opening the relay probe pty");
+        // A Darwin PTY master has no queryable terminal attributes until at least one slave is
+        // open. Retain this slave to capture the PTY-wide baseline; post-reap observation uses the
+        // master because the former controlling-terminal slave becomes ENOTTY after session exit.
+        // No file-status flag claim crosses these distinct open file descriptions.
+        let observer = master
+            .open_slave()
+            .expect("opening the relay probe baseline observer");
+        let baseline_termios =
+            rustix::termios::tcgetattr(&observer).expect("reading relay probe baseline termios");
+        let mut command = exact_native_relay_test_command(
+            "native_relay_pty_fixture_restores_terminal_after_clean_exit",
+        );
+        command.env(PTY_SMOKE_PROBE, "1");
+        let witness = marion_harness::ExecutionSurfaces::opaque()
+            .display_plane()
+            .expect("opaque execution owns a pty");
+        fixture_phase("smoke-probe-spawn-enter");
+        let mut child = crate::pty::spawn_pty(
+            witness,
+            &mut command,
+            &master,
+            crate::pty::StdinPlan::TerminalSlave,
+            None,
+        )
+        .expect("spawning the relay probe on its pty");
+        fixture_phase("smoke-probe-spawn-complete");
+        let deadline = Instant::now() + PTY_SMOKE_LIFECYCLE_BOUND;
+        fixture_phase("smoke-output-wait-enter");
+        let output = match read_pty_until(&master, b"NATIVE_PTY_DONE\r\n", deadline) {
+            Ok(output) => output,
+            Err(error) => {
+                let cleanup = child.kill_and_reap();
+                panic!("{error}; exact child cleanup: {cleanup:?}");
+            }
+        };
+        fixture_phase("smoke-output-wait-complete");
+        assert!(
+            output
+                .windows(b"NATIVE_PTY_READY\n".len())
+                .any(|window| window == b"NATIVE_PTY_READY\n"),
+            "the probe restored without first entering raw relay mode: {:?}",
+            String::from_utf8_lossy(&output)
+        );
+        fixture_phase("smoke-exit-wait-enter");
+        let status = wait_pty_child(&mut child, deadline);
+        fixture_phase("smoke-exit-wait-complete");
+        assert!(status.success(), "the relay probe exited with {status}");
+        let restored_termios = pty_master_termios(&master);
+        assert_same_termios(&restored_termios, &baseline_termios);
+    }
+
+    fn termios_mismatches(
+        actual: &rustix::termios::Termios,
+        expected: &rustix::termios::Termios,
+    ) -> Vec<String> {
+        let mut mismatches = Vec::new();
+        if actual.input_modes != expected.input_modes {
+            mismatches.push(format!(
+                "input_modes: actual={:?}, expected={:?}",
+                actual.input_modes, expected.input_modes
+            ));
+        }
+        if actual.output_modes != expected.output_modes {
+            mismatches.push(format!(
+                "output_modes: actual={:?}, expected={:?}",
+                actual.output_modes, expected.output_modes
+            ));
+        }
+        if actual.control_modes != expected.control_modes {
+            mismatches.push(format!(
+                "control_modes: actual={:?}, expected={:?}",
+                actual.control_modes, expected.control_modes
+            ));
+        }
+        let actual_local = actual.local_modes & !rustix::termios::LocalModes::PENDIN;
+        if actual_local != expected.local_modes {
+            mismatches.push(format!(
+                "local_modes: actual={actual_local:?}, expected={:?}",
+                expected.local_modes
+            ));
+        }
+        if actual.input_speed() != expected.input_speed() {
+            mismatches.push(format!(
+                "input_speed: actual={:?}, expected={:?}",
+                actual.input_speed(),
+                expected.input_speed()
+            ));
+        }
+        if actual.output_speed() != expected.output_speed() {
+            mismatches.push(format!(
+                "output_speed: actual={:?}, expected={:?}",
+                actual.output_speed(),
+                expected.output_speed()
+            ));
+        }
+        let actual_codes = format!("{:?}", actual.special_codes);
+        let expected_codes = format!("{:?}", expected.special_codes);
+        if actual_codes != expected_codes {
+            mismatches.push(format!(
+                "special_codes: actual={actual_codes}, expected={expected_codes}"
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        if actual.line_discipline != expected.line_discipline {
+            mismatches.push(format!(
+                "line_discipline: actual={:?}, expected={:?}",
+                actual.line_discipline, expected.line_discipline
+            ));
+        }
+        mismatches
+    }
+
+    fn run_native_pty_sigterm_inner() {
+        use std::os::unix::process::ExitStatusExt;
+
+        unsafe extern "C" {
+            fn kill(pid: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
+        }
+
+        fixture_phase("sigterm-inner-start");
+        let master = crate::pty::PtyMaster::open(crate::pty::WinSize::new(91, 29))
+            .expect("opening the SIGTERM relay probe pty");
+        let observer = master
+            .open_slave()
+            .expect("opening the SIGTERM relay baseline observer");
+        let baseline_termios =
+            rustix::termios::tcgetattr(&observer).expect("reading SIGTERM relay baseline termios");
+        let mut command = exact_native_relay_test_command(
+            "native_relay_sigterm_restores_terminal_and_redelivers_to_itself",
+        );
+        command.env(PTY_SIGTERM_PROBE, "1");
+        let witness = marion_harness::ExecutionSurfaces::opaque()
+            .display_plane()
+            .expect("opaque execution owns a pty");
+        fixture_phase("sigterm-probe-spawn-enter");
+        let mut child = crate::pty::spawn_pty(
+            witness,
+            &mut command,
+            &master,
+            crate::pty::StdinPlan::TerminalSlave,
+            None,
+        )
+        .expect("spawning the SIGTERM relay probe on its pty");
+        fixture_phase("sigterm-probe-spawn-complete");
+        let ready_deadline = Instant::now() + PTY_SIGTERM_READY_BOUND;
+        fixture_phase("sigterm-ready-wait-enter");
+        if let Err(error) = read_pty_until(&master, b"NATIVE_SIGTERM_READY\n", ready_deadline) {
+            let cleanup = child.kill_and_reap();
+            panic!("{error}; exact SIGTERM child cleanup: {cleanup:?}");
+        }
+        fixture_phase("sigterm-ready-wait-complete");
+
+        // SAFETY: `child.pid()` is the exact live `PtyChild` owned here; positive SIGTERM targets
+        // only that process, not its group.
+        let signal_result = unsafe { kill(child.pid(), SIGTERM) };
+        assert_eq!(
+            signal_result,
+            0,
+            "sending SIGTERM to exact relay probe pid {}: {}",
+            child.pid(),
+            std::io::Error::last_os_error()
+        );
+        fixture_phase("sigterm-observed-wait-enter");
+        if let Err(error) = read_pty_until(
+            &master,
+            b"NATIVE_SIGTERM_OBSERVED\n",
+            Instant::now() + PTY_SIGTERM_OBSERVED_BOUND,
+        ) {
+            let cleanup = child.kill_and_reap();
+            panic!("{error}; exact SIGTERM child cleanup: {cleanup:?}");
+        }
+        fixture_phase("sigterm-observed-wait-complete");
+
+        let natural_deadline = Instant::now() + PTY_SIGTERM_NATURAL_EXIT_BOUND;
+        fixture_phase("sigterm-exit-wait-enter");
+        let natural_status = loop {
+            match child.try_wait().expect("polling the SIGTERM relay probe") {
+                Some(status) => break status,
+                None if Instant::now() < natural_deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                None => {
+                    // Keep ownership with the bounded outer runner: `kill_and_reap` can itself
+                    // block if this nested PTY child is wedged, while the outer process-group
+                    // watchdog is independently able to kill the whole fixture tree.
+                    std::mem::forget(child);
+                    panic!(
+                        "the SIGTERM relay probe did not exit naturally within {:?}",
+                        PTY_SIGTERM_NATURAL_EXIT_BOUND
+                    );
+                }
+            }
+        };
+        fixture_phase("sigterm-exit-wait-complete");
+        let restored_termios = pty_master_termios(&master);
+        let mismatches = termios_mismatches(&restored_termios, &baseline_termios);
+        let natural_signal = natural_status.signal();
+
+        assert!(
+            natural_signal == Some(SIGTERM) && mismatches.is_empty(),
+            "SIGTERM lifecycle mismatch: natural_status={natural_status:?}, natural_signal={natural_signal:?}, termios_mismatches={mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn native_relay_pty_fixture_restores_terminal_after_clean_exit() {
+        if std::env::var_os(PTY_SMOKE_PROBE).is_some() {
+            let witness = crate::native_tty::capture_process_stdio()
+                .expect("the probe owns its foreground controlling terminal");
+            let mut terminal = witness
+                .enter_native_relay()
+                .expect("the probe enters raw relay mode");
+            let signals = RelaySignalGuard::acquire().expect("the probe owns relay signals");
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(b"NATIVE_PTY_READY\n").unwrap();
+            stdout.flush().unwrap();
+            drop(signals);
+            terminal
+                .restore_result()
+                .expect("the probe restores its terminal");
+            stdout.write_all(b"NATIVE_PTY_DONE\n").unwrap();
+            stdout.flush().unwrap();
+            // The probe's observable work is complete. Exit directly so unrelated libtest
+            // teardown cannot keep the nested PTY child alive after the terminal is restored.
+            // SAFETY: the marker was flushed, no Rust destructor is required by this isolated
+            // test process, and `_exit` terminates without running process-global teardown.
+            unsafe { _exit(0) }
+        }
+        if std::env::var_os(PTY_SMOKE_INNER).is_some() {
+            exit_after_successful_fixture(run_native_pty_smoke_inner);
+        }
+        run_isolated_signal_probe_bounded(
+            PTY_SMOKE_INNER,
+            "native_relay_pty_fixture_restores_terminal_after_clean_exit",
+            pty_smoke_outer_bound(),
+        )
+        .expect("the bounded native relay smoke runner");
+    }
+
+    #[test]
+    fn native_relay_sigterm_outer_bound_covers_every_legal_inner_phase() {
+        let legal_inner_bound =
+            PTY_SIGTERM_READY_BOUND + PTY_SIGTERM_OBSERVED_BOUND + PTY_SIGTERM_NATURAL_EXIT_BOUND;
+        assert!(
+            pty_sigterm_outer_bound() >= PTY_NESTED_RUNNER_STARTUP_BOUND + legal_inner_bound,
+            "the outer runner can kill a conforming inner lifecycle: outer={:?}, startup={PTY_NESTED_RUNNER_STARTUP_BOUND:?}, legal inner={legal_inner_bound:?}",
+            pty_sigterm_outer_bound()
+        );
+    }
+
+    #[test]
+    fn native_relay_sigterm_restores_terminal_and_redelivers_to_itself() {
+        if std::env::var_os(PTY_SIGTERM_PROBE).is_some() {
+            let witness = crate::native_tty::capture_process_stdio()
+                .expect("the SIGTERM probe owns its foreground controlling terminal");
+            let mut terminal = witness
+                .enter_native_relay()
+                .expect("the SIGTERM probe enters raw relay mode");
+            let inherited_sigterm = snapshot_action(SIGTERM);
+            assert_eq!(
+                inherited_sigterm.handler, SIG_DFL,
+                "the SIGTERM probe inherited a non-default disposition: {}",
+                inherited_sigterm.handler
+            );
+            let inherited_mask = current_thread_signal_mask();
+            assert!(
+                !signal_is_blocked(&inherited_mask, SIGTERM),
+                "the SIGTERM probe inherited SIGTERM blocked: {inherited_mask:?}"
+            );
+            let signals = RelaySignalGuard::acquire().expect("the probe owns relay signals");
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(b"NATIVE_SIGTERM_READY\n").unwrap();
+            stdout.flush().unwrap();
+            while FIRST_RELAY_SIGNAL.load(Ordering::SeqCst) == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            stdout.write_all(b"NATIVE_SIGTERM_OBSERVED\n").unwrap();
+            stdout.flush().unwrap();
+            drop(stdout);
+            let signal = FIRST_RELAY_SIGNAL.load(Ordering::SeqCst);
+            finish_claimed_relay(
+                &mut terminal,
+                Ok(RelayStop::ExternalSignal(signal)),
+                signals,
+            )
+            .expect("the restored prior signal action accepted redelivery");
+            return;
+        }
+        if std::env::var_os(PTY_SIGTERM_INNER).is_some() {
+            exit_after_successful_fixture(run_native_pty_sigterm_inner);
+        }
+        run_isolated_signal_probe_bounded(
+            PTY_SIGTERM_INNER,
+            "native_relay_sigterm_restores_terminal_and_redelivers_to_itself",
+            pty_sigterm_outer_bound(),
+        )
+        .expect("the bounded SIGTERM lifecycle runner");
     }
 
     #[derive(Clone, Default)]

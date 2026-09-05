@@ -887,6 +887,25 @@ acceptance evidence, so every marker remains unchanged.
     pre-injection open/lock failure. The root cause remains unconfirmed, production behavior is
     unchanged, and M3 remains `[partial]` pending C1's recorded manual session.
 
+    **Native relay signal ownership through real exit paths in this commit moves no milestone
+    marker.** The relay now acquires exclusive WINCH/INT/TERM/HUP/TSTP ownership before entering
+    raw mode, refuses while any owned signal is blocked on its thread, records the first
+    INT/TERM/HUP, stops pumping on it, and finishes every exit (End, detach, protocol or I/O
+    failure, external signal) through one stage that writes passive terminal cleanup bytes,
+    restores termios and descriptor flags, restores the prior actions termination-first, and
+    synchronously redelivers the recorded signal to the restored disposition while ownership is
+    still held. Failed restoration poisons ownership and leaves Drop armed to retry. Covered by
+    `relay_signal_guard_refuses_each_blocked_owned_signal_without_side_effects`,
+    `finish_redelivers_synchronously_while_signal_owner_is_held`,
+    `signal_published_during_action_restoration_is_not_cleared`,
+    `every_failed_signal_restoration_remains_armed_for_drop_retry`,
+    `native_relay_restores_the_prior_sigwinch_handler_after_every_exit`,
+    `native_relay_sigterm_restores_terminal_and_redelivers_to_itself` (nested-PTY child), and the
+    `native_tty` relay probes on the production `relay_claimed`/`finish_claimed_relay` path. The
+    production native facade stays dark: `run` is still unreachable from the shipped CLI, TSTP is
+    recorded but suspend/resume is not implemented, and no end-to-end socket/lease evidence is
+    claimed. M3 remains `[partial]` pending C1's recorded manual session.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

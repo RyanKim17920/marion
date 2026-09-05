@@ -1180,8 +1180,41 @@ mod tests {
         assert_eq!(fcntl_getfl(&observed_stdin).unwrap(), baseline_stdin_flags);
     }
 
+    /// Run `test` alone in a child process, where the process-global relay signal ownership the
+    /// production relay acquires is uncontended. Returns `true` inside that child and `false` in
+    /// the parent once the child has passed.
+    fn run_isolated_relay_probe(probe: &str, test: &str) -> bool {
+        if std::env::var_os(probe).is_some() {
+            return true;
+        }
+        let name = format!(
+            "{}::{test}",
+            module_path!().split_once("::").expect("crate::module").1
+        );
+        let child = std::process::Command::new(
+            std::env::current_exe().expect("the unit-test binary has a path"),
+        )
+        .args(["--exact", "--nocapture", "--test-threads", "1", &name])
+        .env(probe, "1")
+        .output()
+        .expect("the isolated production relay probe runs");
+        assert!(
+            child.status.success(),
+            "the isolated production relay probe failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        false
+    }
+
     #[test]
     fn relay_exit_preserves_the_primary_error_and_names_cleanup_failure() {
+        if !run_isolated_relay_probe(
+            "MARION_NATIVE_RELAY_FINISH_PROBE",
+            "relay_exit_preserves_the_primary_error_and_names_cleanup_failure",
+        ) {
+            return;
+        }
         let master = PtyMaster::open(WinSize::new(91, 29)).expect("test PTY");
         let stdin = master.open_slave().expect("relay stdin");
         let stdout = master.open_slave().expect("relay stdout");
@@ -1218,9 +1251,13 @@ mod tests {
                 .extend([Some(rustix::io::Errno::BADF), None])
         });
 
-        let error = crate::native_relay::finish_terminal_relay(
+        let signals =
+            crate::native_relay::RelaySignalGuard::acquire().expect("the probe owns relay signals");
+
+        let error = crate::native_relay::finish_claimed_relay(
             &mut terminal,
             Err("reading the native pane socket: reset".into()),
+            signals,
         )
         .unwrap_err();
         assert!(
@@ -1236,25 +1273,10 @@ mod tests {
 
     #[test]
     fn production_relay_open_failure_reports_cleanup_and_drop_retries_restoration() {
-        const PROBE: &str = "MARION_NATIVE_RELAY_OPEN_FAILURE_PROBE";
-        if std::env::var_os(PROBE).is_none() {
-            let name = format!(
-                "{}::production_relay_open_failure_reports_cleanup_and_drop_retries_restoration",
-                module_path!().split_once("::").expect("crate::module").1
-            );
-            let probe = std::process::Command::new(
-                std::env::current_exe().expect("the unit-test binary has a path"),
-            )
-            .args(["--exact", "--nocapture", "--test-threads", "1", &name])
-            .env(PROBE, "1")
-            .output()
-            .expect("the isolated production relay probe runs");
-            assert!(
-                probe.status.success(),
-                "the isolated production relay probe failed:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&probe.stdout),
-                String::from_utf8_lossy(&probe.stderr)
-            );
+        if !run_isolated_relay_probe(
+            "MARION_NATIVE_RELAY_OPEN_FAILURE_PROBE",
+            "production_relay_open_failure_reports_cleanup_and_drop_retries_restoration",
+        ) {
             return;
         }
 
@@ -1303,10 +1325,14 @@ mod tests {
                 .extend([Some(rustix::io::Errno::BADF), None])
         });
 
+        let signals =
+            crate::native_relay::RelaySignalGuard::acquire().expect("the probe owns relay signals");
+
         let error = crate::native_relay::relay_claimed(
             marion_core::contract::AgentId("native".into()),
             &mut terminal,
             client,
+            signals,
         )
         .unwrap_err();
         server.join().unwrap();
