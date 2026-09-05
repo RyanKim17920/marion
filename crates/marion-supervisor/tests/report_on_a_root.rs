@@ -7,7 +7,7 @@
 //!
 //! * `bridge::tools()` declares `report` to **every** node, root included, and says so in its own
 //!   doc comment (deliberately — a merely-absent verb carries no bound and no sentence);
-//! * `root::ROOT_ALLOWED_TOOLS` omits it, but that is the **permission** axis, and only the Claude
+//! * `root::ROOT_VERBS` omits it, but that is the **permission** axis, and only the Claude
 //!   Code adapter compiles a per-tool permission list at all (`run.rs`'s note on `check_spawn_gates`
 //!   — codex, gemini and opencode compile none);
 //! * so on the three `LaunchOnly` harnesses a root's `report` arrived at `marion-supervisor mcp` and

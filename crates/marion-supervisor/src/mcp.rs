@@ -632,7 +632,7 @@ fn descendants_of(
 /// * **Availability** — not declaring `report` to a root. `bridge::tools`' own docs reject that on
 ///   three grounds, and the first is decisive: an absent verb carries no sentence, so the root
 ///   cannot tell "marion has no `report`" from "I may not report", and nothing anywhere says why.
-/// * **Permission** — `root::ROOT_ALLOWED_TOOLS`, which already omits it. That axis is
+/// * **Permission** — `root::ROOT_VERBS`, which already omits it. That axis is
 ///   **Claude-Code-only**: it is the one adapter that compiles `allowed_tools` into anything
 ///   (`claude_code.rs`), so a fix living there is a one-harness fix for a four-harness problem. On
 ///   codex, gemini and opencode a root's `report` arrived here and was answered `report recorded`,

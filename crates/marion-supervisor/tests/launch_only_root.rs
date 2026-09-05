@@ -197,6 +197,7 @@ fn reached_the_bridge(node: &Node) -> String {
         // Unreachable by construction — the table has three entries and claude-code is not one of
         // them — and a `panic!` rather than a fabricated frame, because a duplex harness arriving
         // here would mean this file had grown a root path it does not test.
+        Harness::Copilot => unreachable!("a LaunchOnly root this file does not drive yet"),
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
         Harness::ClaudeCode => panic!(
             "claude-code is the duplex root path and has no LaunchOnly stream to fake (§3.4)"
@@ -340,6 +341,7 @@ fn assert_launched_the_way_this_harness_is_launched(node: &Node, args: &[String]
                 "{h}: the prompt is the trailing positional argument (§6.1 step 8): {args:?}"
             );
         }
+        Harness::Copilot => unreachable!("a LaunchOnly root this file does not drive yet"),
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
         Harness::ClaudeCode => unreachable!("not a LaunchOnly root — see the module docs"),
     }
@@ -365,6 +367,7 @@ fn assert_the_bridge_declaration_was_written(node: &Node, dir: &Path) {
         Harness::Codex => ("CODEX_HOME", &["config.toml"]),
         Harness::Gemini => ("GEMINI_CLI_SYSTEM_SETTINGS_PATH", &[]),
         Harness::OpenCode => ("XDG_CONFIG_HOME", &["opencode", "opencode.json"]),
+        Harness::Copilot => unreachable!("a LaunchOnly root this file does not drive yet"),
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
         Harness::ClaudeCode => unreachable!("not a LaunchOnly root — see the module docs"),
     };
@@ -639,6 +642,7 @@ fn refused_at_the_bridge(node: &Node) -> String {
             r#"{{"type":"tool_use","part":{{"tool":"{}","state":{{"status":"error","error":"The user rejected permission to use this specific tool call."}}}}}}"#,
             adapter.marion_tool_name("spawn")
         ),
+        Harness::Copilot => unreachable!("a LaunchOnly root this file does not drive yet"),
         Harness::Acp => unreachable!("not a LaunchOnly root — ACP is Typed(Acp) (§3.4)"),
         Harness::ClaudeCode => panic!(
             "claude-code is the duplex root path and has no LaunchOnly stream to fake (§3.4)"

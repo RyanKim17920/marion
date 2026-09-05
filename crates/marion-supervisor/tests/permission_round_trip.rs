@@ -7,7 +7,7 @@
 //!
 //! # How a permission ask is provoked without a model
 //!
-//! `report` is deliberately **absent** from [`root::ROOT_ALLOWED_TOOLS`] — §9 rejects `report` on a
+//! `report` is deliberately **absent** from [`root::ROOT_VERBS`] — §9 rejects `report` on a
 //! node with no contract, and a root has none. So pointing the canned root at
 //! `mcp__marion__report` gives the exact situation `root.rs` warns about ("omitting a *reachable*
 //! verb would deny calls that then block until the root's bound expires") with **no argv surgery**:
@@ -47,7 +47,7 @@ use marion_testsupport::{Scratch, on_path, pinned_version, scratch, survivors};
 use serde_json::{Value, json};
 
 /// The verb the canned root reaches for. Real, served by marion's own bridge, and **not** in
-/// `ROOT_ALLOWED_TOOLS`.
+/// `ROOT_VERBS`.
 const ASKED_TOOL: &str = "mcp__marion__report";
 
 /// The root's per-episode `Blocked` budget for the expiry test. Short enough to keep the suite
@@ -73,7 +73,7 @@ fn recording() -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Target {
     /// marion's own `report` verb: real, served by marion's own bridge, and absent from
-    /// `ROOT_ALLOWED_TOOLS`. **No argv surgery** — this is marion's production invocation.
+    /// `ROOT_VERBS`. **No argv surgery** — this is marion's production invocation.
     MarionReport,
     /// A built-in `Bash` call touching a path outside the root's cwd. Needs one argv edit
     /// (`--tools ""` → `--tools Bash`), since a `claude` root is compiled with no built-ins at

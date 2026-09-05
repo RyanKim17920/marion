@@ -285,7 +285,7 @@ pub fn tools() -> Value {
             // and shipping one would be `verification`'s accept-and-ignore wearing a handle's
             // clothes.
             //
-            // It also closes a gap that predates backgrounding: `root::ROOT_ALLOWED_TOOLS` has
+            // It also closes a gap that predates backgrounding: `root::ROOT_VERBS` has
             // permitted `wait` since M1 (§9 records the allowlist being wider than the declared
             // surface as "not a bug", since an allowlist entry for an undeclared tool is inert).
             // The entry stops being inert here.
@@ -326,7 +326,7 @@ pub fn tools() -> Value {
             }
         },
         {
-            // **§5.4's `status`, and the entry in `root::ROOT_ALLOWED_TOOLS` stops being inert
+            // **§5.4's `status`, and the entry in `root::ROOT_VERBS` stops being inert
             // here** — the same move `wait` made, for the same reason and with the same honesty
             // about how narrow it is.
             //
@@ -1172,7 +1172,7 @@ mod tests {
         // `wait` joined the list when `spawn` started handing out handles: §5.4 makes the
         // handle's holder's ability to resolve it a requirement, not an ergonomic. `status` and
         // `list` joined it when they were implemented, which is what made the last two entries of
-        // `root::ROOT_ALLOWED_TOOLS` stop being inert.
+        // `root::ROOT_VERBS` stop being inert.
         //
         // **The order is pinned, and it is the order a caller meets them in** — delegate, then
         // block on one child, then poll one child, then survey them all, then return your own

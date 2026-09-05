@@ -794,7 +794,7 @@ pub struct Script {
     /// The tool the root calls on its first turn, in the harness's own spelling.
     ///
     /// Parameterised so a test can aim the root at a verb that is **not** in
-    /// `ROOT_ALLOWED_TOOLS` — which is the only way to provoke a real inbound `can_use_tool`
+    /// `ROOT_VERBS` — which is the only way to provoke a real inbound `can_use_tool`
     /// frame from the CLI (S9, design §11 item 14). The M1 hop leaves it at `spawn`.
     pub root_tool: String,
     /// Arguments the root passes to [`Script::root_tool`].

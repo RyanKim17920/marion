@@ -1517,7 +1517,7 @@ fn a_harness_that_hangs_answering_its_version_does_not_hang_the_bridge() {
 /// it arrives in answer to the frame a real client sends, and the count is what an operator reading
 /// `ntools` will see.
 ///
-/// **`ROOT_ALLOWED_TOOLS` is checked against it in the same test, in both directions.** An
+/// **`ROOT_VERBS` is checked against it in the same test, in both directions.** An
 /// allowlist entry for an undeclared tool is inert — §9 says so and blessed it — and a *declared*
 /// tool missing from the allowlist is the converse defect, which is not inert at all: it is offered
 /// to the root and then denied on use, and the denial spends the root's bound. Neither can now
@@ -1561,9 +1561,9 @@ fn a_real_handshake_lists_exactly_the_tools_marion_declares() {
     }
 
     // The allowlist and the declared surface, in both directions.
-    let allowed: Vec<String> = marion_supervisor::root::ROOT_ALLOWED_TOOLS
+    let allowed: Vec<String> = marion_supervisor::root::ROOT_VERBS
         .iter()
-        .map(|t| t.trim_start_matches("mcp__marion__").to_string())
+        .map(|t| t.to_string())
         .collect();
     for verb in &allowed {
         assert!(

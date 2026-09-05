@@ -21,6 +21,7 @@ use crate::acp;
 pub use crate::auth::Auth;
 use crate::claude_code::{self, HeadlessSpec, McpEnv, compile_headless};
 use crate::codex::{self, ExecSpec, compile_exec};
+use crate::copilot;
 use crate::gemini;
 use crate::invocation::Invocation;
 use crate::mcp_bridge;
@@ -1471,6 +1472,238 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
 }
 
+/// GitHub Copilot CLI 1.0.83, headless `-p` (fixture `tests/fixtures/s24/`).
+///
+/// The second harness after Claude Code where **both** of §3.1's axes are marion's to set
+/// (`copilot::PromptSpec::available` and `::allow`), and the first where the two axes spell the
+/// same tool differently — see [`copilot`]'s module docs. Everything else is the `LaunchOnly`
+/// shape gemini and opencode take: the prompt rides argv, the declaration is a document, and the
+/// stream is read after the fact.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CopilotAdapter;
+
+impl CopilotAdapter {
+    /// Marion's verbs out of [`LaunchSpec::allowed_tools`], which arrive in **this harness's**
+    /// model-facing spelling (`marion-report`) because `run_spawn` compiles them through
+    /// [`HarnessAdapter::marion_tool_name`].
+    ///
+    /// **Refused by name when they do not**, rather than passed through: copilot is the one
+    /// `LaunchOnly` harness that compiles this list into a flag, and a list in another harness's
+    /// spelling would compile to `--available-tools=mcp__marion__spawn`, which names no copilot
+    /// tool and leaves the node with none of marion's verbs, at exit 0. That is the shape a root
+    /// would take today — `root::ROOT_VERBS` is spelled for Claude Code — and a refusal
+    /// here is what keeps it from being a silent one.
+    fn marion_verbs(spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        let prefix = copilot::model_tool_name(copilot::MCP_ALIAS, "");
+        spec.allowed_tools
+            .iter()
+            .map(|t| {
+                t.strip_prefix(prefix.as_str())
+                    .filter(|verb| !verb.is_empty())
+                    .map(str::to_string)
+                    .ok_or(HarnessError::MissingInput {
+                        harness: Harness::Copilot,
+                        what: "allowed_tools must carry marion's verbs in this harness's own \
+                               spelling (`marion-<verb>`, from `marion_tool_name`); a list in \
+                               another harness's spelling would compile into --available-tools \
+                               and grant the node none of marion's tools, silently",
+                    })
+            })
+            .collect()
+    }
+
+    /// `--available-tools`: what the model sees — marion's verbs plus the declared built-ins, in
+    /// copilot's spellings. One derivation, shared with [`Self::permission_axis`] through
+    /// `native_tools`, so the two flags cannot name different tools.
+    fn availability_axis(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        let mut available = spec.allowed_tools.clone();
+        available.extend(self.native_tools(spec)?);
+        Ok(available)
+    }
+
+    /// `--allow-tool`: what runs without a prompt — `<alias>(<verb>)` for each of marion's verbs,
+    /// plus the kind `write` when the declaration reaches a file-writing built-in. §3.1's *"the
+    /// same list, plus marion's own"*, in the pattern grammar rather than the tool grammar.
+    ///
+    /// **`view` adds nothing here, and that is measured**: with only `marion(report)` granted, a
+    /// `view` call ran (`tests/fixtures/s24/README.md`, item 4). Reads inside `-C` need no grant.
+    fn permission_axis(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        let mut allow: Vec<String> = Self::marion_verbs(spec)?
+            .iter()
+            .map(|verb| copilot::permission_pattern(copilot::MCP_ALIAS, verb))
+            .collect();
+        if self
+            .native_tools(spec)?
+            .iter()
+            .any(|t| copilot::is_write_tool(t))
+        {
+            allow.push(copilot::WRITE_PERMISSION.into());
+        }
+        Ok(allow)
+    }
+
+    fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Option<copilot::BridgeEnv> {
+        (spec.mcp == McpDeclaration::Marion).then(|| copilot::BridgeEnv {
+            bridge: ctx.bridge.clone(),
+            args: ctx.bridge_args.clone(),
+            repo: ctx.repo.clone(),
+            state: ctx.state_dir.clone(),
+            base_url: spec.base_url.clone(),
+            auth: spec.auth,
+            agent_id: ctx.agent_id.clone(),
+            agent_type: ctx.agent_type.clone(),
+            depth: ctx.depth,
+            node_token: ctx.node_token.clone(),
+            ready_file: ctx.ready_file.clone(),
+        })
+    }
+}
+
+impl HarnessAdapter for CopilotAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Copilot
+    }
+
+    fn surfaces(&self) -> ExecutionSurfaces {
+        ExecutionSurfaces::launch_only_with_protocol_events()
+    }
+
+    fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        match spec.auth {
+            Auth::Canned => {
+                // Both measured as hard refusals by the CLI itself, so marion refuses first and
+                // says why. Without a base URL there is no BYOK at all and the CLI goes looking
+                // for a GitHub login; without a model BYOK exits 1 before any request.
+                if spec.base_url.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Copilot,
+                        what: "a canned node needs a provider base URL: COPILOT_PROVIDER_BASE_URL \
+                               is what selects BYOK at all, and without it the CLI requires a \
+                               GitHub login",
+                    });
+                }
+                if spec.model.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Copilot,
+                        what: "an explicit model is mandatory under BYOK: 1.0.83 exits 1 with \
+                               `BYOK providers require an explicit model` before any request, \
+                               and marion will not guess one",
+                    });
+                }
+            }
+            // The canned default names marion's own endpoint's plumbing, and a live node has no
+            // such endpoint — the string would go to GitHub's model routing and name nothing. The
+            // same refusal opencode makes for `marion/default`, for the same reason.
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::COPILOT_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Copilot,
+                        what: "the built-in default model names marion's canned endpoint, which a \
+                               --live node does not talk to. Name a real Copilot model instead \
+                               (marion run --live -m …)",
+                    });
+                }
+            }
+        }
+        Ok(copilot::compile_prompt(&copilot::PromptSpec {
+            cwd: spec.cwd.clone(),
+            model: spec.model.clone(),
+            prompt: spec.prompt.clone(),
+            available: self.availability_axis(spec)?,
+            allow: self.permission_axis(spec)?,
+            home: copilot::home(&spec.config_dir),
+            mcp_config: (spec.mcp == McpDeclaration::Marion)
+                .then(|| copilot::mcp_config_path(&spec.config_dir)),
+            base_url: spec.base_url.clone(),
+            api_key: spec.api_key.clone(),
+            auth: spec.auth,
+        }))
+    }
+
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let Some(bridge) = Self::bridge_env(spec, ctx) else {
+            return Ok(Vec::new());
+        };
+        Ok(vec![(
+            copilot::mcp_config_path(&spec.config_dir),
+            serde_json::to_string_pretty(&copilot::mcp_config_json(&bridge))
+                .expect("a Value always serialises"),
+        )])
+    }
+
+    /// A document in both modes: `--additional-mcp-config @<file>` *augments* whatever
+    /// `$COPILOT_HOME/mcp-config.json` holds, so live mode — which stops relocating that home —
+    /// changes nothing about where marion's declaration lives.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        match spec.mcp {
+            McpDeclaration::Marion => McpRoute::Document,
+            McpDeclaration::None => McpRoute::None,
+        }
+    }
+
+    /// The exit code is not the verdict here either (s24: a denied or refused `report` exits 0), so
+    /// the stream decides and a non-zero exit with nothing in-stream is left to the supervisor's
+    /// exit-code rule, as on gemini.
+    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
+        copilot::parse_stream(stdout, &self.marion_tool_name("report"))
+    }
+
+    fn marion_tool_name(&self, tool: &str) -> String {
+        // `<server>-<tool>`, a hyphen — the fifth spelling of one tool (s24, in `tools[]` and
+        // `toolName` alike). The permission pattern for the same tool is a *different* string;
+        // see `copilot::permission_pattern`.
+        copilot::model_tool_name(copilot::MCP_ALIAS, tool)
+    }
+
+    /// `read` → **`view`**, `write` → **`create`**, measured on 1.0.83 (`tests/fixtures/s24/`):
+    /// `--available-tools=marion-report,create` put exactly `create` and `marion-report` in the
+    /// request body, `create` with `--allow-tool=write` landed a file under the node's `-C`, and
+    /// `view` ran with no grant at all. Both take absolute paths per their own descriptions;
+    /// `-C` bounds where they may point (`copilot help permissions`).
+    ///
+    /// `edit` is copilot's *other* write tool — the same `write` kind grants it — and marion's
+    /// vocabulary has no verb that means it, so nothing maps there; [`copilot::is_write_tool`]
+    /// still names it, because that function answers about copilot's names rather than marion's.
+    /// `bash` is unmapped for the reason gemini's `run_shell_command` is: no verb, and no grant
+    /// marion has watched arrive.
+    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
+        match tool {
+            agent_type::TOOL_READ => Ok("view".into()),
+            agent_type::TOOL_WRITE => Ok("create".into()),
+            _ => Err(HarnessError::UnsupportedTool {
+                harness: Harness::Copilot,
+                tool: tool.to_string(),
+            }),
+        }
+    }
+
+    /// The `--allow-tool` patterns, which are what `-p` mode checks a call against — §3.1's first
+    /// branch, as on Claude Code. **Not** the `--available-tools` list: that decides what the model
+    /// sees, and an ungranted visible tool is denied (s24), so it is the weaker of the two
+    /// constraints and recording it would overstate what the node could do.
+    ///
+    /// `allow-tool:` prefixed, on the shape gemini and codex use (`approval-mode:default`,
+    /// `sandbox:workspace-write`): the axis and its value. Here the prefix is load-bearing rather
+    /// than cosmetic — copilot's grant kind for the file tools is spelled `write`, the same six
+    /// letters as marion's own verb, and §3.1 forbids a record that reads as marion's vocabulary.
+    /// `allow-tool:write` is unambiguously the flag's word.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        Ok(self
+            .permission_axis(spec)?
+            .into_iter()
+            .map(|pattern| format!("allow-tool:{pattern}"))
+            .collect())
+    }
+
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
+        copilot::marion_calls(stdout, &self.marion_tool_name(""))
+    }
+}
+
 /// §5.2's `acp` row: **one adapter, many agents** (§9's M5).
 ///
 /// # What the surfaces are, and why
@@ -1899,6 +2132,7 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
         Harness::Codex => Ok(Box::new(CodexAdapter)),
         Harness::Gemini => Ok(Box::new(GeminiAdapter)),
         Harness::OpenCode => Ok(Box::new(OpenCodeAdapter)),
+        Harness::Copilot => Ok(Box::new(CopilotAdapter)),
         // The **protocol** row, bound to no agent. Enough for every question a harness name can
         // answer — the surfaces, the declaration route, the ceiling — and unlaunchable, because a
         // harness name is not enough to say what a model will call marion's verbs. See
@@ -2136,6 +2370,17 @@ mod tests {
         }
     }
 
+    /// The one `LaunchOnly` spec that carries `allowed_tools`, because copilot is the one
+    /// `LaunchOnly` adapter that compiles them — in its own spelling, as `run_spawn` hands them.
+    fn copilot_spec() -> LaunchSpec {
+        LaunchSpec {
+            model: Some("canned-1".into()),
+            api_key: Some("sk-fake".into()),
+            allowed_tools: vec!["marion-report".into()],
+            ..codex_spec()
+        }
+    }
+
     /// The two things an ACP launch needs that no other harness does: an agent named by the
     /// operator, and the operator's own login — see `AcpAdapter::compile`, which refuses both by
     /// name rather than defaulting either.
@@ -2230,6 +2475,7 @@ mod tests {
             ("codex", Box::new(CodexAdapter), codex_spec()),
             ("gemini", Box::new(GeminiAdapter), gemini_spec()),
             ("opencode", Box::new(OpenCodeAdapter), opencode_spec()),
+            ("copilot", Box::new(CopilotAdapter), copilot_spec()),
         ]
     }
 
@@ -2309,6 +2555,28 @@ mod tests {
                     "do the task",
                 ],
             ),
+            // Pinned at the adapter's birth rather than captured pre-axis: copilot arrived with both
+            // axes already compiled, so this is the argv `tests/fixtures/s24/` measured against
+            // 1.0.83 with an empty declaration — marion's verb on both flags and nothing else.
+            (
+                "copilot",
+                vec![
+                    "-p",
+                    "do the task",
+                    "--output-format",
+                    "json",
+                    "-C",
+                    "/wt",
+                    "--disable-builtin-mcps",
+                    "--no-custom-instructions",
+                    "--model",
+                    "canned-1",
+                    "--available-tools=marion-report",
+                    "--allow-tool=marion(report)",
+                    "--additional-mcp-config",
+                    "@/state/x/config/mcp.json",
+                ],
+            ),
         ];
         // The env block, keys and values, in order. Captured from the same pre-axis run: the axis
         // must be provably invisible in every channel a harness is configured through, not only
@@ -2350,6 +2618,18 @@ mod tests {
                     ("OPENCODE_DISABLE_SHARE", "1"),
                     ("OPENCODE_DB", ":memory:"),
                     ("PWD", "/wt"),
+                ],
+            ),
+            (
+                "copilot",
+                vec![
+                    ("COPILOT_HOME", "/state/x/config/home"),
+                    ("COPILOT_PROVIDER_BASE_URL", "http://127.0.0.1:8099/v1"),
+                    ("COPILOT_PROVIDER_TYPE", "openai"),
+                    ("COPILOT_PROVIDER_WIRE_API", "completions"),
+                    ("COPILOT_PROVIDER_API_KEY", "sk-fake"),
+                    ("COPILOT_OFFLINE", "true"),
+                    ("COPILOT_AUTO_UPDATE", "false"),
                 ],
             ),
         ];
@@ -2396,6 +2676,8 @@ mod tests {
                 "codex" => 1275,
                 "gemini" => 718,
                 "opencode" => 962,
+                // Pinned at the adapter's birth (s24), not pre-axis — see the argv table.
+                "copilot" => 529,
                 _ => unreachable!(),
             };
             assert_eq!(len, want, "{name}: generated config changed size");
@@ -2737,6 +3019,9 @@ mod tests {
                 // The mode is the constraint, and it is recorded when withheld as well as relaxed.
                 "gemini" => vec!["approval-mode:default".into()],
                 "opencode" => vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()],
+                // A real allowlist again, in the pattern grammar: the `--allow-tool`s, prefixed
+                // with the axis because copilot's `write` kind collides with marion's verb.
+                "copilot" => vec!["allow-tool:marion(report)".into()],
                 _ => unreachable!(),
             }
         };
@@ -2776,6 +3061,12 @@ mod tests {
                 "codex" => vec!["sandbox:workspace-write".into()],
                 "gemini" => vec!["approval-mode:auto_edit".into()],
                 "opencode" => vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()],
+                // The kind `write` joins the list — not the tool name `create`, which s24 measured
+                // granting nothing as a pattern.
+                "copilot" => vec![
+                    "allow-tool:marion(report)".into(),
+                    "allow-tool:write".into(),
+                ],
                 _ => unreachable!(),
             }
         };
@@ -3169,6 +3460,7 @@ mod tests {
             Harness::Codex => codex_spec(),
             Harness::Gemini => gemini_spec(),
             Harness::OpenCode => opencode_spec(),
+            Harness::Copilot => copilot_spec(),
             Harness::Acp => acp_spec(),
         }
     }
@@ -4550,6 +4842,7 @@ mod tests {
             Harness::Codex,
             Harness::Gemini,
             Harness::OpenCode,
+            Harness::Copilot,
         ]
         .into_iter()
         .map(|h| launch_adapter(h).unwrap().marion_tool_name("report"))
@@ -4561,6 +4854,8 @@ mod tests {
                 "mcp__marion__report",
                 "mcp_marion_report",
                 "marion_report",
+                // A hyphen: the fifth spelling (s24, in `tools[]` and `toolName` alike).
+                "marion-report",
             ]
         );
         // The opencode spelling is the **model-facing** one. The JSON-RPC `tools/call` that
@@ -4680,6 +4975,28 @@ mod tests {
         "\n",
         r#"{"type":"step_finish","timestamp":"<TS>","sessionID":"<SESSION-1>","part":{"reason":"stop","type":"step-finish","tokens":{"input":0,"output":0},"cost":0}}"#,
     );
+
+    /// A copilot `-p --output-format json` run, verbatim from `tests/fixtures/s24/` — the write
+    /// tool granted and used, then marion's report answered, then the model's closing text.
+    const COPILOT_STREAM: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/s24/copilot-write-then-report.stdout.jsonl"
+    ));
+
+    #[test]
+    fn a_copilot_report_is_read_from_the_execution_start_frame_in_copilots_own_spelling() {
+        let out = CopilotAdapter.parse_stream(COPILOT_STREAM, ChildExit::default());
+        assert_eq!(
+            out.narrative.as_deref(),
+            Some("Wrote the matrix marker under src/ and reported back.")
+        );
+        assert_eq!(out.failure, None);
+        assert!(out.file_change_paths.is_empty(), "git is the authority");
+        // The spelling is load-bearing: no other harness's name for the tool appears.
+        for other in ["mcp__marion__report", "mcp_marion_report", "marion_report"] {
+            assert!(!COPILOT_STREAM.contains(other), "{other}");
+        }
+    }
 
     #[test]
     fn a_gemini_report_is_read_from_the_tool_use_frame_in_geminis_own_spelling() {
@@ -4830,6 +5147,10 @@ mod tests {
                 Harness::OpenCode => format!(
                     r#"{{"type":"tool_use","part":{{"type":"tool","tool":"{tool}","state":{{"status":"completed","input":{args}}}}}}}"#
                 ),
+                // s24's `tool.execution_start`: the arguments arrive parsed under `data`.
+                Harness::Copilot => format!(
+                    r#"{{"type":"tool.execution_start","data":{{"toolCallId":"c1","toolName":"{tool}","arguments":{args}}}}}"#
+                ),
                 // Two frames, because ACP is the one wire where the verb and the arguments never
                 // arrive together: S21's opening `tool_call` carries the title and an empty
                 // `rawInput`, and the closing update carries the arguments and an empty title.
@@ -4889,6 +5210,7 @@ mod tests {
             (Harness::Codex, codex),
             (Harness::Gemini, GEMINI_STREAM),
             (Harness::OpenCode, OPENCODE_STREAM),
+            (Harness::Copilot, COPILOT_STREAM),
         ];
         for (owner, stream) in streams {
             for h in Harness::ALL {
@@ -4985,11 +5307,13 @@ mod tests {
         let claude_spawn = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__marion__spawn","input":{}}]}}"#;
         let gemini_spawn = r#"{"type":"tool_use","tool_name":"mcp_marion_spawn","parameters":{}}"#;
         let opencode_spawn = r#"{"type":"tool_use","part":{"type":"tool","tool":"marion_spawn","state":{"status":"completed"}}}"#;
+        let copilot_spawn = r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}"#;
         let streams = [
             (Harness::ClaudeCode, claude_spawn),
             (Harness::Codex, codex_spawn),
             (Harness::Gemini, gemini_spawn),
             (Harness::OpenCode, opencode_spawn),
+            (Harness::Copilot, copilot_spawn),
         ];
         assert!(
             !codex_spawn.contains("mcp__marion__"),
@@ -5065,7 +5389,7 @@ mod tests {
             verb: verb.to_string(),
             outcome: CallOutcome::Answered,
         };
-        let cases: [(Harness, &str, &str, MarionCall); 8] = [
+        let cases: [(Harness, &str, &str, MarionCall); 10] = [
             (
                 Harness::ClaudeCode,
                 "answered",
@@ -5146,6 +5470,32 @@ mod tests {
                     ),
                 },
             ),
+            (
+                Harness::Copilot,
+                "answered",
+                concat!(
+                    r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}"#,
+                    "\n",
+                    r#"{"type":"tool.execution_complete","data":{"toolCallId":"c1","success":true,"result":{"content":"ok"}}}"#,
+                ),
+                answered("spawn"),
+            ),
+            (
+                Harness::Copilot,
+                "refused",
+                // s24's recorded shape for a call with no `--allow-tool` grant, verbatim.
+                concat!(
+                    r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}"#,
+                    "\n",
+                    r#"{"type":"tool.execution_complete","data":{"toolCallId":"c1","success":false,"error":{"message":"Permission denied and could not request permission from user","code":"denied"}}}"#,
+                ),
+                MarionCall {
+                    verb: "spawn".into(),
+                    outcome: CallOutcome::Refused(
+                        "Permission denied and could not request permission from user".into(),
+                    ),
+                },
+            ),
         ];
         for (h, label, stream, want) in cases {
             assert_eq!(
@@ -5163,10 +5513,15 @@ mod tests {
     /// class `root::assert_a_verb_was_answered` exists to close.
     #[test]
     fn a_call_with_no_result_frame_is_unknown_and_not_an_answer() {
-        let unanswered: [(Harness, &str); 3] = [
+        let unanswered: [(Harness, &str); 4] = [
             (
                 Harness::ClaudeCode,
                 r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__marion__spawn","input":{}}]}}"#,
+            ),
+            // copilot's `tool.execution_start`, which s24 records ahead of every completion.
+            (
+                Harness::Copilot,
+                r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"marion-spawn","arguments":{}}}"#,
             ),
             // codex's `item.started`, which s6 records ahead of every completion.
             (
@@ -5265,9 +5620,16 @@ mod tests {
     #[test]
     fn the_harnesses_that_write_without_a_grant_are_the_ones_that_compile_no_constraint() {
         use Evidence::*;
-        let cases: [(Harness, Evidence, bool); 5] = [
+        let cases: [(Harness, Evidence, bool); 6] = [
             // A per-tool allowlist with `write` not in it: the mutating tool is simply absent.
             (Harness::ClaudeCode, Withholds("Write"), false),
+            // The same shape one harness over: the `write` kind is absent from `--allow-tool`, and
+            // s24 measured what an ungranted `create` gets — `denied`, at exit 0.
+            (
+                Harness::Copilot,
+                Withholds(crate::copilot::WRITE_PERMISSION),
+                false,
+            ),
             // One coarse knob, and it is set to the writing value on every node marion configures.
             (Harness::Codex, Names("sandbox:workspace-write"), true),
             // The default mode drops the mutating tools from `functionDeclarations` outright, so

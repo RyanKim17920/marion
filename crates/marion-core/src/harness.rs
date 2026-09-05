@@ -21,6 +21,10 @@ pub enum Harness {
     Codex,
     Gemini,
     OpenCode,
+    /// GitHub Copilot CLI, headless `-p` (measured on 1.0.83, `tests/fixtures/s24/`). The sixth
+    /// name and the fifth binary; added after `Acp`'s doc comment below was written, so where that
+    /// comment says "the other four" read "the other five".
+    Copilot,
     /// **A protocol, not a vendor** — §5.2's `acp` adapter row, *"one adapter serving many
     /// agents"*. The other four name a binary; this one names Agent Client Protocol and the binary
     /// arrives per launch (`Extras::acp_agent`), because the agent supplies its own identity in
@@ -39,6 +43,7 @@ impl Harness {
             Harness::Codex => "codex",
             Harness::Gemini => "gemini",
             Harness::OpenCode => "opencode",
+            Harness::Copilot => "copilot",
             Harness::Acp => "acp",
         }
     }
@@ -61,6 +66,7 @@ impl Harness {
     /// | opencode | **writes** — marion compiles no constraint whatsoever | `opencode::NO_COMPILED_TOOL_CONSTRAINT` |
     /// | claude-code | withheld — `--tools ""` unless `write` is declared | `ClaudeCodeAdapter::permission_axis` |
     /// | gemini | withheld — the default approval mode drops the mutating tools from `functionDeclarations` outright | `gemini::DEFAULT_APPROVAL_MODE` |
+    /// | copilot | withheld — `--available-tools` names only marion's verbs unless `write` is declared, and an ungranted `create` is `denied` (measured, `tests/fixtures/s24/`) | `CopilotAdapter::permission_axis` |
     /// | acp | **writes** — twice over; see below | `acp::NO_TOOL_AVAILABILITY_SURFACE` |
     ///
     /// **The `acp` arm is decided, not inherited.** Two independent reasons, either sufficient:
@@ -94,16 +100,17 @@ impl Harness {
     pub const fn writes_without_a_declaration(self) -> bool {
         match self {
             Harness::Codex | Harness::OpenCode | Harness::Acp => true,
-            Harness::ClaudeCode | Harness::Gemini => false,
+            Harness::ClaudeCode | Harness::Gemini | Harness::Copilot => false,
         }
     }
 
     /// Every harness marion can name — what `marion doctor` would list.
-    pub const ALL: [Harness; 5] = [
+    pub const ALL: [Harness; 6] = [
         Harness::ClaudeCode,
         Harness::Codex,
         Harness::Gemini,
         Harness::OpenCode,
+        Harness::Copilot,
         Harness::Acp,
     ];
 }
@@ -112,7 +119,9 @@ impl Harness {
 /// default — defaulting would compile some other harness's argv for a type that asked for one
 /// marion has never heard of.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unknown harness {0:?}; known harnesses are claude-code, codex, gemini, opencode, acp")]
+#[error(
+    "unknown harness {0:?}; known harnesses are claude-code, codex, gemini, opencode, copilot, acp"
+)]
 pub struct UnknownHarness(pub String);
 
 impl FromStr for Harness {
@@ -167,11 +176,12 @@ mod tests {
         assert_eq!(Harness::Codex.as_str(), "codex");
         assert_eq!(Harness::Gemini.as_str(), "gemini");
         assert_eq!(Harness::OpenCode.as_str(), "opencode");
+        assert_eq!(Harness::Copilot.as_str(), "copilot");
         // §5.2's adapter row is spelled `acp`, and it names the protocol rather than an agent.
         assert_eq!(Harness::Acp.as_str(), "acp");
     }
 
-    /// The five answers, named one at a time. A `_ => true` arm, or a sixth harness copying a
+    /// The six answers, named one at a time. A `_ => true` arm, or a seventh harness copying a
     /// neighbour, changes exactly one of these rows.
     #[test]
     fn each_harness_answers_the_occupancy_question_for_itself() {
@@ -182,6 +192,9 @@ mod tests {
                 ("codex", true),
                 ("gemini", false),
                 ("opencode", true),
+                // Measured on 1.0.83 (`tests/fixtures/s24/`): `--available-tools` withholds every
+                // built-in it does not name, and an ungranted `create` is denied at exit 0.
+                ("copilot", false),
                 ("acp", true),
             ]
         );

@@ -96,7 +96,7 @@ pub use marion_harness::claude_code::{
     anthropic_base_url, mcp_config_json,
 };
 
-/// The permission axis for an M1 root (§9).
+/// The permission axis for an M1 root (§9), in **marion's** vocabulary.
 ///
 /// `spawn` is the load-bearing one; without it the root's single call is denied. The other three
 /// are the only descendant verbs an M1 root can reach — `spawn` blocks and backgrounding is M2+,
@@ -104,12 +104,14 @@ pub use marion_harness::claude_code::{
 /// against terminal targets. `report` is rejected on a root. Omitting a *reachable* verb would
 /// deny calls that then block until the root's bound expires, which is why the list is stated in
 /// full rather than trimmed to what the canned script happens to use.
-pub const ROOT_ALLOWED_TOOLS: [&str; 4] = [
-    "mcp__marion__spawn",
-    "mcp__marion__status",
-    "mcp__marion__wait",
-    "mcp__marion__list",
-];
+///
+/// Verbs, not spellings. This was `ROOT_VERBS`, four `mcp__marion__*` strings — Claude
+/// Code's spelling, compiled into every root's `LaunchSpec` whatever its harness. That was
+/// invisible while Claude Code was the only adapter reading `allowed_tools`; copilot reads them
+/// into `--available-tools`, where `mcp__marion__spawn` names no tool and the root would launch
+/// with none of marion's verbs, at exit 0. So the root does what `run_spawn` does for a child:
+/// name the verb, and let the adapter spell it (`HarnessAdapter::marion_tool_name`, §3.1).
+pub const ROOT_VERBS: [&str; 4] = ["spawn", "status", "wait", "list"];
 
 /// §3.1's **availability** axis for a root — *"the agent type's `tools:` list"*, exactly as
 /// `run::run_spawn` gives a child, **and the gate the grant is conditional on.**
@@ -170,7 +172,7 @@ pub const ROOT_ALLOWED_TOOLS: [&str; 4] = [
 /// `--permission-prompt-tool stdio`, marion has no answerer, and the node gets item 22's dead-end
 /// string instead of the file. `ClaudeCodeAdapter::permission_axis` unions this list into
 /// `--allowedTools` from the same declaration, so the two cannot be declared apart — which is why
-/// [`ROOT_ALLOWED_TOOLS`] carries marion's own verbs *only*, and nothing here appends to it.
+/// [`ROOT_VERBS`] carries marion's own verbs *only*, and nothing here appends to it.
 /// marion never compiles `--disallowedTools`, on this path or any other (§3.1).
 fn availability_axis(
     declared: &[String],
@@ -746,10 +748,13 @@ pub fn prepare_watched(
         // §3.1's availability axis: the agent type's own `tools:` list, exactly as
         // `run::run_spawn` gives a child — but only ever through `availability_axis`, which is
         // where the list and the audit that justifies it are decided together rather than in two
-        // places. `ROOT_ALLOWED_TOOLS` below stays a constant, and for a different reason: it
-        // carries marion's own verbs, which no agent type may widen.
+        // places. `ROOT_VERBS` below stays a constant, and for a different reason: it carries
+        // marion's own verbs, which no agent type may widen — spelled per harness by the adapter.
         tools,
-        allowed_tools: ROOT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
+        allowed_tools: ROOT_VERBS
+            .iter()
+            .map(|verb| adapter.marion_tool_name(verb))
+            .collect(),
         mcp: McpDeclaration::Marion,
         base_url: spec.base_url.clone(),
         // On the duplex path the root's credential is the per-run `ANTHROPIC_AUTH_TOKEN` pushed
@@ -2675,8 +2680,19 @@ mod tests {
     #[test]
     fn the_root_allowlist_is_every_verb_an_m1_root_can_reach() {
         // Omitting a reachable verb denies a call that then blocks until the root's bound expires.
+        assert_eq!(ROOT_VERBS.to_vec(), vec!["spawn", "status", "wait", "list"]);
+        assert!(
+            !ROOT_VERBS.contains(&"report"),
+            "report is rejected on a node without a contract, and a root has none"
+        );
+        // And on Claude Code the adapter spells them to exactly the four strings the constant used
+        // to carry, so a claude root's `--allowedTools` is byte-identical to before the rename.
+        let claude = adapter_for(Harness::ClaudeCode).unwrap();
         assert_eq!(
-            ROOT_ALLOWED_TOOLS.to_vec(),
+            ROOT_VERBS
+                .iter()
+                .map(|v| claude.marion_tool_name(v))
+                .collect::<Vec<_>>(),
             vec![
                 "mcp__marion__spawn",
                 "mcp__marion__status",
@@ -2684,9 +2700,12 @@ mod tests {
                 "mcp__marion__list"
             ]
         );
-        assert!(
-            !ROOT_ALLOWED_TOOLS.contains(&"mcp__marion__report"),
-            "report is rejected on a node without a contract, and a root has none"
+        // Whereas copilot, the other adapter that compiles this list, spells them its own way.
+        assert_eq!(
+            adapter_for(Harness::Copilot)
+                .unwrap()
+                .marion_tool_name(ROOT_VERBS[0]),
+            "marion-spawn"
         );
     }
 

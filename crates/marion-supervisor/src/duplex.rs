@@ -725,6 +725,7 @@ mod tests {
                 ("claude-impl", Some(LaunchPath::Duplex)),
                 ("codex", Some(LaunchPath::LaunchOnly)),
                 ("codex-impl", Some(LaunchPath::LaunchOnly)),
+                ("copilot", Some(LaunchPath::LaunchOnly)),
                 ("gemini", Some(LaunchPath::LaunchOnly)),
                 ("gemini-impl", Some(LaunchPath::LaunchOnly)),
                 ("opencode", Some(LaunchPath::LaunchOnly)),

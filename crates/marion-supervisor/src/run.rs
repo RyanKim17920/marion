@@ -2685,6 +2685,7 @@ mod tests {
             ("gemini", Harness::Gemini),
             ("gemini-impl", Harness::Gemini),
             ("opencode", Harness::OpenCode),
+            ("copilot", Harness::Copilot),
         ] {
             let t = builtin(name).expect("built-in resolves");
             assert_eq!(t.harness, expected, "{name}");
@@ -2837,6 +2838,11 @@ mod tests {
             (Harness::Codex, vec!["sandbox:workspace-write"]),
             (Harness::Gemini, vec!["approval-mode:auto_edit"]),
             (Harness::OpenCode, vec!["harness-default:unconstrained"]),
+            // The pattern grammar, not the tool grammar: `write` is the kind that grants `create`.
+            (
+                Harness::Copilot,
+                vec!["allow-tool:marion(report)", "allow-tool:write"],
+            ),
         ] {
             let adapter = adapter_for(harness).unwrap();
             let launch = LaunchSpec {
@@ -2899,7 +2905,11 @@ mod tests {
     /// rather than falling through to codex.
     #[test]
     fn a_new_harness_with_no_model_anywhere_still_refuses_and_names_itself() {
-        for (name, h) in [("gemini", Harness::Gemini), ("opencode", Harness::OpenCode)] {
+        for (name, h) in [
+            ("gemini", Harness::Gemini),
+            ("opencode", Harness::OpenCode),
+            ("copilot", Harness::Copilot),
+        ] {
             let adapter = adapter_for(builtin(name).unwrap().harness).unwrap();
             let err: SpawnError = adapter
                 .compile(&launch_spec(None), &launch_ctx())

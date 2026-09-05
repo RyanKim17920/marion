@@ -37,6 +37,16 @@ pub const GEMINI_DEFAULT_MODEL: &str = "gemini-2.5-flash";
 /// pointing a node at a real endpoint overrides both through `spawn`'s `model`.
 pub const OPENCODE_DEFAULT_MODEL: &str = "marion/default";
 
+/// The `copilot` built-in's default model.
+///
+/// Copilot's BYOK path refuses to start without an explicit model (1.0.83: `BYOK providers require
+/// an explicit model`, exit 1 before any request), and marion's canned endpoint ignores the name.
+/// So, as with [`OPENCODE_DEFAULT_MODEL`], this names marion's own plumbing rather than a vendor's
+/// catalogue — and, as there, the adapter refuses it by name under `--live`, where the string would
+/// go to GitHub's model routing and name nothing. An operator running live names a real Copilot
+/// model through `spawn`'s `model` / `marion run -m`.
+pub const COPILOT_DEFAULT_MODEL: &str = "marion-canned";
+
 /// The first entry in §3.1's `tools:` vocabulary: *may create or overwrite a file*.
 ///
 /// **A vocabulary of two words, and the second arrived the way the first did.** §3.1's example line
@@ -325,6 +335,16 @@ pub fn builtin(name: &str) -> Option<AgentType> {
                 Harness::OpenCode,
             )
         }),
+        // The fifth binary, on the same footing as `gemini` and `opencode`: the harness's own name,
+        // the defaults, and a model because its adapter refuses to launch canned without one.
+        "copilot" => Some(AgentType {
+            model: Some(COPILOT_DEFAULT_MODEL.into()),
+            ..AgentType::defaults(
+                "copilot",
+                "Implements a well-specified change on the GitHub Copilot CLI.",
+                Harness::Copilot,
+            )
+        }),
         // **One built-in per ACP agent, and no built-in named `acp`.** The other four harnesses
         // get a type named after the harness because there the harness *is* the program. Here it
         // is not: a type named `acp` would have to pick an agent, and §6.4 says marion may not.
@@ -356,6 +376,7 @@ pub fn builtin_names() -> &'static [&'static str] {
         "claude-impl",
         "codex",
         "codex-impl",
+        "copilot",
         "gemini",
         "gemini-impl",
         "opencode",
@@ -452,6 +473,7 @@ mod tests {
             ("claude-impl", Harness::ClaudeCode),
             ("codex", Harness::Codex),
             ("codex-impl", Harness::Codex),
+            ("copilot", Harness::Copilot),
             ("gemini", Harness::Gemini),
             ("gemini-impl", Harness::Gemini),
             ("opencode", Harness::OpenCode),
@@ -461,7 +483,7 @@ mod tests {
         }
         assert_eq!(
             builtin_names().len(),
-            8,
+            9,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
@@ -521,6 +543,11 @@ mod tests {
         assert_eq!(
             builtin("opencode").unwrap().model.as_deref(),
             Some(OPENCODE_DEFAULT_MODEL)
+        );
+        assert_eq!(
+            builtin("copilot").unwrap().model.as_deref(),
+            Some(COPILOT_DEFAULT_MODEL),
+            "BYOK refuses to start without a model, so the canned default must carry one"
         );
         // opencode's `-m` accepts nothing else, and the generated provider block has to repeat it.
         assert!(

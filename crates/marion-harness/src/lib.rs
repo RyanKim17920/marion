@@ -25,9 +25,9 @@ pub mod surfaces;
 
 pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
-    AcpAdapter, ClaudeCodeAdapter, CodexAdapter, Extras, GeminiAdapter, HarnessAdapter,
-    HarnessError, LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx, adapter_for,
-    adapter_for_type,
+    AcpAdapter, ClaudeCodeAdapter, CodexAdapter, CopilotAdapter, Extras, GeminiAdapter,
+    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx,
+    adapter_for, adapter_for_type,
 };
 pub use auth::Auth;
 pub use caps::{Capabilities, advertised, static_caps};

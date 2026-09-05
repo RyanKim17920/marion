@@ -214,6 +214,7 @@ fn script(root: &Node, child: &Node) -> Script {
         // mode at all: `AcpAdapter::compile` refuses `Auth::Canned` by name, because ACP has no
         // protocol-level way to point an agent at an endpoint. There is nothing to script, so this
         // says so rather than scripting something that would not be an ACP run.
+        Harness::Copilot => unreachable!("no cell of this matrix names `copilot` yet"),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s

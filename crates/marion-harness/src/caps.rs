@@ -260,6 +260,11 @@ pub fn advertised(harness: Harness, version: &str) -> Capabilities {
         // precisely so one cannot be read as the other. See `crate::acp` for where S20's answer is
         // actually consumed.
         Harness::OpenCode => Capabilities::NONE,
+        // Nothing measured through the `-p` surface. s24 drove it to a tool call and back and
+        // watched `session.error` and a denied call, none of which is one of the ten; `--resume`,
+        // `--session-id` and `--acp` exist on 1.0.83's `--help` and none has been driven, so none
+        // is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
+        Harness::Copilot => Capabilities::NONE,
         // **The one row where `advertised` describes a protocol rather than a program**, because
         // §5.2's `acp` adapter serves many agents and the version here is not even readable until
         // one of them has answered `initialize`. So `version` is deliberately unused: it keys the
