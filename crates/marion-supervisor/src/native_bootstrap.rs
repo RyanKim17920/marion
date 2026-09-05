@@ -108,6 +108,7 @@ const CLAIM_ACK_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_ACTIVE_NATIVE_CONNECTIONS: usize = 32;
 const MAX_CONTEXT_FIELD_BYTES: usize = 64 * 1024;
 const MAX_CONTEXT_ARGUMENTS: usize = 4096;
+const MAX_CONTEXT_ENVIRONMENT_ENTRIES: usize = 4096;
 const MAX_CONTEXT_BYTES: usize = 192 * 1024;
 const MAX_SELECTOR_BYTES: usize = 255;
 const MAX_CAPABILITY_GENERATION_ATTEMPTS: usize = 128;
@@ -378,6 +379,12 @@ const LINUX_ATOMIC_RECEIVE_FLAGS: RecvFlags = RecvFlags::CMSG_CLOEXEC;
 const _: () = assert!(LINUX_ATOMIC_RECEIVE_FLAGS.contains(RecvFlags::CMSG_CLOEXEC));
 
 /// The exact secret-free request state authenticated by the native bootstrap.
+///
+/// The client's process environment rides beside the hashed context: the vendor process must see
+/// the operator's `PATH` and shell state, not the detached supervisor's, and the environment is
+/// the only way that state can reach a process the supervisor spawns. It is carried, budgeted, and
+/// stripped of `MARION_*` identity, but it is deliberately **not** a hash input (§5 runtime spec:
+/// "Secrets and environment values are never hash inputs").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectNativeRequestContext {
     canonical_project: PathBuf,
@@ -385,6 +392,7 @@ pub struct DirectNativeRequestContext {
     opaque_tail: Vec<OsString>,
     terminal_profile: OsString,
     native_wire_version: u32,
+    environment: Vec<(OsString, OsString)>,
 }
 
 impl DirectNativeRequestContext {
@@ -401,7 +409,23 @@ impl DirectNativeRequestContext {
             opaque_tail,
             terminal_profile,
             native_wire_version,
+            environment: Vec::new(),
         }
+    }
+
+    /// Carry the client's environment to the authorized launch, minus every `MARION_*` name.
+    ///
+    /// Stripping happens here, on the client, so reserved identity never leaves the process; the
+    /// server independently refuses a wire frame that still carries one.
+    pub fn with_environment(
+        mut self,
+        environment: impl IntoIterator<Item = (OsString, OsString)>,
+    ) -> Self {
+        self.environment = environment
+            .into_iter()
+            .filter(|(name, _)| !is_reserved_marion_name(name))
+            .collect();
+        self
     }
 
     pub(crate) fn canonical_project(&self) -> &std::path::Path {
@@ -427,6 +451,14 @@ impl DirectNativeRequestContext {
     pub(crate) fn terminal_profile(&self) -> &OsStr {
         &self.terminal_profile
     }
+
+    pub(crate) fn environment(&self) -> &[(OsString, OsString)] {
+        &self.environment
+    }
+}
+
+fn is_reserved_marion_name(name: &OsStr) -> bool {
+    name.as_bytes().starts_with(b"MARION_")
 }
 
 /// Domain-separated digest of a [`DirectNativeRequestContext`].
@@ -2148,8 +2180,24 @@ fn read_native_claim_request(stream: &mut impl Read) -> Result<NativeClaimReques
     })
 }
 
+/// The exact bytes a native client puts on the wire for an `Issue`, for tests that must prove an
+/// ordinary transport refuses this frame before any capability lookup.
+#[cfg(test)]
+pub(crate) fn issue_request_bytes_for_tests(context: &DirectNativeRequestContext) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    write_wire_request(
+        &mut bytes,
+        &WireRequest::Issue {
+            context: context.clone(),
+            claimed_hash: context_hash(context),
+        },
+    )
+    .expect("an in-memory wire frame encodes");
+    bytes
+}
+
 fn write_wire_request(
-    stream: &mut UnixStream,
+    stream: &mut impl Write,
     request: &WireRequest,
 ) -> Result<(), BootstrapError> {
     let (kind, context, claimed_hash, token) = match request {
@@ -2179,11 +2227,11 @@ fn write_wire_request(
     stream.flush().map_err(BootstrapError::NativeTransportIo)
 }
 
-fn write_context(
-    stream: &mut UnixStream,
+fn write_context<W: Write>(
+    stream: &mut W,
     context: &DirectNativeRequestContext,
 ) -> Result<(), BootstrapError> {
-    fn field(stream: &mut UnixStream, value: &OsStr) -> Result<(), BootstrapError> {
+    fn field<W: Write>(stream: &mut W, value: &OsStr) -> Result<(), BootstrapError> {
         let value = value.as_bytes();
         let length = u32::try_from(value.len()).map_err(|_| BootstrapError::NativeWireProtocol)?;
         if value.len() > MAX_CONTEXT_FIELD_BYTES {
@@ -2209,7 +2257,20 @@ fn write_context(
     field(stream, &context.terminal_profile)?;
     stream
         .write_all(&context.native_wire_version.to_be_bytes())
-        .map_err(BootstrapError::NativeTransportIo)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    // The environment trails the hashed fields so the authenticated prefix keeps its layout; it
+    // is bounded like the tail and never carries reserved identity onto the wire.
+    stream
+        .write_all(&(context.environment.len() as u32).to_be_bytes())
+        .map_err(BootstrapError::NativeTransportIo)?;
+    for (name, value) in &context.environment {
+        if is_reserved_marion_name(name) {
+            return Err(BootstrapError::NativeWireProtocol);
+        }
+        field(stream, name)?;
+        field(stream, value)?;
+    }
+    Ok(())
 }
 
 fn read_wire_request<R: Read>(mut stream: R) -> Result<WireRequest, BootstrapError> {
@@ -2286,12 +2347,33 @@ fn read_context<R: Read>(stream: &mut R) -> Result<DirectNativeRequestContext, B
     stream
         .read_exact(&mut native_wire_version)
         .map_err(BootstrapError::NativeTransportIo)?;
+    budget.consume(4)?;
+    let mut environment_count = [0u8; 4];
+    stream
+        .read_exact(&mut environment_count)
+        .map_err(BootstrapError::NativeTransportIo)?;
+    let environment_count = u32::from_be_bytes(environment_count) as usize;
+    if environment_count > MAX_CONTEXT_ENVIRONMENT_ENTRIES {
+        return Err(BootstrapError::NativeWireProtocol);
+    }
+    let mut environment = Vec::new();
+    for _ in 0..environment_count {
+        let name = field(stream, &mut budget)?;
+        // A conforming client strips reserved identity before sending, so its presence is a
+        // protocol violation rather than something to silently drop on the server's behalf.
+        if is_reserved_marion_name(&name) {
+            return Err(BootstrapError::NativeWireProtocol);
+        }
+        let value = field(stream, &mut budget)?;
+        environment.push((name, value));
+    }
     Ok(DirectNativeRequestContext {
         canonical_project,
         selector,
         opaque_tail,
         terminal_profile,
         native_wire_version: u32::from_be_bytes(native_wire_version),
+        environment,
     })
 }
 
@@ -2318,11 +2400,14 @@ impl ContextBudget {
 fn checked_framed_context_size(
     field_lengths: impl IntoIterator<Item = usize>,
     argument_count: usize,
+    environment_count: usize,
 ) -> Result<usize, BootstrapError> {
-    if argument_count > MAX_CONTEXT_ARGUMENTS {
+    if argument_count > MAX_CONTEXT_ARGUMENTS || environment_count > MAX_CONTEXT_ENVIRONMENT_ENTRIES
+    {
         return Err(BootstrapError::NativeWireProtocol);
     }
-    let mut size = 8usize;
+    // Fixed-width framing: argument count, wire version, environment entry count.
+    let mut size = 12usize;
     for length in field_lengths {
         if length > MAX_CONTEXT_FIELD_BYTES {
             return Err(BootstrapError::NativeWireProtocol);
@@ -2350,8 +2435,15 @@ fn checked_context_wire_size(
                     .iter()
                     .map(|value| value.as_bytes().len()),
             )
-            .chain(std::iter::once(context.terminal_profile.as_bytes().len())),
+            .chain(std::iter::once(context.terminal_profile.as_bytes().len()))
+            .chain(
+                context
+                    .environment
+                    .iter()
+                    .flat_map(|(name, value)| [name.as_bytes().len(), value.as_bytes().len()]),
+            ),
         context.opaque_tail.len(),
+        context.environment.len(),
     )
 }
 
@@ -2397,6 +2489,12 @@ impl<'request> ConsumedNativeRequest<'request> {
 
     pub(crate) const fn authorization(&self) -> &AuthorizedNativeFacade<'request> {
         &self.authorization
+    }
+
+    /// The client's stripped environment, authenticated as part of this request's frame but never
+    /// as a hash input.
+    pub(crate) fn environment(&self) -> &'request [(OsString, OsString)] {
+        self.context.environment()
     }
 
     pub(crate) fn into_parts(self) -> ConsumedNativeRequestParts<'request> {

@@ -1781,6 +1781,7 @@ mod tests {
     use marion_core::node::{NodeState, ReapState};
     use marion_proto::result::{NodeGetResult, TreeSubscribeResult};
     use marion_proto::{Method, NodeSummary, ReplayPoint};
+    use std::ffi::OsString;
     use std::io::BufRead;
     use std::os::unix::net::UnixStream;
 
@@ -2234,6 +2235,47 @@ mod tests {
             response["error"]["code"],
             marion_proto::error::METHOD_NOT_FOUND
         );
+        assert_eq!(native.capability_lookup_count(), 0);
+        assert!(lock(&recorder.calls).is_empty());
+
+        // The environment is the one wire surface the native context grew after this refusal was
+        // written. Neither the exact env-bearing native frame nor a JSON spelling of it may reach
+        // the capability authority over the ordinary socket. Lines on one connection are consumed
+        // in order, so the answer to the trailing JSON line (or the connection closing on the
+        // binary line) proves both were already handled when the counters are read.
+        let context = crate::native_bootstrap::DirectNativeRequestContext::new(
+            paths.canonical_project().to_path_buf(),
+            OsString::from("atlas"),
+            vec![OsString::from("--opaque")],
+            OsString::from("xterm-256color"),
+            crate::native_bootstrap::NATIVE_WIRE_VERSION,
+        )
+        .with_environment([(OsString::from("PATH"), OsString::from("/attacker/bin"))]);
+        let mut client = UnixStream::connect(paths.socket()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut frame = crate::native_bootstrap::issue_request_bytes_for_tests(&context);
+        frame.push(b'\n');
+        client.write_all(&frame).unwrap();
+        client
+            .write_all(
+                b"{\"jsonrpc\":\"2.0\",\"id\":901,\"method\":\"native/bootstrap\",\"params\":{\"capability\":\"copied-secret-token\",\"env\":{\"PATH\":\"/attacker/bin\"}}}\n",
+            )
+            .unwrap();
+        client.flush().unwrap();
+        let mut response = String::new();
+        let read = std::io::BufReader::new(client)
+            .read_line(&mut response)
+            .unwrap();
+        if read > 0 {
+            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(response["id"], 901);
+            assert_eq!(
+                response["error"]["code"],
+                marion_proto::error::METHOD_NOT_FOUND
+            );
+        }
         assert_eq!(native.capability_lookup_count(), 0);
         assert!(lock(&recorder.calls).is_empty());
         server.stop();

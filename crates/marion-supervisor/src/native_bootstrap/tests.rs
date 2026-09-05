@@ -1028,6 +1028,10 @@ fn request_context() -> DirectNativeRequestContext {
         OsString::from("xterm-256color"),
         7,
     )
+    .with_environment([(
+        OsString::from("PATH"),
+        OsString::from_vec(b"/client-bin-\xfd".to_vec()),
+    )])
 }
 
 fn hash() -> ContextHash {
@@ -1137,6 +1141,13 @@ fn context_hash_has_a_fixed_vector_and_every_semantic_boundary_is_load_bearing()
     changed = base.clone();
     changed.native_wire_version += 1;
     assert_ne!(context_hash(&changed), context_hash(&base));
+
+    // Environment values are carried but are never hash inputs.
+    let with_environment = base
+        .clone()
+        .with_environment([(OsString::from("PATH"), OsString::from("/elsewhere"))]);
+    assert_ne!(with_environment, base);
+    assert_eq!(context_hash(&with_environment), context_hash(&base));
 }
 
 #[test]
@@ -1189,6 +1200,11 @@ fn encoded_context(context: &DirectNativeRequestContext) -> Vec<u8> {
     }
     field(&mut bytes, &context.terminal_profile);
     bytes.extend_from_slice(&context.native_wire_version.to_be_bytes());
+    bytes.extend_from_slice(&(context.environment.len() as u32).to_be_bytes());
+    for (name, value) in &context.environment {
+        field(&mut bytes, name);
+        field(&mut bytes, value);
+    }
     bytes
 }
 
@@ -1202,9 +1218,14 @@ fn budget_context(argument_bytes: usize) -> DirectNativeRequestContext {
     )
 }
 
+/// Fixed framing (argc, version, env count) plus the project and profile fields at their caps,
+/// the one-byte selector, and one length-prefixed argument.
+const BUDGET_FRAMING_BYTES: usize =
+    12 + (4 + MAX_CONTEXT_FIELD_BYTES) + (4 + 1) + 4 + (4 + MAX_CONTEXT_FIELD_BYTES);
+
 #[test]
 fn aggregate_context_budget_accepts_exact_boundary_and_rejects_cumulative_and_checked_overflow() {
-    let exact = budget_context(MAX_CONTEXT_FIELD_BYTES - 25);
+    let exact = budget_context(MAX_CONTEXT_BYTES - BUDGET_FRAMING_BYTES);
     assert_eq!(
         checked_context_wire_size(&exact).unwrap(),
         MAX_CONTEXT_BYTES
@@ -1212,7 +1233,7 @@ fn aggregate_context_budget_accepts_exact_boundary_and_rejects_cumulative_and_ch
     let mut encoded = std::io::Cursor::new(encoded_context(&exact));
     assert_eq!(read_context(&mut encoded).unwrap(), exact);
 
-    let over = budget_context(MAX_CONTEXT_FIELD_BYTES - 24);
+    let over = budget_context(MAX_CONTEXT_BYTES - BUDGET_FRAMING_BYTES + 1);
     assert!(matches!(
         checked_context_wire_size(&over),
         Err(BootstrapError::NativeWireContextTooLarge)
@@ -1227,6 +1248,71 @@ fn aggregate_context_budget_accepts_exact_boundary_and_rejects_cumulative_and_ch
     assert!(matches!(
         budget.consume(usize::MAX),
         Err(BootstrapError::NativeWireContextTooLarge)
+    ));
+}
+
+/// Mutation: leave the environment outside the aggregate budget, or trust its element count. One
+/// name/value pair costs its two length prefixes plus its bytes, and the last byte of the budget
+/// is still the boundary when it is spent on the environment.
+#[test]
+fn environment_debits_the_same_aggregate_budget_and_is_bounded_by_count() {
+    let pair_bytes = (4 + 1) + (4 + 1);
+    let exact = budget_context(MAX_CONTEXT_BYTES - BUDGET_FRAMING_BYTES - pair_bytes)
+        .with_environment([(OsString::from("E"), OsString::from("v"))]);
+    assert_eq!(
+        checked_context_wire_size(&exact).unwrap(),
+        MAX_CONTEXT_BYTES
+    );
+    let mut encoded = std::io::Cursor::new(encoded_context(&exact));
+    assert_eq!(read_context(&mut encoded).unwrap(), exact);
+
+    let over = budget_context(MAX_CONTEXT_BYTES - BUDGET_FRAMING_BYTES - pair_bytes)
+        .with_environment([(OsString::from("E"), OsString::from("vv"))]);
+    assert!(matches!(
+        checked_context_wire_size(&over),
+        Err(BootstrapError::NativeWireContextTooLarge)
+    ));
+    let mut encoded = std::io::Cursor::new(encoded_context(&over));
+    assert!(matches!(
+        read_context(&mut encoded),
+        Err(BootstrapError::NativeWireContextTooLarge)
+    ));
+
+    let too_many = request_context().with_environment(
+        (0..=MAX_CONTEXT_ENVIRONMENT_ENTRIES)
+            .map(|index| (OsString::from(format!("E{index}")), OsString::new())),
+    );
+    assert!(matches!(
+        checked_context_wire_size(&too_many),
+        Err(BootstrapError::NativeWireProtocol)
+    ));
+    let mut encoded = std::io::Cursor::new(encoded_context(&too_many));
+    assert!(matches!(
+        read_context(&mut encoded),
+        Err(BootstrapError::NativeWireProtocol)
+    ));
+}
+
+/// Mutation: strip `MARION_*` only on the client. A frame that still carries reserved identity is
+/// refused by the decoder itself, before any hash comparison or handler could see it.
+#[test]
+fn reserved_marion_environment_on_the_wire_is_a_protocol_violation() {
+    let mut forged =
+        request_context().with_environment([(OsString::from("PATH"), OsString::from("/bin"))]);
+    forged.environment.push((
+        OsString::from("MARION_NODE_TOKEN"),
+        OsString::from("forged"),
+    ));
+    let mut encoded = std::io::Cursor::new(encoded_context(&forged));
+    assert!(matches!(
+        read_context(&mut encoded),
+        Err(BootstrapError::NativeWireProtocol)
+    ));
+
+    let (mut client, _server) = UnixStream::pair().unwrap();
+    assert!(matches!(
+        write_context(&mut client, &forged),
+        Err(BootstrapError::NativeWireProtocol)
     ));
 }
 
@@ -2739,6 +2825,97 @@ fn native_wire_issues_and_consumes_only_after_the_verified_handoff() {
     assert_eq!(effects.filesystem.load(Ordering::SeqCst), 1);
     assert_eq!(effects.processes.load(Ordering::SeqCst), 1);
     assert_eq!(effects.artifacts.load(Ordering::SeqCst), 1);
+}
+
+struct EnvironmentCapturingHandler {
+    captured: Mutex<Option<Vec<(OsString, OsString)>>>,
+}
+
+impl NativeBootstrapHandler for EnvironmentCapturingHandler {
+    fn verify_terminal(
+        &self,
+        _peer: PeerIdentity,
+        _stdin: BorrowedFd<'_>,
+        _stdout: BorrowedFd<'_>,
+    ) -> Result<TerminalGeometryObservation, BootstrapError> {
+        Ok(TerminalGeometryObservation::new(geometry()))
+    }
+
+    fn authorized(
+        &self,
+        request: ConsumedNativeRequest<'_>,
+        _deadline: &NativeLaunchDeadline,
+    ) -> Result<PendingNativeLaunchReceipt, BootstrapError> {
+        assert_eq!(request.hash(), context_hash(request.context()));
+        *lock(&self.captured) = Some(request.environment().to_vec());
+        Ok(pending_receipt(NATIVE_TEST_AGENT))
+    }
+}
+
+/// Mutation: read the environment off the supervisor process, or let `MARION_*` identity ride
+/// the wire. The authorized handler must see exactly the client's stripped environment, byte for
+/// byte, while the hash it authenticated stays independent of every environment value.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn authorized_launch_sees_the_client_environment_not_the_supervisors() {
+    let client_path = OsString::from("/client/only/bin");
+    assert_ne!(
+        std::env::var_os("PATH"),
+        Some(client_path.clone()),
+        "the supervisor process must not already carry the client's PATH"
+    );
+    let raw_value = OsString::from_vec(vec![b'v', 0xff, b'=', 0xfe]);
+    let context = request_context().with_environment([
+        (OsString::from("PATH"), client_path.clone()),
+        (
+            OsString::from("MARION_NODE_TOKEN"),
+            OsString::from("leaked"),
+        ),
+        (OsString::from("TERM_PROGRAM"), raw_value.clone()),
+        (OsString::from("MARION_AGENT_ID"), OsString::from("leaked")),
+    ]);
+    assert_eq!(
+        context_hash(&context),
+        hash(),
+        "environment values became hash inputs"
+    );
+
+    let handler = Arc::new(EnvironmentCapturingHandler {
+        captured: Mutex::new(None),
+    });
+    let service = Arc::new(
+        NativeBootstrapService::new_without_terminal_verification_for_task2_tests(
+            context.canonical_project().to_path_buf(),
+            context.native_wire_version(),
+            Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
+        ),
+    );
+    let (mut client, server) = UnixStream::pair().unwrap();
+    let worker = {
+        let service = Arc::clone(&service);
+        let active = service.try_acquire_connection().unwrap();
+        std::thread::spawn(move || service.serve_connection(ConnId(33), server, active))
+    };
+    let input = std::fs::File::open("/dev/null").unwrap();
+    let output = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .unwrap();
+    let capability =
+        request_direct_cli_capability(&mut client, input.as_fd(), output.as_fd(), &context)
+            .unwrap();
+    present_direct_cli_capability(&mut client, capability, &context).unwrap();
+    worker.join().unwrap();
+
+    assert_eq!(
+        lock(&handler.captured)
+            .take()
+            .expect("the handler was authorized"),
+        vec![
+            (OsString::from("PATH"), client_path),
+            (OsString::from("TERM_PROGRAM"), raw_value),
+        ],
+    );
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

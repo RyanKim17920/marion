@@ -998,6 +998,20 @@ acceptance evidence, so every marker remains unchanged.
     recorded but suspend/resume is not implemented, and no end-to-end socket/lease evidence is
     claimed. M3 remains `[partial]` pending C1's recorded manual session.
 
+    **The client environment on the native bootstrap wire in this commit moves no milestone
+    marker.** `DirectNativeRequestContext` now carries the caller's process environment as a
+    trailing, length-framed section that is debited from the same aggregate context budget,
+    bounded by entry count, stripped of `MARION_*` on the client, refused by the decoder if a
+    reserved name still arrives, and excluded from the BLAKE3 context hash (the fixed hash vector
+    is unchanged). Covered by `authorized_launch_sees_the_client_environment_not_the_supervisors`,
+    `environment_debits_the_same_aggregate_budget_and_is_bounded_by_count`,
+    `reserved_marion_environment_on_the_wire_is_a_protocol_violation`, the extended
+    `context_hash_has_a_fixed_vector_and_every_semantic_boundary_is_load_bearing`, and the extended
+    `ordinary_json_rpc_rejects_copied_native_token_before_capability_lookup`, which now also sends
+    the exact env-bearing native frame over the ordinary socket. Production serving still installs
+    the disabled native bootstrap service, so nothing consumes the environment yet; M3 remains
+    `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
