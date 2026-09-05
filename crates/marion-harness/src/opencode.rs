@@ -13,18 +13,13 @@
 
 use std::path::{Path, PathBuf};
 
-use marion_core::contract::AgentId;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
-// The bridge's env contract, imported for the same reason gemini imports it: one spelling.
-use crate::auth::Auth;
 use crate::grammar::{
     Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
 };
-use crate::mcp_bridge::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
-};
+pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 
 /// `$XDG_CONFIG_HOME`'s name under the sandbox — one spelling for [`SPEC`]'s env row and for
@@ -272,31 +267,6 @@ pub fn config_path(sandbox: &Path) -> PathBuf {
         .join("opencode.json")
 }
 
-/// The values [`config_json`] writes into the MCP declaration.
-#[derive(Debug, Clone)]
-pub struct BridgeEnv {
-    pub bridge: PathBuf,
-    pub args: Vec<String>,
-    pub repo: PathBuf,
-    pub state: PathBuf,
-    /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
-    /// ([`crate::mcp_bridge::BASE_URL_ENV`]).
-    pub base_url: Option<String>,
-    /// Which endpoint a child this node spawns should talk to
-    /// ([`crate::mcp_bridge::AUTH_ENV`]).
-    pub auth: Auth,
-    pub agent_id: AgentId,
-    /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
-    pub agent_type: String,
-    /// The node's depth, root = 0 (§3.1's `max_depth`).
-    pub depth: u32,
-    /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
-    /// absent, never empty ([`crate::mcp_bridge::NODE_TOKEN_ENV`]).
-    pub node_token: Option<String>,
-    /// `None` on this surface — the prompt rides argv (§6.1 step 8).
-    pub ready_file: Option<PathBuf>,
-}
-
 /// Everything the generated `opencode.json` needs that is not the MCP block.
 #[derive(Debug, Clone)]
 pub struct ConfigSpec {
@@ -393,30 +363,12 @@ pub const NO_COMPILED_TOOL_CONSTRAINT: &str = "harness-default:unconstrained";
 /// `additionalProperties: false`, so `env` instead of `environment`, or a `command` string instead
 /// of an argv array, is a hard failure rather than an ignored field.
 fn mcp_block(b: &BridgeEnv) -> Value {
-    let mut environment = json!({
-        "MARION_REPO": b.repo.to_string_lossy(),
-        "MARION_STATE_DIR": b.state.to_string_lossy(),
-        AUTH_ENV: b.auth.as_wire(),
-        AGENT_ID_ENV: b.agent_id.0,
-        AGENT_TYPE_ENV: b.agent_type,
-        DEPTH_ENV: b.depth.to_string(),
-    });
-    if let Some(u) = &b.base_url {
-        environment[BASE_URL_ENV] = json!(u);
-    }
-    // Same rule; see [`crate::mcp_bridge::NODE_TOKEN_ENV`].
-    if let Some(t) = &b.node_token {
-        environment[NODE_TOKEN_ENV] = json!(t);
-    }
-    if let Some(r) = &b.ready_file {
-        environment[READY_FILE_ENV] = json!(r.to_string_lossy());
-    }
     let mut command: Vec<String> = vec![b.bridge.to_string_lossy().into_owned()];
     command.extend(b.args.iter().cloned());
     json!({
         "type": "local",
         "command": command,
-        "environment": environment,
+        "environment": b.env_json(),
         "enabled": true,
     })
 }
@@ -441,9 +393,12 @@ pub fn live_config_json(mcp: Option<&BridgeEnv>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marion_core::contract::AgentId;
+
     use crate::adapter::{
         Extras, HarnessAdapter, LaunchSpec, McpDeclaration, OpenCodeAdapter, SpawnCtx,
     };
+    use crate::auth::Auth;
     use crate::invocation::Invocation;
 
     fn model() -> ModelRef {

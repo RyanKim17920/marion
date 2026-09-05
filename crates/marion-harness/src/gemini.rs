@@ -9,22 +9,13 @@
 
 use std::path::{Path, PathBuf};
 
-use marion_core::contract::AgentId;
+use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
-// These name the **bridge's** env contract rather than Claude Code's — the bridge reads
-// `MARION_AGENT_ID` whichever harness started it — so they are imported rather than respelled: a
-// second spelling would put a gemini child's `TaskContract.requester` back on "unattributed-root".
-use marion_core::harness::Harness;
-
-use crate::auth::Auth;
 use crate::grammar::{
     Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
 };
-use crate::mcp_bridge::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV as MARION_BASE_URL_ENV, DEPTH_ENV,
-    NODE_TOKEN_ENV, READY_FILE_ENV,
-};
+pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 
 /// The settings document's name under the node's config dir — named by [`SYSTEM_SETTINGS_PATH_ENV`]
@@ -350,37 +341,6 @@ pub fn base_url_is_acceptable(base_url: &str) -> bool {
     matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
 }
 
-/// The values [`settings_json`] writes into the MCP server declaration.
-///
-/// The key names in the `env` block are the **bridge's** contract, not Claude Code's, which is why
-/// they are taken from [`crate::mcp_bridge`]'s constants rather than respelled here: the bridge
-/// reads `MARION_AGENT_ID` no matter which harness started it, and a second spelling would put a
-/// gemini child's contract back on `"unattributed-root"`.
-#[derive(Debug, Clone)]
-pub struct BridgeEnv {
-    pub bridge: PathBuf,
-    pub args: Vec<String>,
-    pub repo: PathBuf,
-    pub state: PathBuf,
-    /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
-    /// ([`crate::mcp_bridge::BASE_URL_ENV`]).
-    pub base_url: Option<String>,
-    /// Which endpoint a child this node spawns should talk to
-    /// ([`crate::mcp_bridge::AUTH_ENV`]).
-    pub auth: Auth,
-    pub agent_id: AgentId,
-    /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
-    pub agent_type: String,
-    /// The node's depth, root = 0 (§3.1's `max_depth`).
-    pub depth: u32,
-    /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
-    /// absent, never empty ([`crate::mcp_bridge::NODE_TOKEN_ENV`]).
-    pub node_token: Option<String>,
-    /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
-    /// withhold and nothing to wait on (§6.1 step 8).
-    pub ready_file: Option<PathBuf>,
-}
-
 /// The settings document `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names.
 ///
 /// **`"trust": true` is load-bearing and its omission is silent.** Measured in S12 against 0.53.0,
@@ -423,31 +383,13 @@ pub fn settings_json_with_auth(mcp: Option<&BridgeEnv>, selected_type: &str) -> 
     });
 
     if let Some(b) = mcp {
-        let mut env = json!({
-            "MARION_REPO": b.repo.to_string_lossy(),
-            "MARION_STATE_DIR": b.state.to_string_lossy(),
-            AUTH_ENV: b.auth.as_wire(),
-            AGENT_ID_ENV: b.agent_id.0,
-            AGENT_TYPE_ENV: b.agent_type,
-            DEPTH_ENV: b.depth.to_string(),
-        });
-        if let Some(u) = &b.base_url {
-            env[MARION_BASE_URL_ENV] = json!(u);
-        }
-        // Same rule; see [`crate::mcp_bridge::NODE_TOKEN_ENV`].
-        if let Some(t) = &b.node_token {
-            env[NODE_TOKEN_ENV] = json!(t);
-        }
-        if let Some(r) = &b.ready_file {
-            env[READY_FILE_ENV] = json!(r.to_string_lossy());
-        }
         settings["mcpServers"] = json!({
             MCP_ALIAS: {
                 "command": b.bridge.to_string_lossy(),
                 "args": b.args,
-                // Gemini's stdio schema carries `env` as Record<string,string>, so unlike codex's
-                // `config_toml` there is no gap here: the node's identity reaches its bridge.
-                "env": env,
+                // Gemini's stdio schema carries `env` as Record<string,string>: the bridge's
+                // contract, verbatim.
+                "env": b.env_json(),
                 // Do not "simplify" this away — read the doc comment above first.
                 "trust": true,
             }
@@ -459,9 +401,12 @@ pub fn settings_json_with_auth(mcp: Option<&BridgeEnv>, selected_type: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marion_core::contract::AgentId;
+
     use crate::adapter::{
         Extras, GeminiAdapter, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
     };
+    use crate::auth::Auth;
     use crate::invocation::Invocation;
 
     fn ctx() -> SpawnCtx {

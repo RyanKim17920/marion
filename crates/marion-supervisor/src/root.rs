@@ -92,7 +92,7 @@ pub use crate::duplex::{
 // `marion-harness` and are re-exported here — `marion-supervisor mcp`, the other end of the
 // handshake, reads them from this module.
 pub use marion_harness::claude_code::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, McpEnv, READY_FILE_ENV,
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, READY_FILE_ENV,
     anthropic_base_url, mcp_config_json,
 };
 
@@ -2622,9 +2622,10 @@ mod tests {
         let _ = std::fs::remove_file(cast);
     }
 
-    fn env() -> McpEnv {
-        McpEnv {
+    fn env() -> BridgeEnv {
+        BridgeEnv {
             bridge: "/bin/marion-supervisor".into(),
+            args: vec!["mcp".into()],
             repo: "/repo".into(),
             state: "/state".into(),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -2633,7 +2634,7 @@ mod tests {
             agent_type: "claude".into(),
             depth: ROOT_DEPTH,
             node_token: None,
-            ready_file: "/state/x/mcp-ready".into(),
+            ready_file: Some("/state/x/mcp-ready".into()),
         }
     }
 

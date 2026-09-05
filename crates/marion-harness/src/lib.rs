@@ -33,18 +33,18 @@ pub use adapter::{
 };
 pub use auth::Auth;
 pub use caps::{Capabilities, advertised, static_caps};
-pub use claude_code::{McpEnv, anthropic_base_url, mcp_config_json};
+pub use claude_code::{anthropic_base_url, mcp_config_json};
 pub use codex::config_toml;
-pub use mcp_bridge::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
+pub use mcp_bridge::{AGENT_ID_ENV, AGENT_TYPE_ENV, BridgeEnv, DEPTH_ENV, READY_FILE_ENV};
 pub use native::{
     NativeDocument, NativeEnvironmentView, NativeInjection, NativeInjectionAdapter,
     NativeInjectionError, NativeInvocation, NativeNodeContext, NativeProcessBase,
     NativeTerminalGeometry, PreparedNativeLaunch, assemble_native, validate_native_process_values,
 };
-// `gemini` and `opencode` are addressed by module path rather than flattened here. Both define a
-// `BridgeEnv` and an `MCP_ALIAS`, and both spell marion's tool names differently — a flattened
-// `BridgeEnv` would make the harness a caller is configuring invisible at the use site, which is
-// the exact confusion §3.1's per-harness-spelling rule exists to prevent.
+// `gemini` and `opencode` are addressed by module path rather than flattened here. Both define an
+// `MCP_ALIAS` and both spell marion's tool names differently — a flattened emitter would make the
+// harness a caller is configuring invisible at the use site, which is the exact confusion §3.1's
+// per-harness-spelling rule exists to prevent.
 pub use invocation::Invocation;
 pub use stream::{CallOutcome, ChildExit, FrameSplitter, MarionCall, StreamOutcome, json_frames};
 pub use surfaces::{

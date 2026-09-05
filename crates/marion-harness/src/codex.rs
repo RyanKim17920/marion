@@ -10,20 +10,12 @@
 //! request rather than a second harness — the two share this file's configuration, its isolation
 //! and its sandbox, and differ only in the argv grammar the binary's two commands accept.
 
-use std::path::PathBuf;
-
-use marion_core::contract::AgentId;
-
 use marion_core::harness::Harness;
 
-// The bridge's own env-var contract, imported rather than respelled — see [`BridgeEnv`].
-use crate::auth::Auth;
 use crate::grammar::{
     Cond, Name, OnRefusedReport, Pairing, PathList, StreamGrammar, Verdict, Where,
 };
-use crate::mcp_bridge::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
-};
+pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -170,38 +162,6 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// adapter would be reporting a mode the generated config does not set.
 pub const SANDBOX_MODE: &str = "workspace-write";
 
-/// The values [`config_toml`] writes into `[mcp_servers.marion]`.
-///
-/// The key names in the `env` block are the **bridge's** contract, not codex's, which is why they
-/// are taken from [`crate::mcp_bridge`]'s constants rather than respelled here: the bridge reads
-/// `MARION_AGENT_ID` no matter which harness started it (`marion-supervisor::main::requester`), and
-/// a second spelling would put a codex node's contract back on `"unattributed-root"`.
-#[derive(Debug, Clone)]
-pub struct BridgeEnv {
-    pub bridge: PathBuf,
-    pub args: Vec<String>,
-    pub repo: PathBuf,
-    pub state: PathBuf,
-    /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
-    /// ([`crate::mcp_bridge::BASE_URL_ENV`]).
-    pub base_url: Option<String>,
-    /// Which endpoint a child this node spawns should talk to
-    /// ([`crate::mcp_bridge::AUTH_ENV`]).
-    pub auth: Auth,
-    pub agent_id: AgentId,
-    /// The node's canonical agent type name (§6.1 step 2 reads the caller's type).
-    pub agent_type: String,
-    /// The node's depth, root = 0 (§3.1's `max_depth`).
-    pub depth: u32,
-    /// §5.4's capability token for this node — `None` where the supervisor minted none. Present or
-    /// absent, never empty ([`crate::mcp_bridge::NODE_TOKEN_ENV`]).
-    pub node_token: Option<String>,
-    /// `None` on a `LaunchOnly` surface: the prompt rides argv, so there is no first frame to
-    /// withhold and nothing to wait on (§6.1 step 8). codex is `LaunchOnly` on every path today, so
-    /// this is `None` in practice; it is carried so the field cannot be forgotten if that changes.
-    pub ready_file: Option<PathBuf>,
-}
-
 /// TOML basic-string escaping, for the handful of characters a path may legally contain.
 ///
 /// Not decorative. Every value below is a filesystem path or a URL that marion did not author — an
@@ -239,40 +199,6 @@ fn toml_str(s: &str) -> String {
 /// which §6.7 makes an audit record naming an agent-dir that does not exist. codex's TOML schema
 /// has always supported `env` inside `[mcp_servers.<name>]`; nothing was blocking this but the
 /// plumbing, and `ctx.agent_id` was already threaded to the call site.
-/// The `env` block of `[mcp_servers.marion]`, as ordered pairs.
-///
-/// Shared by the two routes codex's declaration can take — the generated `config.toml` under
-/// [`Auth::Canned`] and the `-c mcp_servers.marion.env.…` overrides under [`Auth::Inherited`] — so
-/// the two cannot carry different sets of variables. A live bridge that was handed fewer keys than a
-/// canned one is exactly the failure class this codebase keeps re-finding: `spawn` answering
-/// `MARION_REPO is not set` on the one path nobody tests automatically.
-pub fn bridge_env_pairs(env: &BridgeEnv) -> Vec<(String, String)> {
-    let mut pairs = vec![
-        ("MARION_REPO".to_string(), env.repo.display().to_string()),
-        (
-            "MARION_STATE_DIR".to_string(),
-            env.state.display().to_string(),
-        ),
-        (AUTH_ENV.to_string(), env.auth.as_wire().to_string()),
-        (AGENT_ID_ENV.to_string(), env.agent_id.0.clone()),
-        (AGENT_TYPE_ENV.to_string(), env.agent_type.clone()),
-        (DEPTH_ENV.to_string(), env.depth.to_string()),
-    ];
-    // Present or absent, never empty ([`crate::mcp_bridge::BASE_URL_ENV`]).
-    if let Some(u) = &env.base_url {
-        pairs.push((BASE_URL_ENV.to_string(), u.clone()));
-    }
-    // Same rule; [`crate::mcp_bridge::NODE_TOKEN_ENV`] argues why an empty one is worse here than
-    // anywhere else this rule applies.
-    if let Some(t) = &env.node_token {
-        pairs.push((NODE_TOKEN_ENV.to_string(), t.clone()));
-    }
-    if let Some(r) = &env.ready_file {
-        pairs.push((READY_FILE_ENV.to_string(), r.display().to_string()));
-    }
-    pairs
-}
-
 /// The MCP server alias: the `marion` of `[mcp_servers.marion]`, and the `server` an
 /// `mcp_tool_call` item names ([`STREAM`]). One spelling for the document and the reader.
 pub const MCP_ALIAS: &str = "marion";
@@ -310,7 +236,7 @@ pub const PLUGINS_FEATURE_KEY: &str = "features.plugins";
 /// *"unknown variant `not-a-mode`, expected one of `auto`, `prompt`, `writes`, `approve`"*, which is
 /// the proof that the key is really parsed and that `approve` is really one of its values.
 ///
-/// The `env` block comes from [`bridge_env_pairs`], shared with [`config_toml`], so the live route
+/// The `env` block comes from [`BridgeEnv::pairs`], shared with [`config_toml`], so the live route
 /// and the canned one cannot hand the bridge different sets of variables.
 pub fn live_config_overrides(env: &BridgeEnv) -> Vec<(String, String)> {
     let args = env
@@ -333,7 +259,7 @@ pub fn live_config_overrides(env: &BridgeEnv) -> Vec<(String, String)> {
             toml_str("approve"),
         ),
     ];
-    for (k, v) in bridge_env_pairs(env) {
+    for (k, v) in env.pairs() {
         out.push((format!("{MCP_SERVER_KEY}.env.{k}"), toml_str(&v)));
     }
     // Measured (S7 / §12): left on, `codex exec` starts a curated-plugin-marketplace clone whose
@@ -352,7 +278,8 @@ pub fn config_toml(env: &BridgeEnv, base_url: &str) -> String {
         .map(|a| toml_str(a))
         .collect::<Vec<_>>()
         .join(", ");
-    let env_table = bridge_env_pairs(env)
+    let env_table = env
+        .pairs()
         .iter()
         .map(|(k, v)| format!("{k} = {}", toml_str(v)))
         .collect::<Vec<_>>()
@@ -391,9 +318,14 @@ env = {{ {env_table} }}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use marion_core::contract::AgentId;
+
     use crate::adapter::{
         CodexAdapter, Extras, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
     };
+    use crate::auth::Auth;
     use crate::invocation::Invocation;
 
     fn ctx() -> SpawnCtx {

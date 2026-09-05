@@ -30,19 +30,13 @@
 
 use std::path::{Path, PathBuf};
 
-use marion_core::contract::AgentId;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
-use crate::auth::Auth;
-// The **bridge's** env contract, imported rather than respelled for the reason gemini and opencode
-// give: the bridge reads `MARION_AGENT_ID` whichever harness started it.
 use crate::grammar::{
     Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
 };
-use crate::mcp_bridge::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
-};
+pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 
 /// `$COPILOT_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -278,63 +272,26 @@ pub fn mcp_config_path(config_dir: &Path) -> PathBuf {
     config_dir.join("mcp.json")
 }
 
-/// The values [`mcp_config_json`] writes into the MCP server declaration.
-#[derive(Debug, Clone)]
-pub struct BridgeEnv {
-    pub bridge: PathBuf,
-    pub args: Vec<String>,
-    pub repo: PathBuf,
-    pub state: PathBuf,
-    /// `None` under [`Auth::Inherited`]: the key is omitted, never written empty
-    /// ([`crate::mcp_bridge::BASE_URL_ENV`]).
-    pub base_url: Option<String>,
-    pub auth: Auth,
-    pub agent_id: AgentId,
-    pub agent_type: String,
-    pub depth: u32,
-    /// Present or absent, never empty ([`crate::mcp_bridge::NODE_TOKEN_ENV`]).
-    pub node_token: Option<String>,
-    /// `None` on this surface: the prompt rides argv, so there is no first frame to withhold.
-    ///
-    /// **And copilot needs none.** Measured: the CLI holds turn one until every declared MCP
-    /// server has finished `initialize` + `tools/list` (`session.mcp_servers_loaded` precedes
-    /// `user.message` in every capture), with a 60 s ceiling after which it proceeds tool-less and
-    /// says so in that frame (`status: "failed"`). That is the gate §6.1 step 8 makes marion
-    /// build for Claude Code, built into the harness.
-    pub ready_file: Option<PathBuf>,
-}
-
 /// The `--additional-mcp-config` document: the same shape as `~/.copilot/mcp-config.json`, which
 /// it *augments* for one session rather than replacing.
 ///
 /// `"tools": ["*"]` is load-bearing: it is the server's tool allowlist, and the key is required —
 /// without it the server's tools are not exposed to the model. `type: "stdio"` with `command` as a
 /// string and `args` as an array is the shape the CLI's own `copilot mcp add` writes.
+///
+/// `ready_file` is `None` on this surface, **and copilot needs none.** Measured: the CLI holds
+/// turn one until every declared MCP server has finished `initialize` + `tools/list`
+/// (`session.mcp_servers_loaded` precedes `user.message` in every capture), with a 60 s ceiling
+/// after which it proceeds tool-less and says so in that frame (`status: "failed"`). That is the
+/// gate §6.1 step 8 makes marion build for Claude Code, built into the harness.
 pub fn mcp_config_json(b: &BridgeEnv) -> Value {
-    let mut env = json!({
-        "MARION_REPO": b.repo.to_string_lossy(),
-        "MARION_STATE_DIR": b.state.to_string_lossy(),
-        AUTH_ENV: b.auth.as_wire(),
-        AGENT_ID_ENV: b.agent_id.0,
-        AGENT_TYPE_ENV: b.agent_type,
-        DEPTH_ENV: b.depth.to_string(),
-    });
-    if let Some(u) = &b.base_url {
-        env[BASE_URL_ENV] = json!(u);
-    }
-    if let Some(t) = &b.node_token {
-        env[NODE_TOKEN_ENV] = json!(t);
-    }
-    if let Some(r) = &b.ready_file {
-        env[READY_FILE_ENV] = json!(r.to_string_lossy());
-    }
     json!({
         "mcpServers": {
             MCP_ALIAS: {
                 "type": "stdio",
                 "command": b.bridge.to_string_lossy(),
                 "args": b.args,
-                "env": env,
+                "env": b.env_json(),
                 "tools": ["*"],
             }
         }
@@ -363,12 +320,15 @@ mod tests {
         "/../../tests/fixtures/s24/copilot-provider-500.stdout.jsonl"
     ));
 
+    use marion_core::agent_type;
+    use marion_core::contract::AgentId;
+
     use crate::adapter::{
         CopilotAdapter, Extras, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
     };
+    use crate::auth::Auth;
     use crate::invocation::Invocation;
     use crate::stream::{CallOutcome, MarionCall, StreamOutcome};
-    use marion_core::agent_type;
 
     fn ctx() -> SpawnCtx {
         SpawnCtx {

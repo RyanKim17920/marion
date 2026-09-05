@@ -19,13 +19,13 @@ use marion_core::harness::Harness;
 
 use crate::acp;
 pub use crate::auth::Auth;
-use crate::claude_code::{self, McpEnv};
+use crate::claude_code;
 use crate::codex;
 use crate::copilot;
 use crate::gemini;
 use crate::grammar;
 use crate::invocation::Invocation;
-use crate::mcp_bridge;
+use crate::mcp_bridge::BridgeEnv;
 use crate::opencode;
 use crate::spec;
 use crate::stream::{ChildExit, MarionCall, StreamOutcome};
@@ -650,6 +650,29 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
     }
 }
 
+/// **The bridge declaration for this node**, in the neutral form every harness's document
+/// serialises ([`BridgeEnv`]): what marion knows about the node ([`SpawnCtx`]) and what the launch
+/// asked for ([`LaunchSpec`]), joined once so no two adapters can hand the bridge different values.
+///
+/// `base_url` is omitted rather than blanked under [`Auth::Inherited`] — a live node's bridge
+/// declares no endpoint, and `MARION_BASE_URL: ""` once compiled a live root's child canned against
+/// an endpoint spelled as the empty string, with nothing anywhere reporting it.
+fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> BridgeEnv {
+    BridgeEnv {
+        bridge: ctx.bridge.clone(),
+        args: ctx.bridge_args.clone(),
+        repo: ctx.repo.clone(),
+        state: ctx.state_dir.clone(),
+        base_url: spec.base_url.clone(),
+        auth: spec.auth,
+        agent_id: ctx.agent_id.clone(),
+        agent_type: ctx.agent_type.clone(),
+        depth: ctx.depth,
+        node_token: ctx.node_token.clone(),
+        ready_file: ctx.ready_file.clone(),
+    }
+}
+
 /// [`spec::render`] with its two `None`s named: a row with no pane shape, and a launch that named
 /// no program where the row expected one (an ACP adapter bound to no agent).
 fn render_row(
@@ -707,34 +730,21 @@ impl ClaudeCodeAdapter {
         spec.prompt.is_empty()
     }
 
-    fn mcp_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<McpEnv, HarnessError> {
-        // Required on **every** Claude Code node, root or child. Its prompt is always written after
-        // launch — 2.1.220 does not hold turn one for an `--mcp-config` server — so there is always
-        // a frame to withhold and always something for the marker to gate (§6.1 step 8). A node
-        // launched without one takes its first turn with `tools: []` and nothing anywhere reports
-        // an error, which is why the absence is a refusal rather than a fallback path.
-        let ready_file = ctx.ready_file.clone().ok_or(HarnessError::MissingInput {
-            harness: Harness::ClaudeCode,
-            what: "a headless node's prompt is written after launch, so the bridge \
+    /// The bridge declaration, **with the readiness marker required.** A Claude Code node's prompt
+    /// is always written after launch — 2.1.220 does not hold turn one for an `--mcp-config` server
+    /// — so there is always a frame to withhold and always something for the marker to gate (§6.1
+    /// step 8). A node launched without one takes its first turn with `tools: []` and nothing
+    /// anywhere reports an error, which is why the absence is a refusal rather than a fallback.
+    fn mcp_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<BridgeEnv, HarnessError> {
+        if ctx.ready_file.is_none() {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::ClaudeCode,
+                what: "a headless node's prompt is written after launch, so the bridge \
                        readiness marker is required: without it the first turn goes out with \
                        tools: [] and nothing anywhere reports an error",
-        })?;
-        Ok(McpEnv {
-            bridge: ctx.bridge.clone(),
-            repo: ctx.repo.clone(),
-            state: ctx.state_dir.clone(),
-            // **Not `unwrap_or_default()`.** That wrote `MARION_BASE_URL: ""` into a live root's
-            // declaration, the bridge read it back as `Ok("")`, and the child it spawned was
-            // compiled canned against an endpoint spelled as the empty string — a live root whose
-            // child was neither live nor working, with nothing anywhere reporting it.
-            base_url: spec.base_url.clone(),
-            auth: spec.auth,
-            agent_id: ctx.agent_id.clone(),
-            agent_type: ctx.agent_type.clone(),
-            depth: ctx.depth,
-            node_token: ctx.node_token.clone(),
-            ready_file,
-        })
+            });
+        }
+        Ok(bridge_env(spec, ctx))
     }
 }
 
@@ -884,26 +894,6 @@ impl CodexAdapter {
     fn config_path(spec: &LaunchSpec) -> PathBuf {
         spec.config_dir.join("config.toml")
     }
-
-    /// The bridge declaration in the neutral form both of codex's routes serialise — the generated
-    /// `config.toml` under [`Auth::Canned`], the `-c` overrides under [`Auth::Inherited`]. Built
-    /// once so the two cannot carry different `env` blocks.
-    fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Option<codex::BridgeEnv> {
-        (spec.mcp == McpDeclaration::Marion).then(|| codex::BridgeEnv {
-            bridge: ctx.bridge.clone(),
-            args: ctx.bridge_args.clone(),
-            repo: ctx.repo.clone(),
-            state: ctx.state_dir.clone(),
-            // Omitted rather than blanked under `Inherited` — see `ClaudeCodeAdapter::mcp_env`.
-            base_url: spec.base_url.clone(),
-            auth: spec.auth,
-            agent_id: ctx.agent_id.clone(),
-            agent_type: ctx.agent_type.clone(),
-            depth: ctx.depth,
-            node_token: ctx.node_token.clone(),
-            ready_file: ctx.ready_file.clone(),
-        })
-    }
 }
 
 impl HarnessAdapter for CodexAdapter {
@@ -942,12 +932,11 @@ impl HarnessAdapter for CodexAdapter {
             Auth::Canned => None,
             Auth::Inherited => spec.model.clone(),
         };
-        f.pairs = match spec.auth {
-            Auth::Canned => Vec::new(),
-            Auth::Inherited => Self::bridge_env(spec, ctx)
-                .as_ref()
-                .map(codex::live_config_overrides)
-                .unwrap_or_default(),
+        f.pairs = match (spec.auth, spec.mcp) {
+            (Auth::Canned, _) | (_, McpDeclaration::None) => Vec::new(),
+            (Auth::Inherited, McpDeclaration::Marion) => {
+                codex::live_config_overrides(&bridge_env(spec, ctx))
+            }
         };
         Ok(f)
     }
@@ -990,26 +979,10 @@ impl HarnessAdapter for CodexAdapter {
             what: "a model_providers entry needs a base_url; a config pointing nowhere fails as \
                    a hang, which is the worst failure to diagnose",
         })?;
-        // **Closed.** This used to be a `TODO(phase-3)` beside a deliberate `let _ = &ctx.agent_id`:
-        // `config_toml` took only `(bridge, bridge_args, base_url)` and emitted no per-server `env`,
-        // so a codex node's bridge had neither marion's paths nor the node's identity. A codex child
-        // survived it (its one call is `report`, which reads nothing); a codex **root** did not —
-        // `spawn` answered `marion: MARION_REPO is not set`, and `TaskContract.requester` would have
-        // read `"unattributed-root"`. codex's TOML has always accepted `env` inside
-        // `[mcp_servers.<name>]`, so nothing was blocking it but this call.
-        let bridge = Self::bridge_env(spec, ctx).unwrap_or_else(|| codex::BridgeEnv {
-            bridge: ctx.bridge.clone(),
-            args: ctx.bridge_args.clone(),
-            repo: ctx.repo.clone(),
-            state: ctx.state_dir.clone(),
-            base_url: spec.base_url.clone(),
-            auth: spec.auth,
-            agent_id: ctx.agent_id.clone(),
-            agent_type: ctx.agent_type.clone(),
-            depth: ctx.depth,
-            node_token: ctx.node_token.clone(),
-            ready_file: ctx.ready_file.clone(),
-        });
+        // The bridge's identity reaches a codex node's `[mcp_servers.marion]` `env` — a codex
+        // **root** without it answered `spawn` with `marion: MARION_REPO is not set`. Written on
+        // every canned node, declaration or not: the document is the whole of the node's config.
+        let bridge = bridge_env(spec, ctx);
         Ok(vec![(
             Self::config_path(spec),
             codex::config_toml(&bridge, base_url),
@@ -1191,20 +1164,7 @@ impl HarnessAdapter for GeminiAdapter {
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
         // Unlike Claude Code, the file is written even with no MCP server: it also carries the
         // auth selection, without which the run dies with `Invalid auth method selected.`
-        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| gemini::BridgeEnv {
-            bridge: ctx.bridge.clone(),
-            args: ctx.bridge_args.clone(),
-            repo: ctx.repo.clone(),
-            state: ctx.state_dir.clone(),
-            // Omitted rather than blanked under `Inherited` — see `ClaudeCodeAdapter::mcp_env`.
-            base_url: spec.base_url.clone(),
-            auth: spec.auth,
-            agent_id: ctx.agent_id.clone(),
-            agent_type: ctx.agent_type.clone(),
-            depth: ctx.depth,
-            node_token: ctx.node_token.clone(),
-            ready_file: ctx.ready_file.clone(),
-        });
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
         // The one key whose right value is not marion's to choose. Under `Canned` marion supplies
         // `GEMINI_API_KEY` and so selects `gemini-api-key`; under `Inherited` it supplies no
         // credential at all, and this document is the *system settings* layer, which outranks the
@@ -1320,23 +1280,6 @@ impl OpenCodeAdapter {
                    accepts and the one the generated provider block has to repeat",
         })
     }
-
-    /// The bridge declaration, in the neutral form both routes serialise.
-    fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Option<opencode::BridgeEnv> {
-        (spec.mcp == McpDeclaration::Marion).then(|| opencode::BridgeEnv {
-            bridge: ctx.bridge.clone(),
-            args: ctx.bridge_args.clone(),
-            repo: ctx.repo.clone(),
-            state: ctx.state_dir.clone(),
-            base_url: spec.base_url.clone(),
-            auth: spec.auth,
-            agent_id: ctx.agent_id.clone(),
-            agent_type: ctx.agent_type.clone(),
-            depth: ctx.depth,
-            node_token: ctx.node_token.clone(),
-            ready_file: ctx.ready_file.clone(),
-        })
-    }
 }
 
 impl HarnessAdapter for OpenCodeAdapter {
@@ -1373,8 +1316,8 @@ impl HarnessAdapter for OpenCodeAdapter {
         f.title = Some(format!("marion-{}", ctx.agent_id.0));
         f.inline_config = match spec.auth {
             Auth::Canned => None,
-            Auth::Inherited => Self::bridge_env(spec, ctx).map(|b| {
-                serde_json::to_string(&opencode::live_config_json(Some(&b)))
+            Auth::Inherited => (spec.mcp == McpDeclaration::Marion).then(|| {
+                serde_json::to_string(&opencode::live_config_json(Some(&bridge_env(spec, ctx))))
                     .expect("a Value always serialises")
             }),
         };
@@ -1398,7 +1341,7 @@ impl HarnessAdapter for OpenCodeAdapter {
             what: "the provider block needs a baseURL; without one the child resolves no provider \
                    at all, and a provider that answers nothing is an unbounded hang (S13)",
         })?;
-        let bridge = Self::bridge_env(spec, ctx);
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
         let json = opencode::config_json(
             &opencode::ConfigSpec {
                 model: Self::model_ref(spec)?,
@@ -1515,22 +1458,6 @@ impl CopilotAdapter {
             })
             .collect()
     }
-
-    fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Option<copilot::BridgeEnv> {
-        (spec.mcp == McpDeclaration::Marion).then(|| copilot::BridgeEnv {
-            bridge: ctx.bridge.clone(),
-            args: ctx.bridge_args.clone(),
-            repo: ctx.repo.clone(),
-            state: ctx.state_dir.clone(),
-            base_url: spec.base_url.clone(),
-            auth: spec.auth,
-            agent_id: ctx.agent_id.clone(),
-            agent_type: ctx.agent_type.clone(),
-            depth: ctx.depth,
-            node_token: ctx.node_token.clone(),
-            ready_file: ctx.ready_file.clone(),
-        })
-    }
 }
 
 impl HarnessAdapter for CopilotAdapter {
@@ -1628,12 +1555,12 @@ impl HarnessAdapter for CopilotAdapter {
         spec: &LaunchSpec,
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
-        let Some(bridge) = Self::bridge_env(spec, ctx) else {
+        if spec.mcp != McpDeclaration::Marion {
             return Ok(Vec::new());
-        };
+        }
         Ok(vec![(
             copilot::mcp_config_path(&spec.config_dir),
-            serde_json::to_string_pretty(&copilot::mcp_config_json(&bridge))
+            serde_json::to_string_pretty(&copilot::mcp_config_json(&bridge_env(spec, ctx)))
                 .expect("a Value always serialises"),
         )])
     }
@@ -1983,10 +1910,10 @@ impl HarnessAdapter for AcpAdapter {
 
     /// The `session/new` request, with marion's bridge declared as a stdio MCP server.
     ///
-    /// The env block is the **same key set** the other adapters put in their own declarations
-    /// ([`mcp_bridge::AGENT_ID_ENV`] and its neighbours), because the process on the other end is
-    /// the same `marion-supervisor mcp` bridge reading the same variables. A second spelling here
-    /// would be a second thing to keep true.
+    /// The env block is [`BridgeEnv::pairs`] — the same derivation every other declaration
+    /// serialises — because the process on the other end is the same `marion-supervisor mcp`
+    /// bridge reading the same variables. A second spelling here would be a second thing to keep
+    /// true.
     fn session_declaration(
         &self,
         spec: &LaunchSpec,
@@ -1999,34 +1926,9 @@ impl HarnessAdapter for AcpAdapter {
         // The one call site of the s14 gate: this method *is* marion putting its verbs in front of
         // the agent, and there is no other route by which they get there.
         self.bridgeable_agent(spec)?;
-        let mut env = vec![
-            (
-                "MARION_REPO".into(),
-                ctx.repo.to_string_lossy().into_owned(),
-            ),
-            (
-                "MARION_STATE_DIR".into(),
-                ctx.state_dir.to_string_lossy().into_owned(),
-            ),
-            (mcp_bridge::AUTH_ENV.into(), spec.auth.as_wire().into()),
-            (mcp_bridge::AGENT_ID_ENV.into(), ctx.agent_id.0.clone()),
-            (mcp_bridge::AGENT_TYPE_ENV.into(), ctx.agent_type.clone()),
-            (mcp_bridge::DEPTH_ENV.into(), ctx.depth.to_string()),
-        ];
-        // Present or absent, never empty — `mcp_bridge::NODE_TOKEN_ENV`'s rule, and the same for
-        // the other two optionals.
-        if let Some(u) = &spec.base_url {
-            env.push((mcp_bridge::BASE_URL_ENV.into(), u.clone()));
-        }
-        if let Some(t) = &ctx.node_token {
-            env.push((mcp_bridge::NODE_TOKEN_ENV.into(), t.clone()));
-        }
-        if let Some(r) = &ctx.ready_file {
-            env.push((
-                mcp_bridge::READY_FILE_ENV.into(),
-                r.to_string_lossy().into_owned(),
-            ));
-        }
+        // The bridge's contract, verbatim — the same pairs every document-shaped declaration
+        // carries — because the process on the other end is the same `marion-supervisor mcp`.
+        let env = bridge_env(spec, ctx).pairs();
         Ok(Some(acp::session_new_request(
             SESSION_NEW_ID,
             &spec.cwd,
@@ -2159,6 +2061,7 @@ pub fn adapter_for_type(
 mod tests {
     use super::*;
     use crate::codex::config_toml;
+    use crate::mcp_bridge;
     use crate::mcp_bridge::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::stream::CallOutcome;
     use crate::surfaces::{ControlTransport, DisplaySurface};
@@ -3119,8 +3022,9 @@ mod tests {
     fn the_claude_adapter_emits_byte_identical_mcp_json() {
         let spec = claude_spec();
         let files = ClaudeCodeAdapter.config_files(&spec, &ctx()).unwrap();
-        let expected = serde_json::to_string_pretty(&claude_code::mcp_config_json(&McpEnv {
+        let expected = serde_json::to_string_pretty(&claude_code::mcp_config_json(&BridgeEnv {
             bridge: "/bin/marion-supervisor".into(),
+            args: vec!["mcp".into()],
             repo: "/repo".into(),
             state: "/state".into(),
             // The `/v1` form, which is what the bridge hands a Codex grandchild.
@@ -3130,7 +3034,7 @@ mod tests {
             agent_type: "claude".into(),
             depth: 0,
             node_token: None,
-            ready_file: "/state/x/mcp-ready".into(),
+            ready_file: Some("/state/x/mcp-ready".into()),
         }))
         .unwrap();
         assert_eq!(
@@ -3143,7 +3047,7 @@ mod tests {
     fn the_codex_adapter_emits_byte_identical_config_toml() {
         let files = CodexAdapter.config_files(&codex_spec(), &ctx()).unwrap();
         let expected = config_toml(
-            &codex::BridgeEnv {
+            &BridgeEnv {
                 bridge: "/bin/marion-supervisor".into(),
                 args: vec!["mcp".into()],
                 repo: "/repo".into(),
@@ -3395,8 +3299,9 @@ mod tests {
     /// stamped `unattributed-root` with nothing failing.
     #[test]
     fn every_adapters_bridge_env_block_uses_one_set_of_key_names() {
-        let claude = claude_code::mcp_config_json(&McpEnv {
+        let claude = claude_code::mcp_config_json(&BridgeEnv {
             bridge: "/bin/marion-supervisor".into(),
+            args: vec!["mcp".into()],
             repo: "/repo".into(),
             state: "/state".into(),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -3405,7 +3310,7 @@ mod tests {
             agent_type: "claude".into(),
             depth: 0,
             node_token: None,
-            ready_file: "/state/x/mcp-ready".into(),
+            ready_file: Some("/state/x/mcp-ready".into()),
         });
         let expected: Vec<&String> = claude["mcpServers"]["marion"]["env"]
             .as_object()
@@ -3413,7 +3318,7 @@ mod tests {
             .keys()
             .collect();
 
-        let g = gemini::settings_json(Some(&gemini::BridgeEnv {
+        let g = gemini::settings_json(Some(&BridgeEnv {
             bridge: "/bin/marion-supervisor".into(),
             args: vec!["mcp".into()],
             repo: "/repo".into(),
@@ -3432,7 +3337,7 @@ mod tests {
                 base_url: "http://127.0.0.1:8099/v1".into(),
                 api_key: None,
             },
-            Some(&opencode::BridgeEnv {
+            Some(&BridgeEnv {
                 bridge: "/bin/marion-supervisor".into(),
                 args: vec!["mcp".into()],
                 repo: "/repo".into(),
@@ -3785,7 +3690,7 @@ mod tests {
             g,
             vec![(
                 PathBuf::from("/state/x/config/marion-settings.json"),
-                serde_json::to_string_pretty(&gemini::settings_json(Some(&gemini::BridgeEnv {
+                serde_json::to_string_pretty(&gemini::settings_json(Some(&BridgeEnv {
                     bridge: "/bin/marion-supervisor".into(),
                     args: vec!["mcp".into()],
                     repo: "/repo".into(),
@@ -3814,7 +3719,7 @@ mod tests {
                         base_url: "http://127.0.0.1:8099/v1".into(),
                         api_key: Some("sk-fake".into()),
                     },
-                    Some(&opencode::BridgeEnv {
+                    Some(&BridgeEnv {
                         bridge: "/bin/marion-supervisor".into(),
                         args: vec!["mcp".into()],
                         repo: "/repo".into(),
@@ -6332,5 +6237,97 @@ mod tests {
                 "{h}: no stream grammar on its row"
             );
         }
+    }
+
+    /// **One bridge declaration, five documents.** Every harness's declaration of marion's bridge
+    /// is a serialisation of the same [`BridgeEnv`] — the `env` block of four JSON shapes, the TOML
+    /// table and `-c` pairs of codex, the `session/new` env array of ACP — so no adapter can hand
+    /// the bridge a different set of variables than another. Four field-for-field copies of the
+    /// struct, each with its own env-block builder, were how that could have happened.
+    #[test]
+    fn one_bridge_env_feeds_every_declaration_document() {
+        let expected = bridge_env(&claude_spec(), &ctx());
+        assert_eq!(
+            expected
+                .pairs()
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "MARION_REPO",
+                "MARION_STATE_DIR",
+                "MARION_AUTH",
+                "MARION_AGENT_ID",
+                "MARION_AGENT_TYPE",
+                "MARION_DEPTH",
+                "MARION_BASE_URL",
+                "MARION_READY_FILE",
+            ],
+            "the bridge's contract, in one order, with the optionals present because the spec \
+             carries them"
+        );
+        let env_block = |files: Vec<(PathBuf, String)>, ptr: &str| -> serde_json::Value {
+            let v: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
+            v.pointer(ptr)
+                .cloned()
+                .unwrap_or_else(|| panic!("{ptr} in {v:#}"))
+        };
+        assert_eq!(
+            env_block(
+                ClaudeCodeAdapter
+                    .config_files(&claude_spec(), &ctx())
+                    .unwrap(),
+                "/mcpServers/marion/env"
+            ),
+            expected.env_json()
+        );
+        for (h, ptr) in [
+            (Harness::Gemini, "/mcpServers/marion/env"),
+            (Harness::OpenCode, "/mcp/marion/environment"),
+            (Harness::Copilot, "/mcpServers/marion/env"),
+        ] {
+            let spec = spec_for(h);
+            assert_eq!(
+                env_block(
+                    launch_adapter(h)
+                        .unwrap()
+                        .config_files(&spec, &ctx())
+                        .unwrap(),
+                    ptr
+                ),
+                bridge_env(&spec, &ctx()).env_json(),
+                "{h}"
+            );
+        }
+        let toml = CodexAdapter.config_files(&codex_spec(), &ctx()).unwrap()[0]
+            .1
+            .clone();
+        for (k, v) in bridge_env(&codex_spec(), &ctx()).pairs() {
+            assert!(toml.contains(&format!("{k} = \"{v}\"")), "{k} in\n{toml}");
+        }
+        let live = codex_live_spec();
+        let argv = CodexAdapter.compile(&live, &ctx()).unwrap().args.join(" ");
+        for (k, v) in bridge_env(&live, &ctx()).pairs() {
+            assert!(
+                argv.contains(&format!("mcp_servers.marion.env.{k}=\"{v}\"")),
+                "{k}"
+            );
+        }
+        let session = acp_adapter()
+            .session_declaration(&acp_spec(), &ctx())
+            .unwrap()
+            .unwrap();
+        let declared: Vec<(String, String)> = session["params"]["mcpServers"][0]["env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["name"].as_str().unwrap().to_string(),
+                    e["value"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(declared, bridge_env(&acp_spec(), &ctx()).pairs());
     }
 }

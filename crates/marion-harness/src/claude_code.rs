@@ -5,19 +5,15 @@
 //! flag here was measured against 2.1.220, and several are non-obvious enough that the tests below
 //! state *why* rather than merely pinning the string.
 
-use std::path::PathBuf;
-
-use marion_core::contract::AgentId;
+use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
-use marion_core::harness::Harness;
-
-use crate::auth::Auth;
 use crate::grammar::{
     Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::{
-    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
+    READY_FILE_ENV,
 };
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 
@@ -172,32 +168,6 @@ pub fn anthropic_base_url(base_url: &str) -> String {
         .to_string()
 }
 
-/// The values [`mcp_config_json`] writes into the declaration.
-#[derive(Debug, Clone)]
-pub struct McpEnv {
-    pub bridge: PathBuf,
-    pub repo: PathBuf,
-    pub state: PathBuf,
-    /// `None` under [`crate::Auth::Inherited`], where the key is **omitted** rather than written
-    /// empty — see [`BASE_URL_ENV`].
-    pub base_url: Option<String>,
-    /// Which endpoint the child this node spawns should talk to. See [`AUTH_ENV`].
-    pub auth: Auth,
-    pub agent_id: AgentId,
-    /// The node's agent type name, in its **canonical** spelling — the alias `codex` resolves to
-    /// `codex-impl` before it gets here, so the bridge re-resolves one definition and not two.
-    pub agent_type: String,
-    /// The node's depth, root = 0. Its `spawn` creates a node at `depth + 1`.
-    pub depth: u32,
-    /// §5.4's capability token for this node. `None` where the supervisor minted none — a node
-    /// spawned by a path that does not own it, which since steps 5 and 6 is no production path at
-    /// all: every root and every child now comes through the socket's `agent/spawn`. A node that
-    /// somehow has none runs normally and cannot spawn, which its bridge reports by name. See
-    /// [`NODE_TOKEN_ENV`].
-    pub node_token: Option<String>,
-    pub ready_file: PathBuf,
-}
-
 /// The `--mcp-config` document declaring marion's control MCP.
 ///
 /// The bridge is a *short-lived process the harness starts*, not one marion spawns (§5.4), so
@@ -207,38 +177,16 @@ pub struct McpEnv {
 ///
 /// This is the Claude Code adapter's config emission, so it lives here rather than in the
 /// supervisor: §3.1 makes config generation part of the adapter contract, and the Codex adapter's
-/// counterpart ([`crate::codex::config_toml`]) has always lived beside its own compile step.
-pub fn mcp_config_json(node_env: &McpEnv) -> Value {
-    let mut env = json!({
-        "MARION_REPO": node_env.repo.to_string_lossy(),
-        "MARION_STATE_DIR": node_env.state.to_string_lossy(),
-        // The auth mode is stated on **every** declaration, in both modes: a key that appears only
-        // under `--live` would make its absence mean two things at once (canned, or an older
-        // marion), which is the ambiguity `AUTH_ENV` exists to remove.
-        AUTH_ENV: node_env.auth.as_wire(),
-        AGENT_ID_ENV: node_env.agent_id.0,
-        AGENT_TYPE_ENV: node_env.agent_type,
-        // A string, because an MCP `env` block is `Record<string,string>` on every
-        // harness that has one. The bridge parses it back.
-        DEPTH_ENV: node_env.depth.to_string(),
-        READY_FILE_ENV: node_env.ready_file.to_string_lossy(),
-    });
-    // Present or absent, never empty — see [`BASE_URL_ENV`].
-    if let Some(u) = &node_env.base_url {
-        env[BASE_URL_ENV] = json!(u);
-    }
-    // Same rule, and see [`NODE_TOKEN_ENV`] for why breaking it here is worse than a
-    // misconfiguration.
-    if let Some(t) = &node_env.node_token {
-        env[NODE_TOKEN_ENV] = json!(t);
-    }
+/// counterpart ([`crate::codex::config_toml`]) has always lived beside its own compile step. The
+/// `env` block is [`BridgeEnv::env_json`], the same derivation every harness's document writes.
+pub fn mcp_config_json(b: &BridgeEnv) -> Value {
     json!({
         "mcpServers": {
             "marion": {
                 "type": "stdio",
-                "command": node_env.bridge.to_string_lossy(),
-                "args": ["mcp"],
-                "env": env
+                "command": b.bridge.to_string_lossy(),
+                "args": b.args,
+                "env": b.env_json()
             }
         }
     })
@@ -247,10 +195,13 @@ pub fn mcp_config_json(node_env: &McpEnv) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marion_core::contract::AgentId;
+
     use crate::adapter::{
         ClaudeCodeAdapter, Extras, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration,
         SpawnCtx,
     };
+    use crate::auth::Auth;
     use crate::invocation::Invocation;
 
     fn ctx() -> SpawnCtx {
