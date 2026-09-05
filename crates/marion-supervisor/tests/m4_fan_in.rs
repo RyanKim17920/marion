@@ -53,6 +53,9 @@ use marion_testsupport::{
 };
 use serde_json::{Value, json};
 
+mod common;
+use common::cap_rules::normalize_for_cap_rules;
+
 /// Generous. The bound exists so a hung harness fails loudly instead of wedging the suite; nothing
 /// is measured against it.
 const RUN_BOUND: Duration = Duration::from_secs(300);
@@ -250,30 +253,6 @@ fn only_index(records: &[Value], kind: &str, agent_id: &str) -> usize {
         "expected exactly one {kind} about {agent_id}, found {hits:?}"
     );
     hits[0]
-}
-
-/// §6.7's cap rules 0–6 may shorten these, and the metadata recording the shortening may differ
-/// between the returned and persisted copies. Normalized on both sides, exactly as `m1_hop` does
-/// and for the reason §9 states.
-fn normalize_for_cap_rules(mut v: Value) -> Value {
-    v["instructions"] = Value::Null;
-    v["acceptance_criteria"] = Value::Null;
-    if let Some(c) = v.get_mut("completion").and_then(Value::as_object_mut) {
-        for key in [
-            "narrative",
-            "diff",
-            "evidence",
-            "changed_paths",
-            "scope_violations",
-            "evidence_omitted",
-            "changed_paths_omitted",
-            "scope_violations_omitted",
-            "acceptance_criteria_omitted",
-        ] {
-            c.insert(key.to_string(), Value::Null);
-        }
-    }
-    v
 }
 
 // ---- the criterion ------------------------------------------------------------------------------
