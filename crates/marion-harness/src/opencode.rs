@@ -14,16 +14,156 @@
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::AgentId;
+use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 // The bridge's env contract, imported for the same reason gemini imports it: one spelling.
 use crate::auth::Auth;
-use crate::invocation::Invocation;
 use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
+use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 use crate::stream::{
     CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
+};
+
+/// `$XDG_CONFIG_HOME`'s name under the sandbox — one spelling for [`SPEC`]'s env row and for
+/// [`config_path`], so the document is written where the relocated root is read from.
+const XDG_CONFIG_DIR: &str = "config";
+
+/// opencode's row. Measured against 1.17.3 (`tests/fixtures/s13/`). `LaunchOnly`: `run --pure
+/// --format json` is a full agent turn as NDJSON over pipes, binding no port.
+///
+/// **The env is not hygiene, and the split between `Canned` and `Always` is exactly where S13 puts
+/// the credential.** Auth lives in `$XDG_DATA_HOME/opencode/auth.json` and config in
+/// `$XDG_CONFIG_HOME/opencode/`, resolved through **different variables**, with `HOME`
+/// independently driving the `~/.claude`, `~/.agents` and `~/.opencode` lookups. Relocating any of
+/// them hides the login a live node is meant to present, so the five relocations are `Canned`;
+/// the `OPENCODE_DISABLE_*` set and `OPENCODE_DB=:memory:` are kept under both modes because they
+/// were never the isolation — and two of them matter *more* live, not less:
+/// `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS` sever a route no `XDG_*`
+/// var ever closed (`~/.claude/CLAUDE.md` and `~/.claude/skills/**` are found via `HOME`, and
+/// under live that `HOME` is the operator's real one). The rest suppress work a spawned node has
+/// no business doing: a boot models.dev fetch plus a 60-minute in-process loop, an LSP toolchain
+/// download, an auto-updater that pipes an install script into `bash`, session sharing, and an
+/// on-disk sqlite file.
+///
+/// **What this env cannot do is bound the run.** opencode *never exits* on a provider hang: S13
+/// measured a 500 still retrying at 90 s and a connection-refused still hung at 180 s. The provider
+/// timeouts in [`config_json`] are a first line of defence, not a substitute — marion's own bounded
+/// run and §9's two-step group kill are load-bearing for an opencode child.
+pub const SPEC: HarnessSpec = HarnessSpec {
+    harness: Harness::OpenCode,
+    program: Some("opencode"),
+    argv: &[
+        Arg::Lit("run"),
+        // Skips loading external plugins. It does *not* gate the forkDetach'ed
+        // `@opencode-ai/plugin` npm install or the ripgrep auto-download (S13) — those are bounded
+        // by the throwaway HOME below, not by a flag.
+        Arg::Lit("--pure"),
+        Arg::Lit("--format"),
+        Arg::Lit("json"),
+        // **Required.** Without `--title` opencode issues an extra `You are a title generator`
+        // request against `small_model` — S13 measured 3 POSTs instead of 2.
+        Arg::Flag("--title", Field::Title),
+        // `provider/model`, the only form `-m` accepts; the adapter parses it once so the config's
+        // provider block and argv can never name different providers.
+        Arg::Flag("-m", Field::Model),
+        // Positional (variadic). stdin works identically, but a LaunchOnly surface gives the child
+        // no stdin.
+        Arg::Pos(Field::Prompt),
+    ],
+    pane: None,
+    env: &[
+        Env {
+            key: "HOME",
+            val: Val::Under(""),
+            when: When::Canned,
+        },
+        Env {
+            key: "XDG_CONFIG_HOME",
+            val: Val::Under(XDG_CONFIG_DIR),
+            when: When::Canned,
+        },
+        Env {
+            key: "XDG_DATA_HOME",
+            val: Val::Under("data"),
+            when: When::Canned,
+        },
+        Env {
+            key: "XDG_CACHE_HOME",
+            val: Val::Under("cache"),
+            when: When::Canned,
+        },
+        Env {
+            key: "XDG_STATE_HOME",
+            val: Val::Under("state"),
+            when: When::Canned,
+        },
+        Env {
+            key: "OPENCODE_DISABLE_CLAUDE_CODE",
+            val: Val::Lit("1"),
+            when: When::Always,
+        },
+        Env {
+            key: "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+            val: Val::Lit("1"),
+            when: When::Always,
+        },
+        Env {
+            key: "OPENCODE_DISABLE_PROJECT_CONFIG",
+            val: Val::Lit("1"),
+            when: When::Always,
+        },
+        Env {
+            key: "OPENCODE_DISABLE_MODELS_FETCH",
+            val: Val::Lit("1"),
+            when: When::Always,
+        },
+        Env {
+            key: "OPENCODE_DISABLE_LSP_DOWNLOAD",
+            val: Val::Lit("1"),
+            when: When::Always,
+        },
+        Env {
+            key: "OPENCODE_DISABLE_AUTOUPDATE",
+            val: Val::Lit("1"),
+            when: When::Always,
+        },
+        Env {
+            key: "OPENCODE_DISABLE_SHARE",
+            val: Val::Lit("1"),
+            when: When::Always,
+        },
+        Env {
+            key: "OPENCODE_DB",
+            val: Val::Lit(":memory:"),
+            when: When::Always,
+        },
+        // **`cwd` alone does not place an opencode node, and the difference is a containment
+        // failure.** Measured against 1.17.3 through marion's own `spawn`: with `Invocation.cwd`
+        // set to the child's worktree and `PWD` left inherited, the child's `bash` tool reported
+        // `pwd` / `git rev-parse --show-toplevel` as the **operator's own repository** and a
+        // `write` of `src/…` landed there. Everything downstream of that is silently wrong rather
+        // than loud: §6.7 derives `changed_paths` from a git diff of the worktree, which the child
+        // never touched, so the contract records a clean audit of a run that wrote outside every
+        // scope it was given. Under both modes, because it is placement and not isolation.
+        Env {
+            key: "PWD",
+            val: Val::Field(Field::Cwd),
+            when: When::Always,
+        },
+        // The live route: marion's MCP declaration inline, merged over the operator's own config
+        // ([`CONFIG_CONTENT_ENV`], [`live_config_json`]). Absent where the node has no bridge.
+        Env {
+            key: CONFIG_CONTENT_ENV,
+            val: Val::Field(Field::InlineConfig),
+            when: When::Always,
+        },
+    ],
+    note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
+           the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
+           runs this row end to end",
 };
 
 /// The MCP server alias. opencode exposes MCP tools to the model as `<serverName>_<toolName>`, so
@@ -75,7 +215,7 @@ impl ModelRef {
 
 /// `$XDG_CONFIG_HOME` — the only true config replacement (S13).
 pub fn xdg_config_home(sandbox: &Path) -> PathBuf {
-    sandbox.join("config")
+    sandbox.join(XDG_CONFIG_DIR)
 }
 
 /// Where [`config_json`] is written: the first entry of opencode's merge order.
@@ -83,149 +223,6 @@ pub fn config_path(sandbox: &Path) -> PathBuf {
     xdg_config_home(sandbox)
         .join("opencode")
         .join("opencode.json")
-}
-
-/// The env that makes a child *this* node's child and nobody else's.
-///
-/// Every variable here was measured in S13, and two of them are not hygiene:
-///
-/// - **`OPENCODE_DISABLE_CLAUDE_CODE=1` / `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`.** By default
-///   opencode reads `~/.claude/CLAUDE.md`, **every** `CLAUDE.md` between cwd and the worktree
-///   root, `~/.claude/skills/**/SKILL.md` and every project `.claude/skills/**/SKILL.md`. An
-///   unsevered child therefore silently adopts a **different harness's** user configuration —
-///   defeating `inherit_user_config: false` by a route that default never covered, and one no
-///   amount of `XDG_*` isolation fixes, because `~/.claude` is found via `HOME`
-///   (`tests/fixtures/s13/`).
-/// - **`HOME` plus all four XDG vars.** There is no `CODEX_HOME` analogue: paths resolve through
-///   `XDG_{CONFIG,DATA,CACHE,STATE}_HOME`, while `Path.home` independently drives the `~/.claude`,
-///   `~/.agents` and `~/.opencode` lookups. Setting three of the five isolates nothing in
-///   particular.
-///
-/// The remainder suppress work a spawned node has no business doing: a boot models.dev fetch plus
-/// a 60-minute in-process loop, an LSP toolchain download, an auto-updater that pipes an install
-/// script into `bash`, session sharing, a `.gitignore` written into every project config dir, and
-/// an on-disk sqlite file.
-///
-/// **What this env cannot do is bound the run.** opencode *never exits* on a provider hang: S13
-/// measured a 500 still retrying at 90 s and a connection-refused still hung at 180 s, with no
-/// backoff ceiling found. `provider.options.timeout` / `headerTimeout` ([`config_json`]) are a
-/// first line of defence, not a substitute — so marion's own bounded run and §9 two-step group
-/// kill are **load-bearing for an opencode child, not defensive**.
-///
-/// **Under [`Auth::Inherited`] the five relocations are dropped and the rest are kept**, and the
-/// split is exactly where the fixture puts the credential. S13: auth lives in
-/// `$XDG_DATA_HOME/opencode/auth.json` and config in `$XDG_CONFIG_HOME/opencode/`, resolved through
-/// **different variables**, with `HOME` independently driving the `~/.claude`, `~/.agents` and
-/// `~/.opencode` lookups. Relocating any of them hides the login a live node is meant to present,
-/// so live mode drops all five and delivers marion's MCP declaration through
-/// [`CONFIG_CONTENT_ENV`] instead.
-///
-/// The `OPENCODE_DISABLE_*` set and `OPENCODE_DB=:memory:` are **kept under both modes**, because
-/// they were never the isolation — they are hygiene, and two of them matter *more* on a live run,
-/// not less: `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS` sever a route no
-/// `XDG_*` var ever closed (`~/.claude` is found via `HOME`, and under live that `HOME` is the
-/// operator's real one, with their real `CLAUDE.md` and skills in it).
-pub fn isolation_env(sandbox: &Path, auth: Auth) -> Vec<(String, String)> {
-    let p = |sub: &str| sandbox.join(sub).to_string_lossy().into_owned();
-    let mut env: Vec<(String, String)> = Vec::new();
-    if auth == Auth::Canned {
-        env.extend([
-            ("HOME".into(), sandbox.to_string_lossy().into_owned()),
-            (
-                "XDG_CONFIG_HOME".into(),
-                xdg_config_home(sandbox).to_string_lossy().into_owned(),
-            ),
-            ("XDG_DATA_HOME".into(), p("data")),
-            ("XDG_CACHE_HOME".into(), p("cache")),
-            ("XDG_STATE_HOME".into(), p("state")),
-        ]);
-    }
-    env.extend([
-        ("OPENCODE_DISABLE_CLAUDE_CODE".into(), "1".into()),
-        ("OPENCODE_DISABLE_EXTERNAL_SKILLS".into(), "1".into()),
-        ("OPENCODE_DISABLE_PROJECT_CONFIG".into(), "1".into()),
-        ("OPENCODE_DISABLE_MODELS_FETCH".into(), "1".into()),
-        ("OPENCODE_DISABLE_LSP_DOWNLOAD".into(), "1".into()),
-        ("OPENCODE_DISABLE_AUTOUPDATE".into(), "1".into()),
-        ("OPENCODE_DISABLE_SHARE".into(), "1".into()),
-        ("OPENCODE_DB".into(), ":memory:".into()),
-    ]);
-    env
-}
-
-/// What marion needs to compile an `opencode run` invocation.
-#[derive(Debug, Clone)]
-pub struct RunSpec {
-    pub cwd: PathBuf,
-    /// The isolated home: `HOME` and the parent of all four XDG roots.
-    pub sandbox: PathBuf,
-    pub model: ModelRef,
-    /// **Required.** Without `--title` opencode issues an extra `You are a title generator`
-    /// request against `small_model` — S13 measured **3 POSTs instead of 2**. Same shape as
-    /// §5.5's Claude Code session-title request.
-    pub title: String,
-    pub prompt: String,
-    /// Whether this node presents a credential marion minted or the operator's own login. Drives
-    /// the five relocations in [`isolation_env`] and nothing else.
-    pub auth: Auth,
-    /// The inline JSONC document [`CONFIG_CONTENT_ENV`] carries, when this node's MCP declaration
-    /// travels by environment rather than by file ([`live_config_json`]).
-    ///
-    /// `Option<String>` rather than derived from `auth` because the two are different questions:
-    /// `McpDeclaration::None` is a live node with no bridge at all (§9's fallback branch), and a
-    /// mode flag could not express it.
-    pub config_content: Option<String>,
-}
-
-pub fn compile_run(spec: &RunSpec) -> Invocation {
-    let args: Vec<String> = vec![
-        "run".into(),
-        // Skips loading external plugins. It does *not* gate the forkDetach'ed
-        // `@opencode-ai/plugin` npm install or the ripgrep auto-download (S13) — those are bounded
-        // by the throwaway HOME above, not by a flag.
-        "--pure".into(),
-        "--format".into(),
-        "json".into(),
-        "--title".into(),
-        spec.title.clone(),
-        "-m".into(),
-        spec.model.qualified(),
-        // The prompt is **positional** (variadic). stdin works identically, but a LaunchOnly
-        // surface gives the child no stdin.
-        spec.prompt.clone(),
-    ];
-
-    let mut env = isolation_env(&spec.sandbox, spec.auth);
-    // **`cwd` alone does not place an opencode node, and the difference is a containment failure.**
-    // Measured against 1.17.3 through marion's own `spawn`: with `Invocation.cwd` set to the
-    // child's worktree and `PWD` left inherited, the child's `bash` tool reported
-    // `pwd`/`git rev-parse --show-toplevel` as the **operator's own repository** — the directory
-    // marion itself was launched from — and a `write` of `src/…` landed there. opencode resolves
-    // its project directory from the environment, so the process re-enters `$PWD` whatever it was
-    // `chdir`'d to.
-    //
-    // Everything downstream of that is silently wrong rather than loud: §6.7 derives
-    // `changed_paths` from a git diff of the **worktree**, which the child never touched, so the
-    // contract records `changed_paths: []`, `scope_violations: []`, `scope_enforced: true` — a
-    // clean audit record for a run that wrote outside the worktree, outside the repo marion was
-    // given, and outside any scope list. That is precisely the false confidence §6.7's two-field
-    // split exists to prevent.
-    //
-    // Stated under both auth modes, because it is placement and not isolation: a live node works in
-    // its worktree for the same reason a canned one does.
-    env.push(("PWD".to_string(), spec.cwd.to_string_lossy().into_owned()));
-    if let Some(content) = &spec.config_content {
-        env.push((CONFIG_CONTENT_ENV.into(), content.clone()));
-    }
-
-    Invocation {
-        program: "opencode".into(),
-        args,
-        env,
-        cwd: spec.cwd.clone(),
-        // The `provider/model` pair `-m` carries, which is also the config's `model` key.
-        model: Some(spec.model.qualified()),
-    }
 }
 
 /// Parse an `opencode run --pure --format json` stream.
@@ -501,32 +498,59 @@ pub fn live_config_json(mcp: Option<&BridgeEnv>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{
+        Extras, HarnessAdapter, LaunchSpec, McpDeclaration, OpenCodeAdapter, SpawnCtx,
+    };
+    use crate::invocation::Invocation;
 
     fn model() -> ModelRef {
         ModelRef::parse("canned/canned-1").unwrap()
     }
 
-    fn spec() -> RunSpec {
-        RunSpec {
-            cwd: "/tmp/wt".into(),
-            sandbox: "/tmp/sb".into(),
-            model: model(),
-            title: "marion-019f-child".into(),
-            prompt: "do the task".into(),
-            auth: Auth::Canned,
-            config_content: None,
+    fn ctx() -> SpawnCtx {
+        SpawnCtx {
+            agent_id: AgentId("019f-child".into()),
+            agent_type: "opencode".into(),
+            depth: 1,
+            node_token: None,
+            ready_file: None,
+            repo: "/repo".into(),
+            state_dir: "/state".into(),
+            bridge: "/bin/marion-supervisor".into(),
+            bridge_args: vec!["mcp".into()],
         }
     }
 
-    /// The same node under `--live`: nothing relocated, and the MCP declaration inline.
-    fn live_spec() -> RunSpec {
-        RunSpec {
+    fn spec() -> LaunchSpec {
+        LaunchSpec {
+            cwd: "/tmp/wt".into(),
+            model: Some("canned/canned-1".into()),
+            prompt: "do the task".into(),
+            tools: vec![],
+            allowed_tools: vec![],
+            mcp: McpDeclaration::Marion,
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            api_key: Some("sk-fake".into()),
+            auth: Auth::Canned,
+            config_dir: "/tmp/sb".into(),
+            extra: Extras::default(),
+        }
+    }
+
+    /// The same node under `--live`: nothing relocated, the operator's own provider, and the MCP
+    /// declaration inline.
+    fn live_spec() -> LaunchSpec {
+        LaunchSpec {
             auth: Auth::Inherited,
-            config_content: Some(
-                serde_json::to_string(&live_config_json(Some(&bridge()))).unwrap(),
-            ),
+            model: Some("anthropic/claude-sonnet-4-5".into()),
+            base_url: None,
+            api_key: None,
             ..spec()
         }
+    }
+
+    fn compile_run(spec: &LaunchSpec) -> Invocation {
+        OpenCodeAdapter.compile(spec, &ctx()).unwrap()
     }
 
     fn bridge() -> BridgeEnv {
@@ -771,10 +795,16 @@ mod tests {
                 inv.env
             );
         }
+        let strip_model = |inv: &Invocation| -> Vec<String> {
+            let m = inv.args.iter().position(|a| a == "-m").unwrap();
+            let mut args = inv.args.clone();
+            args.remove(m + 1);
+            args
+        };
         assert_eq!(
-            inv.args,
-            compile_run(&spec()).args,
-            "live differs from canned in env only"
+            strip_model(&inv),
+            strip_model(&compile_run(&spec())),
+            "live differs from canned in env and in whose provider the model names"
         );
     }
 
@@ -825,9 +855,16 @@ mod tests {
             v["mcp"]["marion"]["environment"]["MARION_AGENT_ID"],
             json!("019f-child")
         );
+        // The same block the file route writes for the same node: only the mode and the endpoint
+        // differ, because a live node has neither marion's endpoint nor its auth to declare.
+        let live_bridge = BridgeEnv {
+            auth: Auth::Inherited,
+            base_url: None,
+            ..bridge()
+        };
         assert_eq!(
             v["mcp"]["marion"],
-            config_json(&cfg(), Some(&bridge()))["mcp"]["marion"],
+            config_json(&cfg(), Some(&live_bridge))["mcp"]["marion"],
             "the declaration does not change because it travelled by env instead of by file"
         );
     }

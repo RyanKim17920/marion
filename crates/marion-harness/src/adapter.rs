@@ -644,7 +644,7 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
         Harness::ClaudeCode => &claude_code::SPEC,
         Harness::Codex => todo!("step 4: the codex row"),
         Harness::Gemini => &gemini::SPEC,
-        Harness::OpenCode => todo!("step 4: the opencode row"),
+        Harness::OpenCode => &opencode::SPEC,
         Harness::Copilot => todo!("step 4: the copilot row"),
         Harness::Acp => todo!("step 4: the acp row"),
     }
@@ -1393,34 +1393,37 @@ impl HarnessAdapter for OpenCodeAdapter {
         ExecutionSurfaces::launch_only_with_protocol_events()
     }
 
-    fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        // For the **refusal** only — see `Self::tool_name`. Discarding the names is the honest
-        // outcome on this harness, not a forgotten `?`.
-        let _already_granted = self.native_tools(spec)?;
-        // **Under `Inherited` the declaration is compiled into the env, not written to a file.**
-        // S13: auth resolves through `$XDG_DATA_HOME` and config through `$XDG_CONFIG_HOME` — two
-        // variables — so marion cannot relocate the config without also having to relocate, and
-        // therefore hide, the login. `OPENCODE_CONFIG_CONTENT` is last in the merge order and
-        // merges *over* the operator's own config, which is exactly the wrong property for
-        // isolation and exactly the right one here.
-        let config_content = match spec.auth {
+    /// The `provider/model` pair (refused where it is not one, or is marion's own default on a
+    /// live node — [`Self::model_ref`]), the session title, and the live route's inline document.
+    ///
+    /// **Under `Inherited` the declaration is compiled into the env, not written to a file.** S13:
+    /// auth resolves through `$XDG_DATA_HOME` and config through `$XDG_CONFIG_HOME` — two
+    /// variables — so marion cannot relocate the config without also having to relocate, and
+    /// therefore hide, the login. `OPENCODE_CONFIG_CONTENT` is last in the merge order and merges
+    /// *over* the operator's own config, which is exactly the wrong property for isolation and
+    /// exactly the right one here.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        // The trait's default `axes` runs the refusal owed to a `tools:` declaration; nothing in
+        // the row reads the result — see `Self::tool_name` for why a declaration here compiles
+        // nothing.
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        f.model = Some(Self::model_ref(spec)?.qualified());
+        // Any stable string suppresses the title-generation call; the node's own id makes the
+        // session identifiable in `opencode session list` without leaking the prompt.
+        f.title = Some(format!("marion-{}", ctx.agent_id.0));
+        f.inline_config = match spec.auth {
             Auth::Canned => None,
             Auth::Inherited => Self::bridge_env(spec, ctx).map(|b| {
                 serde_json::to_string(&opencode::live_config_json(Some(&b)))
                     .expect("a Value always serialises")
             }),
         };
-        Ok(opencode::compile_run(&opencode::RunSpec {
-            cwd: spec.cwd.clone(),
-            sandbox: spec.config_dir.clone(),
-            model: Self::model_ref(spec)?,
-            // Any stable string suppresses the title-generation call; the node's own id makes the
-            // session identifiable in `opencode session list` without leaking the prompt.
-            title: format!("marion-{}", ctx.agent_id.0),
-            prompt: spec.prompt.clone(),
-            auth: spec.auth,
-            config_content,
-        }))
+        Ok(f)
     }
 
     /// **No file at all under `Inherited`** — see [`HarnessAdapter::mcp_route`], which is what keeps
@@ -1946,14 +1949,13 @@ impl HarnessAdapter for AcpAdapter {
         let _refusal_only = self.native_tools(spec)?;
         let env = match (spec.auth, agent.canned) {
             (Auth::Inherited, _) => Vec::new(),
-            (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
-                let mut env = opencode::isolation_env(&spec.config_dir, Auth::Canned);
-                // Placement, not isolation: `cwd` alone does not place an opencode node, and S13
-                // measured a child re-entering `$PWD` whatever it was `chdir`'d to. Stated for the
-                // same reason `opencode::compile_run` states it, over the same binary.
-                env.push(("PWD".to_string(), spec.cwd.to_string_lossy().into_owned()));
-                env
-            }
+            // opencode's own isolation rows, over the same binary: the relocations, the hygiene
+            // and `PWD` (placement, not isolation — S13 measured a child re-entering `$PWD`
+            // whatever it was `chdir`'d to). Nothing inline, because the bridge rides `session/new`.
+            (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => spec::render_env(
+                opencode::SPEC.env,
+                &neutral_fields(spec, spec::Axes::default()),
+            ),
             // **Refused by name, per agent.** The protocol has no provider channel and two of the
             // four agents marion knows have no measured one either. Launching them anyway would
             // point the operator's real credential at a vendor while the contract records a canned
@@ -6159,7 +6161,7 @@ mod tests {
     #[test]
     fn spec_render_matches_the_adapter_that_measured_it() {
         use crate::spec::{Shape, render};
-        const MIGRATED: &[Harness] = &[Harness::ClaudeCode, Harness::Gemini];
+        const MIGRATED: &[Harness] = &[Harness::ClaudeCode, Harness::Gemini, Harness::OpenCode];
         for &h in MIGRATED {
             let a = launch_adapter(h).unwrap();
             let row = harness_spec(h);

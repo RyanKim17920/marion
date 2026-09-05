@@ -232,6 +232,41 @@ impl Fields {
     }
 }
 
+/// The environment `rows` describe, read from `f`, in row order.
+///
+/// Public because one harness's isolation is another's recipe: an ACP agent that is the opencode
+/// binary one subcommand over is pointed at a canned provider by exactly opencode's rows.
+pub fn render_env(rows: &[Env], f: &Fields) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = Vec::new();
+    for row in rows {
+        let applies = match row.when {
+            When::Always => true,
+            When::Canned => f.auth == Auth::Canned,
+            When::Present(field) => f.value(field).is_some(),
+        };
+        if !applies {
+            continue;
+        }
+        let value = match row.val {
+            Val::Lit(s) => Some(s.to_string()),
+            Val::Field(field) => f.value(field),
+            Val::Under(rel) => Some(
+                if rel.is_empty() {
+                    f.config_dir.clone()
+                } else {
+                    f.config_dir.join(rel)
+                }
+                .to_string_lossy()
+                .into_owned(),
+            ),
+        };
+        if let Some(v) = value {
+            env.push((row.key.to_string(), v));
+        }
+    }
+    env
+}
+
 /// argv + env for one shape of one row, or `None` where the row has no such shape.
 ///
 /// `None` is the pane refusal's raw material: the adapter names the harness in the error, because
@@ -281,33 +316,7 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Option<Invocation
             Arg::Items(field) => args.extend(f.items(field)),
         }
     }
-    let mut env: Vec<(String, String)> = Vec::new();
-    for row in spec.env {
-        let applies = match row.when {
-            When::Always => true,
-            When::Canned => f.auth == Auth::Canned,
-            When::Present(field) => f.value(field).is_some(),
-        };
-        if !applies {
-            continue;
-        }
-        let value = match row.val {
-            Val::Lit(s) => Some(s.to_string()),
-            Val::Field(field) => f.value(field),
-            Val::Under(rel) => Some(
-                if rel.is_empty() {
-                    f.config_dir.clone()
-                } else {
-                    f.config_dir.join(rel)
-                }
-                .to_string_lossy()
-                .into_owned(),
-            ),
-        };
-        if let Some(v) = value {
-            env.push((row.key.to_string(), v));
-        }
-    }
+    let mut env = render_env(spec.env, f);
     env.extend(f.extra_env.iter().cloned());
     Some(Invocation {
         program,
