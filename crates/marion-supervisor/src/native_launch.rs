@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use marion_core::agent_type::AgentType;
 use marion_core::harness::Harness;
+use marion_core::journal::{Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned};
 use marion_core::{NativeFacadeDescriptor, contract::AgentId};
 use marion_harness::mcp_bridge::BridgeEnv;
 use marion_harness::{
@@ -26,7 +27,7 @@ use crate::native_bootstrap::{
 };
 use crate::native_exec::{
     LaunchedNativeCommand, NativeCommandLauncher, NativeCommandSpec, NativeLifecycleSpawner,
-    PreparedNativeLifecycle, ThreadNativeLifecycleSpawner,
+    NativeNodeRecorder, PreparedNativeLifecycle, ThreadNativeLifecycleSpawner,
 };
 
 pub(crate) struct PreparedNativeCommand {
@@ -295,6 +296,91 @@ impl NativeLaunchHandler {
     }
 }
 
+/// A native node's three journal records, written through the supervisor's own handle so the
+/// live tree sees each before the next connection can ask about it.
+///
+/// `harness_version` is `"unknown"`: a native launch runs whatever the operator's `PATH`
+/// resolves and marion does not probe it (a `--version` on the operator's binary before their
+/// own session starts would be marion's process, not theirs). `model` is `None` for the same
+/// reason a codex `exec` records none — marion placed no model on this argv.
+struct NativeNodeJournal {
+    handle: Arc<crate::handler::RegistryHandle>,
+    agent_id: AgentId,
+}
+
+impl NativeNodeJournal {
+    fn intent(&self, agent_type: &AgentType) -> Result<(), crate::journal::JournalError> {
+        self.handle
+            .journal_now(RecordKind::SpawnIntent(SpawnIntent {
+                agent_id: self.agent_id.clone(),
+                parent_id: None,
+                agent_type: agent_type.name.clone(),
+                harness: agent_type.harness,
+                depth: 0,
+                // A root has no contract (§9).
+                task_id: None,
+            }))
+    }
+
+    fn record(&self, kind: RecordKind) {
+        // The intent is durable, so the node is named either way; a lost confirmation replays as
+        // an intent with no pid, which is the honest state. `journal::record`'s policy.
+        if let Err(error) = self.handle.journal_now(kind) {
+            eprintln!(
+                "marion: journal write failed for native node {}: {error}",
+                self.agent_id.0
+            );
+        }
+    }
+}
+
+impl NativeNodeRecorder for NativeNodeJournal {
+    fn spawned(&self, pid: i32) {
+        self.record(RecordKind::Spawned(Spawned {
+            agent_id: self.agent_id.clone(),
+            harness_version: "unknown".into(),
+            model: None,
+            pid: Some(pid),
+            // Read here, while marion holds the child, or not at all (`run.rs`'s reasoning).
+            start_id: match crate::procid::read(pid) {
+                crate::procid::Read::Id(id) => Some(id),
+                crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
+            },
+        }));
+    }
+
+    fn exited(&self, status: Option<std::process::ExitStatus>) {
+        use std::os::unix::process::ExitStatusExt as _;
+        let code = status.and_then(|s| s.code());
+        let signal = status.and_then(|s| s.signal());
+        let description = match (code, signal) {
+            (Some(code), _) => format!("native node exited with code {code}"),
+            (None, Some(signal)) => format!("native node was terminated by signal {signal}"),
+            (None, None) => "native node exit status was unavailable".to_string(),
+        };
+        self.record(RecordKind::Exited(Exited {
+            agent_id: self.agent_id.clone(),
+            status: if code == Some(0) {
+                marion_core::contract::ExitStatus::Ok
+            } else {
+                marion_core::contract::ExitStatus::Failed
+            },
+            exit: marion_core::contract::ProcessExit {
+                code,
+                signal,
+                description,
+            },
+        }));
+    }
+
+    fn aborted(&self, reason: &str) {
+        self.record(RecordKind::SpawnAborted(SpawnAborted {
+            agent_id: self.agent_id.clone(),
+            reason: reason.to_string(),
+        }));
+    }
+}
+
 struct NativePaneOwner(Arc<crate::handler::RegistryHandle>);
 
 impl crate::root::PaneOwner for NativePaneOwner {
@@ -371,27 +457,49 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
         let agent_id = (self.mint_agent)().map_err(BootstrapError::NativeTransportIo)?;
         let (selected, terminal, binding) = selected.into_parts(agent_id.clone());
         let geometry = terminal.initial_geometry();
+        let agent_type = selected.native_lane().agent_type();
 
-        // Authority exists before the PaneOwner can make a host visible.
-        let mut receipt = self
-            .handle
-            .reserve_pending_native_launch(binding)
+        // §6.1 step 7, first half, at the first instant the node has an identity and before any
+        // side effect: a native node is a root in this project's tree, and `node/attach` — which
+        // the relay is about to send — resolves it from the journal before it looks for a pane.
+        let journal = NativeNodeJournal {
+            handle: Arc::clone(&self.handle),
+            agent_id: agent_id.clone(),
+        };
+        journal
+            .intent(agent_type)
             .map_err(|error| BootstrapError::NativeClaim(error.to_string()))?;
-        let prepared = self.factory.prepare(
-            &selected,
-            &context,
-            NativeTerminalGeometry {
-                cols: geometry.cols,
-                rows: geometry.rows,
-                xpixel: geometry.xpixel,
-                ypixel: geometry.ypixel,
-            },
-            &agent_id,
-        )?;
-        deadline.require_remaining()?;
+        // Every refusal from here until the launch owns the record resolves the intent.
+        let prepared = (|| {
+            // Authority exists before the PaneOwner can make a host visible.
+            let receipt = self
+                .handle
+                .reserve_pending_native_launch(binding)
+                .map_err(|error| BootstrapError::NativeClaim(error.to_string()))?;
+            let prepared = self.factory.prepare(
+                &selected,
+                &context,
+                NativeTerminalGeometry {
+                    cols: geometry.cols,
+                    rows: geometry.rows,
+                    xpixel: geometry.xpixel,
+                    ypixel: geometry.ypixel,
+                },
+                &agent_id,
+            )?;
+            deadline.require_remaining()?;
+            Ok::<_, BootstrapError>((receipt, prepared))
+        })();
+        let (mut receipt, prepared) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                journal.aborted(&format!("the native launch was refused: {error}"));
+                return Err(error);
+            }
+        };
         let owner: Arc<dyn crate::root::PaneOwner> =
             Arc::new(NativePaneOwner(Arc::clone(&self.handle)));
-        let launch = NativeCommandLauncher::launch(
+        let launch = match NativeCommandLauncher::launch(
             NativeCommandSpec {
                 agent_id: agent_id.clone(),
                 invocation: prepared.invocation,
@@ -399,8 +507,20 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
                 terminal_profile: prepared.terminal_profile,
             },
             owner,
-        )
-        .map_err(BootstrapError::NativeTransportIo)?;
+            Arc::new(journal),
+        ) {
+            Ok(launch) => launch,
+            Err(error) => {
+                // The launcher owns the record from `spawn()` on; a launch that never got there
+                // resolves the intent here.
+                NativeNodeJournal {
+                    handle: Arc::clone(&self.handle),
+                    agent_id: agent_id.clone(),
+                }
+                .aborted(&format!("the native process could not be started: {error}"));
+                return Err(BootstrapError::NativeTransportIo(error));
+            }
+        };
         self.handle
             .publish_pending_native_launch(receipt.receipt())
             .map_err(|error| BootstrapError::NativeClaim(error.to_string()))?;
@@ -1007,6 +1127,10 @@ mod tests {
                 terminal_profile: OsString::from("xterm-256color"),
             },
             owner,
+            Arc::new(NativeNodeJournal {
+                handle: Arc::clone(&handle),
+                agent_id: agent_id.clone(),
+            }),
         )
         .unwrap();
         handle

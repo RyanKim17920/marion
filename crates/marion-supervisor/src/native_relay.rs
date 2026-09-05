@@ -638,10 +638,6 @@ impl Write for OwnedFdWriter {
 
 /// Claim the authenticated launch on its issuing socket and transparently relay its pane until
 /// End or operator detach. The terminal guard remains live across every protocol and I/O failure.
-#[expect(
-    dead_code,
-    reason = "compiled for review and tests while production descriptors and dispatch stay dark"
-)]
 pub(crate) fn run(handoff: crate::native_bootstrap::NativeFacadeHandoff) -> Result<(), Refusal> {
     let claimed = handoff
         .claim()

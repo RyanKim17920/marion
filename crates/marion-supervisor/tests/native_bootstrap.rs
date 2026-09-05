@@ -141,6 +141,9 @@ mod enabled_launch {
     const LEAK_ENV: &str = "MARION_PROBE_MUST_NOT_REACH_THE_VENDOR";
     const PROBE_TAIL: &[&[u8]] = &[b"--", b"", b"\xff\x80x"];
     const INJECTED_PREFIX: &str = "--marion-injected";
+    /// What the vendor shim writes to **its** terminal — the supervisor's pane — and what must
+    /// therefore appear on the **operator's** terminal only if the relay carried it there.
+    const VENDOR_GREETING: &str = "VENDOR_SAYS_HELLO";
 
     #[cfg(target_os = "linux")]
     const TIOCSCTTY: usize = 0x540e;
@@ -176,7 +179,8 @@ mod enabled_launch {
         std::fs::create_dir_all(bin).unwrap();
         let shim = bin.join("claude");
         // argv byte-exact with NUL separators, then the environment, then the completion marker
-        // last so a reader that sees the marker sees complete records.
+        // last so a reader that sees the marker sees complete records; then one line on its own
+        // terminal, which only a relay can carry to the operator's.
         std::fs::write(
             &shim,
             format!(
@@ -184,8 +188,10 @@ mod enabled_launch {
                  printf '%s\\0' \"$@\" > {marker}.argv\n\
                  /usr/bin/env > {marker}.env\n\
                  : > {marker}\n\
+                 printf '{greeting}\\n'\n\
                  exit 37\n",
                 marker = shell_quote(marker),
+                greeting = VENDOR_GREETING,
             ),
         )
         .unwrap();
@@ -326,15 +332,48 @@ mod enabled_launch {
             let _ = std::io::Read::read_to_end(&mut std::io::BufReader::new(stderr), &mut output);
             output
         });
+        // The operator's screen: whatever the client process writes to its terminal. Read until
+        // the last slave closes (the child has exited) or the watchdog ceiling.
+        let terminal = Arc::new(terminal);
+        let screen = {
+            let terminal = Arc::clone(&terminal);
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(35);
+                let mut screen = Vec::new();
+                let mut bytes = [0u8; 4096];
+                while Instant::now() < deadline {
+                    match terminal.read(&mut bytes) {
+                        Ok(0) => break,
+                        Ok(count) => screen.extend_from_slice(&bytes[..count]),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                screen
+            })
+        };
         let (status, timed_out) = reap_with_watchdog(child, Duration::from_secs(30));
         let stderr =
             String::from_utf8_lossy(&reader.join().expect("join stderr reader")).into_owned();
+        let screen =
+            String::from_utf8_lossy(&screen.join().expect("join the screen reader")).into_owned();
         drop(terminal);
         assert!(!timed_out, "the probe exceeded its watchdog: {stderr}");
         assert!(status.success(), "the probe failed: {stderr}");
         assert!(
             stderr.contains("NATIVE_HANDOFF"),
             "the client never received a native handoff: {stderr}"
+        );
+        assert!(
+            !stderr.contains("not enabled"),
+            "the shipped seam still refuses the relay: {stderr}"
+        );
+        assert!(
+            screen.contains(VENDOR_GREETING),
+            "the vendor's own output never reached the operator's terminal; screen: {screen:?}; \
+             stderr: {stderr}"
         );
 
         assert!(
@@ -368,6 +407,31 @@ mod enabled_launch {
             !vendor_env.lines().any(|line| line.starts_with("MARION_")),
             "reserved MARION_* identity reached the vendor process: {vendor_env}"
         );
+
+        // The native node is a node: §6.1 step 7's intent, confirmation and terminal record are
+        // in this project's journal, so the tree, restart and `node/attach` all know it.
+        let replayed = Registry::boot(&project_dir).expect("the journal replays");
+        let nodes = replayed.tree().nodes().to_vec();
+        assert_eq!(nodes.len(), 1, "exactly one node was journaled: {nodes:?}");
+        let node = &nodes[0];
+        let intent = node
+            .intent
+            .as_ref()
+            .expect("a SpawnIntent names the native root");
+        assert_eq!(intent.agent_type, "claude");
+        assert_eq!(intent.harness, Harness::ClaudeCode);
+        assert_eq!(intent.depth, 0);
+        assert_eq!(intent.parent_id, None);
+        assert_eq!(intent.task_id, None, "a root has no contract");
+        assert!(node.spawn_confirmed, "no Spawned record: {node:?}");
+        assert!(node.pid.is_some(), "Spawned carries no pid: {node:?}");
+        assert_eq!(node.spawn_aborted, None);
+        let exit = node
+            .exit
+            .as_ref()
+            .expect("an Exited record closes the node");
+        assert_eq!(exit.code, Some(37), "{exit:?}");
+        assert!(node.state.is_exited(), "{:?}", node.state);
         assert!(
             project_dir.agents_dir().read_dir().unwrap().count() == 1,
             "exactly one agent directory holds the native session's cast"
@@ -397,15 +461,15 @@ mod enabled_launch {
             argv,
             &registry,
             NativeBootstrapClient::connect_for_cwd,
-            |_handoff| {
+            |handoff| {
                 eprintln!("NATIVE_HANDOFF");
-                // Hold the authenticated connection until the vendor has provably run, so the
-                // supervisor cannot cancel the pending launch before the shim's records land.
+                // The shipped continuation: claim, relay until the vendor's pane ends, restore.
+                let status = marion_supervisor::facade_cli::relay_native_facade(handoff);
                 if !wait_for(&marker, Duration::from_secs(10)) {
                     eprintln!("VENDOR_NEVER_RAN");
                     return ExitCode::FAILURE;
                 }
-                ExitCode::SUCCESS
+                status
             },
             std::io::stderr(),
             || panic!("the registered selector reached the legacy CLI"),

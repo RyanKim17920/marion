@@ -1560,10 +1560,7 @@ fn main() -> ExitCode {
         std::env::args_os().skip(1),
         &native_facades,
         marion_supervisor::native_bootstrap::NativeBootstrapClient::connect_for_cwd,
-        |_handoff| {
-            eprintln!("marion: native facade relay is not enabled in this build");
-            ExitCode::FAILURE
-        },
+        marion_supervisor::facade_cli::relay_native_facade,
         io::stderr(),
         legacy_main,
     )

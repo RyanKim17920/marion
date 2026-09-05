@@ -3087,6 +3087,18 @@ impl RegistryHandle {
         crate::journal::append_at(&self.journal_path(), kind).map(|_| ())
     }
 
+    /// [`Self::journal_append`], then fold the record into the live tree **before returning**.
+    ///
+    /// For a record whose reader is about to arrive on another connection — a native node's
+    /// `SpawnIntent`, which the relay's `node/attach` resolves moments after the bootstrap
+    /// answers — the follower's poll interval is a race, and ordering rather than elapsed time is
+    /// the contract (`LiveRegistry::refresh`).
+    pub(crate) fn journal_now(&self, kind: RecordKind) -> Result<(), crate::journal::JournalError> {
+        self.journal_append(kind)?;
+        self.live.refresh();
+        Ok(())
+    }
+
     fn guidance(&self) -> DetachGuidance {
         let socket = self
             .journal_path()

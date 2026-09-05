@@ -1202,6 +1202,22 @@ acceptance evidence, so every marker remains unchanged.
     shipped CLI still answers an authorized handoff with "relay is not enabled", so M3 remains
     `[partial]`.
 
+    **The shipped CLI relays a native facade in this commit, moving no milestone marker.**
+    `main`'s authorized continuation is now `facade_cli::relay_native_facade`, which claims the
+    launch and runs `native_relay::run` to its end, printing a refusal only after the terminal is
+    restored. Running it exposed that a native node had no journal identity — `node/attach`
+    resolves a node from the registry before it looks for a pane — so the native launch handler
+    now writes §6.1 step 7's `SpawnIntent` (a root: `parent_id: None`, `depth: 0`, no task)
+    before any side effect and folds it into the live tree before answering, the launcher writes
+    `Spawned` with the pid and start identity at `spawn()`, the lifecycle worker writes `Exited`
+    with the observed status, and every rollback or refusal after the intent writes
+    `SpawnAborted` (`native_exec::NativeNodeRecorder`). Covered by the extended
+    `a_detached_supervisor_authorizes_a_native_launch_for_a_registered_facade`, whose client now
+    relays through the shipped continuation: the vendor shim's own line reaches the operator's PTY,
+    the client exits cleanly when the vendor exits 37, and the replayed journal holds exactly one
+    node with the intent, a pid, and `Exited{code: 37}`. Still unproven from the shipped binary
+    itself; M3 remains `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

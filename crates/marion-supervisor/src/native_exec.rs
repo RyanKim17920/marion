@@ -16,6 +16,25 @@ pub(crate) struct NativeCommandSpec {
 
 pub(crate) struct NativeCommandLauncher;
 
+/// The journal's view of a native node: the three facts only the launcher and its lifecycle
+/// worker observe, handed out at the one instant each is true.
+///
+/// A native node is a node — `node/attach` resolves it from the registry before it looks for a
+/// pane, and the tree, `tree/subscribe` and restart all read the journal — so §6.1 step 7's
+/// *"journal the spawn intent, start the process, journal confirmation"* applies to it exactly as
+/// to a managed one. The intent is the caller's to write before it launches anything; these are
+/// the two later halves and the abort.
+pub(crate) trait NativeNodeRecorder: Send + Sync {
+    /// `command.spawn()` returned this pid and marion still holds the child, so the pid can be
+    /// turned into an identity here and nowhere later.
+    fn spawned(&self, pid: i32);
+    /// The pane ended and its process was swept; `None` where no status could be read.
+    fn exited(&self, status: Option<ExitStatus>);
+    /// The launch was rolled back before its lifecycle ran: the client never claimed it, or a
+    /// step between spawn and handoff failed. The process is gone and no `Exited` will follow.
+    fn aborted(&self, reason: &str);
+}
+
 pub(crate) type NativeLifecycleTask =
     Box<dyn FnOnce() -> std::io::Result<Option<ExitStatus>> + Send + 'static>;
 
@@ -77,6 +96,7 @@ struct LifecycleGate {
 struct PendingNativeCommand {
     agent_id: AgentId,
     owner: Arc<dyn crate::root::PaneOwner>,
+    recorder: Arc<dyn NativeNodeRecorder>,
     host: Arc<crate::pty::PtyHost>,
 }
 
@@ -98,6 +118,7 @@ impl NativeCommandLauncher {
     pub(crate) fn launch(
         spec: NativeCommandSpec,
         owner: Arc<dyn crate::root::PaneOwner>,
+        recorder: Arc<dyn NativeNodeRecorder>,
     ) -> std::io::Result<LaunchedNativeCommand> {
         let NativeCommandSpec {
             agent_id,
@@ -136,18 +157,22 @@ impl NativeCommandLauncher {
             .env_clear()
             .envs(invocation.env.iter().cloned())
             .current_dir(&invocation.cwd);
+        // The pid is announced by `spawn_pty` itself, between `spawn()` and the first byte — the
+        // only instant a durable record can name this process while marion still holds it.
+        let on_started = |pid: i32| recorder.spawned(pid);
         host.adopt(crate::pty::spawn_pty(
             witness,
             &mut command,
             host.master(),
             crate::pty::StdinPlan::TerminalSlave,
-            None,
+            Some(&on_started),
         )?);
 
         let mut launched = LaunchedNativeCommand {
             pending: Some(PendingNativeCommand {
                 agent_id: agent_id.clone(),
                 owner: Arc::clone(&owner),
+                recorder: Arc::clone(&recorder),
                 host: Arc::clone(&host),
             }),
         };
@@ -188,6 +213,7 @@ impl LaunchedNativeCommand {
             .as_ref()
             .expect("a native launch can be prepared only once");
         let lifecycle_owner = Arc::clone(&pending.owner);
+        let lifecycle_recorder = Arc::clone(&pending.recorder);
         let lifecycle_host = Arc::clone(&pending.host);
         let lifecycle_agent = pending.agent_id.clone();
         let gate = Arc::new(LifecycleGate::new());
@@ -199,7 +225,7 @@ impl LaunchedNativeCommand {
                     return Ok(None);
                 }
                 let waited = crate::root::wait_for_the_pane_to_end(&lifecycle_host, None);
-                crate::root::finish_terminal_pane(
+                let finished = crate::root::finish_terminal_pane(
                     Some(lifecycle_owner.as_ref()),
                     &lifecycle_agent,
                     &lifecycle_host,
@@ -207,7 +233,11 @@ impl LaunchedNativeCommand {
                     |timed_out| lifecycle_host.shutdown_with_timeout_outcome(timed_out),
                     || lifecycle_host.completed_replay_charge(),
                 )
-                .map(|(status, _)| status)
+                .map(|(status, _)| status);
+                // The process is gone on both arms — a failed teardown still swept it — so the
+                // node's terminal record is written on both, with the status where one was read.
+                lifecycle_recorder.exited(finished.as_ref().ok().copied().flatten());
+                finished
             }),
         ) {
             Ok(lifecycle) => Ok(PreparedNativeLifecycle {
@@ -325,6 +355,10 @@ impl PendingNativeCommand {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.owner.failed(&self.agent_id, &self.host);
         }));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.recorder
+                .aborted("the native launch was rolled back before its client claimed it");
+        }));
     }
 }
 
@@ -371,6 +405,32 @@ mod tests {
                 "injected lifecycle thread spawn failure",
             ))
         }
+    }
+
+    /// The journal's view, recorded: which of the three facts arrived, in order.
+    #[derive(Default)]
+    struct RecordingRecorder(Mutex<Vec<String>>);
+
+    impl super::NativeNodeRecorder for RecordingRecorder {
+        fn spawned(&self, pid: i32) {
+            assert!(pid > 0, "a spawned pid is a real process");
+            self.0.lock().unwrap().push("spawned".into());
+        }
+
+        fn exited(&self, status: Option<std::process::ExitStatus>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("exited:{:?}", status.and_then(|s| s.code())));
+        }
+
+        fn aborted(&self, _: &str) {
+            self.0.lock().unwrap().push("aborted".into());
+        }
+    }
+
+    fn recorder() -> Arc<RecordingRecorder> {
+        Arc::new(RecordingRecorder::default())
     }
 
     #[derive(Default)]
@@ -469,6 +529,7 @@ mod tests {
                 terminal_profile: OsString::from("xterm-256color"),
             },
             owner.clone(),
+            recorder(),
         )
         .expect("the exact selected command launches");
 
@@ -504,6 +565,7 @@ mod tests {
                 ),
             ),
             owner.clone(),
+            recorder(),
         );
 
         assert!(result.is_err());
@@ -547,6 +609,7 @@ mod tests {
                     ),
                 ),
                 owner.clone(),
+                recorder(),
             );
         }));
 
@@ -572,6 +635,7 @@ mod tests {
                 ),
             ),
             owner.clone(),
+            recorder(),
         )
         .expect("child and pane are pending");
 
@@ -600,6 +664,7 @@ mod tests {
                 ),
             ),
             owner.clone(),
+            recorder(),
         )
         .expect("child and pane are pending");
 

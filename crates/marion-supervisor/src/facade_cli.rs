@@ -92,6 +92,23 @@ pub(crate) fn build_native_launch_v2(
     ))
 }
 
+/// Relay an authorized native launch on the operator's terminal until it ends, and say why if
+/// it did not end cleanly.
+///
+/// The shipped binary's `authorized_native` continuation. Everything the relay does to the
+/// terminal — raw mode, signal ownership, the passive cleanup bytes — is undone inside
+/// `native_relay::run` before it returns, so the message below is written to a **restored**
+/// terminal: a refusal printed into raw mode would be one the operator could not read.
+pub fn relay_native_facade(handoff: NativeFacadeHandoff) -> ExitCode {
+    match crate::native_relay::run(handoff) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(refusal) => {
+            eprintln!("marion: {refusal}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Run the untrusted native-facade match before handing unmatched argv to the legacy CLI.
 ///
 /// Registered selectors require a foreground controlling-TTY witness, then traverse Task 2's
