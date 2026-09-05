@@ -42,7 +42,7 @@
 //! reason `journal_wiring.rs` gives. Every model call is served by the CannedServer: no paid tokens.
 
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -55,6 +55,7 @@ use serde_json::json;
 
 mod common;
 use common::client::{Client, paths_for};
+use common::run::start_run;
 
 /// How long anything in this file may take before it is a failure. Never a verdict: every
 /// assertion below is over an identity, an ordinal, a count or a payload — never over elapsed
@@ -97,86 +98,6 @@ fn script() -> Script {
         ),
         child_final_text: json!({"narrative": FINAL_MARKER, "result_commits": []}).to_string(),
         ..Script::default()
-    }
-}
-
-// ------------------------------------------------------------------------------------------
-// The run under test, and the cleanup that outlives a failing assertion.
-// ------------------------------------------------------------------------------------------
-
-/// A `marion run` in flight, plus everything that must be undone whether it finishes or not.
-///
-/// A guard rather than trailing statements, for `marion_testsupport::Scratch`'s reason: a failing
-/// assertion unwinds straight past cleanup, so the runs that leak are exactly the runs that failed.
-/// **The gate is released first** — a held provider turn is a node parked for ever, and killing the
-/// run without releasing would leave the provider's connection thread blocked on a condvar for the
-/// life of the test binary.
-struct Run {
-    child: Option<Child>,
-    gate: Arc<TurnGate>,
-    needle: String,
-}
-
-impl Run {
-    fn wait(&mut self) -> std::process::ExitStatus {
-        self.gate.release();
-        let mut c = self.child.take().expect("waited once");
-        let deadline = Instant::now() + BOUND;
-        loop {
-            match c.try_wait().expect("try_wait") {
-                Some(s) => return s,
-                None if Instant::now() >= deadline => {
-                    let _ = c.kill();
-                    let _ = c.wait();
-                    panic!("`marion run` did not finish within {BOUND:?}");
-                }
-                None => std::thread::sleep(Duration::from_millis(20)),
-            }
-        }
-    }
-}
-
-impl Drop for Run {
-    fn drop(&mut self) {
-        self.gate.release();
-        if let Some(mut c) = self.child.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        // **Waited on, not merely signalled.** See `marion_testsupport::sweep`: the `Scratch` guard
-        // removes this tree the moment this returns, and a process that has been `SIGKILL`ed but
-        // has not died yet can still land the write it was already inside — which is how a run
-        // that cleaned up after itself left one `contracts/<task>.json` behind.
-        sweep(&self.needle);
-    }
-}
-
-fn start_run(dir: &Path, repo: &Path, state: &Path, base_url: &str, gate: &Arc<TurnGate>) -> Run {
-    let child = Command::new(env!("CARGO_BIN_EXE_marion"))
-        .args([
-            "run",
-            "claude",
-            "--prompt",
-            &format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
-            "--repo",
-            &repo.to_string_lossy(),
-            "--state-dir",
-            &state.to_string_lossy(),
-            "--base-url",
-            base_url,
-            "--canned",
-            "--timeout",
-            ROOT_BLOCKED_SECS,
-        ])
-        .current_dir(dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("marion run starts");
-    Run {
-        child: Some(child),
-        gate: Arc::clone(gate),
-        needle: dir.display().to_string(),
     }
 }
 
@@ -328,7 +249,15 @@ fn a_re_attaching_client_replays_the_detached_window_and_then_hears_what_the_nod
     )
     .expect("the canned provider binds");
 
-    let mut run = start_run(&dir, &repo, &state, &server.base_url(), &gate);
+    let mut run = start_run(
+        &dir,
+        &repo,
+        &state,
+        &server.base_url(),
+        &gate,
+        ROOT_MARKER,
+        ROOT_BLOCKED_SECS,
+    );
     let paths = paths_for(&state, &repo);
 
     assert!(
@@ -459,7 +388,15 @@ fn a_node_that_lived_and_died_while_nobody_watched_replays_with_its_terminal_boo
     )
     .expect("the canned provider binds");
 
-    let mut run = start_run(&dir, &repo, &state, &server.base_url(), &gate);
+    let mut run = start_run(
+        &dir,
+        &repo,
+        &state,
+        &server.base_url(),
+        &gate,
+        ROOT_MARKER,
+        ROOT_BLOCKED_SECS,
+    );
     let status = run.wait();
     assert!(status.success(), "the run itself succeeded: {status:?}");
     drop(server);

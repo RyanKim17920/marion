@@ -13,6 +13,7 @@
 #![allow(dead_code)] // Each test binary uses the part of this bed it needs.
 
 pub mod client;
+pub mod run;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
