@@ -282,13 +282,15 @@ pub fn nav(bytes: &[u8]) -> Vec<Nav> {
 /// `Enter` never asks the operator to type one. The detail pane shows the whole id.
 pub const TREE_COLUMN: u16 = 44;
 
-/// The tree screen's three regions.
+/// The tree screen's four regions.
 ///
 /// This is [`crate::view::pty_size`]'s counterpart and the place its comment points at: an attach
 /// subtracts no chrome because the node has the terminal, and a tree screen subtracts exactly this
 /// much because it does not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Panes {
+    /// One row along the top: which project, how many nodes.
+    pub status: Rect,
     pub tree: Rect,
     pub content: Rect,
     /// One row along the bottom: the selected node's capabilities, greyed where absent.
@@ -298,22 +300,52 @@ pub struct Panes {
 /// Split `area` into [`Panes`].
 ///
 /// Degenerate areas are handled by arithmetic rather than by a guard: a terminal one row tall gives
-/// the actions strip that row and the two panes zero height, and `ratatui` draws nothing into a
-/// zero-height `Rect`. Inventing a minimum size here would make marion refuse to start in a window
-/// the operator can see.
+/// the status row that row and everything else zero height, two rows gives the strip the second,
+/// and `ratatui` draws nothing into a zero-height `Rect`. Inventing a minimum size here would make
+/// marion refuse to start in a window the operator can see.
 pub fn split(area: Rect) -> Panes {
-    let strip = area.height.min(1);
-    let body = area.height - strip;
+    let status = area.height.min(1);
+    let strip = (area.height - status).min(1);
+    let body = area.height - status - strip;
+    let body_y = area.y.saturating_add(status);
     let tree_w = TREE_COLUMN.min(area.width);
     Panes {
-        tree: Rect::new(area.x, area.y, tree_w, body),
+        status: Rect::new(area.x, area.y, area.width, status),
+        tree: Rect::new(area.x, body_y, tree_w, body),
         content: Rect::new(
             area.x.saturating_add(tree_w),
-            area.y,
+            body_y,
             area.width - tree_w,
             body,
         ),
-        actions: Rect::new(area.x, area.y.saturating_add(body), area.width, strip),
+        actions: Rect::new(area.x, body_y.saturating_add(body), area.width, strip),
+    }
+}
+
+/// The status row: which project this tree is, and how big it is.
+///
+/// The counts are the caller's — `marion-tui` cannot say what "running" means any more than it can
+/// say what a harness is — and the row only lays them out.
+pub struct Status<'a> {
+    /// The project key the supervisor was dialled on, as the operator would recognise it.
+    pub repo: &'a str,
+    pub nodes: usize,
+    pub running: usize,
+}
+
+impl Widget for Status<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.height == 0 {
+            return;
+        }
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let (x, _) = buf.set_stringn(area.x, area.y, " marion", area.width as usize, bold);
+        let rest = format!(
+            " · {} · {} nodes, {} running",
+            self.repo, self.nodes, self.running
+        );
+        let remaining = area.x.saturating_add(area.width).saturating_sub(x) as usize;
+        buf.set_stringn(x, area.y, &rest, remaining, Style::default());
     }
 }
 
@@ -550,8 +582,9 @@ mod tests {
     #[test]
     fn the_split_leaves_the_content_pane_the_rest_and_nothing_overlaps() {
         let p = split(Rect::new(0, 0, 100, 40));
-        assert_eq!(p.tree, Rect::new(0, 0, TREE_COLUMN, 39));
-        assert_eq!(p.content, Rect::new(TREE_COLUMN, 0, 100 - TREE_COLUMN, 39));
+        assert_eq!(p.status, Rect::new(0, 0, 100, 1));
+        assert_eq!(p.tree, Rect::new(0, 1, TREE_COLUMN, 38));
+        assert_eq!(p.content, Rect::new(TREE_COLUMN, 1, 100 - TREE_COLUMN, 38));
         assert_eq!(p.actions, Rect::new(0, 39, 100, 1));
 
         // A window narrower than the tree column gives the tree what there is and the content none,
@@ -559,10 +592,39 @@ mod tests {
         let p = split(Rect::new(0, 0, 10, 3));
         assert_eq!(p.tree.width, 10);
         assert_eq!(p.content.width, 0);
-        // And a one-row terminal is all strip.
+        // A one-row terminal is all status row: what marion is looking at, before what it found.
         let p = split(Rect::new(0, 0, 80, 1));
+        assert_eq!(p.status, Rect::new(0, 0, 80, 1));
         assert_eq!(p.tree.height, 0);
-        assert_eq!(p.actions, Rect::new(0, 0, 80, 1));
+        assert_eq!(p.actions.height, 0);
+        // Two rows: status and strip, no body.
+        let p = split(Rect::new(0, 0, 80, 2));
+        assert_eq!(p.status, Rect::new(0, 0, 80, 1));
+        assert_eq!(p.tree.height, 0);
+        assert_eq!(p.actions, Rect::new(0, 1, 80, 1));
+    }
+
+    /// The status row says which project this is and how big the forest is — the two facts that
+    /// tell an operator with three terminals open which one they are looking at.
+    #[test]
+    fn the_status_row_names_the_project_and_counts_the_forest() {
+        let area = Rect::new(0, 0, 60, 1);
+        let mut buf = Buffer::empty(area);
+        Status {
+            repo: "/work/marion",
+            nodes: 4,
+            running: 3,
+        }
+        .render(area, &mut buf);
+        let row: String = (0..60).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(
+            row.trim_end(),
+            " marion · /work/marion · 4 nodes, 3 running"
+        );
+        assert!(
+            buf[(1, 0)].style().add_modifier.contains(Modifier::BOLD),
+            "the program name is the anchor of the row"
+        );
     }
 
     /// **The greying, as styles.** The label text is identical in both cases by design, so this is

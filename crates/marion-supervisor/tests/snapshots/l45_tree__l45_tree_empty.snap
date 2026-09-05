@@ -3,7 +3,7 @@ source: crates/marion-supervisor/tests/l45_tree.rs
 expression: "report(&tree, true)"
 ---
 --- 96x12, tree focused ---
-
+ marion · /work/marion · 0 nodes, 0 running
 
 
 
@@ -16,7 +16,6 @@ expression: "report(&tree, true)"
 
 no nodes
 --- tree column, one line per row, styled ---
-Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""

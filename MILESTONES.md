@@ -1147,6 +1147,11 @@ acceptance evidence, so every marker remains unchanged.
       `a_greyed_action_differs_from_an_offered_one_only_in_style`,
       `the_strips_note_follows_the_actions`, `an_unread_version_is_named_on_the_strip`, and the
       L4.5 snapshots re-accepted over the new styles.
+    - A status row along the top — `marion · <project> · N nodes, M running`, where running is the
+      complement of §7.6's terminal set — so an operator with several terminals open can tell which
+      project and how big a forest each one is. `the_status_row_names_the_project_and_counts_the_forest`,
+      `the_status_rows_running_count_is_the_non_terminal_nodes`, and the L4.5 snapshots re-accepted
+      with the row in the payload.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance

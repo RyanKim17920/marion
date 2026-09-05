@@ -26,8 +26,8 @@ use marion_core::encoding::Duration;
 use marion_core::harness::Harness;
 use marion_core::node::{BlockReason, NodeState, ReapState};
 use marion_proto::NodeSummary;
-use marion_supervisor::tree::build;
-use marion_tui::tree::{self, ActionBar, Tree, TreeView};
+use marion_supervisor::tree::{build, running};
+use marion_tui::tree::{self, ActionBar, Status, Tree, TreeView};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -115,10 +115,21 @@ fn forest() -> Vec<NodeSummary> {
 }
 
 fn draw(tree: &Tree, focused: bool) -> Buffer {
+    let nodes = forest();
     let mut terminal = Terminal::new(TestBackend::new(COLS, ROWS)).expect("TestBackend");
     terminal
         .draw(|f| {
             let panes = tree::split(f.area());
+            // The counts are the forest's own even when `tree` is a subset of it: the status row is
+            // the caller's projection, and this driver stands in for exactly one caller.
+            f.render_widget(
+                Status {
+                    repo: "/work/marion",
+                    nodes: if tree.is_empty() { 0 } else { nodes.len() },
+                    running: if tree.is_empty() { 0 } else { running(&nodes) },
+                },
+                panes.status,
+            );
             f.render_widget(TreeView { tree, focused }, panes.tree);
             f.render_widget(
                 ActionBar {
@@ -150,10 +161,10 @@ fn rows_of(buf: &Buffer) -> Vec<String> {
 /// text-only payload would make one of the two a copy of the other and neither would be testing the
 /// focus model at all.
 fn tree_rows(buf: &Buffer) -> String {
-    let width = tree::TREE_COLUMN.min(buf.area.width);
-    (0..buf.area.height.saturating_sub(1))
+    let tree = tree::split(buf.area).tree;
+    (tree.y..tree.y + tree.height)
         .map(|y| {
-            let mut text: String = (0..width)
+            let mut text: String = (0..tree.width)
                 .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
                 .collect();
             text.truncate(text.trim_end().len());

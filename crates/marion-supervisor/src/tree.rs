@@ -230,7 +230,17 @@ pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
     stream
         .set_read_timeout(Some(POLL))
         .map_err(|e| format!("setting a read bound on the supervisor socket: {e}"))?;
-    Session::open(stream)?.pump(repo, state_dir)
+    Session::open(stream, key.display().to_string())?.pump(repo, state_dir)
+}
+
+/// How many of `nodes` the status row calls running: the ones §7.6 does not count as terminal.
+/// An idle node is running — it is a process marion owns; an orphan is not counted, because §7.2
+/// declines to say whether it is.
+pub fn running(nodes: &[NodeSummary]) -> usize {
+    nodes
+        .iter()
+        .filter(|n| !n.state.is_exited() && !n.reap_state.is_terminal_for_gating())
+        .count()
 }
 
 /// One `marion tree` screen.
@@ -242,12 +252,14 @@ struct Session {
     nodes: Vec<NodeSummary>,
     tree: Tree,
     focus: Focus,
+    /// The project key, for the status row.
+    repo: String,
     /// The last refused `Enter`, shown in the detail pane until the cursor moves.
     notice: Option<String>,
 }
 
 impl Session {
-    fn open(stream: UnixStream) -> Result<Session, Refusal> {
+    fn open(stream: UnixStream, repo: String) -> Result<Session, Refusal> {
         let lines = BufReader::new(
             stream
                 .try_clone()
@@ -259,6 +271,7 @@ impl Session {
             nodes: Vec::new(),
             tree: Tree::new(Vec::new()),
             focus: Focus::Tree,
+            repo,
             notice: None,
         };
         s.subscribe()?;
@@ -476,9 +489,15 @@ impl Session {
         let tree = &self.tree;
         let focus = self.focus;
         let selected = self.selected_summary();
+        let status = tree::Status {
+            repo: &self.repo,
+            nodes: self.nodes.len(),
+            running: running(&self.nodes),
+        };
         let notice = self.notice.as_deref();
         let _ = terminal.draw(|f| {
             let panes = tree::split(f.area());
+            f.render_widget(status, panes.status);
             f.render_widget(
                 tree::TreeView {
                     tree,
@@ -975,6 +994,23 @@ mod tests {
         );
         let read = summary("x", Harness::Codex, false, Some("0.146.0"));
         assert_eq!(row(&read).note, None);
+    }
+
+    /// "Running" on the status row is §7.6's complement: a node that is neither exited nor reaped
+    /// nor orphaned. An idle node is running — it is a process marion owns — and an orphan is not
+    /// counted, since §7.2 will not claim to know.
+    #[test]
+    fn the_status_rows_running_count_is_the_non_terminal_nodes() {
+        use marion_core::contract::ExitStatus;
+        let mut exited = summary("e", Harness::Codex, false, None);
+        exited.state = NodeState::Exited(ExitStatus::Ok);
+        let mut orphan = summary("o", Harness::Codex, false, None);
+        orphan.reap_state = ReapState::Orphaned;
+        let idle = summary("i", Harness::Codex, false, None);
+        let mut busy = summary("b", Harness::Codex, true, None);
+        busy.state = NodeState::Running;
+        assert_eq!(running(&[exited, orphan, idle, busy]), 2);
+        assert_eq!(running(&[]), 0);
     }
 
     /// A refresh must not move the cursor out from under the operator.
