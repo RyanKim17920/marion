@@ -1778,6 +1778,18 @@ grouping.
   not happen and had started the supervisor quits it again rather than leave one lingering.
   `attach_verb.rs::resume_is_dispatched_and_starts_a_supervisor_when_none_serves` is the test, RED
   with `usage: marion` (the verb fell through to the run parser) before the arm existed.
+  **2026-09-05 — the whole arc is measured end to end.**
+  `restart_resume.rs::a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_client_hears_its_next_turn`
+  drives a **real codex** root through the canned provider to a parked, live state; SIGKILLs its
+  detached supervisor (the codex process survives, in its own group); asserts `marion attach`
+  refuses; runs `marion resume`; and asserts the root returns under its **own** id, `Live`,
+  `spawn_generation` 2, a **new** pid with the pre-kill process killed first (the `AliveAndOurs`
+  branch, exercised here for real), a journal contiguous from ordinal 0 across the restart, and a
+  post-resume Responses request carrying the session's prior turns — the proof codex resumed its own
+  session rather than starting fresh under the id. `#[ignore]` (real binary + detached supervisor);
+  runs in ~2–5 s. Codex keeps its session rollout under `$CODEX_HOME` = the node's own agent dir,
+  which nothing deletes on orphan/reap (only `run::cleanup` removes the `worktree`, never the agent
+  dir), so the resume finds it. **This closes plan-restart-resume.md steps 1–8.**
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.

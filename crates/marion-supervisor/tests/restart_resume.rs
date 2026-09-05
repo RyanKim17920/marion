@@ -1,0 +1,340 @@
+//! **Restart-and-resume, end to end** (`plan-restart-resume.md` step 8).
+//!
+//! The whole arc of the feature in one real run, on a **non-claude** harness because this machine's
+//! `claude` is pinned ahead of the fixtures: a codex root is driven through marion's canned
+//! provider until it has a live process and a journaled session, its supervisor is SIGKILLed out
+//! from under it, and then it is brought back.
+//!
+//! What the arc has to show, and why each clause is here:
+//!
+//! * **`marion attach` refuses** once the supervisor is gone — attaching deliberately starts no
+//!   supervisor, so a lost node has nothing to attach to.
+//! * **`marion resume` starts one and relaunches the node into its own id** — the same `agent_id`,
+//!   back to `Live`, `spawn_generation` 2, a **new** pid (the old process is killed first, because
+//!   it was `AliveAndOurs`), and a second `Spawned` on the one journal.
+//! * **The journal is contiguous across the restart** — replay reconstructs the node from ordinal 0
+//!   including the records written before the kill, so nothing about the first life was lost.
+//! * **The canned provider's post-resume request carries prior turns** — codex `exec resume` sends
+//!   the session's earlier transcript back, which is the proof the resume was a *real* resume of the
+//!   harness's own session and not a fresh run wearing the same id.
+//!
+//! # Running it
+//!
+//! ```sh
+//! cargo test -p marion-supervisor --test restart_resume
+//! ```
+//!
+//! It needs a real `codex` on `PATH`. Every model call is the CannedServer's: no paid tokens.
+//! Bounded throughout, so a wedged binary fails as a named timeout rather than a hang.
+
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use marion_core::contract::AgentId;
+use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script, TurnGate};
+use marion_testsupport::{Liveness, fixture_repo, liveness, on_path, scratch};
+use serde_json::json;
+
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+/// codex speaks the OpenAI **Responses** wire under a canned provider.
+const WIRE: &str = "responses";
+/// In the root's prompt and nowhere else, so a provider request can be attributed to the root even
+/// though root and child share the Responses wire.
+const ROOT_MARKER: &str = "MARION-RESTART-RESUME-ROOT-2f7a";
+const CHILD_FILE: &str = "src/restart-resume-marker.txt";
+const CHILD_CONTENT: &str = "restart-resume marker\n";
+const NARRATIVE: &str = "Wrote the marker under src/ and reported back.";
+/// The root's wall clock (codex is a LaunchOnly surface, so `--timeout` is a wall-clock bound).
+const ROOT_TIMEOUT: &str = "150";
+const BOUND: Duration = Duration::from_secs(120);
+
+fn project(state: &Path, repo: &Path) -> marion_core::paths::ProjectDir {
+    marion_core::paths::ProjectDir::new(state, &marion_supervisor::socket::project_root(repo))
+}
+
+fn journal_bytes(state: &Path, repo: &Path) -> Vec<u8> {
+    std::fs::read(project(state, repo).journal()).unwrap_or_default()
+}
+
+fn journal_nodes(state: &Path, repo: &Path) -> Vec<marion_core::registry::ReplayedNode> {
+    marion_core::registry::replay(&journal_bytes(state, repo))
+        .nodes()
+        .to_vec()
+}
+
+/// The one root of the run, by depth.
+fn root_of(nodes: &[marion_core::registry::ReplayedNode]) -> Option<AgentId> {
+    let roots: Vec<&marion_core::registry::ReplayedNode> =
+        nodes.iter().filter(|n| n.depth() == Some(0)).collect();
+    (roots.len() == 1).then(|| roots[0].agent_id.clone())
+}
+
+/// The supervisor's pid, from the first record's `<pid>-<uuid>` writer id.
+fn supervisor_pid(state: &Path, repo: &Path) -> Option<i32> {
+    let bytes = journal_bytes(state, repo);
+    let first = String::from_utf8_lossy(&bytes).lines().next()?.to_string();
+    let v: serde_json::Value = serde_json::from_str(&first).ok()?;
+    v["writer"]
+        .as_str()
+        .and_then(|w| w.split('-').next())
+        .and_then(|p| p.parse().ok())
+}
+
+fn until(mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + BOUND;
+    while Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    cond()
+}
+
+/// A codex root that spawns a codex child, both answered by the canned provider. The child writes
+/// the marker file and reports; the root reports the child completed. The shape is journal_wiring's
+/// Codex arms, for one root/child pairing.
+fn codex_script() -> Script {
+    let mut s = Script {
+        root: Some(RootScript {
+            marker: ROOT_MARKER.into(),
+            turn: RootTurn {
+                tool: "spawn".into(),
+                args: json!({
+                    "agent_type": "codex-impl",
+                    "prompt": "Add the marker file under src/ and report back.",
+                    "acceptance_criteria": ["a file exists under src/ containing the marker"],
+                    "writable_scope": ["src/**"],
+                    "timeout_secs": 60,
+                }),
+                final_text: "The child completed the task and reported back.".into(),
+            },
+        }),
+        ..Script::default()
+    };
+    s.child_narrative = NARRATIVE.into();
+    s.child_patch = format!(
+        "*** Begin Patch\n*** Add File: {CHILD_FILE}\n+{}\n*** End Patch",
+        CHILD_CONTENT.trim_end()
+    );
+    s.child_final_text = json!({ "narrative": NARRATIVE, "result_commits": [] }).to_string();
+    s
+}
+
+/// **The full restart-and-resume arc.** Ignored by default because it drives a real `codex` and
+/// SIGKILLs a detached supervisor: it is the acceptance test, run deliberately, not part of the
+/// unit sweep. Remove `#[ignore]` (or `--include-ignored`) to run it.
+#[test]
+#[ignore = "drives a real codex binary and a detached supervisor; run deliberately"]
+fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_client_hears_its_next_turn()
+ {
+    assert!(
+        on_path("codex"),
+        "this E2E drives a real codex; put it on PATH"
+    );
+    let dir = scratch("restart-resume-e2e");
+    let repo = fixture_repo(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+
+    // Hold the **second** Responses request — the child's first turn — so the tree parks with both
+    // the root and the child holding live processes, exactly as `client_run.rs`'s crit-3 does.
+    let gate = TurnGate::holding_from(WIRE, 2);
+    let server = CannedServer::start_gated(
+        Config {
+            addr: ([127, 0, 0, 1], 0).into(),
+            reqlog: dir.join("provider-requests.jsonl"),
+            script: codex_script(),
+        },
+        Some(Arc::clone(&gate)),
+    )
+    .expect("the canned provider binds");
+    let base_url = server.base_url();
+
+    let mut run = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args([
+            "run",
+            "codex-impl",
+            "--prompt",
+            &format!("{ROOT_MARKER}: delegate the marker-file task to a child."),
+            "--repo",
+            &repo.to_string_lossy(),
+            "--state-dir",
+            &state.to_string_lossy(),
+            "--base-url",
+            &base_url,
+            "--canned",
+            "--timeout",
+            ROOT_TIMEOUT,
+        ])
+        .current_dir(&*dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("marion run starts");
+
+    // ---- the run reaches a parked, live state -------------------------------------------------
+    assert!(
+        until(|| gate.parked() >= 1),
+        "the child's turn is held, so both nodes are parked with live processes"
+    );
+    assert!(
+        until(|| journal_nodes(&state, &repo).len() == 2),
+        "both nodes are on the journal before the supervisor dies"
+    );
+    let before = journal_nodes(&state, &repo);
+    let root_id = root_of(&before).expect("exactly one root");
+    let root_before = before
+        .iter()
+        .find(|n| n.agent_id == root_id)
+        .expect("the root replays");
+    assert_eq!(root_before.spawn_generation, 1, "one life so far");
+    assert!(
+        root_before.harness_session.is_some(),
+        "the root named its codex session before the kill: {root_before:?}"
+    );
+    let old_pid = root_before
+        .pid
+        .expect("the root has a live process on the record");
+    assert_eq!(liveness(old_pid), Liveness::Alive, "its process is running");
+    let records_before = marion_core::registry::replay(&journal_bytes(&state, &repo))
+        .nodes()
+        .iter()
+        .find(|n| n.agent_id == root_id)
+        .map(|n| n.records)
+        .unwrap_or(0);
+
+    // ---- the supervisor dies uncatchably ------------------------------------------------------
+    let sup = supervisor_pid(&state, &repo).expect("the journal names its supervisor");
+    // SAFETY: `kill` on the pid this test's own supervisor journaled.
+    unsafe { kill(sup, 9) };
+    assert!(
+        until(|| liveness(sup) == Liveness::Gone),
+        "the supervisor must be gone before anything is attributed to its absence"
+    );
+    // The run client dies with its supervisor's socket; reap it so nothing lingers.
+    let _ = run.kill();
+    let _ = run.wait();
+
+    // ---- attach refuses to start a supervisor -------------------------------------------------
+    let attach = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args([
+            "attach",
+            &root_id.0,
+            "--repo",
+            &repo.to_string_lossy(),
+            "--state-dir",
+            &state.to_string_lossy(),
+        ])
+        .output()
+        .expect("marion attach runs");
+    let attach_err = String::from_utf8_lossy(&attach.stderr);
+    assert!(
+        attach_err.contains("no supervisor is serving")
+            && attach_err.contains("deliberately does not start one"),
+        "attach must refuse to start a supervisor for a lost node: {attach_err}"
+    );
+    assert!(!attach.status.success());
+
+    // ---- resume starts a supervisor and relaunches the root into its own id -------------------
+    // Backgrounded: `marion resume` hands off to a live attach after the relaunch, so it does not
+    // return on its own. The journal is the oracle, and the process is killed once it has answered.
+    let mut resume = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args([
+            "resume",
+            &root_id.0,
+            "--prompt",
+            "Continue: confirm the marker and report.",
+            "--repo",
+            &repo.to_string_lossy(),
+            "--state-dir",
+            &state.to_string_lossy(),
+            "--base-url",
+            &base_url,
+            "--canned",
+        ])
+        .current_dir(&*dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("marion resume starts");
+
+    // A second `Spawned` for the same id, under a new supervisor.
+    assert!(
+        until(|| {
+            journal_nodes(&state, &repo)
+                .iter()
+                .find(|n| n.agent_id == root_id)
+                .is_some_and(|n| n.spawn_generation >= 2)
+        }),
+        "the root did not come back as generation two"
+    );
+    // The old process was AliveAndOurs, so resume killed it before relaunching.
+    assert!(
+        until(|| liveness(old_pid) != Liveness::Alive),
+        "the surviving pre-kill process must be killed before a second runs against the transcript"
+    );
+
+    let after = journal_nodes(&state, &repo);
+    let root_after = after
+        .iter()
+        .find(|n| n.agent_id == root_id)
+        .expect("the root still replays under its own id");
+    assert_eq!(
+        root_after.spawn_generation, 2,
+        "the second life of one node"
+    );
+    assert_eq!(
+        root_after.reap_state,
+        marion_core::node::ReapState::Live,
+        "a resumed node is Live again, not still Orphaned"
+    );
+    let new_pid = root_after.pid.expect("the relaunch has a pid");
+    assert_ne!(new_pid, old_pid, "a new process, not the killed one");
+    assert!(
+        root_after.records > records_before,
+        "the second life adds records to the same node's history, contiguously: {} then {}",
+        records_before,
+        root_after.records
+    );
+
+    // ---- the journal is contiguous across the restart -----------------------------------------
+    let tree = marion_core::registry::replay(&journal_bytes(&state, &repo));
+    assert!(
+        tree.gaps.is_empty() && tree.truncation.is_none(),
+        "replay is contiguous from ordinal 0, including the pre-kill records: {:?} / {:?}",
+        tree.gaps,
+        tree.truncation
+    );
+
+    // ---- the post-resume provider request carries prior turns ---------------------------------
+    // codex `exec resume` sends the session's earlier transcript back, so at least one Responses
+    // request after the resume carries the root marker AND more than a first user turn.
+    assert!(
+        until(|| {
+            let requests = server.requests().unwrap_or_default();
+            requests.iter().any(|r| {
+                r["wire"].as_str() == Some(WIRE)
+                    && r.to_string().contains(ROOT_MARKER)
+                    && r["body"]["input"]
+                        .as_array()
+                        .is_some_and(|input| input.len() > 1)
+            })
+        }),
+        "no post-resume request carried the session's prior turns — the resume did not resume"
+    );
+
+    // ---- teardown -----------------------------------------------------------------------------
+    gate.release();
+    let _ = resume.kill();
+    let _ = resume.wait();
+    // Best-effort: kill any supervisor the resume started so nothing lingers past the test.
+    if let Some(pid) = supervisor_pid(&state, &repo) {
+        unsafe { kill(pid, 9) };
+    }
+}
