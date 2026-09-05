@@ -18,7 +18,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Resume, Spelling, Surfaces,
     ToolSpelling, Val, When,
 };
 
@@ -64,6 +64,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     program: Some("codex"),
     argv: &[
         Arg::Lit("exec"),
+        // `codex exec resume [SESSION_ID] [PROMPT]` (0.147.0): a subcommand of `exec`, ahead of
+        // its flags, which the resume help lists unchanged (`--json`, `-c`, `-C`, `-m`).
+        Arg::Resume,
         Arg::Lit("--json"),
         Arg::Lit("--skip-git-repo-check"),
         // The live route's whole configuration, one `-c key=value` per pair
@@ -133,6 +136,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "sandbox:",
         value: SANDBOX_MODE,
     },
+    // The TUI's `codex resume` is a different grammar and unmeasured, so the pane row carries no
+    // `Arg::Resume` and a paned resume is refused.
+    resume: Some(Resume::Subcommand("resume")),
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",

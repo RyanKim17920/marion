@@ -78,6 +78,12 @@ pub struct HarnessSpec {
     /// §6.7's `TaskContract.allowed_tools`: what the audit record says this launch was constrained
     /// by, in this harness's own vocabulary.
     pub constraint: Constraint,
+    /// How this harness names a session to resume on its command line, as measured on the
+    /// installed binary's `--help` — or `None`, where it has no measured way, and a launch that
+    /// asks for one is refused by name rather than started fresh under a resumed session's id.
+    /// **Data now, so the resume feature needs no per-harness branch later** (`plan-restart-
+    /// resume.md` step 5); nothing sets [`Fields::resume`] yet.
+    pub resume: Option<Resume>,
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,
@@ -117,11 +123,13 @@ pub enum Field {
     OutputLastMessage,
     /// The argv tail an ACP agent's own table supplies, verbatim.
     AgentArgs,
+    /// The session to resume, where a launch asks for one. Rendered by [`Arg::Resume`] alone.
+    Resume,
 }
 
 /// One argv element, or the rule for several.
 ///
-/// Closed on purpose: these nine shapes cover five harnesses' `--help` output, and a sixth that
+/// Closed on purpose: these ten shapes cover five harnesses' `--help` output, and a sixth that
 /// needs a ninth should add it here — visibly — rather than write a branch in an adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arg {
@@ -146,6 +154,21 @@ pub enum Arg {
     PosIfNonEmpty(Field),
     /// Every item of a list field, bare.
     Items(Field),
+    /// The row's [`HarnessSpec::resume`] tokens around [`Field::Resume`], where a launch asks for
+    /// one; nothing where it does not. A shape whose argv has no `Resume` slot, or a row whose
+    /// `resume` is `None`, **refuses** a launch that asks for one.
+    Resume,
+}
+
+/// How a harness names a session to resume on argv, as `<harness> --help` spells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resume {
+    /// `<flag> <id>` — claude `--resume <session-id>`, opencode `run --session <id>`.
+    Flag(&'static str),
+    /// `<flag>=<id>` — copilot `--resume[=value]`, whose value is optional and so must be joined.
+    FlagEq(&'static str),
+    /// `<word> <id>` as a subcommand after the row's own — codex `exec resume [SESSION_ID]`.
+    Subcommand(&'static str),
 }
 
 /// Where an environment value comes from.
@@ -218,6 +241,9 @@ pub struct Fields {
     pub output_schema: Option<PathBuf>,
     pub output_last_message: Option<PathBuf>,
     pub agent_args: Vec<String>,
+    /// The session this launch resumes, if any. **Nothing sets it yet**: the flag is data ahead of
+    /// the feature, so that the feature is a field and not five branches.
+    pub resume: Option<String>,
     /// Environment the hook derived that no row names — appended after the row's own. ACP's
     /// per-agent canned recipe is the one user.
     pub extra_env: Vec<(String, String)>,
@@ -241,6 +267,7 @@ impl Fields {
             Field::Title => self.title.clone(),
             Field::OutputSchema => self.output_schema.as_ref().and_then(path),
             Field::OutputLastMessage => self.output_last_message.as_ref().and_then(path),
+            Field::Resume => self.resume.clone(),
             Field::Tools | Field::Allowed | Field::Pairs | Field::AgentArgs => {
                 let items = self.items(field);
                 (!items.is_empty()).then(|| items.join(","))
@@ -295,20 +322,33 @@ pub fn render_env(rows: &[Env], f: &Fields) -> Vec<(String, String)> {
     env
 }
 
-/// argv + env for one shape of one row, or `None` where the row has no such shape.
-///
-/// `None` is the pane refusal's raw material: the adapter names the harness in the error, because
-/// a pane request answered with the headless launch is the silent downgrade
-/// `HarnessError::NoPaneSurface` exists to refuse.
-pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Option<Invocation> {
+/// Why a row could not render a launch. Each is the adapter's to name the harness in, because a
+/// pane request answered with the headless launch, or a resume answered with a fresh session, is
+/// the silent downgrade the refusal exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// The row has no pane shape.
+    NoPaneShape,
+    /// The row names no program and the launch supplied none.
+    NoProgram,
+    /// The launch asks to resume a session and this shape of this harness has no measured way to
+    /// name one.
+    NoResume,
+}
+
+/// argv + env for one shape of one row, or the [`Refusal`] the row states.
+pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation, Refusal> {
     let argv = match shape {
         Shape::Headless => spec.argv,
-        Shape::Pane => spec.pane?,
+        Shape::Pane => spec.pane.ok_or(Refusal::NoPaneShape)?,
     };
     let program = match spec.program {
         Some(p) => p.to_string(),
-        None => f.program.clone()?,
+        None => f.program.clone().ok_or(Refusal::NoProgram)?,
     };
+    if f.resume.is_some() && !(spec.resume.is_some() && argv.contains(&Arg::Resume)) {
+        return Err(Refusal::NoResume);
+    }
     let mut args: Vec<String> = Vec::new();
     for arg in argv {
         match *arg {
@@ -342,11 +382,22 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Option<Invocation
             Arg::Pos(field) => args.extend(f.value(field)),
             Arg::PosIfNonEmpty(field) => args.extend(f.value(field).filter(|v| !v.is_empty())),
             Arg::Items(field) => args.extend(f.items(field)),
+            Arg::Resume => {
+                if let (Some(id), Some(how)) = (f.value(Field::Resume), spec.resume) {
+                    match how {
+                        Resume::Flag(flag) | Resume::Subcommand(flag) => {
+                            args.push(flag.into());
+                            args.push(id);
+                        }
+                        Resume::FlagEq(flag) => args.push(format!("{flag}={id}")),
+                    }
+                }
+            }
         }
     }
     let mut env = render_env(spec.env, f);
     env.extend(f.extra_env.iter().cloned());
-    Some(Invocation {
+    Ok(Invocation {
         program,
         args,
         env,

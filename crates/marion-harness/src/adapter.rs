@@ -691,18 +691,25 @@ fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> BridgeEnv {
     }
 }
 
-/// [`spec::render`] with its two `None`s named: a row with no pane shape, and a launch that named
-/// no program where the row expected one (an ACP adapter bound to no agent).
+/// [`spec::render`] with its refusals named for this harness: a row with no pane shape, a launch
+/// that named no program where the row expected one (an ACP adapter bound to no agent), and a
+/// resume this harness has no measured flag for.
 fn render_row(
     row: &spec::HarnessSpec,
     shape: spec::Shape,
     f: &spec::Fields,
 ) -> Result<Invocation, HarnessError> {
-    spec::render(row, shape, f).ok_or(match shape {
-        spec::Shape::Pane => HarnessError::NoPaneSurface(row.harness),
-        spec::Shape::Headless => HarnessError::MissingInput {
+    spec::render(row, shape, f).map_err(|why| match why {
+        spec::Refusal::NoPaneShape => HarnessError::NoPaneSurface(row.harness),
+        spec::Refusal::NoProgram => HarnessError::MissingInput {
             harness: row.harness,
             what: "the launch named no program and the row carries none",
+        },
+        spec::Refusal::NoResume => HarnessError::MissingInput {
+            harness: row.harness,
+            what: "this harness has no measured way to name a session to resume on this shape's \
+                   command line; starting it fresh under a resumed session's id would be a launch \
+                   the contract misdescribes",
         },
     })
 }
@@ -5648,9 +5655,9 @@ mod tests {
                         Shape::Headless => a.compile(launch, &ctx()),
                         Shape::Pane => a.compile_pane(launch, &ctx()),
                     };
-                    let got = a
-                        .fields(launch, &ctx(), shape)
-                        .and_then(|f| render(row, shape, &f).ok_or(HarnessError::NoPaneSurface(h)));
+                    let got = a.fields(launch, &ctx(), shape).and_then(|f| {
+                        render(row, shape, &f).map_err(|_| HarnessError::NoPaneSurface(h))
+                    });
                     assert_eq!(
                         got, expected,
                         "{h} ({mode}, {shape:?}): the row must render exactly what the adapter \
@@ -6027,6 +6034,90 @@ mod tests {
                     )
                 }
             }
+        }
+    }
+
+    /// **The resume flag is a row field, measured per harness on the installed binary's `--help`,
+    /// ahead of the feature that will use it** (`plan-restart-resume.md` step 5) — so that resume
+    /// becomes one field on the launch and not five branches. Nothing sets `Fields::resume` yet;
+    /// these tests set it directly on the fields the adapter computed.
+    ///
+    /// claude 2.1.224: `-r, --resume [value]  Resume a conversation by session ID`.
+    /// codex 0.147.0: `codex exec resume [SESSION_ID] [PROMPT]`, `--json` still accepted.
+    /// opencode 1.17.3: `run -s, --session  session id to continue`.
+    /// copilot 1.0.83: `-r, --resume[=value]  Resume from a previous session (optionally specify
+    /// existing session ID …)` — an optional value, so `=`-joined.
+    #[test]
+    fn resume_argv_per_harness() {
+        use crate::spec::{Shape, render};
+        let resumed = |h: Harness, shape: Shape| -> Vec<String> {
+            let a = launch_adapter(h).unwrap();
+            let mut f = a.fields(&spec_for(h), &ctx(), shape).unwrap();
+            f.resume = Some("SID".into());
+            render(harness_spec(h), shape, &f)
+                .unwrap_or_else(|e| panic!("{h}: {e:?}"))
+                .args
+        };
+        let window = |args: &[String], n: usize| -> Vec<Vec<String>> {
+            args.windows(n).map(|w| w.to_vec()).collect()
+        };
+        for shape in [Shape::Headless, Shape::Pane] {
+            let args = resumed(Harness::ClaudeCode, shape);
+            assert!(
+                window(&args, 2).contains(&vec!["--resume".into(), "SID".into()]),
+                "{args:?}"
+            );
+        }
+        let args = resumed(Harness::Codex, Shape::Headless);
+        assert_eq!(
+            &args[..3],
+            ["exec", "resume", "SID"],
+            "the subcommand follows exec: {args:?}"
+        );
+        assert!(args.contains(&"--json".to_string()));
+        let args = resumed(Harness::OpenCode, Shape::Headless);
+        assert_eq!(&args[..3], ["run", "--session", "SID"], "{args:?}");
+        let args = resumed(Harness::Copilot, Shape::Headless);
+        assert!(args.contains(&"--resume=SID".to_string()), "{args:?}");
+        // And a launch that asks for no resume renders no resume token on any of them.
+        for h in Harness::ALL {
+            let inv = launch_adapter(h)
+                .unwrap()
+                .compile(&spec_for(h), &ctx())
+                .unwrap();
+            assert!(
+                !inv.args
+                    .iter()
+                    .any(|a| a.contains("resume") || a == "--session"),
+                "{h}: {:?}",
+                inv.args
+            );
+        }
+    }
+
+    /// gemini 0.53.0's `--resume` takes `latest` or an index, not a session id, and ACP resumes
+    /// through `session/load` rather than argv; codex's TUI has no measured resume grammar. Each
+    /// is a refusal by name, never a fresh session started under a resumed session's id.
+    #[test]
+    fn a_harness_without_a_measured_resume_flag_refuses_by_name() {
+        use crate::spec::{Refusal, Shape, render};
+        for (h, shape) in [
+            (Harness::Gemini, Shape::Headless),
+            (Harness::Acp, Shape::Headless),
+            (Harness::Codex, Shape::Pane),
+        ] {
+            let a = launch_adapter(h).unwrap();
+            let mut f = a.fields(&spec_for(h), &ctx(), shape).unwrap();
+            f.resume = Some("SID".into());
+            assert_eq!(
+                render(harness_spec(h), shape, &f),
+                Err(Refusal::NoResume),
+                "{h}"
+            );
+            assert!(matches!(
+                render_row(harness_spec(h), shape, &f),
+                Err(HarnessError::MissingInput { harness, .. }) if harness == h
+            ));
         }
     }
 }

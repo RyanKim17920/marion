@@ -85,6 +85,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "",
         value: NO_TOOL_AVAILABILITY_SURFACE,
     },
+    // ACP resumes through `session/load` where the agent advertises `loadSession` — a protocol
+    // request, not argv — so the row names no flag and an argv resume is refused.
+    resume: None,
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn). The argv of every agent is the one those spikes launched",

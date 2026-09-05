@@ -39,7 +39,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Resume, Spelling, Surfaces,
     ToolSpelling, Val, When,
 };
 
@@ -75,6 +75,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // marion's prompt is the whole of the node's instructions (§3.1).
         Arg::Lit("--no-custom-instructions"),
         Arg::Flag("--model", Field::Model),
+        // `-r, --resume[=value]` (1.0.83 `--help`): the value is optional, so it is `=`-joined or
+        // the parser would take the next token as the session.
+        Arg::Resume,
         // `=`-joined on both axes: the flags are variadic (`[=tools...]`), and a space-separated
         // value would leave the parser free to swallow whatever came next. An empty availability
         // list compiles **no flag**: `--available-tools=` with nothing after it was measured to
@@ -149,6 +152,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     constraint: Constraint::Allowed {
         prefix: "allow-tool:",
     },
+    resume: Some(Resume::FlagEq("--resume")),
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",

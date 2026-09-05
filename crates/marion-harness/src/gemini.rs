@@ -111,6 +111,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "approval-mode:",
         default: DEFAULT_APPROVAL_MODE,
     },
+    // 0.53.0's `-r, --resume` takes `"latest"` or an index number, not a session id, and
+    // `--session-id` **starts** a session with a given UUID. Resuming a named session is unmeasured,
+    // so a launch that asks is refused rather than pointed at whichever session is "latest".
+    resume: None,
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",

@@ -17,7 +17,7 @@ pub use crate::mcp_bridge::{
     READY_FILE_ENV,
 };
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Resume, Spelling, Surfaces,
     ToolSpelling, Val, When,
 };
 use crate::surfaces::TypedKind;
@@ -57,6 +57,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Lit("--setting-sources"),
         Arg::Lit(""),
         Arg::Flag("--model", Field::Model),
+        Arg::Resume,
     ],
     // The TUI: the same isolation and the same two axes, none of the protocol flags (a pane has an
     // operator in it, so the permission ask stays the harness's own dialog), and the prompt on
@@ -69,6 +70,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         Arg::Lit("--setting-sources"),
         Arg::Lit(""),
         Arg::Flag("--model", Field::Model),
+        Arg::Resume,
         Arg::PosIfNonEmpty(Field::Prompt),
     ]),
     // NOT `CLAUDE_CONFIG_DIR`: isolating it breaks OAuth, because the Keychain entry is keyed to
@@ -116,6 +118,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // The one harness with a real per-tool allowlist: the record is the literal contents of
     // `--allowedTools`, which is the flag the CLI checks a call against.
     constraint: Constraint::Allowed { prefix: "" },
+    // `-r, --resume [value]  Resume a conversation by session ID` (2.1.224 `--help`); the same flag
+    // on the TUI.
+    resume: Some(Resume::Flag("--resume")),
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

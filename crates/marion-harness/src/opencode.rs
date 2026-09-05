@@ -22,7 +22,7 @@ use crate::grammar::{
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
-    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Resume, Spelling, Surfaces,
     ToolSpelling, Val, When,
 };
 
@@ -57,6 +57,8 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     program: Some("opencode"),
     argv: &[
         Arg::Lit("run"),
+        // `-s, --session  session id to continue` (1.17.3 `run --help`).
+        Arg::Resume,
         // Skips loading external plugins. It does *not* gate the forkDetach'ed
         // `@opencode-ai/plugin` npm install or the ripgrep auto-download (S13) — those are bounded
         // by the throwaway HOME below, not by a flag.
@@ -186,6 +188,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "",
         value: NO_COMPILED_TOOL_CONSTRAINT,
     },
+    resume: Some(Resume::Flag("--session")),
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",
