@@ -1242,6 +1242,19 @@ acceptance evidence, so every marker remains unchanged.
     `open_for_test`) and `a_keyboard_failure_wakes_the_pump_immediately_with_its_own_message`
     (elapsed under the poll interval). M3 remains `[partial]`.
 
+    **The shipped binary in front of a real harness, as a smoke proof, moves no milestone
+    marker.** `tests/native_facade_smoke.rs` composes a supervisor exactly as `detach.rs` stage 3
+    does — `PRODUCTION_NATIVE_FACADES`, `marion_harness::native_adapter`, the production factory —
+    and runs the **shipped `marion codex --help`** on its own controlling PTY from another session.
+    Observed on darwin with codex 0.147.0: the client exits 0, `Usage: codex` from the harness's
+    own help text reaches the operator's PTY through the relay, the PTY's termios after the run
+    equals its baseline, and the journal replays one native `codex` root with a pid and
+    `Exited{code: 0}`. It skips loudly when `codex` is not on `PATH`. This is one lane, one flag,
+    and no keystroke: the M3 matrix (a TUI cell on screen, input reaching the child, resize,
+    detach leaving the node in the tree, single-use re-attach refusal, signal restoration across
+    every enabled harness) is `plan-native-activation.md` step 9 and remains open, so M3 remains
+    `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
