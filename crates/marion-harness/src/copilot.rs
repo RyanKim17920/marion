@@ -32,17 +32,100 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::AgentId;
+use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::auth::Auth;
-use crate::invocation::Invocation;
 // The **bridge's** env contract, imported rather than respelled for the reason gemini and opencode
 // give: the bridge reads `MARION_AGENT_ID` whichever harness started it.
 use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
+use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 use crate::stream::{
     CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
+};
+
+/// `$COPILOT_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
+/// [`home`].
+const HOME_DIR: &str = "home";
+
+/// Copilot's row. Measured against 1.0.83 on 2026-09-05 (`tests/fixtures/s24/`), every probe
+/// against a canned local OpenAI Chat Completions endpoint at $0.00.
+///
+/// **Live mode is a removal.** The home relocation and the whole provider block go together: they
+/// exist to point a node at marion's endpoint without touching `~/.copilot`, and a live node's
+/// premise is the opposite — the operator's own login, from the operator's own home. The one
+/// survivor is the auto-update switch, which was never isolation.
+pub const SPEC: HarnessSpec = HarnessSpec {
+    harness: Harness::Copilot,
+    program: Some("copilot"),
+    argv: &[
+        // The prompt is the **argument to `-p`**: `-p` is what selects non-interactive mode at
+        // all, and a bare positional would open the TUI.
+        Arg::Flag("-p", Field::Prompt),
+        Arg::Lit("--output-format"),
+        Arg::Lit("json"),
+        // `-C` places the node **and** bounds the built-in file tools: the permission help says
+        // file access is restricted to the working directory and its subdirectories by default,
+        // so a worktree is the whole of what `create`/`view` can reach.
+        Arg::Flag("-C", Field::Cwd),
+        // The GitHub MCP server, which is a network round trip on a live node and dead weight on
+        // a canned one; `--available-tools` below would hide its tools anyway.
+        Arg::Lit("--disable-builtin-mcps"),
+        // `AGENTS.md`, `.github/copilot-instructions.md` and friends out of the operator's repo.
+        // marion's prompt is the whole of the node's instructions (§3.1).
+        Arg::Lit("--no-custom-instructions"),
+        Arg::Flag("--model", Field::Model),
+        // `=`-joined on both axes: the flags are variadic (`[=tools...]`), and a space-separated
+        // value would leave the parser free to swallow whatever came next. An empty availability
+        // list compiles **no flag**: `--available-tools=` with nothing after it was measured to
+        // disable nothing, so emitting it would claim a constraint that does not exist.
+        Arg::FlagEq("--available-tools", Field::Tools),
+        Arg::EachEq("--allow-tool", Field::Allowed),
+        Arg::Flag("--additional-mcp-config", Field::McpConfig),
+    ],
+    pane: None,
+    env: &[
+        Env {
+            key: HOME_ENV,
+            val: Val::Under(HOME_DIR),
+            when: When::Canned,
+        },
+        Env {
+            key: PROVIDER_BASE_URL_ENV,
+            val: Val::Field(Field::BaseUrl),
+            when: When::Canned,
+        },
+        Env {
+            key: PROVIDER_TYPE_ENV,
+            val: Val::Lit(PROVIDER_TYPE),
+            when: When::Canned,
+        },
+        Env {
+            key: PROVIDER_WIRE_API_ENV,
+            val: Val::Lit(WIRE_API),
+            when: When::Canned,
+        },
+        Env {
+            key: PROVIDER_API_KEY_ENV,
+            val: Val::Field(Field::ApiKey),
+            when: When::Canned,
+        },
+        Env {
+            key: OFFLINE_ENV,
+            val: Val::Lit("true"),
+            when: When::Canned,
+        },
+        Env {
+            key: AUTO_UPDATE_ENV,
+            val: Val::Lit("false"),
+            when: When::Always,
+        },
+    ],
+    note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
+           spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
+           end to end",
 };
 
 /// Relocates configuration and state — `config.json`, `session-state/`, `logs/`,
@@ -126,106 +209,12 @@ pub fn permission_pattern(alias: &str, tool: &str) -> String {
 
 /// `$COPILOT_HOME` for a node: a directory under marion's own config dir, never `~/.copilot`.
 pub fn home(config_dir: &Path) -> PathBuf {
-    config_dir.join("home")
+    config_dir.join(HOME_DIR)
 }
 
 /// Where [`mcp_config_json`] is written, named by `--additional-mcp-config @<path>`.
 pub fn mcp_config_path(config_dir: &Path) -> PathBuf {
     config_dir.join("mcp.json")
-}
-
-/// What marion needs to compile a headless copilot invocation.
-#[derive(Debug, Clone)]
-pub struct PromptSpec {
-    pub cwd: PathBuf,
-    /// `--model`. `None` is legal only where the CLI has a model of its own to fall back on, which
-    /// is a GitHub login: under BYOK the CLI refuses outright, and the adapter refuses first.
-    pub model: Option<String>,
-    pub prompt: String,
-    /// `--available-tools`: everything the model may **see**, already in copilot's own spellings —
-    /// marion's verbs as `<alias>-<tool>`, the built-ins as `create`, `view`, …. An empty list
-    /// compiles **no flag**: `--available-tools=` with nothing after it was measured to disable
-    /// nothing, so emitting it would claim a constraint that does not exist.
-    pub available: Vec<String>,
-    /// `--allow-tool`, one flag per pattern: everything the model may **run** without a prompt, as
-    /// [`permission_pattern`]s and kinds. This is the constraint `-p` mode actually checks a call
-    /// against — an empty list here denies every call whatever [`Self::available`] says.
-    pub allow: Vec<String>,
-    /// `$COPILOT_HOME` ([`home`]). Read only under [`Auth::Canned`].
-    pub home: PathBuf,
-    /// The MCP declaration document, or `None` for a node with no bridge (§9's fallback branch).
-    pub mcp_config: Option<PathBuf>,
-    /// Provider base URL in marion's canonical `…/v1` form, passed verbatim. Read only under
-    /// [`Auth::Canned`].
-    pub base_url: Option<String>,
-    pub api_key: Option<String>,
-    pub auth: Auth,
-}
-
-pub fn compile_prompt(spec: &PromptSpec) -> Invocation {
-    let mut args: Vec<String> = vec![
-        // The prompt is the **argument to `-p`**: `-p` is what selects non-interactive mode at
-        // all, and a bare positional would open the TUI.
-        "-p".into(),
-        spec.prompt.clone(),
-        "--output-format".into(),
-        "json".into(),
-        // `-C` places the node **and** bounds the built-in file tools: the permission help says
-        // file access is restricted to the working directory and its subdirectories by default,
-        // so a worktree is the whole of what `create`/`view` can reach.
-        "-C".into(),
-        spec.cwd.to_string_lossy().into_owned(),
-        // The GitHub MCP server, which is a network round trip on a live node and dead weight on
-        // a canned one; `--available-tools` below would hide its tools anyway.
-        "--disable-builtin-mcps".into(),
-        // `AGENTS.md`, `.github/copilot-instructions.md` and friends out of the operator's repo.
-        // marion's prompt is the whole of the node's instructions (§3.1).
-        "--no-custom-instructions".into(),
-    ];
-    if let Some(m) = &spec.model {
-        args.push("--model".into());
-        args.push(m.clone());
-    }
-    // `=`-joined on both axes: the flags are variadic (`[=tools...]`), and a space-separated
-    // value would leave the parser free to swallow whatever came next.
-    if !spec.available.is_empty() {
-        args.push(format!("--available-tools={}", spec.available.join(",")));
-    }
-    for pattern in &spec.allow {
-        args.push(format!("--allow-tool={pattern}"));
-    }
-    if let Some(p) = &spec.mcp_config {
-        args.push("--additional-mcp-config".into());
-        args.push(format!("@{}", p.to_string_lossy()));
-    }
-
-    // **Live mode is a removal.** The home relocation and the whole provider block go together:
-    // they exist to point a node at marion's endpoint without touching `~/.copilot`, and a live
-    // node's premise is the opposite — the operator's own login, from the operator's own home.
-    let mut env: Vec<(String, String)> = Vec::new();
-    if spec.auth == Auth::Canned {
-        env.push((HOME_ENV.into(), spec.home.to_string_lossy().into_owned()));
-        if let Some(u) = &spec.base_url {
-            env.push((PROVIDER_BASE_URL_ENV.into(), u.clone()));
-        }
-        env.push((PROVIDER_TYPE_ENV.into(), PROVIDER_TYPE.into()));
-        env.push((PROVIDER_WIRE_API_ENV.into(), WIRE_API.into()));
-        if let Some(k) = &spec.api_key {
-            env.push((PROVIDER_API_KEY_ENV.into(), k.clone()));
-        }
-        env.push((OFFLINE_ENV.into(), "true".into()));
-    }
-    env.push((AUTO_UPDATE_ENV.into(), "false".into()));
-
-    Invocation {
-        program: "copilot".into(),
-        args,
-        env,
-        cwd: spec.cwd.clone(),
-        // What `--model` carries, which the CLI echoes back unchanged in every
-        // `model.call_start` frame — the one harness of five measured to do so.
-        model: spec.model.clone(),
-    }
 }
 
 /// The values [`mcp_config_json`] writes into the MCP server declaration.
@@ -429,28 +418,55 @@ mod tests {
         "/../../tests/fixtures/s24/copilot-provider-500.stdout.jsonl"
     ));
 
-    fn spec() -> PromptSpec {
-        PromptSpec {
-            cwd: "/tmp/wt".into(),
-            model: Some("canned-1".into()),
-            prompt: "do the task".into(),
-            available: vec!["marion-report".into()],
-            allow: vec!["marion(report)".into()],
-            home: "/tmp/cfg/home".into(),
-            mcp_config: Some("/tmp/cfg/mcp.json".into()),
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
-            api_key: Some("sk-fake".into()),
-            auth: Auth::Canned,
+    use crate::adapter::{
+        CopilotAdapter, Extras, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
+    };
+    use crate::invocation::Invocation;
+    use marion_core::agent_type;
+
+    fn ctx() -> SpawnCtx {
+        SpawnCtx {
+            agent_id: AgentId("019f-child".into()),
+            agent_type: "copilot".into(),
+            depth: 1,
+            node_token: None,
+            ready_file: None,
+            repo: "/repo".into(),
+            state_dir: "/state".into(),
+            bridge: "/bin/marion-supervisor".into(),
+            bridge_args: vec!["mcp".into()],
         }
     }
 
-    fn live_spec() -> PromptSpec {
-        PromptSpec {
+    /// `allowed_tools` arrives in **this harness's** model-facing spelling, as `run_spawn` hands
+    /// it; the adapter turns it into both axes.
+    fn spec() -> LaunchSpec {
+        LaunchSpec {
+            cwd: "/tmp/wt".into(),
+            model: Some("canned-1".into()),
+            prompt: "do the task".into(),
+            tools: vec![],
+            allowed_tools: vec!["marion-report".into()],
+            mcp: McpDeclaration::Marion,
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            api_key: Some("sk-fake".into()),
+            auth: Auth::Canned,
+            config_dir: "/tmp/cfg".into(),
+            extra: Extras::default(),
+        }
+    }
+
+    fn live_spec() -> LaunchSpec {
+        LaunchSpec {
             base_url: None,
             api_key: None,
             auth: Auth::Inherited,
             ..spec()
         }
+    }
+
+    fn compile_prompt(spec: &LaunchSpec) -> Invocation {
+        CopilotAdapter.compile(spec, &ctx()).unwrap()
     }
 
     fn bridge() -> BridgeEnv {
@@ -493,9 +509,11 @@ mod tests {
     /// the call. The two axes take two spellings and the argv must carry each in its own.
     #[test]
     fn the_two_axes_are_compiled_as_two_flags_in_two_spellings() {
-        let inv = compile_prompt(&PromptSpec {
-            available: vec!["marion-report".into(), "create".into()],
-            allow: vec!["marion(report)".into(), "write".into()],
+        // A declared `write` is `create` on the availability axis and the kind `write` on the
+        // permission axis; marion's own verb is `marion-report` on one and `marion(report)` on
+        // the other.
+        let inv = compile_prompt(&LaunchSpec {
+            tools: vec![agent_type::TOOL_WRITE.into()],
             ..spec()
         });
         assert!(
@@ -523,9 +541,9 @@ mod tests {
     /// compiles no flag rather than a flag that claims a constraint.
     #[test]
     fn an_empty_availability_list_compiles_no_flag_rather_than_an_empty_one() {
-        let inv = compile_prompt(&PromptSpec {
-            available: vec![],
-            allow: vec![],
+        let inv = compile_prompt(&LaunchSpec {
+            tools: vec![],
+            allowed_tools: vec![],
             ..spec()
         });
         assert!(
@@ -545,8 +563,8 @@ mod tests {
             .position(|a| a == "--additional-mcp-config")
             .unwrap();
         assert_eq!(inv.args[i + 1], "@/tmp/cfg/mcp.json");
-        let none = compile_prompt(&PromptSpec {
-            mcp_config: None,
+        let none = compile_prompt(&LaunchSpec {
+            mcp: McpDeclaration::None,
             ..spec()
         });
         assert!(!none.args.iter().any(|a| a == "--additional-mcp-config"));
@@ -612,7 +630,7 @@ mod tests {
     /// Gated on the mode, not only on the value: a live spec handed an endpoint pushes none.
     #[test]
     fn a_live_spec_that_carries_an_endpoint_still_pushes_none() {
-        let inv = compile_prompt(&PromptSpec {
+        let inv = compile_prompt(&LaunchSpec {
             auth: Auth::Inherited,
             ..spec()
         });
@@ -627,7 +645,7 @@ mod tests {
         let i = inv.args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(inv.args[i + 1], "canned-1");
         assert_eq!(inv.model.as_deref(), Some("canned-1"));
-        let none = compile_prompt(&PromptSpec {
+        let none = compile_prompt(&LaunchSpec {
             model: None,
             ..live_spec()
         });

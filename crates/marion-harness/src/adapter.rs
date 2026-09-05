@@ -645,7 +645,7 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
         Harness::Codex => todo!("step 4: the codex row"),
         Harness::Gemini => &gemini::SPEC,
         Harness::OpenCode => &opencode::SPEC,
-        Harness::Copilot => todo!("step 4: the copilot row"),
+        Harness::Copilot => &copilot::SPEC,
         Harness::Acp => &acp::SPEC,
     }
 }
@@ -1574,36 +1574,6 @@ impl CopilotAdapter {
             .collect()
     }
 
-    /// `--available-tools`: what the model sees — marion's verbs plus the declared built-ins, in
-    /// copilot's spellings. One derivation, shared with [`Self::permission_axis`] through
-    /// `native_tools`, so the two flags cannot name different tools.
-    fn availability_axis(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        let mut available = spec.allowed_tools.clone();
-        available.extend(self.native_tools(spec)?);
-        Ok(available)
-    }
-
-    /// `--allow-tool`: what runs without a prompt — `<alias>(<verb>)` for each of marion's verbs,
-    /// plus the kind `write` when the declaration reaches a file-writing built-in. §3.1's *"the
-    /// same list, plus marion's own"*, in the pattern grammar rather than the tool grammar.
-    ///
-    /// **`view` adds nothing here, and that is measured**: with only `marion(report)` granted, a
-    /// `view` call ran (`tests/fixtures/s24/README.md`, item 4). Reads inside `-C` need no grant.
-    fn permission_axis(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        let mut allow: Vec<String> = Self::marion_verbs(spec)?
-            .iter()
-            .map(|verb| copilot::permission_pattern(copilot::MCP_ALIAS, verb))
-            .collect();
-        if self
-            .native_tools(spec)?
-            .iter()
-            .any(|t| copilot::is_write_tool(t))
-        {
-            allow.push(copilot::WRITE_PERMISSION.into());
-        }
-        Ok(allow)
-    }
-
     fn bridge_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Option<copilot::BridgeEnv> {
         (spec.mcp == McpDeclaration::Marion).then(|| copilot::BridgeEnv {
             bridge: ctx.bridge.clone(),
@@ -1630,7 +1600,39 @@ impl HarnessAdapter for CopilotAdapter {
         ExecutionSurfaces::launch_only_with_protocol_events()
     }
 
-    fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+    /// Both of §3.1's axes, in copilot's two spellings ([`copilot`]'s module docs).
+    ///
+    /// `tools` is `--available-tools`: what the model **sees** — marion's verbs plus the declared
+    /// built-ins. `allowed` is `--allow-tool`: what runs **without a prompt** — `<alias>(<verb>)`
+    /// for each of marion's verbs, plus the kind `write` when the declaration reaches a
+    /// file-writing built-in. §3.1's *"the same list, plus marion's own"*, in the pattern grammar
+    /// rather than the tool grammar. **`view` adds nothing here, and that is measured**: with only
+    /// `marion(report)` granted, a `view` call ran (`tests/fixtures/s24/README.md`, item 4).
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let native = self.native_tools(spec)?;
+        let mut tools = spec.allowed_tools.clone();
+        tools.extend(native.iter().cloned());
+        let mut allowed: Vec<String> = Self::marion_verbs(spec)?
+            .iter()
+            .map(|verb| copilot::permission_pattern(copilot::MCP_ALIAS, verb))
+            .collect();
+        if native.iter().any(|t| copilot::is_write_tool(t)) {
+            allowed.push(copilot::WRITE_PERMISSION.into());
+        }
+        Ok(spec::Axes {
+            tools,
+            allowed,
+            mode: None,
+        })
+    }
+
+    /// The three refusals this harness owes, and where argv names the declaration document.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
         match spec.auth {
             Auth::Canned => {
                 // Both measured as hard refusals by the CLI itself, so marion refuses first and
@@ -1667,19 +1669,16 @@ impl HarnessAdapter for CopilotAdapter {
                 }
             }
         }
-        Ok(copilot::compile_prompt(&copilot::PromptSpec {
-            cwd: spec.cwd.clone(),
-            model: spec.model.clone(),
-            prompt: spec.prompt.clone(),
-            available: self.availability_axis(spec)?,
-            allow: self.permission_axis(spec)?,
-            home: copilot::home(&spec.config_dir),
-            mcp_config: (spec.mcp == McpDeclaration::Marion)
-                .then(|| copilot::mcp_config_path(&spec.config_dir)),
-            base_url: spec.base_url.clone(),
-            api_key: spec.api_key.clone(),
-            auth: spec.auth,
-        }))
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // `--additional-mcp-config @<file>`: the `@` is how the flag reads a file, and the path is
+        // the one `config_files` writes.
+        f.mcp_config = (spec.mcp == McpDeclaration::Marion).then(|| {
+            format!(
+                "@{}",
+                copilot::mcp_config_path(&spec.config_dir).to_string_lossy()
+            )
+        });
+        Ok(f)
     }
 
     fn config_files(
@@ -1755,7 +1754,8 @@ impl HarnessAdapter for CopilotAdapter {
     /// `allow-tool:write` is unambiguously the flag's word.
     fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
         Ok(self
-            .permission_axis(spec)?
+            .axes(spec)?
+            .allowed
             .into_iter()
             .map(|pattern| format!("allow-tool:{pattern}"))
             .collect())
@@ -6164,6 +6164,7 @@ mod tests {
             Harness::Gemini,
             Harness::OpenCode,
             Harness::Acp,
+            Harness::Copilot,
         ];
         for &h in MIGRATED {
             let a = launch_adapter(h).unwrap();
