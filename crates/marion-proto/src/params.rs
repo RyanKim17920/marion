@@ -108,6 +108,21 @@ pub struct NodePromptParams {
     pub text: String,
 }
 
+/// `node/resume` — relaunch a lost node under its own agent id (`plan-restart-resume.md` step 6).
+///
+/// Not a `node/prompt`: prompt speaks to a node whose process the supervisor still holds, and a
+/// resume's node has none — its process died with the supervisor that owned it, and §8's rule is
+/// that a lost session is *relaunched*, never re-opened. So this carries the first turn the
+/// relaunched process runs (`prompt`) and the supervisor rebuilds the launch from the node's own
+/// journal — its agent type, model, and the harness session its stream named — resuming that
+/// session through the harness's own measured flag, or refusing by name where the node named none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeResumeParams {
+    pub agent_id: AgentId,
+    pub prompt: String,
+}
+
 /// `node/steer` — mid-flight injection (§6.3). Requires `caps.steer`; a harness without it is
 /// answered [`crate::FailureKind::Unsupported`].
 ///

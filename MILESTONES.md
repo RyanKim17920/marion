@@ -1740,6 +1740,11 @@ grouping.
   [SpawnIntent, RootGrantDecided, Spawned, SpawnIntent, Spawned, Exited, …]` and is GREEN with one
   `SessionObserved` per node. Still no `node/resume`, and a pane (pty) root emits no frames, so a
   pane node has no journaled session and its resume will be refused honestly.
+  **2026-09-05 — `node/resume` is the sixteenth method.** `Method::ALL` moves from fifteen to
+  sixteen (`the_method_list_is_fifteen` and `input.rs`'s inbound-table pin both updated, the second
+  proving keystrokes were not what grew the list), with `NodeResumeParams { agent_id, prompt }` and
+  `NodeResumeResult { agent_id, state, spawn_generation }`. The handler arm is the next commit; for
+  now the method is specified on the wire and still answered `Unimplemented`.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.

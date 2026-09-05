@@ -18,13 +18,13 @@ use crate::error::RpcError;
 use crate::params::{
     AgentSpawnParams, DoctorRunParams, ElicitationReplyParams, NodeAttachParams, NodeCancelParams,
     NodeDetachParams, NodeGetParams, NodeKillParams, NodePromptParams, NodeRenameParams,
-    NodeSteerParams, POLICY_SET_UNSPECIFIED, PermissionReplyParams, SessionQuitParams,
-    TreeSubscribeParams, UnspecifiedPolicy,
+    NodeResumeParams, NodeSteerParams, POLICY_SET_UNSPECIFIED, PermissionReplyParams,
+    SessionQuitParams, TreeSubscribeParams, UnspecifiedPolicy,
 };
 use crate::result::{
     AgentSpawnResult, DeliveryResult, DoctorRunResult, NodeAttachResult, NodeCancelResult,
-    NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult, ReplyResult,
-    SessionQuitResult, TreeSubscribeResult,
+    NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult, NodeResumeResult,
+    ReplyResult, SessionQuitResult, TreeSubscribeResult,
 };
 
 /// §2's client↔supervisor method list.
@@ -43,6 +43,9 @@ pub enum Method {
     NodeCancel,
     NodeKill,
     NodeRename,
+    /// M2+. Relaunch a lost node under its own agent id, resuming its harness session
+    /// (`plan-restart-resume.md` step 6).
+    NodeResume,
     PermissionReply,
     ElicitationReply,
     /// Declared by §2, specified nowhere. See [`UnspecifiedPolicy`]: the name exists, no call to it
@@ -68,6 +71,7 @@ impl Method {
             Method::NodeCancel => "node/cancel",
             Method::NodeKill => "node/kill",
             Method::NodeRename => "node/rename",
+            Method::NodeResume => "node/resume",
             Method::PermissionReply => "permission/reply",
             Method::ElicitationReply => "elicitation/reply",
             Method::PolicySet => "policy/set",
@@ -77,7 +81,7 @@ impl Method {
         }
     }
 
-    pub const ALL: [Method; 15] = [
+    pub const ALL: [Method; 16] = [
         Method::TreeSubscribe,
         Method::NodeGet,
         Method::NodeAttach,
@@ -87,6 +91,7 @@ impl Method {
         Method::NodeCancel,
         Method::NodeKill,
         Method::NodeRename,
+        Method::NodeResume,
         Method::PermissionReply,
         Method::ElicitationReply,
         Method::PolicySet,
@@ -130,6 +135,7 @@ impl Method {
             Method::NodeCancel => MethodResult::NodeCancel(take(self, body)?),
             Method::NodeKill => MethodResult::NodeKill(take(self, body)?),
             Method::NodeRename => MethodResult::NodeRename(take(self, body)?),
+            Method::NodeResume => MethodResult::NodeResume(take(self, body)?),
             Method::PermissionReply => MethodResult::PermissionReply(take(self, body)?),
             Method::ElicitationReply => MethodResult::ElicitationReply(take(self, body)?),
             Method::PolicySet => {
@@ -173,6 +179,8 @@ pub enum Call {
     NodeKill(NodeKillParams),
     #[serde(rename = "node/rename")]
     NodeRename(NodeRenameParams),
+    #[serde(rename = "node/resume")]
+    NodeResume(NodeResumeParams),
     #[serde(rename = "permission/reply")]
     PermissionReply(PermissionReplyParams),
     #[serde(rename = "elicitation/reply")]
@@ -201,6 +209,7 @@ impl Call {
             Call::NodeCancel(_) => Method::NodeCancel,
             Call::NodeKill(_) => Method::NodeKill,
             Call::NodeRename(_) => Method::NodeRename,
+            Call::NodeResume(_) => Method::NodeResume,
             Call::PermissionReply(_) => Method::PermissionReply,
             Call::ElicitationReply(_) => Method::ElicitationReply,
             Call::PolicySet(p) => match *p {},
@@ -223,6 +232,7 @@ pub enum MethodResult {
     NodeCancel(NodeCancelResult),
     NodeKill(NodeKillResult),
     NodeRename(NodeRenameResult),
+    NodeResume(NodeResumeResult),
     PermissionReply(ReplyResult),
     ElicitationReply(ReplyResult),
     PolicySet(UnspecifiedPolicy),
@@ -243,6 +253,7 @@ impl MethodResult {
             MethodResult::NodeCancel(_) => Method::NodeCancel,
             MethodResult::NodeKill(_) => Method::NodeKill,
             MethodResult::NodeRename(_) => Method::NodeRename,
+            MethodResult::NodeResume(_) => Method::NodeResume,
             MethodResult::PermissionReply(_) => Method::PermissionReply,
             MethodResult::ElicitationReply(_) => Method::ElicitationReply,
             MethodResult::PolicySet(p) => match *p {},
@@ -267,6 +278,7 @@ impl MethodResult {
             MethodResult::NodeCancel(r) => v(r),
             MethodResult::NodeKill(r) => v(r),
             MethodResult::NodeRename(r) => v(r),
+            MethodResult::NodeResume(r) => v(r),
             MethodResult::PermissionReply(r) | MethodResult::ElicitationReply(r) => v(r),
             MethodResult::PolicySet(p) => match *p {},
             MethodResult::AgentSpawn(r) => v(r),
@@ -408,6 +420,17 @@ mod tests {
                 }),
             ),
             (
+                Call::NodeResume(NodeResumeParams {
+                    agent_id: agent("a"),
+                    prompt: "carry on".into(),
+                }),
+                MethodResult::NodeResume(NodeResumeResult {
+                    agent_id: agent("a"),
+                    state: NodeState::Spawning,
+                    spawn_generation: 2,
+                }),
+            ),
+            (
                 Call::PermissionReply(PermissionReplyParams {
                     request_id: PermissionRequestId("r-1".into()),
                     decision: PermissionDecision::Allow,
@@ -499,8 +522,8 @@ mod tests {
     fn the_method_list_is_fifteen() {
         assert_eq!(
             Method::ALL.len(),
-            15,
-            "§2 lines 87-89 list fifteen; §10's 'fourteen' is stale"
+            16,
+            "§2's fifteen plus node/resume (plan step 6)"
         );
         let mut names: Vec<&str> = Method::ALL.iter().map(|m| m.as_str()).collect();
         assert_eq!(
@@ -515,6 +538,7 @@ mod tests {
                 "node/cancel",
                 "node/kill",
                 "node/rename",
+                "node/resume",
                 "permission/reply",
                 "elicitation/reply",
                 "policy/set",

@@ -305,15 +305,15 @@ mod tests {
         }
     }
 
-    /// **The pin this change was required not to move.**
+    /// **The pin that keeps keystrokes off the request surface.**
     ///
-    /// A keystroke transport that arrived as a sixteenth request method would have broken
-    /// `the_method_list_is_fifteen`, and the tempting repair is to bump the constant. This asserts
-    /// the opposite outcome from the other side: the inbound table exists and the request surface
-    /// is untouched by it.
+    /// A keystroke transport arriving as a request method would have grown [`Method::ALL`]; this
+    /// asserts from the other side that the inbound table is disjoint from it. The count moves only
+    /// when a genuine request method lands (`node/resume` took it from fifteen to sixteen), never
+    /// because an `Input` name leaked in — which the loop below is what proves.
     #[test]
     fn the_inbound_table_is_not_part_of_the_request_surface() {
-        assert_eq!(Method::ALL.len(), 15, "§2's request list is unchanged");
+        assert_eq!(Method::ALL.len(), 16, "§2's fifteen plus node/resume");
         for n in Input::METHODS {
             assert_eq!(
                 Method::from_wire(n),

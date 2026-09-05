@@ -187,6 +187,21 @@ pub struct DoctorRunResult {
     pub reports: Vec<HarnessReport>,
 }
 
+/// `node/resume` — the node relaunched into its **own** id (`plan-restart-resume.md` step 6).
+///
+/// `agent_id` is the id the caller asked for, echoed back so a client watching over
+/// `tree/subscribe` knows the same node it lost is the one that came back — a resume that minted a
+/// new id would be a spawn, and the whole point is that it is not. `spawn_generation` is the
+/// lifetime count from replay: `2` on the first resume, more on later ones, and the field a caller
+/// reads to tell "relaunched" from "was never lost". `state` is typically `Spawning`, the same
+/// instant `agent/spawn` returns at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeResumeResult {
+    pub agent_id: AgentId,
+    pub state: NodeState,
+    pub spawn_generation: u32,
+}
+
 /// `session/quit`. See [`QuitOutcome`] — one variant per disposition, so a detach cannot be
 /// reported without its guidance and a kill cannot report reaped nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
