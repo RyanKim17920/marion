@@ -256,7 +256,7 @@ impl RelaySignalGuard {
         for signal in RELAY_SIGNALS {
             let mut prior_action = Sigaction::zeroed();
             if let Err(error) = install_relay_signal_action(signal, &action, &mut prior_action) {
-                return match restore_signal_actions(&mut prior) {
+                return match restore_signal_actions_matching(&mut prior, |_| true) {
                     Ok(()) => {
                         clear_relay_signal_state();
                         Err(format!(
@@ -402,27 +402,6 @@ fn restore_signal_action(prior: &PriorSignalAction) -> std::io::Result<()> {
     } else {
         Err(std::io::Error::last_os_error())
     }
-}
-
-fn restore_signal_actions(prior: &mut [PriorSignalAction]) -> Result<(), RelaySignalRestoreError> {
-    let mut first_error = None;
-    for prior in prior.iter_mut().rev() {
-        if !prior.relay_installed {
-            continue;
-        }
-        match restore_signal_action(prior) {
-            Ok(()) => prior.relay_installed = false,
-            Err(source) if first_error.is_none() => {
-                first_error = Some(RelaySignalRestoreError {
-                    signal: prior.signal,
-                    source,
-                    captured_signal: None,
-                });
-            }
-            Err(_) => {}
-        }
-    }
-    first_error.map_or(Ok(()), Err)
 }
 
 fn restore_signal_actions_matching(
