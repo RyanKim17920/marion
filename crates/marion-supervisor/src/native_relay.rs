@@ -1094,10 +1094,11 @@ mod tests {
     use super::{
         AFTER_RELAY_SIGNAL_RESTORE, AFTER_RESIZE_SIGNAL_ACQUIRE,
         BEFORE_REDELIVERY_WHILE_OWNER_HELD, FIRST_RELAY_SIGNAL, HUNG_UP, INTERRUPTED,
-        RELAY_SIGNAL_EVENTS, RESIZED, RawPaneSession, RelaySignalGuard, RelayStop, SIGWINCH,
-        SUSPENDED, SigSet, Sigaction, TERMINATED, empty_sigset, fail_relay_signal_install_at,
+        RELAY_SIGNAL_EVENTS, RELAY_SIGNALS, RESIZED, RawPaneSession, RelaySignalGuard, RelayStop,
+        SIG_BLOCK, SIGHUP, SIGINT, SIGTERM, SIGWINCH, SUSPENDED, SigSet, Sigaction, TERMINATED,
+        current_thread_signal_mask, empty_sigset, fail_relay_signal_install_at,
         fail_relay_signal_restore_at, fail_relay_signal_restore_at_attempts, finish_claimed_relay,
-        on_relay_signal, pthread_sigmask, redeliver_signal, resolve_relay_finish,
+        on_relay_signal, pthread_sigmask, raise, redeliver_signal, resolve_relay_finish,
         setup_after_signal_acquire, sigaction, signal, signal_is_blocked,
         write_passive_terminal_cleanup_to,
     };
@@ -1124,14 +1125,6 @@ mod tests {
     const SIG_IGN: usize = 1;
     static SENTINEL_HITS: AtomicUsize = AtomicUsize::new(0);
 
-    const SIGHUP: std::ffi::c_int = 1;
-    const SIGINT: std::ffi::c_int = 2;
-    const SIGTERM: std::ffi::c_int = 15;
-    #[cfg(target_os = "macos")]
-    const SIGTSTP: std::ffi::c_int = 18;
-    #[cfg(target_os = "linux")]
-    const SIGTSTP: std::ffi::c_int = 20;
-    const RELAY_SIGNALS: [std::ffi::c_int; 5] = [SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGTSTP];
     #[cfg(target_os = "macos")]
     const TEST_SA_RESTART: i32 = 0x0002;
     #[cfg(target_os = "linux")]
@@ -1149,14 +1142,9 @@ mod tests {
     }
 
     unsafe extern "C" {
-        fn raise(signal: std::ffi::c_int) -> std::ffi::c_int;
         fn _exit(status: std::ffi::c_int) -> !;
     }
 
-    #[cfg(target_os = "macos")]
-    const SIG_BLOCK: std::ffi::c_int = 1;
-    #[cfg(target_os = "linux")]
-    const SIG_BLOCK: std::ffi::c_int = 0;
     #[cfg(target_os = "macos")]
     const SIG_SETMASK: std::ffi::c_int = 3;
     #[cfg(target_os = "linux")]
@@ -1189,16 +1177,6 @@ mod tests {
             }
         }
         set
-    }
-
-    fn current_thread_signal_mask() -> SigSet {
-        let mut mask = empty_sigset();
-        // SAFETY: a null replacement queries the calling thread's mask into a valid out pointer.
-        assert_eq!(
-            unsafe { pthread_sigmask(SIG_BLOCK, std::ptr::null(), &mut mask) },
-            0
-        );
-        mask
     }
 
     struct RestoreThreadSignalMask(SigSet);
@@ -1533,7 +1511,7 @@ mod tests {
         }
         let _restore_originals = install_exact_sentinels();
         let actions = snapshot_actions();
-        let original_mask = current_thread_signal_mask();
+        let original_mask = current_thread_signal_mask().expect("querying the thread signal mask");
         for signal in RELAY_SIGNALS {
             let blocked_mask = block_signal_on_current_thread(signal);
             let expected_blocked_mask = signal_added_to_set(original_mask, signal);
@@ -1557,12 +1535,15 @@ mod tests {
             assert_eq!(FIRST_RELAY_SIGNAL.load(Ordering::SeqCst), SIGINT);
             assert_same_actions(&snapshot_actions(), &actions);
             assert_eq!(
-                current_thread_signal_mask(),
+                current_thread_signal_mask().expect("querying the thread signal mask"),
                 expected_blocked_mask,
                 "relay admission changed the calling thread's mask for signal {signal}"
             );
             drop(blocked_mask);
-            assert_eq!(current_thread_signal_mask(), original_mask);
+            assert_eq!(
+                current_thread_signal_mask().expect("querying the thread signal mask"),
+                original_mask
+            );
         }
     }
 
@@ -2252,7 +2233,8 @@ mod tests {
                 "the SIGTERM probe inherited a non-default disposition: {}",
                 inherited_sigterm.handler
             );
-            let inherited_mask = current_thread_signal_mask();
+            let inherited_mask =
+                current_thread_signal_mask().expect("querying the thread signal mask");
             assert!(
                 !signal_is_blocked(&inherited_mask, SIGTERM),
                 "the SIGTERM probe inherited SIGTERM blocked: {inherited_mask:?}"
