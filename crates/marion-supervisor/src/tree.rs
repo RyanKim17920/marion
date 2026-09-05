@@ -418,6 +418,7 @@ impl Session {
     fn paint(&mut self, terminal: &mut Terminal<ScreenBackend>) {
         let tree = &self.tree;
         let focus = self.focus;
+        let selected = self.selected_summary();
         let _ = terminal.draw(|f| {
             let panes = tree::split(f.area());
             f.render_widget(
@@ -433,39 +434,122 @@ impl Session {
                 },
                 panes.actions,
             );
-            f.render_widget(Hint, panes.content);
+            f.render_widget(
+                Detail {
+                    node: selected,
+                    notice: None,
+                },
+                panes.content,
+            );
         });
+    }
+
+    /// The wire summary under the cursor. The tree row is a projection of it; the detail pane
+    /// wants the whole thing.
+    fn selected_summary(&self) -> Option<&NodeSummary> {
+        let id = &self.tree.selected()?.id;
+        self.nodes.iter().find(|n| n.agent_id.0 == *id)
     }
 }
 
-/// What the content pane says before anything is attached.
+/// What the content pane shows before anything is attached: **the selected node, spelled out.**
 ///
-/// A placeholder and named as one. §5.6's content pane is a node's terminal, and this screen
-/// deliberately does not open one until `Enter`: two panes both feeding a `marion_term::Term` would
-/// hold two [`marion_tui::MAX_SCROLLBACK`] budgets for a node the operator is only browsing past.
-struct Hint;
+/// The tree row is a state and a short label, and that is all a 44-column sidebar can carry. The
+/// rest of the [`NodeSummary`] — the harness and the version the greying is keyed on, whether the
+/// node has a display plane `Enter` can open, its depth, parent, bound and whole id — is here, in
+/// the pane that has the width. The whole id is the one line an operator copies: `marion attach`
+/// takes it.
+///
+/// Still not a terminal. §5.6's content pane is a node's grid, and this screen deliberately does
+/// not open one until `Enter`: two panes both feeding a `marion_term::Term` would hold two
+/// [`marion_tui::MAX_SCROLLBACK`] budgets for a node the operator is only browsing past.
+struct Detail<'a> {
+    /// `None` on an empty forest, which is a real state and is said as one.
+    node: Option<&'a NodeSummary>,
+    /// One line this screen wants the operator to read — a refused `Enter`, for instance. Drawn
+    /// here rather than printed, because a `eprintln!` under the alternate screen is erased by the
+    /// next frame before anyone sees it.
+    notice: Option<&'a str>,
+}
 
-impl ratatui::widgets::Widget for Hint {
+/// The pane's last row: every key this screen answers to, and what `Enter` will and will not open.
+const KEYS: &str = "enter open pane nodes only  j/k move  tab focus  q quit  ^] d detach";
+
+impl Detail<'_> {
+    fn lines(node: &NodeSummary) -> Vec<String> {
+        let version = node.harness_version.as_deref().unwrap_or("version unknown");
+        let surface = if node.pane {
+            "pane (Enter attaches)"
+        } else {
+            "headless (no display plane; Enter refuses, and so would `marion attach`)"
+        };
+        let parent = node
+            .parent_id
+            .as_ref()
+            .map_or("none (root)", |p| p.0.as_str());
+        let mut out = Vec::with_capacity(8);
+        if let Some(name) = &node.name {
+            out.push(format!("name     {name}"));
+        }
+        out.push(format!("type     {}", node.agent_type));
+        out.push(format!("harness  {} {version}", node.harness));
+        out.push(format!(
+            "state    {}  (reap: {})",
+            state_label(node.state, node.reap_state),
+            format!("{:?}", node.reap_state).to_lowercase()
+        ));
+        out.push(format!("surface  {surface}"));
+        out.push(format!("depth    {}   parent  {parent}", node.depth));
+        out.push(format!("timeout  {}s", node.timeout.0.as_secs()));
+        out.push(format!("id       {}", node.agent_id.0));
+        out
+    }
+}
+
+impl ratatui::widgets::Widget for Detail<'_> {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        for (i, line) in [
-            "enter  attach to the selected node",
-            "j / k  move        tab  focus        q  quit",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let Ok(i) = u16::try_from(i) else { break };
-            if i >= area.height {
-                break;
-            }
+        if area.height == 0 {
+            return;
+        }
+        let style = ratatui::style::Style::default;
+        let put = |buf: &mut ratatui::buffer::Buffer, y: u16, text: &str, style| {
             buf.set_stringn(
                 area.x.saturating_add(2),
-                area.y.saturating_add(i),
-                line,
+                area.y.saturating_add(y),
+                text,
                 area.width.saturating_sub(2) as usize,
-                ratatui::style::Style::default(),
+                style,
             );
+        };
+        let mut lines = match self.node {
+            Some(n) => Self::lines(n),
+            None => vec!["no nodes in this forest".into()],
+        };
+        if let Some(notice) = self.notice {
+            lines.push(String::new());
+            lines.push(notice.to_string());
         }
+        // The hints own the last row; the facts get every row above it.
+        let last = area.height - 1;
+        for (i, line) in lines.iter().enumerate() {
+            let Ok(y) = u16::try_from(i) else { break };
+            if y >= last {
+                break;
+            }
+            let bold = self.notice.is_some() && i + 1 == lines.len();
+            let s = if bold {
+                style().add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                style()
+            };
+            put(buf, y, line, s);
+        }
+        put(
+            buf,
+            last,
+            KEYS,
+            style().add_modifier(ratatui::style::Modifier::DIM),
+        );
     }
 }
 
@@ -668,6 +752,86 @@ mod tests {
         assert_eq!(row(&n).label, "reviewer");
         assert_eq!(short_id("root-claude"), "root-claude");
         assert_eq!(short_id(uuid), "5b04");
+    }
+
+    fn painted(area: ratatui::layout::Rect, w: impl ratatui::widgets::Widget) -> Vec<String> {
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        w.render(area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// **The content pane carries every fact the row cannot.** A row is a state and a short label;
+    /// the harness, its version, the surface, the depth, the parent, the bound and the whole id —
+    /// which is what `marion attach` wants typed — are all in `NodeSummary` and were shown nowhere.
+    /// The key hints stay, as the pane's last row, and say which nodes `Enter` can open.
+    #[test]
+    fn the_detail_pane_names_every_fact_the_row_cannot_carry() {
+        let mut n = summary(
+            "01a07275-5c4a-73ac-88f8-7df80dc5095c",
+            Harness::ClaudeCode,
+            false,
+            Some("2.1.261 (Claude Code)"),
+        );
+        n.parent_id = Some(AgentId("01a07275-5b04-78d7-8f77-ad154316f985".into()));
+        n.depth = 1;
+        n.agent_type = "claude-impl".into();
+        let area = ratatui::layout::Rect::new(0, 0, 76, 12);
+        let rows = painted(
+            area,
+            Detail {
+                node: Some(&n),
+                notice: None,
+            },
+        );
+        let text = rows.join("\n");
+        for fact in [
+            "claude-impl",
+            "claude-code 2.1.261 (Claude Code)",
+            "idle",
+            "headless",
+            "depth    1",
+            "01a07275-5b04-78d7-8f77-ad154316f985",
+            "900s",
+            "01a07275-5c4a-73ac-88f8-7df80dc5095c",
+        ] {
+            assert!(text.contains(fact), "`{fact}` is not in the pane:\n{text}");
+        }
+        let keys = rows.last().expect("a last row");
+        assert!(keys.contains("^] d"), "detach hint: {keys}");
+        assert!(keys.contains("pane nodes only"), "what Enter opens: {keys}");
+
+        // The version that was never read is said, not blanked.
+        n.harness_version = None;
+        n.pane = true;
+        let text = painted(
+            area,
+            Detail {
+                node: Some(&n),
+                notice: None,
+            },
+        )
+        .join("\n");
+        assert!(text.contains("version unknown"), "{text}");
+        assert!(text.contains("pane"), "{text}");
+
+        // An empty forest is a sentence, and the hints still show.
+        let rows = painted(
+            area,
+            Detail {
+                node: None,
+                notice: None,
+            },
+        );
+        assert!(rows[0].contains("no nodes"), "{rows:?}");
+        assert!(rows.last().unwrap().contains("q quit"), "{rows:?}");
     }
 
     /// A refresh must not move the cursor out from under the operator.

@@ -1127,6 +1127,10 @@ acceptance evidence, so every marker remains unchanged.
       `a_row_leads_with_its_state_so_the_column_clip_cannot_hide_it`,
       `an_unnamed_node_is_labelled_by_type_and_short_id_and_a_named_one_by_its_name`, and the L4.5
       snapshots re-accepted over the new rows.
+    - The content pane is a detail pane instead of a two-line hint: name, agent type, harness and
+      version (or `version unknown`), state with reap state, pane/headless surface, depth, parent,
+      timeout and the whole id, with the key hints as its last row saying `Enter` opens pane nodes
+      only and `^] d` detaches. `the_detail_pane_names_every_fact_the_row_cannot_carry`.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
