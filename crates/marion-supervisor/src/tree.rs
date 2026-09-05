@@ -107,17 +107,38 @@ pub fn key_of(node: &NodeSummary) -> (Harness, Option<&str>, Option<ExecutionSur
 
 /// One wire summary as one tree row.
 ///
-/// The label is the node's `name` where it has one and its id where it does not — §2's
-/// `node/rename` is what puts a name there, and until something calls it every node shows its id.
-/// A placeholder would be worse than the id: an operator can `marion attach` an id.
+/// The label is the node's `name` where it has one — §2's `node/rename` is what puts a name there —
+/// and its agent type plus [`short_id`] where it does not. Not the whole id: a UUID is wider than
+/// the tree column, and every id in one forest shares its leading time-ordered group, so the whole
+/// id told nodes apart by exactly the characters that were clipped. The full id is in the detail
+/// pane, where `marion attach` can be copied from.
 pub fn row(node: &NodeSummary) -> tree::Node {
+    let id = node.agent_id.0.as_str();
     tree::Node {
-        id: node.agent_id.0.clone(),
+        id: id.to_string(),
         parent: node.parent_id.as_ref().map(|p| p.0.clone()),
-        label: node.name.clone().unwrap_or_else(|| node.agent_id.0.clone()),
+        label: node
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("{} {}", node.agent_type, short_id(id))),
         state: state_label(node.state, node.reap_state),
         actions: actions_for(node),
     }
+}
+
+/// The part of an id that tells one node from its siblings.
+///
+/// An `AgentId` is a UUIDv7: the first group is a timestamp every node spawned in the same second
+/// shares, so the second group is the earliest one that varies. Anything not shaped like a UUID —
+/// a test fixture's `root-claude` — is shown whole, because guessing at its structure would hide
+/// characters the caller chose.
+pub fn short_id(id: &str) -> &str {
+    let uuid_shaped = id.len() == 36
+        && id.is_ascii()
+        && id
+            .char_indices()
+            .all(|(i, c)| (c == '-') == matches!(i, 8 | 13 | 18 | 23));
+    if uuid_shaped { &id[9..13] } else { id }
 }
 
 /// A node's state in one short word.
@@ -632,6 +653,21 @@ mod tests {
                 n.agent_id.0
             );
         }
+    }
+
+    /// A UUID does not fit the tree column and every node in one forest shares its first eight
+    /// characters, so an unnamed node is labelled by what does tell nodes apart: its agent type and
+    /// the second group of its id. A name, once given, replaces both; an id that is not a UUID is
+    /// shown whole.
+    #[test]
+    fn an_unnamed_node_is_labelled_by_type_and_short_id_and_a_named_one_by_its_name() {
+        let uuid = "01a07275-5b04-78d7-8f77-ad154316f985";
+        let mut n = summary(uuid, Harness::Codex, false, None);
+        assert_eq!(row(&n).label, "codex-impl 5b04");
+        n.name = Some("reviewer".into());
+        assert_eq!(row(&n).label, "reviewer");
+        assert_eq!(short_id("root-claude"), "root-claude");
+        assert_eq!(short_id(uuid), "5b04");
     }
 
     /// A refresh must not move the cursor out from under the operator.

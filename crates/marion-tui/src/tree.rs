@@ -76,7 +76,8 @@ pub struct Node {
     /// §7.5's immutable parent, or `None` for a root. A parent naming a node not in the same
     /// snapshot is treated as `None` — see the module doc.
     pub parent: Option<String>,
-    /// What to show. The node's name where it has one, its id where it does not.
+    /// What to show. The node's name where it has one; its agent type and a short id where it
+    /// does not. Never the whole id: a UUID is wider than the tree column.
     pub label: String,
     /// The node's state, already rendered. One short word.
     pub state: String,
@@ -195,7 +196,9 @@ impl Tree {
                 let n = &self.nodes[i];
                 let indent = "  ".repeat(d as usize);
                 let edge = if d == 0 { "" } else { "└ " };
-                format!("{indent}{edge}{} [{}]", n.label, n.state)
+                // State first. It is the fact an operator scans the column for, and a label that
+                // runs past the column edge must clip itself rather than the state.
+                format!("{indent}{edge}[{}] {}", n.state, n.label)
             })
             .collect()
     }
@@ -267,11 +270,12 @@ pub fn nav(bytes: &[u8]) -> Vec<Nav> {
 /// Fixed rather than proportional. A tree pane that grew with the window would resize the *content*
 /// pane on every drag, and the content pane is a node's pty — §5.3 gives it one `TIOCSWINSZ` per
 /// change and a harness repaints its whole screen for each.
-/// 36, which is what `codex-unversioned [spawning]` needs at depth 2 — the widest row §6.1's
-/// default `max_depth` of 3 can produce from marion's own state words. An `AgentId` is a UUID and
-/// does not fit at any width worth spending on a sidebar; the tree is navigated with the cursor,
-/// not by reading ids back, and `Enter` never asks the operator to type one.
-pub const TREE_COLUMN: u16 = 36;
+/// 44, which is what `    └ [blocked:permission] claude-impl 5b04` needs at depth 2 — marion's
+/// longest state word, a typical agent type and the short id, at the deepest row §6.1's default
+/// `max_depth` of 3 can produce. An `AgentId` is a UUID and does not fit at any width worth
+/// spending on a sidebar; the tree is navigated with the cursor, not by reading ids back, and
+/// `Enter` never asks the operator to type one. The detail pane shows the whole id.
+pub const TREE_COLUMN: u16 = 44;
 
 /// The tree screen's three regions.
 ///
@@ -467,6 +471,14 @@ mod tests {
             node("first", Some("r")),
         ]);
         assert_eq!(ids(&t), ["r", "second", "first"]);
+    }
+
+    /// The state leads the row. A UUID label is wider than the column, so a state written after
+    /// it was clipped off on every real node; written first it survives any label length.
+    #[test]
+    fn a_row_leads_with_its_state_so_the_column_clip_cannot_hide_it() {
+        let t = Tree::new(vec![node("a", None), node("kid", Some("a"))]);
+        assert_eq!(t.lines(), ["[Idle] a", "  └ [Idle] kid"]);
     }
 
     #[test]

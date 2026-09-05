@@ -3,11 +3,11 @@ source: crates/marion-supervisor/tests/l45_tree.rs
 expression: "report(&tree, true)"
 ---
 --- 96x12, tree focused ---
-root-claude [running]
-  └ pane-claude [idle]
-  └ codex-146 [blocked:permission]
-    └ codex-unversioned [spawning]
-orphan-gemini [exited:ok]
+[running] impl root-claude
+  └ [idle] impl pane-claude
+  └ [blocked:permission] impl codex-146
+    └ [spawning] impl codex-unversioned
+[exited:ok] impl orphan-gemini
 
 
 
@@ -16,11 +16,11 @@ orphan-gemini [exited:ok]
 
  steer  interrupt  fork  resume  view  permissions  elicitation  set_model  token_deltas  usage
 --- tree column, one line per row, styled ---
-Style::new().fg(Color::Reset).bg(Color::Reset)  "root-claude [running]"
-Style::new().fg(Color::Reset).bg(Color::Reset).reversed()  "  └ pane-claude [idle]"
-Style::new().fg(Color::Reset).bg(Color::Reset)  "  └ codex-146 [blocked:permission]"
-Style::new().fg(Color::Reset).bg(Color::Reset)  "    └ codex-unversioned [spawning]"
-Style::new().fg(Color::Reset).bg(Color::Reset)  "orphan-gemini [exited:ok]"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "[running] impl root-claude"
+Style::new().fg(Color::Reset).bg(Color::Reset).reversed()  "  └ [idle] impl pane-claude"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "  └ [blocked:permission] impl codex-146"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "    └ [spawning] impl codex-unversioned"
+Style::new().fg(Color::Reset).bg(Color::Reset)  "[exited:ok] impl orphan-gemini"
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""

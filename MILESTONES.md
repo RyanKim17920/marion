@@ -1118,6 +1118,16 @@ acceptance evidence, so every marker remains unchanged.
     with the terminal still restored instead of re-entering raw mode. Covered by
     `a_termination_during_the_stop_wins_after_continue_before_raw_reentry`; M3 remains `[partial]`.
 
+    **The tree screen's 2026-09-05 UX pass moves no milestone marker.** A screenshot review of
+    `marion tree` at 80x24, 120x40 and 160x50 found the screen technically complete and
+    operationally mute, and each fix below is one microcommit with its own render-to-buffer test;
+    M3 stays `[partial]` and M5 clause 3's greying is unchanged in substance.
+    - Rows lead with the state and label an unnamed node `agent_type short-id` instead of its
+      UUID, whose state the 36-column tree had clipped on every real node; the column is 44 now.
+      `a_row_leads_with_its_state_so_the_column_clip_cannot_hide_it`,
+      `an_unnamed_node_is_labelled_by_type_and_short_id_and_a_named_one_by_its_name`, and the L4.5
+      snapshots re-accepted over the new rows.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

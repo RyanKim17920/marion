@@ -47,7 +47,8 @@ fn node(
         agent_id: AgentId(id.into()),
         parent_id: parent.map(|p| AgentId(p.into())),
         name: None,
-        agent_type: "codex-impl".into(),
+        // Short, so the state-first row with the whole (non-UUID) id fits the column at depth 2.
+        agent_type: "impl".into(),
         harness,
         harness_version: version.map(str::to_string),
         depth: 0,
