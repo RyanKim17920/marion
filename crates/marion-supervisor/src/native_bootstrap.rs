@@ -436,18 +436,10 @@ impl DirectNativeRequestContext {
         self.native_wire_version
     }
 
-    #[expect(
-        dead_code,
-        reason = "reserved for the first verified native command factory"
-    )]
     pub(crate) fn opaque_tail(&self) -> &[OsString] {
         &self.opaque_tail
     }
 
-    #[expect(
-        dead_code,
-        reason = "reserved for the first verified native command factory"
-    )]
     pub(crate) fn terminal_profile(&self) -> &OsStr {
         &self.terminal_profile
     }
@@ -3340,6 +3332,8 @@ pub enum BootstrapError {
     LaunchResultExpired,
     #[error("native bootstrap authorization was refused")]
     AuthorizationRefused,
+    #[error("native command could not be prepared: {0}")]
+    NativeCommand(String),
     #[error("native bootstrap terminal verification failed: {0}")]
     TerminalVerification(String),
     #[error("native pane claim failed: {0}")]

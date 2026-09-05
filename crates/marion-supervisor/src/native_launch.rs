@@ -8,10 +8,18 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use marion_core::NativeFacadeDescriptor;
-use marion_core::contract::AgentId;
-use marion_harness::{NativeInvocation, NativeTerminalGeometry};
+use marion_core::agent_type::AgentType;
+use marion_core::harness::Harness;
+use marion_core::{NativeFacadeDescriptor, contract::AgentId};
+use marion_harness::mcp_bridge::{
+    AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, MarionMcpBridge,
+};
+use marion_harness::{
+    NativeEnvironmentView, NativeInjectionAdapter, NativeInvocation, NativeNodeContext,
+    NativeProcessBase, NativeTerminalGeometry, assemble_native,
+};
 
+use crate::native_binding::resolve_declared_executable;
 use crate::native_bootstrap::{
     BootstrapError, ConsumedNativeRequest, DirectNativeRequestContext, NativeBootstrapHandler,
     NativeClaimant, NativeLaunchDeadline, NativeLaunchTicket, PendingNativeLaunchReceipt,
@@ -38,6 +46,135 @@ pub(crate) trait NativeCommandFactory: Send + Sync + 'static {
         geometry: NativeTerminalGeometry,
         agent_id: &AgentId,
     ) -> Result<PreparedNativeCommand, BootstrapError>;
+}
+
+/// The marion tools a native root may call through its injected MCP server, in marion's own
+/// spelling. Each vendor adapter maps them to that harness's spelling; the registry-driven
+/// adapters own that translation, not this factory.
+pub const NATIVE_ROOT_MARION_TOOLS: &[&str] = &["spawn", "wait", "status"];
+
+/// Where the factory finds the vendor injection adapter for a selected harness.
+///
+/// A plain function pointer rather than a registry method, so the lookup is data the composition
+/// root supplies: production hands in the registry-driven table once it exists, and `None` keeps
+/// every launch on that harness refused until then.
+pub type NativeAdapterLookup = fn(Harness) -> Option<&'static dyn NativeInjectionAdapter>;
+
+/// The production [`NativeCommandFactory`]: resolve the declared executable on the **client's**
+/// `PATH`, ask the opaque adapter for its injection, and let the generic assembler place
+/// `program + prefix + opaque_tail`. This type never inspects the tail.
+pub(crate) struct ProductionNativeCommandFactory {
+    env: crate::run::Env,
+    adapter_for: NativeAdapterLookup,
+}
+
+impl ProductionNativeCommandFactory {
+    pub(crate) fn new(env: crate::run::Env, adapter_for: NativeAdapterLookup) -> Self {
+        Self { env, adapter_for }
+    }
+
+    /// The declaration of marion's own MCP server for this node — the same keys a managed node's
+    /// declaration carries (`claude_code::mcp_config_json`), minus the readiness file a native
+    /// session has no use for, and minus a node token no owner has minted yet.
+    fn bridge_for(
+        &self,
+        agent_id: &AgentId,
+        agent_type: &AgentType,
+        repo: &std::path::Path,
+    ) -> MarionMcpBridge {
+        let mut env = vec![
+            (OsString::from("MARION_REPO"), repo.as_os_str().to_owned()),
+            (
+                OsString::from("MARION_STATE_DIR"),
+                self.env.state.as_os_str().to_owned(),
+            ),
+            (
+                OsString::from(AUTH_ENV),
+                OsString::from(self.env.auth.as_wire()),
+            ),
+            (
+                OsString::from(AGENT_ID_ENV),
+                OsString::from(agent_id.0.as_str()),
+            ),
+            (
+                OsString::from(AGENT_TYPE_ENV),
+                OsString::from(agent_type.name.as_str()),
+            ),
+            (OsString::from(DEPTH_ENV), OsString::from("0")),
+        ];
+        if let Some(base_url) = &self.env.base_url {
+            env.push((OsString::from(BASE_URL_ENV), OsString::from(base_url)));
+        }
+        MarionMcpBridge {
+            program: self.env.bridge.as_os_str().to_owned(),
+            args: vec![OsString::from("mcp")],
+            env,
+        }
+    }
+}
+
+fn native_command_error(error: impl std::fmt::Display) -> BootstrapError {
+    BootstrapError::NativeCommand(error.to_string())
+}
+
+impl NativeCommandFactory for ProductionNativeCommandFactory {
+    fn prepare(
+        &self,
+        selected: &crate::native_intent::SelectedNativeFacade<'_>,
+        context: &DirectNativeRequestContext,
+        geometry: NativeTerminalGeometry,
+        agent_id: &AgentId,
+    ) -> Result<PreparedNativeCommand, BootstrapError> {
+        let lane = selected.native_lane();
+        let environment = context.environment();
+        let cwd = context.canonical_project().to_path_buf();
+        // The client's PATH, never this detached process's: the operator's shell decides which
+        // `claude` they get, exactly as it would without marion in front.
+        let program = resolve_declared_executable(lane.executable(), &cwd, environment)
+            .map_err(native_command_error)?;
+        let agent_type = lane.agent_type();
+        let adapter = (self.adapter_for)(agent_type.harness).ok_or_else(|| {
+            native_command_error(format!(
+                "no native injection adapter is registered for harness {:?}",
+                agent_type.harness.as_str()
+            ))
+        })?;
+        let agent_dir = self.env.project_dir.agent(agent_id);
+        let bridge = self.bridge_for(agent_id, agent_type, &cwd);
+        let injection = adapter
+            .prepare_native(&NativeNodeContext {
+                bridge: &bridge,
+                document_dir: agent_dir.path(),
+                allowed_marion_tools: NATIVE_ROOT_MARION_TOOLS,
+                environment: NativeEnvironmentView::validate(environment)
+                    .map_err(native_command_error)?,
+            })
+            .map_err(native_command_error)?;
+        let prepared = assemble_native(
+            NativeProcessBase {
+                program,
+                user_argv: context.opaque_tail().to_vec(),
+                env: environment.to_vec(),
+                cwd,
+                geometry,
+            },
+            injection,
+        )
+        .map_err(native_command_error)?;
+        if !prepared.documents.is_empty() {
+            // Fail closed rather than write anything: the dirfd-relative artifact executor the
+            // runtime design requires is not in this build, and an adapter that needs documents
+            // must not get a less careful writer by default.
+            return Err(native_command_error(
+                "native document materialization is not available in this build",
+            ));
+        }
+        Ok(PreparedNativeCommand {
+            invocation: prepared.invocation,
+            cast_path: agent_dir.pty_cast(),
+            terminal_profile: context.terminal_profile().to_owned(),
+        })
+    }
 }
 
 pub(crate) struct NativeLaunchHandler {
@@ -286,6 +423,7 @@ impl NativeBootstrapHandler for NativeLaunchHandler {
 #[cfg(all(test, unix))]
 mod tests {
     use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
@@ -401,6 +539,253 @@ mod tests {
                 result
             })
         }
+    }
+
+    const ATLAS: marion_core::NativeFacadeDescriptor = marion_core::NativeFacadeDescriptor {
+        identity: marion_core::VendorIdentity::new("atlas"),
+        command: "atlas",
+        aliases: &[],
+        native: Some(marion_core::Lane::new(
+            true,
+            marion_core::NativeLane::new(
+                "atlas-cli",
+                "codex",
+                marion_core::NativeAdapterId::new("atlas-native"),
+            ),
+        )),
+        structured: None,
+    };
+    const ATLAS_DESCRIPTORS: &[marion_core::NativeFacadeDescriptor] = &[ATLAS];
+
+    /// The adapter sees only the semantic node context. It proves that by echoing the bridge
+    /// program it was handed into its prefix, which the factory must place before the tail.
+    struct FixtureAdapter;
+
+    impl marion_harness::NativeInjectionAdapter for FixtureAdapter {
+        fn prepare_native(
+            &self,
+            context: &marion_harness::NativeNodeContext<'_>,
+        ) -> Result<NativeInjection, marion_harness::NativeInjectionError> {
+            assert_eq!(context.allowed_marion_tools, NATIVE_ROOT_MARION_TOOLS);
+            assert!(
+                context
+                    .environment
+                    .get(std::ffi::OsStr::new("PATH"))
+                    .is_some(),
+                "the adapter must see the client's PATH through the validated view"
+            );
+            let declared = |name: &str| {
+                context
+                    .bridge
+                    .env
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_else(|| panic!("the bridge declaration carries {name}"))
+            };
+            assert_eq!(context.bridge.args, [OsString::from("mcp")]);
+            assert_eq!(declared("MARION_DEPTH"), "0");
+            assert_eq!(declared("MARION_AUTH"), "canned");
+            assert_eq!(declared("MARION_BASE_URL"), "http://127.0.0.1:8099/v1");
+            Ok(NativeInjection {
+                argv_prefix: vec![
+                    OsString::from("--marion-mcp"),
+                    context.bridge.program.clone(),
+                    OsString::from("--marion-documents"),
+                    context.document_dir.as_os_str().to_owned(),
+                    OsString::from("--marion-agent"),
+                    declared(marion_harness::AGENT_ID_ENV),
+                    OsString::from("--marion-repo"),
+                    declared("MARION_REPO"),
+                    OsString::from("--marion-agent-type"),
+                    declared(marion_harness::AGENT_TYPE_ENV),
+                ],
+                env_overlay: vec![(OsString::from("ATLAS_INJECTED"), OsString::from("1"))],
+                documents: vec![],
+            })
+        }
+    }
+
+    static FIXTURE_ADAPTER: FixtureAdapter = FixtureAdapter;
+
+    fn fixture_adapter(
+        harness: marion_core::Harness,
+    ) -> Option<&'static dyn marion_harness::NativeInjectionAdapter> {
+        (harness == marion_core::Harness::Codex).then_some(&FIXTURE_ADAPTER)
+    }
+
+    fn no_adapter(
+        _: marion_core::Harness,
+    ) -> Option<&'static dyn marion_harness::NativeInjectionAdapter> {
+        None
+    }
+
+    fn factory_env(work: &std::path::Path) -> crate::run::Env {
+        crate::run::Env {
+            project_dir: marion_core::paths::ProjectDir::new(
+                &work.join("state"),
+                &work.join("project"),
+            ),
+            state: work.join("state"),
+            bridge: PathBuf::from("/opt/marion/bin/marion-supervisor"),
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            auth: marion_harness::Auth::Canned,
+        }
+    }
+
+    fn fixture_executable(work: &std::path::Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = work.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("atlas-cli");
+        std::fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (bin, executable)
+    }
+
+    fn atlas_context(
+        project: &std::path::Path,
+        tail: Vec<OsString>,
+        environment: Vec<(OsString, OsString)>,
+    ) -> DirectNativeRequestContext {
+        DirectNativeRequestContext::new(
+            project.to_path_buf(),
+            OsString::from("atlas"),
+            tail,
+            OsString::from_vec(b"xterm-\xf0".to_vec()),
+            crate::native_bootstrap::NATIVE_WIRE_VERSION,
+        )
+        .with_environment(environment)
+    }
+
+    /// Mutation: reorder prefix and tail, parse or normalize the tail, resolve the executable on
+    /// the supervisor's own PATH, or let the adapter see anything but the node context.
+    #[test]
+    fn production_factory_assembles_program_prefix_then_opaque_tail_byte_exact() {
+        let work = marion_testsupport::scratch("native-factory-byte-exact");
+        let (bin, executable) = fixture_executable(&work);
+        let project = work.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let env = factory_env(&work);
+        let agent_id = AgentId("019f81eb-36a4-7000-8000-000000000101".into());
+        let registry = marion_core::NativeFacadeRegistry::new(ATLAS_DESCRIPTORS).unwrap();
+        let selected = crate::native_intent::select_test_native(&registry, "atlas").unwrap();
+        let tail = vec![
+            OsString::from("--"),
+            OsString::new(),
+            OsString::from_vec(vec![0xff, 0x80, b'x']),
+            OsString::from("--marion-mcp"),
+        ];
+        let context = atlas_context(
+            &project,
+            tail.clone(),
+            vec![
+                (OsString::from("PATH"), bin.as_os_str().to_owned()),
+                (OsString::from("SHELL"), OsString::from("/bin/zsh")),
+            ],
+        );
+        let geometry = NativeTerminalGeometry {
+            cols: 103,
+            rows: 41,
+            xpixel: 7,
+            ypixel: 11,
+        };
+
+        let prepared = ProductionNativeCommandFactory::new(env.clone(), fixture_adapter)
+            .prepare(&selected, &context, geometry, &agent_id)
+            .expect("the fixture facade assembles");
+
+        let agent_dir = env.project_dir.agent(&agent_id);
+        assert_eq!(prepared.invocation.program, executable.as_os_str());
+        let mut expected_args = vec![
+            OsString::from("--marion-mcp"),
+            OsString::from("/opt/marion/bin/marion-supervisor"),
+            OsString::from("--marion-documents"),
+            agent_dir.path().as_os_str().to_owned(),
+            OsString::from("--marion-agent"),
+            OsString::from(agent_id.0.as_str()),
+            OsString::from("--marion-repo"),
+            project.as_os_str().to_owned(),
+            OsString::from("--marion-agent-type"),
+            OsString::from("codex-impl"),
+        ];
+        expected_args.extend(tail);
+        assert_eq!(prepared.invocation.args, expected_args);
+        assert_eq!(prepared.invocation.cwd, project);
+        assert_eq!(prepared.invocation.geometry, geometry);
+        assert!(prepared.invocation.requires_env_clear());
+        assert_eq!(
+            prepared.invocation.env,
+            vec![
+                (OsString::from("PATH"), bin.as_os_str().to_owned()),
+                (OsString::from("SHELL"), OsString::from("/bin/zsh")),
+                (OsString::from("ATLAS_INJECTED"), OsString::from("1")),
+            ],
+            "the child environment is the client's plus the adapter overlay, nothing else"
+        );
+        assert_eq!(prepared.cast_path, agent_dir.pty_cast());
+        assert_eq!(
+            prepared.terminal_profile,
+            OsString::from_vec(b"xterm-\xf0".to_vec())
+        );
+    }
+
+    /// Mutation: fall back to the supervisor's PATH, or launch without an adapter. Both refusals
+    /// must happen before any filesystem artifact appears under the agent directory.
+    #[test]
+    fn production_factory_refuses_without_a_client_resolvable_executable_or_an_adapter() {
+        let work = marion_testsupport::scratch("native-factory-refusals");
+        let (bin, _executable) = fixture_executable(&work);
+        let project = work.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let env = factory_env(&work);
+        let agent_id = AgentId("019f81eb-36a4-7000-8000-000000000102".into());
+        let registry = marion_core::NativeFacadeRegistry::new(ATLAS_DESCRIPTORS).unwrap();
+        let selected = crate::native_intent::select_test_native(&registry, "atlas").unwrap();
+        let geometry = NativeTerminalGeometry {
+            cols: 80,
+            rows: 24,
+            xpixel: 0,
+            ypixel: 0,
+        };
+
+        let unresolvable = atlas_context(
+            &project,
+            vec![],
+            vec![(OsString::from("PATH"), work.join("empty").into_os_string())],
+        );
+        assert!(matches!(
+            ProductionNativeCommandFactory::new(env.clone(), fixture_adapter).prepare(
+                &selected,
+                &unresolvable,
+                geometry,
+                &agent_id
+            ),
+            Err(BootstrapError::NativeCommand(_))
+        ));
+
+        let resolvable = atlas_context(
+            &project,
+            vec![],
+            vec![(OsString::from("PATH"), bin.as_os_str().to_owned())],
+        );
+        assert!(matches!(
+            ProductionNativeCommandFactory::new(env.clone(), no_adapter).prepare(
+                &selected,
+                &resolvable,
+                geometry,
+                &agent_id
+            ),
+            Err(BootstrapError::NativeCommand(_))
+        ));
+
+        assert!(
+            matches!(
+                std::fs::metadata(env.project_dir.agent(&agent_id).path()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            ),
+            "a refused preparation created the agent directory"
+        );
     }
 
     /// Mutation: omit writer commit or let the prepared lifecycle start before the ACK boundary.

@@ -1012,6 +1012,20 @@ acceptance evidence, so every marker remains unchanged.
     the disabled native bootstrap service, so nothing consumes the environment yet; M3 remains
     `[partial]`.
 
+    **The production native command factory in this commit moves no milestone marker.**
+    `ProductionNativeCommandFactory` resolves the descriptor's declared executable on the client's
+    `PATH` (never the supervisor's), builds the node's marion MCP bridge declaration, hands the
+    opaque adapter only `NativeNodeContext`, and lets `assemble_native` place
+    `program + prefix + opaque_tail` with the client environment plus overlay; documents are
+    refused fail-closed until the dirfd-relative artifact executor exists. The adapter lookup is a
+    constructor argument (`NativeAdapterLookup`) so the registry-driven adapters can be supplied
+    later without a vendor branch here. Covered by
+    `production_factory_assembles_program_prefix_then_opaque_tail_byte_exact` (tail with `--`, an
+    empty argument, invalid UTF-8, and a spelling that collides with the prefix) and
+    `production_factory_refuses_without_a_client_resolvable_executable_or_an_adapter`. The factory
+    is still production-dark: no serving path constructs it, and the production descriptor slice is
+    empty. M3 remains `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
