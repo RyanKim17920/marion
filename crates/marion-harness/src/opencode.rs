@@ -19,6 +19,9 @@ use serde_json::{Value, json};
 
 // The bridge's env contract, imported for the same reason gemini imports it: one spelling.
 use crate::auth::Auth;
+use crate::grammar::{
+    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+};
 use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
@@ -161,10 +164,56 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Always,
         },
     ],
-    stream: None,
+    stream: Some(&STREAM),
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",
+};
+
+/// How an `opencode run --pure --format json` stream is read (`tests/fixtures/s13/`).
+///
+/// The event set is closed and measured: `step_start | step_finish | text | reasoning | tool_use |
+/// error`. **There is no terminal frame** — the stream simply ends when the session goes idle — so
+/// this is a fold over whatever arrived and nothing here waits for a last event. `tool_use` fires
+/// **only on terminal states** (`completed` / `error`) and carries the call's `input` under
+/// `part.state.input`, so the verdict is on the call unit itself, and a state that is neither is
+/// one this harness has not been measured emitting.
+///
+/// **opencode is the one harness whose refusal shape is recorded rather than constructed**: S13
+/// measured `{"status":"error","error":"The user rejected permission to use this specific tool
+/// call."}` on the tool part, with the run continuing and exiting 0 — the silent success §6.1 step
+/// 8 exists to refuse, which is why a refused `report` fails the run here and reads no narrative.
+/// `error` frames carry `{name, data:{message, …}}`, measured arriving with **exit 1 and an empty
+/// stderr**, so the stream is the only place that failure is described.
+pub const STREAM: StreamGrammar = StreamGrammar {
+    call: Where {
+        frame: &[Cond::Eq("/type", "tool_use")],
+        each: None,
+        unit: &[],
+    },
+    name: Name::Prefixed("/part/tool"),
+    args: "/part/state/input",
+    pairing: Pairing::SameUnit {
+        id: None,
+        verdict: Verdict::Terminal {
+            path: "/part/state/status",
+            ok: "completed",
+            err: "error",
+            words: &["/part/state/error"],
+            fallback: "the tool part carried no message",
+        },
+    },
+    refused_report: OnRefusedReport::FailWithoutNarrative,
+    failures: &[Failure::Frame {
+        at: Where {
+            frame: &[Cond::Eq("/type", "error")],
+            each: None,
+            unit: &[],
+        },
+        words: &["/error/data/message", "/error/name"],
+        fallback: "the child's stream carried an error frame",
+    }],
+    file_changes: None,
 };
 
 /// The MCP server alias. opencode exposes MCP tools to the model as `<serverName>_<toolName>`, so

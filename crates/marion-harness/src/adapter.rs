@@ -23,6 +23,7 @@ use crate::claude_code::{self, McpEnv};
 use crate::codex;
 use crate::copilot;
 use crate::gemini;
+use crate::grammar;
 use crate::invocation::Invocation;
 use crate::mcp_bridge;
 use crate::opencode;
@@ -483,7 +484,27 @@ pub trait HarnessAdapter {
     ///
     /// A pure function of bytes: it must never block, and in particular must never wait for a
     /// terminal frame, because opencode emits none at all (`tests/fixtures/s13/`).
-    fn parse_stream(&self, stdout: &str, exit: ChildExit) -> StreamOutcome;
+    ///
+    /// The default reads the row's [`spec::HarnessSpec::stream`] grammar in this harness's own
+    /// spelling of marion's tools. A row with no grammar and no override is **a failure in the
+    /// outcome itself**, never an empty reading: a reader that finds nothing looks exactly like a
+    /// run that reported nothing, and §12's silent-failure family is the one thing this seam must
+    /// not admit. `exit` is unused by every row: each of the five measured harnesses states its
+    /// verdict in-stream (or, codex, not at all), and the exit code stays the supervisor's to
+    /// record.
+    fn parse_stream(&self, stdout: &str, exit: ChildExit) -> StreamOutcome {
+        let _ = exit;
+        match harness_spec(self.harness()).stream {
+            Some(g) => grammar::parse_stream(g, stdout, &self.marion_tool_name("")),
+            None => StreamOutcome {
+                failure: Some(format!(
+                    "{}: marion has no grammar for this harness's stream and read none of it",
+                    self.harness()
+                )),
+                ..StreamOutcome::default()
+            },
+        }
+    }
 
     /// This harness's spelling of one of marion's tools, for **compiling into a prompt**
     /// (§3.1 item 1).
@@ -584,7 +605,15 @@ pub trait HarnessAdapter {
     /// `report` defect fixed in `7ff470e` stayed invisible — every refusal marion started issuing
     /// still read as evidence the run had worked. So each call carries its [`CallOutcome`], and
     /// what that outcome can and cannot see is documented there.
-    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall>;
+    ///
+    /// The default reads the row's grammar; a row with no grammar shows no calls, which is what
+    /// §6.1 step 8's gate refuses — loudly, and by name, one layer up.
+    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
+        match harness_spec(self.harness()).stream {
+            Some(g) => grammar::marion_calls(g, stdout, &self.marion_tool_name("")),
+            None => Vec::new(),
+        }
+    }
 
     /// The verbs alone, for callers that only ask *which* verbs were reached for.
     ///
@@ -802,13 +831,6 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         }
     }
 
-    /// Failure comes off the run's own `result` frame; the exit code is not consulted, because on
-    /// this surface a non-zero exit is already the supervisor's to record and 2.1.220 reports its
-    /// own errors in-band as `is_error`.
-    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
-        claude_code::parse_stream(stdout, &self.marion_tool_name("report"))
-    }
-
     fn marion_tool_name(&self, tool: &str) -> String {
         format!("mcp__marion__{tool}")
     }
@@ -851,12 +873,6 @@ impl HarnessAdapter for ClaudeCodeAdapter {
     /// [`Self::axes`] the row renders, so §6.7's audit record and the flag cannot disagree.
     fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
         Ok(self.axes(spec)?.allowed)
-    }
-
-    /// The prefix is derived from this adapter's own `marion_tool_name`, so the reader and the
-    /// compiler of the name can never disagree about the spelling.
-    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
-        claude_code::marion_calls(stdout, &self.marion_tool_name(""))
     }
 }
 
@@ -6260,7 +6276,13 @@ mod tests {
                 "s9/can-use-tool-deny.stdout.jsonl",
                 fixture!("s9/can-use-tool-deny.stdout.jsonl"),
                 outcome(Some("s9 probe: a verb the root may not use"), None),
-                refused("report", "the result frame carried no message"),
+                // The recording carries the refusal as a **string** `content`, which the reader
+                // this grammar replaced read past (it joined array blocks only) and reported as
+                // "the result frame carried no message". The grammar reads the words.
+                refused(
+                    "report",
+                    "marion: no permission answerer in M1; the root's Blocked bound expired",
+                ),
             ),
             (
                 Harness::Copilot,

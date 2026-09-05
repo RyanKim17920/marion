@@ -19,6 +19,9 @@ use marion_core::harness::Harness;
 
 // The bridge's own env-var contract, imported rather than respelled — see [`BridgeEnv`].
 use crate::auth::Auth;
+use crate::grammar::{
+    Cond, Name, OnRefusedReport, Pairing, PathList, StreamGrammar, Verdict, Where,
+};
 use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
@@ -103,10 +106,59 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         val: Val::Under(""),
         when: When::Canned,
     }],
-    stream: None,
+    stream: Some(&STREAM),
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",
+};
+
+/// How a `codex exec --json` stream is read (`tests/fixtures/s6/`).
+///
+/// Codex is the one harness that does **not** name marion's verbs by a prefixed identifier: an
+/// `mcp_tool_call` item carries `server` and `tool` as two fields, so the row selects marion's
+/// server and reads the bare verb — a substring scan for `mcp__marion__` would find nothing here.
+///
+/// **One call is two frames of the same item, and the later one revises the earlier.**
+/// `exec-mcp-report.stream.jsonl` records `item.started` with `"status":"in_progress"` and then
+/// `item.completed` with `"status":"completed"`, so the item's `id` keys the call and the last
+/// frame for it wins — the reader this replaces once counted both. `status` is the verdict and
+/// `error` the words; only the success spelling is recorded, so anything else terminal is a
+/// refusal rather than an unknown.
+///
+/// **No failure claim of its own**: codex emits a terminal item but no verdict marion reads, so
+/// the contract's status comes from the reported narrative and the exit code, as it always has.
+/// `file_change` items are recorded as corroboration; git is the authority.
+pub const STREAM: StreamGrammar = StreamGrammar {
+    call: Where {
+        frame: &[
+            Cond::Eq("/item/type", "mcp_tool_call"),
+            Cond::Eq("/item/server", MCP_ALIAS),
+        ],
+        each: None,
+        unit: &[],
+    },
+    name: Name::Verb("/item/tool"),
+    args: "/item/arguments",
+    pairing: Pairing::SameUnit {
+        id: Some("/item/id"),
+        verdict: Verdict::Status {
+            path: "/item/status",
+            ok: "completed",
+            pending: &["in_progress"],
+            words: &["/item/error"],
+        },
+    },
+    refused_report: OnRefusedReport::Record,
+    failures: &[],
+    file_changes: Some(PathList {
+        at: Where {
+            frame: &[Cond::Eq("/item/type", "file_change")],
+            each: None,
+            unit: &[],
+        },
+        list: "/item/changes",
+        path: "/path",
+    }),
 };
 
 /// The sandbox every codex node marion generates a config for runs in — and **this harness's whole
@@ -335,6 +387,10 @@ pub fn bridge_env_pairs(env: &BridgeEnv) -> Vec<(String, String)> {
     }
     pairs
 }
+
+/// The MCP server alias: the `marion` of `[mcp_servers.marion]`, and the `server` an
+/// `mcp_tool_call` item names ([`STREAM`]). One spelling for the document and the reader.
+pub const MCP_ALIAS: &str = "marion";
 
 /// The config key `[mcp_servers.marion]` sits at, as a dotted path.
 ///

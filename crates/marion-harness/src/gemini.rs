@@ -19,6 +19,9 @@ use serde_json::{Value, json};
 use marion_core::harness::Harness;
 
 use crate::auth::Auth;
+use crate::grammar::{
+    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+};
 use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV as MARION_BASE_URL_ENV, DEPTH_ENV,
     NODE_TOKEN_ENV, READY_FILE_ENV,
@@ -91,10 +94,82 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Canned,
         },
     ],
-    stream: None,
+    stream: Some(&STREAM),
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",
+};
+
+/// How a `gemini --output-format stream-json` stream is read (`tests/fixtures/s12/`).
+///
+/// The event set is closed and measured: `init | message | tool_use | tool_result | error |
+/// result`. A call is a `tool_use` frame whose `tool_name` carries the `mcp_<server>_` spelling;
+/// its result is a separate `tool_result` paired by `tool_id` — a pairing S12 recorded with the two
+/// ids redacted independently, so it is the only reading the field name admits and is stated here
+/// so that whoever next records a gemini run knows the fixture owes an unredacted pair. Only
+/// `"success"` was ever captured for `tool_result.status`, so every other spelling is a refusal.
+///
+/// **The exit code is not the verdict, and that is a measurement**: S12 recorded an auth failure
+/// exiting **0** with a JSON error body — the bare `{"error":{…}}` object the third rule reads, an
+/// untyped frame the `error` and `result` rules would miss. A report's narrative is read off the
+/// `tool_use` that made the call, because `tool_result` carries only an opaque `output` string.
+pub const STREAM: StreamGrammar = StreamGrammar {
+    call: Where {
+        frame: &[Cond::Eq("/type", "tool_use")],
+        each: None,
+        unit: &[],
+    },
+    name: Name::Prefixed("/tool_name"),
+    args: "/parameters",
+    pairing: Pairing::Separate {
+        call_id: "/tool_id",
+        result: Where {
+            frame: &[Cond::Eq("/type", "tool_result")],
+            each: None,
+            unit: &[],
+        },
+        result_id: "/tool_id",
+        verdict: Verdict::Status {
+            path: "/status",
+            ok: "success",
+            pending: &[],
+            words: &["/output"],
+        },
+    },
+    refused_report: OnRefusedReport::Record,
+    failures: &[
+        Failure::Frame {
+            at: Where {
+                frame: &[Cond::Eq("/type", "error")],
+                each: None,
+                unit: &[],
+            },
+            words: &["/error/message", "/message", "/error/type"],
+            fallback: "the child's stream carried an error frame",
+        },
+        Failure::NotOk {
+            at: Where {
+                frame: &[Cond::Eq("/type", "result")],
+                each: None,
+                unit: &[],
+            },
+            path: "/status",
+            ok: "success",
+            words: &[],
+            label: "gemini result status: ",
+        },
+        // The exit-0 auth failure S12 recorded: an `error` object with no `type` frame around it.
+        Failure::Frame {
+            at: Where {
+                frame: &[Cond::Has("/error")],
+                each: None,
+                unit: &[],
+            },
+            words: &["/error/message", "/error/type"],
+            fallback: "the child's stream carried an error body",
+        },
+    ],
+    file_changes: None,
 };
 
 /// Relocates the **entire** config and auth surface: `settings.json`, `oauth_creds.json`,

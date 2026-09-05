@@ -38,6 +38,9 @@ use serde_json::{Value, json};
 use crate::auth::Auth;
 // The **bridge's** env contract, imported rather than respelled for the reason gemini and opencode
 // give: the bridge reads `MARION_AGENT_ID` whichever harness started it.
+use crate::grammar::{
+    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+};
 use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
@@ -123,10 +126,71 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Always,
         },
     ],
-    stream: None,
+    stream: Some(&STREAM),
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",
+};
+
+/// How a `copilot -p … --output-format json` stream is read (`tests/fixtures/s24/`).
+///
+/// A report is read off `tool.execution_start` — the frame that says the harness dispatched the
+/// call, whose `arguments` are the parsed object rather than the `inputDelta` fragments — and its
+/// verdict off the `tool.execution_complete` with the same `toolCallId`. `success: true` is the
+/// only answered shape measured; `success: false` always carried `error.message` and an
+/// `error.code` (`"denied"` for a call with no grant, `"failure"` for an `isError` MCP result).
+///
+/// **The exit code is not the verdict, and that is measured.** A `report` denied for want of a
+/// grant, and a `report` the bridge answered `isError: true`, both end the run at `exitCode: 0`
+/// with the model's closing text intact — so a refused report fails the run here. `session.error`
+/// is the CLI's own failure claim (a provider 500 after five retries, beside `exitCode: 1`), and a
+/// non-zero `result.exitCode` is recorded when nothing more specific was.
+pub const STREAM: StreamGrammar = StreamGrammar {
+    call: Where {
+        frame: &[Cond::Eq("/type", "tool.execution_start")],
+        each: None,
+        unit: &[],
+    },
+    name: Name::Prefixed("/data/toolName"),
+    args: "/data/arguments",
+    pairing: Pairing::Separate {
+        call_id: "/data/toolCallId",
+        result: Where {
+            frame: &[Cond::Eq("/type", "tool.execution_complete")],
+            each: None,
+            unit: &[],
+        },
+        result_id: "/data/toolCallId",
+        verdict: Verdict::Success {
+            path: "/data/success",
+            words: &["/data/error/message", "/data/error/code"],
+            fallback: "the tool call failed without a message",
+        },
+    },
+    refused_report: OnRefusedReport::Fail,
+    failures: &[
+        Failure::Frame {
+            at: Where {
+                frame: &[Cond::Eq("/type", "session.error")],
+                each: None,
+                unit: &[],
+            },
+            words: &["/data/message", "/data/errorType"],
+            fallback: "the child's stream carried a session.error frame",
+        },
+        Failure::NotOk {
+            at: Where {
+                frame: &[Cond::Eq("/type", "result")],
+                each: None,
+                unit: &[],
+            },
+            path: "/exitCode",
+            ok: "0",
+            words: &[],
+            label: "copilot's result frame reported exitCode ",
+        },
+    ],
+    file_changes: None,
 };
 
 /// Relocates configuration and state — `config.json`, `session-state/`, `logs/`,

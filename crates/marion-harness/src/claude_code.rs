@@ -1,10 +1,10 @@
-//! The Claude Code adapter (design §5.2).
+//! The Claude Code adapter (design §5.2): its launch row, its stream grammar, and its MCP
+//! declaration document.
 //!
 //! Control is **config-time**: marion owns the launch configuration and never parses a pty. Every
 //! flag here was measured against 2.1.220, and several are non-obvious enough that the tests below
 //! state *why* rather than merely pinning the string.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use marion_core::contract::AgentId;
@@ -13,13 +13,13 @@ use serde_json::{Value, json};
 use marion_core::harness::Harness;
 
 use crate::auth::Auth;
+use crate::grammar::{
+    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+};
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
-use crate::stream::{
-    CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
-};
 
 /// Claude Code's row. Measured against 2.1.220 (S1, S9, S11) and re-measured on 2.1.222 for the
 /// two tool axes (`tests/fixtures/s14/`); every flag below carries its reason in the doc of the
@@ -92,138 +92,69 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Present(Field::ApiKey),
         },
     ],
-    stream: None,
+    stream: Some(&STREAM),
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };
 
-/// Parse a `--output-format stream-json` stream.
+/// How a `--output-format stream-json` stream is read (`tests/fixtures/s1/`, `s9/`).
 ///
-/// The frame shapes are the ones `tests/fixtures/s1/` and `tests/fixtures/s9/` recorded off a real
-/// 2.1.220: an `assistant` frame wraps `message.content[]` blocks, and a call to marion is a block
-/// of `{"type":"tool_use","name":"mcp__marion__report","input":{…}}`. The run's terminal frame is
-/// `{"type":"result", …}`, whose `is_error`/`subtype` is the harness's own verdict.
+/// A call to marion is a `tool_use` block inside an `assistant` frame's `message.content[]`, and
+/// its result a `tool_result` block inside a later `user` frame, paired by `tool_use_id`. On the
+/// recording the success case has **no `is_error` key at all**, which is why the verdict is an
+/// error *flag*: an absent key is this harness saying the call was fine. The run's own verdict is
+/// its `result` frame — `is_error` or a `subtype` other than `success` — read on this surface
+/// rather than the exit code, because 2.1.220 reports its own errors in-band.
 ///
-/// **This is the child path.** `marion-supervisor::duplex` drives the conversation itself and keeps
-/// the whole transcript; this folds the same bytes into the `StreamOutcome` the seam requires of
-/// every harness, which is what `run_spawn` turns into a `TaskContract` (§6.1 step 9). The two are
-/// not duplicates: one is the live protocol, the other is the audit read.
-///
-/// `file_change_paths` stays empty: Claude Code's edits arrive as `tool_use` blocks for its own
-/// built-in tools, whose argument shapes are per-tool and unmeasured here. Guessing them would put
-/// invented paths into the audit record, and git is the authority for `changed_paths` anyway.
-pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
-    let mut out = StreamOutcome::default();
-    for v in json_frames(s) {
-        match v["type"].as_str() {
-            Some("assistant") => {
-                for block in v["message"]["content"].as_array().into_iter().flatten() {
-                    if block["type"].as_str() == Some("tool_use")
-                        && block["name"].as_str() == Some(report_tool)
-                    {
-                        // Both fields off the one call. Narrative stays conditional — `None` is
-                        // load-bearing, it is what `build_contract` turns into `Unreported` — while
-                        // commits are read whenever the call is seen, since an absent list and an
-                        // empty one are the same claim.
-                        if let Some(n) = block["input"]["narrative"].as_str() {
-                            out.narrative = Some(n.to_string());
-                        }
-                        out.result_commits = report_commits(&block["input"]);
-                    }
-                }
-            }
-            Some("result") => {
-                let errored = v["is_error"].as_bool() == Some(true)
-                    || v["subtype"].as_str().is_some_and(|s| s != "success");
-                if errored {
-                    out.failure = first_string(&v, &["/result", "/subtype"])
-                        .or_else(|| Some("the run's result frame reported an error".into()));
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
-/// of each call.
-///
-/// `prefix` is this harness's own namespace for marion's verbs — the adapter derives it from its
-/// `marion_tool_name`, so there is one spelling, not two.
-///
-/// **The call and its result are two frames and are paired by `tool_use_id`.** The shape is the one
-/// `tests/fixtures/s9/can-use-tool-allow.stdout.jsonl` recorded off a real 2.1.220: an `assistant`
-/// frame carries `{"type":"tool_use","id":"toolu_…","name":"mcp__marion__report"}` and a later
-/// `user` frame carries `{"type":"tool_result","tool_use_id":"toolu_…", …}`. On that recording the
-/// success case has **no `is_error` key at all**, which is why the reading is `Some(true)` ⇒
-/// refused rather than "not `Some(false)`" ⇒ refused: an absent key is this harness saying the call
-/// was fine, and treating it as a refusal would red-line every working run.
-///
-/// A call whose result frame never arrived is [`CallOutcome::Unknown`], not an answer — a run that
-/// was killed mid-call leaves exactly that trace.
-pub fn marion_calls(s: &str, prefix: &str) -> Vec<MarionCall> {
-    let frames = json_frames(s);
-    // id → what its result frame said. Built first, because a stream is read once and the results
-    // trail the calls.
-    let mut results: BTreeMap<String, CallOutcome> = BTreeMap::new();
-    for v in &frames {
-        if v["type"].as_str() != Some("user") {
-            continue;
-        }
-        for block in v["message"]["content"].as_array().into_iter().flatten() {
-            if block["type"].as_str() == Some("tool_result")
-                && let Some(id) = block["tool_use_id"].as_str()
-            {
-                results.insert(id.to_string(), tool_result_outcome(block));
-            }
-        }
-    }
-
-    let mut out = Vec::new();
-    for v in &frames {
-        if v["type"].as_str() != Some("assistant") {
-            continue;
-        }
-        for block in v["message"]["content"].as_array().into_iter().flatten() {
-            if block["type"].as_str() == Some("tool_use")
-                && let Some(tool) = block["name"].as_str().and_then(|n| n.strip_prefix(prefix))
-            {
-                let outcome = block["id"]
-                    .as_str()
-                    .and_then(|id| results.get(id).cloned())
-                    .unwrap_or(CallOutcome::Unknown);
-                out.push(MarionCall {
-                    verb: tool.to_string(),
-                    outcome,
-                });
-            }
-        }
-    }
-    out
-}
-
-/// One `tool_result` block's verdict, and the words behind it.
-///
-/// The `content` is an array of typed blocks on the recording, so the refusal's own sentence is
-/// gathered from the `text` ones. A refusal with no readable text still refuses — the fallback says
-/// so rather than reporting an empty string, since "refused, and the harness gave no reason" is a
-/// different thing to read than "refused: <reason>".
-fn tool_result_outcome(block: &Value) -> CallOutcome {
-    if block["is_error"].as_bool() != Some(true) {
-        return CallOutcome::Answered;
-    }
-    let text: Vec<&str> = block["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|c| c["text"].as_str())
-        .collect();
-    match text.is_empty() {
-        true => CallOutcome::Refused("the result frame carried no message".into()),
-        false => CallOutcome::Refused(text.join(" ")),
-    }
-}
+/// `file_changes` is `None`: Claude Code's edits arrive as `tool_use` blocks for its own built-in
+/// tools, whose argument shapes are per-tool and unmeasured here, and git is the authority anyway.
+pub const STREAM: StreamGrammar = StreamGrammar {
+    call: Where {
+        frame: &[Cond::Eq("/type", "assistant")],
+        each: Some("/message/content"),
+        unit: &[Cond::Eq("/type", "tool_use")],
+    },
+    name: Name::Prefixed("/name"),
+    args: "/input",
+    pairing: Pairing::Separate {
+        call_id: "/id",
+        result: Where {
+            frame: &[Cond::Eq("/type", "user")],
+            each: Some("/message/content"),
+            unit: &[Cond::Eq("/type", "tool_result")],
+        },
+        result_id: "/tool_use_id",
+        verdict: Verdict::ErrorFlag {
+            path: "/is_error",
+            words: &["/content"],
+            fallback: "the result frame carried no message",
+        },
+    },
+    refused_report: OnRefusedReport::Record,
+    failures: &[
+        Failure::NotOk {
+            at: Where {
+                frame: &[Cond::Eq("/type", "result")],
+                each: None,
+                unit: &[],
+            },
+            path: "/subtype",
+            ok: "success",
+            words: &["/result", "/subtype"],
+            label: "the run's result frame reported an error",
+        },
+        Failure::Frame {
+            at: Where {
+                frame: &[Cond::Eq("/type", "result"), Cond::Eq("/is_error", "true")],
+                each: None,
+                unit: &[],
+            },
+            words: &["/result", "/subtype"],
+            fallback: "the run's result frame reported an error",
+        },
+    ],
+    file_changes: None,
+};
 
 /// `ANTHROPIC_BASE_URL` from the provider base URL marion carries.
 ///
