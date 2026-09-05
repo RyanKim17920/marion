@@ -203,7 +203,6 @@ pub(crate) struct RelaySignalGuard {
 struct RelaySignalRestoreError {
     signal: std::ffi::c_int,
     source: std::io::Error,
-    captured_signal: Option<std::ffi::c_int>,
 }
 
 impl std::fmt::Display for RelaySignalRestoreError {
@@ -264,7 +263,7 @@ impl RelaySignalGuard {
                         ))
                     }
                     Err(rollback) => {
-                        RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+                        poison_relay_signal_ownership();
                         Err(format!(
                             "installing process signal action {signal}: {error}; rolling back partially installed process signal actions failed: {rollback}"
                         ))
@@ -294,7 +293,7 @@ impl RelaySignalGuard {
             let _ = restore_signal_actions_matching(&mut self.prior, |signal| {
                 !is_termination_signal(signal)
             });
-            RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+            poison_relay_signal_ownership();
             return Err(error);
         }
         // All prior termination dispositions are live before this exchange. A signal handled
@@ -304,14 +303,11 @@ impl RelaySignalGuard {
             0 => None,
             signal => Some(signal),
         };
-        if self.captured_signal.is_none() {
-            self.captured_signal = captured_signal;
-        }
-        if let Err(mut error) = restore_signal_actions_matching(&mut self.prior, |signal| {
+        self.captured_signal = self.captured_signal.or(captured_signal);
+        if let Err(error) = restore_signal_actions_matching(&mut self.prior, |signal| {
             !is_termination_signal(signal)
         }) {
-            error.captured_signal = self.captured_signal;
-            RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+            poison_relay_signal_ownership();
             return Err(error);
         }
         self.armed = false;
@@ -420,7 +416,6 @@ fn restore_signal_actions_matching(
                 first_error = Some(RelaySignalRestoreError {
                     signal: prior.signal,
                     source,
-                    captured_signal: None,
                 });
             }
             Err(_) => {}
@@ -435,28 +430,23 @@ fn clear_relay_signal_state() {
     FIRST_RELAY_SIGNAL.store(0, Ordering::SeqCst);
 }
 
+/// No later relay in this process may install handlers over actions Marion could not restore.
+fn poison_relay_signal_ownership() {
+    RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+}
+
 impl Drop for RelaySignalGuard {
     fn drop(&mut self) {
-        // Restore in reverse installation order while `_owner` still excludes a later relay.
-        if self.armed {
-            match self.restore_result() {
-                Ok(Some(signal)) => {
-                    let _ = redeliver_signal(signal);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
-                    if let Some(signal) = error.captured_signal {
-                        let _ = redeliver_signal(signal);
-                    }
-                }
-            }
-        }
-        // Never clear FIRST while any Marion termination handler can still publish into it.
-        if self.prior.iter().all(|prior| !prior.relay_installed) {
-            clear_relay_signal_state();
-        } else {
-            RELAY_SIGNAL_OWNERSHIP_POISONED.store(true, Ordering::SeqCst);
+        // Restore in reverse installation order while `_owner` still excludes a later relay. A
+        // failed restoration has already poisoned ownership and left `FIRST_RELAY_SIGNAL` alone,
+        // since a still-installed Marion handler could publish into it; the termination captured
+        // so far is redelivered either way.
+        let redeliver = match self.restore_result() {
+            Ok(captured_signal) => captured_signal,
+            Err(_) => self.captured_signal,
+        };
+        if let Some(signal) = redeliver {
+            let _ = redeliver_signal(signal);
         }
     }
 }
