@@ -96,6 +96,7 @@ fn live_spec_with_gateway(model: Option<&str>) -> LaunchSpec {
         api_key: None,
         auth: Auth::Inherited,
         config_dir: "/state/x/config".into(),
+        resume: None,
         extra: Extras::default(),
     }
 }

@@ -91,8 +91,8 @@ pub struct HarnessSpec {
     /// How this harness names a session to resume on its command line, as measured on the
     /// installed binary's `--help` — or `None`, where it has no measured way, and a launch that
     /// asks for one is refused by name rather than started fresh under a resumed session's id.
-    /// **Data now, so the resume feature needs no per-harness branch later** (`plan-restart-
-    /// resume.md` step 5); nothing sets [`Fields::resume`] yet.
+    /// **Data, so the resume feature has no per-harness branch**: [`Fields::resume`] is seeded from
+    /// `LaunchSpec::resume` for every adapter alike, and this row decides how it is spelled.
     pub resume: Option<Resume>,
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
@@ -251,8 +251,8 @@ pub struct Fields {
     pub output_schema: Option<PathBuf>,
     pub output_last_message: Option<PathBuf>,
     pub agent_args: Vec<String>,
-    /// The session this launch resumes, if any. **Nothing sets it yet**: the flag is data ahead of
-    /// the feature, so that the feature is a field and not five branches.
+    /// The session this launch resumes, if any — `LaunchSpec::resume`, copied by the neutral
+    /// seeding so the feature is a field and not five branches.
     pub resume: Option<String>,
     /// Environment the hook derived that no row names — appended after the row's own. ACP's
     /// per-agent canned recipe is the one user.

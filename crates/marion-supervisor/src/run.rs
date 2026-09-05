@@ -1428,6 +1428,7 @@ pub fn run_spawn_watched(
         // what catches a second assignment appearing later.
         //
         // `None` on the other four, where nothing reads it.
+        resume: None,
         extra: Extras {
             acp_agent: agent_type.acp_agent.clone(),
             ..Extras::default()
@@ -2874,6 +2875,7 @@ mod tests {
             api_key: None,
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
+            resume: None,
             extra: Extras::default(),
         }
     }

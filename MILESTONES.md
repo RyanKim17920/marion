@@ -93,10 +93,13 @@ the model rules, the derived base URLs, the document emitters, and ACP's agent b
 harness is a row plus those hooks. `adapter::tests::spec_render_matches_the_adapter_that_measured_it`
 and `every_committed_fixture_reads_the_same_through_the_grammar` pin every row to the hand-written
 adapter it replaced, byte for byte on every committed fixture. **Resume flags, measured on the
-installed binaries' `--help` and carried as row data ahead of the resume feature** (plan step 5,
-unwired): claude `--resume <id>`, codex `exec resume <id>`, opencode `run --session <id>`, copilot
-`--resume=<id>`; gemini's `--resume` takes `latest` or an index rather than a session id, and ACP
-resumes through `session/load`, so both rows say `None` and a resume on them is refused by name.
+installed binaries' `--help` and carried as row data** (plan step 5): claude `--resume <id>`, codex
+`exec resume <id>`, opencode `run --session <id>`, copilot `--resume=<id>`; gemini's `--resume`
+takes `latest` or an index rather than a session id, and ACP resumes through `session/load`, so
+both rows say `None` and a resume on them is refused by name. **Wired 2026-09-05:**
+`LaunchSpec::resume: Option<String>` is seeded into `Fields::resume` by the one neutral seeding, so
+`compile`/`compile_pane` render the row's grammar or refuse by name with no per-harness branch
+(`a_harness_whose_row_refuses_resume_is_refused_by_name`, RED with `no field named resume`).
 
 **A version here names the binary a behaviour was measured on, not the binary that will run.** The
 installed `claude` on this machine is **2.1.224**, not the 2.1.220 stamped above and throughout this

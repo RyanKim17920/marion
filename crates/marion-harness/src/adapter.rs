@@ -195,6 +195,12 @@ pub struct LaunchSpec {
     /// relax where marion *writes*, and every path in [`HarnessAdapter::config_files`] stays under
     /// this directory on every harness in every mode.
     pub config_dir: PathBuf,
+    /// The harness session this launch **resumes**, in the harness's own spelling — the id its
+    /// stream named (`SessionObserved`), handed back through the row's measured resume grammar
+    /// ([`crate::spec::HarnessSpec::resume`]). `None` is a fresh session. A row with no measured
+    /// grammar for the shape asked for refuses the launch by name rather than starting fresh under
+    /// a resumed session's id; nothing here is per harness.
+    pub resume: Option<String>,
     pub extra: Extras,
 }
 
@@ -664,6 +670,7 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
         axes,
         output_schema: spec.extra.output_schema.clone(),
         output_last_message: spec.extra.output_last_message.clone(),
+        resume: spec.resume.clone(),
         ..spec::Fields::default()
     }
 }
@@ -1840,6 +1847,7 @@ mod tests {
             api_key: None,
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
+            resume: None,
             extra: Extras::default(),
         }
     }
@@ -1856,6 +1864,7 @@ mod tests {
             api_key: None,
             auth: Auth::Canned,
             config_dir: "/state/x/config".into(),
+            resume: None,
             extra: Extras::default(),
         }
     }
@@ -1899,6 +1908,7 @@ mod tests {
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             api_key: Some("marion-placeholder".into()),
             model: Some("marion/canned-1".into()),
+            resume: None,
             extra: Extras {
                 acp_agent: Some(acp::OPENCODE.id.into()),
                 ..Extras::default()
@@ -5241,6 +5251,7 @@ mod tests {
     fn each_way_an_acp_launch_can_be_refused_is_named_separately() {
         // 1. No agent named. §6.4: marion may not pick one.
         let unnamed = LaunchSpec {
+            resume: None,
             extra: Extras::default(),
             ..acp_spec()
         };
@@ -5260,6 +5271,7 @@ mod tests {
 
         // 2. An agent marion has never heard of, with the known ids listed.
         let unknown = LaunchSpec {
+            resume: None,
             extra: Extras {
                 acp_agent: Some("zed".into()),
                 ..Extras::default()
@@ -5276,6 +5288,7 @@ mod tests {
         // knowable and `marion doctor` must be able to probe it — and it is refused the moment
         // marion would put its own verbs in front of it.
         let unmeasured = LaunchSpec {
+            resume: None,
             extra: Extras {
                 acp_agent: Some(acp::GEMINI.id.into()),
                 ..Extras::default()
@@ -5384,6 +5397,7 @@ mod tests {
         for agent in [acp::CLAUDE_ACP, acp::CODEX_ACP] {
             assert!(agent.canned.is_none(), "the premise for `{}`", agent.id);
             let spec = LaunchSpec {
+                resume: None,
                 extra: Extras {
                     acp_agent: Some(agent.id.into()),
                     ..Extras::default()
@@ -5513,6 +5527,7 @@ mod tests {
     #[test]
     fn an_adapter_bound_to_one_agent_refuses_another_agents_launch() {
         let spec = LaunchSpec {
+            resume: None,
             extra: Extras {
                 acp_agent: Some(acp::CODEX_ACP.id.into()),
                 ..Extras::default()
@@ -6285,10 +6300,11 @@ mod tests {
         }
     }
 
-    /// **The resume flag is a row field, measured per harness on the installed binary's `--help`,
-    /// ahead of the feature that will use it** (`plan-restart-resume.md` step 5) — so that resume
-    /// becomes one field on the launch and not five branches. Nothing sets `Fields::resume` yet;
-    /// these tests set it directly on the fields the adapter computed.
+    /// **The resume flag is a row field, measured per harness on the installed binary's `--help`**
+    /// (`plan-restart-resume.md` step 5) — so that resume is one field on the launch and not five
+    /// branches. This test sets `Fields::resume` directly on the fields the adapter computed, to
+    /// pin the rows; `a_harness_whose_row_refuses_resume_is_refused_by_name` goes through
+    /// `LaunchSpec::resume` and `compile`.
     ///
     /// claude 2.1.224: `-r, --resume [value]  Resume a conversation by session ID`.
     /// codex 0.147.0: `codex exec resume [SESSION_ID] [PROMPT]`, `--json` still accepted.
@@ -6367,6 +6383,64 @@ mod tests {
                 Err(HarnessError::MissingInput { harness, .. }) if harness == h
             ));
         }
+    }
+
+    /// **Resume is a field on the launch, and it reaches argv through the row alone**
+    /// (`plan-restart-resume.md` step 5). `LaunchSpec::resume` is copied into `Fields::resume` by
+    /// the neutral seeding every adapter's `fields` hook builds on, so the same launch that renders
+    /// `--resume <id>` on claude renders `exec resume <id>` on codex — and on a row with no
+    /// measured resume grammar for the shape asked for, `compile`/`compile_pane` refuse **by
+    /// name**, never start a fresh session under the old id.
+    #[test]
+    fn a_harness_whose_row_refuses_resume_is_refused_by_name() {
+        let resuming = |h: Harness| LaunchSpec {
+            resume: Some("SID".into()),
+            ..spec_for(h)
+        };
+        for (h, pane) in [
+            (Harness::Gemini, false),
+            (Harness::Acp, false),
+            (Harness::Codex, true),
+        ] {
+            let a = launch_adapter(h).unwrap();
+            let spec = resuming(h);
+            let got = match pane {
+                false => a.compile(&spec, &ctx()),
+                true => a.compile_pane(&spec, &ctx()),
+            };
+            match got {
+                Err(HarnessError::MissingInput { harness, what }) => {
+                    assert_eq!(harness, h);
+                    assert!(what.contains("resume"), "{h}: {what}");
+                }
+                other => panic!("{h} (pane: {pane}) did not refuse by name: {other:?}"),
+            }
+        }
+        // And the rows that carry one render it, through the same field.
+        let args = |h: Harness, pane: bool| -> Vec<String> {
+            let a = launch_adapter(h).unwrap();
+            let spec = resuming(h);
+            match pane {
+                false => a.compile(&spec, &ctx()),
+                true => a.compile_pane(&spec, &ctx()),
+            }
+            .unwrap_or_else(|e| panic!("{h}: {e}"))
+            .args
+        };
+        for pane in [false, true] {
+            let got = args(Harness::ClaudeCode, pane);
+            assert!(
+                got.windows(2)
+                    .any(|w| w == ["--resume".to_string(), "SID".to_string()]),
+                "claude (pane: {pane}): {got:?}"
+            );
+        }
+        assert_eq!(&args(Harness::Codex, false)[..3], ["exec", "resume", "SID"]);
+        assert_eq!(
+            &args(Harness::OpenCode, false)[..3],
+            ["run", "--session", "SID"]
+        );
+        assert!(args(Harness::Copilot, false).contains(&"--resume=SID".to_string()));
     }
 
     /// **The harness session id is grammar data, read by one engine** (`plan-restart-resume.md`

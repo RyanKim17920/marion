@@ -778,6 +778,7 @@ pub fn prepare_watched(
         },
         auth: spec.auth,
         config_dir: agent_dir.config_dir(),
+        resume: None,
         extra: Extras::default(),
     };
     let ctx = SpawnCtx {
