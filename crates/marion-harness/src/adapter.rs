@@ -20,7 +20,7 @@ use marion_core::harness::Harness;
 use crate::acp;
 pub use crate::auth::Auth;
 use crate::claude_code::{self, McpEnv};
-use crate::codex::{self, ExecSpec, compile_exec};
+use crate::codex;
 use crate::copilot;
 use crate::gemini;
 use crate::invocation::Invocation;
@@ -642,7 +642,7 @@ fn render_row(
 pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
     match h {
         Harness::ClaudeCode => &claude_code::SPEC,
-        Harness::Codex => todo!("step 4: the codex row"),
+        Harness::Codex => &codex::SPEC,
         Harness::Gemini => &gemini::SPEC,
         Harness::OpenCode => &opencode::SPEC,
         Harness::Copilot => &copilot::SPEC,
@@ -904,36 +904,36 @@ impl HarnessAdapter for CodexAdapter {
     /// `CODEX_HOME` is dropped, which is what makes the login visible in the first place. The two go
     /// together: unsetting the variable points codex at the operator's `~/.codex/auth.json` *and* at
     /// the operator's `~/.codex/config.toml`, and marion is forbidden to write the second (§6.4), so
-    /// the `-c` overlay is the only channel left.
-    fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        // Called for the **refusal**, which is owed on all four harnesses, and for nothing else:
-        // see `Self::tool_name` for why a codex declaration compiles no flag. Discarding the names
-        // is the honest outcome, not a forgotten `?`.
-        let _already_granted = self.native_tools(spec)?;
-        let config_overrides = match spec.auth {
+    /// the `-c` overlay is the only channel left. The row's `Each("-c", Pairs)` carries it, and the
+    /// `Canned`-gated `CODEX_HOME` row drops the variable.
+    ///
+    /// The same fields serve both shapes: `codex::SPEC`'s pane row simply names no `--output-schema`
+    /// or `--output-last-message`, so the two `exec`-only outputs are ignored there structurally
+    /// rather than by a second branch that sets them `None`.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        // The trait's default `axes` runs the refusal owed to a `tools:` declaration on every
+        // harness; nothing in the row reads the result — see `Self::tool_name` for why a codex
+        // declaration compiles no flag. Discarding the names is the honest outcome.
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // Canned compiles none, so every existing contract still records `None` and the canned argv
+        // is byte-identical to what it was before `-m` was known to exist here.
+        f.model = match spec.auth {
+            Auth::Canned => None,
+            Auth::Inherited => spec.model.clone(),
+        };
+        f.pairs = match spec.auth {
             Auth::Canned => Vec::new(),
             Auth::Inherited => Self::bridge_env(spec, ctx)
                 .as_ref()
                 .map(codex::live_config_overrides)
                 .unwrap_or_default(),
         };
-        Ok(compile_exec(&ExecSpec {
-            cwd: spec.cwd.clone(),
-            codex_home: match spec.auth {
-                Auth::Canned => Some(spec.config_dir.clone()),
-                Auth::Inherited => None,
-            },
-            // Canned compiles none, so every existing contract still records `None` and the canned
-            // argv is byte-identical to what it was before `-m` was known to exist here.
-            model: match spec.auth {
-                Auth::Canned => None,
-                Auth::Inherited => spec.model.clone(),
-            },
-            prompt: spec.prompt.clone(),
-            output_schema: spec.extra.output_schema.clone(),
-            output_last_message: spec.extra.output_last_message.clone(),
-            config_overrides,
-        }))
+        Ok(f)
     }
 
     /// §3.4's `opaque`, the same shape Claude Code's pane declares and for the same reason: a pty
@@ -950,41 +950,6 @@ impl HarnessAdapter for CodexAdapter {
     /// scrollback to lose.
     fn pane_surfaces(&self) -> Option<ExecutionSurfaces> {
         Some(ExecutionSurfaces::opaque())
-    }
-
-    /// The TUI, with the same isolation, the same configuration route and the same sandbox the
-    /// `exec` shape gets. See [`codex::compile_tui`] for why the two argv grammars do not share a
-    /// branch, and for what is deliberately left off this one.
-    fn compile_pane(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        // The refusal is owed on this path exactly as on `compile`'s: a pane does not widen what a
-        // node may do, so an unmappable `tools:` entry aborts the launch here too rather than
-        // opening a terminal for a node whose declaration marion could not honour.
-        let _already_granted = self.native_tools(spec)?;
-        let config_overrides = match spec.auth {
-            Auth::Canned => Vec::new(),
-            Auth::Inherited => Self::bridge_env(spec, ctx)
-                .as_ref()
-                .map(codex::live_config_overrides)
-                .unwrap_or_default(),
-        };
-        Ok(codex::compile_tui(&ExecSpec {
-            cwd: spec.cwd.clone(),
-            codex_home: match spec.auth {
-                Auth::Canned => Some(spec.config_dir.clone()),
-                Auth::Inherited => None,
-            },
-            model: match spec.auth {
-                Auth::Canned => None,
-                Auth::Inherited => spec.model.clone(),
-            },
-            prompt: spec.prompt.clone(),
-            // Stated rather than forwarded: both are `codex exec` flags with no interactive
-            // counterpart, and `compile_tui` would ignore them anyway. Naming them `None` here is
-            // what makes that ignoring a decision rather than a gap.
-            output_schema: None,
-            output_last_message: None,
-            config_overrides,
-        }))
     }
 
     fn config_files(
@@ -2473,19 +2438,30 @@ mod tests {
         "/../../tests/fixtures/s21/opencode-acp-session.jsonl"
     ));
 
+    /// M1's child, pinned token for token: the `codex exec --json` launch S6 measured on 0.146.0,
+    /// which `codex::SPEC` renders. A canned launch compiles no `-m` however loudly one is asked
+    /// for, and records `None`.
     #[test]
-    fn the_codex_adapter_compiles_exactly_what_the_free_function_did() {
-        let via_adapter = CodexAdapter.compile(&codex_spec(), &ctx()).unwrap();
-        let via_free_function = compile_exec(&ExecSpec {
-            cwd: "/wt".into(),
-            codex_home: Some("/state/x/config".into()),
-            model: None,
-            prompt: "do the task".into(),
-            output_schema: None,
-            output_last_message: None,
-            config_overrides: Vec::new(),
-        });
-        assert_eq!(via_adapter, via_free_function);
+    fn the_codex_adapter_compiles_the_measured_m1_child() {
+        assert_eq!(
+            CodexAdapter.compile(&codex_spec(), &ctx()).unwrap(),
+            Invocation {
+                program: "codex".into(),
+                args: [
+                    "exec",
+                    "--json",
+                    "--skip-git-repo-check",
+                    "-C",
+                    "/wt",
+                    "do the task",
+                ]
+                .map(String::from)
+                .to_vec(),
+                env: vec![("CODEX_HOME".into(), "/state/x/config".into())],
+                cwd: "/wt".into(),
+                model: None,
+            }
+        );
     }
 
     // -----------------------------------------------------------------------------------------
@@ -6154,19 +6130,12 @@ mod tests {
     /// comparison. A row that renders one token differently from the code it was transcribed from
     /// is a guess wearing a table's clothes, which is the risk `plan-harness-spec.md` names.
     ///
-    /// `MIGRATED` is the gate: a harness is listed only once its row exists, so this sweep grows
-    /// one harness per commit and never asserts over a `todo!()`.
+    /// Every harness is a row now; the sweep grew one harness per commit behind a `MIGRATED` gate
+    /// and the gate is gone with the last `todo!()`.
     #[test]
     fn spec_render_matches_the_adapter_that_measured_it() {
         use crate::spec::{Shape, render};
-        const MIGRATED: &[Harness] = &[
-            Harness::ClaudeCode,
-            Harness::Gemini,
-            Harness::OpenCode,
-            Harness::Acp,
-            Harness::Copilot,
-        ];
-        for &h in MIGRATED {
+        for h in Harness::ALL {
             let a = launch_adapter(h).unwrap();
             let row = harness_spec(h);
             assert_eq!(

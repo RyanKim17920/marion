@@ -736,9 +736,9 @@ pub fn prepare_watched(
             // A positional, and what the harness then does with it **differs by harness** —
             // stated rather than generalised, because marion compiles the same field twice and
             // gets two behaviours. Claude Code seeds its composer and waits for a return
-            // (`marion_harness::claude_code::compile_pane`); codex 0.147.0 **submits** it, so a
+            // (`marion_harness::claude_code::SPEC`'s pane row); codex 0.147.0 **submits** it, so a
             // paned codex has taken a turn before anybody attaches
-            // (`marion_harness::codex::compile_tui`). Neither is a race the way an argv prompt on
+            // (`marion_harness::codex::SPEC`'s pane row). Neither is a race the way an argv prompt on
             // `--print` is: a TUI's MCP servers are connected before it accepts the turn.
             //
             // Both are safe for the reason the headless refusal is not: see the same two doc

@@ -2,11 +2,11 @@
 //!
 //! `codex exec` is **launch-only with protocol events**: marion writes its configuration, starts
 //! it, and reads its JSONL stream. There is no control channel to steer it mid-turn. That is M1's
-//! child ([`compile_exec`]) and it is the shape every codex node runs under unless a run asked
+//! child ([`SPEC`]'s `argv`) and it is the shape every codex node runs under unless a run asked
 //! otherwise.
 //!
 //! The interactive `codex` is **opaque**: a pty and nothing else, driven by keystrokes and parsed
-//! from nothing ([`compile_tui`]). It exists for §9's M3 criterion C2, and it is a *per-run*
+//! from nothing ([`SPEC`]'s `pane`). It exists for §9's M3 criterion C2, and it is a *per-run*
 //! request rather than a second harness — the two share this file's configuration, its isolation
 //! and its sandbox, and differ only in the argv grammar the binary's two commands accept.
 
@@ -15,136 +15,38 @@ use std::path::PathBuf;
 
 use marion_core::contract::AgentId;
 
+use marion_core::harness::Harness;
+
 // The bridge's own env-var contract, imported rather than respelled — see [`BridgeEnv`].
 use crate::auth::Auth;
-use crate::invocation::Invocation;
 use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
+use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 use crate::stream::{CallOutcome, MarionCall, StreamOutcome, json_frames, report_commits};
 
-/// The sandbox every codex node marion generates a config for runs in — and **this harness's whole
-/// availability axis** (§3.1). `codex exec` has no `--tools` and no permission list; it exposes
-/// only `--sandbox <read-only|workspace-write|danger-full-access>`, so this one value is what
-/// decides whether a codex child can change a file at all.
+/// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
+/// one binary over one isolation.
 ///
-/// Named rather than inlined into [`config_toml`] because
-/// `crate::adapter::CodexAdapter::tool_name` maps marion's `write` onto it as §3.1's *"coarsest
-/// equivalent"* (`sandbox:workspace-write`): two spellings of one grant could drift, and then the
-/// adapter would be reporting a mode the generated config does not set.
-pub const SANDBOX_MODE: &str = "workspace-write";
-
-#[derive(Debug, Clone)]
-pub struct ExecSpec {
-    pub cwd: PathBuf,
-    /// `$CODEX_HOME`. Under [`Auth::Canned`] this is the node's own agent dir, and isolating it does
-    /// not break auth because the child runs against the canned provider.
-    ///
-    /// **`None` under [`Auth::Inherited`], and the variable is then not set at all** — not set to
-    /// the operator's home, *unset*, so codex resolves its own default. That is the whole of live
-    /// auth on this harness: `CODEX_HOME` is where codex looks for `auth.json`, and S8 measured
-    /// codex's to be a plain 0600 file rather than a Keychain item, so leaving the variable alone
-    /// is enough for the child to find the login the operator already has. Nothing is copied and
-    /// nothing is read by marion.
-    pub codex_home: Option<PathBuf>,
-    /// `codex exec -m <MODEL>`. **Verified on 0.146.0**, where `codex exec --help` lists
-    /// `-m, --model <MODEL>  Model the agent should use`.
-    ///
-    /// `None` under [`Auth::Canned`]: marion names no model there, because the endpoint is its own
-    /// canned server and every contract this harness has ever written records `None`. Under
-    /// [`Auth::Inherited`] the model reaches a real vendor and is the operator's to choose, so it
-    /// is carried — and [`Invocation::model`] then records what actually went on the wire.
-    pub model: Option<String>,
-    pub prompt: String,
-    /// `--output-schema`, used only on the fallback branch. S6 proved the primary branch works,
-    /// so M1 leaves this unset.
-    pub output_schema: Option<PathBuf>,
-    pub output_last_message: Option<PathBuf>,
-    /// Repeatable `-c <dotted.key>=<toml value>` overrides, in order — see
-    /// [`live_config_overrides`]. Empty under [`Auth::Canned`], where the same settings are written
-    /// into the generated `config.toml` instead.
-    pub config_overrides: Vec<(String, String)>,
-}
-
-pub fn compile_exec(spec: &ExecSpec) -> Invocation {
-    let mut args: Vec<String> = vec![
-        "exec".into(),
-        "--json".into(),
-        "--skip-git-repo-check".into(),
-    ];
-    for (k, v) in &spec.config_overrides {
-        args.push("-c".into());
-        args.push(format!("{k}={v}"));
-    }
-    if let Some(m) = &spec.model {
-        args.push("-m".into());
-        args.push(m.clone());
-    }
-    if let Some(s) = &spec.output_schema {
-        args.push("--output-schema".into());
-        args.push(s.to_string_lossy().into_owned());
-    }
-    if let Some(m) = &spec.output_last_message {
-        args.push("--output-last-message".into());
-        args.push(m.to_string_lossy().into_owned());
-    }
-    args.push("-C".into());
-    args.push(spec.cwd.to_string_lossy().into_owned());
-    args.push(spec.prompt.clone());
-
-    Invocation {
-        program: "codex".into(),
-        args,
-        // Set only where marion owns the config surface. Omitted — not blanked — under
-        // `Auth::Inherited`: an empty `CODEX_HOME` would send codex looking for `auth.json` in the
-        // process's cwd, and a *present* one pointed at marion's agent dir is exactly what hides the
-        // operator's login. See [`ExecSpec::codex_home`].
-        env: spec
-            .codex_home
-            .iter()
-            .map(|h| ("CODEX_HOME".to_string(), h.to_string_lossy().into_owned()))
-            .collect(),
-        cwd: spec.cwd.clone(),
-        // **Corrected against the installed binary.** This used to read "`codex exec` takes no model
-        // argument here at all"; 0.146.0's `codex exec --help` lists `-m, --model <MODEL>`, so the
-        // comment was simply wrong. What stays true is the *recorded* value: this is whatever went
-        // on the wire and nothing else, so a canned launch — which compiles no `-m` — still records
-        // `None` however loudly a caller asked for a model, and a contract naming a model that never
-        // reached argv remains the lie `child.harness` was moved behind the adapter to stop telling.
-        model: spec.model.clone(),
-    }
-}
-
-/// argv for the **pane** shape: codex's own TUI, on a pty marion owns (§9's M3 criterion C2).
+/// # The TUI is not `exec` with a flag off
 ///
-/// # Why this is a second compile and not a flag on [`compile_exec`]
+/// `exec`'s `--json`, `--skip-git-repo-check`, `--output-schema` and `--output-last-message` are the
+/// whole of what makes a headless codex a protocol peer, and **none of the four exists on the
+/// interactive command** — `codex --help` on 0.147.0 lists them nowhere, so passing any of them is
+/// an argv the binary rejects before it draws anything. The two `exec`-only outputs are therefore
+/// absent from the pane row rather than compiled: a caller that sets one on a pane launch finds it
+/// ignored, structurally.
 ///
-/// `codex exec` and `codex` are two subcommands of one binary with two argv grammars, and the
-/// difference is not a switch. `exec`'s `--json`, `--skip-git-repo-check`, `--output-schema` and
-/// `--output-last-message` are the whole of what makes a headless codex a protocol peer, and
-/// **none of the four exists on the interactive command** — `codex --help` on 0.147.0 lists them
-/// nowhere, so passing any of them is an argv the binary rejects before it draws anything. What
-/// the two shapes *do* share is the isolation ([`ExecSpec::codex_home`]) and the configuration
-/// route ([`ExecSpec::config_overrides`]), which is why this takes the same struct rather than one
-/// of its own.
-///
-/// `output_schema` and `output_last_message` are therefore ignored here rather than compiled. They
-/// are always `None` on this path — `crate::adapter::CodexAdapter::compile_pane` sets them so
-/// explicitly, and `marion_supervisor::root` builds a pane's `LaunchSpec` with
-/// `Extras::default()` — and the ignoring is asserted below so a future caller that sets one gets
-/// a red test rather than a flag silently dropped.
-///
-/// # The prompt rides argv, and it is **submitted** rather than seeded
+/// # The prompt rides argv on both, and is **submitted** rather than seeded on the TUI
 ///
 /// Measured on 0.147.0 against an isolated `CODEX_HOME`: `codex "<prompt>"` opens the TUI with the
 /// text already sent — the composer shows it above a running spinner, with no keystroke from
 /// anybody. That is the one place the two panes genuinely differ, because Claude Code's TUI seeds
-/// its composer and waits (`crate::claude_code::SPEC`'s pane row). It is recorded here rather than
-/// smoothed over: an operator who runs `marion run codex --pane --prompt …` has taken a turn by
-/// the time they attach, and a reader of the pane's first screen is looking at a turn in flight.
-/// An empty prompt compiles no positional at all, which is a TUI opened at its composer.
+/// its composer and waits (`crate::claude_code::SPEC`'s pane row). An operator who runs `marion run
+/// codex --pane --prompt …` has taken a turn by the time they attach. An empty prompt compiles no
+/// positional at all, which is a TUI opened at its composer.
 ///
-/// # What is deliberately **not** passed
+/// # What is deliberately **not** on the pane row
 ///
 /// **`--no-alt-screen`.** 0.147.0 documents it as *"Disable alternate screen mode … preserving
 /// terminal scrollback history"*, which reads like exactly what C2 wants — and passing it would
@@ -158,39 +60,64 @@ pub fn compile_exec(spec: &ExecSpec) -> Invocation {
 /// **`-s/--sandbox` and `-a/--ask-for-approval`.** Both are already set, by the same
 /// [`config_toml`] the headless shape is configured with (`sandbox_mode`, `approval_policy`), and
 /// a second spelling on argv is the drift [`SANDBOX_MODE`] exists to prevent.
-pub fn compile_tui(spec: &ExecSpec) -> Invocation {
-    let mut args: Vec<String> = Vec::new();
-    for (k, v) in &spec.config_overrides {
-        args.push("-c".into());
-        args.push(format!("{k}={v}"));
-    }
-    if let Some(m) = &spec.model {
-        args.push("-m".into());
-        args.push(m.clone());
-    }
-    // `-C/--cd` rather than relying on `Invocation.cwd` alone: codex names this *"the directory the
-    // agent uses as its working root"*, which is what its sandbox is scoped to, and leaving it to
-    // the process cwd would make the workspace a fact about who launched marion.
-    args.push("-C".into());
-    args.push(spec.cwd.to_string_lossy().into_owned());
-    if !spec.prompt.is_empty() {
-        args.push(spec.prompt.clone());
-    }
+pub const SPEC: HarnessSpec = HarnessSpec {
+    harness: Harness::Codex,
+    program: Some("codex"),
+    argv: &[
+        Arg::Lit("exec"),
+        Arg::Lit("--json"),
+        Arg::Lit("--skip-git-repo-check"),
+        // The live route's whole configuration, one `-c key=value` per pair
+        // ([`live_config_overrides`]); empty under canned, where the same settings are written into
+        // the generated `config.toml` instead.
+        Arg::Each("-c", Field::Pairs),
+        // **Verified on 0.146.0**, where `codex exec --help` lists `-m, --model <MODEL>`. The
+        // adapter places none under a canned provider, so every contract this harness has ever
+        // written still records `None`; under a real vendor the model is the operator's to choose.
+        Arg::Flag("-m", Field::Model),
+        // `--output-schema`, the §9 fallback branch. S6 proved the primary branch, so M1 leaves it
+        // unset.
+        Arg::Flag("--output-schema", Field::OutputSchema),
+        Arg::Flag("--output-last-message", Field::OutputLastMessage),
+        Arg::Flag("-C", Field::Cwd),
+        Arg::Pos(Field::Prompt),
+    ],
+    pane: Some(&[
+        Arg::Each("-c", Field::Pairs),
+        Arg::Flag("-m", Field::Model),
+        // `-C/--cd` rather than relying on `Invocation.cwd` alone: codex names this *"the directory
+        // the agent uses as its working root"*, which is what its sandbox is scoped to, and leaving
+        // it to the process cwd would make the workspace a fact about who launched marion.
+        Arg::Flag("-C", Field::Cwd),
+        Arg::PosIfNonEmpty(Field::Prompt),
+    ]),
+    // `$CODEX_HOME`: the node's own agent dir where marion owns the config surface, and under
+    // [`Auth::Inherited`] **not set at all** — not set to the operator's home, *unset*, so codex
+    // resolves its own default. That is the whole of live auth on this harness: `CODEX_HOME` is
+    // where codex looks for `auth.json`, and S8 measured codex's to be a plain 0600 file rather
+    // than a Keychain item, so leaving the variable alone is enough for the child to find the login
+    // the operator already has. Omitted, never blanked: an empty `CODEX_HOME` would send codex
+    // looking for `auth.json` in the process's cwd.
+    env: &[Env {
+        key: "CODEX_HOME",
+        val: Val::Under(""),
+        when: When::Canned,
+    }],
+    note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
+           omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
+           the exec row end to end",
+};
 
-    Invocation {
-        program: "codex".into(),
-        args,
-        // Same rule as [`compile_exec`]: set where marion owns the config surface, **omitted** —
-        // never blanked — under [`Auth::Inherited`].
-        env: spec
-            .codex_home
-            .iter()
-            .map(|h| ("CODEX_HOME".to_string(), h.to_string_lossy().into_owned()))
-            .collect(),
-        cwd: spec.cwd.clone(),
-        model: spec.model.clone(),
-    }
-}
+/// The sandbox every codex node marion generates a config for runs in — and **this harness's whole
+/// availability axis** (§3.1). `codex exec` has no `--tools` and no permission list; it exposes
+/// only `--sandbox <read-only|workspace-write|danger-full-access>`, so this one value is what
+/// decides whether a codex child can change a file at all.
+///
+/// Named rather than inlined into [`config_toml`] because
+/// `crate::adapter::CodexAdapter::tool_name` maps marion's `write` onto it as §3.1's *"coarsest
+/// equivalent"* (`sandbox:workspace-write`): two spellings of one grant could drift, and then the
+/// adapter would be reporting a mode the generated config does not set.
+pub const SANDBOX_MODE: &str = "workspace-write";
 
 /// Parse a `codex exec --json` stream.
 ///
@@ -522,17 +449,65 @@ env = {{ {env_table} }}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{
+        CodexAdapter, Extras, HarnessAdapter, LaunchSpec, McpDeclaration, SpawnCtx,
+    };
+    use crate::invocation::Invocation;
 
-    fn spec() -> ExecSpec {
-        ExecSpec {
+    fn ctx() -> SpawnCtx {
+        SpawnCtx {
+            agent_id: AgentId("019f-node".into()),
+            agent_type: "codex-impl".into(),
+            depth: 1,
+            node_token: None,
+            ready_file: None,
+            repo: "/repo".into(),
+            state_dir: "/state".into(),
+            bridge: "/bin/marion-supervisor".into(),
+            bridge_args: vec!["mcp".into()],
+        }
+    }
+
+    fn spec() -> LaunchSpec {
+        LaunchSpec {
             cwd: "/tmp/wt".into(),
-            codex_home: Some("/tmp/ch".into()),
             model: None,
             prompt: "do the task".into(),
-            output_schema: None,
-            output_last_message: None,
-            config_overrides: Vec::new(),
+            tools: vec![],
+            allowed_tools: vec![],
+            mcp: McpDeclaration::Marion,
+            base_url: Some("http://127.0.0.1:8099/v1".into()),
+            api_key: None,
+            auth: Auth::Canned,
+            config_dir: "/tmp/ch".into(),
+            extra: Extras::default(),
         }
+    }
+
+    /// What `--live` hands a codex node: no `CODEX_HOME`, and the declaration on `-c` flags.
+    fn live_spec() -> LaunchSpec {
+        LaunchSpec {
+            auth: Auth::Inherited,
+            base_url: None,
+            ..spec()
+        }
+    }
+
+    fn compile_exec(spec: &LaunchSpec) -> Invocation {
+        CodexAdapter.compile(spec, &ctx()).unwrap()
+    }
+
+    fn compile_tui(spec: &LaunchSpec) -> Invocation {
+        CodexAdapter.compile_pane(spec, &ctx()).unwrap()
+    }
+
+    /// The `-c` pairs an invocation carries, in order.
+    fn pairs(inv: &Invocation) -> Vec<String> {
+        inv.args
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| w[1].clone())
+            .collect()
     }
 
     #[test]
@@ -584,9 +559,12 @@ mod tests {
     /// finds out here rather than by watching a flag vanish.
     #[test]
     fn the_execs_output_files_are_ignored_on_the_tui_rather_than_silently_dropped_into_argv() {
-        let inv = compile_tui(&ExecSpec {
-            output_schema: Some("/tmp/schema.json".into()),
-            output_last_message: Some("/tmp/last.txt".into()),
+        let inv = compile_tui(&LaunchSpec {
+            extra: Extras {
+                output_schema: Some("/tmp/schema.json".into()),
+                output_last_message: Some("/tmp/last.txt".into()),
+                ..Extras::default()
+            },
             ..spec()
         });
         assert!(
@@ -606,7 +584,7 @@ mod tests {
     fn the_tui_prompt_is_the_last_positional_and_an_empty_one_is_no_positional() {
         let inv = compile_tui(&spec());
         assert_eq!(inv.args.last().map(String::as_str), Some("do the task"));
-        let bare = compile_tui(&ExecSpec {
+        let bare = compile_tui(&LaunchSpec {
             prompt: String::new(),
             ..spec()
         });
@@ -630,7 +608,7 @@ mod tests {
     }
 
     /// Isolation is the `exec` shape's, exactly — present under canned, **absent** rather than
-    /// empty under inherited, for [`ExecSpec::codex_home`]'s reason.
+    /// empty under inherited, for [`SPEC`]'s `CODEX_HOME` row's reason.
     #[test]
     fn the_tui_is_isolated_by_codex_home_and_a_live_one_is_not_isolated_at_all() {
         let inv = compile_tui(&spec());
@@ -640,38 +618,16 @@ mod tests {
                 .any(|(k, v)| k == "CODEX_HOME" && v == "/tmp/ch"),
             "a paned codex would read and write the operator's own ~/.codex"
         );
-        let live = compile_tui(&ExecSpec {
-            codex_home: None,
-            ..spec()
-        });
+        let live = compile_tui(&live_spec());
         assert!(!live.env.iter().any(|(k, _)| k == "CODEX_HOME"));
     }
 
     /// The live route's `-c` overrides ride the TUI's argv in the same order and the same spelling
-    /// they ride `exec`'s, because there is one builder behind both.
+    /// they ride `exec`'s, because there is one row field behind both.
     #[test]
     fn the_tui_carries_the_same_config_overrides_the_exec_shape_does() {
-        let overrides = live_config_overrides(&BridgeEnv {
-            auth: Auth::Inherited,
-            ..bridge_env()
-        });
-        let tui = compile_tui(&ExecSpec {
-            codex_home: None,
-            config_overrides: overrides.clone(),
-            ..spec()
-        });
-        let exec = compile_exec(&ExecSpec {
-            codex_home: None,
-            config_overrides: overrides,
-            ..spec()
-        });
-        let pairs = |inv: &Invocation| -> Vec<String> {
-            inv.args
-                .windows(2)
-                .filter(|w| w[0] == "-c")
-                .map(|w| w[1].clone())
-                .collect()
-        };
+        let tui = compile_tui(&live_spec());
+        let exec = compile_exec(&live_spec());
         assert!(!pairs(&tui).is_empty(), "a live TUI carries no declaration");
         assert_eq!(pairs(&tui), pairs(&exec));
     }
@@ -872,9 +828,7 @@ mod tests {
     /// by name, not merely different: a blank value would send codex looking in the process cwd.
     #[test]
     fn a_live_node_sets_no_codex_home_at_all_so_it_finds_the_operators_own_auth_json() {
-        let mut s = spec();
-        s.codex_home = None;
-        let inv = compile_exec(&s);
+        let inv = compile_exec(&live_spec());
         assert!(
             !inv.env.iter().any(|(k, _)| k == "CODEX_HOME"),
             "{:?}",
@@ -891,16 +845,24 @@ mod tests {
     /// here goes through a shell, so codex receives the TOML exactly as written.
     #[test]
     fn config_overrides_ride_argv_one_flag_per_pair() {
-        let mut s = spec();
-        s.config_overrides = vec![
-            ("a.b".into(), r#""x""#.into()),
-            ("c".into(), "false".into()),
-        ];
-        let inv = compile_exec(&s);
-        let joined = inv.args.join(" ");
-        assert!(joined.contains(r#"-c a.b="x""#), "{joined}");
-        assert!(joined.contains("-c c=false"), "{joined}");
-        assert_eq!(inv.args.iter().filter(|a| *a == "-c").count(), 2);
+        let inv = compile_exec(&live_spec());
+        let expected: Vec<String> = live_config_overrides(&BridgeEnv {
+            auth: Auth::Inherited,
+            base_url: None,
+            ..bridge_env()
+        })
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+        assert_eq!(
+            pairs(&inv),
+            expected,
+            "one `-c key=value` per pair, in order"
+        );
+        assert_eq!(
+            inv.args.iter().filter(|a| *a == "-c").count(),
+            expected.len()
+        );
         assert_eq!(
             inv.args.last().unwrap(),
             "do the task",
@@ -912,9 +874,11 @@ mod tests {
     /// does: 0.146.0's `codex exec --help` lists `-m, --model <MODEL>  Model the agent should use`.
     #[test]
     fn exec_does_take_a_model_and_records_the_one_it_compiled() {
-        let mut s = spec();
-        s.model = Some("gpt-5-codex".into());
-        let inv = compile_exec(&s);
+        // Under a real vendor: a canned launch compiles none whatever was asked for.
+        let inv = compile_exec(&LaunchSpec {
+            model: Some("gpt-5-codex".into()),
+            ..live_spec()
+        });
         assert_eq!(
             inv.args.windows(2).find(|w| w[0] == "-m").map(|w| &w[1]),
             Some(&"gpt-5-codex".to_string())
@@ -939,10 +903,14 @@ mod tests {
 
     #[test]
     fn the_fallback_branch_still_compiles_when_asked() {
-        let mut s = spec();
-        s.output_schema = Some("/tmp/schema.json".into());
-        s.output_last_message = Some("/tmp/last.txt".into());
-        let inv = compile_exec(&s);
+        let inv = compile_exec(&LaunchSpec {
+            extra: Extras {
+                output_schema: Some("/tmp/schema.json".into()),
+                output_last_message: Some("/tmp/last.txt".into()),
+                ..Extras::default()
+            },
+            ..spec()
+        });
         assert!(inv.args.iter().any(|a| a == "--output-schema"));
         assert!(inv.args.iter().any(|a| a == "--output-last-message"));
     }
