@@ -522,10 +522,83 @@ impl Drop for NativeRelayTerminal {
     }
 }
 
+/// Test-only fixtures for callers that drive a [`NativeRelayTerminal`] on a fresh PTY.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use rustix::fs::{OFlags, fcntl_getfl};
+    use rustix::io::fcntl_dupfd_cloexec;
+    use rustix::process::getpgrp;
+    use rustix::termios::tcgetattr;
+
+    use super::{
+        ClientTtyWitness, F_SETFL_RESULTS, NativeRelayTerminal, TerminalBaseline,
+        TerminalFingerprint,
+    };
+    use crate::pty::{PtyMaster, WinSize};
+    use marion_proto::TerminalGeometryV1;
+
+    /// A relay terminal already in raw mode on a test PTY, plus what a test needs to prove it
+    /// was restored: a retained duplicate of stdin and the cooked flags it started with.
+    pub(crate) struct RawRelayTerminal {
+        pub(crate) master: PtyMaster,
+        pub(crate) terminal: NativeRelayTerminal,
+        pub(crate) observed_stdin: std::os::fd::OwnedFd,
+        pub(crate) baseline_stdin_flags: OFlags,
+    }
+
+    pub(crate) fn raw_relay_terminal_on_test_pty() -> RawRelayTerminal {
+        let master = PtyMaster::open(WinSize::new(91, 29)).expect("test PTY");
+        let stdin = master.open_slave().expect("relay stdin");
+        let stdout = master.open_slave().expect("relay stdout");
+        let baseline_termios = tcgetattr(&stdin).unwrap();
+        let baseline_stdin_flags = fcntl_getfl(&stdin).unwrap();
+        let baseline_stdout_flags = fcntl_getfl(&stdout).unwrap();
+        let witness = ClientTtyWitness {
+            stdin,
+            stdout,
+            fingerprint: TerminalFingerprint {
+                st_dev: 0,
+                st_ino: 0,
+                st_rdev: 0,
+            },
+            baseline: TerminalBaseline {
+                termios: baseline_termios,
+                stdin_flags: baseline_stdin_flags,
+                stdout_flags: baseline_stdout_flags,
+            },
+            session_id: getpgrp(),
+            foreground_pgid: getpgrp(),
+            observed_geometry: TerminalGeometryV1 {
+                cols: 91,
+                rows: 29,
+                xpixel: 0,
+                ypixel: 0,
+            },
+        };
+        let observed_stdin = fcntl_dupfd_cloexec(witness.stdin(), 3).unwrap();
+        let terminal = witness.enter_native_relay().expect("enter raw mode");
+        RawRelayTerminal {
+            master,
+            terminal,
+            observed_stdin,
+            baseline_stdin_flags,
+        }
+    }
+
+    /// Make the next stdin status-flag restoration fail with `EBADF` on this thread; the retry
+    /// after it succeeds.
+    pub(crate) fn fail_next_stdin_flag_restore() {
+        F_SETFL_RESULTS.with(|results| {
+            results
+                .borrow_mut()
+                .extend([Some(rustix::io::Errno::BADF), None])
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::OpenOptions;
-    use std::io::{BufRead, Write};
 
     use super::*;
     use crate::pty::{PtyMaster, WinSize};
@@ -1177,169 +1250,6 @@ mod tests {
         terminal
             .restore_result()
             .expect("the armed guard retries the failed resource");
-        assert_eq!(fcntl_getfl(&observed_stdin).unwrap(), baseline_stdin_flags);
-    }
-
-    /// Run `test` alone in a child process, where the process-global relay signal ownership the
-    /// production relay acquires is uncontended. Returns `true` inside that child and `false` in
-    /// the parent once the child has passed.
-    fn run_isolated_relay_probe(probe: &str, test: &str) -> bool {
-        if std::env::var_os(probe).is_some() {
-            return true;
-        }
-        let name = format!(
-            "{}::{test}",
-            module_path!().split_once("::").expect("crate::module").1
-        );
-        let child = std::process::Command::new(
-            std::env::current_exe().expect("the unit-test binary has a path"),
-        )
-        .args(["--exact", "--nocapture", "--test-threads", "1", &name])
-        .env(probe, "1")
-        .output()
-        .expect("the isolated production relay probe runs");
-        assert!(
-            child.status.success(),
-            "the isolated production relay probe failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&child.stdout),
-            String::from_utf8_lossy(&child.stderr)
-        );
-        false
-    }
-
-    #[test]
-    fn relay_exit_preserves_the_primary_error_and_names_cleanup_failure() {
-        if !run_isolated_relay_probe(
-            "MARION_NATIVE_RELAY_FINISH_PROBE",
-            "relay_exit_preserves_the_primary_error_and_names_cleanup_failure",
-        ) {
-            return;
-        }
-        let master = PtyMaster::open(WinSize::new(91, 29)).expect("test PTY");
-        let stdin = master.open_slave().expect("relay stdin");
-        let stdout = master.open_slave().expect("relay stdout");
-        let baseline_termios = tcgetattr(&stdin).unwrap();
-        let baseline_stdin_flags = fcntl_getfl(&stdin).unwrap();
-        let baseline_stdout_flags = fcntl_getfl(&stdout).unwrap();
-        let witness = ClientTtyWitness {
-            stdin,
-            stdout,
-            fingerprint: TerminalFingerprint {
-                st_dev: 0,
-                st_ino: 0,
-                st_rdev: 0,
-            },
-            baseline: TerminalBaseline {
-                termios: baseline_termios,
-                stdin_flags: baseline_stdin_flags,
-                stdout_flags: baseline_stdout_flags,
-            },
-            session_id: getpgrp(),
-            foreground_pgid: getpgrp(),
-            observed_geometry: TerminalGeometryV1 {
-                cols: 91,
-                rows: 29,
-                xpixel: 0,
-                ypixel: 0,
-            },
-        };
-        let observed_stdin = fcntl_dupfd_cloexec(witness.stdin(), 3).unwrap();
-        let mut terminal = witness.enter_native_relay().expect("enter raw mode");
-        F_SETFL_RESULTS.with(|results| {
-            results
-                .borrow_mut()
-                .extend([Some(rustix::io::Errno::BADF), None])
-        });
-
-        let signals =
-            crate::native_relay::RelaySignalGuard::acquire().expect("the probe owns relay signals");
-
-        let error = crate::native_relay::finish_claimed_relay(
-            &mut terminal,
-            Err("reading the native pane socket: reset".into()),
-            signals,
-        )
-        .unwrap_err();
-        assert!(
-            error.contains("reading the native pane socket: reset"),
-            "{error}"
-        );
-        assert!(error.contains("restoring native terminal state"), "{error}");
-
-        // A failed explicit restore leaves Drop armed for the last-resort retry.
-        drop(terminal);
-        assert_eq!(fcntl_getfl(&observed_stdin).unwrap(), baseline_stdin_flags);
-    }
-
-    #[test]
-    fn production_relay_open_failure_reports_cleanup_and_drop_retries_restoration() {
-        if !run_isolated_relay_probe(
-            "MARION_NATIVE_RELAY_OPEN_FAILURE_PROBE",
-            "production_relay_open_failure_reports_cleanup_and_drop_retries_restoration",
-        ) {
-            return;
-        }
-
-        let master = PtyMaster::open(WinSize::new(91, 29)).expect("test PTY");
-        let stdin = master.open_slave().expect("relay stdin");
-        let stdout = master.open_slave().expect("relay stdout");
-        let baseline_termios = tcgetattr(&stdin).unwrap();
-        let baseline_stdin_flags = fcntl_getfl(&stdin).unwrap();
-        let baseline_stdout_flags = fcntl_getfl(&stdout).unwrap();
-        let witness = ClientTtyWitness {
-            stdin,
-            stdout,
-            fingerprint: TerminalFingerprint {
-                st_dev: 0,
-                st_ino: 0,
-                st_rdev: 0,
-            },
-            baseline: TerminalBaseline {
-                termios: baseline_termios,
-                stdin_flags: baseline_stdin_flags,
-                stdout_flags: baseline_stdout_flags,
-            },
-            session_id: getpgrp(),
-            foreground_pgid: getpgrp(),
-            observed_geometry: TerminalGeometryV1 {
-                cols: 91,
-                rows: 29,
-                xpixel: 0,
-                ypixel: 0,
-            },
-        };
-        let observed_stdin = fcntl_dupfd_cloexec(witness.stdin(), 3).unwrap();
-        let mut terminal = witness.enter_native_relay().expect("enter raw mode");
-        let (client, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || {
-            let mut request = String::new();
-            std::io::BufReader::new(server.try_clone().unwrap())
-                .read_line(&mut request)
-                .expect("read native attach request");
-            server.write_all(b"not-json\n").unwrap();
-            server.flush().unwrap();
-        });
-        F_SETFL_RESULTS.with(|results| {
-            results
-                .borrow_mut()
-                .extend([Some(rustix::io::Errno::BADF), None])
-        });
-
-        let signals =
-            crate::native_relay::RelaySignalGuard::acquire().expect("the probe owns relay signals");
-
-        let error = crate::native_relay::relay_claimed(
-            marion_core::contract::AgentId("native".into()),
-            &mut terminal,
-            client,
-            signals,
-        )
-        .unwrap_err();
-        server.join().unwrap();
-        assert!(error.contains("unreadable native pane frame"), "{error}");
-        assert!(error.contains("terminal restoration"), "{error}");
-
-        drop(terminal);
         assert_eq!(fcntl_getfl(&observed_stdin).unwrap(), baseline_stdin_flags);
     }
 }

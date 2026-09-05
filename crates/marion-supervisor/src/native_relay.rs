@@ -1098,9 +1098,12 @@ mod tests {
         SIG_BLOCK, SIGHUP, SIGINT, SIGTERM, SIGWINCH, SUSPENDED, SigSet, Sigaction, TERMINATED,
         current_thread_signal_mask, empty_sigset, fail_relay_signal_install_at,
         fail_relay_signal_restore_at, fail_relay_signal_restore_at_attempts, finish_claimed_relay,
-        on_relay_signal, pthread_sigmask, raise, redeliver_signal, resolve_relay_finish,
-        setup_after_signal_acquire, sigaction, signal, signal_is_blocked,
+        on_relay_signal, pthread_sigmask, raise, redeliver_signal, relay_claimed,
+        resolve_relay_finish, setup_after_signal_acquire, sigaction, signal, signal_is_blocked,
         write_passive_terminal_cleanup_to,
+    };
+    use crate::native_tty::test_support::{
+        RawRelayTerminal, fail_next_stdin_flag_restore, raw_relay_terminal_on_test_pty,
     };
 
     const SIGNAL_RESTORE_PROBE: &str = "MARION_NATIVE_SIGNAL_RESTORE_PROBE";
@@ -1688,6 +1691,82 @@ mod tests {
         };
         assert_eq!(error, "injected setup failure");
         drop(RelaySignalGuard::acquire().expect("setup failure finalized signal ownership"));
+    }
+
+    #[test]
+    fn relay_exit_preserves_the_primary_error_and_names_cleanup_failure() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "relay_exit_preserves_the_primary_error_and_names_cleanup_failure",
+        ) {
+            return;
+        }
+        let RawRelayTerminal {
+            master: _master,
+            mut terminal,
+            observed_stdin,
+            baseline_stdin_flags,
+        } = raw_relay_terminal_on_test_pty();
+        fail_next_stdin_flag_restore();
+        let signals = RelaySignalGuard::acquire().expect("the probe owns relay signals");
+
+        let error = finish_claimed_relay(
+            &mut terminal,
+            Err("reading the native pane socket: reset".into()),
+            signals,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("reading the native pane socket: reset"),
+            "{error}"
+        );
+        assert!(error.contains("restoring native terminal state"), "{error}");
+        // A failed explicit restore leaves Drop armed for the last-resort retry.
+        drop(terminal);
+        assert_eq!(
+            rustix::fs::fcntl_getfl(&observed_stdin).unwrap(),
+            baseline_stdin_flags
+        );
+    }
+
+    #[test]
+    fn production_relay_open_failure_reports_cleanup_and_drop_retries_restoration() {
+        if !run_isolated_signal_probe(
+            SIGNAL_OWNER_PROBE,
+            "production_relay_open_failure_reports_cleanup_and_drop_retries_restoration",
+        ) {
+            return;
+        }
+        let RawRelayTerminal {
+            master: _master,
+            mut terminal,
+            observed_stdin,
+            baseline_stdin_flags,
+        } = raw_relay_terminal_on_test_pty();
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut request = String::new();
+            BufReader::new(server.try_clone().unwrap())
+                .read_line(&mut request)
+                .expect("read native attach request");
+            server.write_all(b"not-json\n").unwrap();
+            server.flush().unwrap();
+        });
+        fail_next_stdin_flag_restore();
+        let signals = RelaySignalGuard::acquire().expect("the probe owns relay signals");
+
+        let error =
+            relay_claimed(AgentId("native".into()), &mut terminal, client, signals).unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.contains("unreadable native pane frame"), "{error}");
+        assert!(error.contains("terminal restoration"), "{error}");
+        drop(terminal);
+        assert_eq!(
+            rustix::fs::fcntl_getfl(&observed_stdin).unwrap(),
+            baseline_stdin_flags
+        );
     }
 
     #[test]

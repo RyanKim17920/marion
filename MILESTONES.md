@@ -969,7 +969,8 @@ acceptance evidence, so every marker remains unchanged.
     `every_failed_signal_restoration_remains_armed_for_drop_retry`,
     `native_relay_restores_the_prior_sigwinch_handler_after_every_exit`,
     `native_relay_sigterm_restores_terminal_and_redelivers_to_itself` (nested-PTY child), and the
-    `native_tty` relay probes on the production `relay_claimed`/`finish_claimed_relay` path. The
+    raw-terminal probes on the production `relay_claimed`/`finish_claimed_relay` path, which now
+    live in `native_relay` so `native_tty` no longer imports the module that depends on it. The
     production native facade stays dark: `run` is still unreachable from the shipped CLI, TSTP is
     recorded but suspend/resume is not implemented, and no end-to-end socket/lease evidence is
     claimed. M3 remains `[partial]` pending C1's recorded manual session.
