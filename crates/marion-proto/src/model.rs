@@ -27,9 +27,9 @@ use serde::{Deserialize, Serialize};
 /// says a caller should learn anything marion will not do: from a refusal that says so —
 /// [`crate::FailureKind::Unsupported`] on the `node/steer` that needed it.
 ///
-/// `binary_path`, `harness_session` and §7.6's evidence flags are likewise absent: they are
-/// supervisor-internal, and a tree pane that could render them would be a tree pane that could
-/// leak them.
+/// `binary_path`, `harness_session`, `harness_pane` and §7.6's evidence flags are likewise absent:
+/// they are supervisor-internal, and a tree pane that could render them would be a tree pane that
+/// could leak them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeSummary {
     pub agent_id: AgentId,

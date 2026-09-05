@@ -84,6 +84,10 @@ pub struct ReplayedNode {
     /// the journal predates the record. A reader that needs one and finds `None` refuses by name
     /// rather than inventing a session.
     pub harness_session: Option<String>,
+    /// The shape the last [`SessionObserved`] recorded this node was launched in — `true` a pane,
+    /// `false` headless (and the default where no session was observed). A resume reads it so the
+    /// relaunch takes the same shape rather than inferring one.
+    pub harness_pane: bool,
     /// `Some` iff the intent was resolved by an abort rather than a confirmation.
     pub spawn_aborted: Option<String>,
     pub state: NodeState,
@@ -142,6 +146,7 @@ impl ReplayedNode {
             pid: None,
             start_id: None,
             harness_session: None,
+            harness_pane: false,
             spawn_aborted: None,
             // Before any state record, a node is `Spawning` — §3.2's first state, and the only one
             // an intent alone justifies.
@@ -520,8 +525,11 @@ impl Replay {
             // conversation, and a later observation — a resumed process re-announcing the same
             // session, or a harness that forks one — is the one that was true last. `harness` is
             // carried on the record for the reader; the node already knows its own from the intent.
-            RecordKind::SessionObserved(SessionObserved { session_id, .. }) => {
-                node.harness_session = Some(session_id)
+            RecordKind::SessionObserved(SessionObserved {
+                session_id, pane, ..
+            }) => {
+                node.harness_session = Some(session_id);
+                node.harness_pane = pane;
             }
             RecordKind::SupervisorExited(_) => {
                 unreachable!("the process-wide record returned before selecting a node")

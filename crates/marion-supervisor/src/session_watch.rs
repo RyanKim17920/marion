@@ -32,6 +32,10 @@ pub(crate) struct SessionWatch<'a> {
     project: &'a ProjectDir,
     agent_id: &'a AgentId,
     harness: Harness,
+    /// The shape this node was launched in, recorded onto the session so a resume reconstructs it
+    /// rather than inferring it. A pane emits no `stream-json`, so today this is only ever seen
+    /// beside a `false`; the field is written so a pane node's resume stays a checked refusal.
+    pane: bool,
     /// The row's grammar, or `None` for a harness whose stream is read as code (ACP) — nothing is
     /// observed, honestly, and the node replays with `harness_session: None`.
     grammar: Option<&'static StreamGrammar>,
@@ -39,11 +43,17 @@ pub(crate) struct SessionWatch<'a> {
 }
 
 impl<'a> SessionWatch<'a> {
-    pub(crate) fn new(project: &'a ProjectDir, agent_id: &'a AgentId, harness: Harness) -> Self {
+    pub(crate) fn new(
+        project: &'a ProjectDir,
+        agent_id: &'a AgentId,
+        harness: Harness,
+        pane: bool,
+    ) -> Self {
         Self {
             project,
             agent_id,
             harness,
+            pane,
             grammar: harness_spec(harness).stream,
             seen: Cell::new(false),
         }
@@ -81,6 +91,7 @@ impl<'a> SessionWatch<'a> {
                     agent_id: self.agent_id.clone(),
                     harness: self.harness,
                     session_id: id,
+                    pane: self.pane,
                 }),
             );
         }
@@ -127,7 +138,7 @@ mod tests {
     fn the_first_sighting_is_journaled_once_and_nothing_else_is() {
         let (_dir, project) = scratch_project("once");
         let id = AgentId("n-1".into());
-        let watch = SessionWatch::new(&project, &id, Harness::Codex);
+        let watch = SessionWatch::new(&project, &id, Harness::Codex, false);
         watch.observe_line("Reading additional input from stdin...");
         watch.observe_line(r#"{"type":"turn.started"}"#);
         assert!(!watch.seen());
@@ -148,7 +159,7 @@ mod tests {
     fn a_duplex_frame_is_observed_and_a_rowless_harness_observes_nothing() {
         let (_dir, project) = scratch_project("duplex");
         let id = AgentId("n-2".into());
-        let watch = SessionWatch::new(&project, &id, Harness::ClaudeCode);
+        let watch = SessionWatch::new(&project, &id, Harness::ClaudeCode, false);
         let init = serde_json::json!({"type":"system","subtype":"init","session_id":"c-1"});
         watch.observe_event(StreamEvent::Unparsed("warming up"));
         watch.observe_event(StreamEvent::Frame(&init));
@@ -156,7 +167,7 @@ mod tests {
 
         let (_dir, project) = scratch_project("acp");
         let id = AgentId("n-3".into());
-        let watch = SessionWatch::new(&project, &id, Harness::Acp);
+        let watch = SessionWatch::new(&project, &id, Harness::Acp, false);
         watch.observe_line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1"}}"#);
         assert!(!watch.seen());
         assert_eq!(records(&project), 0);

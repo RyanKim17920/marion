@@ -344,6 +344,19 @@ pub struct SessionObserved {
     pub harness: Harness,
     /// Opaque to marion: the harness's spelling, kept verbatim, handed back verbatim.
     pub session_id: String,
+    /// **The shape this node was launched in**, recorded here so a resume reconstructs the launch
+    /// from a written value rather than inferring it (`plan-restart-resume.md` step 6): `true` is a
+    /// pane (a pty marion owns), `false` the headless launch. It rides this record because this is
+    /// the record a resume reads — a session and the shape that produced it, together — and because
+    /// only a launch that emitted a frame has one at all. `false` today on every resumable node: a
+    /// pane emits no `stream-json`, so it names no session, so a pane node is never resumed anyway;
+    /// the field is written so that stays a checked refusal and never a silent headless relaunch.
+    ///
+    /// **Additive**, this enum's rule: `#[serde(default)]` so older journals replay, and
+    /// `skip_serializing_if` so a headless node's record is byte-identical to what earlier builds
+    /// wrote.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub pane: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -540,6 +553,7 @@ mod tests {
                 agent_id: AgentId("a-1".into()),
                 harness: Harness::Codex,
                 session_id: "thr_01".into(),
+                pane: false,
             }),
             RecordKind::SupervisorExited(SupervisorExited {}),
         ];
@@ -738,6 +752,7 @@ mod tests {
             agent_id: AgentId("a-1".into()),
             harness: Harness::ClaudeCode,
             session_id: "0a2f7d1e-session".into(),
+            pane: false,
         });
         assert_eq!(observed.agent_id(), Some(&AgentId("a-1".into())));
         assert!(
@@ -793,6 +808,40 @@ mod tests {
             tree.get(&AgentId("a-1".into())).unwrap().harness_session,
             None
         );
+
+        // **Pane is additive and byte-exact when false**, and folds onto the node when true.
+        let headless = RecordKind::SessionObserved(SessionObserved {
+            agent_id: AgentId("a-1".into()),
+            harness: Harness::ClaudeCode,
+            session_id: "s".into(),
+            pane: false,
+        });
+        assert_eq!(
+            serde_json::to_string(&headless).unwrap(),
+            r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"s"}}"#,
+            "a headless record omits pane, byte-identical to older builds"
+        );
+        let paned = RecordKind::SessionObserved(SessionObserved {
+            agent_id: AgentId("a-1".into()),
+            harness: Harness::ClaudeCode,
+            session_id: "s".into(),
+            pane: true,
+        });
+        assert_eq!(
+            serde_json::to_string(&paned).unwrap(),
+            r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"s","pane":true}}"#
+        );
+        let mut bytes = Vec::new();
+        for (seq, kind) in [intent(), paned].into_iter().enumerate() {
+            let mut r = rec(kind);
+            r.seq = seq as u64;
+            bytes.extend(encode(&r).unwrap());
+        }
+        let node = crate::registry::replay(&bytes)
+            .get(&AgentId("a-1".into()))
+            .cloned()
+            .unwrap();
+        assert!(node.harness_pane, "the pane shape folds onto the node");
     }
 
     #[test]

@@ -1104,8 +1104,14 @@ fn launch_inner(
     // The root's harness session, journaled on the frame that names it — what a later
     // `node/resume` hands back to the harness. Beside `events` for the same reason it is on the
     // child path: a root lost mid-run never reaches its capture.
-    let session =
-        crate::session_watch::SessionWatch::new(&node.project, &node.agent_id, node.harness);
+    // A root's shape is its launch path: a pane is the pty marion owns (`Terminal`), everything
+    // else is headless. Recorded on the session so a resume takes the same shape.
+    let session = crate::session_watch::SessionWatch::new(
+        &node.project,
+        &node.agent_id,
+        node.harness,
+        node.path == RootPath::Terminal,
+    );
     let result = match node.path {
         // Unreachable by `prepare`'s refusal, and stated as the refusal rather than as a panic: a
         // `Node` reaching here on this path would mean the guard had been removed, and an operator

@@ -1745,6 +1745,13 @@ grouping.
   proving keystrokes were not what grew the list), with `NodeResumeParams { agent_id, prompt }` and
   `NodeResumeResult { agent_id, state, spawn_generation }`. The handler arm is the next commit; for
   now the method is specified on the wire and still answered `Unimplemented`.
+  **2026-09-05 — the launch shape is recorded, so resume never infers it.** `SessionObserved`
+  gains `pane: bool` (additive, `skip_serializing_if` so a headless record is byte-identical to
+  older journals) and replay folds it onto `ReplayedNode::harness_pane`. A pane emits no
+  `stream-json` and so names no session, meaning every resumable node is headless and the value is
+  `false` today — recorded anyway so a pane node's resume stays a checked refusal rather than a
+  silent headless relaunch. `SessionWatch::new` carries the shape from the launch path (a root's
+  `RootPath::Terminal` is the pane; children are never paned).
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.
