@@ -1089,6 +1089,12 @@ acceptance evidence, so every marker remains unchanged.
     does not yet act on a pending stop, so Ctrl-Z behavior in the dark facade is unchanged in
     effect; M3 remains `[partial]`.
 
+    **Pending-stop observation in the relay pump moves no milestone marker.** Each 50 ms tick now
+    queries `sigpending` for the owned default `SIGTSTP` and returns `RelayStop::Suspend` without
+    consuming it, ahead of the detach check. Until the suspend transition lands, a Ctrl-Z on the
+    dark facade would finish the relay like a clean detach with the terminal restored. Covered by
+    `pump_reports_a_pending_owned_stop_as_suspend_without_consuming_it`; M3 remains `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

@@ -34,6 +34,8 @@ static RELAY_SIGNAL_EVENTS: AtomicU32 = AtomicU32::new(0);
 static FIRST_RELAY_SIGNAL: AtomicI32 = AtomicI32::new(0);
 static RELAY_SIGNAL_OWNER: Mutex<()> = Mutex::new(());
 static RELAY_SIGNAL_OWNERSHIP_POISONED: AtomicBool = AtomicBool::new(false);
+/// True while the current owner keeps an eligible default `SIGTSTP` blocked on the relay thread.
+static STOP_OWNED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static BEFORE_REDELIVERY_WHILE_OWNER_HELD: Mutex<Option<Box<dyn FnOnce() + Send>>> =
     Mutex::new(None);
@@ -336,6 +338,7 @@ impl RelaySignalGuard {
                 }
             };
         }
+        STOP_OWNED.store(stop_owned, Ordering::SeqCst);
         Ok(Self {
             prior,
             stop_owned,
@@ -349,21 +352,6 @@ impl RelaySignalGuard {
     #[cfg(test)]
     pub(crate) fn owns_stop(&self) -> bool {
         self.stop_owned
-    }
-
-    /// Whether an owned `SIGTSTP` is pending. Observation never consumes it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the relay pump consumes the pending stop in the suspend transition"
-        )
-    )]
-    pub(crate) fn stop_pending(&self) -> std::io::Result<bool> {
-        if !self.stop_owned {
-            return Ok(false);
-        }
-        pending_signals().map(|pending| signal_in_set(&pending, SIGTSTP))
     }
 
     fn restore_result(&mut self) -> Result<Option<std::ffi::c_int>, RelaySignalRestoreError> {
@@ -403,10 +391,20 @@ impl RelaySignalGuard {
                 });
             }
             self.stop_owned = false;
+            STOP_OWNED.store(false, Ordering::SeqCst);
         }
         clear_relay_signal_state();
         Ok(self.captured_signal.take())
     }
+}
+
+/// Whether the owned default `SIGTSTP` is pending. Observation never consumes it, so a stop stays
+/// pending until the relay reveals it or ownership is restored.
+fn owned_stop_pending() -> std::io::Result<bool> {
+    if !STOP_OWNED.load(Ordering::SeqCst) {
+        return Ok(false);
+    }
+    pending_signals().map(|pending| signal_in_set(&pending, SIGTSTP))
 }
 
 /// Decide `SIGTSTP` ownership from its current disposition, mutating nothing.
@@ -576,6 +574,8 @@ impl Drop for RelaySignalGuard {
 pub(crate) enum RelayStop {
     Complete,
     ExternalSignal(std::ffi::c_int),
+    /// The owned default `SIGTSTP` is pending; the terminal must be restored before it is revealed.
+    Suspend,
 }
 
 struct OwnedFdReader(std::os::fd::OwnedFd);
@@ -1116,6 +1116,11 @@ impl<W: Write> RawPaneSession<W> {
             if signal != 0 {
                 return Ok(RelayStop::ExternalSignal(signal));
             }
+            if owned_stop_pending()
+                .map_err(|error| format!("querying the pending native relay stop: {error}"))?
+            {
+                return Ok(RelayStop::Suspend);
+            }
             if self.leaving.load(Ordering::SeqCst) {
                 if let Some(error) = self
                     .keyboard_failure
@@ -1219,9 +1224,9 @@ mod tests {
         SIG_BLOCK, SIG_DFL, SIG_IGN, SIGHUP, SIGINT, SIGTERM, SIGTSTP, SIGWINCH, SigSet, Sigaction,
         TERMINATED, current_thread_signal_mask, empty_sigset, fail_relay_signal_install_at,
         fail_relay_signal_restore_at, fail_relay_signal_restore_at_attempts, finish_claimed_relay,
-        on_relay_signal, pthread_sigmask, raise, redeliver_signal, relay_claimed,
-        resolve_relay_finish, setup_after_signal_acquire, sigaction, signal, signal_in_set,
-        signal_set, write_passive_terminal_cleanup_to,
+        on_relay_signal, owned_stop_pending, pthread_sigmask, raise, redeliver_signal,
+        relay_claimed, resolve_relay_finish, setup_after_signal_acquire, sigaction, signal,
+        signal_in_set, signal_set, write_passive_terminal_cleanup_to,
     };
     use crate::native_tty::test_support::{
         RawRelayTerminal, fail_next_stdin_flag_restore, raw_relay_terminal_on_test_pty,
@@ -1637,15 +1642,15 @@ mod tests {
             ),
             "an eligible SIGTSTP stays blocked on the coordinator"
         );
-        assert!(!guard.stop_pending().expect("querying pending signals"));
+        assert!(!owned_stop_pending().expect("querying pending signals"));
         // SAFETY: SIGTSTP is blocked on this thread, so the raise only marks it pending.
         assert_eq!(unsafe { raise(SIGTSTP) }, 0);
         assert!(
-            guard.stop_pending().expect("querying pending signals"),
+            owned_stop_pending().expect("querying pending signals"),
             "a blocked default SIGTSTP is observed pending, never consumed"
         );
         assert!(
-            guard.stop_pending().expect("querying pending signals"),
+            owned_stop_pending().expect("querying pending signals"),
             "observing the pending stop must not consume it"
         );
 
@@ -1684,7 +1689,7 @@ mod tests {
         );
         // SAFETY: the ignored disposition discards the raise.
         assert_eq!(unsafe { raise(SIGTSTP) }, 0);
-        assert!(!guard.stop_pending().expect("querying pending signals"));
+        assert!(!owned_stop_pending().expect("querying pending signals"));
         drop(guard);
         assert_eq!(snapshot_action(SIGTSTP).handler, SIG_IGN);
     }
@@ -1704,7 +1709,7 @@ mod tests {
 
         assert!(!guard.owns_stop());
         assert_eq!(snapshot_action(SIGTSTP).handler, SIG_DFL);
-        assert!(!guard.stop_pending().expect("querying pending signals"));
+        assert!(!owned_stop_pending().expect("querying pending signals"));
         drop(guard);
         assert_eq!(
             current_thread_signal_mask().expect("querying the thread signal mask"),
@@ -2916,6 +2921,36 @@ mod tests {
             elapsed < Duration::from_millis(100),
             "signal contention waited for {elapsed:?} instead of refusing"
         );
+    }
+
+    #[test]
+    fn pump_reports_a_pending_owned_stop_as_suspend_without_consuming_it() {
+        if !run_isolated_signal_probe(
+            SIGNAL_RESET_PROBE,
+            "pump_reports_a_pending_owned_stop_as_suspend_without_consuming_it",
+        ) {
+            return;
+        }
+        let _restore_original = install_sentinel();
+        let (mut session, signals, release, server_thread, _resize_tty) =
+            relay_for_signal_exit(SignalExit::Detach);
+        assert!(signals.owns_stop());
+        // SAFETY: SIGTSTP is blocked on this thread, so the raise only marks it pending.
+        assert_eq!(unsafe { raise(SIGTSTP) }, 0);
+
+        let outcome = session.pump();
+
+        assert_eq!(outcome, Ok(RelayStop::Suspend));
+        assert!(
+            owned_stop_pending().expect("querying pending signals"),
+            "the pump observed the stop but must not consume it"
+        );
+        // Discard the pending stop before ownership is released so this probe is not stopped.
+        let _ignored = install_ignored_action(SIGTSTP);
+        release.unwrap().send(()).unwrap();
+        drop(session);
+        drop(signals);
+        server_thread.join().unwrap();
     }
 
     #[test]
