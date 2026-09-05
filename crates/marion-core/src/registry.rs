@@ -20,7 +20,10 @@
 //!   policy needs answered — "what does the journal actually say?" A node recorded live with no
 //!   exit record replays as [`ReapState::Live`] with [`ReplayedNode::is_unresolved`] true, which
 //!   is where the marking reads from. The one door the verdict enters through is
-//!   [`Replay::mark_orphaned`], which a policy calls; no record kind reaches it.
+//!   [`Replay::mark_orphaned`], which a policy calls; no record kind reaches it. The verdict
+//!   leaves by two: a record that decides the fate (an exit, a kill, a reap, an abort), and a
+//!   **second `Spawned`** — a resume, which starts a new process lifetime on the same node and is
+//!   counted in [`ReplayedNode::spawn_generation`].
 //! * **It never resolves an unconfirmed reap intent.** §7.2 resolves it by *checking for the
 //!   process*, which is I/O and a decision, not a reading.
 //! * **It never reads a contract file.** [`ContractPersisted`] says a contract exists and how it
@@ -59,6 +62,13 @@ pub struct ReplayedNode {
     pub intent: Option<SpawnIntent>,
     /// §6.1 step 7's confirmation arrived.
     pub spawn_confirmed: bool,
+    /// How many `Spawned` records this node has folded — how many process lifetimes the journal
+    /// says it has had. `0` before any, `1` for every node marion has ever produced so far, and
+    /// `2` or more for a node that was **resumed**: relaunched under its own agent id after a
+    /// supervisor lost it. The count is the reader's handle for "this pid is not the pid the first
+    /// records were about", which nothing else on the node says once [`Self::pid`] has been
+    /// overwritten.
+    pub spawn_generation: u32,
     pub harness_version: Option<String>,
     pub model: Option<String>,
     pub pid: Option<i32>,
@@ -119,6 +129,7 @@ impl ReplayedNode {
             agent_id,
             intent: None,
             spawn_confirmed: false,
+            spawn_generation: 0,
             harness_version: None,
             model: None,
             pid: None,
@@ -247,6 +258,14 @@ impl ReplayedNode {
     ///
     /// This is stable across the marking: `Orphaned` is precisely marion saying it did **not**
     /// decide.
+    ///
+    /// **A resume does not decide a fate, and this is deliberate.** A second `Spawned` on the same
+    /// agent id returns the node to `Live` in the running tree as a new process lifetime, so a
+    /// supervisor that relaunched an orphan stops showing it as one. But this predicate reads the
+    /// *fate*, and a relaunched process whose journal ends at its `Spawned` has none on record — so
+    /// the **next** boot over that journal marks it `Orphaned` again, which is correct: it is once
+    /// more a node no supervisor holds. Counting the relaunch as a decision here would make the
+    /// second orphaning silent.
     pub fn fate_decided(&self) -> bool {
         self.state.is_exited() || self.reap_state == ReapState::ReapedIdle
     }
@@ -414,10 +433,25 @@ impl Replay {
             }
             RecordKind::Spawned(s) => {
                 node.spawn_confirmed = true;
+                node.spawn_generation += 1;
                 node.harness_version = Some(s.harness_version);
                 node.model = s.model;
                 node.pid = s.pid;
                 node.start_id = s.start_id;
+                // **A second `Spawned` is a resume**: marion relaunched this node under its own
+                // agent id, and the record names the new process. That is a decision about the
+                // node's fate — the only one §7.2's `Orphaned` was ever waiting for — so the
+                // marking goes, and a new process lifetime begins where every lifetime does:
+                // `Spawning`, with no exit and no reap outstanding, until this process's own
+                // records say otherwise. Everything that is about the *node* rather than the
+                // *process* — the intent, the contracts, the denials, the root readings, the record
+                // count, when it first appeared — is left exactly as the earlier records built it.
+                if node.spawn_generation > 1 {
+                    node.state = NodeState::Spawning;
+                    node.exit = None;
+                    node.reap_state = ReapState::Live;
+                    node.reap_intent = None;
+                }
             }
             RecordKind::SpawnAborted(a) => node.spawn_aborted = Some(a.reason),
             RecordKind::StateChanged(s) => {
@@ -909,6 +943,68 @@ mod tests {
             r.get(&id("root")).unwrap().reap_state,
             ReapState::Orphaned,
             "a state change says what the node is doing, not what marion decided about it",
+        );
+    }
+
+    /// **A resume is a second `Spawned` on the same agent id**, and it is a decision — marion
+    /// relaunched the node — so it retracts an `Orphaned` marking the way an exit or a reap does,
+    /// and it starts a new process lifetime: the node is `Live`, its pid and start identity are
+    /// the new process's, and `spawn_generation` counts the relaunch. What the record does **not**
+    /// do is rewrite history: the node's earlier records are still counted, the contracts it
+    /// produced in its first life are still its, and the intent — §7.5's immutable half — is the
+    /// one the first writer wrote.
+    #[test]
+    fn a_second_spawned_after_an_orphan_marking_returns_the_node_to_live_with_the_new_pid_and_start_id()
+     {
+        let mut j = m1_journal();
+        j.retain(|r| !matches!(&r.kind, RecordKind::Exited(e) if e.agent_id == id("root")));
+        let mut r = replay(&bytes(&j));
+        assert!(r.mark_orphaned(&id("root")));
+        let before = r.get(&id("root")).unwrap().clone();
+        assert_eq!(before.reap_state, ReapState::Orphaned);
+        assert_eq!(before.pid, Some(11));
+        assert_eq!(before.spawn_generation, 1, "one Spawned is one generation");
+
+        let n = j.len() as u64;
+        let new_start = crate::node::StartId("macos:1725500000-relaunch".into());
+        r.extend(&bytes(&[record(
+            n,
+            RecordKind::Spawned(Spawned {
+                agent_id: id("root"),
+                harness_version: "2.1.221".into(),
+                model: Some("opus".into()),
+                pid: Some(99),
+                start_id: Some(new_start.clone()),
+            }),
+        )]));
+
+        let root = r.get(&id("root")).unwrap();
+        assert_eq!(root.reap_state, ReapState::Live, "a relaunch is a decision");
+        assert_eq!(root.spawn_generation, 2);
+        assert_eq!(root.pid, Some(99), "the pid is the new process's");
+        assert_eq!(root.start_id, Some(new_start), "and so is the identity");
+        assert_eq!(root.harness_version.as_deref(), Some("2.1.221"));
+        assert_eq!(root.model.as_deref(), Some("opus"));
+        assert_eq!(
+            root.state,
+            NodeState::Spawning,
+            "a new process has produced no state record yet"
+        );
+        assert_eq!(root.exit, None);
+        assert_eq!(
+            root.records,
+            before.records + 1,
+            "the old records still count"
+        );
+        assert_eq!(root.intent, before.intent, "§7.5: the intent is immutable");
+        assert_eq!(
+            root.first_ts, before.first_ts,
+            "the node did not appear anew"
+        );
+        assert_eq!(
+            r.nodes().len(),
+            2,
+            "a relaunch is the same node, not a second one"
         );
     }
 

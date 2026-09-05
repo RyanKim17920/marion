@@ -1425,8 +1425,15 @@ grouping.
   **Re-checked 2026-09-05 — the sentence is stale in one respect and true in the one that
   matters.** `Orphaned` marking has had its substrate since `restart.rs` (M2 criterion 3), and a
   client attaching after a restart is now told the truth about an orphan — `ReplayResumable`, never
-  a live channel. What a restart still does **not** do is bring any node back: no record names a
-  harness session, no `node/resume` exists, and a re-spawn of a known `agent_id` is unmeasured.
+  a live channel. Replay now folds a **second `Spawned` on a known `agent_id`** as a resume — the
+  node returns to `Live` with the new pid and start identity, `ReplayedNode::spawn_generation`
+  counts the lifetime, and the earlier records, contracts and intent are untouched
+  (`a_second_spawned_after_an_orphan_marking_returns_the_node_to_live_with_the_new_pid_and_start_id`,
+  RED at `left: Orphaned, right: Live` before the arm existed). `restart.rs` deliberately does not
+  count a relaunch as a fate, so a resumed node whose second process is also lost is orphaned
+  afresh on the next boot rather than silently. What a restart still does **not** do is bring any
+  node back: no record names a harness session and no `node/resume` exists, so nothing writes that
+  second `Spawned` yet.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.

@@ -718,6 +718,77 @@ mod tests {
     }
 
     /// An empty journal — a project that has never run — is not a tree full of orphans.
+    /// The resume interplay, both halves. A second `Spawned` un-orphans the node in the tree that
+    /// relaunched it; the same bytes booted over afresh, with the relaunched process's fate still
+    /// unrecorded, mark it `Orphaned` again — and its `spawn_generation` says which lifetime that
+    /// verdict is about.
+    #[test]
+    fn a_re_spawned_orphan_is_live_in_the_running_tree_and_is_orphaned_afresh_on_the_next_boot() {
+        let mut log = Log::default();
+        log.started("lost", Some(11));
+        let mut tree = log.tree();
+        assert_eq!(
+            marking_of(&apply(&mut tree), "lost"),
+            Some(Marking::Orphaned)
+        );
+
+        // The running supervisor relaunches the node under its own id.
+        let relaunch = RecordKind::Spawned(Spawned {
+            agent_id: id("lost"),
+            harness_version: "2.1.220".into(),
+            model: None,
+            pid: Some(99),
+            start_id: None,
+        });
+        let n = log.0.len() as u64;
+        let mut tail = Log::default();
+        tail.0.push(JournalRecord {
+            writer: WriterId("w".into()),
+            seq: n,
+            ts: SystemTime::from_unix_millis(1_785_625_628_619),
+            mono_ns: n,
+            provenance: Provenance::marion(),
+            src_seq: None,
+            kind: relaunch.clone(),
+        });
+        let bytes: Vec<u8> = tail.0.iter().flat_map(|r| encode(r).unwrap()).collect();
+        tree.extend(&bytes);
+        let node = tree
+            .nodes()
+            .iter()
+            .find(|n| n.agent_id == id("lost"))
+            .unwrap();
+        assert_eq!(node.reap_state, ReapState::Live);
+        assert_eq!(node.spawn_generation, 2);
+        assert!(!node.fate_decided(), "a relaunch is not a fate");
+        assert!(
+            resumable(&tree).is_empty(),
+            "a node that is running again is not offered for resume"
+        );
+        // `mark` is a pure reading of the record and the record shows no fate for the second
+        // lifetime either — which is exactly why the pass runs once, at boot, and never again over
+        // a tree whose supervisor is holding the process.
+        assert_eq!(marking_of(&mark(&tree), "lost"), Some(Marking::Orphaned));
+
+        // A fresh boot over the whole journal: the relaunched process has no fate on record.
+        log.push(relaunch);
+        let mut rebooted = log.tree();
+        assert_eq!(
+            marking_of(&apply(&mut rebooted), "lost"),
+            Some(Marking::Orphaned)
+        );
+        let node = rebooted
+            .nodes()
+            .iter()
+            .find(|n| n.agent_id == id("lost"))
+            .unwrap();
+        assert_eq!(
+            node.spawn_generation, 2,
+            "the verdict is about the second lifetime"
+        );
+        assert_eq!(node.pid, Some(99));
+    }
+
     #[test]
     fn an_empty_tree_marks_nothing() {
         let mut tree = replay(b"");
