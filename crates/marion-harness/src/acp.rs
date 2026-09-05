@@ -66,6 +66,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     argv: &[Arg::Items(Field::AgentArgs)],
     pane: None,
     env: &[],
+    stream: None,
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn). The argv of every agent is the one those spikes launched",

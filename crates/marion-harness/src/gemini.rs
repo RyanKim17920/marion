@@ -91,6 +91,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Canned,
         },
     ],
+    stream: None,
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",

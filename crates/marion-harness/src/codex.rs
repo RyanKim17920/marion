@@ -103,6 +103,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         val: Val::Under(""),
         when: When::Canned,
     }],
+    stream: None,
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",

@@ -16,6 +16,7 @@ pub mod claude_code;
 pub mod codex;
 pub mod copilot;
 pub mod gemini;
+pub mod grammar;
 pub mod invocation;
 pub mod mcp_bridge;
 pub mod native;

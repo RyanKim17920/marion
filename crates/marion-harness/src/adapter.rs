@@ -6180,4 +6180,185 @@ mod tests {
             }
         }
     }
+
+    /// **Every committed stream fixture reads the same through the grammar as it read through the
+    /// hand-written reader it replaces** — pinned as the literal outcome the old reader produced,
+    /// so the readings survive the readers.
+    ///
+    /// `tests/fixtures/s6` (codex), `s9` (claude) and `s24` (copilot) carry real captured stdout;
+    /// `s12` (gemini) and `s13` (opencode) carry only their README, so those two rows are pinned by
+    /// the synthetic frames in their module tests and by `harness_matrix`, which reads a live
+    /// stream of each. Every reading below was produced by the adapter's reader on this tree
+    /// before the grammar existed, and the adapter is asserted beside the row so the two cannot
+    /// come apart while both exist.
+    #[test]
+    fn every_committed_fixture_reads_the_same_through_the_grammar() {
+        use crate::grammar;
+        macro_rules! fixture {
+            ($p:literal) => {
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/",
+                    $p
+                ))
+            };
+        }
+        let answered = |verb: &str| {
+            vec![MarionCall {
+                verb: verb.into(),
+                outcome: CallOutcome::Answered,
+            }]
+        };
+        let refused = |verb: &str, why: &str| {
+            vec![MarionCall {
+                verb: verb.into(),
+                outcome: CallOutcome::Refused(why.into()),
+            }]
+        };
+        let outcome = |narrative: Option<&str>, failure: Option<&str>| StreamOutcome {
+            narrative: narrative.map(str::to_string),
+            failure: failure.map(str::to_string),
+            ..StreamOutcome::default()
+        };
+        let cases: Vec<(Harness, &str, &str, StreamOutcome, Vec<MarionCall>)> = vec![
+            (
+                Harness::Codex,
+                "s6/exec-codemode-apply-patch.stream.jsonl",
+                fixture!("s6/exec-codemode-apply-patch.stream.jsonl"),
+                StreamOutcome {
+                    file_change_paths: vec![
+                        "<HOME>/Desktop/CODING/marion/spikes/s6/wt/a.rs".into(),
+                        "<HOME>/Desktop/CODING/marion/spikes/s6/wt/a.rs".into(),
+                    ],
+                    ..StreamOutcome::default()
+                },
+                vec![],
+            ),
+            (
+                Harness::Codex,
+                "s6/exec-mcp-report.stream.jsonl",
+                fixture!("s6/exec-mcp-report.stream.jsonl"),
+                outcome(Some("s6 probe: reporting via MCP"), None),
+                answered("report"),
+            ),
+            (
+                Harness::ClaudeCode,
+                "s9/can-use-tool-allow.stdout.jsonl",
+                fixture!("s9/can-use-tool-allow.stdout.jsonl"),
+                outcome(Some("s9 probe: a verb the root may not use"), None),
+                answered("report"),
+            ),
+            (
+                Harness::ClaudeCode,
+                "s9/can-use-tool-builtin-deny.stdout.jsonl",
+                fixture!("s9/can-use-tool-builtin-deny.stdout.jsonl"),
+                outcome(None, None),
+                vec![],
+            ),
+            (
+                Harness::ClaudeCode,
+                "s9/can-use-tool-deny.stdout.jsonl",
+                fixture!("s9/can-use-tool-deny.stdout.jsonl"),
+                outcome(Some("s9 probe: a verb the root may not use"), None),
+                refused("report", "the result frame carried no message"),
+            ),
+            (
+                Harness::Copilot,
+                "s24/copilot-allow-all-baseline.stdout.jsonl",
+                fixture!("s24/copilot-allow-all-baseline.stdout.jsonl"),
+                outcome(
+                    Some("Wrote the matrix marker under src/ and reported back."),
+                    None,
+                ),
+                answered("report"),
+            ),
+            (
+                Harness::Copilot,
+                "s24/copilot-create-denied-without-grant.stdout.jsonl",
+                fixture!("s24/copilot-create-denied-without-grant.stdout.jsonl"),
+                outcome(
+                    Some("Wrote the matrix marker under src/ and reported back."),
+                    Some(
+                        "the child's marion-report call ended in error: Permission denied and \
+                         could not request permission from user",
+                    ),
+                ),
+                refused(
+                    "report",
+                    "Permission denied and could not request permission from user",
+                ),
+            ),
+            (
+                Harness::Copilot,
+                "s24/copilot-provider-500.stdout.jsonl",
+                fixture!("s24/copilot-provider-500.stdout.jsonl"),
+                outcome(
+                    None,
+                    Some(
+                        "Failed to get response from the AI model; retried 5 times (total retry \
+                         wait time: 30.30 seconds) Last error: 500 canned provider failure",
+                    ),
+                ),
+                vec![],
+            ),
+            (
+                Harness::Copilot,
+                "s24/copilot-report-iserror.stdout.jsonl",
+                fixture!("s24/copilot-report-iserror.stdout.jsonl"),
+                outcome(
+                    Some("Wrote the matrix marker under src/ and reported back."),
+                    Some(
+                        "the child's marion-report call ended in error: MCP server 'marion': \
+                         refused: not authorized",
+                    ),
+                ),
+                refused("report", "MCP server 'marion': refused: not authorized"),
+            ),
+            (
+                Harness::Copilot,
+                "s24/copilot-write-then-report.stdout.jsonl",
+                fixture!("s24/copilot-write-then-report.stdout.jsonl"),
+                outcome(
+                    Some("Wrote the matrix marker under src/ and reported back."),
+                    None,
+                ),
+                answered("report"),
+            ),
+        ];
+        for (h, name, stdout, expected_outcome, expected_calls) in cases {
+            let a = adapter_for(h).unwrap();
+            assert_eq!(
+                a.parse_stream(stdout, ChildExit::default()),
+                expected_outcome,
+                "{h} {name}: the adapter's reading"
+            );
+            assert_eq!(
+                a.marion_calls(stdout),
+                expected_calls,
+                "{h} {name}: the adapter's calls"
+            );
+            let g = harness_spec(h)
+                .stream
+                .unwrap_or_else(|| panic!("{h}: no stream grammar on its row"));
+            let prefix = a.marion_tool_name("");
+            assert_eq!(
+                grammar::parse_stream(g, stdout, &prefix),
+                expected_outcome,
+                "{h} {name}: the grammar's reading"
+            );
+            assert_eq!(
+                grammar::marion_calls(g, stdout, &prefix),
+                expected_calls,
+                "{h} {name}: the grammar's calls"
+            );
+        }
+        // The two harnesses with no captured stream: their rows must still exist, so the sweep
+        // above is not silently narrower than the registry.
+        for h in [Harness::Gemini, Harness::OpenCode] {
+            assert!(
+                harness_spec(h).stream.is_some(),
+                "{h}: no stream grammar on its row"
+            );
+        }
+    }
 }

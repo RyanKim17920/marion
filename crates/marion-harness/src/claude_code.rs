@@ -92,6 +92,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Present(Field::ApiKey),
         },
     ],
+    stream: None,
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

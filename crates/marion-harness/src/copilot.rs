@@ -123,6 +123,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Always,
         },
     ],
+    stream: None,
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",

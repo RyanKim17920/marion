@@ -33,6 +33,7 @@ use std::path::PathBuf;
 use marion_core::harness::Harness;
 
 use crate::auth::Auth;
+use crate::grammar::StreamGrammar;
 use crate::invocation::Invocation;
 
 /// One harness, as a row: what its launch looks like, stated as data.
@@ -50,6 +51,9 @@ pub struct HarnessSpec {
     /// The environment, in order. Rows gated on [`When`] are the whole of live mode: *"live is a
     /// removal"* is a property of the table, not of five hand-written branches.
     pub env: &'static [Env],
+    /// How this harness's output stream is read (§6.1 step 9), or `None` where the reader is code
+    /// — ACP, whose stream shape is per agent ([`crate::grammar`]'s module docs).
+    pub stream: Option<&'static StreamGrammar>,
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,

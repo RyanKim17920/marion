@@ -161,6 +161,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Always,
         },
     ],
+    stream: None,
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",
