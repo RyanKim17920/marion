@@ -1141,6 +1141,12 @@ acceptance evidence, so every marker remains unchanged.
     - `Screen::enter` clears and homes the alternate buffer right after switching to it, so a pane
       opened from the tree no longer shows tree fragments wherever its first frame was blank.
       `entering_switches_the_buffer_before_it_enables_a_mouse` pins the byte order.
+    - The capability strip is labelled `caps:`, draws an absent capability dim rather than struck
+      through (unmeasured, not cannot), an offered one bold, and appends `harness version unknown`
+      when the key's version was never read. Doctor remains the only source of the bits;
+      `a_greyed_action_differs_from_an_offered_one_only_in_style`,
+      `the_strips_note_follows_the_actions`, `an_unread_version_is_named_on_the_strip`, and the
+      L4.5 snapshots re-accepted over the new styles.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance

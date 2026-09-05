@@ -30,11 +30,12 @@
 //!
 //! # Two styles, and no third
 //!
-//! Available is the terminal's own foreground; unavailable is [`Color::DarkGray`] plus
-//! [`Modifier::CROSSED_OUT`]. The label text is **identical** either way, which is deliberate: if
-//! the greyed form also changed the characters, a snapshot would still catch a mis-greyed action
-//! while the *style* path — the part an operator actually reads at a glance — went untested. The
-//! only signal is the style, so a test that asserts styles is asserting the whole mechanism.
+//! Available is [`Modifier::BOLD`]; unavailable is [`Color::DarkGray`] plus [`Modifier::DIM`] —
+//! dim and not struck, because a strikethrough says *cannot* and §3.3's answer is *unmeasured*. The
+//! label text is **identical** either way, which is deliberate: if the greyed form also changed the
+//! characters, a snapshot would still catch a mis-greyed action while the *style* path — the part
+//! an operator actually reads at a glance — went untested. The only signal is the style, so a test
+//! that asserts styles is asserting the whole mechanism.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -82,6 +83,10 @@ pub struct Node {
     /// The node's state, already rendered. One short word.
     pub state: String,
     pub actions: Vec<Action>,
+    /// One caveat about the key the actions were decided at, appended to the strip — *"harness
+    /// version unknown"*, for a node whose version marion never read. A `String` for the same
+    /// reason [`Action::name`] is one: the words are the supervisor's.
+    pub note: Option<String>,
 }
 
 /// The flattened tree, plus the cursor.
@@ -349,12 +354,13 @@ impl Widget for TreeView<'_> {
 pub fn greyed() -> Style {
     Style::default()
         .fg(Color::DarkGray)
-        .add_modifier(Modifier::CROSSED_OUT)
+        .add_modifier(Modifier::DIM)
 }
 
-/// The style an available action is drawn in: the terminal's own, deliberately unstyled.
+/// The style an available action is drawn in: bold, so the offered set is the figure and the
+/// greyed set the ground rather than the other way round.
 pub fn offered() -> Style {
-    Style::default()
+    Style::default().add_modifier(Modifier::BOLD)
 }
 
 /// The capability strip for one node.
@@ -365,6 +371,9 @@ pub struct ActionBar<'a> {
 }
 
 impl ActionBar<'_> {
+    /// What the strip is a strip of. Unlabelled, ten short words along the bottom read as a menu.
+    const LABEL: &'static str = "caps:";
+
     /// The label for one action, with a space either side so adjacent styles do not touch.
     fn cell(a: &Action) -> String {
         format!(" {} ", a.name)
@@ -383,14 +392,18 @@ impl Widget for ActionBar<'_> {
             );
             return;
         };
+        let cells = std::iter::once((Self::LABEL.to_string(), Style::default()))
+            .chain(node.actions.iter().map(|a| {
+                let style = if a.available { offered() } else { greyed() };
+                (Self::cell(a), style)
+            }))
+            .chain(
+                node.note
+                    .iter()
+                    .map(|n| (format!(" · {n}"), Style::default())),
+            );
         let mut x = area.x;
-        for action in &node.actions {
-            let text = Self::cell(action);
-            let style = if action.available {
-                offered()
-            } else {
-                greyed()
-            };
+        for (text, style) in cells {
             let remaining = area.x.saturating_add(area.width).saturating_sub(x) as usize;
             if remaining == 0 {
                 break;
@@ -412,6 +425,7 @@ mod tests {
             label: id.into(),
             state: "Idle".into(),
             actions: Vec::new(),
+            note: None,
         }
     }
 
@@ -552,7 +566,10 @@ mod tests {
     }
 
     /// **The greying, as styles.** The label text is identical in both cases by design, so this is
-    /// the only assertion in the tree that can tell an offered action from a greyed one.
+    /// the only assertion in the tree that can tell an offered action from a greyed one. Absent is
+    /// dim, not struck: a strikethrough over ten short words at low contrast read as a rendering
+    /// fault, and it said "cannot" where §3.3's answer is "unmeasured". Present is bold, so the
+    /// strip has a figure as well as a ground. The strip is labelled, so it is not a bare word list.
     #[test]
     fn a_greyed_action_differs_from_an_offered_one_only_in_style() {
         let n = Node {
@@ -564,19 +581,50 @@ mod tests {
         ActionBar { node: Some(&n) }.render(area, &mut buf);
 
         let row: String = (0..40).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(row.starts_with(" interrupt  fork "), "{row:?}");
+        assert!(row.starts_with("caps: interrupt  fork "), "{row:?}");
 
-        // " interrupt " occupies 0..11, " fork " 11..17. The comparison is against the *marks*
-        // rather than against a whole `Style`, because `Buffer::empty` seeds every cell with an
-        // explicit `Color::Reset` that `Style::default()` does not carry — asserting equality with
-        // `offered()` would then fail for a reason that has nothing to do with greying.
+        // "caps:" occupies 0..5, " interrupt " 5..16, " fork " 16..22. The comparison is against
+        // the *marks* rather than against a whole `Style`, because `Buffer::empty` seeds every cell
+        // with an explicit `Color::Reset` that `Style::default()` does not carry — asserting
+        // equality with `offered()` would then fail for a reason that has nothing to do with
+        // greying.
         let grey = |x: u16| {
             let s = buf[(x, 0)].style();
-            s.fg == Some(Color::DarkGray) && s.add_modifier.contains(Modifier::CROSSED_OUT)
+            s.fg == Some(Color::DarkGray)
+                && s.add_modifier.contains(Modifier::DIM)
+                && !s.add_modifier.contains(Modifier::CROSSED_OUT)
         };
-        assert!(!grey(1), "`interrupt` is available and was greyed out");
-        assert!(grey(12), "`fork` is unavailable and was offered");
+        let bold = |x: u16| buf[(x, 0)].style().add_modifier.contains(Modifier::BOLD);
+        assert!(
+            !grey(6) && bold(6),
+            "`interrupt` is available and was greyed out"
+        );
+        assert!(
+            grey(17) && !bold(17),
+            "`fork` is unavailable and was offered"
+        );
+        assert!(
+            !grey(0) && !bold(0),
+            "the label is neither offered nor greyed"
+        );
         assert_ne!(offered(), greyed(), "the two styles must be tellable apart");
+    }
+
+    /// A caveat about the key the actions were decided at — the version marion never read — is
+    /// said on the strip, after the actions, rather than left to be inferred from all of them
+    /// being greyed.
+    #[test]
+    fn the_strips_note_follows_the_actions() {
+        let n = Node {
+            actions: vec![Action::new("steer", false)],
+            note: Some("harness version unknown".into()),
+            ..node("a", None)
+        };
+        let area = Rect::new(0, 0, 60, 1);
+        let mut buf = Buffer::empty(area);
+        ActionBar { node: Some(&n) }.render(area, &mut buf);
+        let row: String = (0..60).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(row.trim_end(), "caps: steer  · harness version unknown");
     }
 
     /// The cursor bar spans the column, and only when the tree has the keyboard is it reversed —

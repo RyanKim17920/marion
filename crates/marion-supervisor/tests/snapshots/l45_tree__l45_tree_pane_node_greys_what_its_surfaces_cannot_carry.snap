@@ -14,7 +14,7 @@ expression: "report(&tree, true)"
 
 
 
- steer  interrupt  fork  resume  view  permissions  elicitation  set_model  token_deltas  usage
+caps: steer  interrupt  fork  resume  view  permissions  elicitation  set_model  token_deltas  u
 --- tree column, one line per row, styled ---
 Style::new().fg(Color::Reset).bg(Color::Reset)  "[running] impl root-claude"
 Style::new().fg(Color::Reset).bg(Color::Reset).reversed()  "  └ [idle] impl pane-claude"
@@ -28,6 +28,7 @@ Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 --- action strip, one line per style run ---
-Style::new().dark_gray().bg(Color::Reset).crossed_out()  " steer "
-Style::new().fg(Color::Reset).bg(Color::Reset)  " interrupt "
-Style::new().dark_gray().bg(Color::Reset).crossed_out()  " fork  resume  view  permissions  elicitation  set_model  token_deltas  usage "
+Style::new().fg(Color::Reset).bg(Color::Reset)  "caps:"
+Style::new().dark_gray().bg(Color::Reset).dim()  " steer "
+Style::new().fg(Color::Reset).bg(Color::Reset).bold()  " interrupt "
+Style::new().dark_gray().bg(Color::Reset).dim()  " fork  resume  view  permissions  elicitation  set_model  token_deltas  u"

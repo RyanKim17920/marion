@@ -123,6 +123,12 @@ pub fn row(node: &NodeSummary) -> tree::Node {
             .unwrap_or_else(|| format!("{} {}", node.agent_type, short_id(id))),
         state: state_label(node.state, node.reap_state),
         actions: actions_for(node),
+        // The conservative key is the right answer for an unread version (§3.3), and the strip
+        // should say that is why, rather than let ten greyed words read as "this harness cannot".
+        note: node
+            .harness_version
+            .is_none()
+            .then(|| "harness version unknown".to_string()),
     }
 }
 
@@ -956,6 +962,19 @@ mod tests {
             "no answer is not a resize"
         );
         assert_eq!(size, (80, 24));
+    }
+
+    /// A node whose version was never read is greyed at the conservative key, and the strip says
+    /// so rather than leaving ten greyed words to be read as "this harness can do nothing".
+    #[test]
+    fn an_unread_version_is_named_on_the_strip() {
+        let unread = summary("x", Harness::Codex, false, None);
+        assert_eq!(
+            row(&unread).note.as_deref(),
+            Some("harness version unknown")
+        );
+        let read = summary("x", Harness::Codex, false, Some("0.146.0"));
+        assert_eq!(row(&read).note, None);
     }
 
     /// A refresh must not move the cursor out from under the operator.

@@ -296,7 +296,7 @@ fn moving_the_cursor_changes_the_action_strip() {
     // And specifically: `permissions` is offered on one and greyed on the other.
     let greyed_permissions = |s: &str| {
         s.lines()
-            .any(|l| l.contains("permissions") && l.contains("crossed_out"))
+            .any(|l| l.contains("permissions") && l.contains("dim()"))
     };
     assert!(!greyed_permissions(&head), "{head}");
     assert!(greyed_permissions(&pane), "{pane}");
