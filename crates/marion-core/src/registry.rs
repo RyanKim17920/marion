@@ -37,7 +37,8 @@ use crate::contract::{AgentId, ExitStatus, ProcessExit, ResultStatus, TaskId};
 use crate::harness::Harness;
 use crate::ir::SrcSeq;
 use crate::journal::{
-    ContractPersisted, JournalRecord, PermissionDenied, RecordKind, SpawnIntent, WriterId, decode,
+    ContractPersisted, JournalRecord, PermissionDenied, RecordKind, SessionObserved, SpawnIntent,
+    WriterId, decode,
 };
 use crate::node::{NodeState, ReapState};
 use crate::root_change::{RootChanged, RootGrant, RootObservation};
@@ -77,6 +78,12 @@ pub struct ReplayedNode {
     /// existed and for a platform that cannot read one; both mean the same thing to a reader, which
     /// is that a live pid proves nothing about this node.
     pub start_id: Option<crate::node::StartId>,
+    /// The harness's own name for this node's conversation, from the last [`SessionObserved`]
+    /// the journal carries — the handle a resume hands back to the harness. `None` is honest and
+    /// common: no producer has written the record yet, the harness's first frame never arrived, or
+    /// the journal predates the record. A reader that needs one and finds `None` refuses by name
+    /// rather than inventing a session.
+    pub harness_session: Option<String>,
     /// `Some` iff the intent was resolved by an abort rather than a confirmation.
     pub spawn_aborted: Option<String>,
     pub state: NodeState,
@@ -134,6 +141,7 @@ impl ReplayedNode {
             model: None,
             pid: None,
             start_id: None,
+            harness_session: None,
             spawn_aborted: None,
             // Before any state record, a node is `Spawning` — §3.2's first state, and the only one
             // an intent alone justifies.
@@ -508,6 +516,13 @@ impl Replay {
             // keeping the first has the same justification as the arm above: a second record for
             // one agent id cannot happen in a run, so the later one is the one that was true last.
             RecordKind::RootGrantDecided(g) => node.root_grant = Some(g),
+            // Last record wins, and it says nothing about state: the harness named the
+            // conversation, and a later observation — a resumed process re-announcing the same
+            // session, or a harness that forks one — is the one that was true last. `harness` is
+            // carried on the record for the reader; the node already knows its own from the intent.
+            RecordKind::SessionObserved(SessionObserved { session_id, .. }) => {
+                node.harness_session = Some(session_id)
+            }
             RecordKind::SupervisorExited(_) => {
                 unreachable!("the process-wide record returned before selecting a node")
             }

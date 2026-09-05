@@ -1431,8 +1431,13 @@ grouping.
   (`a_second_spawned_after_an_orphan_marking_returns_the_node_to_live_with_the_new_pid_and_start_id`,
   RED at `left: Orphaned, right: Live` before the arm existed). `restart.rs` deliberately does not
   count a relaunch as a fate, so a resumed node whose second process is also lost is orphaned
-  afresh on the next boot rather than silently. What a restart still does **not** do is bring any
-  node back: no record names a harness session and no `node/resume` exists, so nothing writes that
+  afresh on the next boot rather than silently. `RecordKind::SessionObserved { agent_id, harness,
+  session_id }` now exists as its own additive record — separate from `Spawned` because the
+  harness names its session in its first frame, after the barrier record is already on disk — and
+  replay sets `ReplayedNode::harness_session` from it
+  (`session_observed_round_trips_and_replays_onto_the_node`). **No producer writes it yet**: every
+  node still replays with `harness_session: None`. What a restart still does **not** do is bring
+  any node back — nothing journals a session, no `node/resume` exists, so nothing writes that
   second `Spawned` yet.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.

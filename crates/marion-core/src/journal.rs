@@ -157,6 +157,20 @@ pub enum RecordKind {
     /// [`Self::SpawnIntent`] — write the intent, do the act, confirm — applied to the other thing
     /// `root::prepare` does.
     RootGrantDecided(crate::root_change::RootGrant),
+    /// The harness's own name for this node's conversation, as marion observed it.
+    ///
+    /// **A separate record, not a field on [`Self::Spawned`]**, because the two are known at
+    /// different instants: `Spawned` is written the moment the process exists, and the session id
+    /// arrives in the harness's first frame — Claude Code's `system/init.session_id`, Codex's
+    /// `thread.started.thread_id` — some time after. Folding it onto `Spawned` would mean either
+    /// delaying the barrier record past the window it exists to cover, or writing a `Spawned` and
+    /// then rewriting it, which an append-only journal cannot do. It carries the `harness` beside
+    /// the id because the id is meaningful only in that harness's own resume grammar, and a reader
+    /// handing it back must not have to look up the intent to know whose grammar that is.
+    ///
+    /// **Not a barrier.** Losing one on the ~50 ms timer costs the ability to resume this node; it
+    /// does not leave a process untracked, and §4.3 pays for a barrier only for the latter.
+    SessionObserved(SessionObserved),
     /// §5.7's ordinary exit record. It deliberately carries no node id: the supervisor serves a
     /// forest, and choosing one node would fabricate ownership of a process-wide event.
     SupervisorExited(SupervisorExited),
@@ -207,6 +221,7 @@ impl RecordKind {
             RecordKind::PermissionDenied(r) => Some(&r.agent_id),
             RecordKind::RootChanged(r) => Some(&r.agent_id),
             RecordKind::RootGrantDecided(r) => Some(&r.agent_id),
+            RecordKind::SessionObserved(r) => Some(&r.agent_id),
             RecordKind::SupervisorExited(_) => None,
         }
     }
@@ -319,6 +334,17 @@ pub struct KillConfirmed {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupervisorExited {}
+
+/// See [`RecordKind::SessionObserved`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionObserved {
+    pub agent_id: AgentId,
+    /// Whose grammar `session_id` belongs to. Written rather than looked up from the intent so the
+    /// record is self-describing to a reader that has only this line.
+    pub harness: Harness,
+    /// Opaque to marion: the harness's spelling, kept verbatim, handed back verbatim.
+    pub session_id: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractPersisted {
@@ -510,6 +536,11 @@ mod tests {
                 tool: "Bash".into(),
                 reason: "the root's Blocked bound expired unanswered".into(),
             }),
+            RecordKind::SessionObserved(SessionObserved {
+                agent_id: AgentId("a-1".into()),
+                harness: Harness::Codex,
+                session_id: "thr_01".into(),
+            }),
             RecordKind::SupervisorExited(SupervisorExited {}),
         ];
         for kind in kinds {
@@ -694,6 +725,74 @@ mod tests {
             "one raw newline, the terminator"
         );
         assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
+    }
+
+    /// **The harness's own name for the conversation**, journaled as its own record. It cannot
+    /// ride on `Spawned` — that record is written the instant the process exists, and the session
+    /// id arrives in the harness's first frame, later — so it is a separate, additive variant with
+    /// the same round-trip and the same rule about older journals. Replay puts it on the node as
+    /// `harness_session`, which is what a resume will hand back to the harness.
+    #[test]
+    fn session_observed_round_trips_and_replays_onto_the_node() {
+        let observed = RecordKind::SessionObserved(SessionObserved {
+            agent_id: AgentId("a-1".into()),
+            harness: Harness::ClaudeCode,
+            session_id: "0a2f7d1e-session".into(),
+        });
+        assert_eq!(observed.agent_id(), Some(&AgentId("a-1".into())));
+        assert!(
+            !observed.is_barrier(),
+            "losing one costs a resume, not an untracked process; §4.3 puts it on the timer"
+        );
+
+        let r = rec(observed.clone());
+        let line = encode(&r).unwrap();
+        assert_eq!(
+            serde_json::to_string(&r.kind).unwrap(),
+            r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"0a2f7d1e-session"}}"#,
+            "the wire shape is pinned like every other record's"
+        );
+        assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
+
+        // Onto the node: after `SpawnIntent` + `Spawned`, the observation names the session.
+        let spawned = RecordKind::Spawned(Spawned {
+            agent_id: AgentId("a-1".into()),
+            harness_version: "2.1.220".into(),
+            model: None,
+            pid: Some(4242),
+            start_id: None,
+        });
+        let mut bytes = Vec::new();
+        for (seq, kind) in [intent(), spawned, observed].into_iter().enumerate() {
+            let mut r = rec(kind);
+            r.seq = seq as u64;
+            bytes.extend(encode(&r).unwrap());
+        }
+        let tree = crate::registry::replay(&bytes);
+        assert!(tree.gaps.is_empty() && tree.truncation.is_none());
+        let node = tree.get(&AgentId("a-1".into())).unwrap();
+        assert_eq!(node.harness_session.as_deref(), Some("0a2f7d1e-session"));
+        assert_eq!(
+            node.records, 3,
+            "the observation is one more record about the node"
+        );
+        assert_eq!(
+            node.state,
+            NodeState::Spawning,
+            "naming the session moves no state"
+        );
+        // And a node nobody named a session for says so, rather than inventing one.
+        let mut bytes = Vec::new();
+        for (seq, kind) in [intent()].into_iter().enumerate() {
+            let mut r = rec(kind);
+            r.seq = seq as u64;
+            bytes.extend(encode(&r).unwrap());
+        }
+        let tree = crate::registry::replay(&bytes);
+        assert_eq!(
+            tree.get(&AgentId("a-1".into())).unwrap().harness_session,
+            None
+        );
     }
 
     #[test]

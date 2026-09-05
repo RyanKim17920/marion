@@ -205,6 +205,7 @@ fn kinds_of(bytes: &[u8]) -> Vec<&'static str> {
             RecordKind::PermissionDenied(_) => "PermissionDenied",
             RecordKind::RootChanged(_) => "RootChanged",
             RecordKind::RootGrantDecided(_) => "RootGrantDecided",
+            RecordKind::SessionObserved(_) => "SessionObserved",
             RecordKind::SupervisorExited(_) => "SupervisorExited",
         })
         .collect()
