@@ -467,29 +467,6 @@ pub(crate) enum RelayStop {
     ExternalSignal(std::ffi::c_int),
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum RelayFinish {
-    Return(Result<(), Refusal>),
-    SignalRedelivered(std::ffi::c_int),
-}
-
-impl RelayFinish {
-    fn into_result(self) -> Result<(), Refusal> {
-        match self {
-            Self::Return(result) => result,
-            Self::SignalRedelivered(_) => Ok(()),
-        }
-    }
-
-    #[cfg(test)]
-    fn signal_redelivered(&self) -> Option<std::ffi::c_int> {
-        match self {
-            Self::SignalRedelivered(signal) => Some(*signal),
-            Self::Return(_) => None,
-        }
-    }
-}
-
 struct OwnedFdReader(std::os::fd::OwnedFd);
 
 impl Read for OwnedFdReader {
@@ -581,7 +558,7 @@ pub(crate) fn finish_claimed_relay(
         write_passive_terminal_cleanup(terminal).map_err(|error| error.to_string());
     let terminal_cleanup = terminal.restore_result().map_err(|error| error.to_string());
     let signal_cleanup = signals.restore_result().map_err(|error| error.to_string());
-    let finish = resolve_relay_finish(
+    let result = resolve_relay_finish(
         primary,
         passive_cleanup,
         terminal_cleanup,
@@ -592,7 +569,7 @@ pub(crate) fn finish_claimed_relay(
     // ownership until synchronous redelivery has run the restored disposition. The relay thread
     // never changes its mask, whose owned-signal invariant was checked during acquisition.
     drop(signals);
-    finish.into_result()
+    result
 }
 
 fn resolve_relay_finish(
@@ -601,7 +578,7 @@ fn resolve_relay_finish(
     terminal_cleanup: Result<(), String>,
     signal_cleanup: Result<Option<std::ffi::c_int>, String>,
     mut redeliver: impl FnMut(std::ffi::c_int) -> Result<(), Refusal>,
-) -> RelayFinish {
+) -> Result<(), Refusal> {
     let mut errors = Vec::new();
     if let Err(primary) = primary {
         errors.push(primary);
@@ -634,17 +611,15 @@ fn resolve_relay_finish(
         {
             hook();
         }
-        match redeliver(signal) {
-            Ok(()) if errors.is_empty() => return RelayFinish::SignalRedelivered(signal),
-            Ok(()) => {}
-            Err(error) => errors.push(error),
+        if let Err(error) = redeliver(signal) {
+            errors.push(error);
         }
     }
-    RelayFinish::Return(if errors.is_empty() {
+    if errors.is_empty() {
         Ok(())
     } else {
         Err(errors.join("; "))
-    })
+    }
 }
 
 fn write_passive_terminal_cleanup(
@@ -1632,7 +1607,7 @@ mod tests {
             redeliver_signal,
         );
 
-        assert_eq!(finish.signal_redelivered(), Some(SIGTERM));
+        assert_eq!(finish, Ok(()));
         assert_eq!(
             SENTINEL_HITS.load(Ordering::SeqCst),
             1,
@@ -1769,7 +1744,7 @@ mod tests {
             Ok(None),
             |_| Ok(()),
         );
-        let error = outcome.into_result().unwrap_err();
+        let error = outcome.unwrap_err();
         assert!(error.contains("primary failure"), "{error}");
         assert!(error.contains("passive terminal bytes"), "{error}");
         assert!(error.contains("cleanup writer failed"), "{error}");
@@ -1787,7 +1762,7 @@ mod tests {
                 Ok(())
             },
         );
-        let error = outcome.into_result().unwrap_err();
+        let error = outcome.unwrap_err();
         assert_eq!(error, "primary failure");
     }
 
@@ -1803,7 +1778,7 @@ mod tests {
                 Ok(())
             },
         );
-        let error = outcome.into_result().unwrap_err();
+        let error = outcome.unwrap_err();
         assert_eq!(
             error,
             "native relay cleanup stage `passive terminal bytes` failed: cleanup writer failed"
@@ -1812,18 +1787,19 @@ mod tests {
 
     #[test]
     fn returning_signal_redelivery_without_errors_detaches_cleanly() {
+        let mut redelivered = None;
         let outcome = resolve_relay_finish(
             Ok(RelayStop::ExternalSignal(SIGTERM)),
             Ok(()),
             Ok(()),
             Ok(Some(SIGTERM)),
             |signal| {
-                assert_eq!(signal, SIGTERM);
+                redelivered = Some(signal);
                 Ok(())
             },
         );
-        assert_eq!(outcome.signal_redelivered(), Some(SIGTERM));
-        assert_eq!(outcome.into_result(), Ok(()));
+        assert_eq!(redelivered, Some(SIGTERM));
+        assert_eq!(outcome, Ok(()));
     }
 
     #[test]
