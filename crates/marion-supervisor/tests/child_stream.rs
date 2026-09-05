@@ -30,11 +30,11 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use marion_core::harness::Harness;
-use marion_harness::adapter_for;
-use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script};
+use marion_provider::{CannedServer, Config, Script};
 use marion_testsupport::{fixture_repo, scratch};
-use serde_json::json;
+
+mod common;
+use common::script::{Delegation, claude_delegates_to_codex};
 
 /// Generous. It exists so a hung run fails loudly instead of wedging the suite.
 const RUN_BOUND: Duration = Duration::from_secs(300);
@@ -54,30 +54,15 @@ const CHILD_FILE: &str = "src/child-stream-marker.txt";
 
 /// The canned script for a `claude` root that delegates to a `codex` child.
 fn script() -> Script {
-    let claude = adapter_for(Harness::ClaudeCode).expect("claude has an adapter");
-    Script {
-        root: Some(RootScript {
-            marker: ROOT_MARKER.into(),
-            turn: RootTurn {
-                tool: claude.marion_tool_name("spawn"),
-                args: json!({
-                    "agent_type": "codex-impl",
-                    "prompt": "Add the marker file under src/ and report back.",
-                    "acceptance_criteria": ["a file exists under src/ containing the marker"],
-                    "writable_scope": ["src/**"],
-                    "timeout_secs": CHILD_TIMEOUT_SECS,
-                }),
-                final_text: "The child completed the task and reported back.".into(),
-            },
-        }),
-        // The child is codex: it applies a patch, then reports through marion's own verb.
-        child_narrative: NARRATIVE.into(),
-        child_patch: format!(
-            "*** Begin Patch\n*** Add File: {CHILD_FILE}\n+marion child-stream marker\n*** End Patch"
-        ),
-        child_final_text: json!({"narrative": NARRATIVE, "result_commits": []}).to_string(),
-        ..Script::default()
-    }
+    claude_delegates_to_codex(Delegation {
+        root_marker: ROOT_MARKER,
+        root_final_text: "The child completed the task and reported back.",
+        child_narrative: NARRATIVE,
+        child_file: CHILD_FILE,
+        child_file_line: "marion child-stream marker",
+        child_final_narrative: NARRATIVE,
+        child_timeout_secs: CHILD_TIMEOUT_SECS,
+    })
 }
 
 /// The index of the first line satisfying `pred`, or `None`.

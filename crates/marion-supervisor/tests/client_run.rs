@@ -54,17 +54,16 @@ use marion_core::node::StartId;
 use marion_proto::notify::Event as Note;
 use marion_provider::script::classify_root;
 use marion_provider::{
-    CannedServer, Config, RequestKind, RootScript, RootStep, RootTurn, Script, TurnGate,
-    classify_anthropic,
+    CannedServer, Config, RequestKind, RootStep, Script, TurnGate, classify_anthropic,
 };
 use marion_supervisor::procid::{self, Resolution};
 use marion_supervisor::socket::{SocketPaths, read_identity};
 use marion_testsupport::{Liveness, fixture_repo, liveness, scratch, sweep};
-use serde_json::json;
 
 mod common;
 use common::client::{Client, paths_for};
 use common::run::start_run;
+use common::script::{Delegation, claude_delegates_to_codex};
 
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -90,31 +89,15 @@ const CHILD_WIRE: &str = "responses";
 const ROOT_WIRE: &str = "anthropic";
 
 fn script() -> Script {
-    let claude = marion_harness::adapter_for(marion_core::harness::Harness::ClaudeCode)
-        .expect("claude has an adapter");
-    Script {
-        root: Some(RootScript {
-            marker: ROOT_MARKER.into(),
-            turn: RootTurn {
-                tool: claude.marion_tool_name("spawn"),
-                args: json!({
-                    "agent_type": "codex-impl",
-                    "prompt": "Add the marker file under src/ and report back.",
-                    "acceptance_criteria": ["a file exists under src/ containing the marker"],
-                    "writable_scope": ["src/**"],
-                    "timeout_secs": CHILD_TIMEOUT_SECS,
-                }),
-                final_text: ROOT_FINAL_MARKER.into(),
-            },
-        }),
-        child_narrative: NARRATIVE.into(),
-        child_patch: format!(
-            "*** Begin Patch\n*** Add File: {CHILD_FILE}\n+marion client-run marker\n*** End Patch"
-        ),
-        child_final_text: json!({"narrative": "the child is done", "result_commits": []})
-            .to_string(),
-        ..Script::default()
-    }
+    claude_delegates_to_codex(Delegation {
+        root_marker: ROOT_MARKER,
+        root_final_text: ROOT_FINAL_MARKER,
+        child_narrative: NARRATIVE,
+        child_file: CHILD_FILE,
+        child_file_line: "marion client-run marker",
+        child_final_narrative: "the child is done",
+        child_timeout_secs: CHILD_TIMEOUT_SECS,
+    })
 }
 
 /// `(agent_seq, payload)` for the `node/event` notifications about one node, in arrival order.

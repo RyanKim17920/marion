@@ -14,6 +14,7 @@
 
 pub mod client;
 pub mod run;
+pub mod script;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};

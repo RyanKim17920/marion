@@ -48,14 +48,14 @@ use std::time::{Duration, Instant};
 
 use marion_core::contract::AgentId;
 use marion_proto::notify::Event as Note;
-use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script, TurnGate};
+use marion_provider::{CannedServer, Config, Script, TurnGate};
 use marion_supervisor::socket::{SocketPaths, read_identity};
 use marion_testsupport::{fixture_repo, scratch, sweep};
-use serde_json::json;
 
 mod common;
 use common::client::{Client, paths_for};
 use common::run::start_run;
+use common::script::{Delegation, claude_delegates_to_codex};
 
 /// How long anything in this file may take before it is a failure. Never a verdict: every
 /// assertion below is over an identity, an ordinal, a count or a payload — never over elapsed
@@ -75,30 +75,15 @@ const ROOT_BLOCKED_SECS: &str = "5";
 const CHILD_WIRE: &str = "responses";
 
 fn script() -> Script {
-    let claude = marion_harness::adapter_for(marion_core::harness::Harness::ClaudeCode)
-        .expect("claude has an adapter");
-    Script {
-        root: Some(RootScript {
-            marker: ROOT_MARKER.into(),
-            turn: RootTurn {
-                tool: claude.marion_tool_name("spawn"),
-                args: json!({
-                    "agent_type": "codex-impl",
-                    "prompt": "Add the marker file under src/ and report back.",
-                    "acceptance_criteria": ["a file exists under src/ containing the marker"],
-                    "writable_scope": ["src/**"],
-                    "timeout_secs": CHILD_TIMEOUT_SECS,
-                }),
-                final_text: "The child completed the task and reported back.".into(),
-            },
-        }),
-        child_narrative: NARRATIVE.into(),
-        child_patch: format!(
-            "*** Begin Patch\n*** Add File: {CHILD_FILE}\n+marion node-attach marker\n*** End Patch"
-        ),
-        child_final_text: json!({"narrative": FINAL_MARKER, "result_commits": []}).to_string(),
-        ..Script::default()
-    }
+    claude_delegates_to_codex(Delegation {
+        root_marker: ROOT_MARKER,
+        root_final_text: "The child completed the task and reported back.",
+        child_narrative: NARRATIVE,
+        child_file: CHILD_FILE,
+        child_file_line: "marion node-attach marker",
+        child_final_narrative: FINAL_MARKER,
+        child_timeout_secs: CHILD_TIMEOUT_SECS,
+    })
 }
 
 /// `(agent_seq, payload)` for the `node/event` notifications in a run, in arrival order.
