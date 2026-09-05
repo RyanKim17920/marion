@@ -188,13 +188,12 @@ extern "C" fn on_relay_signal(signal: std::ffi::c_int) {
 struct PriorSignalAction {
     signal: std::ffi::c_int,
     action: Sigaction,
-    relay_installed: bool,
 }
 
 /// Exclusive ownership of marion's process-global relay handlers for one native relay session.
 pub(crate) struct RelaySignalGuard {
+    /// Actions Marion's handler still replaces; each is removed the moment it is restored.
     prior: Vec<PriorSignalAction>,
-    armed: bool,
     captured_signal: Option<std::ffi::c_int>,
     _owner: MutexGuard<'static, ()>,
 }
@@ -273,19 +272,17 @@ impl RelaySignalGuard {
             prior.push(PriorSignalAction {
                 signal,
                 action: prior_action,
-                relay_installed: true,
             });
         }
         Ok(Self {
             prior,
-            armed: true,
             captured_signal: None,
             _owner: owner,
         })
     }
 
     fn restore_result(&mut self) -> Result<Option<std::ffi::c_int>, RelaySignalRestoreError> {
-        if !self.armed {
+        if self.prior.is_empty() {
             return Ok(None);
         }
         if let Err(error) = restore_signal_actions_matching(&mut self.prior, is_termination_signal)
@@ -310,7 +307,6 @@ impl RelaySignalGuard {
             poison_relay_signal_ownership();
             return Err(error);
         }
-        self.armed = false;
         clear_relay_signal_state();
         Ok(self.captured_signal.take())
     }
@@ -400,25 +396,29 @@ fn restore_signal_action(prior: &PriorSignalAction) -> std::io::Result<()> {
     }
 }
 
+/// Restore the matching actions in reverse installation order, removing each one restored so a
+/// retry sees only what is still Marion's. Every match is attempted; the first failure is reported.
 fn restore_signal_actions_matching(
-    prior: &mut [PriorSignalAction],
+    prior: &mut Vec<PriorSignalAction>,
     matches: impl Fn(std::ffi::c_int) -> bool,
 ) -> Result<(), RelaySignalRestoreError> {
     let mut first_error = None;
-    for prior in prior
-        .iter_mut()
-        .rev()
-        .filter(|prior| prior.relay_installed && matches(prior.signal))
-    {
-        match restore_signal_action(prior) {
-            Ok(()) => prior.relay_installed = false,
-            Err(source) if first_error.is_none() => {
-                first_error = Some(RelaySignalRestoreError {
-                    signal: prior.signal,
+    let mut index = prior.len();
+    while index > 0 {
+        index -= 1;
+        if !matches(prior[index].signal) {
+            continue;
+        }
+        match restore_signal_action(&prior[index]) {
+            Ok(()) => {
+                prior.remove(index);
+            }
+            Err(source) => {
+                first_error.get_or_insert(RelaySignalRestoreError {
+                    signal: prior[index].signal,
                     source,
                 });
             }
-            Err(_) => {}
         }
     }
     first_error.map_or(Ok(()), Err)
