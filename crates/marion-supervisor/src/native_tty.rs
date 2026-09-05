@@ -172,6 +172,173 @@ pub(crate) enum NativeTtyError {
     },
     #[error("terminal inspection failed: {0}")]
     Inspection(#[from] rustix::io::Errno),
+    #[error("the peer's controlling terminal could not be read from the kernel: {0}")]
+    PeerTerminal(String),
+}
+
+/// A terminal device number as `(major, minor)`, so the process table's spelling and `fstat`'s
+/// spelling of the same device compare equal on every platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalDevice {
+    major: u32,
+    minor: u32,
+}
+
+impl TerminalDevice {
+    fn from_rdev(rdev: u64) -> Self {
+        let dev = rdev as rustix::fs::Dev;
+        Self {
+            major: rustix::fs::major(dev),
+            minor: rustix::fs::minor(dev),
+        }
+    }
+}
+
+/// What the kernel's process table says about a peer's controlling terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PeerTerminal {
+    /// `None` when the peer has no controlling terminal at all.
+    device: Option<TerminalDevice>,
+    /// The terminal's foreground process group, as the process table records it for the peer.
+    foreground_pgid: Option<Pid>,
+}
+
+/// **macOS: `sysctl(KERN_PROC_PID)` → `kinfo_proc.kp_eproc.{e_tdev, e_tpgid}`.**
+///
+/// Offsets measured on this platform with `offsetof` rather than mirrored from a header:
+/// `e_tdev` at **572** (a 4-byte `dev_t`, `-1` for no terminal) and `e_tpgid` at **576** (a
+/// 4-byte `pid_t`), inside the measured **648**-byte struct. A shorter answer is refused rather
+/// than read past.
+#[cfg(target_os = "macos")]
+fn peer_controlling_terminal(peer_pid: Pid) -> Result<PeerTerminal, NativeTtyError> {
+    const CTL_KERN: i32 = 1;
+    const KERN_PROC: i32 = 14;
+    const KERN_PROC_PID: i32 = 1;
+    const CAP: usize = 4096;
+    const E_TDEV: usize = 572;
+    const E_TPGID: usize = 576;
+    const NEEDED: usize = E_TPGID + 4;
+
+    unsafe extern "C" {
+        fn sysctl(
+            name: *mut i32,
+            namelen: u32,
+            oldp: *mut core::ffi::c_void,
+            oldlenp: *mut usize,
+            newp: *mut core::ffi::c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+
+    let mut mib = [
+        CTL_KERN,
+        KERN_PROC,
+        KERN_PROC_PID,
+        peer_pid.as_raw_nonzero().get(),
+    ];
+    let mut buf = [0u8; CAP];
+    let mut len = CAP;
+    // SAFETY: `mib` is four `i32`s and `namelen` says four; `buf` is `CAP` bytes and `len` says
+    // `CAP`; `newp`/`newlen` are the documented "reading, not writing" pair.
+    let rc = unsafe {
+        sysctl(
+            mib.as_mut_ptr(),
+            4,
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return Err(NativeTtyError::PeerTerminal(format!(
+            "the kernel refused to describe process {}: {}",
+            peer_pid.as_raw_nonzero(),
+            std::io::Error::last_os_error()
+        )));
+    }
+    if len < NEEDED {
+        return Err(NativeTtyError::PeerTerminal(format!(
+            "the kernel described process {} in {len} bytes, too few to hold its terminal",
+            peer_pid.as_raw_nonzero()
+        )));
+    }
+    let field = |at: usize| i32::from_ne_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]]);
+    let tdev = field(E_TDEV);
+    let tpgid = field(E_TPGID);
+    Ok(PeerTerminal {
+        device: (tdev != -1).then(|| TerminalDevice::from_rdev(i64::from(tdev) as u64)),
+        foreground_pgid: Pid::from_raw(tpgid),
+    })
+}
+
+/// **Linux: `/proc/<pid>/stat` fields `tty_nr` (7) and `tpgid` (8).**
+///
+/// Fields are counted after the last `)` so a `comm` containing spaces or parentheses cannot
+/// shift them. `tty_nr` uses the kernel's `new_encode_dev` layout, decoded here into the same
+/// `(major, minor)` pair `fstat` yields.
+#[cfg(target_os = "linux")]
+fn peer_controlling_terminal(peer_pid: Pid) -> Result<PeerTerminal, NativeTtyError> {
+    let pid = peer_pid.as_raw_nonzero().get();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|error| {
+        NativeTtyError::PeerTerminal(format!("/proc/{pid}/stat could not be read: {error}"))
+    })?;
+    let after_comm = stat.rsplit_once(')').map(|(_, rest)| rest).ok_or_else(|| {
+        NativeTtyError::PeerTerminal(format!("/proc/{pid}/stat is not in the documented shape"))
+    })?;
+    let mut fields = after_comm.split_ascii_whitespace();
+    // state ppid pgrp session tty_nr tpgid
+    let tty_nr = fields.nth(4);
+    let tpgid = fields.next();
+    let (Some(tty_nr), Some(tpgid)) = (tty_nr, tpgid) else {
+        return Err(NativeTtyError::PeerTerminal(format!(
+            "/proc/{pid}/stat has too few fields"
+        )));
+    };
+    let tty_nr: u64 = tty_nr.parse().map_err(|_| {
+        NativeTtyError::PeerTerminal(format!("/proc/{pid}/stat tty_nr is not a number"))
+    })?;
+    let tpgid: i32 = tpgid.parse().map_err(|_| {
+        NativeTtyError::PeerTerminal(format!("/proc/{pid}/stat tpgid is not a number"))
+    })?;
+    let device = (tty_nr != 0).then(|| TerminalDevice {
+        major: ((tty_nr >> 8) & 0xfff) as u32,
+        minor: ((tty_nr & 0xff) | ((tty_nr >> 12) & 0xfff00)) as u32,
+    });
+    Ok(PeerTerminal {
+        device,
+        foreground_pgid: Pid::from_raw(tpgid),
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn peer_controlling_terminal(_peer_pid: Pid) -> Result<PeerTerminal, NativeTtyError> {
+    Err(NativeTtyError::PeerTerminal(
+        "this platform has no supported process-table terminal read".into(),
+    ))
+}
+
+/// Prove, from the kernel's process table rather than a terminal ioctl, that the terminal behind
+/// `fingerprint` is the peer's controlling terminal and that the peer sits in its foreground
+/// process group.
+///
+/// `tcgetsid`/`tcgetpgrp` cannot do this from a detached supervisor: on Linux and macOS alike they
+/// answer `ENOTTY` unless the terminal is the **caller's** controlling terminal, and the supervisor
+/// lives in its own session. The process table records the same two facts about the peer.
+fn verify_peer_terminal(
+    peer_pid: Pid,
+    fingerprint: TerminalFingerprint,
+) -> Result<(Pid, Pid), NativeTtyError> {
+    let terminal = peer_controlling_terminal(peer_pid)?;
+    if terminal.device != Some(TerminalDevice::from_rdev(fingerprint.st_rdev)) {
+        return Err(NativeTtyError::NotControllingTerminal);
+    }
+    let peer_pgid = getpgid(Some(peer_pid))?;
+    if terminal.foreground_pgid != Some(peer_pgid) {
+        return Err(NativeTtyError::BackgroundProcessGroup);
+    }
+    let peer_session_id = getsid(Some(peer_pid))?;
+    Ok((peer_session_id, peer_pgid))
 }
 
 fn descriptor_roles_allow(stdin_flags: OFlags, stdout_flags: OFlags) -> bool {
@@ -294,14 +461,7 @@ pub(crate) fn verify_bootstrap_tty(
     }
 
     let peer_pid = Pid::from_raw(peer.pid() as i32).ok_or(NativeTtyError::InvalidPeer)?;
-    let peer_session_id = getsid(Some(peer_pid))?;
-    if tcgetsid(&stdin)? != peer_session_id || tcgetsid(&stdout)? != peer_session_id {
-        return Err(NativeTtyError::NotControllingTerminal);
-    }
-    let foreground_pgid = getpgid(Some(peer_pid))?;
-    if tcgetpgrp(&stdin)? != foreground_pgid || tcgetpgrp(&stdout)? != foreground_pgid {
-        return Err(NativeTtyError::BackgroundProcessGroup);
-    }
+    let (peer_session_id, foreground_pgid) = verify_peer_terminal(peer_pid, fingerprint)?;
 
     let winsize = tcgetwinsize(&stdin)?;
     if winsize.ws_col == 0 || winsize.ws_row == 0 {
@@ -355,16 +515,11 @@ impl ControllingTtyWitness {
         }
 
         let peer_pid = Pid::from_raw(peer.pid() as i32).ok_or(NativeTtyError::InvalidPeer)?;
-        if getsid(Some(peer_pid))? != self.peer_session_id
-            || tcgetsid(&self.stdin)? != self.peer_session_id
-            || tcgetsid(&self.stdout)? != self.peer_session_id
-        {
+        let (peer_session_id, foreground_pgid) = verify_peer_terminal(peer_pid, self.fingerprint)?;
+        if peer_session_id != self.peer_session_id {
             return Err(NativeTtyError::NotControllingTerminal);
         }
-        if getpgid(Some(peer_pid))? != self.foreground_pgid
-            || tcgetpgrp(&self.stdin)? != self.foreground_pgid
-            || tcgetpgrp(&self.stdout)? != self.foreground_pgid
-        {
+        if foreground_pgid != self.foreground_pgid {
             return Err(NativeTtyError::BackgroundProcessGroup);
         }
         Ok(())
@@ -838,6 +993,107 @@ mod tests {
             .expect_err("invalid descriptor roles must fail before terminal-session disclosure");
             assert_eq!(error.to_string(), "terminal descriptor roles are invalid");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    const TIOCSCTTY: std::ffi::c_ulong = 0x540e;
+    #[cfg(target_os = "macos")]
+    const TIOCSCTTY: std::ffi::c_ulong = 0x2000_7461;
+
+    /// A `sleep` in its own session, optionally holding the PTY as its controlling terminal.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn session_child(master: &PtyMaster, claim_terminal: bool) -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        unsafe extern "C" {
+            fn setsid() -> i32;
+            fn ioctl(fd: i32, request: std::ffi::c_ulong, ...) -> i32;
+        }
+        let stdin = master.open_slave().expect("child stdin");
+        let stdout = master.open_slave().expect("child stdout");
+        let mut command = std::process::Command::new("/bin/sleep");
+        command
+            .arg("30")
+            .stdin(std::process::Stdio::from(stdin))
+            .stdout(std::process::Stdio::from(stdout))
+            .stderr(std::process::Stdio::null());
+        // SAFETY: only async-signal-safe session/ioctl syscalls run between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                if setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if claim_terminal && ioctl(0, TIOCSCTTY, 0_i32) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn().expect("spawn the session child")
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn wait_for_session(child: &std::process::Child) {
+        let pid = Pid::from_raw(child.id() as i32).expect("live child pid");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while getsid(Some(pid)).expect("child session") != pid {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never became a session leader"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Mutation: verify the peer with `tcgetsid`/`tcgetpgrp`. Both answer `ENOTTY` from a process
+    /// outside the terminal's session, which a detached supervisor always is; the process table
+    /// answers for any same-uid peer and still refuses a peer that merely holds the descriptors.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn production_verifier_proves_the_peer_terminal_from_another_session() {
+        let master = PtyMaster::open(WinSize::new(101, 37)).expect("verifier PTY");
+
+        let mut foreground = session_child(&master, true);
+        wait_for_session(&foreground);
+        let peer = PeerIdentity::child_for_tty_test(foreground.id());
+        let child_pid = Pid::from_raw(foreground.id() as i32).unwrap();
+        assert_ne!(
+            getsid(Some(child_pid)).unwrap(),
+            getsid(None).unwrap(),
+            "the fixture must verify across sessions"
+        );
+        let witness = verify_bootstrap_tty(
+            peer,
+            [
+                master.open_slave().expect("verifier stdin"),
+                master.open_slave().expect("verifier stdout"),
+            ],
+        )
+        .expect("a foreground peer on its controlling terminal verifies from another session");
+        assert_eq!(witness.foreground_pgid, child_pid);
+        assert_eq!(witness.peer_session_id, child_pid);
+        assert_eq!(witness.initial_geometry.cols, 101);
+        witness
+            .revalidate_peer(peer)
+            .expect("the same peer revalidates");
+        foreground.kill().unwrap();
+        foreground.wait().unwrap();
+
+        let mut detached = session_child(&master, false);
+        wait_for_session(&detached);
+        let error = verify_bootstrap_tty(
+            PeerIdentity::child_for_tty_test(detached.id()),
+            [
+                master.open_slave().expect("verifier stdin"),
+                master.open_slave().expect("verifier stdout"),
+            ],
+        )
+        .expect_err("a peer that only holds the descriptors is not on its controlling terminal");
+        assert!(
+            matches!(error, NativeTtyError::NotControllingTerminal),
+            "{error}"
+        );
+        detached.kill().unwrap();
+        detached.wait().unwrap();
     }
 
     #[test]

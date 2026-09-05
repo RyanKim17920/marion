@@ -507,6 +507,16 @@ impl PeerIdentity {
             pid: std::process::id(),
         }
     }
+
+    /// A same-uid peer in **another** session, for verifier tests that must not run inside the
+    /// client's own session the way the socket-pair fixtures do.
+    #[cfg(test)]
+    pub(crate) fn child_for_tty_test(pid: u32) -> Self {
+        Self {
+            uid: own_uid(),
+            pid,
+        }
+    }
 }
 
 /// Initial terminal size verified by the supervisor from the received descriptor.

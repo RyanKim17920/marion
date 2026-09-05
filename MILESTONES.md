@@ -1026,6 +1026,22 @@ acceptance evidence, so every marker remains unchanged.
     is still production-dark: no serving path constructs it, and the production descriptor slice is
     empty. M3 remains `[partial]`.
 
+    **The process-table terminal verifier in this commit moves no milestone marker, and it
+    corrects a claim the earlier records implied.** `verify_bootstrap_tty` and `revalidate_peer`
+    proved "same controlling terminal, foreground process group" with `tcgetsid`/`tcgetpgrp` on the
+    received descriptors. Both ioctls answer `ENOTTY` on Linux and macOS unless the terminal is the
+    **caller's** controlling terminal, so the production verifier could never have authorized a
+    launch from a detached supervisor; the "real TTY" unit fixtures passed only because they ran
+    the service inside the client's own session. The verifier now reads the peer's controlling
+    terminal device and foreground process group from the kernel process table (macOS
+    `sysctl(KERN_PROC_PID)` → `kinfo_proc.kp_eproc.{e_tdev, e_tpgid}` at measured offsets 572/576;
+    Linux `/proc/<pid>/stat` `tty_nr`/`tpgid`) and compares them with `fstat` of the descriptors
+    and `getpgid(peer)`. Covered by
+    `production_verifier_proves_the_peer_terminal_from_another_session`, which verifies a
+    foreground child in a fresh session from the test's own session and refuses a session child
+    that merely holds the descriptors. The Linux arm is written to the documented `/proc` layout
+    and is unmeasured here. M3 remains `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
