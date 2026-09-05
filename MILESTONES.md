@@ -598,6 +598,12 @@ acceptance evidence, so every marker remains unchanged.
     will attend to — not *"any live process"*, since §7.2 sanctions a running orphan and a
     SIGKILLed supervisor leaves its fleet running by design. The `ReapedIdle`-resumable and
     `Live` → `Orphaned` halves were already covered in `restart.rs`.
+    **Corrected 2026-09-05:** the marking was covered, but `node/attach` answered an `Orphaned`
+    node with `ResubscribeFrom` — a live-channel verdict from a supervisor that holds no channel
+    for it, exactly the answer `registry.rs`'s module doc says §7.3.3 cannot survive being wrong
+    about. `handler::attach_mode` now answers `ReplayResumable` for every non-`Live` reap state;
+    `an_orphaned_node_attaches_as_replay_resumable_and_never_as_a_live_channel` is the test, and it
+    failed on the old arm with `answered ResubscribeFrom` before the fix.
     **Linux is not shipped**: `/proc/<pid>/stat` field 22 is designed and unmeasured, so non-macOS
     returns an explicit refusal that resolves to cannot-tell, and the consequence is tested.
     **This bullet was true of the audit and false of the system until 2026-08-07 (`cf1cd01`), and
@@ -1416,6 +1422,11 @@ grouping.
   recovers nothing, `Orphaned` marking and reap recovery still have no substrate, and **M2's
   replay criteria remain unmet**. This bullet stays on the list for that reason, with a different
   reason than it had yesterday.
+  **Re-checked 2026-09-05 — the sentence is stale in one respect and true in the one that
+  matters.** `Orphaned` marking has had its substrate since `restart.rs` (M2 criterion 3), and a
+  client attaching after a restart is now told the truth about an orphan — `ReplayResumable`, never
+  a live channel. What a restart still does **not** do is bring any node back: no record names a
+  harness session, no `node/resume` exists, and a re-spawn of a known `agent_id` is unmeasured.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.

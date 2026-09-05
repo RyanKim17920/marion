@@ -3440,12 +3440,15 @@ impl RegistryHandle {
 
 /// §7.3.3's three answers, chosen from the two fields that decide them and nothing else.
 ///
-/// `ReapedIdle` is tested **before** the exit, because §7.3.2's disposition (c) reaps a node that
-/// is idle rather than one that is finished, and a reaped node whose journal also shows an exit is
-/// still the one the operator can bring back. Collapsing it into `ReplayOnly` would tell a client
-/// its only option is to read, when the node is resumable.
+/// Any non-`Live` reap state is tested **before** the exit. `ReapedIdle` because §7.3.2's
+/// disposition (c) reaps a node that is idle rather than one that is finished, and a reaped node
+/// whose journal also shows an exit is still the one the operator can bring back. `Orphaned`
+/// (§7.2) because this supervisor booted over a record it did not write and holds no channel for
+/// the node — `ResubscribeFrom` would promise live events nobody can deliver — while the record
+/// itself is complete and the node is the operator's to bring back. Collapsing either into
+/// `ReplayOnly` would tell a client its only option is to read, when the node is resumable.
 fn attach_mode(state: NodeState, reap_state: ReapState, point: ReplayPoint) -> AttachMode {
-    if reap_state == ReapState::ReapedIdle {
+    if reap_state != ReapState::Live {
         AttachMode::ReplayResumable(point)
     } else if state.is_exited() {
         AttachMode::ReplayOnly(point)
@@ -9159,6 +9162,34 @@ mod tests {
         assert!(e.is_refusal());
         assert!(e.message.contains("records read"), "{e}");
         assert_eq!(w.fx.handle.attachments(), 0);
+    }
+
+    /// **§7.2 meets §7.3.3.** An `Orphaned` node is one whose channel *no* supervisor holds: this
+    /// one booted over a journal it did not write, and `restart.rs` marked the node because the
+    /// record shows no decision about its fate. `ResubscribeFrom` asserts the opposite — that the
+    /// supervisor has held the channel since `t=0` — so answering it here would promise live events
+    /// that can never arrive. The orphan is a replayable record whose operator option is to bring it
+    /// back, which is exactly what `ReplayResumable` says; that holds whether the orphan's last
+    /// state was mid-turn or, per §7.2's *"the process may be gone"*, an exit the record never saw.
+    #[test]
+    fn an_orphaned_node_attaches_as_replay_resumable_and_never_as_a_live_channel() {
+        let p = || ReplayPoint {
+            records: 7,
+            src_seq: None,
+        };
+        for state in [
+            NodeState::Running,
+            NodeState::Idle,
+            NodeState::Exited(ExitStatus::Ok),
+        ] {
+            let mode = attach_mode(state, ReapState::Orphaned, p());
+            assert!(
+                matches!(mode, AttachMode::ReplayResumable(_)),
+                "an orphan in state {state:?} answered {mode:?}"
+            );
+            assert!(!mode.is_live(), "no supervisor holds an orphan's channel");
+            assert_eq!(mode.replay_point(), &p());
+        }
     }
 
     /// §7.3.3's three answers, at the one place that chooses between them.

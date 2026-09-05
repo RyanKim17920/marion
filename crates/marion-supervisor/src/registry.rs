@@ -62,7 +62,9 @@
 //! * **`marion_proto::AttachMode`.** Its `ResubscribeFrom` arm asserts that *the supervisor still
 //!   holds the channel* (§6.2, §7.3.3) — live supervisor state, which no journal can report.
 //!   Deriving it from replay would hand a re-attaching client a live-node verdict for a node whose
-//!   channel nobody holds, which is the one answer §7.3.3 cannot survive being wrong about.
+//!   channel nobody holds, which is the one answer §7.3.3 cannot survive being wrong about. The
+//!   handler's `attach_mode` is where the two meet, and it answers `ReplayResumable` for every
+//!   non-`Live` reap state — an `Orphaned` node included — for exactly this reason.
 //! # §7.2's restart marking, and where it happens
 //!
 //! `marion-core`'s replay is explicit that `Live` → `Orphaned` is not replay's job. It is

@@ -160,9 +160,11 @@ pub enum AttachMode {
     /// A node that finished while detached. Replay only; there is no channel to resume, and
     /// offering one would invent a subscription that can never deliver.
     ReplayOnly(ReplayPoint),
-    /// `ReapedIdle` (§7.2, reached from §7.3.2's disposition (c)). Replay plus the fact that it is
-    /// resumable — *"they have no channel to re-subscribe to until resumed"*. Distinct from
-    /// `ReplayOnly` because the operator's options differ: this node can be brought back.
+    /// `ReapedIdle` (§7.2, reached from §7.3.2's disposition (c)) or `Orphaned` (§7.2, marked at
+    /// supervisor restart). Replay plus the fact that it is resumable — *"they have no channel to
+    /// re-subscribe to until resumed"*. Distinct from `ReplayOnly` because the operator's options
+    /// differ: this node can be brought back. An orphan is never `ResubscribeFrom`: the supervisor
+    /// answering holds no channel for it, whatever its process may still be doing.
     ReplayResumable(ReplayPoint),
 }
 
