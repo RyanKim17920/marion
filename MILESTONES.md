@@ -1131,6 +1131,10 @@ acceptance evidence, so every marker remains unchanged.
       version (or `version unknown`), state with reap state, pane/headless surface, depth, parent,
       timeout and the whole id, with the key hints as its last row saying `Enter` opens pane nodes
       only and `^] d` detaches. `the_detail_pane_names_every_fact_the_row_cannot_carry`.
+    - `Enter` on a headless node is refused from `NodeSummary::pane` before the terminal changes
+      hands, and the reason is drawn bold in the detail pane until the cursor moves; an attach's
+      own refusal lands there too instead of on a stderr the next frame erased.
+      `enter_on_a_headless_node_is_refused_in_the_pane_and_a_pane_node_opens`.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance

@@ -157,6 +157,23 @@ fn state_label(state: NodeState, reap: ReapState) -> String {
     }
 }
 
+/// What `Enter` does to `node`: the id to attach to, or the sentence saying why not.
+///
+/// [`NodeSummary::pane`] is the whole test. `attach::run` would reach the same refusal from the
+/// supervisor — a headless node has no display plane to lease — but only after this screen had
+/// left the alternate buffer, so its `eprintln!` landed under the frame that repainted over it.
+pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
+    if node.pane {
+        Ok(node.agent_id.0.as_str())
+    } else {
+        Err(format!(
+            "{} {} is headless: it has no display plane to open. Enter opens pane nodes only.",
+            node.agent_type,
+            short_id(&node.agent_id.0)
+        ))
+    }
+}
+
 /// Build the flattened tree from a snapshot, preserving the selection where the node survives.
 pub fn build(nodes: &[NodeSummary], keep: Option<&str>) -> Tree {
     let mut t = Tree::new(nodes.iter().map(row).collect());
@@ -205,6 +222,8 @@ struct Session {
     nodes: Vec<NodeSummary>,
     tree: Tree,
     focus: Focus,
+    /// The last refused `Enter`, shown in the detail pane until the cursor moves.
+    notice: Option<String>,
 }
 
 impl Session {
@@ -220,6 +239,7 @@ impl Session {
             nodes: Vec::new(),
             tree: Tree::new(Vec::new()),
             focus: Focus::Tree,
+            notice: None,
         };
         s.subscribe()?;
         Ok(s)
@@ -341,10 +361,10 @@ impl Session {
             let opened = self.draw_loop(screen, cols, rows)?;
             let Some(agent) = opened else { return Ok(()) };
             // The attach owns the terminal from here until the operator detaches with `^] d`. Its
-            // refusal is printed and the tree comes back, rather than ending the session: a node
-            // with no display plane is a fact about that node, not a reason to close the tree.
+            // refusal — a lease another client holds, say — comes back as the pane's notice rather
+            // than ending the session or going to a stderr the next frame erases.
             if let Err(e) = crate::attach::run(&agent, repo, state_dir) {
-                eprintln!("marion: {e}");
+                self.notice = Some(format!("attach refused: {e}"));
             }
         }
     }
@@ -400,16 +420,26 @@ impl Session {
                             Focus::Content => Focus::Tree,
                         }
                     }
-                    Nav::Up if self.focus == Focus::Tree => self.tree.move_by(-1),
-                    Nav::Down if self.focus == Focus::Tree => self.tree.move_by(1),
+                    Nav::Up if self.focus == Focus::Tree => {
+                        self.notice = None;
+                        self.tree.move_by(-1);
+                    }
+                    Nav::Down if self.focus == Focus::Tree => {
+                        self.notice = None;
+                        self.tree.move_by(1);
+                    }
                     Nav::Up | Nav::Down => {}
-                    Nav::Open => {
-                        if let Some(node) = self.tree.selected() {
-                            let id = node.id.clone();
+                    // Decided here, from the summary, before the terminal changes hands: an attach
+                    // would refuse a headless node too, but onto a screen the next frame erases.
+                    Nav::Open => match self.selected_summary().map(open_target) {
+                        Some(Ok(id)) => {
+                            let id = id.to_string();
                             leave(&terminal);
                             return Ok(Some(id));
                         }
-                    }
+                        Some(Err(refusal)) => self.notice = Some(refusal),
+                        None => {}
+                    },
                 }
             }
         }
@@ -419,6 +449,7 @@ impl Session {
         let tree = &self.tree;
         let focus = self.focus;
         let selected = self.selected_summary();
+        let notice = self.notice.as_deref();
         let _ = terminal.draw(|f| {
             let panes = tree::split(f.area());
             f.render_widget(
@@ -437,7 +468,7 @@ impl Session {
             f.render_widget(
                 Detail {
                     node: selected,
-                    notice: None,
+                    notice,
                 },
                 panes.content,
             );
@@ -832,6 +863,54 @@ mod tests {
         );
         assert!(rows[0].contains("no nodes"), "{rows:?}");
         assert!(rows.last().unwrap().contains("q quit"), "{rows:?}");
+    }
+
+    /// **`Enter` on a headless node is refused on the screen, not on stderr.** The old path ran
+    /// `attach::run`, which refused correctly and `eprintln!`ed the reason under the alternate
+    /// screen — where the next frame erased it, so the operator saw a flicker and nothing else. The
+    /// decision is made here from `NodeSummary::pane`, before the terminal is handed over, and the
+    /// reason is drawn in the detail pane until the cursor moves.
+    #[test]
+    fn enter_on_a_headless_node_is_refused_in_the_pane_and_a_pane_node_opens() {
+        let headless = summary("h", Harness::ClaudeCode, false, None);
+        let refusal = open_target(&headless).expect_err("a headless node has nothing to open");
+        assert!(refusal.contains("headless"), "{refusal}");
+        assert!(refusal.contains("pane nodes only"), "{refusal}");
+
+        let paned = summary("p", Harness::Codex, true, None);
+        assert_eq!(open_target(&paned), Ok("p"));
+
+        // And the refusal is on the screen, in the pane, emphasised.
+        let area = ratatui::layout::Rect::new(0, 0, 90, 14);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(
+            Detail {
+                node: Some(&headless),
+                notice: Some(&refusal),
+            },
+            area,
+            &mut buf,
+        );
+        let rows = painted(
+            area,
+            Detail {
+                node: Some(&headless),
+                notice: Some(&refusal),
+            },
+        );
+        let (y, _) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.contains("pane nodes only") && !r.contains("j/k"))
+            .unwrap_or_else(|| panic!("the refusal is not in the pane: {rows:?}"));
+        let y = u16::try_from(y).unwrap();
+        assert!(
+            buf[(2, y)]
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD),
+            "a refusal must stand out from the facts"
+        );
     }
 
     /// A refresh must not move the cursor out from under the operator.
