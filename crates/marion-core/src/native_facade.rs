@@ -737,10 +737,84 @@ fn executable_error(executable: &str) -> Result<(), NativeFacadeExecutableError>
     }
 }
 
-/// Production intentionally advertises no native facade until one is independently implemented.
-pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[];
+/// One native facade per terminal harness marion names — `marion <harness> <its own flags>`.
+///
+/// This is the registry's shape, not a menu: the sweep
+/// `production_facades_cover_every_terminal_harness_exactly_once` holds it to
+/// [`crate::harness::Harness`] minus `Acp` (a protocol with no binary of its own to stand in
+/// front of), so adding a harness there without a row here is a failing test, and a facade here
+/// that names no harness is too. Each native lane's adapter id is the harness's wire spelling,
+/// because the adapter **is** the harness's row (`marion_harness::native_adapter`), not a
+/// separate implementation.
+///
+/// `enabled` is where a lane has been measured on the **interactive** shape the facade runs,
+/// and the reason is stated where it is not:
+///
+/// * `claude`, `codex` — the row's TUI shape was measured with its declaration flag
+///   (`--mcp-config`, `-c mcp_servers.marion.*`) for M3's pane work.
+/// * `gemini` — disabled: the system-settings layer the declaration rides **outranks the
+///   operator's own**, and whether it merges per key or replaces `mcpServers` wholesale is an
+///   unmeasured question (`marion_harness::gemini::settings_json_with_auth`); a native node that
+///   silently lost the operator's servers would be §6.4's failure.
+/// * `opencode`, `copilot` — disabled: the declaration channel was measured on the headless
+///   surface (S13's `run`, s24's `-p`) and its reading by the TUI has not been; a flag the TUI
+///   ignored would be a node with no bridge wearing a green check.
+///
+/// No structured lanes: `marion run <agent-type>` is that surface, and it is not this registry's.
+pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("claude"),
+        command: "claude",
+        aliases: &[],
+        native: Some(Lane::new(
+            true,
+            NativeLane::new("claude", "claude", NativeAdapterId::new("claude-code")),
+        )),
+        structured: None,
+    },
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("codex"),
+        command: "codex",
+        aliases: &[],
+        native: Some(Lane::new(
+            true,
+            NativeLane::new("codex", "codex", NativeAdapterId::new("codex")),
+        )),
+        structured: None,
+    },
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("gemini"),
+        command: "gemini",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("gemini", "gemini", NativeAdapterId::new("gemini")),
+        )),
+        structured: None,
+    },
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("opencode"),
+        command: "opencode",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("opencode", "opencode", NativeAdapterId::new("opencode")),
+        )),
+        structured: None,
+    },
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("copilot"),
+        command: "copilot",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("copilot", "copilot", NativeAdapterId::new("copilot")),
+        )),
+        structured: None,
+    },
+];
 
-/// The production registry gate. Its empty descriptor set permits no native-facade launch.
+/// The production registry: [`PRODUCTION_NATIVE_FACADES`], validated.
 pub fn production_native_facades() -> NativeFacadeRegistry<'static> {
     NativeFacadeRegistry::new(PRODUCTION_NATIVE_FACADES)
         .expect("the built-in native facade descriptor slice is valid")
@@ -1076,28 +1150,83 @@ mod tests {
         assert_eq!(registry.enabled_native_commands(), vec!["atlas", "boreal"]);
     }
 
+    /// **The registry's cardinality is the `Harness` enum's**, minus the one protocol row.
+    ///
+    /// Every terminal harness has exactly one facade whose native lane resolves to an agent type
+    /// on that harness, whose adapter id is that harness's own spelling (the adapter is the row),
+    /// and whose command is the executable it stands in front of; no facade names a harness
+    /// twice, none names ACP, and no structured lane is advertised here. Reserved words stay
+    /// unresolvable, and so does an unknown name.
+    ///
+    /// Mutation: drop a harness's descriptor, add a second `claude`, give a lane an ACP agent
+    /// type, or advertise a structured lane.
     #[test]
-    fn production_registry_has_no_enabled_facades() {
-        assert!(
-            production_native_facades()
-                .enabled_native_commands()
-                .is_empty()
-        );
-        assert!(
-            production_native_facades()
-                .enabled_structured_commands()
-                .is_empty()
-        );
-    }
+    fn production_facades_cover_every_terminal_harness_exactly_once() {
+        use crate::harness::Harness;
 
-    #[test]
-    fn production_native_facades_remain_literal_empty_and_fail_closed() {
-        assert_eq!(PRODUCTION_NATIVE_FACADES, &[]);
-        assert!(
-            production_native_facades()
-                .resolve("codex-native")
-                .is_none()
+        let registry = production_native_facades();
+        let mut covered: Vec<Harness> = Vec::new();
+        for descriptor in PRODUCTION_NATIVE_FACADES {
+            let resolved = registry
+                .resolve_primary(descriptor.command)
+                .unwrap_or_else(|| panic!("{} does not resolve", descriptor.command));
+            let lane = resolved
+                .native_lane()
+                .unwrap_or_else(|| panic!("{} has no native lane", descriptor.command));
+            let harness = lane.agent_type().harness;
+            assert_ne!(
+                harness,
+                Harness::Acp,
+                "{}: a protocol is not a facade",
+                descriptor.command
+            );
+            assert_eq!(
+                lane.lane().adapter().as_str(),
+                harness.as_str(),
+                "{}: the adapter id is the harness's row",
+                descriptor.command
+            );
+            assert_eq!(
+                lane.executable(),
+                descriptor.command,
+                "{}: the facade command is the executable it stands in front of",
+                descriptor.command
+            );
+            assert!(
+                descriptor.structured.is_none(),
+                "{}: `marion run` is the structured surface",
+                descriptor.command
+            );
+            assert!(
+                !covered.contains(&harness),
+                "{}: {harness} is advertised twice",
+                descriptor.command
+            );
+            covered.push(harness);
+        }
+        let mut expected: Vec<Harness> = Harness::ALL
+            .into_iter()
+            .filter(|h| *h != Harness::Acp)
+            .collect();
+        expected.sort();
+        covered.sort();
+        assert_eq!(
+            covered, expected,
+            "every terminal harness has exactly one facade"
         );
+        assert_eq!(
+            registry.enabled_native_commands(),
+            vec!["claude", "codex"],
+            "the enabled lanes are the two whose interactive shape was measured"
+        );
+        assert!(registry.enabled_structured_commands().is_empty());
+        for word in RESERVED_COMMANDS
+            .iter()
+            .copied()
+            .chain(["codex-native", "definitely-not-a-facade"])
+        {
+            assert!(registry.resolve(word).is_none(), "{word:?} resolves");
+        }
     }
 
     #[test]

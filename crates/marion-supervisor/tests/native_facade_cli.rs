@@ -1,6 +1,5 @@
-//! The native facade seam is wired into the user-facing binary, but this slice advertises none.
-//! These selectors therefore retain the legacy usage refusal until a later transport slice makes
-//! one production descriptor ready.
+//! The native facade seam in the user-facing binary: which first tokens are the facade's, what a
+//! matched selector needs before anything native happens, and what stays the legacy CLI's.
 
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -158,15 +157,15 @@ fn registered_disabled_or_native_absent_facades_never_fall_through_to_legacy() {
     }
 }
 
+/// The shipped binary's first-token routing, with the production registry advertised.
+///
+/// Every registered facade selector — enabled or not — is the facade's, and off a terminal it
+/// refuses with the TTY message rather than falling back to legacy usage (which would be a
+/// `marion claude` that silently ran nothing native). Reserved words and unknown names keep the
+/// byte-exact legacy usage and the legacy all-argument `--help` scan.
 #[test]
-fn production_exposes_no_facade_and_known_or_arbitrary_names_keep_legacy_usage() {
-    assert!(
-        production_native_facades()
-            .enabled_native_commands()
-            .is_empty(),
-        "a native facade became public before its transport exists"
-    );
-
+fn registered_selectors_refuse_off_a_terminal_while_reserved_and_unknown_names_keep_legacy_usage() {
+    let registry = production_native_facades();
     let canonical_help = Command::new(env!("CARGO_BIN_EXE_marion"))
         .arg("--help")
         .output()
@@ -180,7 +179,54 @@ fn production_exposes_no_facade_and_known_or_arbitrary_names_keep_legacy_usage()
         "the canonical marion help command printed to stderr"
     );
 
-    for selector in ["claude", "codex", "definitely-not-a-facade"] {
+    for descriptor in marion_core::PRODUCTION_NATIVE_FACADES {
+        let selector = descriptor.command;
+        assert!(registry.resolve(selector).is_some());
+        for tail in [&[][..], &["--help"][..]] {
+            let output = Command::new(env!("CARGO_BIN_EXE_marion"))
+                .arg(selector)
+                .args(tail)
+                .output()
+                .expect("the marion binary runs");
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{selector:?} {tail:?} did not take the facade refusal; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!(
+                    "marion: native facade \"{selector}\" requires stdin and stdout on the same foreground controlling terminal; use 'marion run <agent-type> --prompt <text>' for structured execution\n"
+                ),
+                "{selector:?} {tail:?} refused for a different reason"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{selector:?} {tail:?} printed to stdout: {:?}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+
+    for selector in [
+        "run",
+        "attach",
+        "tree",
+        "mcp",
+        "doctor",
+        "help",
+        "version",
+        "definitely-not-a-facade",
+    ] {
+        assert!(
+            registry.resolve(selector).is_none(),
+            "{selector:?} resolves"
+        );
+    }
+    // `run`/`attach`/`tree`/`mcp` each have their own legacy argument grammar; the unknown name
+    // is the one that exercises the bare legacy usage path byte for byte.
+    for selector in ["definitely-not-a-facade", "not-a-harness-either"] {
         let output = Command::new(env!("CARGO_BIN_EXE_marion"))
             .arg(selector)
             .output()

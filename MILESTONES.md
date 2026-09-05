@@ -1188,6 +1188,20 @@ acceptance evidence, so every marker remains unchanged.
     and copilot rows can therefore be assembled; the descriptor slice is still empty, so M3 remains
     `[partial]`.
 
+    **The production registry advertises every terminal harness in this commit, moving no
+    milestone marker.** `PRODUCTION_NATIVE_FACADES` now carries one descriptor per `Harness` minus
+    `Acp` — `claude`, `codex`, `gemini`, `opencode`, `copilot`, each command the executable it
+    stands in front of, each adapter id the harness's own row — with `claude` and `codex` enabled
+    (their TUI rows were measured with the declaration flag) and the other three disabled by a
+    named reason (gemini's system-settings merge granularity; opencode's and copilot's channel
+    measured only headless). Covered by `production_facades_cover_every_terminal_harness_exactly_
+    once` (cardinality from the enum) and, at the shipped binary, by `registered_selectors_refuse_
+    off_a_terminal_while_reserved_and_unknown_names_keep_legacy_usage`: every registered selector
+    off a terminal now takes the facade's TTY refusal instead of legacy usage, while `run`,
+    `attach`, `tree`, `mcp`, the reserved words and unknown names stay legacy byte for byte. The
+    shipped CLI still answers an authorized handoff with "relay is not enabled", so M3 remains
+    `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

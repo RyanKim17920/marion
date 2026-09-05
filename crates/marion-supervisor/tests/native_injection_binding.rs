@@ -282,7 +282,13 @@ fn assembly_preserves_every_indexed_native_value_without_launching() {
             .try_exists()
             .expect("document path absence is observable after assembly")
     );
-    assert!(PRODUCTION_NATIVE_FACADES.is_empty());
+    assert!(
+        marion_core::NativeFacadeRegistry::new(PRODUCTION_NATIVE_FACADES)
+            .expect("the production slice is valid")
+            .resolve("atlas")
+            .is_none(),
+        "the synthetic facade must never be a production selector"
+    );
 }
 
 #[test]
