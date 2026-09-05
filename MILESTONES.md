@@ -79,8 +79,9 @@ things. In one day of research, Gemini moved 0.40.1 → 0.53.0, Codex 0.145.0 �
 Enter hit its update prompt mid-experiment), and Codex removed `wire_api = "chat"` outright.
 
 Baseline: **Claude Code 2.1.220 · opencode 1.17.3 · Gemini CLI 0.53.0 · Codex CLI — 0.145.0 for S3
-and the alt-screen/`/diff` capture, 0.146.0 for S5**. (The 0.146.0 captures contain no `?1049h` at
-all; the alt-screen evidence is the 0.145.0 file.) Qwen Code and Amp claims are **unstamped and unverified locally**.
+and the alt-screen/`/diff` capture, 0.146.0 for S5 · GitHub Copilot CLI 1.0.83 (S24, 2026-09-05)**.
+(The 0.146.0 captures contain no `?1049h` at all; the alt-screen evidence is the 0.145.0 file.)
+Qwen Code and Amp claims are **unstamped and unverified locally**.
 
 **A version here names the binary a behaviour was measured on, not the binary that will run.** The
 installed `claude` on this machine is **2.1.224**, not the 2.1.220 stamped above and throughout this
@@ -203,6 +204,63 @@ machine's configuration and are illustrative**; the durable finding is qualitati
 `ninput = 7 → 9 → 11` across a three-turn child *(codex-cli 0.146.0, 2026-08-02)*. Not settleable
 from `tests/fixtures/s6/`, whose request log is reduced and strips `input`.
 
+**GitHub Copilot CLI runs as a marion child at $0.00 — the fifth binary, on the opencode cell's
+wire.** *(copilot 1.0.83, macOS darwin 25.5.0, measured 2026-09-05 against the canned provider;
+fixture `tests/fixtures/s24/`; witnessed end to end by `harness_matrix`'s fifth cell, which starts
+marion's own bridge from the document `CopilotAdapter` writes and reads the child's `report` back
+out of the persisted contract.)* Installed with `npm i -g @github/copilot@1.0.83` — the 0.0.367 that
+npm had left on `PATH` has no BYOK, no `--output-format json` and no `--acp`, so nothing below was
+measurable before it. The facts the adapter rests on, every one of which a naive port from the
+other four would get wrong:
+
+- **BYOK is env, not config, and it needs an explicit model.** `COPILOT_PROVIDER_BASE_URL` selects
+  a provider outright (no GitHub login), takes marion's `…/v1` form verbatim and appends
+  `/chat/completions`; `COPILOT_PROVIDER_TYPE=openai` + `COPILOT_PROVIDER_WIRE_API=completions` is
+  the canned provider's already-proven wire. Without `--model` the CLI exits 1 before any request
+  (`BYOK providers require an explicit model`), so the `copilot` built-in carries
+  `COPILOT_DEFAULT_MODEL` and the adapter refuses that default under `--live`, as opencode does.
+- **Both of §3.1's axes exist, as two flags with two spellings of one tool.** `--available-tools`
+  is what the model *sees* (everything unnamed is withheld and listed in a `session.info` frame);
+  `--allow-tool` is what *runs* without a prompt. The MCP tool is `marion-report` on the first
+  axis — a hyphen, the fifth spelling — and `marion(report)` on the second; the file tools are
+  `create`/`edit`/`view` on the first and the *kind* `write` on the second. `--allow-tool=create`
+  and `--allow-tool=marion-report` both grant **nothing**. Hence `writes_without_a_declaration`
+  is `false` here (as on Claude Code and gemini), `read → view` needs no grant, `write → create`
+  needs `write`, and the contract records `allow-tool:<pattern>` — prefixed, because copilot's
+  `write` kind is spelled exactly like marion's own verb.
+- **⚠ In `-p` mode an ungranted call is denied and the run exits 0.** `Permission denied and could
+  not request permission from user`, `code: "denied"`, the model's closing text, `exitCode: 0`. A
+  `report` the bridge answered `isError: true` also exits 0. §12's silent-success shape twice
+  over; the stream is the only place either is described, so `CopilotAdapter::parse_stream` reads
+  the verdict off `tool.execution_complete` (paired to `tool.execution_start` by `toolCallId`) and
+  the exit code decides nothing on its own. A provider 500 is five retries over 30 s, then
+  `session.error` and `exitCode: 1`.
+- **The CLI holds turn one for its MCP servers itself.** `session.mcp_server_status_changed`
+  `pending → connected`, `session.mcp_servers_loaded`, then `user.message`, on every capture; the
+  ceiling is 60 s, after which it proceeds tool-less and says `status: "failed"` in that frame. So
+  the gate §6.1 step 8 makes marion build for Claude Code is built in, and no readiness marker is
+  compiled — `mcp_servers_loaded` is what a caller should assert instead.
+- **Isolation is `COPILOT_HOME`, and `HOME` must be left alone.** The former relocates config,
+  session state, logs, the sqlite store and `mcp-config.json` (`--additional-mcp-config @file`
+  *augments* it for one session); the latter is where the 1.0.83 launcher finds its platform
+  package (`~/Library/Caches/copilot/pkg/`). `COPILOT_OFFLINE=true` closes GitHub auth, telemetry,
+  web tools, the GitHub MCP server and auto-update in one switch, and rides with the provider block
+  (dropped under `--live`); `COPILOT_AUTO_UPDATE=false` is kept under both.
+- **The API key is redacted from the CLI's own output.** Every occurrence of
+  `COPILOT_PROVIDER_API_KEY`'s value in the JSONL becomes `******` (a key `fake` printed a model
+  `fake-model` as `******-model`). marion's placeholder appears in nothing a child prints; a live
+  key is the operator's and is never placed by marion. Do not choose a canned key that is a
+  substring of a tool name, a model, or anything a narrative might say.
+- **`copilot --version` prints `GitHub Copilot CLI 1.0.83.`** — the version ends a sentence, and
+  the pin parser had to learn to strip one trailing dot to identify the binary at all.
+
+Not measured, and so not claimed: `--acp` (it starts; no session has been driven, so `acp::AGENTS`
+has no row), `--resume`/`--session-id`, a copilot **root** (the adapter refuses a root whose
+`allowed_tools` arrive in another harness's spelling, which is why `root::ROOT_ALLOWED_TOOLS`
+became `ROOT_VERBS` spelled by the adapter; the root path itself has not been driven), and every
+`cross_product`/`journal_wiring`/`depth_gate` cell, whose matches name `copilot` as *not yet* a
+cell rather than omitting it.
+
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
 ---
@@ -249,12 +307,13 @@ routing third-party clients through Pro/Max OAuth — is prohibited and enforced
 | Qwen Code † | `OPENAI_BASE_URL/_API_KEY/_MODEL` | `QWEN_HOME` | OpenAI Chat Completions | easy |
 | Gemini CLI | `GOOGLE_GEMINI_BASE_URL` | `GEMINI_CLI_HOME` | Gemini `v1beta` + mandatory `:countTokens`, `:embedContent` | medium — **but blocked vendor-side on a personal login; see below** |
 | Codex | `[model_providers.X]` | `CODEX_HOME` / `-c` inline / `-p` profile (isolating `CODEX_HOME` **also** breaks auth — but copying `auth.json` in fully restores it) | **OpenAI Responses ONLY** | hardest |
+| Copilot CLI | `COPILOT_PROVIDER_BASE_URL` + `COPILOT_PROVIDER_API_KEY` + `--model` (BYOK; **no GitHub login needed**) | `COPILOT_HOME` (never `HOME` — the launcher's package cache lives under it) | OpenAI Chat Completions by default; Responses via `COPILOT_PROVIDER_WIRE_API=responses`, Anthropic Messages via `COPILOT_PROVIDER_TYPE=anthropic` — **the one harness that can be pointed at three of the four wires** | easy — **verified 2026-09-05 on 1.0.83, `harness_matrix`'s fifth cell** |
 | Amp † | — | — | — | **blocked** |
 
 † unverified locally.
 
-Order of attack for model injection: opencode → Claude Code → Qwen → Gemini → Codex. (Distinct from
-adapter build order: claude-code → codex → acp → opencode.)
+Order of attack for model injection: opencode → Claude Code → Copilot → Qwen → Gemini → Codex.
+(Distinct from adapter build order: claude-code → codex → acp → opencode → copilot.)
 
 **Codex is hardest**: `wire_api="chat"` removed; sends `include:["reasoning.encrypted_content"]`
 unconditionally; `apply_patch` only as a Lark-grammar custom tool; MCP wrapped in a proprietary

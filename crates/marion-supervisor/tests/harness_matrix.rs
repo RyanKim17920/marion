@@ -32,14 +32,14 @@
 //! cargo test -p marion-supervisor --test harness_matrix
 //! ```
 //!
-//! It needs real `claude`, `codex`, `gemini` and `opencode` on `PATH`, **at the versions
+//! It needs real `claude`, `codex`, `gemini`, `opencode` and `copilot` on `PATH`, **at the versions
 //! [`marion_testsupport::PINNED_HARNESSES`] lists** — that table is the source of truth, and the
 //! gate refuses a binary of the right name at an unrecognised version rather than reporting a
 //! matrix result attributed to a build that never ran.
 //! Like `m1_hop` and `timeout_kill` it is **not** `#[ignore]`d and it does **not** skip
 //! when a binary is missing: §9's standing rule is that *a criterion that quietly passes on a
 //! machine that cannot run it is worth less than no criterion*. One `#[test]` per harness, never a
-//! loop over four, so a failure names its own cell instead of hiding the three behind it.
+//! loop over five, so a failure names its own cell instead of hiding the four behind it.
 
 use std::path::PathBuf;
 
@@ -501,6 +501,46 @@ fn an_opencode_child_reports_through_marions_bridge_over_the_openai_wire() {
         // rather than claiming one. An empty list here would read as "no tool was allowed", which
         // is the opposite of the truth for a child that can run `bash`.
         expected_allowed_tools: &["harness-default:unconstrained"],
+        expected_wire: "openai",
+    };
+    let ev = drive(&cell);
+    assert_cell(&cell, &ev);
+}
+
+/// **The fifth binary, on the wire the opencode cell already proved.** copilot 1.0.83's BYOK path
+/// speaks OpenAI Chat Completions by default (`COPILOT_PROVIDER_TYPE=openai`,
+/// `COPILOT_PROVIDER_WIRE_API=completions`), so the same `Script` fields the opencode cell fills
+/// drive it — with the tool under copilot's own `marion-report` spelling, a hyphen, which is the
+/// fifth spelling of one tool and the thing (5) below is really asserting.
+///
+/// What this cell witnesses that `tests/fixtures/s24/` alone cannot: marion's **own** bridge behind
+/// `--additional-mcp-config`, started by copilot from the document `CopilotAdapter::config_files`
+/// wrote, answering `tools/list` before copilot's first turn and `tools/call` during it — and the
+/// persisted contract carrying that call's narrative as the child's own words.
+#[test]
+fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
+    assert!(
+        on_path("copilot"),
+        "this cell drives a REAL copilot child; put `copilot` ({}) on PATH",
+        pinned_version("copilot")
+    );
+    let cell = Cell {
+        agent_type: "copilot",
+        // Explicit: BYOK refuses to start without one (`BYOK providers require an explicit model`,
+        // exit 1), and the adapter refuses first. The canned provider ignores the name.
+        model: Some("canned-1"),
+        script: Script {
+            // copilot's own spelling: `<serverName>-<toolName>`.
+            openai_report_tool: "marion-report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        expected_harness: Harness::Copilot,
+        expected_model: Some("canned-1"),
+        // A real allowlist, in copilot's pattern grammar and prefixed with the axis: the literal
+        // `--allow-tool=marion(report)`, which is what `-p` mode checks the call against. `copilot`
+        // declares no tools, so no `allow-tool:write` joins it.
+        expected_allowed_tools: &["allow-tool:marion(report)"],
         expected_wire: "openai",
     };
     let ev = drive(&cell);
