@@ -1426,15 +1426,6 @@ impl HarnessAdapter for OpenCodeAdapter {
         }
     }
 
-    /// **No terminal frame exists to wait for** (S13, `tests/fixtures/s13/`): opencode's stream
-    /// ends when the session goes idle, so this is a fold over whatever arrived before stdout
-    /// closed and has no concept of a last event. Failure comes from an `error` frame or from a
-    /// terminal-state `tool_use` that ended in error — the exit code is not consulted, because S13
-    /// measured exit 1 with an **empty stderr** and the description only in-stream.
-    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
-        opencode::parse_stream(stdout, &self.marion_tool_name("report"))
-    }
-
     fn marion_tool_name(&self, tool: &str) -> String {
         // `<serverName>_<toolName>` — a third spelling again (S13, verified live). The JSON-RPC
         // `tools/call` opencode then makes to the bridge carries the **unprefixed** `report`: that
@@ -1482,10 +1473,6 @@ impl HarnessAdapter for OpenCodeAdapter {
     fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
         self.native_tools(spec)?;
         Ok(vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()])
-    }
-
-    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
-        opencode::marion_calls(stdout, &self.marion_tool_name(""))
     }
 }
 

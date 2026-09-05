@@ -26,9 +26,6 @@ use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
-use crate::stream::{
-    CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
-};
 
 /// `$XDG_CONFIG_HOME`'s name under the sandbox — one spelling for [`SPEC`]'s env row and for
 /// [`config_path`], so the document is written where the relocated root is read from.
@@ -273,110 +270,6 @@ pub fn config_path(sandbox: &Path) -> PathBuf {
     xdg_config_home(sandbox)
         .join("opencode")
         .join("opencode.json")
-}
-
-/// Parse an `opencode run --pure --format json` stream.
-///
-/// The event set is closed and measured (`tests/fixtures/s13/`): `step_start | step_finish | text |
-/// reasoning | tool_use | error`. Every line carries `{type, timestamp, sessionID, …}`.
-///
-/// **There is no terminal frame, and this parser must never wait for one.** S13: *"There is no
-/// init, result or usage summary event. The stream simply ends when `session.status === "idle"`. A
-/// reader must terminate on stdout close, not on a terminal frame — the contrast with codex and
-/// gemini, which both emit one."* That property is honoured in two places and both matter: this
-/// function is a fold over however many frames arrived and has no notion of a last one, and
-/// [`crate::stream::FrameSplitter::finish`] delivers a trailing unterminated frame at close. The
-/// supervisor's own drain already ends on EOF, so nothing upstream waits either.
-///
-/// The two evidence-bearing shapes, verbatim from S13:
-///
-/// - `tool_use` fires **only on terminal states** (`completed` / `error`) — there are no streaming
-///   partials — and carries the call's `input` under `part.state.input`. So a report's narrative is
-///   read there, from the call marion's own bridge was handed;
-/// - `error` carries `{name, data:{message, statusCode, …}}`, which S13 measured arriving with
-///   **exit 1 and an empty stderr**, so the stream is the only place that failure is described.
-///
-/// `file_change_paths` stays empty: opencode announces no file-change event at all, and git is the
-/// authority for `changed_paths` regardless.
-pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
-    let mut out = StreamOutcome::default();
-    for v in json_frames(s) {
-        match v["type"].as_str() {
-            Some("tool_use") if v["part"]["tool"].as_str() == Some(report_tool) => {
-                let state = &v["part"]["state"];
-                match state["status"].as_str() {
-                    Some("completed") => {
-                        if let Some(n) = state["input"]["narrative"].as_str() {
-                            out.narrative = Some(n.to_string());
-                        }
-                        out.result_commits = report_commits(&state["input"]);
-                    }
-                    // The measured rejection shape: `{"status":"error","error":"The user rejected
-                    // permission…"}`. The run continues and exits 0, so without this the contract
-                    // would record a clean run in which marion's tool was refused.
-                    Some("error") => {
-                        out.failure = Some(format!(
-                            "the child's {report_tool} call ended in error: {}",
-                            state["error"].as_str().unwrap_or("no message")
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-            Some("error") => {
-                out.failure = out.failure.take().or_else(|| {
-                    first_string(&v, &["/error/data/message", "/error/name"])
-                        .or_else(|| Some("the child's stream carried an error frame".into()))
-                });
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
-/// of each call.
-///
-/// The tool's name sits under `part.tool` — a third field in a third place — and every state is
-/// counted, including `error`: the question this answers is "which of marion's verbs did the node
-/// reach for", and a call the bridge refused was reached for just as surely as one it served. What
-/// *became* of each is the [`CallOutcome`] beside it, which is where a refusal is now recorded
-/// instead of being flattened away.
-///
-/// **opencode is the one harness whose refusal shape is recorded rather than constructed.** S13
-/// measured `{"status":"error","error":"The user rejected permission to use this specific tool
-/// call."}` on the tool part, with the run continuing and exiting 0 — the exact silent success
-/// §6.1 step 8 exists to refuse. `parse_stream` has read that shape for a *child's* `report` since
-/// S13; this makes it readable for a **root**, which has no `TaskContract` for `parse_stream` to
-/// put it in.
-///
-/// `tool_use` fires only on terminal states here (S13: no streaming partials), so a state that is
-/// neither `completed` nor `error` is something this harness has not been measured emitting, and is
-/// [`CallOutcome::Unknown`] rather than a guess in either direction.
-pub fn marion_calls(s: &str, prefix: &str) -> Vec<MarionCall> {
-    json_frames(s)
-        .iter()
-        .filter(|v| v["type"].as_str() == Some("tool_use"))
-        .filter_map(|v| {
-            let verb = v["part"]["tool"]
-                .as_str()?
-                .strip_prefix(prefix)?
-                .to_string();
-            let state = &v["part"]["state"];
-            let outcome = match state["status"].as_str() {
-                Some("completed") => CallOutcome::Answered,
-                Some("error") => CallOutcome::Refused(
-                    state["error"]
-                        .as_str()
-                        .unwrap_or("the tool part carried no message")
-                        .to_string(),
-                ),
-                _ => CallOutcome::Unknown,
-            };
-            Some(MarionCall { verb, outcome })
-        })
-        .collect()
 }
 
 /// The values [`config_json`] writes into the MCP declaration.
