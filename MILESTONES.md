@@ -790,6 +790,23 @@ acceptance evidence, so every marker remains unchanged.
     Measured on codex 0.147.0 while closing this: the argv prompt is **submitted** rather than
     seeded (unlike claude's pane), the default is already inline so `--no-alt-screen` is
     deliberately not passed, and no mouse mode is enabled.
+
+    **Attach reliability, 2026-09-05: the codex cell had gone red, and the cause was marion's.**
+    `marion attach` exited with *"painting the pane on the operator's terminal: Resource
+    temporarily unavailable (os error 35)"* on codex's ~2.3 MB opening frame, and on claude's trust
+    dialog under load. `ce346c0` bounded the keyboard read by setting `O_NONBLOCK` on fd 0 and
+    `edc366d` carried that into the attach — but in a terminal fds 0, 1 and 2 are one open file
+    description and the flag lives on the description, so stdout went nonblocking too and a paint
+    larger than the pty's output buffer failed instead of waiting. Reproduced causally rather than
+    by re-running codex: `marion-tui::guard::tests::watching_the_keyboard_leaves_a_large_write_on_the_same_terminal_blocking`
+    (a dup of one pty slave, a 512 KiB write, nothing draining for 200 ms) and
+    `attach.rs::a_paint_larger_than_the_pty_buffer_completes_while_the_keyboard_is_watched` (the
+    same through `Session`, a 200x200 frame of distinct colours), both red with that exact error
+    before the change. The keyboard is now read with `poll(2)` under the same bound
+    (`marion_tui::guard::Keyboard`), in both the attach's reader thread and the tree's
+    single-threaded loop; nothing mutates the shared description, so nothing needs restoring on
+    drop or panic and the paint blocks until the terminal drains. The codex cell is green again on
+    the same binary.
   - **Criterion 3 (L4.5 snapshot tests pass and gate commits) — MET, and now over two targets.**
     `.githooks/pre-commit` runs `cargo test -p marion-term --test l45_driver` **and**
     `cargo test -p marion-supervisor --test l45_tree` unconditionally: no opt-out, no staged-file

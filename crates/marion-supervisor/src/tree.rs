@@ -45,7 +45,7 @@
 //! criterion names them, marion denies every permission today (§11 item 22), and a queue rendering
 //! decisions marion has already made would be a widget with nothing to show.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
@@ -307,7 +307,9 @@ impl Session {
     /// stdin on its own thread because it has to forward every byte; this screen consumes a handful
     /// of keys, and a reader thread here would still be blocked in `read(2)` while the attach it
     /// launched was trying to read the same fd — stealing the operator's first keystroke into a
-    /// pane. Non-blocking stdin on this one thread has no such window.
+    /// pane. A bounded `poll` of stdin on this one thread has no such window — and it is a `poll`,
+    /// not `O_NONBLOCK`, because that flag lives on the tty description stdout shares and would
+    /// make the paint fail on a full pty buffer instead of waiting.
     fn pump(&mut self, repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
         loop {
             // Re-measured each pass: an attach the operator just left may have been resized, and
@@ -333,6 +335,9 @@ impl Session {
         cols: u16,
         rows: u16,
     ) -> Result<Option<String>, Refusal> {
+        // Before the renderer, so a refused keyboard leaves through `screen`'s own drop.
+        let mut stdin = marion_tui::guard::Keyboard::open(0)
+            .map_err(|e| format!("watching the tree's keyboard: {e}"))?;
         let mut terminal = Terminal::new(ScreenBackend::new(screen, cols, rows))
             .map_err(|e| format!("starting the tree's renderer: {e}"))?;
         // **The terminal is restored on every exit from this function**, including the one that
@@ -340,8 +345,6 @@ impl Session {
         // order matters on the way out for the same reason `attach::Session::drop` says: an error
         // printed onto the alternate screen disappears with it.
         let leave = |t: &Terminal<ScreenBackend>| t.backend().screen().leave();
-        // Restored when this drops, which is before the attach below reads a byte.
-        let mut stdin = marion_tui::guard::NonBlocking::set(0);
         let mut buf = [0u8; 256];
         loop {
             self.paint(&mut terminal);
@@ -354,13 +357,15 @@ impl Session {
                     return Ok(None);
                 }
             }
-            let n = match stdin.read(&mut buf) {
-                Ok(0) => {
+            // The socket read above is the pacing; the keyboard is only glanced at, so a key that
+            // is not already there waits for the next pass rather than holding up a frame.
+            let n = match stdin.read_within(&mut buf, std::time::Duration::ZERO) {
+                Ok(Some(0)) => {
                     leave(&terminal);
                     return Ok(None);
                 }
-                Ok(n) => n,
-                Err(_) => 0,
+                Ok(Some(n)) => n,
+                Ok(None) | Err(_) => 0,
             };
             for action in tree::nav(&buf[..n]) {
                 match action {

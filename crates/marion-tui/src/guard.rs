@@ -55,16 +55,28 @@ unsafe extern "C" {
     fn isatty(fd: std::ffi::c_int) -> std::ffi::c_int;
     fn ioctl(fd: std::ffi::c_int, request: std::ffi::c_ulong, ...) -> std::ffi::c_int;
     fn fcntl(fd: std::ffi::c_int, cmd: std::ffi::c_int, ...) -> std::ffi::c_int;
+    fn poll(fds: *mut PollFd, nfds: NfdsT, timeout_ms: std::ffi::c_int) -> std::ffi::c_int;
 }
 
-/// `F_GETFL` / `F_SETFL` / `O_NONBLOCK`. The first two are 3 and 4 on every Unix; `O_NONBLOCK` is
-/// `0x4` on Darwin and `0o4000` on Linux, which is the one that has to be spelled per platform.
+/// `F_GETFL`, 3 on every Unix. Used only to ask whether a descriptor is open.
 const F_GETFL: std::ffi::c_int = 3;
-const F_SETFL: std::ffi::c_int = 4;
-#[cfg(target_os = "macos")]
-const O_NONBLOCK: std::ffi::c_int = 0x0004;
-#[cfg(not(target_os = "macos"))]
-const O_NONBLOCK: std::ffi::c_int = 0o4000;
+
+/// `nfds_t`: `unsigned long` on Linux, `unsigned int` everywhere else marion runs.
+#[cfg(target_os = "linux")]
+type NfdsT = u64;
+#[cfg(not(target_os = "linux"))]
+type NfdsT = u32;
+
+#[repr(C)]
+struct PollFd {
+    fd: std::ffi::c_int,
+    events: i16,
+    revents: i16,
+}
+
+/// `POLLIN` and `POLLNVAL` are `0x0001` and `0x0020` on Darwin and Linux alike.
+const POLLIN: i16 = 0x0001;
+const POLLNVAL: i16 = 0x0020;
 
 /// `TIOCGWINSZ`, measured on Darwin 25.5.0 as `0x40087468`; Linux spells it `0x5413`.
 ///
@@ -329,7 +341,7 @@ impl Restore {
     }
 }
 
-/// `O_NONBLOCK` on one descriptor, restored on drop.
+/// The keyboard, read with a bound: `poll(2)` on one descriptor, then `read(2)`.
 ///
 /// # Why every screen that polls needs this
 ///
@@ -341,59 +353,85 @@ impl Restore {
 /// into the pane it just opened. One thread that polls both needs the keyboard read to return
 /// rather than block, and that is this.
 ///
-/// **Restored on drop, including on a panic**, by the same argument [`Screen`] makes: a shell left
-/// with `O_NONBLOCK` on its stdin sees spurious `EAGAIN` from every later program that reads it,
-/// which is a broken terminal with no visible cause.
+/// # Why `poll`, and never `O_NONBLOCK`
+///
+/// In a terminal, stdin, stdout and stderr are three descriptors on **one** open file description
+/// — the shell opened the tty once and `dup`ed it — and `O_NONBLOCK` is a status flag on the
+/// description, not the descriptor. Setting it on fd 0 to bound the keyboard read set it on fd 1,
+/// and a paint larger than the pty's output buffer then failed with `EAGAIN` instead of waiting
+/// for the terminal to drain: `marion attach` exited on codex's 2.3 MB first frame with "Resource
+/// temporarily unavailable (os error 35)". `poll` bounds the wait without touching the
+/// description, so the paint stays blocking and nothing needs restoring — not on drop, not on
+/// panic.
 #[derive(Debug)]
-pub struct NonBlocking {
+pub struct Keyboard {
     fd: RawFd,
-    /// The flags as they were. `None` when the fd could not be queried — a closed or invalid
-    /// descriptor — in which case nothing was changed and nothing is restored.
-    original: Option<std::ffi::c_int>,
 }
 
-impl NonBlocking {
-    /// Set `O_NONBLOCK` on `fd`, remembering the previous flags.
-    pub fn set(fd: RawFd) -> Self {
-        // SAFETY: `F_GETFL` and `F_SETFL` take and return an int; neither reads through a pointer.
-        let original = unsafe {
-            let flags = fcntl(fd, F_GETFL);
-            if flags < 0 {
-                None
-            } else {
-                (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0).then_some(flags)
-            }
+impl Keyboard {
+    /// Watch `fd`. Refused when the descriptor is not open, because `poll` on a negative or closed
+    /// descriptor reports silence forever and a caller polling in a loop would never learn that
+    /// it has no keyboard.
+    pub fn open(fd: RawFd) -> std::io::Result<Self> {
+        // SAFETY: `F_GETFL` takes and returns an int; nothing is read through a pointer.
+        if fd < 0 || unsafe { fcntl(fd, F_GETFL) } < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("keyboard descriptor {fd} is not open"),
+            ));
+        }
+        Ok(Self { fd })
+    }
+
+    /// Wait up to `timeout` for input, then read what is there.
+    ///
+    /// `Ok(None)` is silence — nothing arrived in time, and an interrupted wait counts as silence
+    /// too, since the caller's loop is about to look again. `Ok(Some(0))` is the descriptor closed
+    /// or hung up, exactly as `read(2)` reports it. Reads the descriptor directly rather than
+    /// through `std::io::Stdin`, whose `BufRead` layer would hold bytes this loop needs to see as
+    /// soon as they arrive.
+    pub fn read_within(
+        &mut self,
+        buf: &mut [u8],
+        timeout: std::time::Duration,
+    ) -> std::io::Result<Option<usize>> {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+        let mut pfd = PollFd {
+            fd: self.fd,
+            events: POLLIN,
+            revents: 0,
         };
-        Self { fd, original }
-    }
-
-    /// Whether the flag was actually set — `false` for a descriptor `fcntl` refused, which a caller
-    /// polling in a loop wants to know about because its reads will block instead.
-    pub fn engaged(&self) -> bool {
-        self.original.is_some()
-    }
-}
-
-impl Read for NonBlocking {
-    /// Reads the descriptor directly rather than through `std::io::Stdin`, whose `BufRead` layer
-    /// would hold bytes this loop needs to see as soon as they arrive.
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        use std::os::fd::{BorrowedFd, FromRawFd, IntoRawFd};
-        // SAFETY: `self.fd` is owned by the caller for this guard's lifetime; the `File` is
+        let timeout_ms =
+            std::ffi::c_int::try_from(timeout.as_millis()).unwrap_or(std::ffi::c_int::MAX);
+        // SAFETY: `pfd` is a live, correctly laid out `struct pollfd` for the duration of the call.
+        let ready = unsafe { poll(&mut pfd, 1, timeout_ms) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            return if error.kind() == std::io::ErrorKind::Interrupted {
+                Ok(None)
+            } else {
+                Err(error)
+            };
+        }
+        if ready == 0 {
+            return Ok(None);
+        }
+        if pfd.revents & POLLNVAL != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("keyboard descriptor {} was closed", self.fd),
+            ));
+        }
+        // `POLLIN`, `POLLHUP` or `POLLERR`: the read decides, and cannot block after any of them.
+        // SAFETY: `self.fd` is owned by the caller for this reader's lifetime; the `File` is
         // immediately defused with `into_raw_fd` so it never closes a descriptor it did not open.
         let mut f = unsafe { std::fs::File::from_raw_fd(self.fd) };
         let r = f.read(buf);
         let _ = f.into_raw_fd();
-        let _ = unsafe { BorrowedFd::borrow_raw(self.fd) };
-        r
-    }
-}
-
-impl Drop for NonBlocking {
-    fn drop(&mut self) {
-        if let Some(flags) = self.original {
-            // SAFETY: as above; restoring exactly the flags this guard read.
-            unsafe { fcntl(self.fd, F_SETFL, flags) };
+        match r {
+            Ok(n) => Ok(Some(n)),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(None),
+            Err(e) => Err(e),
         }
     }
 }
@@ -811,5 +849,128 @@ mod tests {
         assert!(RawMode::enable(-1).is_none());
         assert!(!is_tty(-1));
         assert!(get_termios(-1).is_none());
+    }
+
+    /// A pty master as a `File`, for a test thread that needs to read or type on it.
+    ///
+    /// `ManuallyDrop` because the descriptor belongs to [`Tty`], which closes it once the thread
+    /// has been joined; a `File` that closed it too would double-close.
+    fn master_file(master: std::ffi::c_int) -> std::mem::ManuallyDrop<std::fs::File> {
+        // SAFETY: `master` is an open descriptor owned by a `Tty` that outlives every use of the
+        // returned `File`, and `ManuallyDrop` keeps the `File` from closing it.
+        std::mem::ManuallyDrop::new(unsafe {
+            <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(master)
+        })
+    }
+
+    /// **The keyboard reader must not change how the terminal is written.**
+    ///
+    /// In a terminal, stdin, stdout and stderr are `dup`s of one open file description, and
+    /// `O_NONBLOCK` is a status flag on that shared description — so a reader that set it on fd 0
+    /// would have set it on fd 1 too, and a paint larger than the pty's output buffer would come
+    /// back `EAGAIN` instead of waiting for the terminal to drain. That is `marion attach` dying
+    /// with "Resource temporarily unavailable (os error 35)" on codex's 2.3 MB first paint.
+    ///
+    /// The dup here is the same relationship: one description, two descriptors. Nothing drains the
+    /// master until the writer has been blocked for a moment, so a write that returns early has
+    /// returned an error.
+    #[test]
+    fn watching_the_keyboard_leaves_a_large_write_on_the_same_terminal_blocking() {
+        let tty = Tty::open();
+        let mut stdout = tty
+            .slave
+            .try_clone()
+            .expect("dup the slave, as a shell does for fds 0, 1 and 2");
+        let keyboard = Keyboard::open(tty.fd()).expect("a pty slave is a keyboard");
+
+        // `F_SETFL` and `O_NONBLOCK`, for the *master* only: `0x4` on Darwin, `0o4000` on Linux.
+        const F_SETFL: std::ffi::c_int = 4;
+        #[cfg(target_os = "macos")]
+        const O_NONBLOCK: std::ffi::c_int = 0x0004;
+        #[cfg(not(target_os = "macos"))]
+        const O_NONBLOCK: std::ffi::c_int = 0o4000;
+
+        const PAINT: usize = 512 * 1024;
+        let drained = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let written = Arc::new(AtomicBool::new(false));
+        let drainer = {
+            let drained = Arc::clone(&drained);
+            let written = Arc::clone(&written);
+            let master = tty.master;
+            std::thread::spawn(move || {
+                // Let the writer fill the pty and block before a byte is taken off the master.
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                // The master's description is its own, so this flag reaches nothing else — and it
+                // is what lets a drainer notice the writer gave up early instead of waiting on a
+                // paint that will never arrive.
+                // SAFETY: an int in, an int out; no pointer is read.
+                unsafe {
+                    fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK);
+                }
+                let mut master = master_file(master);
+                let mut buf = vec![0u8; 64 * 1024];
+                while drained.load(Ordering::SeqCst) < PAINT {
+                    match master.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            drained.fetch_add(n, Ordering::SeqCst);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if written.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+
+        let result = stdout.write_all(&vec![b'x'; PAINT]);
+        written.store(true, Ordering::SeqCst);
+        drainer.join().expect("the drainer did not panic");
+        // The reader was watching for the whole write; it has nothing to restore.
+        let _watched_throughout = keyboard;
+        result.unwrap_or_else(|e| {
+            panic!("a paint larger than the pty buffer failed instead of blocking: {e}")
+        });
+        assert_eq!(drained.load(Ordering::SeqCst), PAINT);
+    }
+
+    /// The reader's own contract: silence within the bound is `None`, not an error; a key is read
+    /// as soon as it arrives, without waiting out the bound.
+    #[test]
+    fn the_keyboard_reader_reports_silence_as_none_and_returns_keys_as_they_arrive() {
+        let tty = Tty::open();
+        let mut keyboard = Keyboard::open(tty.fd()).expect("a pty slave is a keyboard");
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            keyboard
+                .read_within(&mut buf, std::time::Duration::from_millis(20))
+                .expect("a quiet keyboard is not an error"),
+            None,
+        );
+        // Raw mode, so the byte is delivered without waiting for a line.
+        let _raw = RawMode::enable(tty.fd()).expect("raw mode on a pty slave");
+        master_file(tty.master).write_all(b"q").expect("type a key");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            keyboard
+                .read_within(&mut buf, std::time::Duration::from_secs(5))
+                .expect("a key is a read"),
+            Some(1)
+        );
+        assert_eq!(buf[0], b'q');
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "the read waited out its bound instead of returning on the key"
+        );
+    }
+
+    #[test]
+    fn a_descriptor_that_is_not_open_is_refused_as_a_keyboard() {
+        let error = Keyboard::open(-1).expect_err("nothing to poll");
+        assert!(error.to_string().contains("keyboard"), "{error}");
     }
 }

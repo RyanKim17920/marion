@@ -742,16 +742,19 @@ impl Session {
             .spawn(move || {
                 let mut keys = Keys::new();
                 let mut buf = [0u8; 4096];
-                let mut stdin = marion_tui::guard::NonBlocking::set(input_fd);
-                if !stdin.engaged() {
-                    *failure.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some("making pane keyboard input nonblocking: the terminal refused".into());
-                    leaving.store(true, Ordering::SeqCst);
-                    return;
-                }
+                let mut stdin = match marion_tui::guard::Keyboard::open(input_fd) {
+                    Ok(stdin) => stdin,
+                    Err(error) => {
+                        *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(format!("watching pane keyboard input: {error}"));
+                        leaving.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                };
                 while !leaving.load(Ordering::SeqCst) {
-                    let n = match stdin.read(&mut buf) {
-                        Ok(0) => {
+                    let n = match stdin.read_within(&mut buf, POLL) {
+                        Ok(None) => continue,
+                        Ok(Some(0)) => {
                             *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
                                 if encoder.has_pending_utf8() {
                                     "pane keyboard input closed in the middle of a UTF-8 scalar"
@@ -765,16 +768,7 @@ impl Session {
                             leaving.store(true, Ordering::SeqCst);
                             return;
                         }
-                        Ok(n) => n,
-                        Err(e)
-                            if matches!(
-                                e.kind(),
-                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                            ) =>
-                        {
-                            std::thread::sleep(POLL);
-                            continue;
-                        }
+                        Ok(Some(n)) => n,
                         Err(error) => {
                             *failure.lock().unwrap_or_else(|e| e.into_inner()) =
                                 Some(format!("reading pane keyboard input: {error}"));
@@ -1028,10 +1022,9 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.leaving.store(true, Ordering::SeqCst);
-        // The reader polls nonblocking stdin, so this join is bounded by `POLL`. It must finish
-        // before the screen leaves raw mode or the detached thread could steal the first key from
-        // the tree/shell that resumes afterwards. Dropping its NonBlocking guard also restores the
-        // descriptor flags before terminal restoration.
+        // The reader polls stdin with a `POLL` bound, so this join is bounded by `POLL`. It must
+        // finish before the screen leaves raw mode or the detached thread could steal the first
+        // key from the tree/shell that resumes afterwards.
         if let Some(keyboard) = self.keyboard.take() {
             let _ = keyboard.join();
         }
@@ -1173,6 +1166,139 @@ mod tests {
         assert!(error.contains("painting the pane"), "{error}");
     }
 
+    /// **A writable attach's first big paint must reach the terminal, however slowly it drains.**
+    ///
+    /// The operator's stdin and stdout are two descriptors on one tty description, exactly as this
+    /// test arranges them: the keyboard reader watches the slave, the screen paints through a dup
+    /// of it. A reader that made "its" descriptor nonblocking made the paint nonblocking too, and a
+    /// paint bigger than the pty's output buffer — codex's TUI opens with 2.3 MB — came back
+    /// `EAGAIN`, which `paint` reports as fatal: `marion attach` exited with "painting the pane on
+    /// the operator's terminal: Resource temporarily unavailable (os error 35)". Nothing reads the
+    /// master for a moment here, so the paint has to wait rather than fail.
+    #[test]
+    fn a_paint_larger_than_the_pty_buffer_completes_while_the_keyboard_is_watched() {
+        use std::os::fd::AsRawFd;
+        const COLS: u16 = 200;
+        const ROWS: u16 = 200;
+
+        let master = crate::pty::PtyMaster::open(crate::pty::WinSize::new(COLS, ROWS))
+            .expect("an operator pty");
+        let slave = master.open_slave().expect("the operator's tty");
+        let stdout = std::fs::File::from(slave.try_clone().expect("dup the tty, as a shell does"));
+
+        // Every cell in a different colour: each is an SGR plus a glyph, so the frame is far past
+        // a pty output buffer (64 KiB here) before a quarter of the grid is painted.
+        let mut screenful = Vec::new();
+        for row in 0..ROWS as usize {
+            for col in 0..COLS as usize {
+                let colour = ((row * COLS as usize + col) % 255) + 1;
+                screenful.extend_from_slice(format!("\x1b[38;5;{colour}mX").as_bytes());
+            }
+            if row + 1 < ROWS as usize {
+                screenful.extend_from_slice(b"\r\n");
+            }
+        }
+
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            server
+                .write_all(
+                    pane_attach_response(marion_proto::result::PaneAttach {
+                        cols: COLS,
+                        rows: ROWS,
+                        writable: true,
+                        held_by: None,
+                        pane_ready: Some(marion_proto::result::PaneReadyDescriptorV1 {
+                            token: pane_token(),
+                            cut: 0,
+                        }),
+                    })
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+            // Ready and the initial NodeResize, after which the keyboard reader is running.
+            for _ in 0..2 {
+                line.clear();
+                lines.read_line(&mut line).unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            for (seq, kind) in [
+                (
+                    0,
+                    PaneFrameKindV1::Output {
+                        bytes: marion_proto::OpaquePaneBytesV1::new(screenful),
+                    },
+                ),
+                (1, PaneFrameKindV1::End {}),
+            ] {
+                server
+                    .write_all(
+                        Frame::Notification(marion_proto::Notification::new(pane_event(seq, kind)))
+                            .to_line()
+                            .as_bytes(),
+                    )
+                    .unwrap();
+            }
+            server.flush().unwrap();
+        });
+
+        let painted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        let drainer = {
+            let painted = Arc::clone(&painted);
+            let finished = Arc::clone(&finished);
+            let master_fd = master.as_raw();
+            std::thread::spawn(move || {
+                // Long enough for the paint to have filled the pty and blocked.
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                // The master has its own file description; this flag reaches neither slave fd.
+                let master = unsafe { std::os::fd::BorrowedFd::borrow_raw(master_fd) };
+                rustix::fs::fcntl_setfl(master, rustix::fs::OFlags::NONBLOCK).unwrap();
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    match rustix::io::read(master, &mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            painted.fetch_add(n, Ordering::SeqCst);
+                        }
+                        Err(rustix::io::Errno::AGAIN) => {
+                            if finished.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+
+        let mut session = Session::open_for_test(
+            client,
+            AgentId("root".into()),
+            stdout,
+            slave.as_raw_fd(),
+            (COLS, ROWS),
+        )
+        .unwrap();
+        let pumped = session.pump();
+        drop(session);
+        finished.store(true, Ordering::SeqCst);
+        drainer.join().unwrap();
+        server_thread.join().unwrap();
+        pumped.unwrap_or_else(|e| panic!("the pane loop failed on a slow terminal: {e}"));
+        assert!(
+            painted.load(Ordering::SeqCst) > 64 * 1024,
+            "the frame was only {} bytes, which fits a pty buffer and proves nothing",
+            painted.load(Ordering::SeqCst)
+        );
+    }
+
     #[test]
     fn writable_attach_reports_keyboard_setup_failure_instead_of_hanging() {
         let (client, mut server) = UnixStream::pair().unwrap();
@@ -1213,7 +1339,7 @@ mod tests {
         )
         .unwrap();
         let error = session.pump().unwrap_err();
-        assert!(error.contains("nonblocking"), "{error}");
+        assert!(error.contains("keyboard"), "{error}");
         server_thread.join().unwrap();
     }
 
