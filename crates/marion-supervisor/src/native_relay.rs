@@ -904,7 +904,21 @@ struct RawPaneSession<W: Write> {
     input_fd: Option<std::os::fd::RawFd>,
     leaving: Arc<AtomicBool>,
     keyboard_failure: Arc<std::sync::Mutex<Option<String>>>,
+    /// Whether any keystroke has been forwarded. The supervisor refuses opaque input by closing
+    /// the connection (`serve::Departure::PaneInputFailed`), so an EOF before End is a refusal
+    /// only if something was sent for it to refuse.
+    input_sent: Arc<AtomicBool>,
     keyboard: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Why `next_frame` could not produce a frame — kept apart from the operator-facing [`Refusal`]
+/// so `pump` can say what a disconnect *meant* before it becomes a message.
+enum FrameError {
+    /// The socket closed before End, with this many unfinished protocol bytes buffered.
+    Closed {
+        unfinished: usize,
+    },
+    Other(Refusal),
 }
 
 impl<W: Write> RawPaneSession<W> {
@@ -959,6 +973,7 @@ impl<W: Write> RawPaneSession<W> {
             input_fd,
             leaving: Arc::new(AtomicBool::new(false)),
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
+            input_sent: Arc::new(AtomicBool::new(false)),
             keyboard: None,
         };
         session.attach(geometry)?;
@@ -1033,7 +1048,17 @@ impl<W: Write> RawPaneSession<W> {
 
     fn await_attach_response(&mut self) -> Result<marion_proto::Response, Refusal> {
         loop {
-            match self.next_frame()? {
+            let frame = self.next_frame().map_err(|error| match error {
+                // Nothing has been sent that could be refused yet: this is the plain fact.
+                FrameError::Closed { unfinished: 0 } => {
+                    "the native pane socket closed before End".to_string()
+                }
+                FrameError::Closed { unfinished } => format!(
+                    "the native pane socket closed with {unfinished} unfinished protocol bytes"
+                ),
+                FrameError::Other(error) => error,
+            })?;
+            match frame {
                 Some(Frame::Response(response)) if response.id == RequestId::Number(1) => {
                     return Ok(response);
                 }
@@ -1121,8 +1146,24 @@ impl<W: Write> RawPaneSession<W> {
     fn start_keyboard<R: Read + Send + 'static>(&mut self, mut input: R) -> Result<(), Refusal> {
         let leaving = Arc::clone(&self.leaving);
         let failure = Arc::clone(&self.keyboard_failure);
+        let input_sent = Arc::clone(&self.input_sent);
         let writer = Arc::clone(&self.writer);
         let id = self.id.clone();
+        // The pump blocks in `stream.read` for up to `POLL`. Shutting the read side from here
+        // returns that read at once, so a worker that stops — for any reason — ends the relay now
+        // rather than at the next timeout; `pump` reads the failure slot before the EOF it caused.
+        let wake = self
+            .stream
+            .try_clone()
+            .map_err(|error| format!("cloning the native pane socket for the keyboard: {error}"))?;
+        let stop = move |why: Option<String>| {
+            if let Some(why) = why {
+                *failure.lock().unwrap_or_else(|error| error.into_inner()) = Some(why);
+            }
+            leaving.store(true, Ordering::SeqCst);
+            let _ = wake.shutdown(std::net::Shutdown::Read);
+        };
+        let leaving = Arc::clone(&self.leaving);
         self.keyboard = Some(
             std::thread::Builder::new()
                 .name("marion-native-keys".into())
@@ -1131,10 +1172,7 @@ impl<W: Write> RawPaneSession<W> {
                     let mut bytes = [0u8; 4096];
                     while !leaving.load(Ordering::SeqCst) {
                         let count = match input.read(&mut bytes) {
-                            Ok(0) => {
-                                leaving.store(true, Ordering::SeqCst);
-                                return;
-                            }
+                            Ok(0) => return stop(None),
                             Ok(count) => count,
                             Err(error)
                                 if matches!(
@@ -1147,18 +1185,12 @@ impl<W: Write> RawPaneSession<W> {
                                 continue;
                             }
                             Err(error) => {
-                                *failure.lock().unwrap_or_else(|error| error.into_inner()) =
-                                    Some(format!("reading native pane input: {error}"));
-                                leaving.store(true, Ordering::SeqCst);
-                                return;
+                                return stop(Some(format!("reading native pane input: {error}")));
                             }
                         };
                         for action in keys.feed(&bytes[..count]) {
                             match action {
-                                Action::Detach => {
-                                    leaving.store(true, Ordering::SeqCst);
-                                    return;
-                                }
+                                Action::Detach => return stop(None),
                                 Action::Forward(bytes) => {
                                     let frame = Frame::Input(ClientNotification::new(
                                         Input::NodePaneWrite(NodePaneWriteV1 {
@@ -1169,14 +1201,11 @@ impl<W: Write> RawPaneSession<W> {
                                     if let Err(error) =
                                         write_serialized(&writer, frame.to_line().as_bytes())
                                     {
-                                        *failure
-                                            .lock()
-                                            .unwrap_or_else(|error| error.into_inner()) = Some(
-                                            format!("sending native pane keyboard input: {error}"),
-                                        );
-                                        leaving.store(true, Ordering::SeqCst);
-                                        return;
+                                        return stop(Some(format!(
+                                            "sending native pane keyboard input: {error}"
+                                        )));
                                     }
+                                    input_sent.store(true, Ordering::SeqCst);
                                 }
                             }
                         }
@@ -1187,40 +1216,49 @@ impl<W: Write> RawPaneSession<W> {
         Ok(())
     }
 
-    fn next_frame(&mut self) -> Result<Option<Frame>, Refusal> {
+    /// The worker's failure, if it recorded one: the primary error whenever it is set, because the
+    /// EOF the pump then sees is one the worker caused on purpose.
+    fn take_keyboard_failure(&self) -> Option<Refusal> {
+        self.keyboard_failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+
+    fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
         loop {
             if let Some(end) = self.inbound.iter().position(|byte| *byte == b'\n') {
                 if end > crate::serve::MAX_FRAME_BYTES {
-                    return Err(format!(
+                    return Err(FrameError::Other(format!(
                         "the supervisor sent a native pane frame larger than {} bytes",
                         crate::serve::MAX_FRAME_BYTES
-                    ));
+                    )));
                 }
                 let mut line = self.inbound.drain(..=end).collect::<Vec<_>>();
                 line.pop();
                 let line = std::str::from_utf8(&line).map_err(|_| {
-                    "the supervisor sent a non-UTF-8 native protocol frame".to_string()
+                    FrameError::Other(
+                        "the supervisor sent a non-UTF-8 native protocol frame".to_string(),
+                    )
                 })?;
                 return Frame::from_line(line).map(Some).map_err(|error| {
-                    format!("the supervisor sent an unreadable native pane frame: {error}")
+                    FrameError::Other(format!(
+                        "the supervisor sent an unreadable native pane frame: {error}"
+                    ))
                 });
             }
             if self.inbound.len() > crate::serve::MAX_FRAME_BYTES {
-                return Err(format!(
+                return Err(FrameError::Other(format!(
                     "the supervisor sent an unterminated native pane frame larger than {} bytes",
                     crate::serve::MAX_FRAME_BYTES
-                ));
+                )));
             }
             let mut bytes = [0u8; 8192];
             match self.stream.read(&mut bytes) {
-                Ok(0) if self.inbound.is_empty() => {
-                    return Err("the native pane socket closed before End".into());
-                }
                 Ok(0) => {
-                    return Err(format!(
-                        "the native pane socket closed with {} unfinished protocol bytes",
-                        self.inbound.len()
-                    ));
+                    return Err(FrameError::Closed {
+                        unfinished: self.inbound.len(),
+                    });
                 }
                 Ok(count) => self.inbound.extend_from_slice(&bytes[..count]),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -1232,9 +1270,39 @@ impl<W: Write> RawPaneSession<W> {
                 {
                     return Ok(None);
                 }
-                Err(error) => return Err(format!("reading the native pane socket: {error}")),
+                Err(error) => {
+                    return Err(FrameError::Other(format!(
+                        "reading the native pane socket: {error}"
+                    )));
+                }
             }
         }
+    }
+
+    /// What a socket closed before End means, in the order the causes are known: a keyboard
+    /// worker that stopped on purpose (its own message, or a clean detach), then the supervisor
+    /// refusing the input it was sent, then a connection lost with nothing in flight.
+    fn closed_before_end(&self, unfinished: usize) -> Result<RelayStop, Refusal> {
+        if let Some(failure) = self.take_keyboard_failure() {
+            return Err(failure);
+        }
+        if self.leaving.load(Ordering::SeqCst) {
+            return Ok(RelayStop::Complete);
+        }
+        if unfinished > 0 {
+            return Err(format!(
+                "the native pane socket closed with {unfinished} unfinished protocol bytes"
+            ));
+        }
+        if self.input_sent.load(Ordering::SeqCst) {
+            return Err(
+                "the supervisor refused the relay's keyboard input and closed the native \
+                        pane: opaque input it cannot deliver or record is refused rather than \
+                        dropped, and the supervisor's log names the reason"
+                    .into(),
+            );
+        }
+        Err("the native pane socket closed before End".into())
     }
 
     fn pump(&mut self) -> Result<RelayStop, Refusal> {
@@ -1249,18 +1317,20 @@ impl<W: Write> RawPaneSession<W> {
                 return Ok(RelayStop::Suspend);
             }
             if self.leaving.load(Ordering::SeqCst) {
-                if let Some(error) = self
-                    .keyboard_failure
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take()
-                {
+                if let Some(error) = self.take_keyboard_failure() {
                     return Err(error);
                 }
                 return Ok(RelayStop::Complete);
             }
             self.forward_resize()?;
-            match self.next_frame()? {
+            let frame = match self.next_frame() {
+                Ok(frame) => frame,
+                Err(FrameError::Closed { unfinished }) => {
+                    return self.closed_before_end(unfinished);
+                }
+                Err(FrameError::Other(error)) => return Err(error),
+            };
+            match frame {
                 Some(Frame::Notification(note)) => {
                     let decoded = crate::pane_client::decode_pane_v1_event(
                         &self.id,
@@ -3555,5 +3625,112 @@ mod tests {
             assert!(error.contains(expected), "{error}");
             server_thread.join().unwrap();
         }
+    }
+
+    /// The supervisor refuses opaque pane input by **closing the negotiated connection**
+    /// (`serve::Departure::PaneInputFailed`: a notification has no response envelope). Seen from
+    /// the relay that is an EOF right after a keystroke went out, and the operator must be told
+    /// *that* — after the terminal is back in cooked mode, as the primary error, not a generic
+    /// "closed before End" that reads like a network fault.
+    ///
+    /// Mutation: report every pre-End EOF with one message, or let a cleanup error displace the
+    /// primary one.
+    #[test]
+    fn a_supervisor_input_refusal_ends_the_relay_visibly_after_terminal_restoration() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let hold = Arc::new(AtomicBool::new(false));
+        let release = Arc::clone(&hold);
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            assert!(matches!(read_frame(&mut lines), Frame::Request(_)));
+            server
+                .write_all(attach_response().to_line().as_bytes())
+                .unwrap();
+            server.flush().unwrap();
+            assert!(matches!(read_frame(&mut lines), Frame::Input(_))); // initial Resize
+            assert!(matches!(read_frame(&mut lines), Frame::Input(_))); // Ready
+            let Frame::Input(note) = read_frame(&mut lines) else {
+                panic!("the keystroke did not arrive as an Input notification")
+            };
+            assert!(matches!(note.input, Input::NodePaneWrite(_)));
+            // What `Outbound::fail(Departure::PaneInputFailed { .. })` does to the wire.
+            server.shutdown(std::net::Shutdown::Both).unwrap();
+            release.store(true, Ordering::SeqCst);
+        });
+
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            OneRead {
+                bytes: Some(b"k".to_vec()),
+                hold,
+            },
+            Sink::default(),
+            (80, 24),
+        )
+        .unwrap();
+        let refusal = session.pump().unwrap_err();
+        server_thread.join().unwrap();
+        assert!(
+            refusal.contains("refused") && refusal.contains("keyboard input"),
+            "the operator is not told the input was refused: {refusal}"
+        );
+        assert!(
+            !refusal.contains("closed before End"),
+            "a refusal must not read as a network fault: {refusal}"
+        );
+
+        // Through the finish stage: every cleanup succeeded, so the refusal is the whole message,
+        // and it is what `relay_native_facade` prints once the terminal is restored.
+        let finished = resolve_relay_finish(Err(refusal.clone()), Ok(()), Ok(()), Ok(None), |_| {
+            panic!("no signal was captured")
+        });
+        assert_eq!(finished, Err(refusal));
+    }
+
+    /// A keyboard worker that fails must end the pump **now**, not at the next socket read
+    /// timeout: it shuts the socket's read side so the blocked read returns at once, and the pump
+    /// reports the worker's failure rather than the EOF it caused.
+    ///
+    /// Mutation: leave the wake to the poll interval (the elapsed bound fails), or let the EOF
+    /// message displace the worker's (the message assertion fails).
+    #[test]
+    fn a_keyboard_failure_wakes_the_pump_immediately_with_its_own_message() {
+        struct FailingInput;
+        impl Read for FailingInput {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("sentinel terminal input failure"))
+            }
+        }
+
+        let (client, mut server) = UnixStream::pair().unwrap();
+        // The server completes the attach and then goes silent for far longer than the pump's poll,
+        // so only a deliberate wake can end the pump early.
+        let server_thread = std::thread::spawn(move || {
+            complete_attach(&mut server);
+            std::thread::sleep(super::POLL * 10);
+            drop(server);
+        });
+        let started = Instant::now();
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            FailingInput,
+            Sink::default(),
+            (80, 24),
+        )
+        .unwrap();
+        let error = session.pump().unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(
+            error.contains("sentinel terminal input failure"),
+            "the pump reported something other than the keyboard failure: {error}"
+        );
+        assert!(
+            elapsed < super::POLL,
+            "the pump waited for its poll interval instead of being woken: {elapsed:?}"
+        );
+        drop(session);
+        server_thread.join().unwrap();
     }
 }

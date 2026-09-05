@@ -1229,6 +1229,19 @@ acceptance evidence, so every marker remains unchanged.
     job is `BackgroundProcessGroup` through descriptors on A; disabling either comparison fails
     the test. M3 remains `[partial]`.
 
+    **Visible input-failure semantics in this commit move no milestone marker.** The supervisor
+    refuses opaque pane input by closing the negotiated connection (`Departure::PaneInputFailed`),
+    so the relay now reads a pre-End EOF in causal order: the keyboard worker's own failure first,
+    a clean detach second, then — if a keystroke had been forwarded — a named refusal that says the
+    supervisor refused the relay's keyboard input, and only otherwise the plain "closed before
+    End". A keyboard worker that stops for any reason shuts the socket's read side so the pump
+    wakes at once instead of at its next 50 ms poll, and the pump reports the worker's message
+    rather than the EOF it caused. The message survives `finish_claimed_relay` as the primary error
+    and `relay_native_facade` prints it after termios restoration. Covered by
+    `a_supervisor_input_refusal_ends_the_relay_visibly_after_terminal_restoration` (via
+    `open_for_test`) and `a_keyboard_failure_wakes_the_pump_immediately_with_its_own_message`
+    (elapsed under the poll interval). M3 remains `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
