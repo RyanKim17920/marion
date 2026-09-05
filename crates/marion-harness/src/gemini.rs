@@ -14,7 +14,7 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -206,6 +206,17 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
     ],
     file_changes: None,
+    // The first `stream-json` frame (`s12/README.md`): `init` carries `session_id`. Recorded even
+    // though the row's `resume` is `None` — the id is a fact about the run, and what 0.53.0 cannot
+    // take back on argv a later build may.
+    session: Some(SessionId {
+        at: Where {
+            frame: &[Cond::Eq("/type", "init")],
+            each: None,
+            unit: &[],
+        },
+        path: "/session_id",
+    }),
 };
 
 /// Relocates the **entire** config and auth surface: `settings.json`, `oauth_creds.json`,

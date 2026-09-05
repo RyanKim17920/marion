@@ -1713,6 +1713,16 @@ grouping.
   node still replays with `harness_session: None`. What a restart still does **not** do is bring
   any node back — nothing journals a session, no `node/resume` exists, so nothing writes that
   second `Spawned` yet.
+  **2026-09-05, later — the session id is grammar data.** `StreamGrammar::session: Option<SessionId
+  { at: Where, path }>` names, per row, the unit that carries the harness's own session id and the
+  pointer to it, and one engine function `grammar::session_id(row, frame)` reads it — no
+  per-harness reader. Measured rows: claude `system`/`init` `.session_id` (s10), codex
+  `thread.started` `.thread_id` (s7), gemini `init` `.session_id` (s12), opencode `.sessionID` on
+  every frame (s13), copilot **only** on the terminal `result` frame `.sessionId` (s24 — no earlier
+  frame names the session, so a copilot node killed mid-run has no id and its resume is refused
+  honestly); ACP has no row. `each_harness_row_extracts_its_session_id_from_its_first_frame` is the
+  test, RED with `no session_id in grammar` / `no field session` before the field existed. Still no
+  producer journals it; that is the next commit.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.

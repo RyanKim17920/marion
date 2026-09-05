@@ -10,7 +10,7 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
@@ -200,6 +200,16 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
     ],
     file_changes: None,
+    // The first frame of every run (`s10/stream-*.jsonl`): `system`/`init` carries `session_id`,
+    // the value `--resume` takes back.
+    session: Some(SessionId {
+        at: Where {
+            frame: &[Cond::Eq("/type", "system"), Cond::Eq("/subtype", "init")],
+            each: None,
+            unit: &[],
+        },
+        path: "/session_id",
+    }),
 };
 
 /// `ANTHROPIC_BASE_URL` from the provider base URL marion carries.

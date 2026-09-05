@@ -35,7 +35,7 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -232,6 +232,17 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
     ],
     file_changes: None,
+    // **Measured late, not early** (`s24/*.stdout.jsonl`): no `session.*` frame names the
+    // session; only the terminal `result` frame carries `sessionId`. So a copilot node has an id
+    // to resume only once it has finished a run, and one killed mid-run is refused honestly.
+    session: Some(SessionId {
+        at: Where {
+            frame: &[Cond::Eq("/type", "result")],
+            each: None,
+            unit: &[],
+        },
+        path: "/sessionId",
+    }),
 };
 
 /// Relocates configuration and state — `config.json`, `session-state/`, `logs/`,

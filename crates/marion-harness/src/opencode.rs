@@ -18,7 +18,7 @@ use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
 use crate::grammar::{
-    Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
+    Cond, Failure, Name, OnRefusedReport, Pairing, SessionId, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -248,6 +248,16 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         fallback: "the child's stream carried an error frame",
     }],
     file_changes: None,
+    // `sessionID` (`ses_` + 26 chars) is on **every** event (`s13/README.md`), so the first frame
+    // of any shape names the session `run --session` takes back.
+    session: Some(SessionId {
+        at: Where {
+            frame: &[Cond::Has("/sessionID")],
+            each: None,
+            unit: &[],
+        },
+        path: "/sessionID",
+    }),
 };
 
 /// The MCP server alias. opencode exposes MCP tools to the model as `<serverName>_<toolName>`, so

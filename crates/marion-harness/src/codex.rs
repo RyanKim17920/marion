@@ -14,7 +14,7 @@ use marion_core::agent_type;
 use marion_core::harness::Harness;
 
 use crate::grammar::{
-    Cond, Name, OnRefusedReport, Pairing, PathList, StreamGrammar, Verdict, Where,
+    Cond, Name, OnRefusedReport, Pairing, PathList, SessionId, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
@@ -195,6 +195,16 @@ pub const STREAM: StreamGrammar = StreamGrammar {
         },
         list: "/item/changes",
         path: "/path",
+    }),
+    // The first JSON frame of `codex exec --json` (`s7/exec-spawn-child.stream.jsonl`):
+    // `thread.started` carries `thread_id`, the value `exec resume` takes back.
+    session: Some(SessionId {
+        at: Where {
+            frame: &[Cond::Eq("/type", "thread.started")],
+            each: None,
+            unit: &[],
+        },
+        path: "/thread_id",
     }),
 };
 

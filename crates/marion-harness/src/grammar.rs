@@ -47,6 +47,19 @@ pub struct StreamGrammar {
     pub failures: &'static [Failure],
     /// Where the harness announces the files it changed, if it does. Corroboration only.
     pub file_changes: Option<PathList>,
+    /// Where the harness names its own session — the id its `resume` grammar
+    /// ([`crate::spec::HarnessSpec::resume`]) takes back. `None` where no frame was measured
+    /// carrying one, and a resume of such a node is refused rather than guessed. Read by
+    /// [`session_id`], once per frame, by whoever owns the node's stream.
+    pub session: Option<SessionId>,
+}
+
+/// Where a harness states its session id: the string at `path` in each unit of `at`. The first
+/// unit that carries one is the node's session; the supervisor journals it once.
+#[derive(Debug)]
+pub struct SessionId {
+    pub at: Where,
+    pub path: &'static str,
 }
 
 /// A set of JSON units inside a stream: frames of a shape, or elements of an array in them.
@@ -370,6 +383,18 @@ fn calls(g: &StreamGrammar, frames: &[Value], prefix: &str) -> Vec<Call> {
                 .collect()
         }
     }
+}
+
+/// The session id `frame` carries under this row's [`StreamGrammar::session`], if it is the unit
+/// that carries one. Per frame rather than per stream because the owner of a live node reads its
+/// frames as they arrive and journals the id on **first sighting**, while the process is still
+/// running — a stream read whole after exit would name the session only of a node that has already
+/// gone. `None` on a row with no measured session unit, and on every frame that is not it.
+pub fn session_id(g: &StreamGrammar, frame: &Value) -> Option<String> {
+    let s = g.session.as_ref()?;
+    units(std::slice::from_ref(frame), &s.at)
+        .into_iter()
+        .find_map(|u| text(u, s.path).filter(|id| !id.trim().is_empty()))
 }
 
 /// Every call to one of marion's verbs the stream shows, with what came of each — in

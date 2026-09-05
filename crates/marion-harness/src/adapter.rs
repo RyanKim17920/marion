@@ -6368,4 +6368,75 @@ mod tests {
             ));
         }
     }
+
+    /// **The harness session id is grammar data, read by one engine** (`plan-restart-resume.md`
+    /// step 4): each row names the unit that carries the id and the pointer to it, and
+    /// [`crate::grammar::session_id`] reads it from a frame. Frames are the measured shapes:
+    ///
+    /// claude 2.1.220 (`s10/stream-*.jsonl`): `{"type":"system","subtype":"init","session_id"}`.
+    /// codex 0.146.0 (`s7/exec-spawn-child.stream.jsonl`): `{"type":"thread.started","thread_id"}`.
+    /// gemini 0.53.0 (`s12/README.md`): `{"type":"init","session_id"}`.
+    /// opencode 1.17.3 (`s13/README.md`): `sessionID` on **every** frame.
+    /// copilot 1.0.83 (`s24/*.stdout.jsonl`): only the terminal `result` frame carries `sessionId`;
+    /// no earlier frame names the session, so a copilot run killed before its result has no id
+    /// and a resume of it is refused honestly.
+    /// ACP reads its stream as code and has no row: nothing to read.
+    #[test]
+    fn each_harness_row_extracts_its_session_id_from_its_first_frame() {
+        use crate::grammar::{Cond, session_id};
+        let frames: &[(Harness, &str, &str)] = &[
+            (
+                Harness::ClaudeCode,
+                r#"{"type":"system","subtype":"init","cwd":"/x","session_id":"c-1","tools":[]}"#,
+                "c-1",
+            ),
+            (
+                Harness::Codex,
+                r#"{"type":"thread.started","thread_id":"t-1"}"#,
+                "t-1",
+            ),
+            (
+                Harness::Gemini,
+                r#"{"type":"init","timestamp":"<TS>","session_id":"g-1","model":"m"}"#,
+                "g-1",
+            ),
+            (
+                Harness::OpenCode,
+                r#"{"type":"step_start","timestamp":1,"sessionID":"ses_1","part":{}}"#,
+                "ses_1",
+            ),
+            (
+                Harness::Copilot,
+                r#"{"type":"result","timestamp":"<TS>","sessionId":"p-1","exitCode":0}"#,
+                "p-1",
+            ),
+        ];
+        for (h, frame, want) in frames {
+            let g = harness_spec(*h)
+                .stream
+                .unwrap_or_else(|| panic!("{h} has a stream row"));
+            let v: serde_json::Value = serde_json::from_str(frame).unwrap();
+            assert_eq!(session_id(g, &v).as_deref(), Some(*want), "{h}");
+        }
+        // A frame that is not the session-bearing unit yields nothing, on every row: the engine
+        // must not read a plausible-looking field off the wrong frame.
+        for h in Harness::ALL {
+            let Some(g) = harness_spec(h).stream else {
+                assert_eq!(h, Harness::Acp, "only ACP reads its stream as code");
+                continue;
+            };
+            let v = serde_json::json!({
+                "type": "assistant", "session_id": "no", "thread_id": "no", "sessionId": "no"
+            });
+            assert_eq!(session_id(g, &v), None, "{h}");
+            // Copilot's earlier frames carry no session id; every other row reads its first frame.
+            let claims_early = g.session.as_ref().is_some_and(|s| {
+                !s.at
+                    .frame
+                    .iter()
+                    .any(|c| matches!(c, Cond::Eq("/type", "result")))
+            });
+            assert_eq!(claims_early, h != Harness::Copilot, "{h}");
+        }
+    }
 }
