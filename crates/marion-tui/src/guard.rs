@@ -241,6 +241,11 @@ impl RawMode {
 /// should get their terminal's own selection, not a stream of reports nobody will read.
 pub fn enter_bytes(modes: &Sticky) -> Vec<u8> {
     let mut out = b"\x1b[?1049h".to_vec();
+    // `ED 2` and home right after the switch. xterm clears the alternate buffer on `?1049h`; not
+    // every terminal does, and marion enters this buffer twice in a row when the tree screen hands
+    // over to an attach, so a pane's first frame was painted over the tree's last one wherever
+    // the pane's own cells were blank.
+    out.extend_from_slice(b"\x1b[2J\x1b[H");
     out.extend_from_slice(&mouse_bytes(modes, true));
     out
 }
@@ -598,7 +603,11 @@ mod tests {
             s.starts_with("\x1b[?1049h"),
             "the buffer switch comes first: {s:?}"
         );
-        assert_eq!(s, "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+        assert_eq!(
+            s, "\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h",
+            "the alternate screen is cleared and homed before any mode: the buffer a terminal\
+             switches to may still hold the last screen that used it"
+        );
     }
 
     #[test]
@@ -607,7 +616,7 @@ mod tests {
         // own click-to-select.
         assert_eq!(
             enter_bytes(&Sticky::initial(80, 24)),
-            b"\x1b[?1049h".to_vec()
+            b"\x1b[?1049h\x1b[2J\x1b[H".to_vec()
         );
     }
 

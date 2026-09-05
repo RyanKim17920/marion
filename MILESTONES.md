@@ -1138,6 +1138,9 @@ acceptance evidence, so every marker remains unchanged.
     - The draw loop re-measures the window every pass and resizes the `ScreenBackend`, so a tree
       dragged to another size repaints at that size instead of at the one it was entered with.
       `a_resize_is_applied_on_the_next_pass_and_a_pipe_keeps_the_last_geometry`.
+    - `Screen::enter` clears and homes the alternate buffer right after switching to it, so a pane
+      opened from the tree no longer shows tree fragments wherever its first frame was blank.
+      `entering_switches_the_buffer_before_it_enables_a_mouse` pins the byte order.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
