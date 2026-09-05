@@ -646,7 +646,7 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
         Harness::Gemini => &gemini::SPEC,
         Harness::OpenCode => &opencode::SPEC,
         Harness::Copilot => todo!("step 4: the copilot row"),
-        Harness::Acp => todo!("step 4: the acp row"),
+        Harness::Acp => &acp::SPEC,
     }
 }
 
@@ -1931,31 +1931,44 @@ impl HarnessAdapter for AcpAdapter {
     }
 
     /// argv is the agent's own, verbatim as S20 launched it, and **nothing else is compiled into
-    /// it**.
+    /// it** — [`acp::SPEC`]'s one row splices [`spec::Field::AgentArgs`] and names no program of
+    /// its own, because the program is the agent's.
     ///
     /// * *No prompt.* It rides `session/prompt` after the handshake, so `spec.prompt` reaches argv
     ///   on no ACP agent — the claude-code situation, one protocol over.
     /// * *No model.* S21's `session/new` result carries a `configOptions` `model` **select**: the
     ///   model is chosen inside the session, and marion has measured no argv that sets it. So the
     ///   compiled [`Invocation::model`] is `None` however loudly a caller asked, exactly as codex
-    ///   does, rather than a value the launch did not carry appearing in the audit record.
+    ///   does, rather than a value the launch did not carry appearing in the audit record. Under
+    ///   the canned recipe it is the config document's `model` key that carries it, which is
+    ///   recorded because it is what the launch actually compiled.
     /// * *No credential.* Under [`Auth::Canned`] marion would have to point the agent at its own
     ///   endpoint, and there is no ACP-level way to do that — it is per-agent config, and this
     ///   adapter is per-protocol. Refused by name rather than launched at the operator's real
     ///   provider while the contract records a canned one.
-    fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
         let agent = self.agent(spec)?;
         // For the refusal only: ACP has no availability axis — see `Self::tool_name`.
-        let _refusal_only = self.native_tools(spec)?;
-        let env = match (spec.auth, agent.canned) {
-            (Auth::Inherited, _) => Vec::new(),
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        let (program, args) = agent
+            .argv
+            .split_first()
+            .expect("every agent row names a program");
+        f.program = Some(program.to_string());
+        f.agent_args = args.iter().map(|s| s.to_string()).collect();
+        (f.extra_env, f.model) = match (spec.auth, agent.canned) {
+            (Auth::Inherited, _) => (Vec::new(), None),
             // opencode's own isolation rows, over the same binary: the relocations, the hygiene
             // and `PWD` (placement, not isolation — S13 measured a child re-entering `$PWD`
             // whatever it was `chdir`'d to). Nothing inline, because the bridge rides `session/new`.
-            (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => spec::render_env(
-                opencode::SPEC.env,
-                &neutral_fields(spec, spec::Axes::default()),
-            ),
+            (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
+                (spec::render_env(opencode::SPEC.env, &f), spec.model.clone())
+            }
             // **Refused by name, per agent.** The protocol has no provider channel and two of the
             // four agents marion knows have no measured one either. Launching them anyway would
             // point the operator's real credential at a vendor while the contract records a canned
@@ -1970,22 +1983,7 @@ impl HarnessAdapter for AcpAdapter {
                 });
             }
         };
-        Ok(Invocation {
-            program: agent.argv[0].to_string(),
-            args: agent.argv[1..].iter().map(|s| s.to_string()).collect(),
-            env,
-            cwd: spec.cwd.clone(),
-            // S21's `session/new` result carries a `configOptions` `model` **select**: the model is
-            // chosen inside the session, and marion has measured no argv that sets it. Under the
-            // canned recipe it is the config document's `model` key that carries it, which is
-            // recorded here because it is what the launch actually compiled.
-            model: match (spec.auth, agent.canned) {
-                (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
-                    spec.model.clone()
-                }
-                _ => None,
-            },
-        })
+        Ok(f)
     }
 
     /// **No declaration document, on any ACP agent** — and, under a canned provider, one document
@@ -6161,7 +6159,12 @@ mod tests {
     #[test]
     fn spec_render_matches_the_adapter_that_measured_it() {
         use crate::spec::{Shape, render};
-        const MIGRATED: &[Harness] = &[Harness::ClaudeCode, Harness::Gemini, Harness::OpenCode];
+        const MIGRATED: &[Harness] = &[
+            Harness::ClaudeCode,
+            Harness::Gemini,
+            Harness::OpenCode,
+            Harness::Acp,
+        ];
         for &h in MIGRATED {
             let a = launch_adapter(h).unwrap();
             let row = harness_spec(h);

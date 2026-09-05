@@ -46,11 +46,30 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use marion_core::harness::Harness;
+
 use crate::caps::Capabilities;
+use crate::spec::{Arg, Field, HarnessSpec};
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
 };
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
+
+/// The ACP row: **one row, many agents.** It names no program and no flag of its own, because
+/// there is nothing per-protocol to compile — the agent's argv ([`Agent::argv`]) is spliced in
+/// whole, the prompt rides `session/prompt`, the model is chosen inside the session, and the bridge
+/// is declared in `session/new`. The env is per-agent too ([`CannedRecipe`]) and arrives beside the
+/// argv rather than as rows here.
+pub const SPEC: HarnessSpec = HarnessSpec {
+    harness: Harness::Acp,
+    program: None,
+    argv: &[Arg::Items(Field::AgentArgs)],
+    pane: None,
+    env: &[],
+    note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
+           with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
+           end_turn). The argv of every agent is the one those spikes launched",
+};
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**
 /// (§5.2: *"v2 lives behind `unstable_protocol_v2`"*), and both agents S20 probed answered `1`.
