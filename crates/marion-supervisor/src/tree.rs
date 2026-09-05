@@ -173,7 +173,7 @@ pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
         Ok(node.agent_id.0.as_str())
     } else {
         Err(format!(
-            "{} {} is headless: it has no display plane to open. Enter opens pane nodes only.",
+            "{} {} is headless; Enter opens pane nodes only.",
             node.agent_type,
             short_id(&node.agent_id.0)
         ))
@@ -228,7 +228,13 @@ pub fn run(repo: &Path, state_dir: &Path) -> Result<(), Refusal> {
     stream
         .set_read_timeout(Some(POLL))
         .map_err(|e| format!("setting a read bound on the supervisor socket: {e}"))?;
-    Session::open(stream, key.display().to_string())?.pump(repo, state_dir)
+    // The status row names the worktree, not its `.git`: §2 keys on the common dir, and an
+    // operator with three windows open recognises the directory they ran marion in.
+    let shown = match key.file_name().and_then(|f| f.to_str()) {
+        Some(".git") => key.parent().unwrap_or(&key),
+        _ => &key,
+    };
+    Session::open(stream, shown.display().to_string())?.pump(repo, state_dir)
 }
 
 /// How many of `nodes` the status row calls running: the ones §7.6 does not count as terminal.
@@ -556,7 +562,7 @@ impl Detail<'_> {
         let surface = if node.pane {
             "pane (Enter attaches)"
         } else {
-            "headless (no display plane; Enter refuses, and so would `marion attach`)"
+            "headless (no display plane)"
         };
         let parent = node
             .parent_id
