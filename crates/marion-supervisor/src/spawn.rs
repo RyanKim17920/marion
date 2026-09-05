@@ -1222,21 +1222,25 @@ mod tests {
         }
     }
 
+    /// What marion reads out of a codex stream: the codex row's grammar, through the adapter.
+    fn codex_reads(s: &str) -> marion_harness::StreamOutcome {
+        adapter_for(Harness::Codex)
+            .unwrap()
+            .parse_stream(s, ChildExit::default())
+    }
+
     #[test]
     fn a_report_is_read_from_the_mcp_tool_call_item() {
         // Verbatim shape from tests/fixtures/s6/exec-mcp-report.stream.jsonl.
         let s = r#"{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"marion","tool":"report","arguments":{"narrative":"did the work"},"status":"completed"}}"#;
-        assert_eq!(
-            marion_harness::codex::parse_stream(s).narrative.as_deref(),
-            Some("did the work")
-        );
+        assert_eq!(codex_reads(s).narrative.as_deref(), Some("did the work"));
     }
 
     #[test]
     fn file_changes_are_collected_as_corroboration() {
         let s = r#"{"type":"item.completed","item":{"id":"item_0","type":"file_change","changes":[{"path":"/wt/a.rs","kind":"update"}],"status":"completed"}}"#;
         assert_eq!(
-            marion_harness::codex::parse_stream(s).file_change_paths,
+            codex_reads(s).file_change_paths,
             vec![PathBuf::from("/wt/a.rs")]
         );
     }
@@ -1244,7 +1248,7 @@ mod tests {
     #[test]
     fn a_tool_call_from_another_server_is_not_a_report() {
         let s = r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"other","tool":"report","arguments":{"narrative":"nope"}}}"#;
-        assert!(marion_harness::codex::parse_stream(s).narrative.is_none());
+        assert!(codex_reads(s).narrative.is_none());
     }
 
     /// **The child's own field reaches the contract, and marion adds nothing to it.**

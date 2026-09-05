@@ -1029,13 +1029,6 @@ impl HarnessAdapter for CodexAdapter {
         }
     }
 
-    /// The pre-seam behaviour, unchanged: `report` off an `mcp_tool_call` item, `file_change`
-    /// items as corroboration, and **no failure claim of its own** — codex's status has always come
-    /// from the narrative and the exit code, so `exit` is deliberately unused here.
-    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
-        codex::parse_stream(stdout)
-    }
-
     fn marion_tool_name(&self, tool: &str) -> String {
         // Flat, exactly as on Claude Code — see the trait's doc comment. The namespaced form is
         // codex's internal wire dispatch shape, not something a child types into `tools.…`.
@@ -1100,12 +1093,6 @@ impl HarnessAdapter for CodexAdapter {
     fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
         self.native_tools(spec)?;
         Ok(vec![format!("sandbox:{}", codex::SANDBOX_MODE)])
-    }
-
-    /// **No prefix.** codex's stream names the server and the tool as two fields, so the flat
-    /// identifier above never appears in it — see [`codex::marion_calls`].
-    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
-        codex::marion_calls(stdout)
     }
 }
 

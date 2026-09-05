@@ -10,7 +10,6 @@
 //! request rather than a second harness — the two share this file's configuration, its isolation
 //! and its sandbox, and differ only in the argv grammar the binary's two commands accept.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use marion_core::contract::AgentId;
@@ -26,7 +25,6 @@ use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
-use crate::stream::{CallOutcome, MarionCall, StreamOutcome, json_frames, report_commits};
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
 /// one binary over one isolation.
@@ -171,119 +169,6 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 /// equivalent"* (`sandbox:workspace-write`): two spellings of one grant could drift, and then the
 /// adapter would be reporting a mode the generated config does not set.
 pub const SANDBOX_MODE: &str = "workspace-write";
-
-/// Parse a `codex exec --json` stream.
-///
-/// **Moved, not rewritten.** This is `marion-supervisor::spawn::parse_child_stream` verbatim, down
-/// to the match arms and the order of the two cases; only the framing call at the top and the
-/// outcome type changed. `marion-supervisor::spawn`'s equivalence test replays a corpus through a
-/// preserved copy of the pre-move function and asserts the two agree, because "it looks the same"
-/// is not the standard this seam's Phase 1 set for itself.
-///
-/// `report` arrives as an `mcp_tool_call` item whose `server` is marion — the shape S6 fixtured.
-/// `file_change` items are recorded as corroborating evidence only: **git is the authority** for
-/// `changed_paths`, so a child that edits without emitting one is still caught.
-///
-/// **Success is not decided here.** codex emits a terminal item but no verdict marion reads, so
-/// `failure` is always `None` and the contract's status comes from the reported narrative and the
-/// exit code, exactly as it always has. That is a statement about codex, not a default: gemini and
-/// opencode both do make failure claims in-stream, and theirs are read.
-pub fn parse_stream(s: &str) -> StreamOutcome {
-    let mut out = StreamOutcome::default();
-    for v in json_frames(s) {
-        let item = &v["item"];
-        match item["type"].as_str() {
-            Some("mcp_tool_call") if item["server"] == "marion" && item["tool"] == "report" => {
-                if let Some(n) = item["arguments"]["narrative"].as_str() {
-                    out.narrative = Some(n.to_string());
-                }
-                out.result_commits = report_commits(&item["arguments"]);
-            }
-            Some("file_change") => {
-                if let Some(cs) = item["changes"].as_array() {
-                    for c in cs {
-                        if let Some(p) = c["path"].as_str() {
-                            out.file_change_paths.push(PathBuf::from(p));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
-/// of each call.
-///
-/// Codex is the one harness that does **not** name marion's verbs by a prefixed identifier in its
-/// stream: an `mcp_tool_call` item carries `server` and `tool` as separate fields, which is why
-/// this reader takes no prefix and a substring scan for `mcp__marion__` would find nothing here.
-/// That difference is exactly why the read is behind the adapter seam rather than done once in the
-/// supervisor.
-///
-/// **One call is two frames of the same item, and the later one revises the earlier.**
-/// `tests/fixtures/s6/exec-mcp-report.stream.jsonl` records `item.started` with
-/// `"result":null,"error":null,"status":"in_progress"` and then `item.completed` with the result
-/// filled in and `"status":"completed"`. So the item's `id` keys the call and the last frame for it
-/// wins — which also deletes a real bug in the reader this replaces: it counted both frames, so a
-/// codex node that called `report` once appeared to have called it twice.
-///
-/// **`status` is the verdict and `error` is the words.** Only the success spelling is recorded, so
-/// anything that is not `completed` is read as a refusal rather than as an unknown: a stream saying
-/// something marion has not measured must not be read as consent. An item with no terminal frame at
-/// all stays [`CallOutcome::Unknown`] — see there for the marion-side refusal this still cannot see.
-pub fn marion_calls(s: &str) -> Vec<MarionCall> {
-    // Insertion-ordered by first sighting, so the calls come back in the order the node made them
-    // while a later frame for the same id revises the outcome in place.
-    let mut order: Vec<String> = Vec::new();
-    let mut calls: BTreeMap<String, MarionCall> = BTreeMap::new();
-    for v in json_frames(s) {
-        let item = &v["item"];
-        if item["type"] != "mcp_tool_call" || item["server"] != "marion" {
-            continue;
-        }
-        let Some(verb) = item["tool"].as_str() else {
-            continue;
-        };
-        // An item with no `id` is its own call: nothing can revise it, and dropping it would lose a
-        // reached verb over a missing field.
-        let id = match item["id"].as_str() {
-            Some(id) => id.to_string(),
-            None => format!("{}-{}", verb, order.len()),
-        };
-        let outcome = match item["status"].as_str() {
-            Some("completed") => CallOutcome::Answered,
-            // The `item.started` spelling. Not an answer and not a refusal: if a later frame
-            // revises this item it will say which, and if none does the stream stopped mid-call.
-            Some("in_progress") | None => CallOutcome::Unknown,
-            // Every terminal spelling codex has not been measured emitting. Read as a refusal
-            // rather than as an unknown: a stream saying something unrecognised must not be read
-            // as consent.
-            Some(status) => CallOutcome::Refused(match item["error"].as_str() {
-                Some(e) => format!("{status}: {e}"),
-                None => status.to_string(),
-            }),
-        };
-        if calls
-            .insert(
-                id.clone(),
-                MarionCall {
-                    verb: verb.to_string(),
-                    outcome,
-                },
-            )
-            .is_none()
-        {
-            order.push(id);
-        }
-    }
-    order
-        .into_iter()
-        .filter_map(|id| calls.remove(&id))
-        .collect()
-}
 
 /// The values [`config_toml`] writes into `[mcp_servers.marion]`.
 ///
