@@ -1112,6 +1112,12 @@ acceptance evidence, so every marker remains unchanged.
     was verified to stop and continue a non-orphaned process out of band. The production native
     facade stays dark, so M3 remains `[partial]` pending C1's recorded manual session.
 
+    **Pre-cutoff termination dominance across the stop moves no milestone marker.** A termination
+    that arrives while the relay is stopped stays blocked and pending; when the resume unblocks the
+    termination handlers it is recorded, and the relay now finishes through the termination path
+    with the terminal still restored instead of re-entering raw mode. Covered by
+    `a_termination_during_the_stop_wins_after_continue_before_raw_reentry`; M3 remains `[partial]`.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
