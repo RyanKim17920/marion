@@ -5,6 +5,7 @@
 //! flag here was measured against 2.1.220, and several are non-obvious enough that the tests below
 //! state *why* rather than merely pinning the string.
 
+use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
@@ -15,7 +16,11 @@ pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, BridgeEnv, DEPTH_ENV, NODE_TOKEN_ENV,
     READY_FILE_ENV,
 };
-use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
+use crate::spec::{
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    ToolSpelling, Val, When,
+};
+use crate::surfaces::TypedKind;
 
 /// Claude Code's row. Measured against 2.1.220 (S1, S9, S11) and re-measured on 2.1.222 for the
 /// two tool axes (`tests/fixtures/s14/`); every flag below carries its reason in the doc of the
@@ -23,6 +28,7 @@ use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 /// the *shape* is the surprising part.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::ClaudeCode,
+    surfaces: Surfaces::Headless(TypedKind::StreamJson),
     program: Some("claude"),
     argv: &[
         Arg::Lit("-p"),
@@ -89,6 +95,27 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     ],
     stream: Some(&STREAM),
+    // `read` → `Read`, `write` → `Write`, measured on 2.1.222 (`tests/fixtures/s14/`): `--tools
+    // Write` puts a tool of that name with schema `{file_path, content}` into the request body, and
+    // `--tools Read` puts `Read` there where the default `--tools ""` has none. **This is the one
+    // harness where the grant buys something.** The negative half is why the mapping exists rather
+    // than a pass-through: `--tools read`, marion's own word unmapped, yields `body.tools []`,
+    // exit 0, empty stderr — indistinguishable from a healthy run. `Edit` and `Bash` were never
+    // tried and are not named.
+    tool_names: &[
+        (agent_type::TOOL_READ, "Read"),
+        (agent_type::TOOL_WRITE, "Write"),
+    ],
+    spelling: Spelling::Fixed(ToolSpelling::McpDoubleUnderscore),
+    // `--mcp-config` names a document in both auth modes: live mode drops three env vars and
+    // changes nothing about where the declaration lives.
+    mcp: McpRoutes {
+        canned: McpRoute::Document,
+        live: McpRoute::Document,
+    },
+    // The one harness with a real per-tool allowlist: the record is the literal contents of
+    // `--allowedTools`, which is the flag the CLI checks a call against.
+    constraint: Constraint::Allowed { prefix: "" },
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };

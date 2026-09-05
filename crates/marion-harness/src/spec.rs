@@ -35,11 +35,20 @@ use marion_core::harness::Harness;
 use crate::auth::Auth;
 use crate::grammar::StreamGrammar;
 use crate::invocation::Invocation;
+use crate::surfaces::{ExecutionSurfaces, TypedKind};
+
+/// The name marion gives its own MCP server in every declaration, and therefore half of every
+/// harness's model-facing spelling of marion's tools. **It must not contain `_`**: gemini exposes
+/// MCP tools as `mcp_<server>_<tool>` and its policy engine mis-parses a fully-qualified name with
+/// extra underscores, **silently** (S12).
+pub const MCP_ALIAS: &str = "marion";
 
 /// One harness, as a row: what its launch looks like, stated as data.
 #[derive(Debug)]
 pub struct HarnessSpec {
     pub harness: Harness,
+    /// §3.4's point in the cross-product this harness runs at.
+    pub surfaces: Surfaces,
     /// The binary, or `None` where the launch itself names it — ACP, whose program is the agent's
     /// own and arrives in [`Fields::program`].
     pub program: Option<&'static str>,
@@ -54,6 +63,21 @@ pub struct HarnessSpec {
     /// How this harness's output stream is read (§6.1 step 9), or `None` where the reader is code
     /// — ACP, whose stream shape is per agent ([`crate::grammar`]'s module docs).
     pub stream: Option<&'static StreamGrammar>,
+    /// §3.1's **availability** axis: marion's vocabulary (`marion_core::agent_type::TOOL_READ`,
+    /// …) to this harness's own name for it. **A verb not in this list is refused by name**, never
+    /// dropped — a launch that quietly loses a tool is §11 item 24's silent failure. Empty is the
+    /// honest row for a harness with no availability axis at all (ACP).
+    ///
+    /// Answering does not imply compiling: on codex and opencode a declared `write` names a tool
+    /// the harness already grants unconditionally, and the row's argv carries nothing for it.
+    pub tool_names: &'static [(&'static str, &'static str)],
+    /// How this harness's model spells one of marion's own tools.
+    pub spelling: Spelling,
+    /// Which channel the MCP declaration travels on, under each auth mode.
+    pub mcp: McpRoutes,
+    /// §6.7's `TaskContract.allowed_tools`: what the audit record says this launch was constrained
+    /// by, in this harness's own vocabulary.
+    pub constraint: Constraint,
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,
@@ -331,4 +355,141 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Option<Invocation
         // hook placed in `Fields::model`, and nothing else is recorded.
         model: f.model.clone(),
     })
+}
+
+/// §3.4's point in the cross-product, as a row can state it. The pane shape is always `opaque`
+/// where a row has one, so it is not a variant here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surfaces {
+    /// Typed control over pipes, `StructuredUi`, `ProtocolEvents`.
+    Headless(TypedKind),
+    /// The prompt rides argv, nothing is displayed, the JSONL is read: `codex exec`'s shape, which
+    /// is not one of the four presets.
+    LaunchOnly,
+}
+
+impl Surfaces {
+    pub fn execution(self) -> ExecutionSurfaces {
+        match self {
+            Surfaces::Headless(kind) => ExecutionSurfaces::headless(kind),
+            Surfaces::LaunchOnly => ExecutionSurfaces::launch_only_with_protocol_events(),
+        }
+    }
+}
+
+/// How a model spells one of marion's tools — a **measurement of a harness**, never a guess.
+///
+/// An enum rather than a format string because the thing recorded is what a model was watched
+/// typing, and s14's finding is that an unknown tool name is *silently ignored*: a spelling
+/// generalised from one harness to another buys a turn that ends having called nothing.
+///
+/// | who | what the model typed | where |
+/// |---|---|---|
+/// | claude-code 2.1.220, codex 0.146.0 (as a JavaScript identifier), `claude-agent-acp` 0.66.0 | `mcp__marion__report` | S1, S6, S22 |
+/// | gemini CLI 0.53.0 | `mcp_marion_report` | S12 |
+/// | opencode 1.17.3, `opencode acp` | `marion_report` | S13, S21 |
+/// | copilot 1.0.83 | `marion-report` | s24 |
+/// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSpelling {
+    /// `mcp__<server>__<tool>`.
+    McpDoubleUnderscore,
+    /// `mcp_<server>_<tool>`, single underscores.
+    McpSingleUnderscore,
+    /// `<server>_<tool>`.
+    ServerUnderscoreTool,
+    /// `<server>-<tool>`.
+    ServerHyphenTool,
+    /// `mcp.<server>.<tool>`.
+    McpDotted,
+}
+
+impl ToolSpelling {
+    pub fn spell(self, tool: &str) -> String {
+        match self {
+            Self::McpDoubleUnderscore => format!("mcp__{MCP_ALIAS}__{tool}"),
+            Self::McpSingleUnderscore => format!("mcp_{MCP_ALIAS}_{tool}"),
+            Self::ServerUnderscoreTool => format!("{MCP_ALIAS}_{tool}"),
+            Self::ServerHyphenTool => format!("{MCP_ALIAS}-{tool}"),
+            Self::McpDotted => format!("mcp.{MCP_ALIAS}.{tool}"),
+        }
+    }
+}
+
+/// Whose spelling a row carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spelling {
+    /// One measured spelling for the whole harness.
+    Fixed(ToolSpelling),
+    /// The spelling is the **agent's**, not the protocol's, and the adapter bound to an agent
+    /// answers for it — ACP, where one row serves agents that spell the same tool three ways.
+    /// Nothing here defaults: an adapter that never binds an agent has no spelling and refuses.
+    PerAgent,
+}
+
+/// **How** the MCP declaration reaches the node, under each auth mode.
+///
+/// Two fields rather than one because two harnesses route differently once marion stops owning
+/// the config surface: a live codex node's `[mcp_servers.marion]` cannot go in `~/.codex/config.toml`
+/// (§6.4) and rides `-c` flags; a live opencode node's cannot go under a relocated `$XDG_CONFIG_HOME`
+/// and rides `OPENCODE_CONFIG_CONTENT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpRoutes {
+    pub canned: McpRoute,
+    pub live: McpRoute,
+}
+
+/// The channel a launch's MCP declaration travels on — stated by the row, never inferred.
+///
+/// The distinction exists because "no configuration file" and "no bridge" are different facts that
+/// look identical downstream. A live opencode node legitimately writes no file at all: its
+/// declaration rides `OPENCODE_CONFIG_CONTENT`. Before this enum the supervisor read an empty
+/// `config_files` as a refusal, and the obvious "fix" — accept an empty vec — would have turned
+/// that refusal into a **hole**: any adapter that forgot its declaration entirely would launch a
+/// node with no bridge, take a turn with no marion tools, and exit 0 having called nothing (§6.1
+/// step 8's failure class). So the row says which route is taken and the supervisor checks *that*
+/// route was actually taken ([`McpRoute::verify`](crate::McpRoute::verify)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpRoute {
+    /// The first document `config_files` emits carries it.
+    Document,
+    /// This env var of the compiled [`Invocation`] carries it inline, and no file is written.
+    Environment(&'static str),
+    /// The compiled [`Invocation`]'s **argv** carries it inline, and no file is written — the
+    /// payload is the config key that must appear in it. Neither a document nor an env var: a live
+    /// codex node's `-c <dotted.key>=<toml>` flags.
+    Argv(&'static str),
+    /// The adapter's **post-launch** `session/new` request carries it, and the payload is the
+    /// param key that must hold it (`mcpServers`). ACP, and only ACP: `session/new`'s block is
+    /// compiled before anything is sent, so it is checkable at exactly the moment argv is (S21).
+    Session(&'static str),
+    /// No declaration was asked for — §9's fallback branch. **Not** the same as a row that was
+    /// asked for one and produced none, which is a refusal.
+    None,
+}
+
+/// What §6.7's `allowed_tools` records — *"the compiled, harness-native constraint, or the
+/// harness's coarsest equivalent where it has no per-tool allowlist at all"* (§3.1). **Never
+/// marion's own vocabulary**: echoing it there would make the field claim a constraint that never
+/// existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Constraint {
+    /// The permission axis itself, each entry prefixed — the literal contents of the list the
+    /// harness checks a call against. `prefix` is load-bearing where the harness's grant kinds
+    /// collide with marion's verbs (copilot's `write`).
+    Allowed { prefix: &'static str },
+    /// A coarse mode: `prefix` followed by the axes' mode, or by `default` where the launch relaxed
+    /// nothing — recorded in **both** states, because a node that ran under the default mode ran
+    /// under a real constraint.
+    Mode {
+        prefix: &'static str,
+        default: &'static str,
+    },
+    /// One fixed value for every launch: the sandbox mode codex always compiles, or the honest
+    /// record that marion compiled no constraint at all. Not `[]`, which would read as "no tool
+    /// was allowed" about a node that could run `bash`.
+    Fixed {
+        prefix: &'static str,
+        value: &'static str,
+    },
 }

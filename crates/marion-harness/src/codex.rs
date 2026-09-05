@@ -10,13 +10,17 @@
 //! request rather than a second harness — the two share this file's configuration, its isolation
 //! and its sandbox, and differ only in the argv grammar the binary's two commands accept.
 
+use marion_core::agent_type;
 use marion_core::harness::Harness;
 
 use crate::grammar::{
     Cond, Name, OnRefusedReport, Pairing, PathList, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
+use crate::spec::{
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    ToolSpelling, Val, When,
+};
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
 /// one binary over one isolation.
@@ -55,6 +59,8 @@ use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 /// a second spelling on argv is the drift [`SANDBOX_MODE`] exists to prevent.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Codex,
+    // `LaunchOnly` + `ProtocolEvents` + no display — §3.4's combination outside the four presets.
+    surfaces: Surfaces::LaunchOnly,
     program: Some("codex"),
     argv: &[
         Arg::Lit("exec"),
@@ -97,6 +103,36 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         when: When::Canned,
     }],
     stream: Some(&STREAM),
+    // `write` → `sandbox:workspace-write`, §3.1's *"coarsest equivalent"* named for this exact
+    // harness: `codex exec` has no `--tools` and no permission list, only `--sandbox`, and
+    // [`config_toml`] compiles `workspace-write` on every node — so a declaration is **satisfied
+    // rather than newly granted** and argv carries nothing for it. Making the mode conditional
+    // would silently demote every codex node marion spawns today to `read-only`.
+    //
+    // `read` is refused, and the absence is the decision: s14 measured codex's whole declaration
+    // (`apply_patch, create_goal, exec_command, …`) identical under both sandbox modes with no
+    // read tool in it — reading a file is `exec_command`, the shell, which also writes and reaches
+    // the network. A reader of `tools: [read]` would take a codex node for read-only when it is
+    // nothing of the kind.
+    tool_names: &[(agent_type::TOOL_WRITE, "sandbox:workspace-write")],
+    // Flat, as on Claude Code: S6 measured codex running **code mode**, where a model reaches marion
+    // by writing `await tools.mcp__marion__report({…})`. The `{"name","namespace"}` pair is codex's
+    // internal wire dispatch form, never something a child types.
+    spelling: Spelling::Fixed(ToolSpelling::McpDoubleUnderscore),
+    // A canned node's `[mcp_servers.marion]` lives in the generated `config.toml`; a live node's
+    // rides `-c mcp_servers.marion.…` on its own command line, because with `CODEX_HOME` unset the
+    // only `config.toml` codex reads is the operator's own (§6.4).
+    mcp: McpRoutes {
+        canned: McpRoute::Document,
+        live: McpRoute::Argv(MCP_SERVER_KEY),
+    },
+    // §3.1's worked example, verbatim: it replaces a hardcoded `["apply_patch", "shell"]` that
+    // named tools codex never checked a call against. Constant, because [`config_toml`] compiles
+    // that one sandbox mode on every node.
+    constraint: Constraint::Fixed {
+        prefix: "sandbox:",
+        value: SANDBOX_MODE,
+    },
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",
@@ -201,7 +237,7 @@ fn toml_str(s: &str) -> String {
 /// plumbing, and `ctx.agent_id` was already threaded to the call site.
 /// The MCP server alias: the `marion` of `[mcp_servers.marion]`, and the `server` an
 /// `mcp_tool_call` item names ([`STREAM`]). One spelling for the document and the reader.
-pub const MCP_ALIAS: &str = "marion";
+pub const MCP_ALIAS: &str = crate::spec::MCP_ALIAS;
 
 /// The config key `[mcp_servers.marion]` sits at, as a dotted path.
 ///

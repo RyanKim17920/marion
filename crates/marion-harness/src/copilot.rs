@@ -30,6 +30,7 @@
 
 use std::path::{Path, PathBuf};
 
+use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
@@ -37,7 +38,10 @@ use crate::grammar::{
     Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
+use crate::spec::{
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    ToolSpelling, Val, When,
+};
 
 /// `$COPILOT_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
 /// [`home`].
@@ -52,6 +56,7 @@ const HOME_DIR: &str = "home";
 /// survivor is the auto-update switch, which was never isolation.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Copilot,
+    surfaces: Surfaces::LaunchOnly,
     program: Some("copilot"),
     argv: &[
         // The prompt is the **argument to `-p`**: `-p` is what selects non-interactive mode at
@@ -117,6 +122,33 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     ],
     stream: Some(&STREAM),
+    // `read` → `view`, `write` → `create`, measured on 1.0.83 (`tests/fixtures/s24/`):
+    // `--available-tools=marion-report,create` put exactly those in the request body, `create` with
+    // `--allow-tool=write` landed a file under `-C`, and `view` ran with no grant at all. `edit` is
+    // copilot's other write tool and `bash` can write too; marion's vocabulary has no verb for
+    // either, so neither is named.
+    tool_names: &[
+        (agent_type::TOOL_READ, "view"),
+        (agent_type::TOOL_WRITE, "create"),
+    ],
+    // `<server>-<tool>`, a hyphen — the fifth spelling of one tool (s24, in `tools[]` and
+    // `toolName` alike). The permission pattern for the same tool is a *different* string
+    // ([`permission_pattern`]).
+    spelling: Spelling::Fixed(ToolSpelling::ServerHyphenTool),
+    // A document in both modes: `--additional-mcp-config @<file>` *augments* whatever
+    // `$COPILOT_HOME/mcp-config.json` holds, so live mode changes nothing about where marion's
+    // declaration lives.
+    mcp: McpRoutes {
+        canned: McpRoute::Document,
+        live: McpRoute::Document,
+    },
+    // The `--allow-tool` patterns are what `-p` mode checks a call against — not the
+    // `--available-tools` list, which only decides what the model sees. The prefix is load-bearing:
+    // copilot's grant kind for the file tools is spelled `write`, the same six letters as marion's
+    // own verb, and §3.1 forbids a record that reads as marion's vocabulary.
+    constraint: Constraint::Allowed {
+        prefix: "allow-tool:",
+    },
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",
@@ -225,7 +257,7 @@ pub const WIRE_API: &str = "completions";
 /// The MCP server alias. The model-facing tool name is `<alias>-<tool>` and the permission
 /// pattern is `<alias>(<tool>)`, so this string is literally half of both `marion-report` and
 /// `marion(report)`.
-pub const MCP_ALIAS: &str = "marion";
+pub const MCP_ALIAS: &str = crate::spec::MCP_ALIAS;
 
 /// The `--allow-tool` **kind** that grants the built-in file tools — *"tools that create and
 /// modify files, except shell tool invocations"* (`copilot help permissions`). A kind, not a tool
@@ -320,7 +352,6 @@ mod tests {
         "/../../tests/fixtures/s24/copilot-provider-500.stdout.jsonl"
     ));
 
-    use marion_core::agent_type;
     use marion_core::contract::AgentId;
 
     use crate::adapter::{

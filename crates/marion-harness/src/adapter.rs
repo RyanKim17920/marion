@@ -27,9 +27,9 @@ use crate::grammar;
 use crate::invocation::Invocation;
 use crate::mcp_bridge::BridgeEnv;
 use crate::opencode;
-use crate::spec;
+use crate::spec::{self, Constraint, Spelling};
 use crate::stream::{ChildExit, MarionCall, StreamOutcome};
-use crate::surfaces::{ExecutionSurfaces, TypedKind};
+use crate::surfaces::ExecutionSurfaces;
 
 /// Whether marion's control MCP is injected into this node, and how much of it.
 ///
@@ -43,50 +43,7 @@ pub enum McpDeclaration {
     None,
 }
 
-/// **How** marion's MCP declaration reaches this node — stated by the adapter, never inferred.
-///
-/// The distinction exists because "no configuration file" and "no bridge" are different facts that
-/// look identical downstream. A live opencode node legitimately writes no file at all: its
-/// declaration rides `OPENCODE_CONFIG_CONTENT`, because a file under an isolated `$XDG_CONFIG_HOME`
-/// would isolate away the very login it is meant to use. Before this enum the supervisor read an
-/// empty `config_files` as the refusal [`crate::RootError::NoMcpDeclaration`], and the obvious
-/// "fix" — accept an empty vec — would have turned that refusal into a **hole**: any adapter that
-/// forgot its declaration entirely would launch a node with no bridge, take a turn with no marion
-/// tools, and exit 0 having called nothing (§6.1 step 8's failure class, §12's silent-failure
-/// family). So the adapter says which route it took and the supervisor checks *that* route was
-/// actually taken; an adapter that declares nothing still fails, loudly and by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum McpRoute {
-    /// The first document [`HarnessAdapter::config_files`] emits carries it.
-    Document,
-    /// This env var of the compiled [`Invocation`] carries it inline, and no file is written.
-    Environment(&'static str),
-    /// The compiled [`Invocation`]'s **argv** carries it inline, and no file is written — the
-    /// payload is the config key that must appear in it.
-    ///
-    /// A third variant rather than a reuse of either neighbour, because a live codex node is
-    /// neither: `codex exec` resolves `mcp_servers` out of `$CODEX_HOME/config.toml`, and under
-    /// [`Auth::Inherited`] that file is the **operator's own** — §6.4's central MUST forbids marion
-    /// writing it. So the declaration is re-routed onto repeatable `-c <dotted.key>=<toml>` flags,
-    /// which are neither a document nor an env var. Returning [`McpRoute::None`] instead would let
-    /// the supervisor's verification pass on a node that has no bridge at all, which is §6.1 step
-    /// 8's failure class; spelling it `Environment` would have marion check a variable nobody set.
-    Argv(&'static str),
-    /// The adapter's **post-launch** `session/new` request carries it, and the payload is the
-    /// param key that must hold it (`mcpServers`). ACP, and only ACP.
-    ///
-    /// `89b822d` argued a fifth variant would be one *"with nothing behind it to check"*, and S21
-    /// measured that clause false: `session/new`'s `mcpServers` block is compiled by
-    /// [`HarnessAdapter::session_declaration`] **before** anything is sent, so it is checkable at
-    /// exactly the moment argv is, and the transcript in `tests/fixtures/s21/opencode-acp-mcp.jsonl`
-    /// is a real `opencode acp` starting that server and calling `tools/call {"name":"report"}` on
-    /// it. What is genuinely different is only *where the bytes go* — a pipe instead of a file or
-    /// an environ — and that is the axis this enum exists to name.
-    Session(&'static str),
-    /// No declaration was asked for — [`McpDeclaration::None`], §9's fallback branch. **Not** the
-    /// same as an adapter that was asked for one and produced none, which is the refusal above.
-    None,
-}
+pub use crate::spec::McpRoute;
 
 impl McpRoute {
     /// **Was the route actually taken?** §6.1 step 8, checked against the route the adapter
@@ -338,9 +295,17 @@ pub trait HarnessAdapter {
     /// Which harness this is. The registry's key, and what `TaskContract.child.harness` records.
     fn harness(&self) -> Harness;
 
-    /// The surfaces this adapter drives (§3.4). Note the two implementations sit at *different*
-    /// points of the cross-product, one of which is not a preset.
-    fn surfaces(&self) -> ExecutionSurfaces;
+    /// This harness's row (`plan-harness-spec.md`): the launch, the stream grammar, the tool
+    /// names, the spelling, the declaration routes and the audit constraint, as data. Every
+    /// default below reads it, and an adapter is the row plus the measured logic no row can hold.
+    fn spec(&self) -> &'static spec::HarnessSpec {
+        harness_spec(self.harness())
+    }
+
+    /// The surfaces this adapter drives (§3.4) — the row's point in the cross-product.
+    fn surfaces(&self) -> ExecutionSurfaces {
+        self.spec().surfaces.execution()
+    }
 
     /// §6.1 step 5: argv + env. Runs on every spawn without exception, including surfaces that
     /// have no `ControlPlane` to open.
@@ -350,7 +315,7 @@ pub trait HarnessAdapter {
     /// judgement, and nothing else stands between a `LaunchSpec` and an argv.
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
         let f = self.fields(spec, ctx, spec::Shape::Headless)?;
-        render_row(harness_spec(self.harness()), spec::Shape::Headless, &f)
+        render_row(self.spec(), spec::Shape::Headless, &f)
     }
 
     /// §3.1's two axes in this harness's spelling, or the first refusal.
@@ -412,9 +377,11 @@ pub trait HarnessAdapter {
     /// read *"a real `claude` TUI runs in a marion pane"* and *"a real `codex` TUI runs in a pane
     /// with scrollback retained across at least one resize"*. A TUI has **no frame parser at all**,
     /// so both hazards are absent by construction rather than mitigated — which is why the pane
-    /// shape is a different node, not the same node with an extra fd.
+    /// shape is a different node, not the same node with an extra fd. **Not `interactive`**
+    /// either: that preset also claims `TranscriptRecords`, and marion reads no transcript a TUI
+    /// writes.
     fn pane_surfaces(&self) -> Option<ExecutionSurfaces> {
-        None
+        self.spec().pane.map(|_| ExecutionSurfaces::opaque())
     }
 
     /// argv + env for [`Self::pane_surfaces`]'s shape. Called **only** where that is `Some`.
@@ -429,7 +396,7 @@ pub trait HarnessAdapter {
             return Err(HarnessError::NoPaneSurface(self.harness()));
         }
         let f = self.fields(spec, ctx, spec::Shape::Pane)?;
-        render_row(harness_spec(self.harness()), spec::Shape::Pane, &f)
+        render_row(self.spec(), spec::Shape::Pane, &f)
     }
 
     /// The configuration files this harness needs, as `(absolute path, contents)`. The caller
@@ -441,12 +408,19 @@ pub trait HarnessAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Vec<(PathBuf, String)>, HarnessError>;
 
-    /// Which channel this launch's MCP declaration travels on — see [`McpRoute`].
+    /// Which channel this launch's MCP declaration travels on — the row's [`spec::McpRoutes`] for
+    /// the launch's auth mode, or [`McpRoute::None`] where no declaration was asked for.
     ///
-    /// Required rather than defaulted on purpose: a default of [`McpRoute::Document`] would be
-    /// inherited silently by a fifth harness whose declaration is not a document, which is the
-    /// same class of mistake as the fallback [`adapter_for`] refuses to make.
-    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute;
+    /// The row states both modes explicitly; there is no default a sixth harness could inherit
+    /// unexamined, which is the same class of mistake as the fallback [`adapter_for`] refuses to
+    /// make.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        match (spec.mcp, spec.auth) {
+            (McpDeclaration::None, _) => McpRoute::None,
+            (McpDeclaration::Marion, Auth::Canned) => self.spec().mcp.canned,
+            (McpDeclaration::Marion, Auth::Inherited) => self.spec().mcp.live,
+        }
+    }
 
     /// The **post-launch** request that carries this launch's declaration, where the harness has
     /// one — today only ACP's `session/new`.
@@ -494,7 +468,7 @@ pub trait HarnessAdapter {
     /// record.
     fn parse_stream(&self, stdout: &str, exit: ChildExit) -> StreamOutcome {
         let _ = exit;
-        match harness_spec(self.harness()).stream {
+        match self.spec().stream {
             Some(g) => grammar::parse_stream(g, stdout, &self.marion_tool_name("")),
             None => StreamOutcome {
                 failure: Some(format!(
@@ -519,7 +493,18 @@ pub trait HarnessAdapter {
     /// something a child types. So the prohibition is about the wire layer: a *`function_call`
     /// item* naming the flat string is what 0.146.0 rejects as `unsupported call` (§11 item 12's
     /// correction), not the identifier in a prompt.
-    fn marion_tool_name(&self, tool: &str) -> String;
+    ///
+    /// The default spells with the row's [`spec::Spelling::Fixed`] measurement. A
+    /// [`spec::Spelling::PerAgent`] row is the adapter's to answer, and an adapter that has not
+    /// bound an agent gets [`acp::UNBOUND_TOOL_NAME`] — a string that is a tool name in no
+    /// spelling and matches nothing in any transcript — which every route to a launch refuses
+    /// before a model sees it.
+    fn marion_tool_name(&self, tool: &str) -> String {
+        match self.spec().spelling {
+            Spelling::Fixed(s) => s.spell(tool),
+            Spelling::PerAgent => format!("{}{tool}", acp::UNBOUND_TOOL_NAME),
+        }
+    }
 
     /// This harness's spelling of one tool from **marion's own vocabulary**
     /// (`marion_core::agent_type::TOOL_WRITE`), for §3.1's **availability** axis.
@@ -541,7 +526,20 @@ pub trait HarnessAdapter {
     /// this method reports and `compile` then has nothing to do about. Making the grant
     /// conditional there would *narrow* what those two harnesses have always been able to do,
     /// which is a behaviour change wearing a feature's clothes.
-    fn tool_name(&self, tool: &str) -> Result<String, HarnessError>;
+    ///
+    /// The default is the row's [`spec::HarnessSpec::tool_names`], and a verb it does not list is
+    /// the refusal.
+    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
+        self.spec()
+            .tool_names
+            .iter()
+            .find(|(verb, _)| *verb == tool)
+            .map(|(_, native)| native.to_string())
+            .ok_or_else(|| HarnessError::UnsupportedTool {
+                harness: self.harness(),
+                tool: tool.to_string(),
+            })
+    }
 
     /// Every tool [`LaunchSpec::tools`] declares, in this harness's own spelling, or the first
     /// refusal.
@@ -575,7 +573,27 @@ pub trait HarnessAdapter {
     /// Fallible for one reason only: on a harness that compiles the declaration, the declaration
     /// has to be mapped, and an unmappable name is [`HarnessError::UnsupportedTool`] here as it is
     /// in `compile`. A caller reaching this after a successful `compile` cannot see that error.
-    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError>;
+    ///
+    /// The default reads the row's [`spec::Constraint`] over [`Self::axes`] — the same axes the
+    /// row renders, so the record and the flag it describes cannot disagree — and runs the
+    /// refusal on every kind, including the fixed ones nothing about a declaration could vary.
+    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
+        let axes = self.axes(spec)?;
+        Ok(match self.spec().constraint {
+            Constraint::Allowed { prefix } => axes
+                .allowed
+                .iter()
+                .map(|a| format!("{prefix}{a}"))
+                .collect(),
+            Constraint::Mode { prefix, default } => {
+                vec![format!(
+                    "{prefix}{}",
+                    axes.mode.as_deref().unwrap_or(default)
+                )]
+            }
+            Constraint::Fixed { prefix, value } => vec![format!("{prefix}{value}")],
+        })
+    }
 
     /// Every call to one of marion's verbs this harness's stream shows the node making, in
     /// **marion's** vocabulary (`spawn`, `report`, …) rather than in the harness's spelling, **and
@@ -609,7 +627,7 @@ pub trait HarnessAdapter {
     /// The default reads the row's grammar; a row with no grammar shows no calls, which is what
     /// §6.1 step 8's gate refuses — loudly, and by name, one layer up.
     fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
-        match harness_spec(self.harness()).stream {
+        match self.spec().stream {
             Some(g) => grammar::marion_calls(g, stdout, &self.marion_tool_name("")),
             None => Vec::new(),
         }
@@ -753,10 +771,6 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         Harness::ClaudeCode
     }
 
-    fn surfaces(&self) -> ExecutionSurfaces {
-        ExecutionSurfaces::headless(TypedKind::StreamJson)
-    }
-
     /// **One shape, and a non-empty prompt is a refusal on it.**
     ///
     /// This adapter used to compile two headless shapes: `--input-format stream-json` for a root
@@ -810,13 +824,6 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         Ok(f)
     }
 
-    /// §3.4's `opaque`: a pty and nothing else. **Not `interactive`** — that preset also claims
-    /// `TranscriptRecords`, and marion reads no transcript this harness writes; claiming an
-    /// observation source nothing consumes would put a false row in §3.4's derivation table.
-    fn pane_surfaces(&self) -> Option<ExecutionSurfaces> {
-        Some(ExecutionSurfaces::opaque())
-    }
-
     fn config_files(
         &self,
         spec: &LaunchSpec,
@@ -830,59 +837,6 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             Self::mcp_config_path(spec),
             serde_json::to_string_pretty(&json).expect("a Value always serialises"),
         )])
-    }
-
-    /// `--mcp-config` names a document, in both auth modes: live mode drops three env vars and
-    /// changes nothing about where the declaration lives.
-    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
-        match spec.mcp {
-            McpDeclaration::Marion => McpRoute::Document,
-            McpDeclaration::None => McpRoute::None,
-        }
-    }
-
-    fn marion_tool_name(&self, tool: &str) -> String {
-        format!("mcp__marion__{tool}")
-    }
-
-    /// `write` → **`Write`**, measured on 2.1.222: `--tools "Write"` puts a tool of that name, with
-    /// schema `{file_path, content}`, into the request body's tool list (§11 item 24). Its own
-    /// description asks for an absolute path; the same measurement drove it at a **relative** one
-    /// deliberately, and the file landed in the node's worktree — this harness resolves against the
-    /// process cwd, so `Invocation.cwd` places it and nothing further is owed here.
-    ///
-    /// `read` → **`Read`**, measured on 2.1.222 (`tests/fixtures/s14/README.md`): `--tools Read`
-    /// puts `Read` in the request body's tool list, and the run marion compiles today — `--tools ""`
-    /// — has no `Read` at all. **This is the one harness of four where the grant buys something**;
-    /// on gemini and opencode a read tool is already declared by default.
-    ///
-    /// The negative half of that measurement is why the mapping exists rather than a pass-through:
-    /// `--tools read`, marion's own word unmapped, yields `body.tools []`, **exit 0, empty stderr**,
-    /// and a `system/init` frame that agrees — indistinguishable from a healthy run and from the
-    /// bogus `--tools NotATool`. That is §12's accept-and-ignore shape with marion on the producing
-    /// end.
-    ///
-    /// `Edit` is *not* mapped, and its absence is deliberate rather than pending: item 24 records
-    /// that `Edit` and `Bash` were never tried, and this codebase does not name a grant it has not
-    /// watched arrive. s14 declared `Bash` once, only to settle the comma separator for the
-    /// multi-name case, and makes no other claim about it.
-    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
-        match tool {
-            agent_type::TOOL_READ => Ok("Read".into()),
-            agent_type::TOOL_WRITE => Ok("Write".into()),
-            _ => Err(HarnessError::UnsupportedTool {
-                harness: Harness::ClaudeCode,
-                tool: tool.to_string(),
-            }),
-        }
-    }
-
-    /// **The one harness of four with a real per-tool allowlist**, so this is §3.1's first branch
-    /// rather than its "coarsest equivalent" fallback: the record is the literal contents of
-    /// `--allowedTools`, which is the flag the CLI checks a call against — read off the same
-    /// [`Self::axes`] the row renders, so §6.7's audit record and the flag cannot disagree.
-    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        Ok(self.axes(spec)?.allowed)
     }
 }
 
@@ -899,11 +853,6 @@ impl CodexAdapter {
 impl HarnessAdapter for CodexAdapter {
     fn harness(&self) -> Harness {
         Harness::Codex
-    }
-
-    /// `LaunchOnly` + `ProtocolEvents` + no display — §3.4's combination outside the four presets.
-    fn surfaces(&self) -> ExecutionSurfaces {
-        ExecutionSurfaces::launch_only_with_protocol_events()
     }
 
     /// **Under `Inherited` the declaration is compiled into argv, not written to a file** — and
@@ -941,22 +890,6 @@ impl HarnessAdapter for CodexAdapter {
         Ok(f)
     }
 
-    /// §3.4's `opaque`, the same shape Claude Code's pane declares and for the same reason: a pty
-    /// and nothing else, because nothing parses a frame off a TUI.
-    ///
-    /// **This is §9's M3 criterion C2, and it is the half that was missing.** `marion_term`'s
-    /// `Suppressor` has intercepted `CSI 3J` since before this method existed, and
-    /// `marion-term/tests/replay.rs::scrollback_survives_codex_resize` pinned the retention over a
-    /// committed capture — but C2 reads *"a real `codex` TUI runs **in a pane**"*, and with this
-    /// returning `None` a codex pane could not be launched at all: `root::prepare_watched` refused
-    /// `--pane` with [`HarnessError::NoPaneSurface`] before anything opened a pty. codex is the
-    /// harness the criterion names for a measured reason (§5.3) — it writes its session to the
-    /// **main** screen and emits `ESC[3J` on every resize, so it is the only one of the four with
-    /// scrollback to lose.
-    fn pane_surfaces(&self) -> Option<ExecutionSurfaces> {
-        Some(ExecutionSurfaces::opaque())
-    }
-
     fn config_files(
         &self,
         spec: &LaunchSpec,
@@ -988,85 +921,6 @@ impl HarnessAdapter for CodexAdapter {
             codex::config_toml(&bridge, base_url),
         )])
     }
-
-    /// The second adapter whose route depends on the auth mode, and for the same reason as
-    /// opencode's: the file marion would write is the operator's own once the isolation is dropped.
-    /// A canned node's `[mcp_servers.marion]` lives in the generated `config.toml`; a live node's
-    /// rides `-c mcp_servers.marion.…` on its own command line, which is neither a document nor an
-    /// env var — hence [`McpRoute::Argv`].
-    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
-        match (spec.mcp, spec.auth) {
-            (McpDeclaration::None, _) => McpRoute::None,
-            (McpDeclaration::Marion, Auth::Canned) => McpRoute::Document,
-            (McpDeclaration::Marion, Auth::Inherited) => McpRoute::Argv(codex::MCP_SERVER_KEY),
-        }
-    }
-
-    fn marion_tool_name(&self, tool: &str) -> String {
-        // Flat, exactly as on Claude Code — see the trait's doc comment. The namespaced form is
-        // codex's internal wire dispatch shape, not something a child types into `tools.…`.
-        format!("mcp__marion__{tool}")
-    }
-
-    /// `write` → **`sandbox:workspace-write`**, which is §3.1's *"the harness's coarsest
-    /// equivalent where it has no per-tool allowlist at all"* — that section names this exact
-    /// string for this exact harness.
-    ///
-    /// **This harness's availability axis is a sandbox mode, and marion already opens it.**
-    /// `codex exec` exposes no `--tools` and no permission list, only
-    /// `--sandbox <read-only|workspace-write|danger-full-access>`; `codex::config_toml` compiles
-    /// `sandbox_mode = "workspace-write"` on every node and always has, which is why a codex child
-    /// is the one this matrix has always been able to drive to a write. So a declaration here is
-    /// **satisfied rather than newly granted**, and `compile` emits nothing for it.
-    ///
-    /// The judgement call, stated: this could instead have made `workspace-write` *conditional* on
-    /// the declaration, which reads tidier and would silently demote every codex node marion spawns
-    /// today to `read-only` — a behaviour change on the harness that was never broken, taken to
-    /// close a gap on two others. The opt-in rule cuts the other way here.
-    ///
-    /// **`read` has no arm, and its absence is the decision rather than an omission.**
-    /// `tests/fixtures/s14/README.md` measured this harness's whole declaration — `apply_patch,
-    /// create_goal, exec_command, get_goal, update_goal, update_plan, view_image, write_stdin`,
-    /// **identical under `--sandbox read-only` and `--sandbox workspace-write`** — and there is no
-    /// read tool in it. Reading a file on codex is `exec_command`, i.e. the shell.
-    ///
-    /// The tempting move is to answer `read` the way `write` is answered above, *satisfied rather
-    /// than newly granted*. It does not transfer, for a reason the two cases do not share: `write`
-    /// names a **measured correspondence** — `apply_patch`, gated by a sandbox mode marion actually
-    /// compiles — whereas `read` would name the shell, which also writes, execs and reaches the
-    /// network. A reader of `tools: [read]` would take a codex node for read-only when it is
-    /// nothing of the kind. So the declaration is refused by name, the launch aborts, and the
-    /// operator is told which verb and which harness. See `marion_core::agent_type::TOOL_READ` for
-    /// why refusal beats recording the absence in the compiled spec.
-    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
-        match tool {
-            agent_type::TOOL_WRITE => Ok(format!("sandbox:{}", codex::SANDBOX_MODE)),
-            _ => Err(HarnessError::UnsupportedTool {
-                harness: Harness::Codex,
-                tool: tool.to_string(),
-            }),
-        }
-    }
-
-    /// **§3.1's worked example, verbatim, and the reason the sentence exists.** That section names
-    /// this harness as the "coarsest equivalent" case and this string as its record: `codex exec`
-    /// exposes only `--sandbox` and `--add-dir`, so `sandbox:workspace-write` is the whole of the
-    /// constraint a codex child ran under.
-    ///
-    /// **It replaces a hardcoded `["apply_patch", "shell"]`** that `build_contract` wrote for every
-    /// child of every harness. Those are marion-side tool *names*, not a list codex ever checked a
-    /// call against — exactly what §3.1 forbids in as many words: *"echoing marion's own vocabulary
-    /// there would make the field claim a constraint that never existed."*
-    ///
-    /// Constant, and correctly so: `codex::config_toml` compiles that one sandbox mode on every
-    /// node, so there is nothing about this launch that could vary it. A declaration changes
-    /// nothing here for the reason [`Self::tool_name`] gives — it is satisfied, not compiled — and
-    /// the record says the same thing whether or not one arrived, because the constraint did not
-    /// move. `native_tools` still runs, so an unmappable name is refused here as it is in `compile`.
-    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        self.native_tools(spec)?;
-        Ok(vec![format!("sandbox:{}", codex::SANDBOX_MODE)])
-    }
 }
 
 /// Gemini CLI 0.53.0, headless `-p` (§6.4, fixture `tests/fixtures/s12/`).
@@ -1083,26 +937,11 @@ impl GeminiAdapter {
     fn settings_path(spec: &LaunchSpec) -> PathBuf {
         spec.config_dir.join(gemini::SETTINGS_FILE)
     }
-
-    /// The approval mode this launch runs under — the whole of gemini's tool constraint — read
-    /// off [`HarnessAdapter::axes`] so the flag and the audit record derive from one answer.
-    fn approval_mode(&self, spec: &LaunchSpec) -> Result<String, HarnessError> {
-        Ok(self
-            .axes(spec)?
-            .mode
-            .unwrap_or_else(|| gemini::DEFAULT_APPROVAL_MODE.to_string()))
-    }
 }
 
 impl HarnessAdapter for GeminiAdapter {
     fn harness(&self) -> Harness {
         Harness::Gemini
-    }
-
-    /// The same point of §3.4's cross-product as codex: the prompt rides argv and the only reading
-    /// is its `stream-json` NDJSON.
-    fn surfaces(&self) -> ExecutionSurfaces {
-        ExecutionSurfaces::launch_only_with_protocol_events()
     }
 
     /// §3.1's availability axis, in the only form this harness has one: **a mode, not a list.**
@@ -1181,69 +1020,6 @@ impl HarnessAdapter for GeminiAdapter {
             serde_json::to_string_pretty(&json).expect("a Value always serialises"),
         )])
     }
-
-    /// A document in both modes. `GEMINI_CLI_SYSTEM_SETTINGS_PATH` is resolved *independently* of
-    /// `GEMINI_CLI_HOME` (S12's precedence table: two layers, two variables), so live mode drops the
-    /// sandbox home and the injection route survives untouched. There is no `--settings` flag and no
-    /// inline analogue, so this file is the only channel gemini has.
-    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
-        match spec.mcp {
-            McpDeclaration::Marion => McpRoute::Document,
-            McpDeclaration::None => McpRoute::None,
-        }
-    }
-
-    fn marion_tool_name(&self, tool: &str) -> String {
-        // `mcp_<server>_<tool>`, single underscores — **not** Claude Code's `mcp__marion__report`.
-        // §3.1 makes the mapping part of the adapter contract precisely because it differs, and
-        // S12 captured this spelling in a `tool_use` frame: `"tool_name":"mcp_marion_report"`.
-        format!("mcp_{}_{tool}", gemini::MCP_ALIAS)
-    }
-
-    /// `write` → **`write_file`**, measured on 0.53.0: under
-    /// [`gemini::AUTO_EDIT_APPROVAL_MODE`] it appears in `functionDeclarations` with schema
-    /// `{file_path, content}`, and under the default mode it appears nowhere but the prose of the
-    /// system instruction (§11 item 24). The same measurement drove it at a **relative** path and
-    /// the file landed in the node's worktree, so `Invocation.cwd` places it.
-    ///
-    /// `replace` is gemini's *other* edit tool and the same mode restores it, but marion's
-    /// vocabulary has no verb that means it today, so nothing maps there. It is still named by
-    /// [`gemini::is_edit_tool`], which answers about gemini's names rather than marion's.
-    ///
-    /// `read` → **`read_file`**, measured on 0.53.0 (`tests/fixtures/s14/README.md`): it is one of
-    /// the eight `functionDeclarations` present under the **default** approval mode, so the grant is
-    /// a **no-op** and `compile` emits nothing for it — `is_edit_tool("read_file")` is false, which
-    /// is what keeps a reading node out of `auto_edit` and its write tools. Answered anyway, for
-    /// [`HarnessAdapter::tool_name`]'s stated reason: answering is not the same as compiling, and
-    /// making the grant conditional here would narrow what this harness has always been able to do.
-    ///
-    /// s14 also measured that `--allowed-tools` neither gates nor validates on 0.53.0 —
-    /// `--allowed-tools read_file` and `--allowed-tools NotATool` produce byte-identical
-    /// declarations — so there is no flag here for marion to compile even if it wanted one.
-    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
-        match tool {
-            agent_type::TOOL_READ => Ok("read_file".into()),
-            agent_type::TOOL_WRITE => Ok("write_file".into()),
-            _ => Err(HarnessError::UnsupportedTool {
-                harness: Harness::Gemini,
-                tool: tool.to_string(),
-            }),
-        }
-    }
-
-    /// **The approval mode, because on this harness the mode *is* the constraint.** 0.53.0 has no
-    /// `--tools` flag and no per-tool permission list; what decides whether a gemini child can
-    /// change a file is which of `default` / `auto_edit` / `yolo` it runs under, and under the
-    /// first the mutating tools are withheld from `functionDeclarations` entirely.
-    ///
-    /// `approval-mode:` prefixed, on the shape §3.1 gives codex (`sandbox:workspace-write`): the
-    /// axis and its value, so a reader can tell a *mode* from a *tool name* at a glance and never
-    /// mistake this for a per-tool allowlist gemini does not have.
-    ///
-    /// Recorded in **both** states, not only the relaxed one — see [`gemini::DEFAULT_APPROVAL_MODE`].
-    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        Ok(vec![format!("approval-mode:{}", self.approval_mode(spec)?)])
-    }
 }
 
 /// opencode 1.17.3, `run` surface (§6.4, fixture `tests/fixtures/s13/`).
@@ -1285,10 +1061,6 @@ impl OpenCodeAdapter {
 impl HarnessAdapter for OpenCodeAdapter {
     fn harness(&self) -> Harness {
         Harness::OpenCode
-    }
-
-    fn surfaces(&self) -> ExecutionSurfaces {
-        ExecutionSurfaces::launch_only_with_protocol_events()
     }
 
     /// The `provider/model` pair (refused where it is not one, or is marion's own default on a
@@ -1355,68 +1127,6 @@ impl HarnessAdapter for OpenCodeAdapter {
             serde_json::to_string_pretty(&json).expect("a Value always serialises"),
         )])
     }
-
-    /// The one adapter whose route depends on the auth mode: a file under an isolated
-    /// `$XDG_CONFIG_HOME` when marion owns the config surface, and inline
-    /// `OPENCODE_CONFIG_CONTENT` when the operator does.
-    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
-        match (spec.mcp, spec.auth) {
-            (McpDeclaration::None, _) => McpRoute::None,
-            (McpDeclaration::Marion, Auth::Canned) => McpRoute::Document,
-            (McpDeclaration::Marion, Auth::Inherited) => {
-                McpRoute::Environment(opencode::CONFIG_CONTENT_ENV)
-            }
-        }
-    }
-
-    fn marion_tool_name(&self, tool: &str) -> String {
-        // `<serverName>_<toolName>` — a third spelling again (S13, verified live). The JSON-RPC
-        // `tools/call` opencode then makes to the bridge carries the **unprefixed** `report`: that
-        // is the MCP wire layer, not the model-facing name, and conflating the two would put the
-        // wrong identifier into a compiled prompt.
-        format!("{}_{tool}", opencode::MCP_ALIAS)
-    }
-
-    /// `write` → **`write`**, which is the name opencode already declares. Measured off the request
-    /// log of a child spawned through `spawn`: an opencode node's tool list carries `write`, `edit`
-    /// and `bash` alongside marion's MCP tools, with no flag from marion asking for any of them.
-    ///
-    /// So, as on codex, a declaration here is **satisfied rather than newly granted** and `compile`
-    /// emits nothing for it. The judgement call is the same one and lands the same way: opencode's
-    /// config *does* have a per-tool block that could disable these, and using the declaration to
-    /// drive it would silently narrow every opencode node marion spawns today. Opening a route on
-    /// two harnesses is not a licence to close one on a third.
-    ///
-    /// A spelling collision, not a shared vocabulary: marion's `write` and opencode's `write` are
-    /// the same six letters by coincidence, and the mapping is written out rather than defaulted
-    /// so that a future marion verb cannot pass through unmapped.
-    ///
-    /// `read` → **`read`**, the same collision and the same no-op: s14 measured opencode 1.17.3's
-    /// default tool list as `bash, edit, glob, grep, read, skill, task, todowrite, webfetch, write`,
-    /// so the tool is there before marion says anything. `OPENCODE_PERMISSION` *does* gate — s14
-    /// measured `{"read":"deny"}` taking the schema from 10 tools to 9 — which is precisely why
-    /// marion compiles nothing into it: driving that block off the declaration would silently
-    /// narrow every opencode node marion spawns today.
-    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
-        match tool {
-            agent_type::TOOL_READ => Ok("read".into()),
-            agent_type::TOOL_WRITE => Ok("write".into()),
-            _ => Err(HarnessError::UnsupportedTool {
-                harness: Harness::OpenCode,
-                tool: tool.to_string(),
-            }),
-        }
-    }
-
-    /// **The one harness where the honest record is that marion compiled nothing** — see
-    /// [`opencode::NO_COMPILED_TOOL_CONSTRAINT`], which carries the measurement and the argument
-    /// against both an empty list and an invented native spelling.
-    ///
-    /// `native_tools` still runs, so an unmappable name is refused here as it is in `compile`.
-    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        self.native_tools(spec)?;
-        Ok(vec![opencode::NO_COMPILED_TOOL_CONSTRAINT.into()])
-    }
 }
 
 /// GitHub Copilot CLI 1.0.83, headless `-p` (fixture `tests/fixtures/s24/`).
@@ -1463,10 +1173,6 @@ impl CopilotAdapter {
 impl HarnessAdapter for CopilotAdapter {
     fn harness(&self) -> Harness {
         Harness::Copilot
-    }
-
-    fn surfaces(&self) -> ExecutionSurfaces {
-        ExecutionSurfaces::launch_only_with_protocol_events()
     }
 
     /// Both of §3.1's axes, in copilot's two spellings ([`copilot`]'s module docs).
@@ -1563,64 +1269,6 @@ impl HarnessAdapter for CopilotAdapter {
             serde_json::to_string_pretty(&copilot::mcp_config_json(&bridge_env(spec, ctx)))
                 .expect("a Value always serialises"),
         )])
-    }
-
-    /// A document in both modes: `--additional-mcp-config @<file>` *augments* whatever
-    /// `$COPILOT_HOME/mcp-config.json` holds, so live mode — which stops relocating that home —
-    /// changes nothing about where marion's declaration lives.
-    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
-        match spec.mcp {
-            McpDeclaration::Marion => McpRoute::Document,
-            McpDeclaration::None => McpRoute::None,
-        }
-    }
-
-    fn marion_tool_name(&self, tool: &str) -> String {
-        // `<server>-<tool>`, a hyphen — the fifth spelling of one tool (s24, in `tools[]` and
-        // `toolName` alike). The permission pattern for the same tool is a *different* string;
-        // see `copilot::permission_pattern`.
-        copilot::model_tool_name(copilot::MCP_ALIAS, tool)
-    }
-
-    /// `read` → **`view`**, `write` → **`create`**, measured on 1.0.83 (`tests/fixtures/s24/`):
-    /// `--available-tools=marion-report,create` put exactly `create` and `marion-report` in the
-    /// request body, `create` with `--allow-tool=write` landed a file under the node's `-C`, and
-    /// `view` ran with no grant at all. Both take absolute paths per their own descriptions;
-    /// `-C` bounds where they may point (`copilot help permissions`).
-    ///
-    /// `edit` is copilot's *other* write tool — the same `write` kind grants it — and marion's
-    /// vocabulary has no verb that means it, so nothing maps there; [`copilot::is_write_tool`]
-    /// still names it, because that function answers about copilot's names rather than marion's.
-    /// `bash` is unmapped for the reason gemini's `run_shell_command` is: no verb, and no grant
-    /// marion has watched arrive.
-    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
-        match tool {
-            agent_type::TOOL_READ => Ok("view".into()),
-            agent_type::TOOL_WRITE => Ok("create".into()),
-            _ => Err(HarnessError::UnsupportedTool {
-                harness: Harness::Copilot,
-                tool: tool.to_string(),
-            }),
-        }
-    }
-
-    /// The `--allow-tool` patterns, which are what `-p` mode checks a call against — §3.1's first
-    /// branch, as on Claude Code. **Not** the `--available-tools` list: that decides what the model
-    /// sees, and an ungranted visible tool is denied (s24), so it is the weaker of the two
-    /// constraints and recording it would overstate what the node could do.
-    ///
-    /// `allow-tool:` prefixed, on the shape gemini and codex use (`approval-mode:default`,
-    /// `sandbox:workspace-write`): the axis and its value. Here the prefix is load-bearing rather
-    /// than cosmetic — copilot's grant kind for the file tools is spelled `write`, the same six
-    /// letters as marion's own verb, and §3.1 forbids a record that reads as marion's vocabulary.
-    /// `allow-tool:write` is unambiguously the flag's word.
-    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        Ok(self
-            .axes(spec)?
-            .allowed
-            .into_iter()
-            .map(|pattern| format!("allow-tool:{pattern}"))
-            .collect())
     }
 }
 
@@ -1784,10 +1432,6 @@ impl HarnessAdapter for AcpAdapter {
         Harness::Acp
     }
 
-    fn surfaces(&self) -> ExecutionSurfaces {
-        acp::surfaces()
-    }
-
     /// argv is the agent's own, verbatim as S20 launched it, and **nothing else is compiled into
     /// it** — [`acp::SPEC`]'s one row splices [`spec::Field::AgentArgs`] and names no program of
     /// its own, because the program is the agent's.
@@ -1901,13 +1545,6 @@ impl HarnessAdapter for AcpAdapter {
         }
     }
 
-    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
-        match spec.mcp {
-            McpDeclaration::None => McpRoute::None,
-            McpDeclaration::Marion => McpRoute::Session(acp::MCP_SERVERS_KEY),
-        }
-    }
-
     /// The `session/new` request, with marion's bridge declared as a stdio MCP server.
     ///
     /// The env block is [`BridgeEnv::pairs`] — the same derivation every other declaration
@@ -1973,34 +1610,6 @@ impl HarnessAdapter for AcpAdapter {
         }
     }
 
-    /// **Every marion verb is refused, by name.** ACP has no availability axis at all.
-    ///
-    /// The other four answer this with a harness-native name, either a real allowlist entry
-    /// (claude-code) or *"the harness's coarsest equivalent"* — a tool the harness already grants
-    /// (codex's `shell`, opencode's `write`). ACP has neither to offer: nothing in `initialize` or
-    /// `session/new` names, grants or withholds a tool of the agent's own, and the agent's tool
-    /// list is a fact about a vendor this adapter is deliberately blind to. Answering `write` here
-    /// would claim a mapping onto a name marion has never seen this protocol use.
-    ///
-    /// So a `tools:` declaration on an `acp` agent type is [`HarnessError::UnsupportedTool`] and
-    /// the launch stops — which is the honest half of §11 item 24: better a caller who is told no
-    /// than a node that silently has no such tool. It costs nothing today (no built-in agent type
-    /// declares a tool) and it is the difference between an unimplemented axis and a broken one.
-    fn tool_name(&self, tool: &str) -> Result<String, HarnessError> {
-        Err(HarnessError::UnsupportedTool {
-            harness: Harness::Acp,
-            tool: tool.to_string(),
-        })
-    }
-
-    /// §6.7's record: **marion compiled no tool constraint**, for the same reason `tool_name`
-    /// refuses — see [`acp::NO_TOOL_AVAILABILITY_SURFACE`], which carries the S21 measurement.
-    /// Not `[]`, which would read as *"no tool was allowed"* about a node that could run `bash`.
-    fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        self.native_tools(spec)?;
-        Ok(vec![acp::NO_TOOL_AVAILABILITY_SURFACE.into()])
-    }
-
     fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
         self.spelling()
             .map(|s| acp::marion_calls(stdout, s))
@@ -2064,7 +1673,7 @@ mod tests {
     use crate::mcp_bridge;
     use crate::mcp_bridge::{AGENT_TYPE_ENV, DEPTH_ENV};
     use crate::stream::CallOutcome;
-    use crate::surfaces::{ControlTransport, DisplaySurface};
+    use crate::surfaces::{ControlTransport, DisplaySurface, TypedKind};
 
     /// [`McpRoute::verify`]'s four branches, directly. The supervisor's launch path and `marion
     /// doctor --adapter` both hang off this one answer, so each branch is pinned here rather than
@@ -6329,5 +5938,95 @@ mod tests {
             })
             .collect();
         assert_eq!(declared, bridge_env(&acp_spec(), &ctx()).pairs());
+    }
+
+    /// **Every row is a complete, measured declaration** — the whole of what the trait used to
+    /// answer in six hand-written impls, stated as data and checked once.
+    ///
+    /// Each clause below is a guess the table would otherwise invite: a verb outside marion's
+    /// vocabulary, a spelling that does not name marion's server, a route left `None` where a
+    /// declaration was asked for, a per-agent spelling on a harness that is one program, a note
+    /// that names no spike. And the trait's defaults are asserted to read the row, harness by
+    /// harness, so that "the adapter says X" and "the row says X" are one claim.
+    #[test]
+    fn every_row_is_a_complete_measured_declaration() {
+        use crate::spec::{Constraint, McpRoute, Spelling, ToolSpelling};
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            let a = launch_adapter(h).unwrap();
+            assert_eq!(a.harness(), h);
+            assert_eq!(a.surfaces(), row.surfaces.execution(), "{h}");
+            assert_eq!(a.pane_surfaces().is_some(), row.pane.is_some(), "{h}");
+            assert!(
+                row.note.contains('S') || row.note.contains('s'),
+                "{h}: unmeasured row"
+            );
+            for (verb, native) in row.tool_names {
+                assert!(
+                    [agent_type::TOOL_READ, agent_type::TOOL_WRITE].contains(verb),
+                    "{h}: `{verb}` is not marion's vocabulary"
+                );
+                assert_eq!(a.tool_name(verb).as_deref(), Ok(*native), "{h}");
+            }
+            assert!(matches!(
+                a.tool_name("bash"),
+                Err(HarnessError::UnsupportedTool { harness, .. }) if harness == h
+            ));
+            match row.spelling {
+                Spelling::Fixed(spelling) => {
+                    assert_ne!(h, Harness::Acp);
+                    assert!(spelling.spell("report").contains(crate::spec::MCP_ALIAS));
+                    assert_eq!(
+                        a.marion_tool_name("report"),
+                        spelling.spell("report"),
+                        "{h}"
+                    );
+                }
+                Spelling::PerAgent => {
+                    assert_eq!(h, Harness::Acp, "only ACP spells per agent");
+                    assert_eq!(
+                        a.marion_tool_name("report"),
+                        ToolSpelling::ServerUnderscoreTool.spell("report"),
+                        "the bound opencode agent's spelling"
+                    );
+                }
+            }
+            for (auth, route) in [
+                (Auth::Canned, row.mcp.canned),
+                (Auth::Inherited, row.mcp.live),
+            ] {
+                assert_ne!(
+                    route,
+                    McpRoute::None,
+                    "{h}: a declaration always has a route"
+                );
+                let asked = LaunchSpec {
+                    auth,
+                    ..spec_for(h)
+                };
+                assert_eq!(a.mcp_route(&asked), route, "{h} {auth:?}");
+                let none = LaunchSpec {
+                    mcp: McpDeclaration::None,
+                    ..asked
+                };
+                assert_eq!(
+                    a.mcp_route(&none),
+                    McpRoute::None,
+                    "{h}: nothing asked, no route"
+                );
+            }
+            let recorded = a.compiled_permissions(&spec_for(h)).unwrap();
+            match row.constraint {
+                Constraint::Fixed { prefix, value } => {
+                    assert_eq!(recorded, vec![format!("{prefix}{value}")], "{h}")
+                }
+                Constraint::Mode { prefix, .. } | Constraint::Allowed { prefix } => {
+                    assert!(
+                        recorded.iter().all(|r| r.starts_with(prefix)),
+                        "{h}: {recorded:?}"
+                    )
+                }
+            }
+        }
     }
 }

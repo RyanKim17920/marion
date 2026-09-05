@@ -49,7 +49,7 @@ use serde_json::{Value, json};
 use marion_core::harness::Harness;
 
 use crate::caps::Capabilities;
-use crate::spec::{Arg, Field, HarnessSpec};
+use crate::spec::{Arg, Constraint, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces};
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
 };
@@ -62,11 +62,29 @@ use crate::surfaces::{ExecutionSurfaces, TypedKind};
 /// argv rather than as rows here.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Acp,
+    // `Typed(Acp)` control: a bidirectional JSON-RPC session marion can address a turn on.
+    // `StructuredUi`, not `NativePty`: marion owns no terminal for an ACP agent, and `NativePty`
+    // would mint a `PtyWitness` for a process that has none (§11 item 1).
+    surfaces: Surfaces::Headless(TypedKind::Acp),
     program: None,
     argv: &[Arg::Items(Field::AgentArgs)],
     pane: None,
     env: &[],
     stream: None,
+    // **Every marion verb is refused, by name.** ACP has no availability axis at all: nothing in
+    // `initialize` or `session/new` names, grants or withholds a tool of the agent's own, and the
+    // agent's tool list is a fact about a vendor this row is deliberately blind to.
+    tool_names: &[],
+    spelling: Spelling::PerAgent,
+    // The one route that is a pipe rather than a file or an environ: `session/new`'s `mcpServers`.
+    mcp: McpRoutes {
+        canned: McpRoute::Session(MCP_SERVERS_KEY),
+        live: McpRoute::Session(MCP_SERVERS_KEY),
+    },
+    constraint: Constraint::Fixed {
+        prefix: "",
+        value: NO_TOOL_AVAILABILITY_SURFACE,
+    },
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn). The argv of every agent is the one those spikes launched",
@@ -82,7 +100,7 @@ pub const PROTOCOL_VERSION: u64 = 1;
 /// frames, which is `StructuredUi`, and claiming `NativePty` would mint a
 /// [`PtyWitness`](crate::PtyWitness) for a node with no terminal.
 pub fn surfaces() -> ExecutionSurfaces {
-    ExecutionSurfaces::headless(TypedKind::Acp)
+    SPEC.surfaces.execution()
 }
 
 /// The `initialize` request marion sends, as a JSON-RPC frame ready for a newline-delimited pipe.
@@ -268,7 +286,7 @@ fn object_keys(parent: Option<&Value>, field: &str) -> BTreeSet<String> {
 /// The name marion gives its own MCP server in `session/new`. **Model-facing**, not internal: S21
 /// measured `opencode acp` presenting the server's `report` tool to the model as `marion_report`,
 /// so this string is half of what a compiled prompt has to say.
-pub const MCP_SERVER_NAME: &str = "marion";
+pub const MCP_SERVER_NAME: &str = crate::spec::MCP_ALIAS;
 
 /// Why an ACP node with `tools: []` still writes (`Harness::writes_without_a_declaration`).
 ///
@@ -286,51 +304,11 @@ pub const UNBOUND_TOOL_NAME: &str = "acp:no-agent-bound:";
 pub const NO_TOOL_AVAILABILITY_SURFACE: &str =
     "acp:no-tool-availability-surface (marion compiles no constraint; the protocol has none)";
 
-/// How one agent spells an MCP server's tool to its model.
-///
-/// An enum rather than a `&'static str` format string, because the thing being recorded is a
-/// **measurement of an agent**. A variant is added here only when somebody has watched that agent
-/// call a tool — and the reason that rule is not pedantry is the table below, which is three
-/// measurements of the same question with three different answers:
-///
-/// | agent | what the model typed | where |
-/// |---|---|---|
-/// | `opencode acp` 1.17.3 | `marion_report` | S21 |
-/// | `claude-agent-acp` 0.66.0 | `mcp__marion__report` | S22 |
-/// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
-///
-/// s14's finding is that an unknown tool name is *silently ignored*, so an adapter that had
-/// generalised the first form would have compiled a name the other two do not have, watched the
-/// turn end `end_turn`, and recorded a healthy run that called nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolSpelling {
-    /// `<server>_<tool>`. Measured on `opencode acp` 1.17.3 (S21): marion declared a server named
-    /// `marion` offering `report`, and the model called **`marion_report`** — the name appears in
-    /// the `session/update` `tool_call` frame's `title`. The MCP `tools/call` the agent then made
-    /// to the server carries the **unprefixed** `report`, which is the wire layer and not a name
-    /// any model types; the same two-layer split S13 measured on `opencode run`.
-    ServerUnderscoreTool,
-    /// `mcp__<server>__<tool>`. Measured on `@agentclientprotocol/claude-agent-acp` 0.66.0 (S22),
-    /// which is Claude Code's own MCP spelling surfacing one protocol up: the shim puts the flat
-    /// name in `title` and repeats it in `_meta.claudeCode.toolName`.
-    McpDoubleUnderscore,
-    /// `mcp.<server>.<tool>`. Measured on `@agentclientprotocol/codex-acp` 1.1.14 (S22).
-    ///
-    /// This agent is also the one that **does not flatten the call at all**: its `rawInput` is
-    /// `{"server", "tool", "arguments"}`, so the verb's arguments are one level deeper than the
-    /// other two put them. See [`Self::arguments`].
-    McpDotted,
-}
+pub use crate::spec::ToolSpelling;
 
+/// The three spellings ACP agents were measured to use, and where the verb's **arguments** sit
+/// for each — which is not always the `rawInput` itself.
 impl ToolSpelling {
-    pub fn spell(self, tool: &str) -> String {
-        match self {
-            Self::ServerUnderscoreTool => format!("{MCP_SERVER_NAME}_{tool}"),
-            Self::McpDoubleUnderscore => format!("mcp__{MCP_SERVER_NAME}__{tool}"),
-            Self::McpDotted => format!("mcp.{MCP_SERVER_NAME}.{tool}"),
-        }
-    }
-
     /// The verb's **arguments**, given a frame's `rawInput` — which is not always the arguments.
     ///
     /// S22 measured `codex-acp` reporting a marion call as an `execute` kind whose `rawInput` is
@@ -344,7 +322,7 @@ impl ToolSpelling {
     pub fn arguments(self, raw_input: &Value) -> Option<&Value> {
         match self {
             Self::McpDotted => raw_input.get("arguments"),
-            Self::ServerUnderscoreTool | Self::McpDoubleUnderscore => Some(raw_input),
+            _ => Some(raw_input),
         }
         .filter(|a| a.as_object().is_some_and(|o| !o.is_empty()))
     }

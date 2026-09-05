@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
@@ -16,7 +17,10 @@ use crate::grammar::{
     Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
+use crate::spec::{
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    ToolSpelling, Val, When,
+};
 
 /// The settings document's name under the node's config dir — named by [`SYSTEM_SETTINGS_PATH_ENV`]
 /// in [`SPEC`]'s env and written by `GeminiAdapter::config_files`, one spelling for both.
@@ -27,6 +31,7 @@ pub const SETTINGS_FILE: &str = "marion-settings.json";
 /// launches the interactive UI) and not stdin (which is *prepended as context* instead).
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::Gemini,
+    surfaces: Surfaces::LaunchOnly,
     program: Some("gemini"),
     argv: &[
         // Never omitted and never `auto`: the adapter refuses a launch without one.
@@ -82,6 +87,30 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     ],
     stream: Some(&STREAM),
+    // `write` → `write_file`, measured on 0.53.0: under [`AUTO_EDIT_APPROVAL_MODE`] it appears in
+    // `functionDeclarations`, and under the default mode nowhere but the prose of the system
+    // instruction (§11 item 24). `read` → `read_file`, one of the eight declarations present under
+    // the **default** mode (s14), so that grant is a no-op — answered anyway, because making it
+    // conditional would narrow what this harness has always been able to do. s14 also measured
+    // `--allowed-tools` neither gating nor validating on 0.53.0, so there is no flag to compile.
+    tool_names: &[
+        (agent_type::TOOL_READ, "read_file"),
+        (agent_type::TOOL_WRITE, "write_file"),
+    ],
+    // `mcp_<server>_<tool>`, single underscores — S12 captured `"tool_name":"mcp_marion_report"`.
+    spelling: Spelling::Fixed(ToolSpelling::McpSingleUnderscore),
+    // A document in both modes: `GEMINI_CLI_SYSTEM_SETTINGS_PATH` is resolved independently of
+    // `GEMINI_CLI_HOME`, so live mode drops the sandbox home and the injection route survives.
+    mcp: McpRoutes {
+        canned: McpRoute::Document,
+        live: McpRoute::Document,
+    },
+    // On this harness the mode **is** the constraint: under `default` the mutating tools are
+    // withheld from `functionDeclarations` entirely. Recorded in both states.
+    constraint: Constraint::Mode {
+        prefix: "approval-mode:",
+        default: DEFAULT_APPROVAL_MODE,
+    },
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",
@@ -256,7 +285,7 @@ pub fn is_edit_tool(native: &str) -> bool {
 /// The MCP server alias. **It must not contain `_`**: gemini exposes MCP tools as
 /// `mcp_<server>_<tool>`, and the shipped policy-engine docs warn that a fully-qualified name with
 /// extra underscores is mis-parsed and **fails silently** (S12). `marion` is safe.
-pub const MCP_ALIAS: &str = "marion";
+pub const MCP_ALIAS: &str = crate::spec::MCP_ALIAS;
 
 /// The operator's own gemini settings document — the **user** layer, which marion never writes.
 ///

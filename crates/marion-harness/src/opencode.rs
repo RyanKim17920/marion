@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+use marion_core::agent_type;
 use marion_core::harness::Harness;
 use serde_json::{Value, json};
 
@@ -20,7 +21,10 @@ use crate::grammar::{
     Cond, Failure, Name, OnRefusedReport, Pairing, StreamGrammar, Verdict, Where,
 };
 pub use crate::mcp_bridge::BridgeEnv;
-use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
+use crate::spec::{
+    Arg, Constraint, Env, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces,
+    ToolSpelling, Val, When,
+};
 
 /// `$XDG_CONFIG_HOME`'s name under the sandbox — one spelling for [`SPEC`]'s env row and for
 /// [`config_path`], so the document is written where the relocated root is read from.
@@ -49,6 +53,7 @@ const XDG_CONFIG_DIR: &str = "config";
 /// run and §9's two-step group kill are load-bearing for an opencode child.
 pub const SPEC: HarnessSpec = HarnessSpec {
     harness: Harness::OpenCode,
+    surfaces: Surfaces::LaunchOnly,
     program: Some("opencode"),
     argv: &[
         Arg::Lit("run"),
@@ -157,6 +162,30 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         },
     ],
     stream: Some(&STREAM),
+    // `read` → `read`, `write` → `write`: the names opencode already declares. s14 measured
+    // 1.17.3's default tool list as `bash, edit, glob, grep, read, skill, task, todowrite, webfetch,
+    // write`, so a declaration here is **satisfied rather than newly granted** and argv carries
+    // nothing for it. A spelling collision, not a shared vocabulary — the mapping is written out so
+    // a future marion verb cannot pass through unmapped. `OPENCODE_PERMISSION` *does* gate (s14:
+    // `{"read":"deny"}` took the schema from 10 tools to 9), which is precisely why marion compiles
+    // nothing into it: driving it off the declaration would silently narrow every opencode node.
+    tool_names: &[
+        (agent_type::TOOL_READ, "read"),
+        (agent_type::TOOL_WRITE, "write"),
+    ],
+    // `<serverName>_<toolName>` (S13, verified live). The JSON-RPC `tools/call` opencode then makes
+    // carries the **unprefixed** `report`: that is the MCP wire layer, not the model-facing name.
+    spelling: Spelling::Fixed(ToolSpelling::ServerUnderscoreTool),
+    // A file under an isolated `$XDG_CONFIG_HOME` when marion owns the config surface, and inline
+    // `OPENCODE_CONFIG_CONTENT` when the operator does.
+    mcp: McpRoutes {
+        canned: McpRoute::Document,
+        live: McpRoute::Environment(CONFIG_CONTENT_ENV),
+    },
+    constraint: Constraint::Fixed {
+        prefix: "",
+        value: NO_COMPILED_TOOL_CONSTRAINT,
+    },
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",
@@ -210,7 +239,7 @@ pub const STREAM: StreamGrammar = StreamGrammar {
 
 /// The MCP server alias. opencode exposes MCP tools to the model as `<serverName>_<toolName>`, so
 /// this alias is literally half of `marion_report`.
-pub const MCP_ALIAS: &str = "marion";
+pub const MCP_ALIAS: &str = crate::spec::MCP_ALIAS;
 
 /// Inline JSONC config text, a virtual source that is **never written back** to disk.
 ///
