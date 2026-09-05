@@ -10,13 +10,91 @@ use std::path::PathBuf;
 use marion_core::contract::AgentId;
 use serde_json::{Value, json};
 
+use marion_core::harness::Harness;
+
 use crate::auth::Auth;
 use crate::invocation::Invocation;
 pub use crate::mcp_bridge::{
     AGENT_ID_ENV, AGENT_TYPE_ENV, AUTH_ENV, BASE_URL_ENV, DEPTH_ENV, NODE_TOKEN_ENV, READY_FILE_ENV,
 };
+use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
 use crate::stream::{
     CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
+};
+
+/// Claude Code's row. Measured against 2.1.220 (S1, S9, S11) and re-measured on 2.1.222 for the
+/// two tool axes (`tests/fixtures/s14/`); every flag below carries its reason in the doc of the
+/// hand-written compile it was transcribed from, and those reasons are repeated here only where
+/// the *shape* is the surprising part.
+pub const SPEC: HarnessSpec = HarnessSpec {
+    harness: Harness::ClaudeCode,
+    program: Some("claude"),
+    argv: &[
+        Arg::Lit("-p"),
+        Arg::Lit("--output-format"),
+        Arg::Lit("stream-json"),
+        Arg::Lit("--input-format"),
+        Arg::Lit("stream-json"),
+        // MANDATORY with `-p --output-format stream-json`: without it 2.1.220 exits 1 with "When
+        // using --print, --output-format=stream-json requires --verbose" before emitting anything.
+        Arg::Lit("--verbose"),
+        // The availability axis, **emitted even when empty**: `--tools ""` is the documented
+        // "disable all tools" spelling, and every node ran with it before the axis existed. It does
+        // not gate MCP tools.
+        Arg::Joined("--tools", Field::Tools),
+        // The permission axis. marion's tools must be listed here or a denied `spawn` is the result.
+        Arg::Joined("--allowedTools", Field::Allowed),
+        // Without this a non-allowlisted call is auto-denied in-process and no `can_use_tool`
+        // frame ever reaches marion. Absent from --help.
+        Arg::Lit("--permission-prompt-tool"),
+        Arg::Lit("stdio"),
+        // Only the MCP servers marion declared; never the user's.
+        Arg::Lit("--strict-mcp-config"),
+        Arg::Flag("--mcp-config", Field::McpConfig),
+        // No user settings, plugins or hooks leak into a node. This does NOT suppress the
+        // session-title request (§5.5).
+        Arg::Lit("--setting-sources"),
+        Arg::Lit(""),
+        Arg::Flag("--model", Field::Model),
+    ],
+    // The TUI: the same isolation and the same two axes, none of the protocol flags (a pane has an
+    // operator in it, so the permission ask stays the harness's own dialog), and the prompt on
+    // argv — seeded into the composer, not sent, so there is no turn-one race to lose.
+    pane: Some(&[
+        Arg::Joined("--tools", Field::Tools),
+        Arg::Joined("--allowedTools", Field::Allowed),
+        Arg::Lit("--strict-mcp-config"),
+        Arg::Flag("--mcp-config", Field::McpConfig),
+        Arg::Lit("--setting-sources"),
+        Arg::Lit(""),
+        Arg::Flag("--model", Field::Model),
+        Arg::PosIfNonEmpty(Field::Prompt),
+    ]),
+    // NOT `CLAUDE_CONFIG_DIR`: isolating it breaks OAuth, because the Keychain entry is keyed to
+    // the real config dir. The fileless path above is what keeps auth working, and live mode is
+    // therefore *only* the removal of these three — which the neutral fields' live rule does.
+    env: &[
+        Env {
+            key: "ANTHROPIC_BASE_URL",
+            val: Val::Field(Field::BaseUrl),
+            when: When::Always,
+        },
+        Env {
+            key: "ANTHROPIC_AUTH_TOKEN",
+            val: Val::Field(Field::ApiKey),
+            when: When::Always,
+        },
+        // A non-empty key silently wins over the token (§6.4), so it is blanked beside one rather
+        // than left inherited — otherwise a node would present the operator's real key to marion's
+        // endpoint.
+        Env {
+            key: "ANTHROPIC_API_KEY",
+            val: Val::Lit(""),
+            when: When::Present(Field::ApiKey),
+        },
+    ],
+    note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
+           measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };
 
 /// What marion needs to compile a headless invocation — **root or child.**

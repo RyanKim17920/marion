@@ -32,7 +32,6 @@ use std::path::PathBuf;
 
 use marion_core::harness::Harness;
 
-use crate::adapter::{HarnessError, LaunchSpec};
 use crate::auth::Auth;
 use crate::invocation::Invocation;
 
@@ -170,8 +169,8 @@ pub struct Axes {
     pub mode: Option<String>,
 }
 
-/// Everything a row reads. Built by the adapter's `fields` hook from a [`LaunchSpec`] — seeded
-/// neutrally by [`Self::neutral`], then adjusted by whatever that harness has measured.
+/// Everything a row reads. Built by the adapter's `fields` hook — seeded neutrally from the
+/// launch, then adjusted by whatever that harness has measured.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Fields {
     pub cwd: PathBuf,
@@ -197,38 +196,126 @@ pub struct Fields {
 }
 
 impl Fields {
-    /// The launch spec's values, verbatim, with **live mode already applied to the overlay**:
-    /// under [`Auth::Inherited`] no base URL and no credential are carried, on any harness, because
-    /// *"live is a removal"* is one rule and not five.
-    pub fn neutral(spec: &LaunchSpec, axes: Axes) -> Self {
-        let (base_url, api_key) = match spec.auth {
-            Auth::Canned => (spec.base_url.clone(), spec.api_key.clone()),
-            Auth::Inherited => (None, None),
-        };
-        Self {
-            cwd: spec.cwd.clone(),
-            config_dir: spec.config_dir.clone(),
-            auth: spec.auth,
-            prompt: spec.prompt.clone(),
-            model: spec.model.clone(),
-            base_url,
-            api_key,
-            axes,
-            output_schema: spec.extra.output_schema.clone(),
-            output_last_message: spec.extra.output_last_message.clone(),
-            ..Self::default()
+    /// The scalar a field carries, or the list it carries comma-joined — `None` where it carries
+    /// nothing, which for a list means empty.
+    fn value(&self, field: Field) -> Option<String> {
+        let path = |p: &PathBuf| Some(p.to_string_lossy().into_owned());
+        match field {
+            Field::Cwd => path(&self.cwd),
+            Field::ConfigDir => path(&self.config_dir),
+            Field::Model => self.model.clone(),
+            Field::Prompt => Some(self.prompt.clone()),
+            Field::Mode => self.axes.mode.clone(),
+            Field::McpConfig => self.mcp_config.clone(),
+            Field::BaseUrl => self.base_url.clone(),
+            Field::ApiKey => self.api_key.clone(),
+            Field::InlineConfig => self.inline_config.clone(),
+            Field::Title => self.title.clone(),
+            Field::OutputSchema => self.output_schema.as_ref().and_then(path),
+            Field::OutputLastMessage => self.output_last_message.as_ref().and_then(path),
+            Field::Tools | Field::Allowed | Field::Pairs | Field::AgentArgs => {
+                let items = self.items(field);
+                (!items.is_empty()).then(|| items.join(","))
+            }
+        }
+    }
+
+    /// The items of a list field; a scalar is a list of at most one.
+    fn items(&self, field: Field) -> Vec<String> {
+        match field {
+            Field::Tools => self.axes.tools.clone(),
+            Field::Allowed => self.axes.allowed.clone(),
+            Field::Pairs => self.pairs.iter().map(|(k, v)| format!("{k}={v}")).collect(),
+            Field::AgentArgs => self.agent_args.clone(),
+            scalar => self.value(scalar).into_iter().collect(),
         }
     }
 }
 
-/// argv + env for one shape of one row, or the refusal the row states.
-pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation, HarnessError> {
-    let _ = (spec, shape, f);
-    todo!("step 2: the Arg renderer")
-}
-
-/// The row for a harness. **Every harness marion names has one**; a harness without a row is a
-/// compile error here, not a fallback.
-pub fn spec_for(h: Harness) -> &'static HarnessSpec {
-    todo!("step 2: spec_for({h})")
+/// argv + env for one shape of one row, or `None` where the row has no such shape.
+///
+/// `None` is the pane refusal's raw material: the adapter names the harness in the error, because
+/// a pane request answered with the headless launch is the silent downgrade
+/// `HarnessError::NoPaneSurface` exists to refuse.
+pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Option<Invocation> {
+    let argv = match shape {
+        Shape::Headless => spec.argv,
+        Shape::Pane => spec.pane?,
+    };
+    let program = match spec.program {
+        Some(p) => p.to_string(),
+        None => f.program.clone()?,
+    };
+    let mut args: Vec<String> = Vec::new();
+    for arg in argv {
+        match *arg {
+            Arg::Lit(s) => args.push(s.into()),
+            Arg::Flag(flag, field) => {
+                if let Some(v) = f.value(field) {
+                    args.push(flag.into());
+                    args.push(v);
+                }
+            }
+            Arg::FlagEq(flag, field) => {
+                if let Some(v) = f.value(field) {
+                    args.push(format!("{flag}={v}"));
+                }
+            }
+            Arg::Each(flag, field) => {
+                for item in f.items(field) {
+                    args.push(flag.into());
+                    args.push(item);
+                }
+            }
+            Arg::EachEq(flag, field) => {
+                for item in f.items(field) {
+                    args.push(format!("{flag}={item}"));
+                }
+            }
+            Arg::Joined(flag, field) => {
+                args.push(flag.into());
+                args.push(f.items(field).join(","));
+            }
+            Arg::Pos(field) => args.extend(f.value(field)),
+            Arg::PosIfNonEmpty(field) => args.extend(f.value(field).filter(|v| !v.is_empty())),
+            Arg::Items(field) => args.extend(f.items(field)),
+        }
+    }
+    let mut env: Vec<(String, String)> = Vec::new();
+    for row in spec.env {
+        let applies = match row.when {
+            When::Always => true,
+            When::Canned => f.auth == Auth::Canned,
+            When::Present(field) => f.value(field).is_some(),
+        };
+        if !applies {
+            continue;
+        }
+        let value = match row.val {
+            Val::Lit(s) => Some(s.to_string()),
+            Val::Field(field) => f.value(field),
+            Val::Under(rel) => Some(
+                if rel.is_empty() {
+                    f.config_dir.clone()
+                } else {
+                    f.config_dir.join(rel)
+                }
+                .to_string_lossy()
+                .into_owned(),
+            ),
+        };
+        if let Some(v) = value {
+            env.push((row.key.to_string(), v));
+        }
+    }
+    env.extend(f.extra_env.iter().cloned());
+    Some(Invocation {
+        program,
+        args,
+        env,
+        cwd: f.cwd.clone(),
+        // What the row carried, including its absence: the model that reached argv is the one the
+        // hook placed in `Fields::model`, and nothing else is recorded.
+        model: f.model.clone(),
+    })
 }

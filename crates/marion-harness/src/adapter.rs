@@ -367,7 +367,7 @@ pub trait HarnessAdapter {
     /// **The measured logic hook**: everything this harness's [`spec::HarnessSpec`] row reads,
     /// derived from the launch — and every refusal the launch is owed, by name.
     ///
-    /// The default is [`spec::Fields::neutral`] over [`Self::axes`]: the spec's values verbatim,
+    /// The default is [`neutral_fields`] over [`Self::axes`]: the spec's values verbatim,
     /// with live mode's removal of the provider overlay applied. An adapter overrides it to add
     /// what its harness has measured and nothing else — a required model, a derived URL, a
     /// document path — so that the row stays a transcription and this stays the place a reader
@@ -379,7 +379,7 @@ pub trait HarnessAdapter {
         shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
         let _ = (ctx, shape);
-        Ok(spec::Fields::neutral(spec, self.axes(spec)?))
+        Ok(neutral_fields(spec, self.axes(spec)?))
     }
 
     /// The surfaces this harness runs under **when a run asks for a pane**, or `None` where marion
@@ -586,6 +586,42 @@ pub trait HarnessAdapter {
     }
 }
 
+/// The launch spec's values, verbatim, with **live mode already applied to the overlay**: under
+/// [`Auth::Inherited`] no base URL and no credential are carried, on any harness, because *"live
+/// is a removal"* is one rule and not five.
+fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
+    let (base_url, api_key) = match spec.auth {
+        Auth::Canned => (spec.base_url.clone(), spec.api_key.clone()),
+        Auth::Inherited => (None, None),
+    };
+    spec::Fields {
+        cwd: spec.cwd.clone(),
+        config_dir: spec.config_dir.clone(),
+        auth: spec.auth,
+        prompt: spec.prompt.clone(),
+        model: spec.model.clone(),
+        base_url,
+        api_key,
+        axes,
+        output_schema: spec.extra.output_schema.clone(),
+        output_last_message: spec.extra.output_last_message.clone(),
+        ..spec::Fields::default()
+    }
+}
+
+/// The row for a harness (`plan-harness-spec.md`). **Every harness marion names has one**; a
+/// harness without a row is a compile error here, not a fallback.
+pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
+    match h {
+        Harness::ClaudeCode => &claude_code::SPEC,
+        Harness::Codex => todo!("step 4: the codex row"),
+        Harness::Gemini => todo!("step 4: the gemini row"),
+        Harness::OpenCode => todo!("step 4: the opencode row"),
+        Harness::Copilot => todo!("step 4: the copilot row"),
+        Harness::Acp => todo!("step 4: the acp row"),
+    }
+}
+
 /// Object safety and the thread bounds, checked by the compiler. §5.2 requires both and says so of
 /// `ControlPlane` in as many words; the same reasoning reaches every trait the supervisor boxes.
 const _: () = {
@@ -727,6 +763,33 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             base_url,
             api_key,
         }))
+    }
+
+    /// What [`claude_code::SPEC`] reads, plus the one refusal this harness owes the headless
+    /// shape — see [`Self::compile`] for the measurement behind it. The pane shape takes the
+    /// prompt on argv (`claude_code::SPEC`'s `pane` row says where), so it is not refused there.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        if shape == spec::Shape::Headless && !Self::prompt_is_written_after_launch(spec) {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::ClaudeCode,
+                what: "this harness's prompt is written after launch as a user frame, never \
+                       compiled into argv: 2.1.220 does not hold turn one for an --mcp-config \
+                       server, so an argv prompt takes that turn with tools: [] and the run exits \
+                       0 having called nothing. Leave LaunchSpec.prompt empty and write the frame \
+                       after §6.1 step 8's readiness gate",
+            });
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // Claude Code wants the base URL **without** the `/v1` marion stores (it appends
+        // `/v1/messages` itself); the derivation is this harness's and lives beside it.
+        f.base_url = f.base_url.as_deref().map(claude_code::anthropic_base_url);
+        f.mcp_config = Some(Self::mcp_config_path(spec).to_string_lossy().into_owned());
+        Ok(f)
     }
 
     /// §3.4's `opaque`: a pty and nothing else. **Not `interactive`** — that preset also claims
@@ -6134,18 +6197,11 @@ mod tests {
     /// one harness per commit and never asserts over a `todo!()`.
     #[test]
     fn spec_render_matches_the_adapter_that_measured_it() {
-        use crate::spec::{Shape, render, spec_for as row_for};
-        const MIGRATED: &[Harness] = &[
-            Harness::ClaudeCode,
-            Harness::Codex,
-            Harness::Gemini,
-            Harness::OpenCode,
-            Harness::Copilot,
-            Harness::Acp,
-        ];
+        use crate::spec::{Shape, render};
+        const MIGRATED: &[Harness] = &[Harness::ClaudeCode];
         for &h in MIGRATED {
             let a = launch_adapter(h).unwrap();
-            let row = row_for(h);
+            let row = harness_spec(h);
             assert_eq!(
                 row.harness, h,
                 "the row names the harness it was measured on"
@@ -6178,7 +6234,7 @@ mod tests {
                     };
                     let got = a
                         .fields(launch, &ctx(), shape)
-                        .and_then(|f| render(row, shape, &f));
+                        .and_then(|f| render(row, shape, &f).ok_or(HarnessError::NoPaneSurface(h)));
                     assert_eq!(
                         got, expected,
                         "{h} ({mode}, {shape:?}): the row must render exactly what the adapter \
