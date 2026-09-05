@@ -174,6 +174,20 @@ pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
     }
 }
 
+/// Fold one window measurement into `size`, saying whether it moved.
+///
+/// `None` — a pipe, or a tty the kernel has not sized — leaves the last geometry in place: a frame
+/// sized to what the operator was last known to be looking at beats one sized to a guess.
+fn geometry_changed(size: &mut (u16, u16), measured: Option<(u16, u16)>) -> bool {
+    match measured {
+        Some(now) if now != *size => {
+            *size = now;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Build the flattened tree from a snapshot, preserving the selection where the node survives.
 pub fn build(nodes: &[NodeSummary], keep: Option<&str>) -> Tree {
     let mut t = Tree::new(nodes.iter().map(row).collect());
@@ -387,7 +401,14 @@ impl Session {
         // printed onto the alternate screen disappears with it.
         let leave = |t: &Terminal<ScreenBackend>| t.backend().screen().leave();
         let mut buf = [0u8; 256];
+        let mut size = (cols, rows);
         loop {
+            // The window is re-measured every pass rather than on `SIGWINCH`: this loop already
+            // wakes every `POLL` to glance at the keyboard, and one `TIOCGWINSZ` per wake is cheaper
+            // than a handler. `Terminal::draw` reads the backend's size back and clears on change.
+            if geometry_changed(&mut size, marion_tui::guard::window_size(0)) {
+                terminal.backend_mut().set_size(size.0, size.1);
+            }
             self.paint(&mut terminal);
             match self.next_frame() {
                 Ok(Some(frame)) => self.absorb(frame),
@@ -911,6 +932,30 @@ mod tests {
                 .contains(ratatui::style::Modifier::BOLD),
             "a refusal must stand out from the facts"
         );
+    }
+
+    /// **A resize reaches the tree screen while it is up.** The loop measured the window once per
+    /// screen entry, so a tree dragged from 120x40 to 80x24 kept painting a 120-column frame into
+    /// 80 columns until the operator left and came back. The geometry is re-read every pass; a
+    /// window that answers nothing — a pipe — keeps the last known size rather than inventing one.
+    #[test]
+    fn a_resize_is_applied_on_the_next_pass_and_a_pipe_keeps_the_last_geometry() {
+        let mut size = (120, 40);
+        assert!(
+            !geometry_changed(&mut size, Some((120, 40))),
+            "unchanged is not a resize"
+        );
+        assert!(geometry_changed(&mut size, Some((80, 24))));
+        assert_eq!(
+            size,
+            (80, 24),
+            "the new geometry is what the next frame is sized to"
+        );
+        assert!(
+            !geometry_changed(&mut size, None),
+            "no answer is not a resize"
+        );
+        assert_eq!(size, (80, 24));
     }
 
     /// A refresh must not move the cursor out from under the operator.

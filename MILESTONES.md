@@ -1135,6 +1135,9 @@ acceptance evidence, so every marker remains unchanged.
       hands, and the reason is drawn bold in the detail pane until the cursor moves; an attach's
       own refusal lands there too instead of on a stderr the next frame erased.
       `enter_on_a_headless_node_is_refused_in_the_pane_and_a_pane_node_opens`.
+    - The draw loop re-measures the window every pass and resizes the `ScreenBackend`, so a tree
+      dragged to another size repaints at that size instead of at the one it was entered with.
+      `a_resize_is_applied_on_the_next_pass_and_a_pipe_keeps_the_last_geometry`.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
