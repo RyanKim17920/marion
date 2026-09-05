@@ -25,7 +25,7 @@ use marion_core::agent_type::{AgentType, builtin, check_spawn_gates};
 use marion_core::cap::cap_for_return;
 use marion_core::contract::*;
 use marion_core::encoding::{Duration, SystemTime};
-use marion_core::ids::{RAND_BYTES, new_agent_id};
+use marion_core::ids::new_agent_id;
 use marion_core::journal::{
     ContractPersisted, Exited, RecordKind, SpawnAborted, SpawnIntent, Spawned,
 };
@@ -35,6 +35,7 @@ use marion_harness::{
     Auth, ChildExit, Extras, Invocation, LaunchSpec, McpDeclaration, SpawnCtx, adapter_for_type,
 };
 
+pub(crate) use crate::clock::{entropy, unix_millis};
 use crate::duplex::{self, DuplexSpec, LaunchPath, launch_path};
 use crate::spawn::{
     ChildOutcome, SpawnError, build_contract, changed_paths, diff_text, make_worktree,
@@ -667,21 +668,6 @@ fn note_truncated_capture(description: &str) -> String {
          was reaped, so stdout/stderr are a prefix",
         DRAIN_GRACE.as_secs()
     )
-}
-
-/// Fresh entropy for an id. Shared with `root`, which mints the root's `AgentId` the same way.
-pub fn entropy() -> std::io::Result<[u8; RAND_BYTES]> {
-    let mut bytes = [0; RAND_BYTES];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes)
-}
-
-/// Wall-clock milliseconds, the timestamp half of a UUIDv7.
-pub fn unix_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// **The node is over: its contract to disk, then the journal's terminal record.**

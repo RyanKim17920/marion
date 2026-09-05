@@ -379,11 +379,11 @@ pub fn record_permission_denials(
 /// This process's writer identity: pid plus a UUIDv7, so two runs of one pid (recycled after a
 /// reboot, or in a container) never collide.
 pub fn writer_id() -> WriterId {
-    let unique = match crate::run::entropy() {
-        Ok(e) => marion_core::ids::uuid_v7(crate::run::unix_millis(), e),
+    let unique = match crate::clock::entropy() {
+        Ok(e) => marion_core::ids::uuid_v7(crate::clock::unix_millis(), e),
         // Entropy is unavailable only in a state marion cannot run in anyway; the pid alone still
         // separates this writer from a concurrent bridge, which is what the ordinal needs.
-        Err(_) => format!("no-entropy-{}", crate::run::unix_millis()),
+        Err(_) => format!("no-entropy-{}", crate::clock::unix_millis()),
     };
     WriterId(format!("{}-{unique}", std::process::id()))
 }
