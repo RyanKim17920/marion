@@ -560,6 +560,23 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // The version that never exits on a provider hang.
         accepted: &["1.17.3"],
     },
+    PinnedHarness {
+        program: "copilot",
+        // 1.0.83 is the pin: the first version on this machine with BYOK (`COPILOT_PROVIDER_*`),
+        // `--output-format json` and `--acp` at all — the 0.0.367 that Homebrew's npm tree had
+        // installed has none of the three, so nothing about copilot was measurable before it.
+        // Installed 2026-09-05 with `npm i -g @github/copilot@1.0.83`; `brew upgrade copilot-cli`
+        // was tried first and refused because the cask was never what put `copilot` on PATH.
+        //
+        // What was measured on it, every probe against a canned local provider at $0.00: the
+        // `marion-<tool>` MCP spelling in `tools[]` and in `tool.execution_start`, the
+        // `<server>(<tool>)` / `write` permission patterns, `--available-tools` withholding
+        // everything it does not name, the `code: "denied"` shape a call takes without a grant,
+        // the `success: false` + `error.message` shape an `isError` MCP result takes, and
+        // `session.error` + `exitCode: 1` on a provider 500 after five retries. See
+        // `marion_harness::copilot`.
+        accepted: &["1.0.83"],
+    },
 ];
 
 /// The pinned version of `program` — entry zero of its [`PinnedHarness::accepted`].
@@ -582,30 +599,38 @@ pub fn pinned_version(program: &str) -> &'static str {
 /// The first dotted-numeric token in `--version` output, e.g. `2.1.222` out of
 /// `2.1.222 (Claude Code)`.
 ///
-/// **Each of the four formats it differently, so this was measured rather than assumed** (darwin
-/// 25.5.0, 2026-08-04; all four print one line to *stdout* and exit 0):
+/// **Each of the five formats it differently, so this was measured rather than assumed** (darwin
+/// 25.5.0, 2026-08-04 for the first four and 2026-09-05 for copilot; all five print to *stdout*
+/// and exit 0, four of them one line):
 ///
-/// | program    | `--version` prints         |
-/// |------------|----------------------------|
-/// | `claude`   | `2.1.222 (Claude Code)`    |
-/// | `codex`    | `codex-cli 0.146.0`        |
-/// | `gemini`   | `0.53.0`                   |
-/// | `opencode` | `1.17.3`                   |
+/// | program    | `--version` prints                                                       |
+/// |------------|--------------------------------------------------------------------------|
+/// | `claude`   | `2.1.222 (Claude Code)`                                                  |
+/// | `codex`    | `codex-cli 0.146.0`                                                      |
+/// | `gemini`   | `0.53.0`                                                                 |
+/// | `opencode` | `1.17.3`                                                                 |
+/// | `copilot`  | `GitHub Copilot CLI 1.0.83.` then `Run 'copilot update' to check for updates.` |
 ///
-/// Two carry a name and two do not, and the name comes first where it is present — so the rule is
-/// "first token that is digits and dots", which skips `codex-cli` (no leading digit) and takes
-/// `2.1.222` ahead of `(Claude`. `None` is returned for output with no such token, and [`on_path`]
-/// turns that into a failure rather than into a match: a shape this cannot read is a binary this
-/// suite has not identified, which is the `launch_only_root.rs` stub case exactly.
+/// Three carry a name and two do not, and the name comes first where it is present — so the rule
+/// is "first token that is digits and dots", which skips `codex-cli` and `GitHub` (no leading
+/// digit) and takes `2.1.222` ahead of `(Claude`. Copilot ends its sentence with a full stop, so a
+/// **single trailing dot is stripped before the shape is judged** — `1.0.83.` reads as `1.0.83`,
+/// while a bare `1.` strips to `1`, which has no dot and is still rejected as the truncation it
+/// is. `None` is returned for output with no such token, and [`on_path`] turns that into a
+/// failure rather than into a match: a shape this cannot read is a binary this suite has not
+/// identified, which is the `launch_only_root.rs` stub case exactly.
 fn parse_version(output: &str) -> Option<&str> {
     // One complete predicate rather than a `find` plus a `filter`: the two-stage form rejects the
     // *whole output* when its first candidate is a truncated `1.`, instead of reading on.
-    output.split_whitespace().find(|tok| {
-        tok.starts_with(|c: char| c.is_ascii_digit())
-            && !tok.ends_with('.')
-            && tok.contains('.')
-            && tok.chars().all(|c| c.is_ascii_digit() || c == '.')
-    })
+    output
+        .split_whitespace()
+        .map(|tok| tok.strip_suffix('.').unwrap_or(tok))
+        .find(|tok| {
+            tok.starts_with(|c: char| c.is_ascii_digit())
+                && !tok.ends_with('.')
+                && tok.contains('.')
+                && tok.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
 }
 
 /// Is `program` on `PATH`, runnable, **and — for a harness this suite pins — the version these
@@ -1231,16 +1256,22 @@ mod tests {
         assert!(!on_path("marion-no-such-program-anywhere"));
     }
 
-    /// The measured formats, as a test rather than as a comment. Two of the four carry a program
+    /// The measured formats, as a test rather than as a comment. Three of the five carry a program
     /// name and two do not, so a parser that assumed either shape would be wrong about half the
-    /// matrix — and `codex-cli 0.146.0` is the one that punishes "first token".
+    /// matrix — `codex-cli 0.146.0` is the one that punishes "first token", and copilot's
+    /// sentence-final `1.0.83.` is the one that punishes "reject a token ending in a dot".
     #[test]
-    fn the_version_parser_reads_all_four_measured_formats() {
+    fn the_version_parser_reads_all_five_measured_formats() {
         for (raw, want) in [
             ("2.1.222 (Claude Code)\n", "2.1.222"), // claude
             ("codex-cli 0.146.0\n", "0.146.0"),     // codex
             ("0.53.0\n", "0.53.0"),                 // gemini
             ("1.17.3\n", "1.17.3"),                 // opencode
+            // copilot: two lines, and the version ends the first sentence with a full stop.
+            (
+                "GitHub Copilot CLI 1.0.83.\nRun 'copilot update' to check for updates.\n",
+                "1.0.83",
+            ),
         ] {
             assert_eq!(
                 parse_version(raw),
