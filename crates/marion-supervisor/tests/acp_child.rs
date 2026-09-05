@@ -79,6 +79,7 @@ fn fixture(root: &Path) -> Fixture {
 
     let env = Env {
         project_dir: ProjectDir::new(&state, &repo),
+        project_root: repo.clone(),
         state,
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         base_url: Some(server.base_url()),

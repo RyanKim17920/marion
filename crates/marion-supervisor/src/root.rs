@@ -265,6 +265,13 @@ pub struct RootSpec {
     /// answer that attach with *"no display plane"* — a true sentence about a node marion made
     /// headless after being told not to.
     pub pane: bool,
+    /// **A resume, or a fresh run** (`plan-restart-resume.md` step 6). `Some((agent_id, session))`
+    /// relaunches a lost node **under its own id** and hands the harness back the session its
+    /// stream named, through the row's measured resume flag — a launch a `node/resume` reconstructs
+    /// from the node's own journal. `None` is a fresh run, where `prepare` mints a new id. The id
+    /// rides here rather than being minted so a resumed node keeps the identity every other record
+    /// about it already names.
+    pub resume: Option<(AgentId, String)>,
 }
 
 /// The base point of the root's change record, or why there is none (§9).
@@ -604,7 +611,14 @@ pub fn prepare_watched(
     spec: &RootSpec,
     observer: &dyn crate::run::SpawnObserver,
 ) -> Result<RootNode, RootError> {
-    let agent_id = new_agent_id(unix_millis(), entropy()?);
+    // **A resume reuses the node's own id; a fresh run mints one.** The id is minted here for a
+    // fresh run so it is marion's own entropy and never a caller's, and carried in on a resume so
+    // the second `Spawned` lands on the same node every earlier record names — which is the whole
+    // of what a resume is (`registry.rs` folds a second `Spawned` on a known id as generation two).
+    let agent_id = match &spec.resume {
+        Some((id, _)) => id.clone(),
+        None => new_agent_id(unix_millis(), entropy()?),
+    };
     // **Before `create_dir_all`, which is this function's first side effect.** See the doc above.
     let node_token = observer.identified(&agent_id);
     // §2: *"both the supervisor and its state are keyed on the project root (git common-dir,
@@ -756,6 +770,10 @@ pub fn prepare_watched(
             .map(|verb| adapter.marion_tool_name(verb))
             .collect(),
         mcp: McpDeclaration::Marion,
+        // The session this launch resumes, handed to the row's measured resume flag — or `None`
+        // for a fresh run. A row with no measured flag for this shape refuses at `compile`, by
+        // name, rather than starting fresh under the resumed session's id.
+        resume: spec.resume.as_ref().map(|(_, session)| session.clone()),
         base_url: spec.base_url.clone(),
         // On the duplex path the root's credential is the per-run `ANTHROPIC_AUTH_TOKEN` pushed
         // onto the invocation below. On the other three it is **not** an env var marion can push
@@ -778,7 +796,6 @@ pub fn prepare_watched(
         },
         auth: spec.auth,
         config_dir: agent_dir.config_dir(),
-        resume: None,
         extra: Extras::default(),
     };
     let ctx = SpawnCtx {
@@ -2764,6 +2781,7 @@ mod tests {
             auth: Auth::Canned,
             no_change_record: false,
             pane: false,
+            resume: None,
         }
     }
 

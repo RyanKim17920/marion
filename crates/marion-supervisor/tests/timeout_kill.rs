@@ -134,6 +134,7 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
 
     let env = Env {
         project_dir: ProjectDir::new(&state, &repo),
+        project_root: repo.clone(),
         state: state.clone(),
         bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
         base_url: Some(server.base_url()),

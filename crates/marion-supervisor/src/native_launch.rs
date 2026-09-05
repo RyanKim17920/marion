@@ -790,6 +790,7 @@ mod tests {
                 &work.join("project"),
             ),
             state: work.join("state"),
+            project_root: work.join("project"),
             bridge: PathBuf::from("/opt/marion/bin/marion-supervisor"),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             auth: marion_harness::Auth::Canned,

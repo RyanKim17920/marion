@@ -1053,6 +1053,7 @@ fn a_linked_worktree_resolves_to_its_main_repositorys_supervisor_and_journal() {
         no_change_record: true,
         pane: false,
         auth: marion_harness::Auth::Canned,
+        resume: None,
     };
     let from_wt = marion_supervisor::root::prepare(&spec(&wt)).expect("a root prepares");
     let from_main = marion_supervisor::root::prepare(&spec(&main)).expect("a root prepares");

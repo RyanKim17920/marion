@@ -196,6 +196,7 @@ fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
         // marion compiles that one itself.
         no_change_record: setup.no_change_record,
         pane: false,
+        resume: None,
     })
     .expect("the root node prepares");
 

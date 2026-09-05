@@ -629,6 +629,9 @@ pub fn run_stage_three(launch: &Launch) -> Result<(), DetachError> {
     let env = crate::run::Env {
         project_dir: project.clone(),
         state: launch.state_dir.clone(),
+        // §2's key, so a `node/resume` can rebuild a lost root's launch in the repository this
+        // supervisor already serves. Not a spawn input — see the field's doc.
+        project_root: launch.project_root.clone(),
         // The binary this process is, not a name looked up on a `$PATH` a detached process does not
         // have. Same fallback `main::spawn_env` takes, and for the same reason.
         bridge: std::env::current_exe().unwrap_or_else(|_| launch.program.clone()),

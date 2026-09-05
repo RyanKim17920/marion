@@ -1752,6 +1752,22 @@ grouping.
   `false` today — recorded anyway so a pane node's resume stays a checked refusal rather than a
   silent headless relaunch. `SessionWatch::new` carries the shape from the launch path (a root's
   `RootPath::Terminal` is the pane; children are never paned).
+  **2026-09-05 — `node/resume` brings a lost root back.** The handler arm is built: preflight in
+  §7.2/§6.7 order (node exists; is a root at depth 0; is finished — `Orphaned`/`ReapedIdle`/exited,
+  never live; named a session; and its recorded process is provably gone — `AliveAndOurs` killed
+  first with the confirmed group kill `session/quit` uses, `CannotTell` refused, `Gone` proceeds),
+  then `agent/spawn`'s own launch path (`handler::launch_root`, factored out of `spawn_root` so
+  spawn and resume are one launcher) fed a `RootSpec` rebuilt from the node's journal with its own
+  id and session on it. `RootSpec` gains `resume: Option<(AgentId, String)>` (id reused, session
+  handed to the row's measured flag) and `prepare_watched` reuses the id rather than minting one;
+  `run::Env` gains `project_root` so the relaunch runs in the served repo's working tree
+  (`resumable_root_cwd` — the parent of `.git`; a linked worktree's cwd is not yet recovered and is
+  the stated boundary). Tests on the `Owning` fixture:
+  `resume_relaunches_an_orphan_into_its_own_node_id_through_agent_spawns_path` (same id,
+  `spawn_generation` 2, a second real `Spawned` on the journal) and
+  `resume_refuses_when_the_orphans_process_cannot_be_identified` (a live recorded pid with no
+  identity is `CannotTell` → `Conflict`, nothing signalled or launched). `node/resume` no longer
+  answers `Unimplemented`.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.

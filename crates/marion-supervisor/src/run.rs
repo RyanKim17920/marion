@@ -245,6 +245,12 @@ pub struct Env {
     /// and a bridge reads it from its declaration, so both already have it; this is where the two
     /// meet.
     pub state: PathBuf,
+    /// **The project root this supervisor serves** — §2's key, the git common dir. Carried so a
+    /// `node/resume` can reconstruct a lost **root**'s launch, whose cwd and worktree base is
+    /// exactly this directory. It is **not** a spawn input: a child's tree is its own
+    /// [`SpawnRequest::repo`] resolved from the caller's node entry (a linked worktree branches its
+    /// children off its own HEAD, not this one), so nothing on the `agent/spawn` path reads it.
+    pub project_root: PathBuf,
     pub bridge: PathBuf,
     /// The canned provider's base URL, `None` where marion overrides no endpoint (`Auth::Inherited`)
     /// and each harness resolves its own.
@@ -2577,6 +2583,7 @@ mod tests {
         let env = Env {
             project_dir: ProjectDir::new(&state, &repo),
             state: state.clone(),
+            project_root: repo.clone(),
             bridge: PathBuf::from("/bin/marion-supervisor"),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             auth: Auth::Canned,
@@ -2705,6 +2712,7 @@ mod tests {
         let env = Env {
             project_dir: ProjectDir::new(&state, &repo),
             state: state.clone(),
+            project_root: repo.clone(),
             bridge: PathBuf::from("/bin/marion-supervisor"),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             auth: Auth::Canned,
@@ -3119,6 +3127,7 @@ mod tests {
         let env = Env {
             project_dir: ProjectDir::new(&state, &repo),
             state: state.clone(),
+            project_root: repo.clone(),
             bridge: PathBuf::from("/bin/marion-supervisor"),
             base_url: Some("http://127.0.0.1:8099/v1".into()),
             auth: Auth::Canned,

@@ -1245,6 +1245,29 @@ pub struct RegistryHandle {
 /// compilation, argv synthesis, filesystem access, PTY allocation, or launch. Production uses
 /// this same seam; while the native transport gate is closed, its focused test proves the opaque
 /// context is nevertheless threaded through unchanged for the slice that will eventually open it.
+/// **The working tree a resumed root runs in**, from the project root this supervisor serves.
+///
+/// A resume has no `repo` from a client — §8 rebuilds the launch from the node's journal, and the
+/// journal keys on the git common dir (§2), not the working tree. A harness resumes a session only
+/// from the **same cwd** it was created in (claude silently starts fresh otherwise), so the cwd
+/// matters and must be the working tree, not the `.git` directory the socket keys on. For a
+/// standard repository the working tree is the parent of `.git`, which is what this recovers.
+///
+/// **The known limit, stated rather than hidden:** a linked worktree's common dir is not its
+/// working tree's parent, so a root started in one is not yet resumable — its cwd would need
+/// recording. Every root a person starts with `marion run` in a plain checkout is, which is M2's
+/// slice. A `node/resume` of a worktree root reaches the harness with the wrong cwd and the harness
+/// refuses or starts fresh; until the cwd is journaled, that is the honest boundary.
+fn resumable_root_cwd(project_root: &std::path::Path) -> PathBuf {
+    match project_root.file_name() {
+        Some(name) if name == ".git" => project_root
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| project_root.to_path_buf()),
+        _ => project_root.to_path_buf(),
+    }
+}
+
 fn root_spec_from_spawn(
     p: &marion_proto::params::AgentSpawnParams,
     repo: PathBuf,
@@ -1268,6 +1291,9 @@ fn root_spec_from_spawn(
         // Absent is `false` — a node gets a pane because a run asked for one. See
         // `AgentSpawnParams::pane`.
         pane: p.pane.unwrap_or(false),
+        // A client `agent/spawn` is always a fresh run: resume is `node/resume`'s path, which
+        // builds its own `RootSpec` from the node's journal.
+        resume: None,
     }
 }
 
@@ -2933,6 +2959,29 @@ impl RegistryHandle {
             agent_type.timeout.0.as_secs(),
         ));
 
+        let (agent_id, state) = self.launch_root(me, spec, repo, bound)?;
+        Ok(marion_proto::result::AgentSpawnResult {
+            state,
+            agent_id,
+            // §9: a root has no `TaskContract`, so there is no file to name. See
+            // [`NodeHandle::task_id`], which is `None` here for the same reason.
+            task_id: None,
+        })
+    }
+
+    /// **The root launcher, driven from a fully-built [`RootSpec`]** — spawn and resume are one
+    /// launch path, differing only in the spec (`agent/spawn` builds a fresh one, `node/resume`
+    /// reconstructs a node's own with an id and a session on it). The thread owns the node for its
+    /// whole life through [`NodeOwner`]; `repo` is the tree its children branch from. Returns once
+    /// the process exists, with the node's `Spawning` state — the same instant `agent/spawn` and
+    /// `node/resume` both answer at.
+    fn launch_root(
+        &self,
+        me: Arc<RegistryHandle>,
+        spec: crate::root::RootSpec,
+        repo: PathBuf,
+        bound: std::time::Duration,
+    ) -> Result<(AgentId, NodeState), RpcError> {
         let (tx, progress) = std::sync::mpsc::channel();
         let owner = me.clone();
         let join = std::thread::spawn(move || {
@@ -3023,15 +3072,192 @@ impl RegistryHandle {
             Err(_) => return Err(launch_bound_expired(Some(&agent_id))),
         }
         self.live.refresh();
-        Ok(marion_proto::result::AgentSpawnResult {
-            state: self
-                .live
-                .read(|r| r.tree().get(&agent_id).map(|n| n.state))
-                .unwrap_or(NodeState::Spawning),
+        let state = self
+            .live
+            .read(|r| r.tree().get(&agent_id).map(|n| n.state))
+            .unwrap_or(NodeState::Spawning);
+        Ok((agent_id, state))
+    }
+
+    /// **`node/resume` — relaunch a lost node under its own id** (`plan-restart-resume.md` step 6).
+    ///
+    /// §8's rule is that a lost session is *relaunched*, never re-opened: the process died with the
+    /// supervisor that held it, and every harness's resume starts a **new** process against the
+    /// single-writer transcript. So this is not `node/prompt` reaching a live channel — there is
+    /// none — it is `agent/spawn`'s own launch path fed a [`RootSpec`] rebuilt from the node's
+    /// journal, with the node's own id and the session its stream named carried onto it.
+    ///
+    /// The preflight is in the order §7.2 and §6.7 impose, each refusal naming the node rather than
+    /// guessing past it:
+    ///
+    /// 1. the node exists;
+    /// 2. it is a root (depth 0) — a child's tree is a worktree its parent entitled, not recorded
+    ///    where a resume could rebuild it, so a child resume is refused by name for now;
+    /// 3. its process is finished — an `Orphaned`/`ReapedIdle`/exited node — never a live one;
+    /// 4. its stream named a session, else there is nothing to resume and the refusal says so;
+    /// 5. its recorded process is provably not still running: `AliveAndOurs` is killed first (the
+    ///    same confirmed group kill `session/quit` uses), `CannotTell` refuses rather than risk a
+    ///    second live process against one transcript, `Gone` proceeds.
+    fn node_resume(
+        &self,
+        p: &marion_proto::params::NodeResumeParams,
+        peer: Peer,
+    ) -> Result<marion_proto::result::NodeResumeResult, RpcError> {
+        // A resume starts work under a root's authority — the same filesystem-permission gate
+        // `agent/spawn`'s root path answers, for the same reason (a resumed root has an id, but the
+        // caller asking to resume it is not that node).
+        root_spawn_authorized(peer)?;
+        let me = self.me.upgrade().ok_or_else(|| {
+            RpcError::internal(
+                "this supervisor is being dropped and will not relaunch a node it could not own",
+            )
+        })?;
+        let Some(env) = self.spawn_env.clone() else {
+            return Err(RpcError::unimplemented(
+                "node/resume",
+                "this handle describes nodes and owns none, so there is no environment to relaunch \
+                 one in. A detached supervisor built by `RegistryHandle::owning` serves this.",
+                "§2",
+            ));
+        };
+        self.live.refresh();
+        let node = self
+            .live
+            .read(|r| r.tree().get(&p.agent_id).cloned())
+            .ok_or_else(|| {
+                RpcError::refused(
+                    "agent_id",
+                    format!(
+                        "no node `{}` is on this project's journal, so there is nothing to resume.",
+                        p.agent_id.0
+                    ),
+                    "§2, §7.2",
+                )
+            })?;
+        if node.depth() != Some(0) {
+            return Err(RpcError::refused(
+                "agent_id",
+                format!(
+                    "`{}` is a child at depth {}, and resume is a root operation: a child runs in a \
+                     worktree its parent entitled, which the journal does not record where a \
+                     relaunch could rebuild it. Refused by name rather than relaunched in the wrong \
+                     tree (§6.6).",
+                    p.agent_id.0,
+                    node.depth().map(|d| d as i64).unwrap_or(-1),
+                ),
+                "§6.6, §7.2",
+            ));
+        }
+        // **A live node is not resumed — it is attached to.** Only a node whose fate is decided (an
+        // orphan the last restart marked, an idle node deliberately reaped, or one that exited) has
+        // a process to relaunch in place of.
+        let resumable = matches!(node.reap_state, ReapState::Orphaned | ReapState::ReapedIdle)
+            || node.state.is_exited();
+        if !resumable {
+            return Err(RpcError::refused(
+                "agent_id",
+                format!(
+                    "`{}` is still live ({:?}); marion holds its channel, so a new turn is \
+                     `node/prompt` and reaching it is `node/attach`. Resume relaunches a node whose \
+                     process is gone, never one that is running.",
+                    p.agent_id.0, node.state,
+                ),
+                "§8, §7.2",
+            ));
+        }
+        let Some(session) = node.harness_session.clone() else {
+            return Err(RpcError::refused(
+                "agent_id",
+                format!(
+                    "`{}` named no harness session — its stream never carried one, or it ran on a \
+                     harness marion reads no session from — so marion cannot hand a resume back to \
+                     the harness. Refused by name rather than started fresh under a resumed \
+                     session's id, which would misdescribe the run.",
+                    p.agent_id.0
+                ),
+                "§8",
+            ));
+        };
+        // **The recorded process must be provably not still running before a second one is started
+        // against the same single-writer transcript** (principle 8). A node with no recorded pid
+        // never reached `command.spawn()` under the lost supervisor, so there is nothing to signal.
+        if let Some(pid) = node.pid {
+            match crate::procid::resolve(node.start_id.as_ref(), crate::procid::read(pid)) {
+                crate::procid::Resolution::AliveAndOurs => {
+                    self.journal_append(RecordKind::KillIntent(KillIntent {
+                        agent_id: node.agent_id.clone(),
+                        was: node.state,
+                    }))
+                    .map_err(journal_failure_before_signal)?;
+                    if !self.runtime.kill_process_tree_and_wait(pid) {
+                        return Err(RpcError::internal(format!(
+                            "`{}` was still running its own process and marion journaled the intent \
+                             to kill it before resuming, but could not observe its PID dead; the \
+                             intent remains unconfirmed and marion will not start a second process \
+                             against one transcript (§6.7, §8)",
+                            node.agent_id.0
+                        )));
+                    }
+                    self.journal_append(RecordKind::KillConfirmed(KillConfirmed {
+                        agent_id: node.agent_id.clone(),
+                        exit: ProcessExit {
+                            code: None,
+                            signal: Some(9),
+                            description: "marion sent SIGKILL to the surviving process before \
+                                          resuming its node"
+                                .into(),
+                        },
+                    }))
+                    .map_err(journal_failure_after_signal)?;
+                }
+                crate::procid::Resolution::CannotTell(_) => {
+                    return Err(RpcError::conflict(
+                        &node.agent_id.0,
+                        "marion cannot prove `node`'s recorded process is gone — a process wears \
+                         its PID and no recorded identity settles whether it is the same one — so \
+                         it will not start a second process that might run against a transcript a \
+                         first is still writing. Nothing was signalled or launched.",
+                        "§6.7, §8",
+                    ));
+                }
+                crate::procid::Resolution::Gone => {}
+            }
+        }
+        // §6.1 step 5's type resolution, for the wall clock the relaunch runs under — the same
+        // number `marion run` and `agent/spawn` resolve, from the node's own recorded type.
+        let agent_type = node
+            .agent_type()
+            .and_then(agent_type::builtin)
+            .ok_or_else(spawn_refused_before_the_node_existed)?;
+        let bound = std::time::Duration::from_secs(crate::root::blocked_bound_secs(
+            None,
+            agent_type.timeout.0.as_secs(),
+        ));
+        let repo = resumable_root_cwd(&env.project_root);
+        let spec = crate::root::RootSpec {
+            agent_type: node.agent_type().unwrap_or_default().to_string(),
+            prompt: p.prompt.clone(),
+            native_launch: None,
+            repo: repo.clone(),
+            state: env.state.clone(),
+            base_url: env.base_url.clone(),
+            bridge: env.bridge.clone(),
+            model: node.model.clone(),
+            no_change_record: false,
+            auth: env.auth,
+            // **From the recorded value, never inferred** (`plan-restart-resume.md` step 6): the
+            // shape the node's session was observed in. A pane names no session, so a resumable
+            // node is always headless today; the field keeps that a checked fact.
+            pane: node.harness_pane,
+            resume: Some((node.agent_id.clone(), session)),
+        };
+        let (agent_id, state) = self.launch_root(me, spec, repo, bound)?;
+        Ok(marion_proto::result::NodeResumeResult {
             agent_id,
-            // §9: a root has no `TaskContract`, so there is no file to name. See
-            // [`NodeHandle::task_id`], which is `None` here for the same reason.
-            task_id: None,
+            state,
+            // The lifetime this relaunch begins: replay folds a second `Spawned` as generation two,
+            // so the count the caller reads is the recorded one plus this launch.
+            spawn_generation: node.spawn_generation + 1,
         })
     }
 
@@ -3554,6 +3780,9 @@ impl Handle for RegistryHandle {
             Call::SessionQuit(p) => self
                 .session_quit(&p.disposition)
                 .map(MethodResult::SessionQuit),
+            Call::NodeResume(p) => self
+                .node_resume(p, out.peer())
+                .map(MethodResult::NodeResume),
             // Everything else is specified and not built. `Unimplemented` and not `Unsupported`,
             // per `error.rs`: the gap is marion's, not the harness's, and the operator's next move
             // is to check the milestone rather than the node.
@@ -3561,8 +3790,8 @@ impl Handle for RegistryHandle {
                 other.method().as_str(),
                 format!(
                     "`{}` is specified (§2) and not built. This supervisor answers `node/get`, \
-                     `tree/subscribe`, `node/attach`, `agent/spawn` and `session/quit`; the \
-                     remaining ten methods land with the milestone that needs them.",
+                     `tree/subscribe`, `node/attach`, `agent/spawn`, `session/quit` and \
+                     `node/resume`; the remaining methods land with the milestone that needs them.",
                     other.method().as_str()
                 ),
                 "§2",
@@ -9386,6 +9615,7 @@ mod tests {
                 crate::run::Env {
                     project_dir: project.clone(),
                     state: state.clone(),
+                    project_root: crate::socket::project_root(&repo),
                     bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
                     // Answers nothing, which is what bounds the two tests below that really launch.
                     base_url: Some("http://127.0.0.1:8099/v1".into()),
@@ -10398,6 +10628,7 @@ mod tests {
                 crate::run::Env {
                     project_dir: project.clone(),
                     state: state.clone(),
+                    project_root: crate::socket::project_root(&main),
                     bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
                     base_url: Some("http://127.0.0.1:8099/v1".into()),
                     auth: marion_harness::Auth::Canned,
@@ -10630,6 +10861,168 @@ mod tests {
             )
             .expect("the spawn is admitted and a process starts")
             .agent_id
+        }
+
+        /// An `Owning` fixture whose records are on disk **before** the registry boots — the
+        /// inverse of [`owning`]'s order — so a node still `Live` at boot is one this supervisor
+        /// never decided the fate of and the boot restart pass marks it `Orphaned` (§7.2). This is
+        /// how a resume gets an orphan to relaunch.
+        fn orphaning(tag: &str, records: Vec<RecordKind>) -> Owning {
+            let dir = scratch(tag);
+            let repo = fixture_repo(&dir);
+            let state = dir.join("state");
+            let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
+            std::fs::create_dir_all(project.path()).unwrap();
+            let journal = project.journal();
+            for (seq, kind) in records.into_iter().enumerate() {
+                append(&journal, &line(seq as u64, 1_000 + seq as u64, kind));
+            }
+            let live = Arc::new(crate::registry::LiveRegistry::follow(
+                Registry::boot_path(&journal).unwrap(),
+                std::time::Duration::from_millis(2),
+            ));
+            let handle = RegistryHandle::owning(
+                live,
+                crate::run::Env {
+                    project_dir: project.clone(),
+                    state: state.clone(),
+                    project_root: crate::socket::project_root(&repo),
+                    bridge: std::path::PathBuf::from("/bin/marion-supervisor"),
+                    base_url: Some("http://127.0.0.1:8099/v1".into()),
+                    auth: marion_harness::Auth::Canned,
+                },
+            );
+            Owning {
+                handle,
+                project,
+                repo,
+                _dir: dir,
+            }
+        }
+
+        /// The records of a lost claude root: its intent, a `Spawned` with **no pid** (nothing to
+        /// signal on relaunch), and the session its stream named. Booted through [`orphaning`],
+        /// this replays `Orphaned` with `harness_session` set — exactly what resume requires.
+        fn lost_root(
+            session: &str,
+            pid: Option<i32>,
+            start_id: Option<marion_core::node::StartId>,
+        ) -> Vec<RecordKind> {
+            vec![
+                intent("root", None, "claude", 0),
+                RecordKind::Spawned(marion_core::journal::Spawned {
+                    agent_id: id("root"),
+                    harness_version: "test".into(),
+                    model: None,
+                    pid,
+                    start_id,
+                }),
+                RecordKind::SessionObserved(marion_core::journal::SessionObserved {
+                    agent_id: id("root"),
+                    harness: Harness::ClaudeCode,
+                    session_id: session.into(),
+                    pane: false,
+                }),
+            ]
+        }
+
+        fn resume(
+            fx: &Owning,
+            agent_id: AgentId,
+            prompt: &str,
+        ) -> Result<marion_proto::result::NodeResumeResult, RpcError> {
+            let out = crate::serve::sink(ConnId(3));
+            match fx.handle.call(
+                ConnId(3),
+                &Call::NodeResume(marion_proto::params::NodeResumeParams {
+                    agent_id,
+                    prompt: prompt.into(),
+                }),
+                &out,
+            )? {
+                MethodResult::NodeResume(r) => Ok(r),
+                other => panic!("wrong result: {}", other.method().as_str()),
+            }
+        }
+
+        /// **A resume relaunches an orphan into its own id, through `agent/spawn`'s launch path.**
+        ///
+        /// The orphan's process is gone (no pid), so the preflight proceeds straight to the
+        /// launcher; `node/resume` answers with the **same** agent id and the next
+        /// `spawn_generation`, and a second `Spawned` for that id lands on the one journal — replay
+        /// then folds it as generation two. Nothing about the launch is a new node.
+        #[test]
+        fn resume_relaunches_an_orphan_into_its_own_node_id_through_agent_spawns_path() {
+            let fx = orphaning("resume-relaunch", lost_root("sess-relaunch", None, None));
+            // The orphan is what a resume is for: fate marked, a session to hand back.
+            let before = fx
+                .handle
+                .call(
+                    ConnId(9),
+                    &Call::NodeGet(marion_proto::params::NodeGetParams {
+                        agent_id: id("root"),
+                    }),
+                    &crate::serve::sink(ConnId(9)),
+                )
+                .expect("the orphan is on the tree");
+            let MethodResult::NodeGet(before) = before else {
+                panic!("node/get")
+            };
+            assert_eq!(before.node.reap_state, ReapState::Orphaned);
+
+            let r = resume(&fx, id("root"), "carry on from here").expect("the orphan relaunches");
+            assert_eq!(r.agent_id, id("root"), "the node keeps its own id");
+            assert_eq!(r.spawn_generation, 2, "the second lifetime of one node");
+            settle(&fx, &id("root"));
+
+            let journalled = std::fs::read_to_string(fx.project.journal()).unwrap();
+            let spawns = journalled
+                .lines()
+                .filter(|l| {
+                    let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                    v["kind"]["Spawned"]["agent_id"] == serde_json::json!("root")
+                })
+                .count();
+            assert_eq!(
+                spawns, 2,
+                "the relaunch wrote a second `Spawned` for the same id:\n{journalled}"
+            );
+            assert_eq!(
+                marion_core::registry::replay(journalled.as_bytes())
+                    .get(&id("root"))
+                    .unwrap()
+                    .spawn_generation,
+                2,
+                "replay folds the second spawn as generation two"
+            );
+        }
+
+        /// **A resume refuses when the orphan's own process cannot be proven gone.** A recorded pid
+        /// that is still alive with no recorded identity is `procid::CannotTell`: marion will not
+        /// start a second process that might run against a transcript a first is still writing, so
+        /// it refuses and launches nothing.
+        #[test]
+        fn resume_refuses_when_the_orphans_process_cannot_be_identified() {
+            // This test's own pid is alive, and the orphan recorded no start identity — so a probe
+            // of it reads a live process marion cannot prove is or is not the node's.
+            let fx = orphaning(
+                "resume-cannot-tell",
+                lost_root("sess-cannot", Some(std::process::id() as i32), None),
+            );
+            let before = journal_len(&fx);
+            let e = resume(&fx, id("root"), "carry on")
+                .expect_err("an unprovable process blocks the resume");
+            assert_eq!(e.kind(), Some(FailureKind::Conflict), "{e:?}");
+            assert!(
+                e.message.contains("cannot prove"),
+                "the refusal names why: {}",
+                e.message
+            );
+            assert_eq!(
+                journal_len(&fx),
+                before,
+                "nothing was signalled or launched, so nothing was journaled"
+            );
         }
 
         /// **The response's `state` is a claim the journal already backs.**
