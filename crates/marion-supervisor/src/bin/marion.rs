@@ -33,6 +33,8 @@ fn usage_text() -> String {
         "usage: marion                                (interactive: pick harness, model, prompt)\n\
          \x20      marion attach <agent-id> [--repo <path>] [--state-dir <path>]\n\
          \x20      marion tree [--repo <path>] [--state-dir <path>]\n\
+         \x20      marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]\n\
+         \x20                 [--canned [--base-url <url>]]\n\
          \x20      marion run <agent-type> --prompt <text> [--repo <path>] [--state-dir <path>]\n\
          \x20                 [--model <name>] [--timeout <secs>] [--no-change-record]\n\
          \x20                 [--pane] [--canned [--base-url <url>]]\n\
@@ -195,6 +197,180 @@ fn attach_main(argv: &[String]) -> ExitCode {
             // After the `Screen` guard has restored the terminal — `Session::drop` runs before
             // this returns — so the sentence lands on the operator's real screen rather than on
             // an alternate one that is about to disappear.
+            eprintln!("marion: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `marion resume <agent-id> [--prompt <text>] [--repo <path>] [--state-dir <path>]
+/// [--canned [--base-url <url>]]`.
+struct ResumeArgs {
+    agent_id: String,
+    prompt: String,
+    repo: Option<PathBuf>,
+    state_dir: Option<String>,
+    base_url: Option<String>,
+    canned: bool,
+}
+
+/// A third small parser, for [`parse_attach`]'s reason: resume takes a prompt and the auth flags an
+/// attach never has, and widening one parser to hold both is how a flag ends up accepted by a verb
+/// that ignores it. It shares only the two project flags, which every verb keying on §2's socket
+/// must resolve the same way.
+fn parse_resume(argv: &[String]) -> Option<ResumeArgs> {
+    let agent_id = argv.get(1)?.clone();
+    if agent_id.starts_with('-') {
+        return None;
+    }
+    let mut args = ResumeArgs {
+        agent_id,
+        prompt: String::new(),
+        repo: None,
+        state_dir: None,
+        base_url: None,
+        canned: false,
+    };
+    let mut rest = argv[2..].iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--prompt" => args.prompt = rest.next()?.clone(),
+            "--repo" => args.repo = Some(PathBuf::from(rest.next()?)),
+            "--state-dir" => args.state_dir = Some(rest.next()?.clone()),
+            "--base-url" => args.base_url = Some(rest.next()?.clone()),
+            "--canned" => args.canned = true,
+            // An unknown flag is a refusal, for `parse_attach`'s reason.
+            _ => return None,
+        }
+    }
+    Some(args)
+}
+
+/// **The whole of `marion resume`, from argv to exit code** (`plan-restart-resume.md` step 7).
+///
+/// **Why resume may start a supervisor where attach may not.** `attach` refuses to start one on
+/// purpose: a supervisor started fresh has no record of the node, so it would answer `not found`
+/// about marion rather than about the node, and the operator would be told their live node is gone.
+/// Resume is the opposite case *by definition*: the node it brings back is one whose supervisor
+/// **died with it**, so there is deliberately no supervisor to dial, and starting one is not a
+/// silent fallback — it is the operation. The relaunch reads the node from the on-disk journal the
+/// new supervisor boots over, so the node is exactly as re-findable as it was before.
+fn resume_main(argv: &[String]) -> ExitCode {
+    let Some(args) = parse_resume(argv) else {
+        usage()
+    };
+    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
+        return ExitCode::FAILURE;
+    };
+    let base_url = match resolve_base_url(
+        args.canned,
+        args.base_url.clone(),
+        std::env::var("MARION_BASE_URL").ok(),
+    ) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("marion: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let auth = if args.canned {
+        marion_harness::Auth::Canned
+    } else {
+        marion_harness::Auth::Inherited
+    };
+    let bridge = match std::env::current_exe().map(|p| p.with_file_name("marion-supervisor")) {
+        Ok(p) if p.exists() => p,
+        _ => PathBuf::from("marion-supervisor"),
+    };
+    let project_key = socket::project_root(&repo);
+    let sock = socket::socket_paths(&state, &project_key, uid());
+    let ensured = match detach::ensure_supervisor(
+        &sock,
+        &detach::Launch {
+            program: bridge,
+            state_dir: state.clone(),
+            project_root: project_key,
+            idle_grace: RUN_IDLE_GRACE,
+            auth,
+            base_url,
+        },
+    ) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{}", supervisor_unreachable(sock.socket(), &e.to_string()));
+            return ExitCode::FAILURE;
+        }
+    };
+    let started = ensured.started;
+    let lines = match ensured.stream.try_clone() {
+        Ok(half) => io::BufReader::new(half),
+        Err(e) => {
+            eprintln!(
+                "{}",
+                supervisor_unreachable(
+                    sock.socket(),
+                    &format!("its connection could not be split for reading: {e}")
+                )
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut session = SupervisorSession {
+        stream: ensured.stream,
+        lines,
+        socket: sock.socket().to_path_buf(),
+        next_id: 1,
+    };
+    let resumed = (|| -> Result<marion_proto::result::NodeResumeResult, String> {
+        let id = session.send(marion_proto::Call::NodeResume(
+            marion_proto::params::NodeResumeParams {
+                agent_id: marion_core::contract::AgentId(args.agent_id.clone()),
+                prompt: args.prompt.clone(),
+            },
+        ))?;
+        match session.pump(Awaited::Response(id), &mut |_| {})? {
+            marion_proto::Outcome::Result(body) => {
+                match marion_proto::Method::NodeResume.decode_result(&body) {
+                    Ok(marion_proto::MethodResult::NodeResume(r)) => Ok(r),
+                    _ => Err(
+                        "marion: this project's supervisor answered `node/resume` with a \
+                              result marion cannot read"
+                            .to_string(),
+                    ),
+                }
+            }
+            marion_proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
+        }
+    })();
+    let resumed = match resumed {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{e}");
+            // **If this command is what started the supervisor, it is what ends it.** A resume that
+            // could not happen must not leave a supervisor an operator did not have before — the
+            // node it was for is still gone, and an empty supervisor lingering out its idle grace
+            // is a surprise, not a service. A supervisor that was already serving is left alone.
+            if started {
+                let _ = session.send(marion_proto::Call::SessionQuit(
+                    marion_proto::params::SessionQuitParams {
+                        disposition: marion_proto::QuitDisposition::KillTree { confirmed: vec![] },
+                    },
+                ));
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    eprintln!(
+        "marion: resumed {} (generation {})",
+        resumed.agent_id.0, resumed.spawn_generation
+    );
+    // Hand off to the same live view an attach gives — `attach::Session::pump` — now that the
+    // supervisor is serving the relaunched node. The resume session's `Drop` detaches (§7.3.1
+    // leaves the node untouched), so the supervisor keeps running for the attach to watch.
+    drop(session);
+    match marion_supervisor::attach::run(&resumed.agent_id.0, &repo, &state) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
             eprintln!("marion: {e}");
             ExitCode::FAILURE
         }
@@ -1580,6 +1756,9 @@ fn legacy_main() -> ExitCode {
     }
     if argv.first().map(String::as_str) == Some("tree") {
         return tree_main(&argv);
+    }
+    if argv.first().map(String::as_str) == Some("resume") {
+        return resume_main(&argv);
     }
     // **Before the run parser, and it never falls through to it.** `mcp` speaks JSON-RPC on stdout
     // from its first line; a mistyped flag that reached `parse_args` would print usage text onto

@@ -1768,6 +1768,16 @@ grouping.
   `resume_refuses_when_the_orphans_process_cannot_be_identified` (a live recorded pid with no
   identity is `CannotTell` → `Conflict`, nothing signalled or launched). `node/resume` no longer
   answers `Unimplemented`.
+  **2026-09-05 — `marion resume` is the CLI verb.** `resume <agent-id> [--prompt] [--repo]
+  [--state-dir] [--canned [--base-url]]` (bin/marion.rs `resume_main`/`parse_resume`, dispatched
+  before the run parser). Unlike `attach`, it **starts a supervisor when none serves** — a resumed
+  node's supervisor died with it, so there is deliberately none to dial and starting one, which
+  boots over the on-disk journal, is the operation rather than a silent fallback (documented at the
+  call site). It `detach::ensure_supervisor`s, sends `node/resume`, and on success hands off to
+  `attach::run` (reusing `attach::Session::pump`) to watch the relaunched node; a resume that could
+  not happen and had started the supervisor quits it again rather than leave one lingering.
+  `attach_verb.rs::resume_is_dispatched_and_starts_a_supervisor_when_none_serves` is the test, RED
+  with `usage: marion` (the verb fell through to the run parser) before the arm existed.
 - **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.

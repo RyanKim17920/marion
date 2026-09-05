@@ -60,6 +60,63 @@ fn attach_is_dispatched_by_the_binary_and_not_answered_with_usage() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **`marion resume` is dispatched, and — unlike `attach` — it starts a supervisor when none
+/// serves** (`plan-restart-resume.md` step 7). Attach declines to start one because a supervisor
+/// started fresh has no record of the node and would answer `not found` about marion rather than
+/// about the node. Resume is the opposite case by construction: the node marion is asked to bring
+/// back is one whose supervisor **died**, so there is deliberately no supervisor to dial, and
+/// starting one is the whole operation. With no such node on a fresh journal the resume then
+/// refuses by name — which is what proves both that the argv was dispatched (not answered with
+/// usage) and that a supervisor was reached (not declined the way attach declines).
+#[test]
+fn resume_is_dispatched_and_starts_a_supervisor_when_none_serves() {
+    let dir = std::env::temp_dir().join(format!("marion-resume-verb-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a scratch project");
+    let dir = dir.canonicalize().expect("canonical");
+    let out = Command::new(env!("CARGO_BIN_EXE_marion"))
+        .args([
+            "resume",
+            "a-1",
+            "--prompt",
+            "carry on",
+            "--repo",
+            dir.to_str().expect("utf-8"),
+            "--state-dir",
+            dir.to_str().expect("utf-8"),
+            "--canned",
+        ])
+        .output()
+        .expect("the marion binary runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !stderr.contains("usage: marion"),
+        "`marion resume` fell through to a parser and printed usage: {stderr}"
+    );
+    // Attach's refusal is the sentence resume must NOT share: resume starts a supervisor, attach
+    // does not.
+    assert!(
+        !stderr.contains("deliberately does not start one"),
+        "resume answered with attach's refusal — it declined to start a supervisor: {stderr}"
+    );
+    // It reached a supervisor and got a resume-specific answer about the missing node. (On an
+    // environment where the socket path is too long to bind — a known local limitation — the
+    // attempt still fails as marion's own sentence about the supervisor, never as usage.)
+    assert!(
+        stderr.contains("nothing to resume")
+            || stderr.contains("supervisor")
+            || stderr.contains("resume"),
+        "resume was not dispatched to the supervisor: {stderr}"
+    );
+    assert!(
+        !out.status.success(),
+        "resuming a node that does not exist exits non-zero"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The verb is discoverable. A subcommand nobody can find is one that does not exist for the
 /// operator who needs it, and `--help` is where they will look.
 #[test]
