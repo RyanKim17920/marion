@@ -7,7 +7,6 @@
 //! Three of the four env vars and two of the settings keys below are load-bearing in the §12 sense
 //! — *omitting them produces no error anywhere*. Each one carries the measurement that says so.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use marion_core::contract::AgentId;
@@ -27,9 +26,6 @@ use crate::mcp_bridge::{
     NODE_TOKEN_ENV, READY_FILE_ENV,
 };
 use crate::spec::{Arg, Env, Field, HarnessSpec, Val, When};
-use crate::stream::{
-    CallOutcome, MarionCall, StreamOutcome, first_string, json_frames, report_commits,
-};
 
 /// The settings document's name under the node's config dir — named by [`SYSTEM_SETTINGS_PATH_ENV`]
 /// in [`SPEC`]'s env and written by `GeminiAdapter::config_files`, one spelling for both.
@@ -352,115 +348,6 @@ pub fn base_url_is_acceptable(base_url: &str) -> bool {
         None => authority.split(':').next().unwrap_or("").to_string(),
     };
     matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
-}
-
-/// Parse a `gemini --output-format stream-json` stream.
-///
-/// The event set is closed and measured (`tests/fixtures/s12/`): `init | message | tool_use |
-/// tool_result | error | result`. Three of the six carry evidence marion wants.
-///
-/// **The exit code is not the verdict, and that is a measurement, not caution.** S12: *"an auth
-/// failure returned exit 0 with a JSON error body — so a launcher must parse the JSON and must not
-/// trust the exit code alone."* So a failure claim anywhere in the stream is recorded regardless of
-/// what the process exited with, and two shapes are accepted for it: the `stream-json` `error`
-/// frame, and the bare `{"error":{"type":…,"message":…,"code":…}}` object that the failure S12
-/// actually recorded took. The `result` frame's `status` is read the same way — S12 captured only
-/// `"success"`, so anything else is treated as the harness saying so rather than as an unknown to
-/// be ignored.
-///
-/// Two fields are left empty **because gemini has nothing to fill them with**, not because they
-/// were forgotten: there is no `file_change` analogue anywhere in the event set (git remains the
-/// authority for `changed_paths`), and `tool_result` carries only an opaque `output` string, so a
-/// report's narrative is read off the `tool_use` frame that made the call rather than off its
-/// result.
-///
-/// `report_tool` is the **model-facing** spelling, which is the adapter's to know: gemini's is
-/// `mcp_<server>_<tool>` and is nobody else's (§3.1). Passing it in rather than rebuilding it here
-/// keeps [`crate::HarnessAdapter::marion_tool_name`] the single derivation.
-pub fn parse_stream(s: &str, report_tool: &str) -> StreamOutcome {
-    let mut out = StreamOutcome::default();
-    for v in json_frames(s) {
-        match v["type"].as_str() {
-            Some("tool_use") if v["tool_name"].as_str() == Some(report_tool) => {
-                if let Some(n) = v["parameters"]["narrative"].as_str() {
-                    out.narrative = Some(n.to_string());
-                }
-                out.result_commits = report_commits(&v["parameters"]);
-            }
-            Some("error") => {
-                out.failure = out.failure.take().or_else(|| {
-                    first_string(&v, &["/error/message", "/message", "/error/type"])
-                        .or_else(|| Some("the child's stream carried an error frame".into()))
-                });
-            }
-            Some("result") => {
-                if let Some(status) = v["status"].as_str()
-                    && status != "success"
-                {
-                    out.failure = Some(format!("gemini result status: {status}"));
-                }
-            }
-            // The exit-0 auth failure S12 recorded: an `error` object with no `type` frame around
-            // it. Untyped, so it is matched here rather than in the arms above.
-            _ if v.get("error").is_some() => {
-                out.failure = out.failure.take().or_else(|| {
-                    first_string(&v, &["/error/message", "/error/type"])
-                        .or_else(|| Some("the child's stream carried an error body".into()))
-                });
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Every marion tool this stream shows the node calling, in **marion's** vocabulary, with what came
-/// of each call.
-///
-/// The frame is gemini's `tool_use`, whose `tool_name` carries the `mcp_<server>_` spelling S12
-/// captured — a different field *and* a different spelling from every other harness.
-///
-/// **The result is a separate `tool_result` frame, paired back by `tool_id`, and that pairing is an
-/// assumption this comment refuses to hide.** S12 recorded both frames (`tests/fixtures/s12/
-/// README.md`) but redacted their ids independently — `mcp_marion_report__mcp_marion_report_<n>_0`
-/// on the call, `<TOOL-ID-1>` on the result — so nothing in this tree *proves* the two carry the
-/// same value. Pairing by id is the only reading the field name admits, and it is written here so
-/// that whoever next records a gemini run knows the fixture owes an unredacted pair.
-///
-/// Only `"success"` was ever captured for `tool_result.status`, so every other spelling is read as
-/// a refusal rather than as an unknown — the same call [`parse_stream`] makes for the `result`
-/// frame's status, for the same reason. A call whose result frame never arrived is
-/// [`CallOutcome::Unknown`], which is what a run killed mid-call leaves behind.
-pub fn marion_calls(s: &str, prefix: &str) -> Vec<MarionCall> {
-    let frames = json_frames(s);
-    let mut results: BTreeMap<String, CallOutcome> = BTreeMap::new();
-    for v in &frames {
-        if v["type"].as_str() == Some("tool_result")
-            && let Some(id) = v["tool_id"].as_str()
-        {
-            let outcome = match v["status"].as_str() {
-                Some("success") => CallOutcome::Answered,
-                Some(status) => CallOutcome::Refused(match v["output"].as_str() {
-                    Some(o) => format!("{status}: {o}"),
-                    None => status.to_string(),
-                }),
-                None => CallOutcome::Unknown,
-            };
-            results.insert(id.to_string(), outcome);
-        }
-    }
-    frames
-        .iter()
-        .filter(|v| v["type"].as_str() == Some("tool_use"))
-        .filter_map(|v| {
-            let verb = v["tool_name"].as_str()?.strip_prefix(prefix)?.to_string();
-            let outcome = v["tool_id"]
-                .as_str()
-                .and_then(|id| results.get(id).cloned())
-                .unwrap_or(CallOutcome::Unknown);
-            Some(MarionCall { verb, outcome })
-        })
-        .collect()
 }
 
 /// The values [`settings_json`] writes into the MCP server declaration.

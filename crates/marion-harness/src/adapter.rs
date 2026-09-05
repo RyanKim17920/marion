@@ -1233,15 +1233,6 @@ impl HarnessAdapter for GeminiAdapter {
         }
     }
 
-    /// **The exit code is not trusted on its own here, and that is measured.** S12 recorded an auth
-    /// failure exiting **0** with a JSON error body, so the stream's own error and `result` frames
-    /// decide, and a non-zero exit that says nothing in-stream is left to the supervisor's existing
-    /// exit-code rule. A documented code that arrives *with* a failure body is therefore recorded
-    /// once, with the harness's own words, rather than twice.
-    fn parse_stream(&self, stdout: &str, _exit: ChildExit) -> StreamOutcome {
-        gemini::parse_stream(stdout, &self.marion_tool_name("report"))
-    }
-
     fn marion_tool_name(&self, tool: &str) -> String {
         // `mcp_<server>_<tool>`, single underscores — **not** Claude Code's `mcp__marion__report`.
         // §3.1 makes the mapping part of the adapter contract precisely because it differs, and
@@ -1292,10 +1283,6 @@ impl HarnessAdapter for GeminiAdapter {
     /// Recorded in **both** states, not only the relaxed one — see [`gemini::DEFAULT_APPROVAL_MODE`].
     fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
         Ok(vec![format!("approval-mode:{}", self.approval_mode(spec)?)])
-    }
-
-    fn marion_calls(&self, stdout: &str) -> Vec<MarionCall> {
-        gemini::marion_calls(stdout, &self.marion_tool_name(""))
     }
 }
 
