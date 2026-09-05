@@ -19,7 +19,7 @@ use marion_core::harness::Harness;
 
 use crate::acp;
 pub use crate::auth::Auth;
-use crate::claude_code::{self, HeadlessSpec, McpEnv, compile_headless};
+use crate::claude_code::{self, McpEnv};
 use crate::codex::{self, ExecSpec, compile_exec};
 use crate::copilot;
 use crate::gemini;
@@ -343,7 +343,14 @@ pub trait HarnessAdapter {
 
     /// §6.1 step 5: argv + env. Runs on every spawn without exception, including surfaces that
     /// have no `ControlPlane` to open.
-    fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError>;
+    ///
+    /// The default renders this harness's [`spec::HarnessSpec`] row over [`Self::fields`], and is
+    /// the whole of `compile` for every migrated harness: the row is the launch, the hook is the
+    /// judgement, and nothing else stands between a `LaunchSpec` and an argv.
+    fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
+        let f = self.fields(spec, ctx, spec::Shape::Headless)?;
+        render_row(harness_spec(self.harness()), spec::Shape::Headless, &f)
+    }
 
     /// §3.1's two axes in this harness's spelling, or the first refusal.
     ///
@@ -411,12 +418,17 @@ pub trait HarnessAdapter {
 
     /// argv + env for [`Self::pane_surfaces`]'s shape. Called **only** where that is `Some`.
     ///
-    /// Defaulted to the refusal rather than to [`Self::compile`], so a fifth harness that declares
-    /// a pane surface and forgets this one gets a named error instead of a TUI request answered
-    /// with a headless launch.
+    /// The default renders the row's `pane` argv, and a harness without a pane surface is the
+    /// refusal by name — never [`Self::compile`]'s launch — so a sixth harness that declares a
+    /// pane surface and writes no pane row gets a named error instead of a TUI request answered
+    /// headlessly. The refusal comes **before** [`Self::fields`] runs: it is a fact about the
+    /// harness, not about this launch, and must not be masked by a launch-level refusal.
     fn compile_pane(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        let _ = (spec, ctx);
-        Err(HarnessError::NoPaneSurface(self.harness()))
+        if self.pane_surfaces().is_none() {
+            return Err(HarnessError::NoPaneSurface(self.harness()));
+        }
+        let f = self.fields(spec, ctx, spec::Shape::Pane)?;
+        render_row(harness_spec(self.harness()), spec::Shape::Pane, &f)
     }
 
     /// The configuration files this harness needs, as `(absolute path, contents)`. The caller
@@ -609,6 +621,22 @@ fn neutral_fields(spec: &LaunchSpec, axes: spec::Axes) -> spec::Fields {
     }
 }
 
+/// [`spec::render`] with its two `None`s named: a row with no pane shape, and a launch that named
+/// no program where the row expected one (an ACP adapter bound to no agent).
+fn render_row(
+    row: &spec::HarnessSpec,
+    shape: spec::Shape,
+    f: &spec::Fields,
+) -> Result<Invocation, HarnessError> {
+    spec::render(row, shape, f).ok_or(match shape {
+        spec::Shape::Pane => HarnessError::NoPaneSurface(row.harness),
+        spec::Shape::Headless => HarnessError::MissingInput {
+            harness: row.harness,
+            what: "the launch named no program and the row carries none",
+        },
+    })
+}
+
 /// The row for a harness (`plan-harness-spec.md`). **Every harness marion names has one**; a
 /// harness without a row is a compile error here, not a fallback.
 pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
@@ -648,21 +676,6 @@ impl ClaudeCodeAdapter {
     /// two ways to say the same thing could disagree.
     fn prompt_is_written_after_launch(spec: &LaunchSpec) -> bool {
         spec.prompt.is_empty()
-    }
-
-    /// What `--allowedTools` carries: §3.1's *"the same list, plus marion's own `mcp__marion__*`"*.
-    ///
-    /// One derivation, called by `compile` and by `compiled_permissions`, so §6.7's audit record
-    /// and the flag it describes cannot disagree. Two expressions of this would be two chances for
-    /// the contract to name a permission the node was never granted — the class of defect
-    /// `32ec905` fixed for `harness` and this method exists to keep out of `allowed_tools`.
-    fn permission_axis(
-        adapter: &ClaudeCodeAdapter,
-        spec: &LaunchSpec,
-    ) -> Result<Vec<String>, HarnessError> {
-        let mut allowed = spec.allowed_tools.clone();
-        allowed.extend(adapter.native_tools(spec)?);
-        Ok(allowed)
     }
 
     fn mcp_env(spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<McpEnv, HarnessError> {
@@ -705,69 +718,31 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         ExecutionSurfaces::headless(TypedKind::StreamJson)
     }
 
-    /// **One shape, and a non-empty prompt is a refusal.**
+    /// **One shape, and a non-empty prompt is a refusal on it.**
     ///
-    /// This adapter used to compile two: `--input-format stream-json` for a root whose prompt is a
-    /// frame, and a positional `-p <prompt>` for a child. The second shape does not work and cannot
-    /// be made to — measured on 2.1.220, a child launched that way reports
+    /// This adapter used to compile two headless shapes: `--input-format stream-json` for a root
+    /// whose prompt is a frame, and a positional `-p <prompt>` for a child. The second does not
+    /// work and cannot be made to — measured on 2.1.220, a child launched that way reports
     /// `"tools":[],"mcp_servers":[{"name":"marion","status":"pending"}]` in its own `system/init`,
     /// takes turn one without marion's tools, is answered with the session-title stub, and exits
     /// **0 having called nothing**. There is no flag that makes the CLI wait; `MCP_TIMEOUT` does
     /// not change it. §6.1 step 8's remedy is the only one, and it *requires* a typed stdin, which
     /// is exactly what this adapter's [`Self::surfaces`] declares.
     ///
-    /// So the argv branch is gone and a prompt that arrives here is a **typed refusal naming the
-    /// cause**, never a launch that quietly loses its tools. The signal is the neutral vocabulary's
-    /// own — [`LaunchSpec::prompt`] is *"empty for a surface whose prompt is written after launch"*
-    /// — rather than a second mode flag beside it.
-    fn compile(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        if !Self::prompt_is_written_after_launch(spec) {
-            return Err(HarnessError::MissingInput {
-                harness: Harness::ClaudeCode,
-                what: "this harness's prompt is written after launch as a user frame, never \
-                       compiled into argv: 2.1.220 does not hold turn one for an --mcp-config \
-                       server, so an argv prompt takes that turn with tools: [] and the run exits \
-                       0 having called nothing. Leave LaunchSpec.prompt empty and write the frame \
-                       after §6.1 step 8's readiness gate",
-            });
-        }
-        // **Live is pure removal, and this harness is the case where that is literally true.**
-        // `CLAUDE_CONFIG_DIR` is already never set (isolating it breaks OAuth — the Keychain entry
-        // is keyed to the real config dir), `--strict-mcp-config --mcp-config` already keeps the
-        // MCP declaration fileless inside marion's own agent dir, and `--setting-sources ""`
-        // already excludes the user's settings, plugins and hooks. So the only thing standing
-        // between a logged-in `claude` and marion is the three env vars marion overlays, and
-        // dropping them is the whole of live mode: nothing is seeded, because nothing was cleared.
-        let (base_url, api_key) = match spec.auth {
-            Auth::Canned => (
-                spec.base_url
-                    .as_deref()
-                    .map(claude_code::anthropic_base_url),
-                spec.api_key.clone(),
-            ),
-            // `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` all fall out of
-            // `compile_headless` together: it emits each only when given the value behind it, so
-            // withholding both here is exactly "do not overlay", with no second branch to drift.
-            Auth::Inherited => (None, None),
-        };
-        // §3.1's two axes, compiled from **one** declaration, which is why they cannot disagree:
-        // availability is the mapped list, permission is *"the same list, plus marion's own
-        // `mcp__marion__*`"*. This harness is the one of four where both axes are marion's to set
-        // and where opening only the first is a measured dead end (§11 item 24).
-        Ok(compile_headless(&HeadlessSpec {
-            cwd: spec.cwd.clone(),
-            model: spec.model.clone(),
-            tools: self.native_tools(spec)?,
-            allowed_tools: Self::permission_axis(self, spec)?,
-            mcp_config: Self::mcp_config_path(spec),
-            base_url,
-            api_key,
-        }))
-    }
-
-    /// What [`claude_code::SPEC`] reads, plus the one refusal this harness owes the headless
-    /// shape — see [`Self::compile`] for the measurement behind it. The pane shape takes the
-    /// prompt on argv (`claude_code::SPEC`'s `pane` row says where), so it is not refused there.
+    /// So a prompt on the headless shape is a **typed refusal naming the cause**, never a launch
+    /// that quietly loses its tools. The signal is the neutral vocabulary's own —
+    /// [`LaunchSpec::prompt`] is *"empty for a surface whose prompt is written after launch"* —
+    /// rather than a second mode flag beside it. The pane shape is not refused: a TUI takes no turn
+    /// until the operator presses return, so the text is seeded and there is no race to lose
+    /// ([`claude_code::SPEC`]'s `pane` row).
+    ///
+    /// **Live is pure removal, and this harness is the case where that is literally true.**
+    /// `CLAUDE_CONFIG_DIR` is already never set (isolating it breaks OAuth — the Keychain entry is
+    /// keyed to the real config dir), `--strict-mcp-config --mcp-config` already keeps the MCP
+    /// declaration fileless inside marion's own agent dir, and `--setting-sources ""` already
+    /// excludes the user's settings, plugins and hooks. So the only thing standing between a
+    /// logged-in `claude` and marion is the three env vars marion overlays, and dropping them is
+    /// the whole of live mode — which [`neutral_fields`] does for every harness at once.
     fn fields(
         &self,
         spec: &LaunchSpec,
@@ -784,6 +759,10 @@ impl HarnessAdapter for ClaudeCodeAdapter {
                        after §6.1 step 8's readiness gate",
             });
         }
+        // §3.1's two axes come from the trait's default `axes`: availability is the mapped list,
+        // permission is *"the same list, plus marion's own `mcp__marion__*`"*. This harness is the
+        // one where both axes are marion's to set and where opening only the first is a measured
+        // dead end (§11 item 24).
         let mut f = neutral_fields(spec, self.axes(spec)?);
         // Claude Code wants the base URL **without** the `/v1` marion stores (it appends
         // `/v1/messages` itself); the derivation is this harness's and lives beside it.
@@ -797,32 +776,6 @@ impl HarnessAdapter for ClaudeCodeAdapter {
     /// observation source nothing consumes would put a false row in §3.4's derivation table.
     fn pane_surfaces(&self) -> Option<ExecutionSurfaces> {
         Some(ExecutionSurfaces::opaque())
-    }
-
-    /// The TUI, with the same isolation and the same two axes the headless shape gets. See
-    /// [`claude_code::compile_pane`] for why the prompt may ride argv here and may not there.
-    fn compile_pane(&self, spec: &LaunchSpec, _ctx: &SpawnCtx) -> Result<Invocation, HarnessError> {
-        let (base_url, api_key) = match spec.auth {
-            Auth::Canned => (
-                spec.base_url
-                    .as_deref()
-                    .map(claude_code::anthropic_base_url),
-                spec.api_key.clone(),
-            ),
-            Auth::Inherited => (None, None),
-        };
-        Ok(claude_code::compile_pane(
-            &HeadlessSpec {
-                cwd: spec.cwd.clone(),
-                model: spec.model.clone(),
-                tools: self.native_tools(spec)?,
-                allowed_tools: Self::permission_axis(self, spec)?,
-                mcp_config: Self::mcp_config_path(spec),
-                base_url,
-                api_key,
-            },
-            &spec.prompt,
-        ))
     }
 
     fn config_files(
@@ -894,9 +847,10 @@ impl HarnessAdapter for ClaudeCodeAdapter {
 
     /// **The one harness of four with a real per-tool allowlist**, so this is §3.1's first branch
     /// rather than its "coarsest equivalent" fallback: the record is the literal contents of
-    /// `--allowedTools`, which is the flag the CLI checks a call against.
+    /// `--allowedTools`, which is the flag the CLI checks a call against — read off the same
+    /// [`Self::axes`] the row renders, so §6.7's audit record and the flag cannot disagree.
     fn compiled_permissions(&self, spec: &LaunchSpec) -> Result<Vec<String>, HarnessError> {
-        Self::permission_axis(self, spec)
+        Ok(self.axes(spec)?.allowed)
     }
 
     /// The prefix is derived from this adapter's own `marion_tool_name`, so the reader and the
@@ -2515,25 +2469,6 @@ mod tests {
         "/../../tests/fixtures/s21/opencode-acp-session.jsonl"
     ));
 
-    /// The refactor's whole claim, stated as a test: routing through the adapter changes nothing
-    /// about what gets spawned. If this drifts, the "pure refactor" claim is false.
-    #[test]
-    fn the_claude_adapter_compiles_exactly_what_the_free_function_did() {
-        let spec = claude_spec();
-        let via_adapter = ClaudeCodeAdapter.compile(&spec, &ctx()).unwrap();
-        let via_free_function = compile_headless(&HeadlessSpec {
-            cwd: "/repo".into(),
-            model: Some("haiku".into()),
-            tools: vec![],
-            allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
-            mcp_config: "/state/x/config/mcp.json".into(),
-            // The supervisor used to derive this itself; the adapter now does.
-            base_url: Some("http://127.0.0.1:8099".into()),
-            api_key: None,
-        });
-        assert_eq!(via_adapter, via_free_function);
-    }
-
     #[test]
     fn the_codex_adapter_compiles_exactly_what_the_free_function_did() {
         let via_adapter = CodexAdapter.compile(&codex_spec(), &ctx()).unwrap();
@@ -3382,23 +3317,45 @@ mod tests {
     }
 
     /// The root's shape is untouched by that branch: an empty prompt still compiles the measured
-    /// `--input-format stream-json` launch, marker and all.
+    /// `--input-format stream-json` launch — **this exact argv**, pinned token for token, because
+    /// it is the launch S1/S9/S11 measured on 2.1.220 and the row that renders it is a
+    /// transcription that must not drift.
     #[test]
     fn an_empty_prompt_still_compiles_the_roots_measured_launch() {
         let inv = ClaudeCodeAdapter.compile(&claude_spec(), &ctx()).unwrap();
         assert_eq!(
             inv,
-            compile_headless(&HeadlessSpec {
+            Invocation {
+                program: "claude".into(),
+                args: [
+                    "-p",
+                    "--output-format",
+                    "stream-json",
+                    "--input-format",
+                    "stream-json",
+                    "--verbose",
+                    "--tools",
+                    "",
+                    "--allowedTools",
+                    "mcp__marion__spawn,mcp__marion__status",
+                    "--permission-prompt-tool",
+                    "stdio",
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    "/state/x/config/mcp.json",
+                    "--setting-sources",
+                    "",
+                    "--model",
+                    "haiku",
+                ]
+                .map(String::from)
+                .to_vec(),
+                // The supervisor used to derive the `/v1`-less form itself; the adapter does.
+                env: vec![("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:8099".into())],
                 cwd: "/repo".into(),
                 model: Some("haiku".into()),
-                tools: vec![],
-                allowed_tools: vec!["mcp__marion__spawn".into(), "mcp__marion__status".into()],
-                mcp_config: "/state/x/config/mcp.json".into(),
-                base_url: Some("http://127.0.0.1:8099".into()),
-                api_key: None,
-            })
+            }
         );
-        assert!(inv.args.iter().any(|a| a == "--input-format"));
     }
 
     #[test]

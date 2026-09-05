@@ -7,7 +7,7 @@
 //! > […]; `requester` for a top-level `spawn` is the root's `AgentId`."*
 //!
 //! So this module mints the id, writes the `--mcp-config` declaration that carries that id to the
-//! bridge, compiles the root argv through [`marion_harness::compile_headless`], and drives the
+//! bridge, compiles the root argv through `ClaudeCodeAdapter::compile`, and drives the
 //! `stream-json` conversation.
 //!
 //! # Why the prompt is not written the moment the process starts

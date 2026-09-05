@@ -32,9 +32,7 @@ pub use adapter::{
 };
 pub use auth::Auth;
 pub use caps::{Capabilities, advertised, static_caps};
-pub use claude_code::{
-    HeadlessSpec, McpEnv, anthropic_base_url, compile_headless, mcp_config_json,
-};
+pub use claude_code::{McpEnv, anthropic_base_url, mcp_config_json};
 pub use codex::{ExecSpec, compile_exec, config_toml};
 pub use mcp_bridge::{AGENT_ID_ENV, AGENT_TYPE_ENV, DEPTH_ENV, READY_FILE_ENV};
 pub use native::{

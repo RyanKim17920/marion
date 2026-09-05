@@ -139,7 +139,7 @@ pub fn compile_exec(spec: &ExecSpec) -> Invocation {
 /// Measured on 0.147.0 against an isolated `CODEX_HOME`: `codex "<prompt>"` opens the TUI with the
 /// text already sent — the composer shows it above a running spinner, with no keystroke from
 /// anybody. That is the one place the two panes genuinely differ, because Claude Code's TUI seeds
-/// its composer and waits (`crate::claude_code::compile_pane`). It is recorded here rather than
+/// its composer and waits (`crate::claude_code::SPEC`'s pane row). It is recorded here rather than
 /// smoothed over: an operator who runs `marion run codex --pane --prompt …` has taken a turn by
 /// the time they attach, and a reader of the pane's first screen is looking at a turn in flight.
 /// An empty prompt compiles no positional at all, which is a TUI opened at its composer.

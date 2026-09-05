@@ -877,7 +877,7 @@ fn launch_only_child(
 /// **The `Blocked` budget is zero, and that is a decision — but not the one this comment used to
 /// claim.** It said the child is compiled *without* `--permission-prompt-tool`, so §5.2's rule
 /// applies and no `can_use_tool` ever reaches marion. **That premise is false.** There is one
-/// compile path for a Claude Code node — `ClaudeCodeAdapter::compile` → `compile_headless` — and it
+/// compile path for a Claude Code node — `ClaudeCodeAdapter::compile` over `claude_code::SPEC` — and it
 /// emits `--permission-prompt-tool stdio` **unconditionally**, guarded by its own test
 /// (`permission_prompt_tool_is_set_or_can_use_tool_never_fires`). A duplex child is compiled with
 /// `--tools ""` plus exactly one allowlisted verb (`report`), so **every other tool call it makes
@@ -1635,7 +1635,7 @@ pub fn run_spawn_watched(
     // being the *only* destination lives. Until this call existed `duplex_child` discarded
     // `DuplexOutcome.denied_permissions` and a child's denial appeared in no contract and no
     // journal record at all — while §5.2's ask is genuinely reachable on a duplex child, since
-    // `compile_headless` passes `--permission-prompt-tool stdio` unconditionally.
+    // `claude_code::SPEC` carries `--permission-prompt-tool stdio` unconditionally.
     //
     // Written after `Spawned` and before `Exited`, which is the order the events happened in: the
     // ask can only arrive from a process that exists, and only before it has finished.
