@@ -380,14 +380,13 @@ impl Operator {
             .expect("resizing the operator's terminal");
     }
 
-    /// **Asked through the host, which reaps.** `kill(pid, 0)` succeeds against a *zombie*, and
-    /// nothing else in this test ever waits on `marion attach` — so a liveness probe by signal
-    /// would report a client that exited cleanly as still running, for ever.
+    /// **Asked through the host without reaping.** `kill(pid, 0)` succeeds against a *zombie*, so
+    /// a liveness probe by signal would report a client that exited cleanly as still running.
+    /// Keeping the leader waitable also lets host shutdown perform its process-tree sweep first.
     fn exited(&self) -> bool {
         self.host
-            .try_wait()
-            .expect("waiting on the attaching client")
-            .is_some()
+            .poll_exited_unreaped()
+            .expect("polling the attaching client")
     }
 }
 
