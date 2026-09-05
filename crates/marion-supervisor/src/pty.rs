@@ -1689,14 +1689,6 @@ fn completed_host_charge_from(splice_charge: usize, subscriber_limit: usize) -> 
         })
 }
 
-#[cfg(test)]
-fn completed_host_charge_from_for_test(
-    splice_charge: usize,
-    subscriber_limit: usize,
-) -> Option<usize> {
-    completed_host_charge_from(splice_charge, subscriber_limit)
-}
-
 const PANE_PENDING_TTL: Duration = Duration::from_secs(10);
 
 enum PanePhase {

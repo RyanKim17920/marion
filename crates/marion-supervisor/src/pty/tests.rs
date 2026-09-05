@@ -1758,11 +1758,11 @@ fn completed_host_charge_reserves_future_pane_stream_slots() {
         "each future pane slot needs its map entry and separately allocated cancellation Arc"
     );
     assert!(
-        completed_host_charge_from_for_test(usize::MAX, 0).is_none(),
+        completed_host_charge_from(usize::MAX, 0).is_none(),
         "fixed host accounting overflow must refuse completion, not wrap or panic"
     );
     assert!(
-        completed_host_charge_from_for_test(0, usize::MAX).is_none(),
+        completed_host_charge_from(0, usize::MAX).is_none(),
         "future cancellation/slot reserve overflow must refuse completion"
     );
 }
