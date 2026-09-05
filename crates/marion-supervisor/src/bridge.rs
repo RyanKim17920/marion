@@ -1542,4 +1542,86 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(tools_list_result(&json!(1)), tools_list_result(&json!(1)));
     }
+
+    // --- the tool seam, measured against the builders above -------------------------------
+
+    use crate::tool::from_wire;
+
+    /// The seam round-trips, which is what makes it a boundary rather than a description.
+    #[test]
+    fn an_outcome_survives_the_trip_through_the_wire_shape() {
+        for outcome in [
+            ToolOutcome::text("a child failed, and that is a fact not a fault", true),
+            ToolOutcome::text("contract recorded", false),
+            ToolOutcome {
+                content: vec![
+                    ContentBlock::Text("first line".into()),
+                    ContentBlock::Text("second".into()),
+                ],
+                is_error: false,
+            },
+        ] {
+            let wire = tool_outcome_result(&json!(7), &outcome);
+            assert_eq!(
+                wire["id"], 7,
+                "the id is added on the MCP side, and only there"
+            );
+            assert_eq!(
+                from_wire(&wire),
+                Some(outcome.clone()),
+                "and nothing about the outcome is lost crossing the seam: {outcome}"
+            );
+        }
+    }
+
+    /// **A JSON-RPC error is not an outcome**, which is the distinction the whole type exists for.
+    ///
+    /// If this ever returned `Some`, `isError` and transport failure would have been conflated at
+    /// the one place that is supposed to keep them apart — and s9's policy would be expressible
+    /// two ways, which is how it stops being a policy.
+    #[test]
+    fn a_transport_error_is_not_a_tool_outcome() {
+        assert_eq!(from_wire(&method_not_found(&json!(1), "x")), None);
+        assert_eq!(from_wire(&parse_error("nope")), None);
+        assert_eq!(from_wire(&not_initialized(&json!(1), "tools/call")), None);
+        assert_eq!(
+            from_wire(&json!({"jsonrpc": "2.0", "id": 1, "result": {"content": [
+                {"type": "image", "data": "…"}], "isError": false}})),
+            None,
+            "a block kind marion does not emit is refused rather than dropped"
+        );
+    }
+
+    /// The existing dispatch already satisfies the seam's contract — measured against the real
+    /// builders rather than asserted.
+    ///
+    /// This is what the seam buys before adoption: the builders here are held to "denotes
+    /// exactly one outcome, with an explicit verdict" today, so step 2 of *Adoption* is a refactor
+    /// with a net already under it.
+    #[test]
+    fn todays_result_builders_all_denote_an_outcome_with_an_explicit_verdict() {
+        let id = json!(1);
+        let frames = [
+            ("wait_unknown", wait_unknown(&id, "t-1")),
+            (
+                "wait_still_running",
+                wait_still_running(&id, "t-1", "codex", 30),
+            ),
+            ("status_unknown", status_unknown(&id, "t-1")),
+            ("list_result", list_result(&id, &[])),
+            ("tool_result", tool_result(&id, "a sentence", true)),
+        ];
+        for (name, frame) in frames {
+            let outcome = from_wire(&frame)
+                .unwrap_or_else(|| panic!("{name} must denote a tool outcome: {frame}"));
+            assert!(
+                !outcome.text_content().is_empty(),
+                "{name}: every outcome marion returns is a sentence"
+            );
+            assert!(
+                frame["result"].get("isError").is_some(),
+                "{name}: the verdict is written explicitly, never left to the client's default"
+            );
+        }
+    }
 }
