@@ -20,6 +20,7 @@ pub mod invocation;
 pub mod mcp_bridge;
 pub mod native;
 pub mod opencode;
+pub mod spec;
 pub mod stream;
 pub mod surfaces;
 

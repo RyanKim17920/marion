@@ -26,6 +26,7 @@ use crate::gemini;
 use crate::invocation::Invocation;
 use crate::mcp_bridge;
 use crate::opencode;
+use crate::spec;
 use crate::stream::{ChildExit, MarionCall, StreamOutcome};
 use crate::surfaces::{ExecutionSurfaces, TypedKind};
 
@@ -343,6 +344,43 @@ pub trait HarnessAdapter {
     /// §6.1 step 5: argv + env. Runs on every spawn without exception, including surfaces that
     /// have no `ControlPlane` to open.
     fn compile(&self, spec: &LaunchSpec, ctx: &SpawnCtx) -> Result<Invocation, HarnessError>;
+
+    /// §3.1's two axes in this harness's spelling, or the first refusal.
+    ///
+    /// The default is the rule the design states for the harness that has both axes: availability
+    /// is the declared list mapped through [`Self::tool_name`], and permission is *"the same list,
+    /// plus marion's own"* — [`LaunchSpec::allowed_tools`] with the mapped list appended. A harness
+    /// whose axes are shaped otherwise (copilot's two spellings, gemini's mode) says so here, and
+    /// nowhere else: `compile` and `compiled_permissions` both read this one answer, so the flag and
+    /// the audit record cannot disagree.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let tools = self.native_tools(spec)?;
+        let mut allowed = spec.allowed_tools.clone();
+        allowed.extend(tools.iter().cloned());
+        Ok(spec::Axes {
+            tools,
+            allowed,
+            mode: None,
+        })
+    }
+
+    /// **The measured logic hook**: everything this harness's [`spec::HarnessSpec`] row reads,
+    /// derived from the launch — and every refusal the launch is owed, by name.
+    ///
+    /// The default is [`spec::Fields::neutral`] over [`Self::axes`]: the spec's values verbatim,
+    /// with live mode's removal of the provider overlay applied. An adapter overrides it to add
+    /// what its harness has measured and nothing else — a required model, a derived URL, a
+    /// document path — so that the row stays a transcription and this stays the place a reader
+    /// looks for a decision.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        let _ = (ctx, shape);
+        Ok(spec::Fields::neutral(spec, self.axes(spec)?))
+    }
 
     /// The surfaces this harness runs under **when a run asks for a pane**, or `None` where marion
     /// has no interactive shape for it (§3.4, §9's M3).
@@ -6079,5 +6117,75 @@ mod tests {
             acp_adapter().compile_pane(&acp_spec(), &ctx()),
             Err(HarnessError::NoPaneSurface(Harness::Acp))
         );
+    }
+
+    /// **The declarative spec compiles what the adapter that measured it compiles — byte for byte,
+    /// on every harness, both shapes, both auth modes.**
+    ///
+    /// This is the migration's invariant, stated before the migration: `spec::render` over the
+    /// harness's `HarnessSpec` row must equal the hand-written `compile` / `compile_pane` it is
+    /// about to replace, and must refuse exactly where that refused. The row is data
+    /// (`Arg`s and `Env`s); everything that is genuinely a measured *decision* — a refusal, a model
+    /// rule, a derived URL — stays in the adapter's `fields` hook, which is the other half of the
+    /// comparison. A row that renders one token differently from the code it was transcribed from
+    /// is a guess wearing a table's clothes, which is the risk `plan-harness-spec.md` names.
+    ///
+    /// `MIGRATED` is the gate: a harness is listed only once its row exists, so this sweep grows
+    /// one harness per commit and never asserts over a `todo!()`.
+    #[test]
+    fn spec_render_matches_the_adapter_that_measured_it() {
+        use crate::spec::{Shape, render, spec_for as row_for};
+        const MIGRATED: &[Harness] = &[
+            Harness::ClaudeCode,
+            Harness::Codex,
+            Harness::Gemini,
+            Harness::OpenCode,
+            Harness::Copilot,
+            Harness::Acp,
+        ];
+        for &h in MIGRATED {
+            let a = launch_adapter(h).unwrap();
+            let row = row_for(h);
+            assert_eq!(
+                row.harness, h,
+                "the row names the harness it was measured on"
+            );
+            assert!(
+                !row.note.trim().is_empty(),
+                "{h}: a row without its measurement is a guess"
+            );
+            let canned = spec_for(h);
+            let live = LaunchSpec {
+                auth: Auth::Inherited,
+                base_url: None,
+                api_key: None,
+                ..spec_for(h)
+            };
+            let live = match h {
+                // The two harnesses whose live mode refuses the canned default model by name.
+                Harness::OpenCode => opencode_live_spec(),
+                Harness::Copilot => LaunchSpec {
+                    model: Some("gpt-5".into()),
+                    ..live
+                },
+                _ => live,
+            };
+            for (mode, launch) in [("canned", &canned), ("live", &live)] {
+                for shape in [Shape::Headless, Shape::Pane] {
+                    let expected = match shape {
+                        Shape::Headless => a.compile(launch, &ctx()),
+                        Shape::Pane => a.compile_pane(launch, &ctx()),
+                    };
+                    let got = a
+                        .fields(launch, &ctx(), shape)
+                        .and_then(|f| render(row, shape, &f));
+                    assert_eq!(
+                        got, expected,
+                        "{h} ({mode}, {shape:?}): the row must render exactly what the adapter \
+                         compiled, and refuse exactly where it refused"
+                    );
+                }
+            }
+        }
     }
 }
