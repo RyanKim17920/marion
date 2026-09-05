@@ -553,7 +553,7 @@ pub(crate) fn relay_claimed(
             .map_err(|error| format!("retaining native terminal input: {error}"))?;
         let stdout = rustix::io::fcntl_dupfd_cloexec(terminal.stdout(), 3)
             .map_err(|error| format!("retaining native terminal output: {error}"))?;
-        let mut session = RawPaneSession::open_with_io_after_signal_acquire(
+        let mut session = RawPaneSession::open_with_io(
             stream,
             agent_id,
             OwnedFdReader(stdin),
@@ -706,21 +706,15 @@ struct RawPaneSession<W: Write> {
     next_seq: u64,
     cut: u64,
     input_fd: Option<std::os::fd::RawFd>,
-    signal_guard: Option<RelaySignalGuard>,
-    relay_signals_armed: bool,
     leaving: Arc<AtomicBool>,
     keyboard_failure: Arc<std::sync::Mutex<Option<String>>>,
     keyboard: Option<std::thread::JoinHandle<()>>,
 }
 
 impl<W: Write> RawPaneSession<W> {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "production acquires signal ownership before constructing the relay session"
-        )
-    )]
+    /// Attach over `stream`. The caller owns relay signal handling: production acquires
+    /// [`RelaySignalGuard`] before this call, so a resize edge published between handler
+    /// installation and the geometry read below is kept in `RESIZED` rather than lost.
     fn open_with_io<R: Read + Send + 'static>(
         stream: UnixStream,
         id: AgentId,
@@ -728,46 +722,6 @@ impl<W: Write> RawPaneSession<W> {
         input_fd: Option<std::os::fd::RawFd>,
         output: W,
         geometry: Option<(u16, u16)>,
-    ) -> Result<Self, Refusal> {
-        let signal_guard = geometry
-            .is_none()
-            .then(RelaySignalGuard::acquire)
-            .transpose()?;
-        Self::open_with_io_and_signal_state(
-            stream,
-            id,
-            input,
-            input_fd,
-            output,
-            geometry,
-            signal_guard,
-            true,
-        )
-    }
-
-    fn open_with_io_after_signal_acquire<R: Read + Send + 'static>(
-        stream: UnixStream,
-        id: AgentId,
-        input: R,
-        input_fd: Option<std::os::fd::RawFd>,
-        output: W,
-        geometry: Option<(u16, u16)>,
-    ) -> Result<Self, Refusal> {
-        Self::open_with_io_and_signal_state(
-            stream, id, input, input_fd, output, geometry, None, true,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn open_with_io_and_signal_state<R: Read + Send + 'static>(
-        stream: UnixStream,
-        id: AgentId,
-        input: R,
-        input_fd: Option<std::os::fd::RawFd>,
-        output: W,
-        geometry: Option<(u16, u16)>,
-        signal_guard: Option<RelaySignalGuard>,
-        relay_signals_armed: bool,
     ) -> Result<Self, Refusal> {
         #[cfg(test)]
         if let Some(hook) = AFTER_RESIZE_SIGNAL_ACQUIRE
@@ -807,8 +761,6 @@ impl<W: Write> RawPaneSession<W> {
             next_seq: 0,
             cut: 0,
             input_fd,
-            signal_guard,
-            relay_signals_armed,
             leaving: Arc::new(AtomicBool::new(false)),
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
             keyboard: None,
@@ -1074,11 +1026,9 @@ impl<W: Write> RawPaneSession<W> {
 
     fn pump(&mut self) -> Result<RelayStop, Refusal> {
         loop {
-            if self.relay_signals_armed {
-                let signal = FIRST_RELAY_SIGNAL.load(Ordering::SeqCst);
-                if signal != 0 {
-                    return Ok(RelayStop::ExternalSignal(signal));
-                }
+            let signal = FIRST_RELAY_SIGNAL.load(Ordering::SeqCst);
+            if signal != 0 {
+                return Ok(RelayStop::ExternalSignal(signal));
             }
             if self.leaving.load(Ordering::SeqCst) {
                 if let Some(error) = self
@@ -1161,7 +1111,6 @@ impl<W: Write> Drop for RawPaneSession<W> {
         if let Some(keyboard) = self.keyboard.take() {
             let _ = keyboard.join();
         }
-        drop(self.signal_guard.take());
     }
 }
 
@@ -2508,6 +2457,7 @@ mod tests {
 
     type SignalRelay = (
         RawPaneSession<Box<dyn Write>>,
+        RelaySignalGuard,
         Option<mpsc::SyncSender<()>>,
         std::thread::JoinHandle<()>,
         Option<std::os::fd::OwnedFd>,
@@ -2564,6 +2514,7 @@ mod tests {
             .open_slave()
             .unwrap();
         let input_fd = Some(resize_tty.as_raw_fd());
+        let signals = RelaySignalGuard::acquire().expect("the relay owns every signal");
         let session = RawPaneSession::open_with_io(
             client,
             AgentId("native".into()),
@@ -2578,6 +2529,7 @@ mod tests {
             .expect("the server observed Ready");
         (
             session,
+            signals,
             matches!(exit, SignalExit::Detach).then_some(release_tx),
             server_thread,
             Some(resize_tty),
@@ -2603,7 +2555,7 @@ mod tests {
         ] {
             SENTINEL_HITS.store(0, Ordering::SeqCst);
             RESIZED.store(false, Ordering::SeqCst);
-            let (mut session, detach_release, server_thread, _resize_tty) =
+            let (mut session, signals, detach_release, server_thread, _resize_tty) =
                 relay_for_signal_exit(exit);
 
             raise_winch();
@@ -2636,6 +2588,7 @@ mod tests {
                 release.send(()).unwrap();
             }
             drop(session);
+            drop(signals);
             server_thread.join().unwrap();
 
             SENTINEL_HITS.store(0, Ordering::SeqCst);
@@ -2662,39 +2615,15 @@ mod tests {
             return;
         }
         let _restore_original = install_sentinel();
-        let (first, first_release, first_server, _first_tty) =
+        let (first, first_signals, first_release, first_server, _first_tty) =
             relay_for_signal_exit(SignalExit::Detach);
 
-        let (second_client, mut second_server) = UnixStream::pair().unwrap();
-        second_server
-            .set_read_timeout(Some(Duration::from_millis(250)))
-            .unwrap();
-        let second_server = std::thread::spawn(move || {
-            let mut line = String::new();
-            let mut lines = BufReader::new(second_server.try_clone().unwrap());
-            if lines.read_line(&mut line).is_ok_and(|count| count > 0) {
-                second_server
-                    .write_all(attach_response().to_line().as_bytes())
-                    .unwrap();
-                second_server.flush().unwrap();
-                let _ = read_frame(&mut lines);
-                let _ = read_frame(&mut lines);
-            }
-        });
-
         let started = Instant::now();
-        let second = RawPaneSession::open_with_io(
-            second_client,
-            AgentId("native".into()),
-            IdleInput,
-            None,
-            Sink::default(),
-            None,
-        );
+        let second = RelaySignalGuard::acquire();
         let elapsed = started.elapsed();
         let error = match second {
-            Ok(session) => {
-                drop(session);
+            Ok(signals) => {
+                drop(signals);
                 "overlapping relay unexpectedly acquired SIGWINCH".to_string()
             }
             Err(error) => error,
@@ -2702,8 +2631,8 @@ mod tests {
 
         first_release.unwrap().send(()).unwrap();
         drop(first);
+        drop(first_signals);
         first_server.join().unwrap();
-        second_server.join().unwrap();
         assert!(error.contains("already owns SIGWINCH"), "{error}");
         assert!(
             elapsed < Duration::from_millis(100),
@@ -2721,11 +2650,12 @@ mod tests {
         }
         let _restore_original = install_sentinel();
         RESIZED.store(false, Ordering::SeqCst);
-        let (session, release, server_thread, _resize_tty) =
+        let (session, signals, release, server_thread, _resize_tty) =
             relay_for_signal_exit(SignalExit::Detach);
         RESIZED.store(true, Ordering::SeqCst);
         release.unwrap().send(()).unwrap();
         drop(session);
+        drop(signals);
         server_thread.join().unwrap();
 
         assert!(
@@ -2780,6 +2710,7 @@ mod tests {
             assert!(matches!(read_frame(&mut lines), Frame::Input(_)));
         });
 
+        let signals = RelaySignalGuard::acquire().expect("the relay owns every signal");
         let session = RawPaneSession::open_with_io(
             client,
             AgentId("native".into()),
@@ -2794,6 +2725,7 @@ mod tests {
             "the resize edge arriving after handler installation was erased"
         );
         drop(session);
+        drop(signals);
         server_thread.join().unwrap();
     }
 
