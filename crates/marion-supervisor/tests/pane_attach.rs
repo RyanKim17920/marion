@@ -28,17 +28,18 @@
 //! * **the alt-screen switch handled** — asserted as an *agreement*: marion's grid must be on
 //!   whichever screen the node's own bytes put it on, taking the switch when told and inventing
 //!   none when not. Stated that way because the harness moved — see the clause in the test.
-//! * **the mouse through** — asserted as an SGR-1006 press and release written to the operator's
-//!   pty master and read back out of the node's `i` record, press and release both.
+//! * **a keystroke through** — asserted as its *consequence* on the operator's own screen: the
+//!   trust dialog's cursor moving, the composer appearing, a typed marker echoed back. Never as an
+//!   `i` record: `marion attach` negotiates pane-v1, whose keyboard input is evidenced by length
+//!   only and leaves no asciicast `i` by design.
 //!
 //! # What this file does not cover, and where it is covered instead
 //!
 //! **Covered here**: a real `claude` in a marion-owned pane; a client attaching; bytes rendering;
 //! the pre-alt-screen trust dialog rendered on the main screen (§9 names that clause explicitly,
 //! and it is this file's render anchor); a keystroke arriving *and changing what the node does*; a
-//! resize reaching the one master and the client repainting at the new geometry; a click reaching
-//! the node intact; marion's own alternate-screen restore not depending on the node's; and detach
-//! leaving the node running.
+//! resize reaching the one master and the client repainting at the new geometry; marion's own
+//! alternate-screen restore not depending on the node's; and detach leaving the node running.
 //!
 //! **Not covered here, named rather than left to be assumed:**
 //!
@@ -47,10 +48,15 @@
 //!   agreement asserted here can only catch a spurious switch on this version. The direction that
 //!   needs a harness that switches is pinned over the committed 2.1.220 captures, in
 //!   `marion-term/tests/replay.rs::the_alt_screen_switch_is_handled_including_the_restore_that_never_arrives`.
-//! * **the mouse's *enabling* leg, live.** No harness marion can pane asks for a mouse today:
-//!   2.1.225 enables no tracking mode and codex never has (§5.3). 2.1.220 enabled all four, so
-//!   `attach.rs`'s `the_nodes_mouse_modes_are_mirrored_onto_the_operators_terminal` pins the mirror
-//!   against those sequences rather than against a harness that stopped sending them.
+//! * **the mouse, live, in either direction.** The *enabling* leg: no harness marion can pane asks
+//!   for a mouse today — 2.1.225 and later enable no tracking mode and codex never has (§5.3);
+//!   2.1.220 enabled all four, so `attach.rs`'s
+//!   `the_nodes_mouse_modes_are_mirrored_onto_the_operators_terminal` pins the mirror against
+//!   those sequences rather than against a harness that stopped sending them. The *forwarding*
+//!   leg: an SGR-1006 report typed into a pane-v1 client leaves no `i` record and, with tracking
+//!   off in the node, no visible consequence, so it is pinned byte-exact over the wire in
+//!   `attach.rs`'s `writable_pane_v1_sends_arbitrary_keyboard_bytes_on_node_pane_write` and into a
+//!   real child in `handler.rs`'s `a_negotiated_clients_first_opaque_keystroke_reaches_the_child`.
 //! * **permission prompt correct** — a pane's permission ask is answered *in the pane*, by the
 //!   operator, in the harness's own dialog. That reading is not a shrug: `compile_pane`
 //!   deliberately omits `--permission-prompt-tool stdio`, which is the flag that would route the
@@ -133,13 +139,21 @@ const RESIZED: WinSize = WinSize {
     rows: 34,
 };
 
-/// A left-button press at row 5, column 12, in SGR-1006 — one-based on the wire, which is what a
-/// real terminal emits and therefore what this test must emit to stand in for one.
-const MOUSE_PRESS: &str = "\u{1b}[<0;12;5M";
+/// The trust dialog's accept row **with the cursor on it**, as claude 2.1.261 draws it. The glyph
+/// is the whole assertion: the row's text is on screen from the first paint, and only the cursor
+/// moving onto it says a keystroke was received.
+const TRUST_ACCEPT_SELECTED: &str = "❯ Yes, I trust this folder";
 
-/// The matching release. Lowercase `m` is SGR-1006's whole reason for existing over X10, where
-/// every release is button 3 and a child cannot tell which button came up.
-const MOUSE_RELEASE: &str = "\u{1b}[<0;12;5m";
+/// How long the screen must stay still after a keystroke before the fixture concludes the harness
+/// did not receive it and sends another; also the most `wait_still` spends waiting for a screen
+/// that keeps moving. Well above claude's redraw latency through marion, the cast and the emulator
+/// (tens of milliseconds), and short enough that a lost key costs one retry rather than a stall.
+const KEY_SETTLE: Duration = Duration::from_secs(2);
+
+/// How long the screen must stay unchanged to count as settled after a keystroke moved it. One
+/// Ink frame is far shorter; claude 2.1.261's second paint of its trust dialog lands well inside
+/// this after the first (measured under 250 ms on a bare pty).
+const REDRAW_QUIET: Duration = Duration::from_millis(300);
 
 // ---------------------------------------------------------------------------------------------
 // The run
@@ -308,11 +322,73 @@ impl Operator {
         cast_text(&self.cast, "o")
     }
 
+    /// A write the slave side no longer reads (`EIO`) means `marion attach` has exited, so the
+    /// failure carries the last thing the operator saw rather than only the errno.
     fn type_in(&self, bytes: &[u8]) {
-        self.host
-            .master()
-            .write_all(bytes)
-            .expect("writing to the operator's terminal");
+        if let Err(error) = self.host.master().write_all(bytes) {
+            panic!(
+                "writing {bytes:?} to the operator's terminal: {error}. `marion attach` is no \
+                 longer reading it; what the operator saw last:\n{}",
+                self.screen()
+            );
+        }
+    }
+
+    /// Type `key` until `landed` holds of a screen that has **stopped moving**.
+    ///
+    /// Two measured facts about claude 2.1.261's trust dialog make this the only safe shape, both
+    /// taken on a bare pty with no marion in the path. First, the dialog is painted **twice**: the
+    /// first frame is replaced by a fresh copy within a few hundred milliseconds, and a key applied
+    /// to the first copy is undone by the second — an arrow that moved `❯` to "Yes" is followed,
+    /// unprompted, by a frame with `❯` back on "No, exit", and a `\r` that landed on the first copy
+    /// simply never takes effect. Second, the menu is two rows and **wraps**, so re-sending a key
+    /// on a timer is wrong: a key that landed and one typed on top of it are two keys.
+    ///
+    /// So a keystroke is re-sent only after `KEY_SETTLE` of stillness (it was not received), and a
+    /// keystroke that did move the screen is judged only after the screen has been still for
+    /// `REDRAW_QUIET` — long enough for the second paint to have happened — or `KEY_SETTLE` has
+    /// passed without stillness (a spinner). If the still frame does not satisfy `landed`, the
+    /// key is typed again: that is the remount putting the cursor back, and the wrap-safe answer
+    /// to it is one more key on a settled screen, never two in flight.
+    fn type_until(&self, key: &[u8], landed: impl Fn(&str) -> bool) {
+        let deadline = Instant::now() + BOUND;
+        let mut sent = 0;
+        loop {
+            let before = self.screen();
+            if landed(&before) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "after {sent} keystrokes of {key:?} the screen never settled on what they should \
+                 have done, so no keystroke changed what the node drew. What the operator saw:\n\
+                 {before}"
+            );
+            self.type_in(key);
+            sent += 1;
+            let settle = Instant::now() + KEY_SETTLE;
+            while Instant::now() < settle && self.screen() == before {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            if self.screen() != before {
+                self.wait_still();
+            }
+        }
+    }
+
+    /// Return once the screen has not changed for `REDRAW_QUIET`, or after `KEY_SETTLE` if it
+    /// never stops (a harness animating a spinner is not one that is still redrawing a keystroke).
+    fn wait_still(&self) {
+        let give_up = Instant::now() + KEY_SETTLE;
+        let mut last = self.screen();
+        while Instant::now() < give_up {
+            std::thread::sleep(REDRAW_QUIET);
+            let now = self.screen();
+            if now == last {
+                return;
+            }
+            last = now;
+        }
     }
 
     /// The operator drags the corner of their window. `TIOCSWINSZ` on the operator's master is what
@@ -408,8 +484,9 @@ fn script() -> Script {
 ///   setting `leaving`. The client never exits.
 /// * `root::launch_terminal`: kill the node when the pane is forgotten. The node is gone after the
 ///   detach and §7.3.1 is broken.
-/// * `attach::View::mirror_modes`: drop the `screen().mirror(...)` call, or return early. The
-///   operator's terminal is never put into a tracking mode and the mouse clause fails.
+/// * `PtyHost::write_opaque_input_admitted`: skip the `write_all` to the master. Every keystroke
+///   is admitted and evidenced and the dialog's cursor never moves, so `type_until` runs out its
+///   bound naming the key that changed nothing.
 /// * `marion_tui::guard::leave_bytes`: drop the `?1049l`. The operator is left on the alternate
 ///   screen by a node that never sent a `?1049l` of its own, which is the whole absent-restore
 ///   case.
@@ -518,29 +595,42 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
 
     // ---- a keystroke arrives, and changes what the node does ----
     //
-    // Asserted twice over, because the two halves fail separately. The `i` record is the far end:
-    // a `node/pty-write` the supervisor accepted and never wrote to the master would satisfy
-    // anything asserted on the client side. The screen is the *consequence*: claude dismissed its
-    // dialog and drew the composer, with the prompt `compile_pane` seeded into argv in it.
-    op.type_in(b"\r");
+    // **The oracle is the screen, never the recording.** `marion attach` negotiates pane-v1, and
+    // pane-v1 keyboard input is evidenced by length only — `PtyHost::write_opaque_input_admitted`
+    // writes no asciicast `i` record, by design, so that raw keystrokes are never persisted. This
+    // step used to wait for an `i` record and could only ever time out; the delivery leg it meant
+    // to cover is `handler.rs`'s `a_negotiated_clients_first_opaque_keystroke_reaches_the_child`,
+    // over the real socket into a real child. What a live claude adds is the *consequence*: a key
+    // that changes what the node draws has provably crossed the master.
+    //
+    // **Two facts about claude 2.1.261 shape how the dialog is driven, both measured on a bare pty
+    // with no marion in the path (see `Operator::type_until`).** First, the dialog is painted
+    // twice, and a key applied to the first copy is undone by the second — which is what happened
+    // to the `\r` this step used to type the instant the dialog appeared. Byte by byte, that `\r`
+    // was read by `marion attach`, sent as `node/pane-write`, admitted, and written to the node's
+    // master with `Ok`; the node then drew nothing new, because the copy of the dialog it had been
+    // typed into was about to be replaced. Second, the cursor now defaults to **"No, exit"**
+    // (2.1.226 defaulted to accepting), so a bare Enter ends the node instead of accepting the
+    // folder.
+    //
+    // So the first key is arrow-down, and it is its own probe: it submits nothing and its
+    // consequence is visible (the `❯` moves to "Yes"). Enter goes through the same probe, its
+    // consequence being the composer with the prompt `compile_pane` seeded into argv drawn in it.
+    op.type_until(b"\x1b[B", |screen| screen.contains(TRUST_ACCEPT_SELECTED));
     assert!(
-        until(|| cast_text(&node_cast, "i").contains('\r')),
-        "the keystroke never reached the node's pty. Its recorded input was {:?}",
-        cast_text(&node_cast, "i")
-    );
-    assert!(
-        until(|| op.screen().contains(PROMPT_MARK)),
-        "the node never got past its trust dialog, so the keystroke reached the pty and did \
-         nothing — or the prompt marion seeded into the composer was never drawn. What the \
-         operator saw:\n{}",
+        op.screen().contains(TRUST_ACCEPT_SELECTED),
+        "the cursor left the accept row before Enter could be typed:\n{}",
         op.screen()
     );
+    op.type_until(b"\r", |screen| screen.contains(PROMPT_MARK));
 
+    // The composer echoes what is typed into it, so the marker coming back through claude's own
+    // rendering is the keystroke arriving — by the same reasoning `SECOND_MARK` gives below.
     op.type_in(TYPED_MARK.as_bytes());
     assert!(
-        until(|| cast_text(&node_cast, "i").contains(TYPED_MARK)),
-        "the typed marker never reached the node's pty. Its recorded input was {:?}",
-        cast_text(&node_cast, "i")
+        until(|| op.screen().contains(TYPED_MARK)),
+        "the typed marker never came back through the node's composer. What the operator saw:\n{}",
+        op.screen()
     );
 
     // ---- the alt-screen switch is handled ----
@@ -571,40 +661,19 @@ fn a_real_claude_runs_in_a_pane_a_client_attaches_types_resizes_and_detaches_wit
         if switched { "put" } else { "do not put" }
     );
 
-    // ---- the mouse goes through ----
+    // ---- the mouse ----
     //
-    // **What is asserted live is the forwarding leg, and the reason the enabling leg is not is a
-    // measurement rather than a gap.** A mouse report is input: the operator's terminal produces
-    // it and `Keys` forwards it to `node/pty-write` untouched. What puts a terminal into a
-    // tracking mode is `attach::View::mirror_modes`, which mirrors whatever modes the node asked
-    // for — and **no harness marion can pane asks for one today**. 2.1.225 enables none (probed
-    // above); codex enables none and never has (§5.3). 2.1.220 enabled all four, at bytes 98–122,
-    // and the committed captures still carry them, so the mirror is unit-tested against those
-    // sequences in `attach.rs` rather than left to a harness that stopped sending them.
-    //
-    // The bytes below are what an SGR-1006 terminal emits when the left button goes down and comes
-    // up at one cell. The test stands in for the operator's mouse exactly as `type_in` stands in
-    // for their keyboard, and at the same seam: a write to the master of the pty `marion attach`
-    // is reading. Nothing here calls into marion.
-    op.type_in(MOUSE_PRESS.as_bytes());
-    op.type_in(MOUSE_RELEASE.as_bytes());
-    assert!(
-        until(|| cast_text(&node_cast, "i").contains(MOUSE_PRESS)),
-        "the click never reached the node's pty. `Keys` forwards a mouse report as it forwards any \
-         other input, so a report that stops here stopped in the client or in `deliver_input`. Its \
-         recorded input was {:?}",
-        cast_text(&node_cast, "i")
-    );
-    // Third, **it arrived intact**. A report re-encoded on the way — X10 rather than SGR, or a
-    // coordinate off by the one-based conversion — reaches the node and tells it about a click
-    // somewhere else, which is the failure `marion_tui::mouse`'s module doc calls "clicks land in
-    // the wrong place when the window is wide".
-    assert!(
-        cast_text(&node_cast, "i").contains(MOUSE_RELEASE),
-        "the press arrived and the release did not, so the node has a button held down for ever. \
-         Its recorded input was {:?}",
-        cast_text(&node_cast, "i")
-    );
+    // **Not asserted live any more, and the reason is the same as the keystroke's.** A mouse report
+    // is input: the operator's terminal produces it and `Keys` forwards it untouched, and with
+    // pane-v1 that forwarding leaves no `i` record to read back. A click into claude's composer
+    // has no visible consequence either — no harness marion can pane enables mouse tracking today
+    // (2.1.225 and later enable none; codex never has, §5.3) — so there is nothing on the screen to
+    // stand in for the record. Both legs are pinned where they are observable: `attach.rs`'s
+    // `writable_pane_v1_sends_arbitrary_keyboard_bytes_on_node_pane_write` proves an SGR report
+    // crosses the wire byte-exact, and `handler.rs`'s
+    // `a_negotiated_clients_first_opaque_keystroke_reaches_the_child` proves admitted bytes reach
+    // the child. The enabling leg, `attach::View::mirror_modes`, is unit-tested against the
+    // committed 2.1.220 captures that still carry `?1000h`–`?1006h`.
 
     // ---- a resize takes effect on the one master ----
     let want = RESIZED.as_cast();

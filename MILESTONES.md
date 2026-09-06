@@ -129,16 +129,33 @@ and the workspace `--lib` set (1437). `acp_child`, `permission_round_trip` and `
 first with marion's MCP bridge never becoming ready (`McpNeverReady(30s)`, "the bridge never
 answered tools/list") under a 20–28 load average from concurrent builds, and passed in full on an
 isolated rerun minutes later — environmental, kept here so the next reader does not mistake it
-for drift. Two things the green does not cover. **First, `pane_attach`'s claude cell is red**, at its "a keystroke arrives" step: the `\r` the test writes to the operator's master never
-reaches the node — zero `i` records in the node's `pty.cast`, node output unchanged, `marion attach`
-alive and foreground 1.5 s later. It fails identically against 2.1.251 through a `PATH` shim and
-the codex cell on the same fixture is green, so the byte is lost in marion's pane input-admission
-path, not by the harness; that fix is tracked separately and the cell stays red until it lands.
-**Second, a real 2.1.261 drift the same cell will meet next:** the trust dialog now reads *"Quick
-safety check: Is this a project you created or one you trust?"* and puts the cursor on **"No,
-exit"** by default, where 2.1.226 defaulted to accepting — so "press Enter to accept the dialog"
-will make claude exit once the CR gets through. The s10/s11/s14/s16 probes were **not** re-run;
-those readings remain 2.1.226's.
+for drift. **`pane_attach`'s claude cell was red** at its "a keystroke arrives" step, and the
+first reading — that the `\r` was lost in marion's pane input-admission path — was wrong. Traced
+byte by byte with temporary instrumentation: `marion attach` read `0x0d` from fd 0, sent
+`node/pane-write` with `"DQ=="`, the supervisor admitted it and `write_all` on the node's master
+returned `Ok`. Nothing was dropped. Three things made the cell red, none of them marion's input
+path. **(1) A stale oracle.** The step waited for an `i` record in the node's `pty.cast`, and
+pane-v1 keyboard input writes none by design — `PtyHost::write_opaque_input_admitted` records
+length evidence only, so raw keystrokes are never persisted; that assertion could only time out.
+**(2) Harness drift, measured on a bare pty with no marion in the path:** claude 2.1.261 paints
+its trust dialog **twice** — the first frame is replaced by a fresh copy within a few hundred
+milliseconds — and a key applied to the first copy is undone by the second: an arrow-down that
+moved `❯` to "Yes" was followed, with nothing further typed, by a frame with `❯` back on "No,
+exit", and a `\r` typed the instant "trust" appeared never took effect while a `\r` typed later
+always did. The fixture typed the instant the dialog was on screen, so every run typed into the
+copy that was about to be thrown away. **(3) The cursor default moved:**
+2.1.261's dialog reads *"Quick safety check: Is this a project you created or one you trust?"*
+with the cursor on **"No, exit"**, where 2.1.226 defaulted to accepting, so a bare Enter exits
+claude (measured: exit status 1). The fixture now drives the dialog with arrow-down as its own
+probe — re-sent only after the screen has been still, and judged only once the screen has stopped
+moving, so the second paint is seen before Enter is typed — then Enter through the same probe, and
+every "a keystroke arrived" assertion reads the screen (the composer, the prompt marker, the typed
+marker) rather than the recording. The delivery leg the
+`i` oracle stood in for is pinned where it is observable:
+`handler.rs::a_negotiated_clients_first_opaque_keystroke_reaches_the_child` drives the real socket
+into a real child and was the first test to assert an *admitted* opaque write is delivered (every
+prior opaque-input test was a refusal). The s10/s11/s14/s16 probes were **not** re-run; those
+readings remain 2.1.226's.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in
