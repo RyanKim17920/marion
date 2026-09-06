@@ -165,3 +165,84 @@ fn the_acp_agent_type_resolves_to_the_acp_harness_and_names_its_agent() {
         "`acp` is a protocol, not a program: the type must name which agent it runs"
     );
 }
+
+/// The fake agent's own constants, restated: the test asserts on what marion *recorded*, and the
+/// record must match what the agent actually did rather than what the test wished it had.
+const UNKNOWN_AGENT_FILE: &str = "src/marion_acp.txt";
+const UNKNOWN_AGENT_NARRATIVE: &str =
+    "Edited the worktree over ACP from an agent marion had never heard of.";
+
+/// A fixture with no provider at all: the fake agent runs no model, so there is nothing canned to
+/// point it at, and the launch is `Auth::Inherited` — the shape any operator's own ACP agent runs
+/// under.
+fn inherited_fixture(root: &Path) -> (PathBuf, Env) {
+    let repo = fixture_repo(root);
+    let state = root.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let env = Env {
+        project_dir: ProjectDir::new(&state, &repo),
+        project_root: repo.clone(),
+        state,
+        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
+        base_url: None,
+        auth: marion_harness::Auth::Inherited,
+    };
+    (repo, env)
+}
+
+/// **The baseline: an ACP agent marion has never named reaches marion's bridge with zero per-agent
+/// code.** The agent is `tests/fixtures/acp/fake_acp_agent.py` — a stdio ACP server that is in no
+/// row of `acp::AGENTS`, spells the mirrored tool call `marion/report` (a spelling no measured row
+/// carries), and calls the bridge's `report` for real off the `session/new` declaration.
+///
+/// Selected by command rather than by name: `acp:<command>` is the agent-type shape for an agent
+/// marion has no row for, and the whole argv after the prefix is the agent's own.
+///
+/// Two assertions, and both are on fields the agent cannot fabricate through the report: the
+/// narrative is read out of the ACP transcript by marion's reader (so the generic reading, not the
+/// table, is what found it), and `changed_paths` is git's account of the worktree.
+#[test]
+fn a_previously_unknown_acp_agent_reaches_marions_bridge_through_the_generic_path() {
+    if !on_path("python3") {
+        eprintln!("skipped: `python3` is not installed");
+        return;
+    }
+    let fake = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/acp/fake_acp_agent.py"
+    );
+    let root = scratch("acp-unknown");
+    let (repo, env) = inherited_fixture(&root);
+    let req = SpawnRequest {
+        agent_type: format!("acp:python3 {fake}"),
+        prompt: "Create a file under src/ and report back through marion.".into(),
+        repo: repo.clone(),
+        acceptance_criteria: vec!["a file under src/ was created".into()],
+        writable_scope: vec!["src/**".into()],
+        timeout_secs: CHILD_TIMEOUT_SECS,
+        model: None,
+        isolation: Isolation::Worktree,
+        allow_concurrent_writes: false,
+    };
+    let caller = Caller::root(
+        "root",
+        marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+    );
+    let contract = run_spawn(&env, &req, &TaskId("acp-unknown-1".into()), &caller)
+        .unwrap_or_else(|e| panic!("the unknown ACP agent runs through the generic path: {e}"));
+    let comp = contract
+        .completion
+        .as_ref()
+        .expect("a child that reported has a completion");
+    assert_eq!(
+        comp.narrative.as_ref().map(|n| n.value.as_str()),
+        Some(UNKNOWN_AGENT_NARRATIVE),
+        "the report must be read out of a transcript spelled `marion/report`, which no measured \
+         row uses: {comp:?}"
+    );
+    assert_eq!(
+        comp.changed_paths,
+        vec![PathBuf::from(UNKNOWN_AGENT_FILE)],
+        "the child's write must reach the contract by git's account: {comp:?}"
+    );
+}
