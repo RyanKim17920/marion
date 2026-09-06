@@ -72,7 +72,7 @@ own descendants and its parent; sibling addressing is denied unless explicitly g
 
 ---
 
-## Where it actually stands — 2026-09-05, at `b85ea30`
+## Where it actually stands — 2026-09-05, at `d914eb7`
 
 **Markers:** M1, M2, M4 `[done]`; M3 `[partial]` on C1's recorded manual session alone; M5
 `[partial]` on clause 3 alone (`NodeSummary` names a harness, not an ACP agent's handshake). The
@@ -107,7 +107,8 @@ restart_resume -- --ignored` (real codex, detached supervisor). Live ACP: `--tes
 
 **Structure.** `sentrux` quality signal 6456 at `b85ea30` (cycles 0, redundancy 9170,
 modularity 5057, equality 5441, **depth 4444 — the bottleneck**); the day started at 4856 with
-three import cycles. The depth is the one spawn path — CLI → detach → serve → handler → run →
+three import cycles. The signal was measured at `b85ea30`; the commits from there to `d914eb7`
+are tests and docs only, so it is not re-measured. The depth is the one spawn path — CLI → detach → serve → handler → run →
 harness row → grammar — and the design has exactly one such path, so the remaining headroom is
 the tool's formula over a chain marion will not shorten; do not chase the number past that.
 
@@ -844,9 +845,14 @@ honestly still open. Per milestone:
   `claude`, `codex`, `opencode`, `copilot`. Open, stated: the recording itself; the `gemini` lane
   (disabled: system-settings merge granularity unmeasured, `native_facade.rs`); `goose`, `cline`
   and `qwen` lanes (disabled: interactive shape unmeasured); `SIGTSTP`/`SIGCONT` through the
-  facade (kernel-stop not observable from the `spawn_pty` fixture — an orphaned process group;
-  covered only by the isolated `suspend_probe` tests in `native_relay.rs`); the parallel-run flake
-  of `native_relay_sigterm_restores_terminal_and_redelivers_to_itself`.
+  *facade* E2E fixture, still not asserted (its `spawn_pty` client is an orphaned process group by
+  construction, so the kernel discards the stop). Closed after the audit, same day: a real kernel
+  stop and continue through the relay is observed by
+  `native_relay::tests::native_relay_stop_and_continue_are_observed_by_a_job_control_leader`
+  (`acb1cc5`, a same-session foreground job under a leader that owns the PTY; 20/20 under the
+  parallel filter), and the parallel-run flake of
+  `native_relay_sigterm_restores_terminal_and_redelivers_to_itself` is fixed at `dcd907d` (the
+  fixture stopped draining the master while the exiting session leader still had output to drain).
 - **M4 [done]** — unchanged
   (`m4_fan_in.rs::a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_both_contracts`).
 - **M5 [partial]** — unchanged, on clause 3 alone. Clause 1 met (`acp_child.rs`: the canned
@@ -1055,12 +1061,13 @@ acceptance evidence, so every marker remains unchanged.
   recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
   merge unmeasured); `SIGTSTP`/`SIGCONT` through the shipped facade, not observable from the
   `spawn_pty` fixture (orphaned process group) — a real kernel stop and continue through the relay
-  is now observed by the job-control fixture in `native_relay.rs`, but not yet from the shipped
-  binary; and single-use re-attach plus default-action restoration, proved at the bootstrap and
+  is observed by the job-control fixture in `native_relay.rs` (2026-09-05, `acb1cc5`,
+  `native_relay_stop_and_continue_are_observed_by_a_job_control_leader`), but not yet from the
+  shipped binary; and single-use re-attach plus default-action restoration, proved at the bootstrap and
   unit boundaries but not re-observable end to end. The parallel-run flake of
-  `native_relay_sigterm_restores_terminal_and_redelivers_to_itself` is fixed at its root (the
-  PTY fixture stopped reading the master while the exiting session leader still had output to
-  drain); 20/20 green under the parallel filter.
+  `native_relay_sigterm_restores_terminal_and_redelivers_to_itself` is fixed at its root
+  (2026-09-05, `dcd907d`: the PTY fixture stopped reading the master while the exiting session
+  leader still had output to drain); 20/20 green under the parallel filter.
   - **Criterion 1 (a real `claude` TUI in a marion pane) — NOT MET, and the only thing left is the
     recorded session.** Every clause a test can reach is now reached; the criterion's own words
     end with *"over a recorded 10-minute manual session"*, and a human has to sit at a screen for
@@ -1655,7 +1662,9 @@ acceptance evidence, so every marker remains unchanged.
     too (1 of 2 runs at the same HEAD; the bounded inner probe exits 101 after its
     `sigterm-observed-wait-complete` phase) and passes 6/6 run alone. The suspect is the two PTY
     signal probes sharing the process-wide relay signal owner; it needs serial isolation, not a
-    wider bound.
+    wider bound. Fixed at `dcd907d`; the suspect was wrong: a session leader's `proc_exit` drains
+    its controlling PTY before it becomes reapable, so an unread master left the probe a zombie for
+    the whole bound. The fixture now drains the master while waiting (next paragraph).
 
     **The SIGTERM PTY flake was the fixture, not the signal owner (2026-09-05); no marker
     moves.** Reproduced 2/10 then 5/12 under the parallel filter, every failure `the SIGTERM relay
@@ -1714,7 +1723,10 @@ acceptance evidence, so every marker remains unchanged.
     the stop needs a parent in the client's own session and a different process group (a job-control
     shell as session leader running the client as a foreground job), which is a different fixture
     and is not built here. Stop/resume stays covered where it is observable: the isolated
-    `suspend_probe` tests in `native_relay.rs`. No E2E claim is made about TSTP.
+    `suspend_probe` tests in `native_relay.rs`. No E2E claim is made about TSTP. That different
+    fixture was built the same day at `acb1cc5`:
+    `native_relay::tests::native_relay_stop_and_continue_are_observed_by_a_job_control_leader`
+    (next paragraph).
 
     **A real kernel stop and continue through the relay is observed (2026-09-05); no marker
     moves.** `native_relay::tests::native_relay_stop_and_continue_are_observed_by_a_job_control_leader`
