@@ -1543,6 +1543,12 @@ mod tests {
     const PTY_SIGTERM_READY_BOUND: Duration = Duration::from_secs(3);
     const PTY_SIGTERM_OBSERVED_BOUND: Duration = Duration::from_secs(3);
     const PTY_SIGTERM_NATURAL_EXIT_BOUND: Duration = Duration::from_millis(500);
+    const PTY_STOP_INNER: &str = "MARION_NATIVE_PTY_STOP_INNER";
+    const PTY_STOP_LEADER: &str = "MARION_NATIVE_PTY_STOP_LEADER";
+    /// Each of the leader's four observed phases: raw entry, stop, raw re-entry, exit.
+    const PTY_STOP_PHASE_BOUND: Duration = Duration::from_secs(3);
+    const PTY_STOP_INNER_BOUND: Duration = Duration::from_secs(15);
+    const SIGTTOU: std::ffi::c_int = 22;
     const SIG_ERR: usize = usize::MAX;
     static SENTINEL_HITS: AtomicUsize = AtomicUsize::new(0);
 
@@ -1553,6 +1559,10 @@ mod tests {
 
     fn pty_smoke_outer_bound() -> Duration {
         PTY_NESTED_RUNNER_STARTUP_BOUND + PTY_SMOKE_LIFECYCLE_BOUND
+    }
+
+    fn pty_stop_outer_bound() -> Duration {
+        PTY_NESTED_RUNNER_STARTUP_BOUND + PTY_STOP_INNER_BOUND
     }
 
     fn pty_sigterm_outer_bound() -> Duration {
@@ -2930,6 +2940,391 @@ mod tests {
             pty_sigterm_outer_bound(),
         )
         .expect("the bounded SIGTERM lifecycle runner");
+    }
+
+    /// One job-control child owned by the leader fixture: the probe as a foreground job.
+    ///
+    /// The probe is a `fork` of the leader rather than a re-exec of the test binary: a libtest
+    /// process always has its harness main thread, whose mask does not block `SIGTSTP`, and a
+    /// process-directed stop is delivered to any thread that does not block it. The relay owns the
+    /// stop by blocking it on the relay thread and letting later threads inherit that mask, which
+    /// holds for the shipped binary (the relay runs on the only thread) and for a forked child
+    /// whose sole thread is the relay thread. `std::process::Child::try_wait` never passes
+    /// `WUNTRACED`, so every observation here goes through one `waitpid` that does, and the exit
+    /// status is recorded so the pid is signalled only while this owner still holds it unreaped.
+    struct ForegroundJob {
+        pid: rustix::process::Pid,
+        reaped: Option<rustix::process::WaitStatus>,
+    }
+
+    impl ForegroundJob {
+        fn fork(body: fn()) -> Self {
+            unsafe extern "C" {
+                fn fork() -> std::ffi::c_int;
+                fn setpgid(pid: std::ffi::c_int, pgid: std::ffi::c_int) -> std::ffi::c_int;
+                fn tcsetpgrp(fd: std::ffi::c_int, pgrp: std::ffi::c_int) -> std::ffi::c_int;
+                fn getpid() -> std::ffi::c_int;
+            }
+            // SAFETY: the child is a fresh single-threaded process; the parent's other threads are
+            // parked in the libtest harness, not inside an allocator or I/O lock.
+            let pid = unsafe { fork() };
+            assert!(
+                pid >= 0,
+                "forking the foreground stop probe: {}",
+                std::io::Error::last_os_error()
+            );
+            if pid == 0 {
+                let outcome = std::panic::catch_unwind(|| {
+                    // A new process group in the leader's session is not orphaned, so the kernel
+                    // honours a default stop for it. Claiming the foreground from a background
+                    // group raises `SIGTTOU`, so that signal is blocked for the one syscall and
+                    // the probe body starts with an untouched mask.
+                    // SAFETY: plain syscalls on this process and its inherited controlling tty.
+                    unsafe {
+                        assert_eq!(setpgid(0, 0), 0, "{}", std::io::Error::last_os_error());
+                        let ttou = signal_set(SIGTTOU);
+                        assert_eq!(pthread_sigmask(SIG_BLOCK, &ttou, std::ptr::null_mut()), 0);
+                        assert_eq!(
+                            tcsetpgrp(0, getpid()),
+                            0,
+                            "{}",
+                            std::io::Error::last_os_error()
+                        );
+                        assert_eq!(
+                            pthread_sigmask(super::SIG_UNBLOCK, &ttou, std::ptr::null_mut()),
+                            0
+                        );
+                    }
+                    body();
+                });
+                // The body ends by dying from its redelivered signal; reaching here is a failure
+                // the leader observes as a plain exit. `_exit` keeps the forked copy of the
+                // libtest harness from ever running.
+                // SAFETY: nothing in this forked child needs destructors.
+                unsafe { _exit(if outcome.is_ok() { 0 } else { 101 }) }
+            }
+            Self {
+                pid: rustix::process::Pid::from_raw(pid).expect("a positive child pid"),
+                reaped: None,
+            }
+        }
+
+        fn signal_group(&self, signal: rustix::process::Signal) {
+            assert!(
+                self.reaped.is_none(),
+                "signalling a reaped foreground job would race pid reuse"
+            );
+            rustix::process::kill_process_group(self.pid, signal)
+                .expect("signalling the foreground job's process group");
+        }
+
+        fn signal(&self, signal: rustix::process::Signal) {
+            assert!(
+                self.reaped.is_none(),
+                "signalling a reaped foreground job would race pid reuse"
+            );
+            rustix::process::kill_process(self.pid, signal).expect("signalling the foreground job");
+        }
+
+        /// One non-blocking `waitpid(WUNTRACED)`: a stop, a continue, or an exit, if any.
+        fn poll(&mut self) -> Option<rustix::process::WaitStatus> {
+            use rustix::process::{WaitOptions, waitpid};
+            if let Some(status) = self.reaped {
+                return Some(status);
+            }
+            let status = waitpid(Some(self.pid), WaitOptions::NOHANG | WaitOptions::UNTRACED)
+                .expect("polling the foreground stop probe")
+                .map(|(_, status)| status);
+            if let Some(status) = status
+                && (status.exited() || status.signaled())
+            {
+                self.reaped = Some(status);
+            }
+            status
+        }
+
+        /// Poll until `accept` names the status it wants or the bound expires.
+        fn wait_until(
+            &mut self,
+            bound: Duration,
+            accept: impl Fn(rustix::process::WaitStatus) -> bool,
+        ) -> Result<rustix::process::WaitStatus, String> {
+            let deadline = Instant::now() + bound;
+            loop {
+                if let Some(status) = self.poll()
+                    && accept(status)
+                {
+                    return Ok(status);
+                }
+                if let Some(status) = self.reaped {
+                    return Err(format!("the foreground job exited early: {status:?}"));
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "the foreground job did not reach the expected state within {bound:?}"
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    impl Drop for ForegroundJob {
+        fn drop(&mut self) {
+            if self.reaped.is_some() {
+                return;
+            }
+            // `SIGKILL` ends a stopped job too; the wait after it is the one blocking call and is
+            // bounded by the kill itself.
+            let _ = rustix::process::kill_process(self.pid, rustix::process::Signal::KILL);
+            self.reaped =
+                rustix::process::waitpid(Some(self.pid), rustix::process::WaitOptions::empty())
+                    .ok()
+                    .flatten()
+                    .map(|(_, status)| status);
+        }
+    }
+
+    fn cooked_termios(fd: impl std::os::fd::AsFd) -> rustix::termios::Termios {
+        rustix::termios::tcgetattr(fd).expect("reading the job-control terminal")
+    }
+
+    fn is_raw(termios: &rustix::termios::Termios) -> bool {
+        !termios
+            .local_modes
+            .contains(rustix::termios::LocalModes::ICANON)
+    }
+
+    /// The job-control leader: session leader on the fixture PTY, running the probe as its
+    /// foreground job. It never reads the terminal (the inner fixture drains the master), so its
+    /// oracles are `waitpid(WUNTRACED)` and the terminal's own attributes.
+    fn run_native_pty_stop_leader() {
+        let stdin = std::io::stdin();
+        let baseline = cooked_termios(&stdin);
+        assert!(!is_raw(&baseline), "the leader's terminal starts cooked");
+        let mut job = ForegroundJob::fork(run_native_pty_stop_probe);
+
+        // Raw mode is the probe's ready oracle: it acquires signal ownership (blocking SIGTSTP)
+        // before entering raw mode, so a stop sent now is owned rather than kernel-default.
+        let raw_deadline = Instant::now() + PTY_STOP_PHASE_BOUND;
+        while !is_raw(&cooked_termios(&stdin)) {
+            if let Some(status) = job.poll() {
+                panic!("the stop probe ended before entering raw mode: {status:?}");
+            }
+            assert!(
+                Instant::now() < raw_deadline,
+                "the stop probe never entered raw mode"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        job.signal_group(rustix::process::Signal::TSTP);
+        let stopped = job
+            .wait_until(PTY_STOP_PHASE_BOUND, |status| status.stopped())
+            .expect("the kernel reported the revealed stop");
+        assert_eq!(
+            stopped.stopping_signal(),
+            Some(SIGTSTP),
+            "the job stopped for a different signal: {stopped:?}"
+        );
+        let while_stopped = termios_mismatches(&cooked_termios(&stdin), &baseline);
+        assert!(
+            while_stopped.is_empty(),
+            "the terminal was not cooked while the job was stopped: {while_stopped:?}"
+        );
+        println!("LEADER_STOPPED_COOKED");
+
+        job.signal_group(rustix::process::Signal::CONT);
+        let reraw_deadline = Instant::now() + PTY_STOP_PHASE_BOUND;
+        while !is_raw(&cooked_termios(&stdin)) {
+            if let Some(status) = job.poll()
+                && (status.exited() || status.signaled())
+            {
+                panic!("the stop probe ended before re-entering raw mode: {status:?}");
+            }
+            assert!(
+                Instant::now() < reraw_deadline,
+                "the stop probe never re-entered raw mode after SIGCONT"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        println!("LEADER_RESUMED_RAW");
+
+        job.signal(rustix::process::Signal::TERM);
+        let ended = job
+            .wait_until(PTY_STOP_PHASE_BOUND, |status| status.signaled())
+            .expect("the probe redelivered SIGTERM to itself");
+        assert_eq!(
+            ended.terminating_signal(),
+            Some(SIGTERM),
+            "the probe did not end by SIGTERM: {ended:?}"
+        );
+        let after_exit = termios_mismatches(&cooked_termios(&stdin), &baseline);
+        assert!(
+            after_exit.is_empty(),
+            "the terminal was not restored after the probe ended: {after_exit:?}"
+        );
+        println!("LEADER_EXITED_COOKED");
+    }
+
+    fn run_native_pty_stop_inner() {
+        fixture_phase("stop-inner-start");
+        let master = crate::pty::PtyMaster::open(crate::pty::WinSize::new(91, 29))
+            .expect("opening the stop relay probe pty");
+        let observer = master
+            .open_slave()
+            .expect("opening the stop relay baseline observer");
+        let baseline_termios =
+            rustix::termios::tcgetattr(&observer).expect("reading stop relay baseline termios");
+        let mut command = exact_native_relay_test_command(
+            "native_relay_stop_and_continue_are_observed_by_a_job_control_leader",
+        );
+        command.env(PTY_STOP_LEADER, "1");
+        let witness = marion_harness::ExecutionSurfaces::opaque()
+            .display_plane()
+            .expect("opaque execution owns a pty");
+        fixture_phase("stop-leader-spawn-enter");
+        let mut leader = crate::pty::spawn_pty(
+            witness,
+            &mut command,
+            &master,
+            crate::pty::StdinPlan::TerminalSlave,
+            None,
+        )
+        .expect("spawning the job-control leader on its pty");
+        fixture_phase("stop-leader-spawn-complete");
+        let deadline = Instant::now() + PTY_STOP_INNER_BOUND;
+        fixture_phase("stop-leader-wait-enter");
+        let mut output = match read_pty_until(&master, b"LEADER_EXITED_COOKED\r\n", deadline) {
+            Ok(output) => output,
+            Err(error) => {
+                let cleanup = leader.kill_and_reap();
+                panic!("{error}; exact leader cleanup: {cleanup:?}");
+            }
+        };
+        fixture_phase("stop-leader-wait-complete");
+        let status = wait_pty_child(&master, &mut leader, deadline);
+        drain_pty(&master, &mut output);
+        assert!(
+            status.success(),
+            "the job-control leader exited with {status}"
+        );
+
+        let mut passive_cleanup = Vec::new();
+        write_passive_terminal_cleanup_to(&mut passive_cleanup)
+            .expect("rendering the expected passive cleanup bytes");
+        let position = |needle: &[u8]| {
+            output
+                .windows(needle.len())
+                .position(|window| window == needle)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{:?} never crossed the pty: {:?}",
+                        String::from_utf8_lossy(needle),
+                        String::from_utf8_lossy(&output)
+                    )
+                })
+        };
+        // Markers written in raw mode cross without `ONLCR`, so the line endings are not matched.
+        let ready = position(b"NATIVE_STOP_READY");
+        let cleanup = position(&passive_cleanup);
+        let stopped = position(b"LEADER_STOPPED_COOKED");
+        let resumed = position(b"NATIVE_STOP_RESUMED");
+        let resumed_raw = position(b"LEADER_RESUMED_RAW");
+        assert!(
+            ready < cleanup && cleanup < stopped && stopped < resumed && stopped < resumed_raw,
+            "the stop lifecycle crossed the pty out of order: ready={ready}, cleanup={cleanup}, stopped={stopped}, resumed={resumed}, resumed_raw={resumed_raw}, output={:?}",
+            String::from_utf8_lossy(&output)
+        );
+        let restored = termios_mismatches(&pty_master_termios(&master), &baseline_termios);
+        assert!(
+            restored.is_empty(),
+            "the fixture pty was left modified: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn native_relay_stop_outer_bound_covers_every_legal_inner_phase() {
+        assert!(
+            PTY_STOP_INNER_BOUND >= PTY_NESTED_RUNNER_STARTUP_BOUND + 4 * PTY_STOP_PHASE_BOUND,
+            "the inner runner can outlive a conforming leader: inner={PTY_STOP_INNER_BOUND:?}, leader phases={:?}",
+            4 * PTY_STOP_PHASE_BOUND
+        );
+        assert!(
+            pty_stop_outer_bound() >= PTY_NESTED_RUNNER_STARTUP_BOUND + PTY_STOP_INNER_BOUND,
+            "the outer runner can kill a conforming inner lifecycle: outer={:?}",
+            pty_stop_outer_bound()
+        );
+    }
+
+    /// The foreground job: the relay's stop path on a real controlling terminal, ending by the
+    /// relay's own redelivery of the `SIGTERM` the leader sends once raw mode is re-entered.
+    fn run_native_pty_stop_probe() {
+        let witness = crate::native_tty::capture_process_stdio()
+            .expect("the stop probe owns its foreground controlling terminal");
+        // Ownership first, then raw mode: the leader treats raw mode as proof that SIGTSTP is
+        // already owned, exactly as `run` acquires signals before relay setup. The fixture's
+        // server thread predates ownership and so does not block SIGTSTP; it has finished its
+        // attach by the time the session opens, and joining it here leaves the relay thread and
+        // the keyboard worker (spawned after ownership, inheriting the blocked mask) as the only
+        // threads a process-directed stop could reach.
+        let (mut session, signals, _release, server_thread, _resize_tty) =
+            relay_for_signal_exit(SignalExit::ReadFailure);
+        server_thread
+            .join()
+            .expect("the fixture server finished its attach");
+        assert!(
+            signals.owns_stop(),
+            "the foreground probe owns a default SIGTSTP"
+        );
+        let mut terminal = witness
+            .enter_native_relay()
+            .expect("the stop probe enters raw relay mode");
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(b"NATIVE_STOP_READY\n").unwrap();
+        stdout.flush().unwrap();
+        let pending_deadline = Instant::now() + PTY_STOP_PHASE_BOUND;
+        while !owned_stop_pending().expect("querying the owned stop") {
+            assert!(
+                Instant::now() < pending_deadline,
+                "no owned stop became pending"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        suspend_until_continued(&mut terminal, &mut session, &signals)
+            .expect("the probe stops, continues, and re-enters raw mode");
+        stdout.write_all(b"NATIVE_STOP_RESUMED\n").unwrap();
+        stdout.flush().unwrap();
+        drop(stdout);
+        while FIRST_RELAY_SIGNAL.load(Ordering::SeqCst) == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let signal = FIRST_RELAY_SIGNAL.load(Ordering::SeqCst);
+        finish_claimed_relay(
+            &mut terminal,
+            Ok(RelayStop::ExternalSignal(signal)),
+            signals,
+        )
+        .expect("the restored prior signal action accepted redelivery");
+    }
+
+    /// A real kernel stop and continue through the relay, observed where they are observable: the
+    /// probe runs as the foreground job of a session leader on the same PTY, so its process group
+    /// is not orphaned and the kernel honours the default `SIGTSTP` the relay reveals.
+    #[test]
+    fn native_relay_stop_and_continue_are_observed_by_a_job_control_leader() {
+        if std::env::var_os(PTY_STOP_LEADER).is_some() {
+            exit_after_successful_fixture(run_native_pty_stop_leader);
+        }
+        if std::env::var_os(PTY_STOP_INNER).is_some() {
+            exit_after_successful_fixture(run_native_pty_stop_inner);
+        }
+        run_isolated_signal_probe_bounded(
+            PTY_STOP_INNER,
+            "native_relay_stop_and_continue_are_observed_by_a_job_control_leader",
+            pty_stop_outer_bound(),
+        )
+        .expect("the bounded stop lifecycle runner");
     }
 
     /// Drive one suspend/resume transition directly, standing in for the moment `pump` returns

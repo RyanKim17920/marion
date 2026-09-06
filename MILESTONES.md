@@ -948,10 +948,11 @@ acceptance evidence, so every marker remains unchanged.
   of dying on a full pty queue, a bug the matrix found on its first run. The `opencode` and
   `copilot` lanes were enabled on measurement of their TUIs' `/mcp` views. *Still open:* C1's
   recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
-  merge unmeasured); `SIGTSTP`/`SIGCONT` through the facade, not observable from the `spawn_pty`
-  fixture (orphaned process group) and covered only by the isolated relay probes; and
-  single-use re-attach plus default-action restoration, proved at the bootstrap and unit
-  boundaries but not re-observable end to end. The parallel-run flake of
+  merge unmeasured); `SIGTSTP`/`SIGCONT` through the shipped facade, not observable from the
+  `spawn_pty` fixture (orphaned process group) — a real kernel stop and continue through the relay
+  is now observed by the job-control fixture in `native_relay.rs`, but not yet from the shipped
+  binary; and single-use re-attach plus default-action restoration, proved at the bootstrap and
+  unit boundaries but not re-observable end to end. The parallel-run flake of
   `native_relay_sigterm_restores_terminal_and_redelivers_to_itself` is fixed at its root (the
   PTY fixture stopped reading the master while the exiting session leader still had output to
   drain); 20/20 green under the parallel filter.
@@ -1593,6 +1594,31 @@ acceptance evidence, so every marker remains unchanged.
     shell as session leader running the client as a foreground job), which is a different fixture
     and is not built here. Stop/resume stays covered where it is observable: the isolated
     `suspend_probe` tests in `native_relay.rs`. No E2E claim is made about TSTP.
+
+    **A real kernel stop and continue through the relay is observed (2026-09-05); no marker
+    moves.** `native_relay::tests::native_relay_stop_and_continue_are_observed_by_a_job_control_leader`
+    is the job-control fixture the paragraph above asked for, at the unit boundary: the inner
+    runner owns a PTY master and `spawn_pty`s a *leader* (session leader, the slave as its
+    controlling terminal); the leader `fork`s the probe into a new process group of the same
+    session that claims the foreground itself (`SIGTTOU` blocked around one `tcsetpgrp`), so the
+    group is not orphaned. The probe acquires signal ownership, then enters raw mode, which the
+    leader reads as the ready oracle (`tcgetattr` on its own stdin). The leader sends `SIGTSTP` to
+    the group, observes `WIFSTOPPED` with `SIGTSTP` through bounded `waitpid(WUNTRACED|WNOHANG)`,
+    asserts the terminal is at its cooked baseline while the job is stopped, sends `SIGCONT`,
+    polls the terminal back into raw mode, sends `SIGTERM`, observes the exit by signal 15, and
+    asserts the baseline again; the inner asserts the byte order on the master — ready marker,
+    passive cleanup bytes, stopped marker, resumed markers — and the PTY's final termios. Every
+    child is owned by its direct parent with bounded polls and `SIGKILL` plus `waitpid` at the
+    ceiling; no `std::process::Child::try_wait` is used for the job because it never passes
+    `WUNTRACED`. 10/10 alone and 20/20 inside the parallel `native_relay` filter (50 tests).
+    *What was tried first and why it is not the fixture:* re-exec'ing the test binary as the probe
+    stopped the job with the terminal still raw. libtest's harness main thread does not block
+    `SIGTSTP`, and a process-directed stop is delivered to any thread that does not block it, so
+    the kernel default stopped the process before the relay could reveal anything. The relay's
+    ownership model (block on the relay thread, later threads inherit) holds for the shipped
+    binary because `main` runs the relay on its only thread; it would not hold for a client that
+    spawned any thread before `RelaySignalGuard::acquire`. The fixture therefore forks a
+    single-threaded probe and joins the pre-ownership server thread before entering raw mode.
 
     **The `opencode` and `copilot` native lanes are enabled on measurement (2026-09-05); no
     marker moves.** Their rows had said the declaration channel was measured only on the headless
