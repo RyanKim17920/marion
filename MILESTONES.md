@@ -621,6 +621,13 @@ round-tripping, and accurate token counts.
 | Fixture format | asciicast v3 NDJSON, hand-rolled serde (the `asciicast` crate died in 2018) | — |
 | Seed VT corpus | vendor `vt100-rust` `tests/data/fixtures/` (MIT) | — |
 
+*(Checked against `Cargo.lock` at `b85ea30`, 2026-09-05: `alacritty_terminal`, `vte`,
+`ratatui`, `insta`, `globset` and the dev-only `vt100` are dependencies. `agent-client-protocol`,
+`testy`, `avt`, `wiremock`, `expectrl` and `portable-pty` are **picks, not dependencies** — the
+ACP driver is hand-rolled in `marion-supervisor/src/acp_child.rs`, the canned provider is the
+`marion-provider` crate, and CLI E2E tests drive real PTYs through `marion-supervisor::pty`. The
+table stays as the record of what was chosen and why; this note is what is actually linked.)*
+
 `wezterm-term` is **not on crates.io**. `vt100` is disqualified on retention, and that figure is
 now **derived** from the committed `tests/fixtures/s2` captures by
 `crates/marion-term/tests/vt100_comparison.rs` (design doc §11 item 10, closed 2026-08-07): vt100
@@ -1160,6 +1167,16 @@ acceptance evidence, so every marker remains unchanged.
     was already MET. **M3 stays `[partial]`, blocked on exactly what it was blocked on before: C1's
     recorded 10-minute manual session, which needs a person.**
 
+    **Correction, 2026-09-05, covering the dated run of paragraphs from here down to "The M3
+    native facade matrix runs".** Each of them says some form of *production-dark*, *the shipped
+    CLI still refuses the native facade relay*, *the production descriptor slice is empty*, *no
+    vendor lane is reachable*, or *`run` is unreachable from the shipped CLI*. Every one was true
+    on the day it was written and every one is false at `b85ea30`: `PRODUCTION_NATIVE_FACADES`
+    carries a descriptor for all eight terminal harnesses, four lanes are enabled, `main` relays
+    through `facade_cli::relay_native_facade`, and `tests/native_facade_e2e.rs` runs the shipped
+    `marion <harness>` for each enabled lane. They are kept as the record of how the activation
+    was built, not as a description of the tree; the block at the head of this milestone is.
+
     **Implementation reconciliation, 2026-08-12 — no milestone marker moves.**
     Commits `1bc8874`, `e9563c8`, `558a716`, `fd94284`, `d4ecd92`, `a3d86f7`,
     `8698e51`, and `edc366d` add the production-dark durable stream format and the
@@ -1318,7 +1335,9 @@ acceptance evidence, so every marker remains unchanged.
     live in `native_relay` so `native_tty` no longer imports the module that depends on it. The
     production native facade stays dark: `run` is still unreachable from the shipped CLI, TSTP is
     recorded but suspend/resume is not implemented, and no end-to-end socket/lease evidence is
-    claimed. M3 remains `[partial]` pending C1's recorded manual session.
+    claimed. M3 remains `[partial]` pending C1's recorded manual session. *(2026-09-05: all
+    three sentences superseded — `run` is reached from the shipped CLI, Ctrl-Z suspend/resume is
+    implemented, and `native_facade_e2e.rs` is the end-to-end evidence.)*
 
     **The client environment on the native bootstrap wire in this commit moves no milestone
     marker.** `DirectNativeRequestContext` now carries the caller's process environment as a
@@ -1382,7 +1401,9 @@ acceptance evidence, so every marker remains unchanged.
     claim or relay (the pending launch is cancelled when the bootstrap connection closes); and the
     vendor's cwd is the canonical project root rather than the operator's subdirectory. M3 remains
     `[partial]` pending the registry-driven adapters, facade advertisement, the CLI relay, and
-    C1's recorded manual session.
+    C1's recorded manual session. *(2026-09-05: the first four of those are landed and named in
+    the paragraphs below; the vendor's cwd being the project root rather than the operator's
+    subdirectory is the one clause here still true.)*
 
     **Mask-owned `SIGTSTP` in this commit moves no milestone marker.** Per the v5 synchronous-signal
     design, the relay no longer installs a `SIGTSTP` handler. A default, unblocked `SIGTSTP` is
@@ -1501,7 +1522,9 @@ acceptance evidence, so every marker remains unchanged.
     stands in front of, each adapter id the harness's own row — with `claude` and `codex` enabled
     (their TUI rows were measured with the declaration flag) and the other three disabled by a
     named reason (gemini's system-settings merge granularity; opencode's and copilot's channel
-    measured only headless). Covered by `production_facades_cover_every_terminal_harness_exactly_
+    measured only headless). *(2026-09-05, later: eight descriptors, since `goose`, `cline` and
+    `qwen` joined `Harness`; `opencode` and `copilot` enabled on measurement the same day, so four
+    lanes are enabled and four — `gemini`, `goose`, `cline`, `qwen` — are disabled by name.)* Covered by `production_facades_cover_every_terminal_harness_exactly_
     once` (cardinality from the enum) and, at the shipped binary, by `registered_selectors_refuse_
     off_a_terminal_while_reserved_and_unknown_names_keep_legacy_usage`: every registered selector
     off a terminal now takes the facade's TTY refusal instead of legacy usage, while `run`,
@@ -1604,8 +1627,8 @@ acceptance evidence, so every marker remains unchanged.
 
     **The M3 native facade matrix runs, harness-generic, from the shipped binary (2026-09-05);
     M3 stays `[partial]`.** `tests/native_facade_e2e.rs::every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade`
-    iterates `production_native_facades().enabled_native_commands()` — today `claude` and `codex`
-    — and for each runs the **shipped** `marion <harness>` with no tail (the TUI's first screen,
+    iterates `production_native_facades().enabled_native_commands()` — `claude` and `codex` when
+    this was written, four lanes since the `opencode`/`copilot` paragraph below — and for each runs the **shipped** `marion <harness>` with no tail (the TUI's first screen,
     which asks nothing of a provider) as a foreground session leader on a PTY marion records, in
     front of a supervisor composed as `detach.rs` stage 3 composes it. Observed on darwin 25.5.0
     with claude 2.1.261 and codex 0.147.0, 3/3 loops after the writer fix above, both lanes:
@@ -1723,6 +1746,14 @@ marion run claude --pane --prompt "walk the tree with me" --timeout 900
 # terminal 2 — the operator, recorded
 asciinema rec docs/recordings/m3-c1-<date>.cast --command "marion attach <agent-id>"
 ```
+
+*(2026-09-05: the native facade is live, so the session is to be recorded through it instead —
+`asciinema rec docs/recordings/m3-c1-<date>.cast --command "marion claude"` — one terminal, the
+harness's own TUI on the operator's terminal through the relay, the node in `marion tree` from
+another. The `run --pane` + `attach` pair above still works and remains the shape step 5's
+granted `claude-impl` type needs; the facade passes the operator's own flags through opaquely and
+compiles no grant of its own, so what step 5 reads on a facade session is the harness's ordinary
+permission behaviour — record it either way.)*
 
 Ten minutes on the clock from the attach, with a real model behind it — `--pane` without
 `--canned` uses the login the operator already has, which is the point: the criterion is about a
@@ -2044,7 +2075,10 @@ says a clause failed.
 
   What exists. `marion tree` draws every node `tree/subscribe` reports and, along the bottom, all
   ten of §3.3's capabilities for the selected node — the ones its harness cannot do on its surfaces
-  in `DarkGray` + `CROSSED_OUT`, the rest plain. **The availability bit is not computed by the UI.**
+  in `DarkGray` + `CROSSED_OUT`, the rest plain *(2026-09-05: the strip is labelled `caps:`, an
+  absent capability is drawn dim rather than struck through — it is unmeasured, not cannot — and
+  an offered one bold; `tree.rs::a_greyed_action_differs_from_an_offered_one_only_in_style`)*.
+  **The availability bit is not computed by the UI.**
   `marion_tui::tree` has no dependency that could reach a capability table and cannot name a
   harness; it receives an `Action { name, available }` and chooses a style.
   `marion_supervisor::tree::actions_for` is what decides, through
@@ -2091,6 +2125,10 @@ says a clause failed.
   clause 3 therefore means giving a node summary the *agent* identity behind its harness, which is
   work that belongs with whatever first spawns one — i.e. with clause 1. **The marker does not
   move**, and the reason it does not is now one sentence about ACP rather than "there is no UI".
+  *(2026-09-05: the first two sentences are false — clause 1 is met and `run_spawn` puts ACP
+  children into the registry through `LaunchPath::Acp` — so an ACP node **is** in the tree today,
+  greyed at the protocol's static ceiling. The third sentence is exactly what remains:
+  `NodeSummary` still has no field for the agent's handshake identity.)*
 
   **What the adapter decided, and the argument for each.**
   - **Surfaces: `Typed(Acp)` / `StructuredUi` / `{ProtocolEvents}`** — §3.4's `headless` preset.
@@ -2152,8 +2190,9 @@ says a clause failed.
 
   **What runs live, and what does not.**
   - *Live, from a shipped binary:* `marion-supervisor doctor --capabilities --harness acp` (two
-    real `initialize` handshakes) and `--adapter --harness acp` (the full ACP micro-contract against
-    `opencode acp`, including a real model turn). Both are exercised by `cargo test`.
+    real `initialize` handshakes *— five rows plus any `--acp-command` as of 2026-09-05*) and
+    `--adapter --harness acp` (the full ACP micro-contract against `opencode acp`, including a real
+    model turn). Both are exercised by `cargo test`.
   - *Against fixtures:* the frame readers — `marion_calls`, `parse_stream`, the tool-name mapping —
     are asserted against `tests/fixtures/s21/`, which is a verbatim capture rather than a
     hand-written frame.
@@ -2163,7 +2202,10 @@ says a clause failed.
     every `acp:<command>` type name `harness: acp`. What is still true is narrower: an ACP node is a
     **child** — `marion run` starts roots, and no ACP type is a root type.
 
-  **The blocker, unchanged and not marion's.** `gemini --acp` completes `initialize` and then
+  **The blocker, unchanged and not marion's** *(2026-08-08; superseded 2026-09-05 — the second
+  real agent arrived as `copilot --acp`, and clause 1 is met above; gemini's own refusal is
+  unchanged and is now one of S28's three vendor-side `session/new` refusals)*. `gemini --acp`
+  completes `initialize` and then
   cannot open a session: `session/new` answers `-32000`, *"This client is no longer supported for
   Gemini Code Assist for individuals."* S20 reproduced it with no marion involved, and it is the
   same vendor-side block this file already records for bare `gemini -p` reaching the ACP surface
@@ -2233,7 +2275,11 @@ about the rest of the system. **"M1 [done]" must never be read as "marion works.
 does not exist, so nothing survives a supervisor restart. Descendant gating — which principle 11
 above calls non-negotiable — is specified and **not in code**. `verification` never executes, so
 every contract's `evidence` is empty. The next section is the authoritative list, not a footnote
-to this one.
+to this one. *(2026-09-05: the journal sentence is history — the journal exists, is the detached
+supervisor's boot path, and a lost root is relaunched under its own id by `marion resume`. The
+descendant-gating and `verification` sentences are still true at `b85ea30`:
+`spawn.rs` writes `live_descendants_at_report: vec![]` and a `spawn` carrying `verification` is
+refused by name.)*
 
 ### Not started — what a working M1 does *not* imply
 
@@ -2263,7 +2309,9 @@ grouping.
   watcher seeing a child while it runs, and that is all it buys: a supervisor restart still
   recovers nothing, `Orphaned` marking and reap recovery still have no substrate, and **M2's
   replay criteria remain unmet**. This bullet stays on the list for that reason, with a different
-  reason than it had yesterday.
+  reason than it had yesterday. *(Every clause of that sentence is history as of 2026-09-05:
+  M2 is `[done]`, and the same-day paragraphs at the end of this bullet take a restart through
+  `node/resume` and `marion resume` to a relaunched root.)*
   **Re-checked 2026-09-05 — the sentence is stale in one respect and true in the one that
   matters.** `Orphaned` marking has had its substrate since `restart.rs` (M2 criterion 3), and a
   client attaching after a restart is now told the truth about an orphan — `ReplayResumable`, never
@@ -2280,7 +2328,8 @@ grouping.
   (`session_observed_round_trips_and_replays_onto_the_node`). **No producer writes it yet**: every
   node still replays with `harness_session: None`. What a restart still does **not** do is bring
   any node back — nothing journals a session, no `node/resume` exists, so nothing writes that
-  second `Spawned` yet.
+  second `Spawned` yet. *(Superseded the same day by the paragraphs that follow: the producer,
+  the method, the handler arm and the CLI verb each landed in turn.)*
   **2026-09-05, later — the session id is grammar data.** `StreamGrammar::session: Option<SessionId
   { at: Where, path }>` names, per row, the unit that carries the harness's own session id and the
   pointer to it, and one engine function `grammar::session_id(row, frame)` reads it — no
@@ -2355,8 +2404,11 @@ grouping.
   runs in ~2–5 s. Codex keeps its session rollout under `$CODEX_HOME` = the node's own agent dir,
   which nothing deletes on orphan/reap (only `run::cleanup` removes the `worktree`, never the agent
   dir), so the resume finds it. **This closes plan-restart-resume.md steps 1–8.**
-- **The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
-  exercised only by tests.
+- ~~**The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
+  exercised only by tests.~~ **Off this line 2026-09-05, and it had been false since M2:**
+  `registry::replay` is the detached supervisor's boot path over the on-disk journal (M2
+  criterion 2, `client_run.rs`), `watch.rs` reads through it on a live run, and `node/resume`
+  rebuilds a `RootSpec` from what it replayed. It is a pure function; it is not a test-only one.
 - **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.
   Unchanged, and now visible in the artifact: `spawn.rs` writes `live_descendants_at_report:
   vec![]` on every contract, so the field a gate would read is a hardcoded empty list.
@@ -2426,12 +2478,20 @@ non-negotiable: `spawn.rs:1048` still writes `live_descendants_at_report: vec![]
 gate would read is a hardcoded empty list. It is listed above under "not done" and repeated here
 because it is the item most likely to be lost among five corrections.
 
-What does exist: `marion run <agent-type> --prompt …` launches the root; contracts persist uncapped
+What does exist: `marion run <agent-type> --prompt …` launches the root (and, since 2026-09-05,
+`marion <harness> <its own flags>` runs a native TUI as a root through the relay, `marion resume
+<agent-id>` relaunches a lost root, `marion attach` and `marion tree` view the fleet, and
+`acp:<command>` names any ACP agent as a child type); contracts persist uncapped
 to `<agent-dir>/contracts/<task_id>.json` with the capped copy returned; timeouts are enforced with
 a descendant-pgid sweep; scope is checked both preventively (at spawn) and detectively (git-derived).
 Mechanism for all of it: design doc §5–§7.
 
 ### The evidence base — what 2026-08-04 changed, and what it did not
+
+*(Read the counts in this section as 2026-08-04's: "four harnesses" and "sixteen pairings" were
+the whole set then. At `b85ea30` the set is eight terminal harnesses plus ACP — `harness_matrix`
+has eight cells and `cross_product` fifty-seven — and the headline count of 570 tests is that
+day's, not the tree's.)*
 
 **No milestone status changed on this date, and that is the finding.** M1 was already **[done]** and
 M2 remains **[open]**: at that date the journal was still not read at runtime (`8a16427` changed
