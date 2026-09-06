@@ -169,7 +169,7 @@ fn the_acp_agent_type_resolves_to_the_acp_harness_and_names_its_agent() {
 /// **A second real ACP agent as a marion child: `copilot --acp`, through its refinement row.**
 ///
 /// Ignored by default because it runs against the operator's own Copilot login and spends real
-/// tokens; run it with `--ignored` when copilot is installed and logged in. S25 measured why the row
+/// tokens; run it with `--ignored` when copilot is installed and logged in. S28 measured why the row
 /// exists: copilot 1.0.83 ignores `session/new`'s `mcpServers`, so the bridge is declared on
 /// `--additional-mcp-config` by `AcpAdapter::fields`, and the model's `marion-report` call is read
 /// in the row's measured spelling. The assertions are the same two the canned test makes — the
@@ -186,7 +186,7 @@ fn a_real_copilot_acp_child_reports_through_the_argv_declared_bridge() {
     let (repo, env) = inherited_fixture(&root);
     let req = SpawnRequest {
         // The row's id, not `copilot --acp`: the command form binds the generic path, which on this
-        // version reaches no bridge (S25).
+        // version reaches no bridge (S28).
         agent_type: "acp:copilot".into(),
         prompt: format!(
             "Create the file `{CHILD_FILE}` containing exactly `{}` (you may write it with your own \

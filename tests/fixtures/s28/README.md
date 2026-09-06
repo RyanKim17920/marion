@@ -1,4 +1,4 @@
-# S25 — the installed ACP agents nobody had driven, and the fourth spelling of one tool
+# S28 — the installed ACP agents nobody had driven, and the fourth spelling of one tool
 
 Measured 2026-09-05, macOS darwin 25.5.0, against the operator's own logins, with a throwaway
 stdio MCP server named `marion` exposing one tool, `report`. Every file is the agent's own stdout,
@@ -60,7 +60,7 @@ a session, take the turn, and report nothing.
 | `opencode acp` 1.17.3 (S21) | `marion_report` |
 | `claude-agent-acp` 0.66.0 (S22) | `mcp__marion__report` |
 | `codex-acp` 1.1.14 (S22) | `mcp.marion.report` |
-| `copilot --acp` 1.0.83 (S25) | `marion-report` |
+| `copilot --acp` 1.0.83 (S28) | `marion-report` |
 
 Every one of them is marion's server alias and the verb, joined by some separator, sometimes under
 an `mcp` prefix. That pair — not any one spelling — is what `acp::Reading::Generic` recognises, and

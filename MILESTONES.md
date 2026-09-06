@@ -328,7 +328,7 @@ own vocabulary, spelled per harness by `HarnessAdapter::marion_tool_name` exactl
 already spells a child's `report`; a claude root's `--allowedTools` is byte-identical to before.
 
 ~~Not measured, and so not claimed: `--acp` (it starts; no session has been driven, so `acp::AGENTS`
-has no row)~~ **Measured 2026-09-05 (S25, `tests/fixtures/s25/`):** `copilot --acp` opens a session
+has no row)~~ **Measured 2026-09-05 (S28, `tests/fixtures/s28/`):** `copilot --acp` opens a session
 and calls marion's tool as **`marion-report`**, but only when the bridge is declared on its own
 `--additional-mcp-config`; `session/new`'s `mcpServers` is accepted and ignored on 1.0.83. It is the
 `copilot` row of `acp::AGENTS` (`acp::Declaration::Argv`), and a real copilot child ran through
@@ -1532,7 +1532,7 @@ says a clause failed.
      structured `{server, tool}` `rawInput` — and reads the arguments where that shape puts them.
      Measured against every verbatim capture in which a real agent called `report`: `marion_report`
      (S21 opencode), `mcp__marion__report` and `mcp.marion.report` (S22 shims), `marion-report`
-     (S25 copilot) — four agents, four spellings, one pair
+     (S28 copilot) — four agents, four spellings, one pair
      (`acp::tests::the_generic_reading_finds_every_measured_agents_report`). It is a *pair* match,
      not a prefix match, so S22's phantom `mcp__marion__startup` is named `startup` and never taken
      for `report`. `marion_tool_name` on the generic path answers `acp::GENERIC_SPELLING`
@@ -1558,7 +1558,7 @@ says a clause failed.
   command). What a row adds is exactly what was measured: a pinned `Reading::Measured` spelling
   (five rows, four measured; `gemini`'s stays `None` and reads generically), a canned recipe
   (`opencode` only), and — new — a **declaration quirk**: `acp::Declaration::Argv` on the
-  `copilot` row, because S25 measured copilot 1.0.83 accepting and *ignoring* `session/new`'s
+  `copilot` row, because S28 measured copilot 1.0.83 accepting and *ignoring* `session/new`'s
   `mcpServers` (two sessions, zero frames reached the declared server, the model said the tool
   *"is not available in this session"*) while honouring its own `--additional-mcp-config`. The row
   declares there — the same document `copilot::mcp_config_json` writes for `copilot -p` — leaves the
@@ -1588,7 +1588,7 @@ says a clause failed.
   - `doctor::tests::an_acp_command_gets_its_own_doctor_row_keyed_on_its_own_handshake` —
     `marion-supervisor doctor --capabilities --harness acp --acp-command "<cmd>"` adds one row
     beside the table's five, keyed on the agent's own `initialize` (`fake-acp-agent 0.1.0`).
-  - `tests/fixtures/s25/` — verbatim: copilot's session that ignored the declaration, copilot's
+  - `tests/fixtures/s28/` — verbatim: copilot's session that ignored the declaration, copilot's
     session that called `marion-report` plus the MCP wire behind it, and qwen's, goose's and
     gemini's `session/new` refusals.
 
@@ -1604,7 +1604,7 @@ says a clause failed.
 
   **Known protocol-level limits, so nobody reads "any ACP works" as more than it is.**
   - *Vendor-side `session/new` refusals are the agent's, in its own words, and no adapter routes
-    around them.* S25: `qwen --acp` 0.23.0 (`-32000`, *"Authentication required: Use Qwen Code CLI
+    around them.* S28: `qwen --acp` 0.23.0 (`-32000`, *"Authentication required: Use Qwen Code CLI
     to authenticate first"*), `goose acp` 1.49.0 (`-32603`, *"Configuration value not found:
     GOOSE_PROVIDER"*), `gemini --acp` 0.53.0 (`-32000`, Gemini Code Assist ineligibility, as S20).
     Every one names its `authMethods` in `initialize`; §6.4 says marion may not pick one. All three

@@ -93,7 +93,7 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     resume: None,
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
-           end_turn), S25 (copilot --acp to a real marion-report call; qwen, goose and gemini \
+           end_turn), S28 (copilot --acp to a real marion-report call; qwen, goose and gemini \
            refused session/new vendor-side). The argv of every refinement row is the one those \
            spikes launched; a generic `acp:<command>` row is the operator's own",
 };
@@ -343,7 +343,7 @@ impl ToolSpelling {
 /// refinement of it.**
 ///
 /// Four agents have been watched calling `report`, and they spelled it four ways — `marion_report`
-/// (S21), `mcp__marion__report` and `mcp.marion.report` (S22), `marion-report` (S25). What every one
+/// (S21), `mcp__marion__report` and `mcp.marion.report` (S22), `marion-report` (S28). What every one
 /// of them has in common is the pair the name is built from: marion's server alias and the verb,
 /// joined by *some* separator, sometimes under an `mcp` prefix. [`Reading::Generic`] recognises
 /// that pair and nothing narrower, which is what lets an agent marion has never named — the
@@ -510,7 +510,7 @@ pub enum Declaration {
     Argv(&'static str),
 }
 
-/// The flag copilot takes its per-session MCP document on. S25 measured it, and measured that the
+/// The flag copilot takes its per-session MCP document on. S28 measured it, and measured that the
 /// protocol-standard channel does nothing on 1.0.83.
 pub const COPILOT_MCP_FLAG: &str = "--additional-mcp-config";
 
@@ -607,11 +607,11 @@ pub const CODEX_ACP: Agent = Agent {
            (`npm i @agentclientprotocol/codex-acp@1.1.14`) rather than relying on `npx -y`",
 };
 
-/// `copilot --acp` — GitHub Copilot CLI's own ACP server, measured to a real `report` call (S25).
+/// `copilot --acp` — GitHub Copilot CLI's own ACP server, measured to a real `report` call (S28).
 ///
 /// Its spelling is the fourth: `marion-report`, `<server>-<tool>`. Its quirk is the one that makes
 /// the row worth having: on 1.0.83 the `mcpServers` block of `session/new` is accepted and
-/// **ignored** — the declared server is never started (S25: two sessions, zero frames reached it,
+/// **ignored** — the declared server is never started (S28: two sessions, zero frames reached it,
 /// and the model answered that the tool *"is not available in this session"*). The bridge reaches
 /// copilot only through its own argv channel, `--additional-mcp-config <json>`, which is the
 /// document marion's copilot adapter already compiles for `copilot -p`; the row's `note` says so
@@ -623,7 +623,7 @@ pub const COPILOT: Agent = Agent {
     tools: Some(ToolSpelling::ServerHyphenTool),
     canned: None,
     declaration: Declaration::Argv(COPILOT_MCP_FLAG),
-    note: "S25: initialize, session/new, session/prompt to `end_turn` and a real `marion-report` \
+    note: "S28: initialize, session/new, session/prompt to `end_turn` and a real `marion-report` \
            call against copilot 1.0.83 — but only with the bridge declared through \
            `--additional-mcp-config`; the `session/new` `mcpServers` declaration is ignored by \
            this version, so a generic launch of it reaches no bridge",
@@ -1287,7 +1287,7 @@ mod tests {
                 a.id
             );
         }
-        // Four agents, four names, none of them guessable from another (S21, S22, S25).
+        // Four agents, four names, none of them guessable from another (S21, S22, S28).
         assert_eq!(
             spellings,
             vec![
@@ -1454,12 +1454,12 @@ mod tests {
         );
     }
 
-    const S25: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s25");
+    const S28: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s28");
 
     /// Every verbatim transcript in which a real agent called marion's `report`, with the row that
     /// was measured on it — the corpus the generic reader has to cover to be a baseline at all.
     fn measured_report_transcripts() -> Vec<(&'static str, ToolSpelling, String)> {
-        let s25 = format!("{S25}/copilot-acp-session.jsonl");
+        let s28 = format!("{S28}/copilot-acp-session.jsonl");
         vec![
             (
                 "opencode",
@@ -1475,7 +1475,7 @@ mod tests {
             (
                 "copilot",
                 ToolSpelling::ServerHyphenTool,
-                std::fs::read_to_string(&s25).unwrap_or_else(|e| panic!("{s25}: {e}")),
+                std::fs::read_to_string(&s28).unwrap_or_else(|e| panic!("{s28}: {e}")),
             ),
         ]
     }
@@ -1515,7 +1515,7 @@ mod tests {
         }
     }
 
-    /// **S25's quirk, read off the capture.** The same copilot that called `marion-report` when the
+    /// **S28's quirk, read off the capture.** The same copilot that called `marion-report` when the
     /// bridge came in on argv opened a session over a `session/new` that declared the very same
     /// server — and never started it. The transcript of that session is in the corpus so the
     /// refinement row's `note` is a measurement and not a memory: no marion call, no failure, a
@@ -1523,7 +1523,7 @@ mod tests {
     /// `acp:copilot --acp` launch would produce, and the reason the row exists.
     #[test]
     fn copilots_session_new_declaration_is_measured_ignored() {
-        let p = format!("{S25}/copilot-acp-session-new-mcp-ignored.jsonl");
+        let p = format!("{S28}/copilot-acp-session-new-mcp-ignored.jsonl");
         let ignored = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
         // The model's words arrive one token per `agent_message_chunk`, so they are joined before
         // being read.
@@ -1549,7 +1549,7 @@ mod tests {
         }
         // And the MCP wire of the run that *did* reach the bridge shows the argv-declared server
         // handshaking and taking the unprefixed `report`, as every other agent's did.
-        let p = format!("{S25}/copilot-acp-mcp.jsonl");
+        let p = format!("{S28}/copilot-acp-mcp.jsonl");
         let mcp = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
         let methods: Vec<String> = mcp
             .lines()
