@@ -60,6 +60,19 @@ first launch and the resume — one row, no resume-only branch. Pinned by
 The pane row is untouched: the TUI's `codex resume` is a different grammar and still unmeasured,
 so a paned resume stays refused.
 
+`tests/restart_resume.rs` now asserts the second life's own turn (a post-relaunch request carrying
+the resume prompt and the first life's marker) and its code-0 exit. With the pre-fix row it fails
+in about two seconds at that turn assertion, quoting the exit; with the fixed row it passes on
+0.147.0 (`~/.codex/packages/standalone/releases/0.147.0-…/bin` first on `PATH`).
+
+## Also seen: 0.153.4
+
+The `current` symlink auto-updated to **0.153.4** between the probe above and the E2E run (§7.7's
+hazard). The seven-line probe was re-run on 0.153.4 within the hour: **identical exits and
+identical first lines** (`-C` after `resume` still exits 2 with the same message; `-C` before
+`resume` still parses). Not added to `PINNED_HARNESSES` here — that needs the codex cells re-run,
+which is its own change; the fixture files are the 0.147.0 capture.
+
 ## Reproducing
 
 ```sh

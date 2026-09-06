@@ -101,7 +101,10 @@ the canned provider and skips loudly where a binary is absent; the version gate 
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:
 `cargo test -p marion-supervisor --test native_facade_e2e` (per enabled lane; needs the harness on
 `PATH` and a real PTY). Restart and resume: `cargo test -p marion-supervisor --test
-restart_resume -- --ignored` (real codex, detached supervisor). Live ACP: `--test acp_child --
+restart_resume -- --ignored` (real codex, detached supervisor; since 2026-09-06 it asserts the
+resumed child's own turn — a post-relaunch provider request carrying the resume prompt and the
+first life's transcript — and its code-0 exit, so a relaunch codex rejects at argv is red in
+seconds with the exit quoted; the pre-fix row fails it at exit 2). Live ACP: `--test acp_child --
 --ignored` spends Copilot tokens. Cross-harness: `--test harness_matrix`, `--test cross_product`,
 `--test journal_wiring`, `--test m4_fan_in`. Panes: `--test pane_attach`.
 

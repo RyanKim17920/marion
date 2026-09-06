@@ -14,9 +14,13 @@
 //!   it was `AliveAndOurs`), and a second `Spawned` on the one journal.
 //! * **The journal is contiguous across the restart** — replay reconstructs the node from ordinal 0
 //!   including the records written before the kill, so nothing about the first life was lost.
-//! * **The canned provider's post-resume request carries prior turns** — codex `exec resume` sends
-//!   the session's earlier transcript back, which is the proof the resume was a *real* resume of the
-//!   harness's own session and not a fresh run wearing the same id.
+//! * **The resumed child takes its next turn and exits clean** — a Responses request that arrives
+//!   *after* the relaunch carries the resume prompt **and** the first life's marker, because codex
+//!   `exec resume` sends the session's earlier transcript back: the proof the resume was a *real*
+//!   resume of the harness's own session and not a fresh run wearing the same id. Then the second
+//!   life's `ProcessExit` is code 0. Without the second clause this test was green while the demo's
+//!   relaunch died at exit 2 on an argv `exec resume` rejects (`tests/fixtures/s29/`): the relaunch
+//!   and the journal were asserted, the resumed child's success was not.
 //!
 //! # Running it
 //!
@@ -49,6 +53,9 @@ const ROOT_MARKER: &str = "MARION-RESTART-RESUME-ROOT-2f7a";
 const CHILD_FILE: &str = "src/restart-resume-marker.txt";
 const CHILD_CONTENT: &str = "restart-resume marker\n";
 const NARRATIVE: &str = "Wrote the marker under src/ and reported back.";
+/// The resume's own prompt: on argv only after the relaunch, so a provider request that carries it
+/// was made by the second life.
+const RESUME_PROMPT: &str = "Continue: confirm the marker and report.";
 /// The root's wall clock (codex is a LaunchOnly surface, so `--timeout` is a wall-clock bound).
 const ROOT_TIMEOUT: &str = "150";
 const BOUND: Duration = Duration::from_secs(120);
@@ -242,6 +249,14 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
     assert!(!attach.status.success());
 
     // ---- resume starts a supervisor and relaunches the root into its own id -------------------
+    // Every provider request so far predates the resume; the second life's are the ones after it.
+    let seq_before = server
+        .requests()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r["seq"].as_u64())
+        .max()
+        .unwrap_or(0);
     // Backgrounded: `marion resume` hands off to a live attach after the relaunch, so it does not
     // return on its own. The journal is the oracle, and the process is killed once it has answered.
     let mut resume = Command::new(env!("CARGO_BIN_EXE_marion"))
@@ -249,7 +264,7 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
             "resume",
             &root_id.0,
             "--prompt",
-            "Continue: confirm the marker and report.",
+            RESUME_PROMPT,
             "--repo",
             &repo.to_string_lossy(),
             "--state-dir",
@@ -312,25 +327,72 @@ fn a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_c
         tree.truncation
     );
 
-    // ---- the post-resume provider request carries prior turns ---------------------------------
-    // codex `exec resume` sends the session's earlier transcript back, so at least one Responses
-    // request after the resume carries the root marker AND more than a first user turn.
+    // ---- the resumed child reaches its next turn ----------------------------------------------
+    // The gate parks every Responses request from the second on, the second life's included; it
+    // has done its job (both lives were caught with live processes), so let the turn through.
+    gate.release();
+    // codex `exec resume` sends the session's earlier transcript back, so the second life's first
+    // request — one that arrived after the relaunch — carries the resume prompt, the first life's
+    // marker, and more than a single user turn. A relaunch that dies at the argv parser makes no
+    // request at all; its exit is on the journal instead, so the wait ends on whichever comes
+    // first and the exit is quoted rather than waited out.
+    let took_turn = || {
+        server.requests().unwrap_or_default().iter().any(|r| {
+            r["seq"].as_u64().is_some_and(|seq| seq > seq_before)
+                && r["wire"].as_str() == Some(WIRE)
+                && r.to_string().contains(RESUME_PROMPT)
+                && r.to_string().contains(ROOT_MARKER)
+                && r["body"]["input"]
+                    .as_array()
+                    .is_some_and(|input| input.len() > 1)
+        })
+    };
+    let second_life_exit = || {
+        journal_nodes(&state, &repo)
+            .iter()
+            .find(|n| n.agent_id == root_id && n.spawn_generation >= 2)
+            .and_then(|n| n.exit.clone())
+    };
     assert!(
-        until(|| {
-            let requests = server.requests().unwrap_or_default();
-            requests.iter().any(|r| {
-                r["wire"].as_str() == Some(WIRE)
-                    && r.to_string().contains(ROOT_MARKER)
-                    && r["body"]["input"]
-                        .as_array()
-                        .is_some_and(|input| input.len() > 1)
-            })
-        }),
-        "no post-resume request carried the session's prior turns — the resume did not resume"
+        until(|| took_turn() || second_life_exit().is_some()),
+        "the resumed child neither took a turn nor exited within the bound"
+    );
+    assert!(
+        took_turn(),
+        "the resumed child exited without a request carrying the resume prompt and the session's \
+         prior turns — the relaunch did not resume: {:?}",
+        second_life_exit()
+    );
+
+    // ---- and exits clean ----------------------------------------------------------------------
+    // The provider answers the resumed root's turn with its final text (the transcript already
+    // quotes the spawn call), so the second life runs to a code-0 exit on the same journal.
+    assert!(
+        until(|| second_life_exit().is_some()),
+        "the second life never recorded its exit"
+    );
+    let done = journal_nodes(&state, &repo);
+    let root_done = done
+        .iter()
+        .find(|n| n.agent_id == root_id)
+        .expect("the root still replays under its own id");
+    assert_eq!(
+        root_done.spawn_generation, 2,
+        "the exit is the second life's"
+    );
+    let exit = root_done.exit.as_ref().expect("checked above");
+    assert_eq!(
+        (exit.code, exit.signal),
+        (Some(0), None),
+        "the resumed codex must finish its turn and exit clean: {exit:?}"
+    );
+    assert!(
+        root_done.state.is_exited(),
+        "the terminal transition is recorded: {:?}",
+        root_done.state
     );
 
     // ---- teardown -----------------------------------------------------------------------------
-    gate.release();
     let _ = resume.kill();
     let _ = resume.wait();
     // Best-effort: kill any supervisor the resume started so nothing lingers past the test.
