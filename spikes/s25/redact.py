@@ -161,6 +161,10 @@ mcp("mcp-config-argv", F("qwen-mcp-config-argv.mcp.jsonl"))
 copy_text(R("mcp-config-argv", "argv.json"), F("qwen-mcp-config-argv.argv.json"))
 copy_text(R("mcp-config-argv", "home-after.txt"), F("qwen-mcp-config-argv.home-after.txt"))
 copy_text(R("mcp-config-argv", "home", "settings.json"), F("qwen-mcp-config-argv.settings.json"))
+redact_stream(R("core-tools-empty", "stdout.jsonl"), F("qwen-core-tools-empty.stdout.jsonl"))
+provider_request("core-tools-empty", 1, F("qwen-core-tools-empty.provider-request-1.json"))
+copy_text(R("core-tools-empty", "argv.json"), F("qwen-core-tools-empty.argv.json"))
+copy_text(R("core-tools-empty", "stderr.txt"), F("qwen-core-tools-empty.stderr.txt"))
 
 # Failure shapes.
 redact_stream(R("report-iserror", "stdout.jsonl"), F("qwen-report-iserror.stdout.jsonl"))

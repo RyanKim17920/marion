@@ -117,6 +117,7 @@ def mcp_servers_block(rundir, iserror=False):
 def run_scenario(name, out_root, *, settings=None, project_settings=None, argv_extra=(),
                  env_extra=None, prompt=PROMPT, provider_status=200, iserror=False,
                  write_tool="write_file", prompt_flag="-p", resume_from=None, no_openai_env=False,
+                 argv_tail=(),
                  openai_env_names=("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")):
     rundir = os.path.join(out_root, name)
     if os.path.exists(rundir):
@@ -165,6 +166,7 @@ def run_scenario(name, out_root, *, settings=None, project_settings=None, argv_e
         if prompt is not None:
             argv += [prompt_flag, prompt] if prompt_flag else [prompt]
         argv += ["--output-format", "stream-json"]
+        argv += list(argv_tail)
 
         with open(os.path.join(rundir, "argv.json"), "w") as fh:
             json.dump(argv, fh, indent=2)
@@ -302,6 +304,19 @@ def mcp_config_argv(out):
                         argv_extra=["--yolo", "--core-tools", "write_file", MCP_TOOL_NAME,
                                     "--exclude-tools", *CORE_TOOLS_SURVIVORS, "--mcp-config",
                                     json.dumps({"mcpServers": mcp_servers_block(rundir, False)})])
+
+
+@scenario
+def core_tools_empty(out):
+    """`mcp-config-argv` but with `--core-tools` given no names: does qwen start, and what does
+    request one's `tools[]` hold?"""
+    rundir = os.path.join(out, "core-tools-empty")
+    return run_scenario("core-tools-empty", out, env_extra=BLOCKING_MCP,
+                        settings={"memory": {"enableManagedAutoMemory": False}},
+                        argv_extra=["--yolo", "--core-tools", "--exclude-tools", *CORE_TOOLS_SURVIVORS],
+                        argv_tail=["--mcp-config",
+                                   json.dumps({"mcpServers": mcp_servers_block(rundir, False)})],
+                        write_tool="none")
 
 
 @scenario

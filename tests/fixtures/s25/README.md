@@ -30,6 +30,7 @@ and `spikes/s25/mcp_report_server.py`, redaction `spikes/s25/redact.py`.
 | `qwen-core-tools-alone.provider-request-1.json` | `--core-tools write_file mcp__marion__report` without `--exclude-tools`: fourteen tools, the twelve survivors being `agent enter_worktree exit_worktree get_goal list_agents record_artifact report_findings send_message skill task_stop tool_search update_goal` |
 | `qwen-bare-mcp-config.stdout.jsonl` | `--bare --mcp-config '{"mcpServers":…}'`: `--core-tools` is ignored, the fixed bare set `read_file edit notebook_edit run_shell_command get_goal update_goal` plus the MCP tool is offered, and nothing is written under `QWEN_HOME` |
 | `qwen-mcp-config-argv.{stdout.jsonl,provider-request-1.json,mcp.jsonl,argv.json,home-after.txt,settings.json}` | the compiled run with the server declared **only** on argv, `--mcp-config '{"mcpServers":{"marion":{command,args,env}}}'`, no `--bare`, no `mcpServers` in any settings file (settings carries only the memory switch): `mcp__marion__report` is in `tools[]` on request one, `tools/call` reaches the stub, exit 0; `QWEN_HOME` still receives the session, usage and `installation_id` files (listed) |
+| `qwen-core-tools-empty.{stdout.jsonl,provider-request-1.json,argv.json,stderr.txt}` | the `--mcp-config` run with `--core-tools` given **no names**: qwen starts, exit 0, the usual `--yolo` stderr line, and `tools[]` on request one holds **17** tools — every default built-in the `--exclude-tools` list did not remove, plus `mcp__marion__report` (an empty `--core-tools` is no allowlist at all, not an empty one) |
 | `qwen-report-iserror.stdout.jsonl` | the MCP stub answering `tools/call` with `isError: true`: the `user` frame's `tool_result` has `is_error: true` and a content string that embeds the MCP response; `result.subtype: "success"`, exit **0** |
 | `qwen-denied-without-yolo.stdout.jsonl` | no `--yolo`: `permission_mode: "auto"`, the report call is declined (`is_error: true`, "non-interactive mode cannot prompt for confirmation"), `result.permission_denials[]` names it, exit **0** |
 | `qwen-denied-without-yolo.provider-request-2.json` | the side request `auto` mode made *to the provider* to decide that call: a classifier prompt offered one tool, `respond_in_schema` |
@@ -131,7 +132,12 @@ descriptions/parameters → their lengths. `tools[]` names are verbatim everywhe
     file path, not an `@path` form; the file-path form was not probed and is not claimed. Unlike
     `--bare`, `QWEN_HOME` is still written to (session, usage, `installation_id`), and the
     settings file that carried only the memory switch was still rewritten with `"$version"`.
-16. `-p` is marked deprecated in favour of a positional prompt; it still works in 0.23.0 and is what
+16. **An empty `--core-tools` is silently no allowlist.** `--yolo --core-tools --exclude-tools <12>`
+    with the server on `--mcp-config` starts fine (exit 0, no error anywhere) and offers 17 tools:
+    the 28 defaults minus the 12 excluded, plus the MCP tool — `write_file`, `edit`,
+    `run_shell_command` included. §12's class of omission: the flag that restricts everything, given
+    nothing, restricts nothing and says nothing. The adapter must refuse to compile an empty list.
+17. `-p` is marked deprecated in favour of a positional prompt; it still works in 0.23.0 and is what
     every capture here used.
 
 Consumed by nothing yet: this fixture set exists so `crates/marion-harness/src/qwen.rs` can be written
