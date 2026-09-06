@@ -334,18 +334,147 @@ impl ToolSpelling {
     }
 }
 
-/// One ACP agent marion knows how to name. §5.2's `acp` row is one adapter over many of these.
+/// How marion's verbs are recognised in one agent's transcript: **the baseline, or a measured
+/// refinement of it.**
 ///
-/// **A table of measurements, not of intentions.** `argv` is what S20 launched; `tools` is `None`
-/// until somebody has seen that agent call a tool, and [`crate::AcpAdapter::compile`] refuses an
-/// agent whose `tools` is `None` rather than guessing one — s14's finding is that claude, gemini
-/// and opencode all *silently ignore* an unknown tool name, so a guess buys a run that looks
-/// healthy and has no tool.
+/// Four agents have been watched calling `report`, and they spelled it four ways — `marion_report`
+/// (S21), `mcp__marion__report` and `mcp.marion.report` (S22), `marion-report` (S25). What every one
+/// of them has in common is the pair the name is built from: marion's server alias and the verb,
+/// joined by *some* separator, sometimes under an `mcp` prefix. [`Reading::Generic`] recognises
+/// that pair and nothing narrower, which is what lets an agent marion has never named — the
+/// `acp:<command>` path — be read at all. [`Reading::Measured`] is the refinement: the one exact
+/// name a row was watched to use, so a transcript is never read in a neighbour's spelling and the
+/// pinned captures stay pinned.
+///
+/// The generic reader is deliberately **not** a prefix match on `marion`: S22's `codex-acp` opens
+/// every session with a `tool_call` titled `mcp__marion__startup` — a startup diagnostic for a verb
+/// marion does not have — and a reader that took "starts with marion's alias" as "one of marion's
+/// verbs" would report it as marion's. The generic reader names *that* call `startup`, which is what
+/// the agent named it, and [`parse_stream`] reads only `report` off the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    /// The exact model-facing name this agent was watched to use (an [`Agent::tools`] row).
+    Measured(ToolSpelling),
+    /// The `<server> <verb>` pair, read off whatever the agent wrote. The baseline every ACP agent
+    /// gets until somebody has measured it.
+    Generic,
+}
+
+impl From<ToolSpelling> for Reading {
+    fn from(s: ToolSpelling) -> Self {
+        Self::Measured(s)
+    }
+}
+
+impl Reading {
+    /// The marion verb an opening `tool_call` update names, or `None` where the call is not one of
+    /// marion's in this reading.
+    ///
+    /// Two shapes carry the verb on the measured agents and the generic reader takes both:
+    /// the `title` (every agent), and — where an agent structures the call — `rawInput`'s own
+    /// `server`/`tool` pair (S22's `codex-acp`: `{"server":"marion","tool":"report",…}`), which is
+    /// the *strongest* evidence a frame can carry because it names the pair outright rather than
+    /// spelling it.
+    pub fn verb(self, update: &Value) -> Option<String> {
+        match self {
+            Self::Measured(s) => update
+                .get("title")
+                .and_then(Value::as_str)
+                .and_then(|t| t.strip_prefix(s.spell("").as_str()))
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+            Self::Generic => update
+                .get("rawInput")
+                .and_then(structured_pair)
+                .or_else(|| {
+                    update
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .and_then(spelled_pair)
+                })
+                .map(str::to_string),
+        }
+    }
+
+    /// The verb's **arguments** out of a `rawInput`.
+    ///
+    /// Measured: the row's own answer ([`ToolSpelling::arguments`]). Generic: `arguments` when the
+    /// input is the structured `{server, tool, arguments}` triple **naming marion's server**, else
+    /// the input itself. The generic branch keys on the whole triple rather than on an `arguments`
+    /// key alone, for the reason [`ToolSpelling::arguments`] gives: a marion verb that one day takes
+    /// an argument called `arguments` would not also carry a `server` and a `tool`.
+    pub fn arguments(self, raw_input: &Value) -> Option<&Value> {
+        match self {
+            Self::Measured(s) => s.arguments(raw_input),
+            Self::Generic => structured_pair(raw_input)
+                .and_then(|_| raw_input.get("arguments"))
+                .or(Some(raw_input))
+                .filter(|a| a.as_object().is_some_and(|o| !o.is_empty())),
+        }
+    }
+
+    /// The name a model-facing tool carries in this reading — the exact spelling where one was
+    /// measured, and the baseline [`GENERIC_SPELLING`] where none was.
+    pub fn spell(self, tool: &str) -> String {
+        match self {
+            Self::Measured(s) => s.spell(tool),
+            Self::Generic => GENERIC_SPELLING.spell(tool),
+        }
+    }
+}
+
+/// What the generic reading answers when asked to *spell* a marion verb rather than read one.
+///
+/// On the ACP row the answer reaches no model: ACP has no tool-availability surface, so
+/// `compiled_permissions` records [`NO_TOOL_AVAILABILITY_SURFACE`] and never this string, and the
+/// prompt rides `session/prompt` verbatim. It is the plainest of the four measured shapes and the
+/// first one measured (S21), and it is a **default**, not a claim about any agent: the reader does
+/// not depend on it, which is the whole point of [`Reading::Generic`].
+pub const GENERIC_SPELLING: ToolSpelling = ToolSpelling::ServerUnderscoreTool;
+
+/// The verb out of a structured `rawInput` — `{"server": <alias>, "tool": <verb>, …}` — where the
+/// server is marion's. `None` for every other object, including one naming another server.
+fn structured_pair(raw_input: &Value) -> Option<&str> {
+    let server = raw_input.get("server")?.as_str()?;
+    if server != MCP_SERVER_NAME {
+        return None;
+    }
+    raw_input.get("tool")?.as_str().filter(|t| !t.is_empty())
+}
+
+/// The verb out of a spelled tool name — `<alias><sep><verb>` or `mcp<sep><alias><sep><verb>`, for
+/// any run of non-alphanumeric characters as the separator. Exactly two tokens after the optional
+/// `mcp`, so `marion_report_extra` or a bare `marion` is not a verb of marion's.
+fn spelled_pair(title: &str) -> Option<&str> {
+    let mut tokens = title
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty());
+    let mut first = tokens.next()?;
+    if first == "mcp" {
+        first = tokens.next()?;
+    }
+    if first != MCP_SERVER_NAME {
+        return None;
+    }
+    let verb = tokens.next()?;
+    tokens.next().is_none().then_some(verb)
+}
+
+/// One ACP agent marion has **measured** — a refinement over the generic path, never a
+/// prerequisite for it. §5.2's `acp` row is one adapter over many of these and over every agent
+/// that is not one of these.
+///
+/// **A table of measurements, not of intentions.** `argv` is what a spike launched; `tools` is
+/// `None` until somebody has seen that agent call a tool, and an agent with none is read with
+/// [`Reading::Generic`] rather than with a neighbour's spelling. What a row adds over the baseline
+/// is exactly what was measured: the pinned spelling, a canned recipe, a quirk in how the bridge
+/// reaches it, and the note an operator reads when the agent cannot run here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Agent {
-    /// What an operator writes to select it (`Extras::acp_agent`).
+    /// What an operator writes to select it (`Extras::acp_agent`), and the first word of an
+    /// `acp:<command>` selector that should bind this row instead of the generic path.
     pub id: &'static str,
-    /// The agent's own argv, verbatim as S20 launched it.
+    /// The agent's own argv, verbatim as the spike launched it.
     pub argv: &'static [&'static str],
     /// The measured tool spelling, or `None` where marion has never seen this agent call a tool.
     pub tools: Option<ToolSpelling>,
@@ -445,13 +574,137 @@ pub const CODEX_ACP: Agent = Agent {
            (`npm i @agentclientprotocol/codex-acp@1.1.14`) rather than relying on `npx -y`",
 };
 
-/// Every ACP agent marion can name. Naming one is not having measured it — see [`Agent::tools`].
-pub const AGENTS: [Agent; 4] = [OPENCODE, GEMINI, CLAUDE_ACP, CODEX_ACP];
+/// `copilot --acp` — GitHub Copilot CLI's own ACP server, measured to a real `report` call (S25).
+///
+/// Its spelling is the fourth: `marion-report`, `<server>-<tool>`. Its quirk is the one that makes
+/// the row worth having: on 1.0.83 the `mcpServers` block of `session/new` is accepted and
+/// **ignored** — the declared server is never started (S25: two sessions, zero frames reached it,
+/// and the model answered that the tool *"is not available in this session"*). The bridge reaches
+/// copilot only through its own argv channel, `--additional-mcp-config <json>`, which is the
+/// document marion's copilot adapter already compiles for `copilot -p`; the row's `note` says so
+/// because a generic `acp:copilot --acp` launch would open a session, take the turn, and report
+/// nothing.
+pub const COPILOT: Agent = Agent {
+    id: "copilot",
+    argv: &["copilot", "--acp"],
+    tools: Some(ToolSpelling::ServerHyphenTool),
+    canned: None,
+    note: "S25: initialize, session/new, session/prompt to `end_turn` and a real `marion-report` \
+           call against copilot 1.0.83 — but only with the bridge declared through \
+           `--additional-mcp-config`; the `session/new` `mcpServers` declaration is ignored by \
+           this version, so a generic launch of it reaches no bridge",
+};
 
-/// Resolve an operator's `acp_agent` id. `None` is *"marion has never heard of it"*, which the
-/// adapter turns into a refusal that lists the ids it does know.
+/// Every ACP agent marion has a refinement row for. Naming one is not having measured it — see
+/// [`Agent::tools`] — and not being named is not being refused: see [`Binding`].
+pub const AGENTS: [Agent; 5] = [OPENCODE, GEMINI, CLAUDE_ACP, CODEX_ACP, COPILOT];
+
+/// The refinement row for an id, or `None` where marion has none — which is **not** a refusal;
+/// [`Binding::resolve`] falls back to the generic path.
 pub fn agent(id: &str) -> Option<Agent> {
     AGENTS.into_iter().find(|a| a.id == id)
+}
+
+/// **What an ACP launch is bound to**: the agent's argv, and whatever refinement marion has for it.
+///
+/// This is the layering the `acp` row is built on. An operator's selector — an agent type's
+/// `acp_agent`, whether from the `acp-opencode` built-in or an `acp:<command>` type — is resolved
+/// **once**, here, and in one order: a word that is a row's [`Agent::id`] binds that row and its
+/// measured argv; anything else is a command line, split on whitespace, bound to no row. Both are
+/// launchable. The difference is what marion *knows* about the agent, which is exactly what a
+/// refinement is.
+///
+/// Whitespace-split and nothing cleverer, on purpose: a selector is typed by the operator into an
+/// agent-type string, and a shell-quoting grammar here would be a second shell with its own bugs.
+/// An argument that needs a space in it needs a wrapper script, and the refusal below says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    selector: String,
+    argv: Vec<String>,
+    refinement: Option<Agent>,
+}
+
+impl Binding {
+    /// Resolve a selector. The only refusal is the one the protocol cannot get past: no program.
+    pub fn resolve(selector: &str) -> Result<Self, BindError> {
+        let selector = selector.trim();
+        if let Some(agent) = agent(selector) {
+            return Ok(Self::refined(agent));
+        }
+        let argv: Vec<String> = selector.split_whitespace().map(str::to_string).collect();
+        if argv.is_empty() {
+            return Err(BindError::NoProgram);
+        }
+        Ok(Self {
+            selector: selector.to_string(),
+            argv,
+            refinement: None,
+        })
+    }
+
+    /// A binding straight from a refinement row — what `marion doctor` builds when it enumerates
+    /// [`AGENTS`].
+    pub fn refined(agent: Agent) -> Self {
+        Self {
+            selector: agent.id.to_string(),
+            argv: agent.argv.iter().map(|s| s.to_string()).collect(),
+            refinement: Some(agent),
+        }
+    }
+
+    /// What the operator wrote, trimmed.
+    pub fn selector(&self) -> &str {
+        &self.selector
+    }
+
+    /// The program and its arguments. Never empty.
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    /// The row this binding refines, where there is one.
+    pub fn refinement(&self) -> Option<&Agent> {
+        self.refinement.as_ref()
+    }
+
+    /// How this agent's transcript is read: its measured spelling, or the baseline.
+    pub fn reading(&self) -> Reading {
+        self.refinement
+            .and_then(|a| a.tools)
+            .map(Reading::Measured)
+            .unwrap_or(Reading::Generic)
+    }
+
+    /// The canned recipe, where a row has measured one. `None` on the generic path — the protocol
+    /// names no provider, and that is the one thing the baseline cannot supply.
+    pub fn canned(&self) -> Option<CannedRecipe> {
+        self.refinement.and_then(|a| a.canned)
+    }
+
+    /// One line for a doctor row or a refusal: what is bound, and how much is known about it.
+    pub fn describe(&self) -> String {
+        match &self.refinement {
+            Some(a) => format!("`{}` — {}", a.id, a.note),
+            None => format!(
+                "`{}` — no refinement row: identity from `initialize`, bridge via `session/new`, \
+                 tool names read off its own frames",
+                self.argv.join(" ")
+            ),
+        }
+    }
+}
+
+/// Why a selector could not be bound. One variant, because the generic path accepts everything
+/// else: a selector is either a row's id or a command, and a command is anything with a program.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BindError {
+    #[error(
+        "the ACP agent selector names no program. Name a refinement row ({}) or a command \
+         (`acp:<program> [args…]`, split on whitespace — an argument that needs a space needs a \
+         wrapper script)",
+        AGENTS.iter().map(|a| a.id).collect::<Vec<_>>().join(", ")
+    )]
+    NoProgram,
 }
 
 /// One stdio MCP server, in `session/new`'s own shape. S21 sent exactly this and the agent
@@ -561,21 +814,17 @@ fn call_id(u: &Value) -> Option<&str> {
 /// **`"title": ""`**, so the verb exists only on the opening `tool_call` frame and the outcome only
 /// on the closing one. A reader that took either frame in isolation would report either a call with
 /// no result or a result with no verb.
-pub fn marion_calls(stdout: &str, spelling: ToolSpelling) -> Vec<MarionCall> {
-    let prefix = &spelling.spell("");
+pub fn marion_calls(stdout: &str, reading: impl Into<Reading>) -> Vec<MarionCall> {
+    let reading = reading.into();
     let mut open: Vec<(String, String)> = Vec::new(); // (toolCallId, verb) in call order
     let mut outcome: Vec<(String, CallOutcome)> = Vec::new();
     for frame in json_frames(stdout) {
         let Some(u) = update(&frame) else { continue };
         let Some(id) = call_id(u) else { continue };
         if kind(u) == "tool_call"
-            && let Some(verb) = u
-                .get("title")
-                .and_then(Value::as_str)
-                .and_then(|t| t.strip_prefix(prefix))
-            && !verb.is_empty()
+            && let Some(verb) = reading.verb(u)
         {
-            open.push((id.to_string(), verb.to_string()));
+            open.push((id.to_string(), verb));
         }
         if let Some(o) = terminal_outcome(u) {
             outcome.retain(|(k, _)| k != id);
@@ -619,19 +868,19 @@ fn text_of(content: Option<&Value>) -> String {
         .unwrap_or_default()
 }
 
-/// §6.1 step 9 for an ACP transcript, read in **this agent's** spelling.
+/// §6.1 step 9 for an ACP transcript, read in **this agent's** [`Reading`].
 ///
-/// The name matched is the model-facing one ([`ToolSpelling::spell`]), because that is what a
-/// `tool_call` frame's title carries — the unprefixed `report` never appears on this wire at all,
-/// only on the MCP wire between the agent and marion's bridge. The whole [`ToolSpelling`] is taken
-/// rather than the compiled string, because the *arguments* are in a different place on one of the
-/// three agents ([`ToolSpelling::arguments`]) and a reader handed only a name cannot know which.
+/// The name matched is the model-facing one, because that is what a `tool_call` frame's title
+/// carries — the unprefixed `report` never appears on this wire at all, only on the MCP wire between
+/// the agent and marion's bridge. The whole [`Reading`] is taken rather than a compiled string,
+/// because the *arguments* are in a different place on one of the measured agents
+/// ([`Reading::arguments`]) and a reader handed only a name cannot know which.
 ///
 /// The exit code is **not consulted**, for the same reason opencode's reader ignores it: an ACP
 /// agent is a long-lived stdio server that marion kills, so its exit status describes marion's
 /// shutdown, not the turn. What describes the turn is `stopReason` and the frames.
-pub fn parse_stream(stdout: &str, _exit: ChildExit, spelling: ToolSpelling) -> StreamOutcome {
-    let report_tool = &spelling.spell("report");
+pub fn parse_stream(stdout: &str, _exit: ChildExit, reading: impl Into<Reading>) -> StreamOutcome {
+    let reading = reading.into();
     let mut out = StreamOutcome::default();
     // The ids of the calls that were opened *as `report`*. Every other tool call on this session
     // also carries a `rawInput`, and a reader that took `narrative` off whichever object happened
@@ -655,7 +904,7 @@ pub fn parse_stream(stdout: &str, _exit: ChildExit, spelling: ToolSpelling) -> S
         }
         let Some(u) = update(&frame) else { continue };
         let Some(id) = call_id(u) else { continue };
-        if kind(u) == "tool_call" && u.get("title").and_then(Value::as_str) == Some(report_tool) {
+        if kind(u) == "tool_call" && reading.verb(u).as_deref() == Some("report") {
             report_ids.push(id.to_string());
         }
         // **Every read below is confined to marion's own calls, and both halves of that are
@@ -674,7 +923,7 @@ pub fn parse_stream(stdout: &str, _exit: ChildExit, spelling: ToolSpelling) -> S
             continue;
         }
         if let Some(raw) = u.get("rawInput")
-            && let Some(args) = spelling.arguments(raw)
+            && let Some(args) = reading.arguments(raw)
         {
             if let Some(n) = args.get("narrative").and_then(Value::as_str) {
                 out.narrative = Some(n.to_string());
@@ -949,13 +1198,14 @@ mod tests {
                 a.id
             );
         }
-        // Three agents, three names, none of them guessable from another (S21, S22).
+        // Four agents, four names, none of them guessable from another (S21, S22, S25).
         assert_eq!(
             spellings,
             vec![
                 ("opencode", "marion_report".to_string()),
                 ("claude-acp", "mcp__marion__report".to_string()),
                 ("codex-acp", "mcp.marion.report".to_string()),
+                ("copilot", "marion-report".to_string()),
             ]
         );
         let mut distinct: Vec<&String> = spellings.iter().map(|(_, s)| s).collect();
@@ -1112,6 +1362,236 @@ mod tests {
                 ),
             }],
             "the hazard must be present, or the row above guards nothing"
+        );
+    }
+
+    const S25: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/s25");
+
+    /// Every verbatim transcript in which a real agent called marion's `report`, with the row that
+    /// was measured on it — the corpus the generic reader has to cover to be a baseline at all.
+    fn measured_report_transcripts() -> Vec<(&'static str, ToolSpelling, String)> {
+        let s25 = format!("{S25}/copilot-acp-session.jsonl");
+        vec![
+            (
+                "opencode",
+                ToolSpelling::ServerUnderscoreTool,
+                s21_session(),
+            ),
+            (
+                "claude-acp",
+                ToolSpelling::McpDoubleUnderscore,
+                s22("claude-agent-acp"),
+            ),
+            ("codex-acp", ToolSpelling::McpDotted, s22("codex-acp")),
+            (
+                "copilot",
+                ToolSpelling::ServerHyphenTool,
+                std::fs::read_to_string(&s25).unwrap_or_else(|e| panic!("{s25}: {e}")),
+            ),
+        ]
+    }
+
+    /// **The baseline reads every measured transcript, and reads it as its own row does.**
+    ///
+    /// Four agents spelled `report` four ways, and [`Reading::Generic`] has to find all four —
+    /// verb, outcome and the narrative the model actually passed — with no row telling it which
+    /// it is looking at. That is the whole claim behind "any ACP agent works": an agent marion has
+    /// never named is read this way, so this is the assertion that the way is wide enough. And the
+    /// refinement must agree with it on the captures it was pinned to, or a row would be changing
+    /// what marion records rather than sharpening it.
+    #[test]
+    fn the_generic_reading_finds_every_measured_agents_report() {
+        for (id, measured, session) in measured_report_transcripts() {
+            let generic = marion_calls(&session, Reading::Generic);
+            assert!(
+                generic.iter().any(|c| {
+                    *c == MarionCall {
+                        verb: "report".into(),
+                        outcome: CallOutcome::Answered,
+                    }
+                }),
+                "{id}: the generic reading must find the answered report: {generic:?}"
+            );
+            let out = parse_stream(&session, ChildExit::default(), Reading::Generic);
+            assert_eq!(
+                out.narrative.as_deref(),
+                Some("hello from acp"),
+                "{id}: the narrative the model actually passed"
+            );
+            assert_eq!(out.failure, None, "{id}: the turn ended `end_turn`");
+            // Refinement and baseline agree on what became of marion's own verb.
+            let refined = parse_stream(&session, ChildExit::default(), measured);
+            assert_eq!(refined.narrative, out.narrative, "{id}");
+            assert_eq!(refined.failure, out.failure, "{id}");
+        }
+    }
+
+    /// **S25's quirk, read off the capture.** The same copilot that called `marion-report` when the
+    /// bridge came in on argv opened a session over a `session/new` that declared the very same
+    /// server — and never started it. The transcript of that session is in the corpus so the
+    /// refinement row's `note` is a measurement and not a memory: no marion call, no failure, a
+    /// turn that ended `end_turn` having reported nothing — the exact shape a generic
+    /// `acp:copilot --acp` launch would produce, and the reason the row exists.
+    #[test]
+    fn copilots_session_new_declaration_is_measured_ignored() {
+        let p = format!("{S25}/copilot-acp-session-new-mcp-ignored.jsonl");
+        let ignored = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        // The model's words arrive one token per `agent_message_chunk`, so they are joined before
+        // being read.
+        let said: String = json_frames(&ignored)
+            .iter()
+            .filter_map(|f| {
+                let u = update(f)?;
+                (kind(u) == "agent_message_chunk").then(|| u.pointer("/content/text")?.as_str())?
+            })
+            .collect();
+        assert!(
+            said.contains("is not available in this session"),
+            "the premise: the model said the tool was not there: {said:?}"
+        );
+        for reading in [Reading::Generic, Reading::Measured(COPILOT.tools.unwrap())] {
+            assert!(marion_calls(&ignored, reading).is_empty(), "{reading:?}");
+            let out = parse_stream(&ignored, ChildExit::default(), reading);
+            assert_eq!(out.narrative, None, "{reading:?}");
+            assert_eq!(
+                out.failure, None,
+                "{reading:?}: `end_turn`, and nothing else to say"
+            );
+        }
+        // And the MCP wire of the run that *did* reach the bridge shows the argv-declared server
+        // handshaking and taking the unprefixed `report`, as every other agent's did.
+        let p = format!("{S25}/copilot-acp-mcp.jsonl");
+        let mcp = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        let methods: Vec<String> = mcp
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|f| f.get("method")?.as_str().map(str::to_string))
+            .collect();
+        assert!(
+            methods.contains(&"tools/list".to_string())
+                && methods.contains(&"tools/call".to_string()),
+            "{methods:?}"
+        );
+    }
+
+    /// **The generic reader is a pair match, not a prefix match**, and the difference is S22's
+    /// phantom `mcp__marion__startup`. Every shape a title or a structured input can take is
+    /// enumerated here, so a fifth spelling lands on one side or the other by construction.
+    #[test]
+    fn the_generic_reading_recognises_the_pair_in_any_spelling_and_nothing_else() {
+        let call = |title: &str, raw: Value| {
+            json!({
+                "sessionUpdate": "tool_call", "toolCallId": "c", "title": title,
+                "status": "pending", "rawInput": raw
+            })
+        };
+        for title in [
+            "marion_report",
+            "mcp__marion__report",
+            "mcp.marion.report",
+            "marion-report",
+            "marion/report",
+            "mcp_marion_report",
+            "marion: report",
+        ] {
+            assert_eq!(
+                Reading::Generic.verb(&call(title, json!({}))).as_deref(),
+                Some("report"),
+                "{title}"
+            );
+        }
+        for title in [
+            "report",
+            "marion",
+            "marion_report_extra",
+            "other_report",
+            "Using skill: mcp2cli",
+            "ToolSearch",
+            "write",
+            "",
+        ] {
+            assert_eq!(
+                Reading::Generic.verb(&call(title, json!({}))),
+                None,
+                "{title}"
+            );
+        }
+        // The structured shape names the pair outright and wins over the title.
+        let structured =
+            json!({"server": "marion", "tool": "report", "arguments": {"narrative": "n"}});
+        assert_eq!(
+            Reading::Generic
+                .verb(&call("exec", structured.clone()))
+                .as_deref(),
+            Some("report")
+        );
+        assert_eq!(
+            Reading::Generic.arguments(&structured),
+            Some(&structured["arguments"])
+        );
+        // Another server's structured call is not marion's, whatever its title says.
+        let other = json!({"server": "github", "tool": "report", "arguments": {"narrative": "n"}});
+        assert_eq!(
+            Reading::Generic.verb(&call("github_report", other.clone())),
+            None
+        );
+        // A flat input is the arguments; an empty one is none.
+        let flat = json!({"narrative": "n"});
+        assert_eq!(Reading::Generic.arguments(&flat), Some(&flat));
+        assert_eq!(Reading::Generic.arguments(&json!({})), None);
+        // The phantom: found under its own verb, so `parse_stream` — which reads only `report` —
+        // does not take its failure for marion's.
+        let session = s22("codex-acp");
+        assert!(
+            marion_calls(&session, Reading::Generic)
+                .iter()
+                .any(|c| c.verb == "startup" && matches!(c.outcome, CallOutcome::Refused(_))),
+            "the hazard must be present, or the row above guards nothing"
+        );
+        assert_eq!(
+            parse_stream(&session, ChildExit::default(), Reading::Generic).failure,
+            None
+        );
+    }
+
+    /// **A selector is a row's id or a command, and only an empty one is refused.** The rows keep
+    /// their measured argv and reading; everything else gets the program the operator named and
+    /// the generic reading.
+    #[test]
+    fn a_binding_is_a_refinement_row_by_id_or_a_generic_command() {
+        for a in AGENTS {
+            let b = Binding::resolve(a.id).unwrap();
+            assert_eq!(b.refinement(), Some(&a), "`{}`", a.id);
+            assert_eq!(b.argv(), a.argv, "`{}`", a.id);
+            assert_eq!(
+                b.reading(),
+                a.tools.map(Reading::Measured).unwrap_or(Reading::Generic),
+                "`{}`",
+                a.id
+            );
+            assert_eq!(b, Binding::refined(a));
+        }
+        let generic = Binding::resolve("  copilot --acp --allow-all-tools ").unwrap();
+        assert_eq!(
+            generic.refinement(),
+            None,
+            "a command is not a row, even one whose first word is"
+        );
+        assert_eq!(generic.argv(), ["copilot", "--acp", "--allow-all-tools"]);
+        assert_eq!(generic.reading(), Reading::Generic);
+        assert_eq!(generic.canned(), None);
+        assert_eq!(generic.selector(), "copilot --acp --allow-all-tools");
+        assert!(generic.describe().contains("no refinement row"));
+        for empty in ["", "   ", "\t"] {
+            assert_eq!(
+                Binding::resolve(empty),
+                Err(BindError::NoProgram),
+                "{empty:?}"
+            );
+        }
+        assert!(
+            BindError::NoProgram.to_string().contains("opencode"),
+            "the refusal lists the rows"
         );
     }
 

@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"copilot-cli","version":"0.0.0"},"io.modelcontextprotocol/clientCapabilities":{"sampling":{}}}}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"sampling":{}},"clientInfo":{"name":"copilot-cli","version":"0.0.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"progressToken":0}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"_meta":{"progressToken":1},"arguments":{"narrative":"hello from acp"},"name":"report"}}
