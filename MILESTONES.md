@@ -949,10 +949,12 @@ acceptance evidence, so every marker remains unchanged.
   `copilot` lanes were enabled on measurement of their TUIs' `/mcp` views. *Still open:* C1's
   recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
   merge unmeasured); `SIGTSTP`/`SIGCONT` through the facade, not observable from the `spawn_pty`
-  fixture (orphaned process group) and covered only by the isolated relay probes; the pre-existing
-  parallel-run flake of `native_relay_sigterm_restores_terminal_and_redelivers_to_itself`; and
+  fixture (orphaned process group) and covered only by the isolated relay probes; and
   single-use re-attach plus default-action restoration, proved at the bootstrap and unit
-  boundaries but not re-observable end to end.
+  boundaries but not re-observable end to end. The parallel-run flake of
+  `native_relay_sigterm_restores_terminal_and_redelivers_to_itself` is fixed at its root (the
+  PTY fixture stopped reading the master while the exiting session leader still had output to
+  drain); 20/20 green under the parallel filter.
   - **Criterion 1 (a real `claude` TUI in a marion pane) — NOT MET, and the only thing left is the
     recorded session.** Every clause a test can reach is now reached; the criterion's own words
     end with *"over a recorded 10-minute manual session"*, and a human has to sit at a screen for
@@ -1532,6 +1534,22 @@ acceptance evidence, so every marker remains unchanged.
     `sigterm-observed-wait-complete` phase) and passes 6/6 run alone. The suspect is the two PTY
     signal probes sharing the process-wide relay signal owner; it needs serial isolation, not a
     wider bound.
+
+    **The SIGTERM PTY flake was the fixture, not the signal owner (2026-09-05); no marker
+    moves.** Reproduced 2/10 then 5/12 under the parallel filter, every failure `the SIGTERM relay
+    probe did not exit naturally within 500ms` with `ps` showing the probe already `Z`, and a
+    single `read` of the master reaping it 12 µs later. Mechanism: the probe is the session leader
+    of its controlling PTY, and `proc_exit` drains a session leader's controlling terminal before
+    the process becomes reapable. The probe writes the passive cleanup bytes (`?2004l` plus the
+    TUI leave sequence) *after* `NATIVE_SIGTERM_OBSERVED`, and the inner fixture stopped reading
+    the master once it saw that marker; whether the cleanup bytes were consumed by the same read
+    or left in the slave output queue was a 1 ms scheduling race, which the parallel run lost
+    about half the time. No process-wide state in the parent test process was involved: the probe
+    and the inner runner are already separate processes, and `RELAY_SIGNAL_OWNER` was never
+    contended. Fix in `native_relay.rs`: `drain_pty` reads the master on every `try_wait` poll in
+    both PTY fixtures (a terminal never stops reading), and the SIGTERM fixture now also asserts the
+    passive cleanup bytes crossed the PTY. `cargo test -p marion-supervisor --lib native_relay`:
+    20/20 green after the fix.
 
     **The M3 native facade matrix runs, harness-generic, from the shipped binary (2026-09-05);
     M3 stays `[partial]`.** `tests/native_facade_e2e.rs::every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade`

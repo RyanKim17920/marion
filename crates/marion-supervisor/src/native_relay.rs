@@ -2537,11 +2537,34 @@ mod tests {
         }
     }
 
+    /// Read whatever the probe has already written without waiting for more.
+    ///
+    /// A terminal never stops reading, and neither may a PTY fixture that is waiting for its
+    /// child to exit: the probe is the session leader of its controlling PTY, and `proc_exit`
+    /// drains a session leader's controlling terminal before the process becomes reapable. Bytes
+    /// written after the last marker the fixture read (the passive cleanup sequence) would
+    /// otherwise pin the exiting probe until the master reads them, which no bounded `try_wait`
+    /// can observe.
+    fn drain_pty(master: &crate::pty::PtyMaster, drained: &mut Vec<u8>) {
+        let mut bytes = [0u8; 1024];
+        loop {
+            match master.read(&mut bytes) {
+                Ok(0) => return,
+                Ok(count) => drained.extend_from_slice(&bytes[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
+                Err(error) => panic!("draining the relay probe pty: {error}"),
+            }
+        }
+    }
+
     fn wait_pty_child(
+        master: &crate::pty::PtyMaster,
         child: &mut crate::pty::PtyChild,
         deadline: Instant,
     ) -> std::process::ExitStatus {
+        let mut drained = Vec::new();
         loop {
+            drain_pty(master, &mut drained);
             match child.try_wait().expect("polling the relay probe child") {
                 Some(status) => return status,
                 None if Instant::now() < deadline => {
@@ -2642,7 +2665,7 @@ mod tests {
             String::from_utf8_lossy(&output)
         );
         fixture_phase("smoke-exit-wait-enter");
-        let status = wait_pty_child(&mut child, deadline);
+        let status = wait_pty_child(&master, &mut child, deadline);
         fixture_phase("smoke-exit-wait-complete");
         assert!(status.success(), "the relay probe exited with {status}");
         let restored_termios = pty_master_termios(&master);
@@ -2761,19 +2784,23 @@ mod tests {
             std::io::Error::last_os_error()
         );
         fixture_phase("sigterm-observed-wait-enter");
-        if let Err(error) = read_pty_until(
+        let mut output = match read_pty_until(
             &master,
             b"NATIVE_SIGTERM_OBSERVED\n",
             Instant::now() + PTY_SIGTERM_OBSERVED_BOUND,
         ) {
-            let cleanup = child.kill_and_reap();
-            panic!("{error}; exact SIGTERM child cleanup: {cleanup:?}");
-        }
+            Ok(output) => output,
+            Err(error) => {
+                let cleanup = child.kill_and_reap();
+                panic!("{error}; exact SIGTERM child cleanup: {cleanup:?}");
+            }
+        };
         fixture_phase("sigterm-observed-wait-complete");
 
         let natural_deadline = Instant::now() + PTY_SIGTERM_NATURAL_EXIT_BOUND;
         fixture_phase("sigterm-exit-wait-enter");
         let natural_status = loop {
+            drain_pty(&master, &mut output);
             match child.try_wait().expect("polling the SIGTERM relay probe") {
                 Some(status) => break status,
                 None if Instant::now() < natural_deadline => {
@@ -2795,10 +2822,17 @@ mod tests {
         let restored_termios = pty_master_termios(&master);
         let mismatches = termios_mismatches(&restored_termios, &baseline_termios);
         let natural_signal = natural_status.signal();
+        let mut passive_cleanup = Vec::new();
+        write_passive_terminal_cleanup_to(&mut passive_cleanup)
+            .expect("rendering the expected passive cleanup bytes");
+        let cleanup_written = output
+            .windows(passive_cleanup.len())
+            .any(|window| window == passive_cleanup);
 
         assert!(
-            natural_signal == Some(SIGTERM) && mismatches.is_empty(),
-            "SIGTERM lifecycle mismatch: natural_status={natural_status:?}, natural_signal={natural_signal:?}, termios_mismatches={mismatches:?}"
+            natural_signal == Some(SIGTERM) && mismatches.is_empty() && cleanup_written,
+            "SIGTERM lifecycle mismatch: natural_status={natural_status:?}, natural_signal={natural_signal:?}, termios_mismatches={mismatches:?}, passive_cleanup_written={cleanup_written}, output={:?}",
+            String::from_utf8_lossy(&output)
         );
     }
 
