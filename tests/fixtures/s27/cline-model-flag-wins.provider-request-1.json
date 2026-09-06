@@ -1,0 +1,286 @@
+{
+  "method": "POST",
+  "path": "/v1/chat/completions",
+  "headers": {
+    "Authorization": "<redacted:36 chars>",
+    "Content-Type": "application/json",
+    "User-Agent": "ai-sdk/openai-compatible/3.0.37 ai-sdk/provider-utils/5.0.30 runtime/bun/1.3.13",
+    "Connection": "keep-alive",
+    "Accept": "*/*",
+    "Host": "127.0.0.1:8127",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Content-Length": "22187"
+  },
+  "tool_names": [
+    "read_files",
+    "search_codebase",
+    "run_commands",
+    "fetch_web_content",
+    "editor",
+    "ask_question",
+    "marion__report",
+    "spawn_agent",
+    "team_spawn_teammate",
+    "team_shutdown_teammate",
+    "team_status",
+    "team_task",
+    "team_run_task",
+    "team_cancel_run",
+    "team_list_runs",
+    "team_await_runs",
+    "team_send_message",
+    "team_broadcast",
+    "team_read_mailbox",
+    "team_mission_log",
+    "team_cleanup",
+    "team_create_outcome",
+    "team_attach_outcome_fragment",
+    "team_review_outcome_fragment",
+    "team_finalize_outcome",
+    "team_list_outcomes"
+  ],
+  "body": {
+    "model": "canned-2",
+    "messages": [
+      {
+        "role": "system",
+        "content": "<system prompt elided: 4373 chars>"
+      },
+      {
+        "role": "user",
+        "content": "Call the marion report tool with a one-line narrative. Do nothing else."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_files",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "search_codebase",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "run_commands",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "fetch_web_content",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "editor",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "ask_question",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "marion__report",
+          "description": "Report the outcome of this task back to marion.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "narrative": {
+                "type": "string"
+              },
+              "result_commits": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "narrative"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "spawn_agent",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_spawn_teammate",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_shutdown_teammate",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_status",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_task",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_run_task",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_cancel_run",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_list_runs",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_await_runs",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_send_message",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_broadcast",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_read_mailbox",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_mission_log",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_cleanup",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_create_outcome",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_attach_outcome_fragment",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_review_outcome_fragment",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_finalize_outcome",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "team_list_outcomes",
+          "description": "<elided>",
+          "parameters": "<elided>"
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

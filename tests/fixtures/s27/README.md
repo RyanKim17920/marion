@@ -34,6 +34,7 @@ mask the key itself: it is written in clear into `providers.json` and sent as `A
 | `cline-env-only-spawns-hub-daemon.meta.json`, `.lock.json` | the first probe, relocated by env only (no `--data-dir` flag): exit 0, but `pgrep` afterwards shows `bin/.cline --cline-hub-daemon --host 127.0.0.1 --port 25463 --pathname /hub`, and `<data>/locks/hub/production.json` records its pid, url and auth token |
 | `cline-flags-only-leaks-home.meta.json` | relocated by `--config`/`--data-dir` flags only: no daemon, but `$HOME/.cline/data/db/sessions.db` is written anyway |
 | `cline-mcp-settings-path-env.stdout.jsonl`, `.mcp.jsonl`, `.meta.json` | the MCP document **outside** the data dir, named by `CLINE_MCP_SETTINGS_PATH`: honoured — `marion__report` in `tools[]`, `tools/call` reaches the stub, exit 0, identical stream to `report-ok` |
+| `cline-model-flag-wins.stdout.jsonl`, `.provider-request-1.json`, `.meta.json`, `.rewritten-providers.json` | the happy path plus `-m canned-2` before the prompt, no `-P`: the request body says `model: "canned-2"`, `run_result.model` is `{id: "canned-2", provider: "openai-compatible"}`, `tools/call` still reached, exit 0 — and cline **rewrote** `<data>/settings/providers.json` with `model: "canned-2"` and a new `updatedAt` |
 | `cline-provider-settings-path-env-ignored.stdout.jsonl`, `.stderr.txt`, `.meta.json`, `.default-providers.json`, `.vendor-requests.json` | `providers.json` **outside** the data dir, named by `CLINE_PROVIDER_SETTINGS_PATH`: **ignored** — cline wrote a fresh `<data>/settings/providers.json` selecting `cline` / `anthropic/claude-fable-5.1`, POSTed twice to `https://api.cline.bot/api/v1/chat/completions` (401 `Unauthorized`, logged as `AI_APICallError`), emitted `agent_event error {errorClass: "auth", recoverable: false}` and `run_result finishReason: "error"`, exit **1**; the canned provider saw no request |
 
 Redactions: run directories → `<RUN-DIR>` (with and without the macOS `/private` prefix), the
@@ -136,6 +137,15 @@ ids/names → `<TEAM-ID>`/`<TEAM-NAME>`, the hub auth token → `<HUB-AUTH-TOKEN
     providers file is not a refusal: it is a silent fallback to the vendor. The adapter must
     write `providers.json` under `CLINE_DATA_DIR/settings/` and nowhere else, and should treat
     any `model.provider` other than `openai-compatible` in `run_result` as a compile error.
+15. **`-m` beats the document, keeps the provider, and is persisted.** With `providers.json`
+    saying `canned-1` and `-m canned-2` on argv (no `-P`), the request body carried
+    `model: "canned-2"`, `run_result.model` echoed `{id: "canned-2", provider:
+    "openai-compatible"}`, `cline history` recorded `canned-2`, `tools/call` still reached the
+    stub and the run exited 0. The provider was still selected from `lastUsedProvider`; `-m`
+    alone does not switch it. Side effect: cline rewrote `<data>/settings/providers.json` with
+    `model: "canned-2"` and a fresh `updatedAt` — a per-run flag mutates the document the
+    adapter wrote, so the adapter must rewrite the document before every run rather than trust
+    it, or simply never pass `-m`.
 
 Not measured, and so not claimed: whether a cwd-local `.cline/` MCP file is read (the bundle has
 no `mcp.json` string; not probed at runtime); the `hub.drain`/`hub.status` protocol; ACP mode

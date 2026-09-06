@@ -204,6 +204,17 @@ def main():
         fh.write(redact_text(json.dumps(hits, indent=2), ep) + "\n")
     written.append(dst)
 
+    # -m on argv versus the model in providers.json
+    mf = os.path.join(OUTROOT, "model-flag")
+    written += [copy_stream(mf, "model-flag-wins"), copy_first_request(mf, "model-flag-wins"),
+                copy_argv(mf, "model-flag-wins")]
+    with open(os.path.join(mf, "data", "settings", "providers.json")) as fh:
+        body = fh.read().replace(KEY, "<API-KEY>")
+    dst = os.path.join(FIXDIR, "cline-model-flag-wins.rewritten-providers.json")
+    with open(dst, "w") as fh:
+        fh.write(redact_text(body, mf))
+    written.append(dst)
+
     bad = [p for p in written if KEY in open(p).read()]
     if bad:
         sys.exit("credential leaked into: %s" % bad)

@@ -32,6 +32,7 @@ Options:
     --flags-and-env      env vars and flags together (the combination the adapter should use)
     --external-mcp       MCP document outside data/, via CLINE_MCP_SETTINGS_PATH
     --external-providers providers.json outside data/, via CLINE_PROVIDER_SETTINGS_PATH
+    --model <id>         add `-m <id>` to argv (does the flag beat providers.json?)
     --global-settings J  write J to data/settings/global-settings.json before the run
 
 Usage: run.py <label> [options]
@@ -156,6 +157,7 @@ def main():
                     help="write cline_mcp_settings.json OUTSIDE data/ and point CLINE_MCP_SETTINGS_PATH at it")
     ap.add_argument("--external-providers", action="store_true",
                     help="write providers.json OUTSIDE data/ and point CLINE_PROVIDER_SETTINGS_PATH at it")
+    ap.add_argument("--model", help="pass -m <id> before the positional prompt")
     ap.add_argument("--flags-and-env", action="store_true",
                     help="both: CLINE_DIR/CLINE_DATA_DIR env AND --config/--data-dir flags")
     ap.add_argument("--global-settings", help="JSON written to data/settings/global-settings.json")
@@ -228,6 +230,8 @@ def main():
         argv += ["--auto-approve", "false"]
     if a.id:
         argv += ["--id", a.id]
+    if a.model:
+        argv += ["-m", a.model]
     argv += a.extra
     if not a.stdin_prompt and not a.prompt_first:
         argv.append(a.prompt)
