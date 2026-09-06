@@ -760,6 +760,55 @@ the rest named; **[open]** not started. A milestone is never **[done]** while a 
 is unmet — including the evidence criteria. Statuses are claims about *verified* state, not about
 how much code exists.
 
+**Marker audit against the tree at `b85ea30`, 2026-09-05.** Every marker below was re-checked
+criterion by criterion against the code and the test targets that compile at HEAD
+(`cargo test --workspace --no-run`: 48 integration targets plus 11 unit targets, exit 0). No
+marker moves on this audit; what moved is the evidence under two of them and the list of what is
+honestly still open. Per milestone:
+
+- **M1 [done]** — unchanged. `m1_hop` compiles and runs against the canned provider.
+- **M2 [done]** — unchanged. Criteria 1–4 are `client_run.rs`'s four named tests; criterion 3's
+  "no untracked live process" half is `spawned_barrier.rs`. **Beyond the criteria, a restart is
+  now recoverable rather than merely accounted for:** `node/resume` (`Method::ALL` is 16;
+  `handler.rs::resume_relaunches_an_orphan_into_its_own_node_id_through_agent_spawns_path`) and
+  `marion resume` (`attach_verb.rs::resume_is_dispatched_and_starts_a_supervisor_when_none_serves`)
+  land a lost root back under its own id, measured end to end by
+  `restart_resume.rs::a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_client_hears_its_next_turn`
+  (`#[ignore]`, real codex, run with `--ignored`). Open, stated: Linux `/proc/<pid>/stat` start
+  identity is written and unmeasured (macOS only is measured); a linked worktree's cwd is not
+  recovered on resume; goose and cline carry no session id in any frame and copilot's arrives
+  only on its terminal frame, so a resume on those rows is refused by name
+  (`adapter.rs::a_harness_whose_row_refuses_resume_is_refused_by_name`).
+- **M3 [partial]** — unchanged, on C1's recorded 10-minute manual session alone. C2 met
+  (`pane_attach.rs::a_real_codex_tui_keeps_its_scrollback_across_a_resize_in_a_marion_pane`); C3
+  met (`.githooks/pre-commit` over `l45_driver` and `l45_tree`). Every automatable clause of C1 is
+  asserted (`pane_attach.rs::a_real_claude_runs_in_a_pane…`), and the native facade the session
+  is to be recorded through is live from the shipped binary for four lanes —
+  `native_facade_e2e.rs::every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade`
+  and `…::native_facade_sigterm_restores_the_operator_terminal_and_exits_by_signal` over
+  `claude`, `codex`, `opencode`, `copilot`. Open, stated: the recording itself; the `gemini` lane
+  (disabled: system-settings merge granularity unmeasured, `native_facade.rs`); `goose`, `cline`
+  and `qwen` lanes (disabled: interactive shape unmeasured); `SIGTSTP`/`SIGCONT` through the
+  facade (kernel-stop not observable from the `spawn_pty` fixture — an orphaned process group;
+  covered only by the isolated `suspend_probe` tests in `native_relay.rs`); the parallel-run flake
+  of `native_relay_sigterm_restores_terminal_and_redelivers_to_itself`.
+- **M4 [done]** — unchanged
+  (`m4_fan_in.rs::a_real_codex_root_runs_two_real_claude_children_concurrently_and_receives_both_contracts`).
+- **M5 [partial]** — unchanged, on clause 3 alone. Clause 1 met (`acp_child.rs`: the canned
+  `opencode acp` child, the row-less `acp:python3 …` fake agent through the generic path, and the
+  live `copilot --acp` child, `#[ignore]`); clause 2 met
+  (`doctor.rs::an_acp_command_gets_its_own_doctor_row_keyed_on_its_own_handshake`). Clause 3 —
+  the UI greying *their* capabilities — is not met for the one reason the ruling below gives and
+  which is still true at HEAD: `NodeSummary` (`marion-proto/src/model.rs`) carries `harness` and
+  `harness_version` and no field for an ACP agent's own `initialize` identity, so a tree node can
+  be greyed only at the protocol's static ceiling, never at the agent's. The greying mechanism
+  itself is built and measured (`tree.rs::the_trees_greying_is_doctors_own_answer_at_every_key`).
+- **Spikes** — S8, S9, S12, S13 stay `[partial]` for the reasons given; S24–S28 (copilot, qwen,
+  goose, cline, ACP agents) are measured with fixtures under `tests/fixtures/s24..s28/`. One
+  reading in that set has no Rust assertion behind it and is fixture-only: qwen 0.23.0's
+  `write_file` refusing a relative path (`tests/fixtures/s25/`), which is why `cross_product` has
+  a qwen row and no qwen column.
+
 **README status reconciliation in this commit moves no milestone marker.** The README now mirrors
 the existing M1/M2/M4 `[done]` and M3/M5 `[partial]` markers and removes stale M1 work instructions
 and debts that this ledger already records as paid. This documentation-only correction adds no
@@ -934,8 +983,9 @@ acceptance evidence, so every marker remains unchanged.
     degenerated to a pid, or in which `procid::resolve` stopped treating a mismatch as evidence,
     fails there in 0.4 s.
 - **M3 [partial]** — tree UI + embedded terminal. **Re-audited against the code 2026-08-08 after
-  C2 was closed.** Two of §9's three criteria are met; the third is not, and what is missing from
-  it is one thing only and cannot be automated. It stays off `[done]` for that one reason.
+  C2 was closed, and again 2026-09-05 at `b85ea30` (marker audit above).** Two of §9's three
+  criteria are met; the third is not, and what is missing from it is one thing only and cannot be
+  automated. It stays off `[done]` for that one reason.
 
   **Native facade activation, state as of 2026-09-05 (details in the dated paragraphs below).**
   *Now true:* the shipped `marion <harness>` runs a real native TUI through the relay for every
