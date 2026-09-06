@@ -1307,6 +1307,30 @@ acceptance evidence, so every marker remains unchanged.
     every enabled harness) is `plan-native-activation.md` step 9 and remains open, so M3 remains
     `[partial]`.
 
+    **The relay's terminal writer waits out a full output queue (2026-09-05); no marker moves.**
+    Found by the first run of the M3 E2E matrix, not by any unit test: the shipped `marion claude`
+    and `marion codex` clients left on their own within seconds of their first screen, exit 1, with
+    the operator's screen holding a `?2026h`-opened frame that never closed — 1233 of the node's
+    1506 bytes. Mechanism: `native_relay::OwnedFdWriter::write` was a bare `write(2)` on the
+    terminal descriptor the relay makes nonblocking at activation, and `Write::write_all` returns
+    `WouldBlock` as an error, so a TUI's one-burst frame larger than the pty's output queue ended
+    the relay mid-frame whenever the operator's terminal read a little slower than the harness
+    painted. A refused write now blocks on the descriptor's writability — `poll(2)` for `POLLOUT`
+    with the remaining deadline, declared by hand as `marion_tui::guard` declares it — for up to
+    10 s, and only then reports a named stall (nothing is reading the operator's terminal).
+    RED/GREEN: `output_writes_wait_out_a_full_nonblocking_terminal_queue` writes 1 MiB through the
+    writer to a nonblocking socket pair drained 4 KiB per 2 ms; it failed with `WouldBlock` (os
+    error 35) on the old writer and passes with every byte counted on the new one. M3 remains
+    `[partial]`.
+
+    **Open, recorded rather than fixed here:**
+    `native_relay_sigterm_restores_terminal_and_redelivers_to_itself` is flaky under the parallel
+    `cargo test -p marion-supervisor --lib native_relay` filter on the tree *before* this change
+    too (1 of 2 runs at the same HEAD; the bounded inner probe exits 101 after its
+    `sigterm-observed-wait-complete` phase) and passes 6/6 run alone. The suspect is the two PTY
+    signal probes sharing the process-wide relay signal owner; it needs serial isolation, not a
+    wider bound.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3

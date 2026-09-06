@@ -626,9 +626,104 @@ impl Read for OwnedFdReader {
 
 struct OwnedFdWriter(std::os::fd::OwnedFd);
 
+/// How long the terminal's output queue may stay full before the relay calls it a stall. A pty
+/// drained by any live terminal empties in microseconds; one that stays full this long has no
+/// reader, and the relay ends rather than holding a node's output hostage for ever.
+const OUTPUT_STALL: std::time::Duration = std::time::Duration::from_secs(10);
+
+// `poll(2)`, declared by hand the way `marion_tui::guard` declares it: the crate's `rustix` has
+// no event feature, and one descriptor's writability is all the relay ever asks.
+unsafe extern "C" {
+    fn poll(fds: *mut PollFd, nfds: NfdsT, timeout_ms: std::ffi::c_int) -> std::ffi::c_int;
+}
+
+/// `nfds_t`: `unsigned long` on Linux, `unsigned int` everywhere else marion runs.
+#[cfg(target_os = "linux")]
+type NfdsT = u64;
+#[cfg(not(target_os = "linux"))]
+type NfdsT = u32;
+
+#[repr(C)]
+struct PollFd {
+    fd: std::ffi::c_int,
+    events: i16,
+    revents: i16,
+}
+
+/// `POLLOUT` and `POLLNVAL` are `0x0004` and `0x0020` on Darwin and Linux alike.
+const POLLOUT: i16 = 0x0004;
+const POLLNVAL: i16 = 0x0020;
+
+impl OwnedFdWriter {
+    /// Block until the terminal will take more bytes, or `deadline` passes. `Ok(true)` is
+    /// writable; `Ok(false)` is the deadline; a closed descriptor is an error.
+    fn wait_writable(&self, deadline: std::time::Instant) -> std::io::Result<bool> {
+        use std::os::fd::AsRawFd;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            let mut pfd = PollFd {
+                fd: self.0.as_raw_fd(),
+                events: POLLOUT,
+                revents: 0,
+            };
+            let timeout_ms = std::ffi::c_int::try_from(remaining.as_millis().max(1))
+                .unwrap_or(std::ffi::c_int::MAX);
+            // SAFETY: `pfd` is a live, correctly laid out `struct pollfd` for the duration of the
+            // call, and `self.0` owns the descriptor it names.
+            let ready = unsafe { poll(&mut pfd, 1, timeout_ms) };
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if ready == 0 {
+                return Ok(false);
+            }
+            if pfd.revents & POLLNVAL != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the terminal output descriptor was closed under the relay",
+                ));
+            }
+            // `POLLOUT`, `POLLHUP` or `POLLERR`: the write decides, and cannot block after any.
+            return Ok(true);
+        }
+    }
+}
+
 impl Write for OwnedFdWriter {
+    /// **`WouldBlock` is a full queue, not a failure.** The descriptor is nonblocking while the
+    /// relay runs, and a TUI paints its frame in one burst larger than a pty's output queue; a
+    /// writer that reported the first refusal would end the relay mid-frame whenever the operator's
+    /// terminal drained a little slower than the harness painted (`native_facade_e2e.rs` caught
+    /// exactly that: the client gone, the frame's tail never written). A refused write blocks on
+    /// the descriptor's writability, not on time, and only a queue nobody drains within
+    /// [`OUTPUT_STALL`] becomes an error, named as a stall.
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        rustix::io::write(&self.0, bytes).map_err(Into::into)
+        let deadline = std::time::Instant::now() + OUTPUT_STALL;
+        loop {
+            match rustix::io::write(&self.0, bytes) {
+                Ok(written) => return Ok(written),
+                // `EWOULDBLOCK` is `EAGAIN` on both supported targets.
+                Err(rustix::io::Errno::AGAIN) => {
+                    if !self.wait_writable(deadline)? {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!(
+                                "the terminal's output queue stayed full for {OUTPUT_STALL:?}; \
+                                 nothing is reading the operator's terminal"
+                            ),
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -3732,5 +3827,42 @@ mod tests {
         );
         drop(session);
         server_thread.join().unwrap();
+    }
+
+    /// The terminal output descriptor is nonblocking while the relay runs, and a TUI frame is a
+    /// burst larger than a pty's output queue. A writer that surfaced `WouldBlock` would end the
+    /// relay mid-frame whenever the operator's terminal drained a little slower than the harness
+    /// painted, which is the E2E failure `native_facade_e2e.rs` first caught: the client left with
+    /// the frame's tail unwritten. So a full queue is waited out, not reported.
+    #[test]
+    fn output_writes_wait_out_a_full_nonblocking_terminal_queue() {
+        let (writer_end, mut reader_end) = UnixStream::pair().unwrap();
+        writer_end.set_nonblocking(true).unwrap();
+        let payload = vec![0x41u8; 1 << 20];
+        let expected = payload.len();
+        let reader = std::thread::spawn(move || {
+            let mut received = 0usize;
+            let mut chunk = [0u8; 4096];
+            loop {
+                // A terminal emulator that repaints between reads: slower than the burst.
+                std::thread::sleep(Duration::from_millis(2));
+                match reader_end.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => received += count,
+                    Err(error) => panic!("reading the drained output: {error}"),
+                }
+            }
+            received
+        });
+        let mut writer = super::OwnedFdWriter(std::os::fd::OwnedFd::from(writer_end));
+        writer
+            .write_all(&payload)
+            .expect("a momentarily full terminal queue is waited out, not reported");
+        drop(writer);
+        assert_eq!(
+            reader.join().unwrap(),
+            expected,
+            "every byte of the burst arrived"
+        );
     }
 }
