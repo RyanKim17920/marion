@@ -1446,6 +1446,11 @@ impl HarnessAdapter for AcpAdapter {
             .expect("a binding always names a program");
         f.program = Some(program.to_string());
         f.agent_args = args.to_vec();
+        // A resume rides `session/load` ([`Self::session_declaration`]), never argv: the row has no
+        // `Arg::Resume` and the renderer would otherwise refuse the launch as one it cannot name a
+        // session on. The session *is* named — on the request, which is where this protocol puts
+        // it.
+        f.resume = None;
         (f.extra_env, f.model) = match (spec.auth, binding.canned()) {
             (Auth::Inherited, _) => (Vec::new(), None),
             // opencode's own isolation rows, over the same binary: the relocations, the hygiene
@@ -1542,9 +1547,6 @@ impl HarnessAdapter for AcpAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Option<serde_json::Value>, HarnessError> {
         self.binding(spec)?;
-        if spec.mcp == McpDeclaration::None {
-            return Ok(None);
-        }
         // No spelling gate here any more. This method *is* marion putting its verbs in front of
         // the agent, and it used to refuse an agent nobody had watched call a tool (s14: an
         // unknown tool name is silently ignored). That gate guarded a *compiled* spelling — and
@@ -1552,19 +1554,36 @@ impl HarnessAdapter for AcpAdapter {
         // `session/prompt` verbatim, and the agent presents the bridge's tools to its model under
         // whatever name it likes. What marion has to get right is the *reading*, and
         // `acp::Reading::Generic` reads the `<server> <verb>` pair in any spelling.
+        //
         // The bridge's contract, verbatim — the same pairs every document-shaped declaration
         // carries — because the process on the other end is the same `marion-supervisor mcp`.
-        let env = bridge_env(spec, ctx).pairs();
-        Ok(Some(acp::session_new_request(
-            SESSION_NEW_ID,
-            &spec.cwd,
-            &[acp::McpServerDecl {
+        let servers = match spec.mcp {
+            McpDeclaration::None => Vec::new(),
+            McpDeclaration::Marion => vec![acp::McpServerDecl {
                 name: acp::MCP_SERVER_NAME.into(),
                 command: ctx.bridge.clone(),
                 args: ctx.bridge_args.clone(),
-                env,
+                env: bridge_env(spec, ctx).pairs(),
             }],
-        )))
+        };
+        match &spec.resume {
+            // **A resume is `session/load`, not a flag** — the row's `resume` grammar is `None`
+            // for exactly this reason. The same declaration rides it, because the agent's MCP
+            // processes did not survive the agent. Built even under `McpDeclaration::None`, since
+            // the session to continue is something only this request can say.
+            Some(session) => Ok(Some(acp::session_load_request(
+                SESSION_NEW_ID,
+                session,
+                &spec.cwd,
+                &servers,
+            ))),
+            None if servers.is_empty() => Ok(None),
+            None => Ok(Some(acp::session_new_request(
+                SESSION_NEW_ID,
+                &spec.cwd,
+                &servers,
+            ))),
+        }
     }
 
     fn parse_stream(&self, stdout: &str, exit: ChildExit) -> StreamOutcome {
@@ -5223,6 +5242,82 @@ mod tests {
         assert!(acp_adapter().compile(&acp_spec(), &ctx()).is_ok());
     }
 
+    /// **An ACP resume is `session/load` carrying the same bridge declaration**, on any binding —
+    /// the protocol's own resume, which is why the row's argv `resume` grammar is `None` and the
+    /// generic path resumes exactly as a refinement row does. `McpRoute::Session` verifies it the
+    /// way it verifies a fresh launch, and a resume with no declaration still names its session.
+    #[test]
+    fn an_acp_resume_is_a_session_load_with_the_same_declaration() {
+        for adapter in [acp_adapter(), AcpAdapter::resolve("zed --acp").unwrap()] {
+            let fresh = LaunchSpec {
+                extra: Extras {
+                    acp_agent: Some(adapter.binding.as_ref().unwrap().selector().into()),
+                    ..Extras::default()
+                },
+                ..acp_spec()
+            };
+            let resumed = LaunchSpec {
+                resume: Some("ses_prev".into()),
+                ..fresh.clone()
+            };
+            let new = adapter
+                .session_declaration(&fresh, &ctx())
+                .unwrap()
+                .unwrap();
+            let load = adapter
+                .session_declaration(&resumed, &ctx())
+                .unwrap()
+                .unwrap();
+            assert_eq!(new["method"], acp::SESSION_NEW_METHOD);
+            assert_eq!(load["method"], acp::SESSION_LOAD_METHOD);
+            assert_eq!(
+                load["id"], new["id"],
+                "one id, stamped once, for the driver to wait on"
+            );
+            assert_eq!(load["params"]["sessionId"], "ses_prev");
+            assert_eq!(
+                load["params"][acp::MCP_SERVERS_KEY],
+                new["params"][acp::MCP_SERVERS_KEY],
+                "the bridge is declared again: the agent's MCP processes died with it"
+            );
+            let inv = adapter.compile(&resumed, &ctx()).unwrap();
+            assert!(
+                !inv.args.iter().any(|a| a.contains("ses_prev")),
+                "nothing about the session reaches argv: {:?}",
+                inv.args
+            );
+            assert!(
+                McpRoute::Session(acp::MCP_SERVERS_KEY)
+                    .verify(&[], &inv, Some(&load))
+                    .is_ok()
+            );
+            // With no declaration asked for, a fresh launch compiles no request and a resume still
+            // compiles the load, with an empty `mcpServers`.
+            let bare = LaunchSpec {
+                mcp: McpDeclaration::None,
+                ..resumed
+            };
+            let load = adapter
+                .session_declaration(&bare, &ctx())
+                .unwrap()
+                .expect("the session to continue is named only here");
+            assert_eq!(load["params"]["sessionId"], "ses_prev");
+            assert_eq!(load["params"][acp::MCP_SERVERS_KEY], serde_json::json!([]));
+            assert_eq!(
+                adapter
+                    .session_declaration(
+                        &LaunchSpec {
+                            resume: None,
+                            ..bare
+                        },
+                        &ctx()
+                    )
+                    .unwrap(),
+                None
+            );
+        }
+    }
+
     /// **What an ACP launch is refused for, and — the larger half — what it is not.** The two
     /// refusals are the ones the protocol cannot get past: no agent named (§6.4: marion may not
     /// pick one) and a selector with no program in it. An agent marion has never heard of is *not*
@@ -6421,11 +6516,7 @@ mod tests {
             resume: Some("SID".into()),
             ..spec_for(h)
         };
-        for (h, pane) in [
-            (Harness::Gemini, false),
-            (Harness::Acp, false),
-            (Harness::Codex, true),
-        ] {
+        for (h, pane) in [(Harness::Gemini, false), (Harness::Codex, true)] {
             let a = launch_adapter(h).unwrap();
             let spec = resuming(h);
             let got = match pane {
@@ -6440,6 +6531,25 @@ mod tests {
                 other => panic!("{h} (pane: {pane}) did not refuse by name: {other:?}"),
             }
         }
+        // ACP's row has no argv resume either, and is **not** refused: its resume is the protocol's
+        // `session/load`, carried on the session declaration rather than the command line
+        // (`an_acp_resume_is_a_session_load_with_the_same_declaration`). Argv stays the agent's own.
+        let acp_adapter = launch_adapter(Harness::Acp).unwrap();
+        let inv = acp_adapter
+            .compile(&resuming(Harness::Acp), &ctx())
+            .expect("an ACP resume compiles");
+        assert!(
+            !inv.args.iter().any(|a| a.contains("SID")),
+            "{:?}",
+            inv.args
+        );
+        assert_eq!(
+            acp_adapter
+                .session_declaration(&resuming(Harness::Acp), &ctx())
+                .unwrap()
+                .unwrap()["method"],
+            acp::SESSION_LOAD_METHOD
+        );
         // And the rows that carry one render it, through the same field.
         let args = |h: Harness, pane: bool| -> Vec<String> {
             let a = launch_adapter(h).unwrap();

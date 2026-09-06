@@ -18,8 +18,10 @@
 //!   [`McpDeclaration::None`] so marion is not on both ends of its own assertion (§8). A node run
 //!   carries the adapter's real declaration — the whole point of the fifth `McpRoute` — so the id
 //!   this driver correlates its answer against is read *out of the declaration the adapter built*
-//!   rather than assumed, and a declaration that is not a `session/new` request is refused before
-//!   anything is spawned.
+//!   rather than assumed, and a declaration that is neither a `session/new` nor a `session/load`
+//!   request is refused before anything is spawned. A `session/load` is a **resume** — ACP's own,
+//!   a request rather than a flag — and goes out only to an agent whose `initialize` advertised
+//!   `loadSession`; the prompt then continues the session the load named.
 //! * **doctor answers nothing the agent asks; a node run must.** doctor's micro-prompt is chosen so
 //!   the turn never needs a permission or a file, and `AcpChild` consequently has no inbound
 //!   request path at all. A real prompt does need them — S21's own probe grew
@@ -202,9 +204,10 @@ pub enum AcpChildError {
     /// agent is spawned, because the alternative is a live agent waiting on a frame it will never
     /// understand and a driver waiting on an id nobody stamped.
     #[error(
-        "the session declaration marion compiled is not a `session/new` request: {what}. \
-         `AcpAdapter::session_declaration` builds it with `acp::session_new_request`, and this \
-         driver correlates the agent's answer against the id that request carries"
+        "the session declaration marion compiled is not a `session/new` or `session/load` request: \
+         {what}. `AcpAdapter::session_declaration` builds it with `acp::session_new_request` or \
+         `acp::session_load_request`, and this driver correlates the agent's answer against the id \
+         that request carries"
     )]
     Declaration { what: String },
     #[error(
@@ -236,6 +239,16 @@ pub enum AcpChildError {
     /// vendor's own sentence.
     #[error("the agent refused to open a session: {0}")]
     SessionRefused(#[source] acp::AcpError),
+    /// The launch asked to continue a session and the agent's own `initialize` did not advertise
+    /// `loadSession`, which is the only resume ACP v1 has. Refused before `session/load` is sent,
+    /// by the name of the capability and of the agent, because the alternative — a `session/new`
+    /// under the old id — would be a fresh run the contract misdescribes as a continuation.
+    #[error(
+        "the launch resumes session `{session}` and the agent (`{agent}`) does not advertise \
+         `loadSession`, the one resume ACP v1 has; marion will not open a fresh session and call \
+         it a continuation"
+    )]
+    NoLoadSession { agent: String, session: String },
 }
 
 /// Drive one ACP turn and hand back the transcript.
@@ -261,7 +274,7 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
             acp::session_new_request(marion_harness::adapter::SESSION_NEW_ID, &spec.inv.cwd, &[])
         }
     };
-    let session_new_id = declared_id(&session_new)?;
+    let opening = declared(&session_new)?;
 
     // `checked_add`, for `run_bounded`'s reason: `Instant + Duration` panics on overflow, and every
     // escape from here on abandons a live process. Saturating to the bound's own ceiling keeps an
@@ -287,13 +300,28 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
     // Parsed, not merely received. §3.3's stage two is what narrows this agent's capabilities, and
     // an agent that answers with a wire version marion does not speak has to be refused here rather
     // than prompted anyway and read with a v1 reader.
-    if let Err(e) = AgentHandshake::parse(&handshake) {
+    let handshake = match AgentHandshake::parse(&handshake) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = agent.finish(true);
+            return Err(AcpChildError::Handshake(e));
+        }
+    };
+    // The one capability the handshake gates here: a resume goes out only to an agent that says
+    // it can replay a session. Checked before the frame is sent, so an agent without it never sees
+    // a `session/load` it would answer with an error marion would then have to interpret.
+    if let Some(session) = &opening.session
+        && !handshake.load_session
+    {
         let _ = agent.finish(true);
-        return Err(AcpChildError::Handshake(e));
+        return Err(AcpChildError::NoLoadSession {
+            agent: handshake.key(),
+            session: session.clone(),
+        });
     }
 
-    agent.send(&session_new, "session/new")?;
-    let opened = match agent.settle(session_new_id, clip(deadline, SESSION_BUDGET)) {
+    agent.send(&session_new, opening.method)?;
+    let opened = match agent.settle(opening.id, clip(deadline, SESSION_BUDGET)) {
         Some(f) => f,
         None => {
             return Err(agent.refuse(|end, frames| AcpChildError::NoSession {
@@ -303,7 +331,13 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
             }));
         }
     };
-    let session = match acp::session_id(&opened) {
+    // A fresh session's id is the agent's answer; a loaded session's id was the request's, and the
+    // answer only says whether the agent took it (ACP's `session/load` result carries no id).
+    let session = match &opening.session {
+        None => acp::session_id(&opened),
+        Some(s) => acp::session_loaded(&opened).map(|()| s.clone()),
+    };
+    let session = match session {
         Ok(s) => s,
         Err(e) => {
             let _ = agent.finish(true);
@@ -334,25 +368,65 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
     })
 }
 
-/// The id the adapter stamped on its `session/new`, or a refusal naming what arrived instead.
-fn declared_id(request: &Value) -> Result<u64, AcpChildError> {
-    let method = request.get("method").and_then(Value::as_str);
-    if method != Some("session/new") {
-        return Err(AcpChildError::Declaration {
-            what: match method {
-                Some(m) => format!("its method is `{m}`"),
-                None => "it names no method at all".into(),
-            },
-        });
-    }
-    request
-        .get("id")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| AcpChildError::Declaration {
-            what: "it carries no numeric `id`, so the agent's answer could not be told from a \
+/// What the adapter's session-opening request asks for, read back off the request itself.
+struct Opening {
+    /// The id the adapter stamped, for the driver to wait on.
+    id: u64,
+    /// `session/new` or `session/load` — the step name a refusal carries.
+    method: &'static str,
+    /// The session a `session/load` continues; `None` on a `session/new`, whose session is the
+    /// agent's to name.
+    session: Option<String>,
+}
+
+/// The request the adapter built, or a refusal naming what arrived instead. Two methods open a
+/// session and both are accepted here; a load without a `sessionId` is refused before the spawn for
+/// the same reason a request without an `id` is — it would be a wait on nothing.
+fn declared(request: &Value) -> Result<Opening, AcpChildError> {
+    let method = match request.get("method").and_then(Value::as_str) {
+        Some(acp::SESSION_NEW_METHOD) => acp::SESSION_NEW_METHOD,
+        Some(acp::SESSION_LOAD_METHOD) => acp::SESSION_LOAD_METHOD,
+        Some(m) => {
+            return Err(AcpChildError::Declaration {
+                what: format!("its method is `{m}`"),
+            });
+        }
+        None => {
+            return Err(AcpChildError::Declaration {
+                what: "it names no method at all".into(),
+            });
+        }
+    };
+    let id =
+        request
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| AcpChildError::Declaration {
+                what: "it carries no numeric `id`, so the agent's answer could not be told from a \
                    notification"
-                .into(),
-        })
+                    .into(),
+            })?;
+    let session = match method {
+        acp::SESSION_LOAD_METHOD => Some(
+            request
+                .pointer("/params/sessionId")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| AcpChildError::Declaration {
+                    what:
+                        "it is a `session/load` naming no `sessionId`, so there is no session to \
+                           continue"
+                            .into(),
+                })?,
+        ),
+        _ => None,
+    };
+    Ok(Opening {
+        id,
+        method,
+        session,
+    })
 }
 
 /// A step's deadline: its own measured budget, clipped to what is left of the caller's wall clock.
@@ -889,6 +963,106 @@ sleep 15"#,
         assert!(
             !run.capture_truncated,
             "a pipe was still held open: the group sweep did not reach the agent's children"
+        );
+    }
+
+    /// The `initialize` result of an agent that does **not** advertise `loadSession` — S20's
+    /// `gemini --acp` shape, which carries no `agentCapabilities.loadSession` at all.
+    const HELLO_NO_LOAD: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-acp","version":"0.1"},"agentCapabilities":{}}}"#;
+
+    /// The declaration a resume compiles: `session/load` on the session the agent named last time,
+    /// with the bridge declared again.
+    fn load_declaration(cwd: &Path) -> Value {
+        acp::session_load_request(
+            marion_harness::adapter::SESSION_NEW_ID,
+            "ses_prev",
+            cwd,
+            &[],
+        )
+    }
+
+    /// **A resume is `session/load`, driven on the id the request carries.** The agent advertises
+    /// `loadSession`, gets the load instead of a `session/new`, replays history (one update),
+    /// answers with an empty result — ACP's own shape, no `sessionId` in it — and the prompt then
+    /// goes out on the *requested* session. The replayed history is in the transcript, because it
+    /// is the agent's own frames.
+    #[test]
+    fn a_resumed_turn_loads_the_named_session_and_prompts_on_it() {
+        let dir = scratch("acp-load");
+        let opened = dir.join("open.json");
+        let prompt_seen = dir.join("prompt.json");
+        let script = format!(
+            r#"read init
+printf '%s\n' '{HELLO}'
+read open
+printf '%s\n' "$open" > '{opened}'
+printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"ses_prev","update":{{"sessionUpdate":"user_message_chunk","content":{{"type":"text","text":"replayed"}}}}}}}}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":null}}'
+read prompt
+printf '%s\n' "$prompt" > '{prompt}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"stopReason":"end_turn"}}}}'
+sleep 15"#,
+            opened = opened.display(),
+            prompt = prompt_seen.display(),
+        );
+        let inv = agent(&dir, &script);
+        let run = run_acp_child(AcpChildSpec {
+            session_declaration: Some(load_declaration(&dir)),
+            ..spec(&inv, Duration::from_secs(20), &|_| {})
+        })
+        .expect("the fake agent loads the session and completes a turn");
+
+        let sent: Value = serde_json::from_str(&std::fs::read_to_string(&opened).unwrap()).unwrap();
+        assert_eq!(sent["method"], acp::SESSION_LOAD_METHOD);
+        assert_eq!(sent["params"]["sessionId"], "ses_prev");
+        let prompted: Value =
+            serde_json::from_str(&std::fs::read_to_string(&prompt_seen).unwrap()).unwrap();
+        assert_eq!(prompted["method"], "session/prompt");
+        assert_eq!(
+            prompted["params"]["sessionId"], "ses_prev",
+            "the prompt continues the session the load named, not one the answer invented"
+        );
+        assert!(
+            run.stdout.contains("replayed"),
+            "the replayed history is the agent's own frames and stays in the transcript"
+        );
+        assert!(!run.exit.timed_out);
+    }
+
+    /// **An agent without `loadSession` is refused a resume by name, before the load is sent.** The
+    /// protocol has no other resume marion drives, so the refusal names the capability the agent
+    /// did not advertise and the agent it was — and the agent sees no `session/load` at all, which
+    /// the script proves by exiting on the frame it does receive.
+    #[test]
+    fn a_resume_is_refused_by_name_when_the_agent_does_not_advertise_load_session() {
+        let dir = scratch("acp-noload");
+        let seen = dir.join("after-hello.json");
+        let script = format!(
+            r#"read init
+printf '%s\n' '{HELLO_NO_LOAD}'
+read next
+printf '%s\n' "$next" > '{seen}'
+sleep 15"#,
+            seen = seen.display(),
+        );
+        let inv = agent(&dir, &script);
+        let e = run_acp_child(AcpChildSpec {
+            session_declaration: Some(load_declaration(&dir)),
+            ..spec(&inv, Duration::from_secs(20), &|_| {})
+        })
+        .expect_err("no `loadSession`, no load");
+        assert!(
+            matches!(&e, AcpChildError::NoLoadSession { agent, .. } if agent.contains("fake-acp")),
+            "the refusal names the capability and the agent: {e}"
+        );
+        assert!(
+            e.to_string().contains("loadSession") && e.to_string().contains("ses_prev"),
+            "{e}"
+        );
+        assert!(
+            !seen.exists(),
+            "the agent must never have been sent a frame after `initialize`: {:?}",
+            std::fs::read_to_string(&seen)
         );
     }
 

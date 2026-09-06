@@ -746,6 +746,38 @@ pub fn session_new_request(id: u64, cwd: &Path, mcp: &[McpServerDecl]) -> Value 
     })
 }
 
+/// `session/load` — **the resume that is a protocol request rather than a flag.**
+///
+/// ACP v1 says an agent advertising `agentCapabilities.loadSession` MUST replay the session's
+/// history as `session/update` notifications before answering, so the loaded session is the old
+/// one continued and not a fresh one under the old id. The request carries the same `cwd` and the
+/// same `mcpServers` block as `session/new` — the bridge is declared again because the agent's MCP
+/// processes did not survive the agent — so [`crate::McpRoute::Session`] verifies a resume exactly
+/// as it verifies a fresh launch. The `sessionId` is the one the agent handed back from its own
+/// `session/new`; nothing here mints one.
+///
+/// An agent that does not advertise `loadSession` is refused this by name (the driver checks the
+/// handshake before sending it), because the protocol has no other resume: `session/resume` exists
+/// only behind ACP v2's unstable flag, and both `sessionCapabilities.resume` and `fork` are
+/// carried on [`AgentHandshake`] without being driven.
+pub fn session_load_request(id: u64, session_id: &str, cwd: &Path, mcp: &[McpServerDecl]) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/load",
+        "params": {
+            "sessionId": session_id,
+            "cwd": cwd,
+            MCP_SERVERS_KEY: mcp.iter().map(McpServerDecl::to_value).collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// The methods a session-opening request can carry, read back off the request marion compiled —
+/// so a driver correlates and continues on what the adapter actually built.
+pub const SESSION_NEW_METHOD: &str = "session/new";
+pub const SESSION_LOAD_METHOD: &str = "session/load";
+
 /// The `session/new` param key [`crate::McpRoute::Session`] verifies. One string, so the compiler
 /// keeps the builder and the check on the same key.
 pub const MCP_SERVERS_KEY: &str = "mcpServers";
@@ -773,6 +805,27 @@ pub fn cancel_notification(session_id: &str) -> Value {
 
 /// The `sessionId` out of a `session/new` result, or the agent's own words for why there is none.
 pub fn session_id(frame: &str) -> Result<String, AcpError> {
+    let v = session_answer(frame)?;
+    v.get("result")
+        .and_then(|r| r.get("sessionId"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or(AcpError::NeitherResultNorError)
+}
+
+/// Whether a `session/load` answer opened the session. Its result carries **no** `sessionId` — the
+/// id was the request's — so the only questions are "is it a response" and "did the agent refuse",
+/// and the refusal comes back in the agent's own words (an unknown id, an ineligible login).
+pub fn session_loaded(frame: &str) -> Result<(), AcpError> {
+    let v = session_answer(frame)?;
+    v.get("result")
+        .map(|_| ())
+        .ok_or(AcpError::NeitherResultNorError)
+}
+
+/// One JSON-RPC response frame, with a JSON-RPC `error` already turned into [`AcpError::Refused`].
+fn session_answer(frame: &str) -> Result<Value, AcpError> {
     let v: Value = serde_json::from_str(frame).map_err(|e| AcpError::NotJson(e.to_string()))?;
     if let Some(err) = v.get("error") {
         return Err(AcpError::Refused {
@@ -784,12 +837,7 @@ pub fn session_id(frame: &str) -> Result<String, AcpError> {
                 .to_string(),
         });
     }
-    v.get("result")
-        .and_then(|r| r.get("sessionId"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .ok_or(AcpError::NeitherResultNorError)
+    Ok(v)
 }
 
 /// A `session/update` payload, where the frame is one.
@@ -1639,6 +1687,46 @@ mod tests {
         for f in [&n, &p, &c] {
             assert!(!serde_json::to_string(f).unwrap().contains('\n'));
         }
+    }
+
+    /// **A resume is `session/load` with the same declaration**, and its answer carries no id.
+    #[test]
+    fn a_resume_is_a_session_load_carrying_the_same_bridge_declaration() {
+        let decl = McpServerDecl {
+            name: MCP_SERVER_NAME.into(),
+            command: "/bin/marion-supervisor".into(),
+            args: vec!["mcp".into()],
+            env: vec![],
+        };
+        let load =
+            session_load_request(1, "ses_prev", Path::new("/wt"), std::slice::from_ref(&decl));
+        let new = session_new_request(1, Path::new("/wt"), std::slice::from_ref(&decl));
+        assert_eq!(load["method"], SESSION_LOAD_METHOD);
+        assert_eq!(new["method"], SESSION_NEW_METHOD);
+        assert_eq!(load["params"]["sessionId"], "ses_prev");
+        assert_eq!(load["params"]["cwd"], new["params"]["cwd"]);
+        assert_eq!(
+            load["params"][MCP_SERVERS_KEY], new["params"][MCP_SERVERS_KEY],
+            "the bridge is declared again on a resume, in the same shape"
+        );
+        assert!(!serde_json::to_string(&load).unwrap().contains('\n'));
+
+        // The answer: `null`, `{}` and an object are all "loaded"; an error is the refusal in the
+        // agent's words; a frame with neither is neither.
+        for ok in [
+            r#"{"jsonrpc":"2.0","id":1,"result":null}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+        ] {
+            assert_eq!(session_loaded(ok), Ok(()), "{ok}");
+        }
+        assert!(matches!(
+            session_loaded(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unknown session"}}"#),
+            Err(AcpError::Refused { code: -32602, message }) if message == "unknown session"
+        ));
+        assert_eq!(
+            session_loaded(r#"{"jsonrpc":"2.0","id":1}"#),
+            Err(AcpError::NeitherResultNorError)
+        );
     }
 
     /// The `sessionId` read, and S20's refusal in the same shape a live probe sees it.
