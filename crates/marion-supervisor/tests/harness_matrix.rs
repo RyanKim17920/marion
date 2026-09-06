@@ -547,3 +547,45 @@ fn a_copilot_child_reports_through_marions_bridge_over_the_openai_wire() {
     let ev = drive(&cell);
     assert_cell(&cell, &ev);
 }
+
+/// **The sixth binary, again on the opencode cell's wire.** goose 1.49.0's `openai` provider speaks
+/// OpenAI Chat Completions (`OPENAI_HOST` + the default `OPENAI_BASE_PATH`), so the same `Script`
+/// fields drive it — with the tool under goose's own `marion__report` spelling, a double underscore
+/// between server and tool, which is the sixth spelling of one tool and what (5) asserts here.
+///
+/// What this cell witnesses that `tests/fixtures/s26/` alone cannot: marion's **own** bridge behind
+/// `--with-extension`, started by goose from the one argv token `GooseAdapter` renders, answering
+/// `tools/list` before goose's first turn and `tools/call` during it — and the persisted contract
+/// carrying that call's narrative as the child's own words. The bridge's environment reaches it by
+/// inheritance, not through the extension string: goose persists that string's `ENV=v` pairs in
+/// its session store verbatim, so no node token may travel on it (s26 item 11).
+#[test]
+fn a_goose_child_reports_through_marions_bridge_over_the_openai_wire() {
+    assert!(
+        on_path("goose"),
+        "this cell drives a REAL goose child; put `goose` ({}) on PATH",
+        pinned_version("goose")
+    );
+    let cell = Cell {
+        agent_type: "goose",
+        // `GOOSE_MODEL` is mandatory: without one the `openai` provider has no model to name and
+        // the CLI refuses before any request. The canned provider ignores the name.
+        model: Some("canned-1"),
+        script: Script {
+            // goose's own spelling: `<extension>__<tool>`.
+            openai_report_tool: "marion__report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        expected_harness: Harness::Goose,
+        expected_model: Some("canned-1"),
+        // On goose the built-in extension **is** the constraint: `--no-profile` loads nothing but
+        // marion, and a `write` declaration adds `--with-builtin developer`, which is `edit`,
+        // `shell`, `write`, `tree` and `read_image` as one unit. `goose` declares no tools, so the
+        // record says the default — no builtin at all.
+        expected_allowed_tools: &["with-builtin:none"],
+        expected_wire: "openai",
+    };
+    let ev = drive(&cell);
+    assert_cell(&cell, &ev);
+}

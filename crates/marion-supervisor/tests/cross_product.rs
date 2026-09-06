@@ -289,6 +289,18 @@ const COPILOT: Node = Node {
     program: "copilot",
 };
 
+const GOOSE: Node = Node {
+    agent_type: "goose",
+    child_agent_type: "goose-impl",
+    harness: Harness::Goose,
+    // Explicit: `GOOSE_MODEL` is how the `openai` provider is told what to name, and the adapter
+    // refuses a canned launch without one. The canned provider ignores the name.
+    model: "canned-1",
+    child_model: Some("canned-1"),
+    wire: "openai",
+    program: "goose",
+};
+
 /// marion's `spawn`, in the spelling **this harness's wire** dispatches on.
 ///
 /// Three of the four are the adapter's own `marion_tool_name`, which is the whole point of §3.1
@@ -422,7 +434,20 @@ fn script(root: &Node, child: &Node) -> Script {
                 args: json!({ "path": CHILD_FILE, "file_text": CHILD_FILE_CONTENT }),
             });
         }
-        Harness::Goose => unreachable!("no cell of this matrix names `goose` yet"),
+        // The goose child writes before it reports, through the developer extension's `write`
+        // that `goose-impl`'s `tools: [write]` makes the adapter load with `--with-builtin
+        // developer` — absent entirely without the grant (s26: `--no-profile` offers marion and
+        // nothing else). Same wire and same `Script` fields as opencode and copilot, different
+        // tool name and argument names (`{path, content}`, read off the live `tools[]` schema in
+        // `goose-with-builtin-developer.provider-request-1.json`).
+        Harness::Goose => {
+            s.openai_report_tool = report;
+            s.openai_report_args = json!({ "narrative": NARRATIVE });
+            s.openai_edit = Some(EditTurn {
+                tool: "write".into(),
+                args: json!({ "path": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
+            });
+        }
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s
@@ -1322,4 +1347,64 @@ fn x_copilot_root_spawns_an_opencode_child_and_receives_its_contract() {
 #[test]
 fn y_copilot_root_spawns_a_copilot_child_and_receives_its_contract() {
     cell(&COPILOT, &COPILOT);
+}
+
+// The goose column and row: the sixth harness as a child of each of the five, and as a root over
+// each of the six. Same wire as opencode and copilot; what these eleven add is the sixth spelling
+// of marion's verbs (`marion__spawn`) offered to a root that `--no-profile` leaves with nothing
+// else, and a child whose only route to a file is the extension its grant loads.
+
+#[test]
+fn za_claude_root_spawns_a_goose_child_and_receives_its_contract() {
+    cell(&CLAUDE, &GOOSE);
+}
+
+#[test]
+fn zb_codex_root_spawns_a_goose_child_and_receives_its_contract() {
+    cell(&CODEX, &GOOSE);
+}
+
+#[test]
+fn zc_gemini_root_spawns_a_goose_child_and_receives_its_contract() {
+    cell(&GEMINI, &GOOSE);
+}
+
+#[test]
+fn zd_opencode_root_spawns_a_goose_child_and_receives_its_contract() {
+    cell(&OPENCODE, &GOOSE);
+}
+
+#[test]
+fn ze_copilot_root_spawns_a_goose_child_and_receives_its_contract() {
+    cell(&COPILOT, &GOOSE);
+}
+
+#[test]
+fn zf_goose_root_spawns_a_claude_child_and_receives_its_contract() {
+    cell(&GOOSE, &CLAUDE);
+}
+
+#[test]
+fn zg_goose_root_spawns_a_codex_child_and_receives_its_contract() {
+    cell(&GOOSE, &CODEX);
+}
+
+#[test]
+fn zh_goose_root_spawns_a_gemini_child_and_receives_its_contract() {
+    cell(&GOOSE, &GEMINI);
+}
+
+#[test]
+fn zi_goose_root_spawns_an_opencode_child_and_receives_its_contract() {
+    cell(&GOOSE, &OPENCODE);
+}
+
+#[test]
+fn zj_goose_root_spawns_a_copilot_child_and_receives_its_contract() {
+    cell(&GOOSE, &COPILOT);
+}
+
+#[test]
+fn zk_goose_root_spawns_a_goose_child_and_receives_its_contract() {
+    cell(&GOOSE, &GOOSE);
 }

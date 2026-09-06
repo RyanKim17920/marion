@@ -79,7 +79,8 @@ things. In one day of research, Gemini moved 0.40.1 → 0.53.0, Codex 0.145.0 �
 Enter hit its update prompt mid-experiment), and Codex removed `wire_api = "chat"` outright.
 
 Baseline: **Claude Code 2.1.220 · opencode 1.17.3 · Gemini CLI 0.53.0 · Codex CLI — 0.145.0 for S3
-and the alt-screen/`/diff` capture, 0.146.0 for S5 · GitHub Copilot CLI 1.0.83 (S24, 2026-09-05)**.
+and the alt-screen/`/diff` capture, 0.146.0 for S5 · GitHub Copilot CLI 1.0.83 (S24, 2026-09-05) ·
+goose 1.49.0 (S26, 2026-09-05)**.
 (The 0.146.0 captures contain no `?1049h` at all; the alt-screen evidence is the 0.145.0 file.)
 Qwen Code and Amp claims are **unstamped and unverified locally**.
 
@@ -90,15 +91,20 @@ tools, its MCP declaration route per auth mode, its audit constraint, and its re
 by one `spec::render` and read by one `grammar` engine. The adapter keeps only what no table can
 hold: the measured refusals (claude's argv prompt, gemini's missing model, copilot's BYOK inputs),
 the model rules, the derived base URLs, the document emitters, and ACP's agent binding. A sixth
-harness is a row plus those hooks. `adapter::tests::spec_render_matches_the_adapter_that_measured_it`
+harness is a row plus those hooks — and goose landed as exactly that on 2026-09-05: one row, an
+`axes`/`fields` hook pair, two new closed shapes (`ToolSpelling::ServerDoubleUnderscoreTool`,
+`LiveDeclaration::ArgvInline`), and no other per-harness branch.
+`adapter::tests::spec_render_matches_the_adapter_that_measured_it`
 and `every_committed_fixture_reads_the_same_through_the_grammar` pin every row to the hand-written
 adapter it replaced, byte for byte on every committed fixture. **Resume flags, measured on the
 installed binaries' `--help` and carried as row data** (plan step 5): claude `--resume <id>`, codex
 `exec resume <id>`, opencode `run --session <id>`, copilot `--resume=<id>`; gemini's `--resume`
 takes `latest` or an index rather than a session id, so its row says `None` and a resume on it is
-refused by name; ACP's row says `None` too, and its resume is the protocol's `session/load`, built
-by `AcpAdapter::session_declaration` with the same `mcpServers` block and sent by the driver only to
-an agent whose `initialize` advertised `loadSession` (2026-09-05). **Wired 2026-09-05:**
+refused by name; goose's `--resume --session-id <id>` takes an id no frame of its stream carries
+(S26), so its row says `None` too; ACP's row says `None` as well, and its resume is the protocol's
+`session/load`, built by `AcpAdapter::session_declaration` with the same `mcpServers` block and sent
+by the driver only to an agent whose `initialize` advertised `loadSession` (2026-09-05). **Wired
+2026-09-05:**
 `LaunchSpec::resume: Option<String>` is seeded into `Fields::resume` by the one neutral seeding, so
 `compile`/`compile_pane` render the row's grammar or refuse by name with no per-harness branch
 (`a_harness_whose_row_refuses_resume_is_refused_by_name`, RED with `no field named resume`).
@@ -337,6 +343,65 @@ so not claimed: `--resume`/`--session-id`, and the `journal_wiring`, `depth_gate
 `launch_only_root` matrices, whose matches name `copilot` as *not yet* a cell rather than omitting
 it.
 
+**goose runs as a marion child and as a marion root at $0.00 — the sixth binary, on the opencode
+cell's wire, as a row plus two hooks.** *(goose 1.49.0 via `brew install block-goose-cli`, macOS
+darwin 25.5.0, measured 2026-09-05 against the canned provider; fixture `tests/fixtures/s26/`;
+witnessed end to end by `harness_matrix`'s sixth cell and by `cross_product`'s goose column and
+row — eleven cells, `za`–`zk`, all green on this machine — which start marion's own bridge from the
+one `--with-extension` token `GooseAdapter` renders and read the child's `report` back out of the
+persisted contract.)* No install was needed; the bottle present was the latest. The facts the row
+rests on:
+
+- **Env alone selects the provider; there is no configure step.** `GOOSE_PROVIDER=openai`,
+  `GOOSE_MODEL`, `OPENAI_API_KEY` and `OPENAI_HOST` with no `config.yaml` anywhere ran first time.
+  The host is taken **verbatim** and `OPENAI_BASE_PATH` (default `v1/chat/completions`) appended,
+  so marion hands its `…/v1` form and `OPENAI_BASE_PATH=chat/completions`. goose probes
+  `GET …/v1/models` first; the canned server's `text/plain` answer does not stop it
+  (`goose-models-plain.*`). `GOOSE_MODEL` has no default, so the `goose` built-in carries
+  `GOOSE_DEFAULT_MODEL` and the adapter refuses that default under `--live`, as copilot does.
+- **The declaration is one argv token, and goose persists it — so the node token does not ride
+  it.** `--with-extension "marion:ENV=v … <command> <args>"` is split on whitespace; every `ENV=v`
+  pair is stored **verbatim** in the sqlite session store (`goose session list --format json`
+  prints them back; a `--no-session` run still touches the WAL). The token carries the bridge's
+  identity (`MARION_REPO`, `MARION_AGENT_ID`, …) and the capability token travels on the process
+  environment, which the extension child **inherits** (`goose-env-inherit.mcp.jsonl`). A bridge
+  path with whitespace is refused by name (`HarnessError::Unspellable`). The model sees
+  `marion__report` — `<extension>__<tool>`, the sixth spelling of one tool — and `tools/call`
+  carries the bare `report` with `_meta.agent-tool-call-request-id` = the provider's call id.
+- **`--no-profile` is the only way to load nothing but marion.** With an empty config dir and no
+  flag goose loads developer, apps, extensionmanager, todo and the skill/delegate tools — nineteen
+  tools, and it wrote `~/.local/share/goose/apps/clock.html` doing so. `--with-builtin developer`
+  adds `edit shell write tree read_image`, **unprefixed and as one unit**: there is no per-tool
+  grant, so `write` compiles the whole extension, `read` is refused (the extension has no
+  read-only tool), `writes_without_a_declaration` is `false`, and the contract records
+  `with-builtin:developer` or `with-builtin:none`.
+- **⚠ Neither fault is an exit code.** An `isError: true` MCP result arrives as
+  `toolResult.status: "success"` with `value.isError: true`, the model gets another turn, exit 0 —
+  the row reads `isError`, never `status`. A provider 500 is four retries over ~7 s, then an
+  ordinary assistant `message` beginning `Ran into this error:` and a zero-token `complete`, exit
+  **0**: the stream has no error frame type at all, so a provider fault reads as the report that
+  never came, and nothing else.
+- **Headless approval is `auto` or nothing.** `GOOSE_MODE` unset behaves as `auto`; `approve`
+  aborts at exit 1 after the `toolRequest` frame with `Tool approval required in non-interactive
+  mode`; `chat` withholds every call and feeds the model a canned "skipped" result that the stream
+  cannot tell from success. marion states `GOOSE_MODE=auto` under both auth modes.
+- **Stream grammar is two frame types and no session id.** `message` frames whose `content[]`
+  items are `toolRequest` (`id`, `toolCall.value.{name,arguments}`) and `toolResponse` (same `id`,
+  `toolResult.value.{content,isError}`), then `complete`. No frame carries the session id — not
+  with `--no-session`, not with `-n`: it is in the `-q`-suppressed banner, the `agent-session-id`
+  request header and `goose session list`. `--resume -n <name>` / `--resume --session-id <id>`
+  exist and were driven, but with nothing to hand back the row's `resume` is `None`.
+- **`GOOSE_CONFIG_DIR` does nothing on 1.49.0; `HOME` is the isolation.** `goose info` reports
+  `~/.config/goose` with it set and a `config.yaml` placed there is ignored; `HOME` relocates
+  config, the session store and the `llm_request.N.jsonl` request dumps together. `-q` is required:
+  without it a three-line banner precedes the JSONL on stdout. `goose --version` prints ` 1.49.0`
+  with a leading space and no name.
+
+Not measured, and so not claimed: a 404 or empty list on the `/v1/models` probe, keychain access,
+`--with-streamable-http-extension`, the interactive TUI's reading of `--with-extension` (the native
+lane ships disabled), and the `journal_wiring`, `depth_gate` and `launch_only_root` matrices, whose
+matches name `goose` as *not yet* a cell.
+
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
 ---
@@ -384,11 +449,12 @@ routing third-party clients through Pro/Max OAuth — is prohibited and enforced
 | Gemini CLI | `GOOGLE_GEMINI_BASE_URL` | `GEMINI_CLI_HOME` | Gemini `v1beta` + mandatory `:countTokens`, `:embedContent` | medium — **but blocked vendor-side on a personal login; see below** |
 | Codex | `[model_providers.X]` | `CODEX_HOME` / `-c` inline / `-p` profile (isolating `CODEX_HOME` **also** breaks auth — but copying `auth.json` in fully restores it) | **OpenAI Responses ONLY** | hardest |
 | Copilot CLI | `COPILOT_PROVIDER_BASE_URL` + `COPILOT_PROVIDER_API_KEY` + `--model` (BYOK; **no GitHub login needed**) | `COPILOT_HOME` (never `HOME` — the launcher's package cache lives under it) | OpenAI Chat Completions by default; Responses via `COPILOT_PROVIDER_WIRE_API=responses`, Anthropic Messages via `COPILOT_PROVIDER_TYPE=anthropic` — **the one harness that can be pointed at three of the four wires** | easy — **verified 2026-09-05 on 1.0.83, `harness_matrix`'s fifth cell** |
+| goose | `GOOSE_PROVIDER=openai` + `GOOSE_MODEL` + `OPENAI_API_KEY` + `OPENAI_HOST` (verbatim) + `OPENAI_BASE_PATH=chat/completions` — env only, **no configure step, no login** | `HOME` (`GOOSE_CONFIG_DIR` is a no-op on 1.49.0; even `--no-session` runs write the session store and request dumps under it) | OpenAI Chat Completions, plus a harmless `GET …/v1/models` probe | easy — **verified 2026-09-05 on 1.49.0, `harness_matrix`'s sixth cell and `cross_product` `za`–`zk`** |
 | Amp † | — | — | — | **blocked** |
 
 † unverified locally.
 
-Order of attack for model injection: opencode → Claude Code → Copilot → Qwen → Gemini → Codex.
+Order of attack for model injection: opencode → Claude Code → Copilot → goose → Qwen → Gemini → Codex.
 (Distinct from adapter build order: claude-code → codex → acp → opencode → copilot.)
 
 **Codex is hardest**: `wire_api="chat"` removed; sends `include:["reasoning.encrypted_content"]`
