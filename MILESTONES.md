@@ -1331,6 +1331,33 @@ acceptance evidence, so every marker remains unchanged.
     signal probes sharing the process-wide relay signal owner; it needs serial isolation, not a
     wider bound.
 
+    **The M3 native facade matrix runs, harness-generic, from the shipped binary (2026-09-05);
+    M3 stays `[partial]`.** `tests/native_facade_e2e.rs::every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade`
+    iterates `production_native_facades().enabled_native_commands()` — today `claude` and `codex`
+    — and for each runs the **shipped** `marion <harness>` with no tail (the TUI's first screen,
+    which asks nothing of a provider) as a foreground session leader on a PTY marion records, in
+    front of a supervisor composed as `detach.rs` stage 3 composes it. Observed on darwin 25.5.0
+    with claude 2.1.261 and codex 0.147.0, 3/3 loops after the writer fix above, both lanes:
+    (1) a word the harness painted (`Accessing` from claude's trust dialog, `INTERACTIVE` from
+    codex's first screen) is read off the operator's grid through `marion_term` *and* found in the
+    node's own recorded output, so the cell came through the relay; (2) a keystroke (an arrow, then
+    a letter, each re-sent only after a 2 s settle) grows the node's recorded output and leaves
+    **no `i` record** in its `pty.cast` — native input goes through the opaque path, not the legacy
+    pane write; (3) `TIOCSWINSZ` on the operator's master yields an `r` record with the operator's
+    geometry among at least two; (4) `^]d` exits the client 0 with termios equal to the pre-spawn
+    baseline, and the journal still holds exactly one node with no exit; (5) a confirmed
+    `session/quit KillTree` then ends it and the journal's `Exited` carries `signal 9` — positive
+    evidence the node was alive after its client left. Two of step 9's clauses are stated in the
+    file rather than asserted, because the fixture cannot observe them: single-use re-attach (the
+    capability dies with the client; proved at `native_bootstrap.rs`) and default signal actions
+    in a probe child (no child of the client exists; the SIGTERM test below asserts the observable
+    consequence). It skips loudly per lane when the harness is not on `PATH`.
+
+    What remains for C1 is unchanged and cannot be automated: the recorded 10-minute manual
+    session, now to be run through `marion claude` rather than `marion attach`. Still dark: the
+    `gemini` lane (system-settings merge unmeasured), the `opencode` and `copilot` lanes (their
+    TUIs' reading of the declaration unmeasured), and TSTP/CONT through this fixture.
+
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance
     criteria (§9) mention a pane three times and a tree zero times"*. Re-counted against §9's M3
