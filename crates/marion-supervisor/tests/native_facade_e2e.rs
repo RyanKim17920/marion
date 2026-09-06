@@ -384,7 +384,10 @@ fn resize_from(term: &mut marion_term::Term, record: &str) {
 }
 
 fn tail(s: &str) -> String {
-    let n = s.len().saturating_sub(1500);
+    let mut n = s.len().saturating_sub(1500);
+    while !s.is_char_boundary(n) {
+        n += 1;
+    }
     s[n..].escape_debug().to_string()
 }
 
