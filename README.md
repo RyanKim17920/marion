@@ -8,13 +8,30 @@ Agent(harness, model, tools, prompt, …) -> handle
 handle: observe · steer · interrupt · result
 ```
 
-**Status:** design complete, **spikes S1–S6 all resolved**, **M1, M2 and M4 [done]**, and
-**M3 and M5 [partial]**. The delegation hop runs end to end: `spawn` creates a git worktree,
-launches a real `codex exec` against the canned provider, the child edits a file and calls `report`
-through marion's own stdio MCP bridge, and marion returns a task contract derived from git — with
-detective scope enforcement demonstrated on an out-of-scope write. Native command execution is not
-yet activated by the shipped CLI, and M3's recorded 10-minute manual session remains outstanding.
-Start at the milestone ledger for criterion-by-criterion evidence and remaining work.
+**Status (2026-09-05):** **M1, M2 and M4 [done]**, **M3 and M5 [partial]**. Eight terminal
+harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen` — run as
+children and roots through one spawn path, each a declarative `HarnessSpec` row; any ACP agent
+runs as a child as `acp:<command>`. The delegation hop runs end to end: `spawn` creates a git
+worktree, launches a real harness against the canned provider, the child edits a file and calls
+`report` through marion's own stdio MCP bridge, and marion returns a task contract derived from
+git. `marion <harness>` runs a harness's real TUI through marion's relay for four lanes, and
+`marion resume` relaunches a root lost to a supervisor restart. M3 waits on its recorded 10-minute
+manual session; M5 on the tree naming an ACP agent's own identity. Start at the milestone ledger's
+"Where it actually stands" block for the evidence behind each line.
+
+## Running it
+
+```sh
+marion run <agent-type> --prompt "…"      # a headless root (claude, codex, gemini, opencode,
+                                           #   copilot, goose, cline, qwen types; --pane for a TUI)
+marion <harness> [its own flags]           # the harness's native TUI as a marion root
+                                           #   (claude, codex, opencode, copilot lanes)
+marion tree · marion attach <agent-id>     # the fleet, and one node's pane
+marion resume <agent-id>                   # relaunch a lost root under its own id
+marion-supervisor doctor --capabilities --harness acp --acp-command "<cmd>"   # probe an ACP agent
+```
+
+Child agent types include `acp:<command> [args…]` for any ACP agent with no adapter code.
 
 ---
 
@@ -58,7 +75,10 @@ Each was learned the hard way. Full detail in `MILESTONES.md`.
 ## Trust the docs, but check the version
 
 Claims are stamped: Claude Code **2.1.220** · opencode **1.17.3** · Gemini CLI **0.53.0** ·
-Codex CLI **0.145.0/0.146.0** (stamped per claim; the local install moved mid-research).
+Codex CLI **0.145.0/0.146.0** (stamped per claim; the local install moved mid-research) ·
+Copilot CLI **1.0.83** · goose **1.49.0** · Cline **3.0.61** · Qwen Code **0.23.0** (all
+2026-09-05). The versions a test will accept are the set `marion_testsupport::PINNED_HARNESSES`,
+which as of 2026-09-05 also admits claude 2.1.222–2.1.226 and 2.1.261 and codex 0.146.1/0.147.0.
 
 These tools auto-update and break things. In one day: Gemini moved thirteen minors, Codex updated
 itself when a scripted Enter hit its startup prompt, and Codex had already removed
@@ -116,11 +136,13 @@ hook callbacks and `request_user_dialog` remain unmeasured.
 
 ## Stack
 
-Rust. `pty-process` 0.5.3 (`features = ["async"]`) · `alacritty_terminal` 0.26.0 ·
-`ratatui` 0.30.2 + `insta` 1.48.0 · `agent-client-protocol` 2.0.0 · `wiremock` 0.6.5.
-`vt100` 0.16.2 is a **dev-dependency of `marion-term` alone** — evidence for §11 item 10, never a
+Rust, eight workspace crates. A hand-rolled `posix_openpt` PTY host in `marion-supervisor::pty` ·
+`alacritty_terminal` 0.26 · `ratatui` 0.30 + `insta` 1 · a hand-rolled ACP driver
+(`marion-supervisor/src/acp_child.rs`) · the canned model provider is the `marion-provider` crate.
+`vt100` 0.16 is a **dev-dependency of `marion-term` alone** — evidence for §11 item 10, never a
 component; marion ships one VT and it is alacritty's.
-Rationale and rejected alternatives in `MILESTONES.md`.
+Rationale and rejected alternatives in `MILESTONES.md` ("Chosen tooling", with its note on which
+picks are actually linked).
 
 ## Install the commit gate — one step, do it on clone
 
