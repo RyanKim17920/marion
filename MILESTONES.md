@@ -72,6 +72,52 @@ own descendants and its parent; sibling addressing is denied unless explicitly g
 
 ---
 
+## Where it actually stands — 2026-09-05, at `b85ea30`
+
+**Markers:** M1, M2, M4 `[done]`; M3 `[partial]` on C1's recorded manual session alone; M5
+`[partial]` on clause 3 alone (`NodeSummary` names a harness, not an ACP agent's handshake). The
+dated audit under "Status convention" names the test behind each.
+
+**Harnesses.** Nine rows in `Harness::ALL` (`marion-core/src/harness.rs`): eight terminal
+harnesses — `claude`, `codex`, `gemini`, `opencode`, `copilot`, `goose`, `cline`, `qwen` — as
+`HarnessSpec` rows plus measured hooks, and `acp`, one adapter over any ACP agent. Headless: every
+one runs as a child and a root through `run_spawn` (`harness_matrix` 8 cells; `cross_product` 57
+cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launches any ACP agent
+with no row (`acp_child.rs`), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
+`claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
+own handshake. Pinned versions: claude 2.1.220–2.1.226 and 2.1.261; codex 0.146.0/0.146.1/0.147.0;
+gemini 0.53.0; opencode 1.17.3; copilot 1.0.83; goose 1.49.0; cline 3.0.61; qwen 0.23.0.
+
+**Native facade.** `marion <harness> <its own flags>` runs the harness's real TUI through the
+relay as a journaled root. Enabled lanes: `claude`, `codex`, `opencode`, `copilot`. Disabled by
+name: `gemini` (system-settings merge unmeasured), `goose`, `cline`, `qwen` (interactive shape
+unmeasured). Resume: `marion resume <agent-id>` relaunches a lost root under its own id where its
+row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen);
+gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
+`caps:` strip dimming what doctor has not measured, status row) and `marion attach`.
+
+**E2E, and how to run it.** Default `cargo test --workspace` drives real harness binaries against
+the canned provider and skips loudly where a binary is absent; the version gate is
+`marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:
+`cargo test -p marion-supervisor --test native_facade_e2e` (per enabled lane; needs the harness on
+`PATH` and a real PTY). Restart and resume: `cargo test -p marion-supervisor --test
+restart_resume -- --ignored` (real codex, detached supervisor). Live ACP: `--test acp_child --
+--ignored` spends Copilot tokens. Cross-harness: `--test harness_matrix`, `--test cross_product`,
+`--test journal_wiring`, `--test m4_fan_in`. Panes: `--test pane_attach`.
+
+**Structure.** `sentrux` quality signal 6456 at `b85ea30` (cycles 0, redundancy 9170,
+modularity 5057, equality 5441, **depth 4444 — the bottleneck**); the day started at 4856 with
+three import cycles. The depth is the one spawn path — CLI → detach → serve → handler → run →
+harness row → grammar — and the design has exactly one such path, so the remaining headroom is
+the tool's formula over a chain marion will not shorten; do not chase the number past that.
+
+**Open, honestly:** C1's recording; the four disabled lanes; `SIGTSTP`/`SIGCONT` through the
+facade (kernel stop not observable from the `spawn_pty` fixture); child resume and a linked
+worktree's cwd on resume; Linux `/proc` start identity unmeasured; descendant gating (§7.6) and
+`verification` execution still not in code; the ACP agent identity on `NodeSummary`.
+
+---
+
 ## Verified harness facts
 
 Version-stamped. **Re-verify before relying on anything here** — these tools auto-update and break
