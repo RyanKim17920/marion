@@ -93,7 +93,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     resume: None,
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
-           end_turn). The argv of every agent is the one those spikes launched",
+           end_turn), S25 (copilot --acp to a real marion-report call; qwen, goose and gemini \
+           refused session/new vendor-side). The argv of every refinement row is the one those \
+           spikes launched; a generic `acp:<command>` row is the operator's own",
 };
 
 /// The wire protocol version marion speaks. `agent-client-protocol` 2.0.0 is still **wire v1**
@@ -299,12 +301,15 @@ pub const MCP_SERVER_NAME: &str = crate::spec::MCP_ALIAS;
 /// ACP has no field anywhere that narrows an agent's own tools — not in `initialize`, not in
 /// `session/new`. S21's session had `write`, `edit` and `bash` in scope with marion asking for
 /// nothing, and marion's own `clientCapabilities.fs.writeTextFile` hands the agent a further one.
-/// What [`crate::AcpAdapter::marion_tool_name`] answers when it has no measured spelling to give.
+/// What [`crate::AcpAdapter::marion_tool_name`] answers on the **unbound** adapter — the one built
+/// from the harness name alone, with no agent and so no reading. A bound adapter with no measured
+/// spelling answers [`GENERIC_SPELLING`] instead; this sentinel is for the adapter that cannot be
+/// launched at all.
 ///
-/// **Not a tool name in any of the three measured spellings, and deliberately not one in any
-/// plausible fourth**: it carries a colon, which no MCP tool name may. So it matches nothing in any
+/// **Not a tool name in any of the four measured spellings, and deliberately not one in any
+/// plausible fifth**: it carries a colon, which no MCP tool name may. So it matches nothing in any
 /// transcript and would be a permission entry naming a tool that cannot exist — which is why no
-/// launch is allowed to reach it, and both routes to a launch refuse first, by name.
+/// launch is allowed to reach it, and every route to a launch refuses first, by name.
 pub const UNBOUND_TOOL_NAME: &str = "acp:no-agent-bound:";
 
 pub const NO_TOOL_AVAILABILITY_SURFACE: &str =
@@ -481,9 +486,33 @@ pub struct Agent {
     /// How this agent is pointed at a provider **marion** chose, or `None` where marion has never
     /// made one do it. See [`CannedRecipe`].
     pub canned: Option<CannedRecipe>,
+    /// How marion's bridge reaches this agent. [`Declaration::Session`] on every row but one.
+    pub declaration: Declaration,
     /// What is known about running it here — carried so a refusal can quote it.
     pub note: &'static str,
 }
+
+/// The channel marion's bridge is declared on for one agent.
+///
+/// The protocol has exactly one: `session/new`'s `mcpServers` (S21 watched `opencode acp` start the
+/// declared server; the two Registry shims did the same in S22). [`Declaration::Argv`] exists for
+/// the agent that was measured to *ignore* that channel while honouring one of its own — a quirk,
+/// carried on a refinement row because the generic path can only ever use what the protocol gives
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Declaration {
+    /// The protocol's own: the `mcpServers` block of `session/new` (and of `session/load`).
+    Session,
+    /// The agent's own argv flag, taking one JSON document in the shape of copilot's
+    /// `~/.copilot/mcp-config.json` ([`crate::copilot::mcp_config_json`]) — and the session block
+    /// is then left **empty**, so that a version which one day honours the protocol channel does
+    /// not start a second bridge.
+    Argv(&'static str),
+}
+
+/// The flag copilot takes its per-session MCP document on. S25 measured it, and measured that the
+/// protocol-standard channel does nothing on 1.0.83.
+pub const COPILOT_MCP_FLAG: &str = "--additional-mcp-config";
 
 /// How one ACP agent is pointed at [`crate::Auth::Canned`]'s endpoint.
 ///
@@ -520,6 +549,7 @@ pub const OPENCODE: Agent = Agent {
     argv: &["opencode", "acp"],
     tools: Some(ToolSpelling::ServerUnderscoreTool),
     canned: Some(CannedRecipe::OpencodeConfigDocument),
+    declaration: Declaration::Session,
     note: "S21: initialize, session/new, session/prompt and a real `marion_report` tool call, \
            against opencode 1.17.3. Its canned recipe is inferred from S13 over the same binary, \
            not measured on the `acp` subcommand",
@@ -536,6 +566,7 @@ pub const GEMINI: Agent = Agent {
     argv: &["gemini", "--acp"],
     tools: None,
     canned: None,
+    declaration: Declaration::Session,
     note: "S20: `initialize` succeeds; `session/new` is refused -32000 (Gemini Code Assist \
            ineligibility). No turn has run, so no tool spelling has been measured",
 };
@@ -551,6 +582,7 @@ pub const CLAUDE_ACP: Agent = Agent {
     argv: &["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.66.0"],
     tools: Some(ToolSpelling::McpDoubleUnderscore),
     canned: None,
+    declaration: Declaration::Session,
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
            `mcp__marion__report` call, wrapping the operator's own claude-code 2.1.220",
 };
@@ -569,6 +601,7 @@ pub const CODEX_ACP: Agent = Agent {
     argv: &["codex-acp"],
     tools: Some(ToolSpelling::McpDotted),
     canned: None,
+    declaration: Declaration::Session,
     note: "S22: initialize, session/new, session/prompt to `end_turn` and a real \
            `mcp.marion.report` call, wrapping the operator's own codex 0.147.0. Install it \
            (`npm i @agentclientprotocol/codex-acp@1.1.14`) rather than relying on `npx -y`",
@@ -589,6 +622,7 @@ pub const COPILOT: Agent = Agent {
     argv: &["copilot", "--acp"],
     tools: Some(ToolSpelling::ServerHyphenTool),
     canned: None,
+    declaration: Declaration::Argv(COPILOT_MCP_FLAG),
     note: "S25: initialize, session/new, session/prompt to `end_turn` and a real `marion-report` \
            call against copilot 1.0.83 — but only with the bridge declared through \
            `--additional-mcp-config`; the `session/new` `mcpServers` declaration is ignored by \
@@ -679,6 +713,13 @@ impl Binding {
     /// names no provider, and that is the one thing the baseline cannot supply.
     pub fn canned(&self) -> Option<CannedRecipe> {
         self.refinement.and_then(|a| a.canned)
+    }
+
+    /// The channel the bridge is declared on: the protocol's, unless a row measured otherwise.
+    pub fn declaration(&self) -> Declaration {
+        self.refinement
+            .map(|a| a.declaration)
+            .unwrap_or(Declaration::Session)
     }
 
     /// One line for a doctor row or a refusal: what is bound, and how much is known about it.
@@ -1628,6 +1669,16 @@ mod tests {
         assert_eq!(generic.argv(), ["copilot", "--acp", "--allow-all-tools"]);
         assert_eq!(generic.reading(), Reading::Generic);
         assert_eq!(generic.canned(), None);
+        assert_eq!(
+            generic.declaration(),
+            Declaration::Session,
+            "the protocol's channel is the only one the baseline has — which is why `copilot --acp` \
+             as a command, unlike the `copilot` row, reaches no bridge on 1.0.83"
+        );
+        assert_eq!(
+            Binding::resolve("copilot").unwrap().declaration(),
+            Declaration::Argv(COPILOT_MCP_FLAG)
+        );
         assert_eq!(generic.selector(), "copilot --acp --allow-all-tools");
         assert!(generic.describe().contains("no refinement row"));
         for empty in ["", "   ", "\t"] {

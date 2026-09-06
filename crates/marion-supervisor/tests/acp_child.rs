@@ -166,6 +166,64 @@ fn the_acp_agent_type_resolves_to_the_acp_harness_and_names_its_agent() {
     );
 }
 
+/// **A second real ACP agent as a marion child: `copilot --acp`, through its refinement row.**
+///
+/// Ignored by default because it runs against the operator's own Copilot login and spends real
+/// tokens; run it with `--ignored` when copilot is installed and logged in. S25 measured why the row
+/// exists: copilot 1.0.83 ignores `session/new`'s `mcpServers`, so the bridge is declared on
+/// `--additional-mcp-config` by `AcpAdapter::fields`, and the model's `marion-report` call is read
+/// in the row's measured spelling. The assertions are the same two the canned test makes — the
+/// narrative marion read out of the transcript, and git's account of the write — because a live
+/// agent that opened a session and reported nothing would pass anything weaker.
+#[test]
+#[ignore = "spends the operator's Copilot tokens; run with --ignored once `copilot` is logged in"]
+fn a_real_copilot_acp_child_reports_through_the_argv_declared_bridge() {
+    if !on_path("copilot") {
+        eprintln!("skipped: `copilot` is not installed");
+        return;
+    }
+    let root = scratch("acp-copilot");
+    let (repo, env) = inherited_fixture(&root);
+    let req = SpawnRequest {
+        // The row's id, not `copilot --acp`: the command form binds the generic path, which on this
+        // version reaches no bridge (S25).
+        agent_type: "acp:copilot".into(),
+        prompt: format!(
+            "Create the file `{CHILD_FILE}` containing exactly `{}` (you may write it with your own \
+             file tool), then call the `report` tool of the `marion` MCP server exactly once with \
+             the narrative \"{NARRATIVE}\". Do nothing else.",
+            CHILD_FILE_CONTENT.trim_end()
+        ),
+        repo: repo.clone(),
+        acceptance_criteria: vec!["a file under src/ was created".into()],
+        writable_scope: vec!["src/**".into()],
+        timeout_secs: 180,
+        model: None,
+        isolation: Isolation::Worktree,
+        allow_concurrent_writes: false,
+    };
+    let caller = Caller::root(
+        "root",
+        marion_core::agent_type::builtin("claude").expect("the root type resolves"),
+    );
+    let contract = run_spawn(&env, &req, &TaskId("acp-copilot-1".into()), &caller)
+        .unwrap_or_else(|e| panic!("copilot runs as an ACP child: {e}"));
+    let comp = contract
+        .completion
+        .as_ref()
+        .expect("a child that reported has a completion");
+    assert_eq!(
+        comp.narrative.as_ref().map(|n| n.value.as_str()),
+        Some(NARRATIVE),
+        "the report must be read out of a transcript spelled `marion-report`: {comp:?}"
+    );
+    assert_eq!(
+        comp.changed_paths,
+        vec![PathBuf::from(CHILD_FILE)],
+        "the child's write must reach the contract by git's account: {comp:?}"
+    );
+}
+
 /// The fake agent's own constants, restated: the test asserts on what marion *recorded*, and the
 /// record must match what the agent actually did rather than what the test wished it had.
 const UNKNOWN_AGENT_FILE: &str = "src/marion_acp.txt";

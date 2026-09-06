@@ -1434,7 +1434,7 @@ impl HarnessAdapter for AcpAdapter {
     fn fields(
         &self,
         spec: &LaunchSpec,
-        _ctx: &SpawnCtx,
+        ctx: &SpawnCtx,
         _shape: spec::Shape,
     ) -> Result<spec::Fields, HarnessError> {
         let binding = self.binding(spec)?;
@@ -1446,6 +1446,19 @@ impl HarnessAdapter for AcpAdapter {
             .expect("a binding always names a program");
         f.program = Some(program.to_string());
         f.agent_args = args.to_vec();
+        // **The one refinement that touches argv.** A row measured to ignore the protocol's
+        // declaration channel (S25: copilot 1.0.83) gets the bridge on its own flag instead, as the
+        // same document marion's copilot adapter writes for `copilot -p` — and
+        // [`Self::session_declaration`] then leaves the session block empty, so a version that one
+        // day honours `mcpServers` does not start a second bridge. The generic path never reaches
+        // this arm: it has no row, so it has only the protocol's channel.
+        if let (acp::Declaration::Argv(flag), McpDeclaration::Marion) =
+            (binding.declaration(), spec.mcp)
+        {
+            f.agent_args.push(flag.to_string());
+            f.agent_args
+                .push(copilot::mcp_config_json(&bridge_env(spec, ctx)).to_string());
+        }
         // A resume rides `session/load` ([`Self::session_declaration`]), never argv: the row has no
         // `Arg::Resume` and the renderer would otherwise refuse the launch as one it cannot name a
         // session on. The session *is* named — on the request, which is where this protocol puts
@@ -1557,9 +1570,12 @@ impl HarnessAdapter for AcpAdapter {
         //
         // The bridge's contract, verbatim — the same pairs every document-shaped declaration
         // carries — because the process on the other end is the same `marion-supervisor mcp`.
-        let servers = match spec.mcp {
-            McpDeclaration::None => Vec::new(),
-            McpDeclaration::Marion => vec![acp::McpServerDecl {
+        let servers = match (spec.mcp, self.binding(spec)?.declaration()) {
+            (McpDeclaration::None, _) => Vec::new(),
+            // Declared on argv by `fields`; an entry here too would be the second bridge the
+            // `Declaration::Argv` doc names.
+            (McpDeclaration::Marion, acp::Declaration::Argv(_)) => Vec::new(),
+            (McpDeclaration::Marion, acp::Declaration::Session) => vec![acp::McpServerDecl {
                 name: acp::MCP_SERVER_NAME.into(),
                 command: ctx.bridge.clone(),
                 args: ctx.bridge_args.clone(),
@@ -1583,6 +1599,24 @@ impl HarnessAdapter for AcpAdapter {
                 &spec.cwd,
                 &servers,
             ))),
+        }
+    }
+
+    /// The row's route — `session/new`'s block — except on a binding whose refinement measured the
+    /// bridge reaching the agent on argv, where it is that flag, verified against the compiled argv
+    /// exactly as codex's `-c` overrides are. The unbound adapter answers for the protocol.
+    fn mcp_route(&self, spec: &LaunchSpec) -> McpRoute {
+        let declaration = self
+            .binding
+            .as_ref()
+            .map(acp::Binding::declaration)
+            .unwrap_or(acp::Declaration::Session);
+        match (spec.mcp, declaration) {
+            (McpDeclaration::None, _) => McpRoute::None,
+            (McpDeclaration::Marion, acp::Declaration::Argv(flag)) => McpRoute::Argv(flag),
+            (McpDeclaration::Marion, acp::Declaration::Session) => {
+                McpRoute::Session(acp::MCP_SERVERS_KEY)
+            }
         }
     }
 
@@ -5240,6 +5274,92 @@ mod tests {
         // The empty declaration every node marion spawns today still compiles, or the refusal above
         // would be a refusal of everything.
         assert!(acp_adapter().compile(&acp_spec(), &ctx()).is_ok());
+    }
+
+    /// **The copilot refinement: the bridge on argv, the session block empty.** S25 measured copilot
+    /// 1.0.83 ignoring `session/new`'s `mcpServers` and starting the server named on its own
+    /// `--additional-mcp-config`, so the row declares there — as the same document the copilot
+    /// adapter writes for `copilot -p`, env included — and declares nothing on the session, so a
+    /// version that honours the protocol channel does not start two bridges. The route says argv,
+    /// and verifies against argv. The same program named as a *command* has no row and gets the
+    /// protocol's channel, which on this version is the difference between a report and silence.
+    #[test]
+    fn the_copilot_refinement_declares_the_bridge_on_argv_and_nothing_on_the_session() {
+        let row = AcpAdapter::for_agent(acp::COPILOT);
+        let spec = LaunchSpec {
+            extra: Extras {
+                acp_agent: Some(acp::COPILOT.id.into()),
+                ..Extras::default()
+            },
+            ..acp_spec()
+        };
+        let inv = row.compile(&spec, &ctx()).unwrap();
+        assert_eq!(inv.program, "copilot");
+        assert_eq!(inv.args[..2], ["--acp", acp::COPILOT_MCP_FLAG]);
+        let doc: serde_json::Value = serde_json::from_str(&inv.args[2]).expect("one JSON document");
+        assert_eq!(
+            doc,
+            copilot::mcp_config_json(&bridge_env(&spec, &ctx())),
+            "the document copilot's own adapter writes, and no other"
+        );
+        assert_eq!(
+            doc["mcpServers"]["marion"]["command"],
+            "/bin/marion-supervisor"
+        );
+        assert_eq!(
+            doc["mcpServers"]["marion"]["tools"],
+            serde_json::json!(["*"])
+        );
+        assert_eq!(inv.args.len(), 3, "nothing else is added: {:?}", inv.args);
+
+        // Nothing to declare on the session — the driver opens a plain `session/new` with an empty
+        // `mcpServers`, which is what a second copy of the bridge is kept out of. A resume still
+        // compiles its `session/load`, with the same empty block.
+        assert_eq!(row.session_declaration(&spec, &ctx()).unwrap(), None);
+        let load = row
+            .session_declaration(
+                &LaunchSpec {
+                    resume: Some("ses_prev".into()),
+                    ..spec.clone()
+                },
+                &ctx(),
+            )
+            .unwrap()
+            .expect("a resume names its session");
+        assert_eq!(load["method"], acp::SESSION_LOAD_METHOD);
+        assert_eq!(load["params"][acp::MCP_SERVERS_KEY], serde_json::json!([]));
+        assert_eq!(row.mcp_route(&spec), McpRoute::Argv(acp::COPILOT_MCP_FLAG));
+        assert!(row.mcp_route(&spec).verify(&[], &inv, None).is_ok());
+        // And with no declaration asked for, no flag, no route.
+        let bare = LaunchSpec {
+            mcp: McpDeclaration::None,
+            ..spec.clone()
+        };
+        assert_eq!(row.compile(&bare, &ctx()).unwrap().args, vec!["--acp"]);
+        assert_eq!(row.mcp_route(&bare), McpRoute::None);
+
+        // The same binary as a command: no row, the protocol's channel, the baseline reading.
+        let command = AcpAdapter::resolve("copilot --acp").unwrap();
+        let as_command = LaunchSpec {
+            extra: Extras {
+                acp_agent: Some("copilot --acp".into()),
+                ..Extras::default()
+            },
+            ..acp_spec()
+        };
+        assert_eq!(
+            command.compile(&as_command, &ctx()).unwrap().args,
+            vec!["--acp"]
+        );
+        assert_eq!(
+            command.mcp_route(&as_command),
+            McpRoute::Session(acp::MCP_SERVERS_KEY)
+        );
+        assert_eq!(
+            command.marion_tool_name("report"),
+            acp::GENERIC_SPELLING.spell("report")
+        );
+        assert_eq!(row.marion_tool_name("report"), "marion-report");
     }
 
     /// **An ACP resume is `session/load` carrying the same bridge declaration**, on any binding —
