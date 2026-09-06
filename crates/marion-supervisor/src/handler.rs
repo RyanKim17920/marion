@@ -8953,6 +8953,97 @@ mod tests {
         before_release.expect("grace expiry must visibly fail the exact socket before End");
     }
 
+    /// The pane-v1 keyboard's happy path, over the real socket: a negotiated client's very first
+    /// `node/pane-write`, sent the moment the Ready handshake completes, reaches the child's stdin.
+    ///
+    /// Every other opaque-input test in this module is a refusal. None of them asserted that an
+    /// *admitted* write is delivered, so a path that admitted and then lost the bytes — or a
+    /// client whose first keystroke raced the slot into an inadmissible phase — would have had no
+    /// test to fail. The oracle is what the child read, not the `i` record: pane-v1 input is
+    /// evidenced by length only (`PtyHost::write_opaque_input_admitted`), so `pty.cast` carries no
+    /// `i` for it by design, and that is asserted too so nobody reaches for it as an oracle again.
+    #[test]
+    fn a_negotiated_clients_first_opaque_keystroke_reaches_the_child() {
+        let w = Wired::new("handler-pane-opaque-first-key");
+        let received = w.dir.join("first-key-received.txt");
+        let script = format!(
+            "stty -echo; printf ready; while IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; done",
+            received.display()
+        );
+        let host = pane(&w, "root", &script);
+        assert!(
+            until(|| host.bytes_read() >= b"ready".len() as u64),
+            "the child never entered its input loop"
+        );
+
+        let mut client = w.dial();
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        call(
+            &mut client,
+            Call::NodeAttach(marion_proto::params::NodeAttachParams {
+                agent_id: id("root"),
+                pane_stream: Some(marion_proto::params::PaneStreamCapabilityV1::new()),
+            }),
+            1,
+        );
+        let attached = loop {
+            match next_frame(&mut reader) {
+                Frame::Response(response) => break attached_ok(response.outcome),
+                Frame::Notification(note) => assert!(
+                    !matches!(note.event, Event::NodePaneFrame(_)),
+                    "a pane frame preceded its attach response"
+                ),
+                other => panic!("unexpected attach frame: {other:?}"),
+            }
+        };
+        let pane = attached.pane.expect("the live pane is attachable");
+        assert!(pane.writable, "the v1 client must own the input lease");
+        let descriptor = pane.pane_ready.expect("v1 replay was reserved");
+        let ready = Frame::Input(marion_proto::ClientNotification::new(
+            marion_proto::Input::NodePaneReady(marion_proto::NodePaneReadyV1 {
+                agent_id: id("root"),
+                token: descriptor.token,
+                cut: descriptor.cut,
+            }),
+        ));
+        client.write_all(ready.to_line().as_bytes()).unwrap();
+        client.flush().unwrap();
+        // Typed immediately behind Ready, the way `marion attach` starts its keyboard: no replay
+        // frame is waited for first, so this is the earliest a real client can type.
+        write_opaque_keys(&mut client, "root", b"typed\r");
+
+        assert!(
+            until(|| std::fs::read_to_string(&received)
+                .is_ok_and(|contents| contents.contains("typed\n"))),
+            "the first admitted opaque keystroke never reached the child. Received: {:?}",
+            std::fs::read_to_string(&received).unwrap_or_default()
+        );
+        let cast = std::fs::read_to_string(w.dir.join("root.cast")).unwrap();
+        assert!(
+            !cast.contains("\"i\""),
+            "pane-v1 input is evidenced by length only; an `i` record means the opaque path \
+             started persisting raw keyboard payloads:\n{cast}"
+        );
+        // The socket is still a live, framed connection: nothing about the delivery departed it.
+        call(
+            &mut client,
+            Call::NodeGet(marion_proto::params::NodeGetParams {
+                agent_id: id("root"),
+            }),
+            2,
+        );
+        loop {
+            match next_frame(&mut reader) {
+                Frame::Response(_) => break,
+                Frame::Notification(note) => assert!(
+                    matches!(note.event, Event::NodePaneFrame(_)),
+                    "an unexpected notification followed the keystroke: {note:?}"
+                ),
+                other => panic!("the admitted keystroke closed the connection: {other:?}"),
+            }
+        }
+    }
+
     /// `node/pane-write` is negotiated protocol, not an alternate spelling for legacy input. A
     /// legacy writer has a keyboard lease but no pane stream slot; forged opaque bytes must reach
     /// neither the master nor silence, so the exact legacy socket is visibly closed.
