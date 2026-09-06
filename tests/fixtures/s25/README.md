@@ -31,6 +31,7 @@ and `spikes/s25/mcp_report_server.py`, redaction `spikes/s25/redact.py`.
 | `qwen-bare-mcp-config.stdout.jsonl` | `--bare --mcp-config '{"mcpServers":…}'`: `--core-tools` is ignored, the fixed bare set `read_file edit notebook_edit run_shell_command get_goal update_goal` plus the MCP tool is offered, and nothing is written under `QWEN_HOME` |
 | `qwen-mcp-config-argv.{stdout.jsonl,provider-request-1.json,mcp.jsonl,argv.json,home-after.txt,settings.json}` | the compiled run with the server declared **only** on argv, `--mcp-config '{"mcpServers":{"marion":{command,args,env}}}'`, no `--bare`, no `mcpServers` in any settings file (settings carries only the memory switch): `mcp__marion__report` is in `tools[]` on request one, `tools/call` reaches the stub, exit 0; `QWEN_HOME` still receives the session, usage and `installation_id` files (listed) |
 | `qwen-core-tools-empty.{stdout.jsonl,provider-request-1.json,argv.json,stderr.txt}` | the `--mcp-config` run with `--core-tools` given **no names**: qwen starts, exit 0, the usual `--yolo` stderr line, and `tools[]` on request one holds **17** tools — every default built-in the `--exclude-tools` list did not remove, plus `mcp__marion__report` (an empty `--core-tools` is no allowlist at all, not an empty one) |
+| `qwen-relative-write.stdout.jsonl`, `.work-after.txt` | the compiled run with the canned model naming a **relative** `file_path` (`src/s25-note.txt`): `write_file` is refused — `tool_result` `is_error: true`, `File path must be absolute: src/s25-note.txt` — nothing is written anywhere (the cwd listing is empty), the run continues to the report call and exits 0 |
 | `qwen-report-iserror.stdout.jsonl` | the MCP stub answering `tools/call` with `isError: true`: the `user` frame's `tool_result` has `is_error: true` and a content string that embeds the MCP response; `result.subtype: "success"`, exit **0** |
 | `qwen-denied-without-yolo.stdout.jsonl` | no `--yolo`: `permission_mode: "auto"`, the report call is declined (`is_error: true`, "non-interactive mode cannot prompt for confirmation"), `result.permission_denials[]` names it, exit **0** |
 | `qwen-denied-without-yolo.provider-request-2.json` | the side request `auto` mode made *to the provider* to decide that call: a classifier prompt offered one tool, `respond_in_schema` |
@@ -137,7 +138,12 @@ descriptions/parameters → their lengths. `tools[]` names are verbatim everywhe
     the 28 defaults minus the 12 excluded, plus the MCP tool — `write_file`, `edit`,
     `run_shell_command` included. §12's class of omission: the flag that restricts everything, given
     nothing, restricts nothing and says nothing. The adapter must refuse to compile an empty list.
-17. `-p` is marked deprecated in favour of a positional prompt; it still works in 0.23.0 and is what
+17. **`write_file` refuses relative paths outright.** `src/s25-note.txt` gets `is_error: true`,
+    `File path must be absolute: src/s25-note.txt`; no file appears under cwd or anywhere else, and
+    the turn continues (the model is told, and here went on to report). Absolute paths inside the
+    cwd are the only form the tool takes, which is what its schema says and what the canned model
+    otherwise sends.
+18. `-p` is marked deprecated in favour of a positional prompt; it still works in 0.23.0 and is what
     every capture here used.
 
 Consumed by nothing yet: this fixture set exists so `crates/marion-harness/src/qwen.rs` can be written

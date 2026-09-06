@@ -117,7 +117,7 @@ def mcp_servers_block(rundir, iserror=False):
 def run_scenario(name, out_root, *, settings=None, project_settings=None, argv_extra=(),
                  env_extra=None, prompt=PROMPT, provider_status=200, iserror=False,
                  write_tool="write_file", prompt_flag="-p", resume_from=None, no_openai_env=False,
-                 argv_tail=(),
+                 argv_tail=(), write_path=None,
                  openai_env_names=("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")):
     rundir = os.path.join(out_root, name)
     if os.path.exists(rundir):
@@ -131,7 +131,8 @@ def run_scenario(name, out_root, *, settings=None, project_settings=None, argv_e
     base_url = "http://127.0.0.1:%d/v1" % port
     penv = dict(os.environ, S25_PORT=str(port), S25_REQLOG=os.path.join(rundir, "provider.jsonl"),
                 S25_TOOL=MCP_TOOL_NAME, S25_WRITE_TOOL=write_tool,
-                S25_WRITE_PATH=os.path.join(work, "s25-note.txt"), S25_STATUS=str(provider_status),
+                S25_WRITE_PATH=write_path or os.path.join(work, "s25-note.txt"),
+                S25_STATUS=str(provider_status),
                 S25_MODEL=MODEL)
     prov = subprocess.Popen([sys.executable, PROVIDER], env=penv,
                             stderr=open(os.path.join(rundir, "provider.err"), "w"))
@@ -317,6 +318,16 @@ def core_tools_empty(out):
                         argv_tail=["--mcp-config",
                                    json.dumps({"mcpServers": mcp_servers_block(rundir, False)})],
                         write_tool="none")
+
+
+@scenario
+def relative_write(out):
+    """The compiled run, but the canned model's `write_file` names a RELATIVE `file_path`
+    (`src/s25-note.txt`): written under cwd, refused, or elsewhere?"""
+    return run_scenario("relative-write", out, settings=settings_doc_quiet, env_extra=BLOCKING_MCP,
+                        argv_extra=["--yolo", "--core-tools", "write_file", MCP_TOOL_NAME,
+                                    "--exclude-tools", *CORE_TOOLS_SURVIVORS],
+                        write_path="src/s25-note.txt")
 
 
 @scenario

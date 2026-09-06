@@ -165,6 +165,8 @@ redact_stream(R("core-tools-empty", "stdout.jsonl"), F("qwen-core-tools-empty.st
 provider_request("core-tools-empty", 1, F("qwen-core-tools-empty.provider-request-1.json"))
 copy_text(R("core-tools-empty", "argv.json"), F("qwen-core-tools-empty.argv.json"))
 copy_text(R("core-tools-empty", "stderr.txt"), F("qwen-core-tools-empty.stderr.txt"))
+redact_stream(R("relative-write", "stdout.jsonl"), F("qwen-relative-write.stdout.jsonl"))
+copy_text(R("relative-write", "work-after.txt"), F("qwen-relative-write.work-after.txt"))
 
 # Failure shapes.
 redact_stream(R("report-iserror", "stdout.jsonl"), F("qwen-report-iserror.stdout.jsonl"))
