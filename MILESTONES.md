@@ -111,8 +111,10 @@ three import cycles. The depth is the one spawn path — CLI → detach → serv
 harness row → grammar — and the design has exactly one such path, so the remaining headroom is
 the tool's formula over a chain marion will not shorten; do not chase the number past that.
 
-**Open, honestly:** C1's recording; the four disabled lanes; `SIGTSTP`/`SIGCONT` through the
-facade (kernel stop not observable from the `spawn_pty` fixture); child resume and a linked
+**Open, honestly:** C1's recording; the four disabled lanes; `SIGTSTP`/`SIGCONT` from the
+*shipped* binary (a real kernel stop and continue through the relay is observed by
+`native_relay_stop_and_continue_are_observed_by_a_job_control_leader`, commit acb1cc5, but the
+`spawn_pty` facade fixture cannot observe it); child resume and a linked
 worktree's cwd on resume; Linux `/proc` start identity unmeasured; descendant gating (§7.6) and
 `verification` execution still not in code; the ACP agent identity on `NodeSummary`.
 
