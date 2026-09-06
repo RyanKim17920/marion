@@ -102,18 +102,43 @@ both rows say `None` and a resume on them is refused by name. **Wired 2026-09-05
 (`a_harness_whose_row_refuses_resume_is_refused_by_name`, RED with `no field named resume`).
 
 **A version here names the binary a behaviour was measured on, not the binary that will run.** The
-installed `claude` on this machine is **2.1.224**, not the 2.1.220 stamped above and throughout this
+installed `claude` on this machine is **2.1.261**, not the 2.1.220 stamped above and throughout this
 file. `5792140` replaced the exact pin with a **set** — `marion_testsupport::PINNED_HARNESSES`, the
 one table every version check in the workspace reads — whose **entry zero never moves**, because
 entry zero is what the prose claims, and whose tail carries versions since observed green with the
-evidence beside each. claude's set is `["2.1.220", "2.1.222", "2.1.223", "2.1.224"]` and codex's is
+evidence beside each. claude's set is `["2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225",
+"2.1.226", "2.1.261"]` and codex's is
 `["0.146.0", "0.146.1", "0.147.0"]` — both auto-updated mid-session on 2026-08-06 and codex again
 on 2026-08-07, §7.7's hazard arriving live, and each new version was admitted only after its probes
 were re-run and compared against the committed captures field for field; gemini and opencode each
 pin exactly one. So
 read "2.1.220" as *"the version the turn-one `\"tools\":[]` shape and the
 `tests/fixtures/s9` `can_use_tool` frame were captured from"*, and read a green suite as *"and
-2.1.222, 2.1.223 and 2.1.224 were checked against them too."*
+2.1.222 through 2.1.226 and 2.1.261 were checked against them too."*
+
+**2.1.261, admitted 2026-09-05 at `0b2b4f1`, after a thirty-five-release gap.** The installed
+binary went 2.1.226 → 2.1.261 without any intermediate version being run here, and none of the
+pinned versions is still on disk (`~/.local/share/claude/versions/` holds 2.1.251, 2.1.252,
+2.1.259 and 2.1.261), so there was no one-axis A/B against a pinned build. What was re-run, all
+green with only the table entry widened: `harness_matrix` (5), `cross_product` (26), `m1_hop` (1),
+`m4_fan_in` (1), `acp_child` (2), `permission_round_trip` (8), `journal_wiring` (18),
+`depth_gate` (4), `timeout_kill` (1), `worktree_reap` (8), `no_git` (5), `restart_resume` (1,
+`--ignored`), the six native facade suites (`native_facade_smoke`, `native_injection_binding`,
+`native_facade_cli`, `native_facade_gate`, `native_mode_matrix`, `native_bootstrap`; 22 tests),
+and the workspace `--lib` set (1437). `acp_child`, `permission_round_trip` and `journal_wiring` each failed once
+first with marion's MCP bridge never becoming ready (`McpNeverReady(30s)`, "the bridge never
+answered tools/list") under a 20–28 load average from concurrent builds, and passed in full on an
+isolated rerun minutes later — environmental, kept here so the next reader does not mistake it
+for drift. Two things the green does not cover. **First, `pane_attach`'s claude cell is red**, at its "a keystroke arrives" step: the `\r` the test writes to the operator's master never
+reaches the node — zero `i` records in the node's `pty.cast`, node output unchanged, `marion attach`
+alive and foreground 1.5 s later. It fails identically against 2.1.251 through a `PATH` shim and
+the codex cell on the same fixture is green, so the byte is lost in marion's pane input-admission
+path, not by the harness; that fix is tracked separately and the cell stays red until it lands.
+**Second, a real 2.1.261 drift the same cell will meet next:** the trust dialog now reads *"Quick
+safety check: Is this a project you created or one you trust?"* and puts the cursor on **"No,
+exit"** by default, where 2.1.226 defaulted to accepting — so "press Enter to accept the dialog"
+will make claude exit once the CR gets through. The s10/s11/s14/s16 probes were **not** re-run;
+those readings remain 2.1.226's.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in

@@ -462,8 +462,42 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // fixture still does not say, and that remains a finding about the probe.
         //
         // **Nothing was re-recorded.** Every capture was compared, not refreshed.
+        //
+        // 2.1.261: observed green on darwin 25.5.0, 2026-09-05, at `0b2b4f1` — a thirty-five-release
+        // jump. 2.1.227 through 2.1.260 were never installed here, and
+        // `~/.local/share/claude/versions/` now holds only 2.1.251, 2.1.252, 2.1.259 and 2.1.261,
+        // so **no pinned version is left on disk to vary one axis against**. Every gated suite that
+        // drives a real `claude` passed with only this entry widened: `harness_matrix` (5),
+        // `cross_product` (26), `m1_hop`, `m4_fan_in`, `acp_child` (2), `permission_round_trip`
+        // (8), `journal_wiring` (18), `depth_gate` (4), `timeout_kill`, `worktree_reap` (8),
+        // `no_git` (5), `restart_resume` (1, `--ignored`), the six native facade suites (22
+        // tests), and the workspace `--lib` set (1437). `acp_child`, `permission_round_trip`
+        // and `journal_wiring` each failed once first with the MCP bridge never becoming ready
+        // (`McpNeverReady(30s)`, "the bridge never answered tools/list") while the machine's load
+        // average was 20–28 on 12 cores from concurrent builds, and passed in full on an isolated
+        // rerun minutes later; that is the sandbox weather, not the harness.
+        // `permission_round_trip` reads `tests/fixtures/s9` off disk, so the
+        // `can_use_tool` frame is genuinely re-asserted against 2.1.261.
+        //
+        // **What did not pass, and why it is not 2.1.261's doing.** `pane_attach`'s claude cell is
+        // red at its "a keystroke arrives" step: the `\r` written to the operator's master never
+        // reaches the node — zero `i` records in the node's `pty.cast`, node output unchanged,
+        // `marion attach` still alive and in the foreground 1.5 s later. Run against 2.1.251
+        // through a `PATH` shim the cell fails identically, and the codex cell on the same fixture
+        // is green, so the byte is lost inside marion's pane-input path rather than by the
+        // harness. It is tracked as the pane input-admission bug; this entry does not vouch for
+        // that cell.
+        //
+        // **One shape moved.** 2.1.261's trust dialog reads *"Quick safety check: Is this a
+        // project you created or one you trust?"* with the cursor on **"No, exit"** by default;
+        // 2.1.226's defaulted to accepting. The moment the CR above gets through, `pane_attach`'s
+        // "Enter accepts the dialog" step will make claude exit instead, so that cell needs an
+        // arrow-down (or the trusted-projects setting) before it can be green on 2.1.261.
+        //
+        // **Not re-run:** the s10/s11/s14/s16 probes under `spikes/`. This entry rests on the suite
+        // alone; those readings are still 2.1.226's.
         accepted: &[
-            "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226",
+            "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261",
         ],
     },
     PinnedHarness {
