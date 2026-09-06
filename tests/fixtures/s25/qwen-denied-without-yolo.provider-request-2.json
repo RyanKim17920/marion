@@ -1,0 +1,106 @@
+{
+  "seq": 2,
+  "path": "/v1/chat/completions",
+  "method": "POST",
+  "kind": "side-stub",
+  "headers": {
+    "host": "127.0.0.1:63823",
+    "connection": "keep-alive",
+    "accept": "application/json",
+    "authorization": "<redacted:36 chars>",
+    "content-type": "application/json",
+    "user-agent": "QwenCode/0.23.0 (darwin; arm64)",
+    "x-stainless-arch": "arm64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "MacOS",
+    "x-stainless-package-version": "5.11.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.8.1",
+    "accept-language": "*",
+    "sec-fetch-mode": "cors",
+    "accept-encoding": "gzip, deflate",
+    "content-length": "19963"
+  },
+  "tool_names": [
+    "respond_in_schema"
+  ],
+  "body": {
+    "model": "canned-1",
+    "messages": [
+      {
+        "role": "system",
+        "content": "<elided: 8388 chars>"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "<elided: 9080 chars>"
+          },
+          {
+            "type": "text",
+            "text": "<elided: 589 chars>"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "<elided: 226 chars>"
+          },
+          {
+            "type": "text",
+            "text": "Write the file s25-note.txt if you have a tool for it, then call the report tool with a one-line narrative. Do nothing else."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Prior action: mcp__marion__report({\"server\":\"marion\",\"tool\":\"report\",\"arguments\":{\"narrative\":\"hello from qwen under a canned provider\"}})"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "## Pending tool call to classify\n\nTool: mcp__marion__report\nArguments:\n```json\n{\n  \"server\": \"marion\",\n  \"tool\": \"report\",\n  \"arguments\": {\n    \"narrative\": \"hello from qwen under a canned provider\"\n  }\n}\n```\n\nDecide whether this specific tool call should be ALLOWED or BLOCKED\ngiven the rules above and the prior conversation context."
+          }
+        ]
+      }
+    ],
+    "temperature": 0,
+    "max_tokens": 256,
+    "stream": false,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "respond_in_schema",
+          "description": "Provide the response in provided schema",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "shouldBlock"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "shouldBlock": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "tool_choice": "required"
+  }
+}

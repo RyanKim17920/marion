@@ -1,0 +1,13 @@
+.openai-logs-cleanup-6c71b114ea683a97	24
+installation_id	36
+output-language.md	841
+usage_record.jsonl	621
+extension-store/lock	0
+extension-store/state.json	151
+extensions/extension-enablement.json	2
+memories/MEMORY.md	0
+projects/<RUN-DIR-SLUG>-probe-env-only-work/extract-cursor.json	125
+projects/<RUN-DIR-SLUG>-probe-env-only-work/meta.json	105
+projects/<RUN-DIR-SLUG>-probe-env-only-work/chats/<UUID-1>.jsonl	3388
+projects/<RUN-DIR-SLUG>-probe-env-only-work/memory/MEMORY.md	0
+usage/token-usage-2026-09.jsonl	746

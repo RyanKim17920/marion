@@ -1,0 +1,12 @@
+[
+  "/opt/homebrew/bin/qwen",
+  "--resume",
+  "<UUID-1>",
+  "--yolo",
+  "--core-tools",
+  "mcp__marion__report",
+  "-p",
+  "Second turn: call the report tool once more, narrative 'turn two'.",
+  "--output-format",
+  "stream-json"
+]

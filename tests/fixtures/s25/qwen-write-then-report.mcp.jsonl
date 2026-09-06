@@ -1,0 +1,11 @@
+{"dir": "in", "frame": {"method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {"extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}, "roots": {}}, "clientInfo": {"name": "qwen-cli-mcp-client-marion", "version": "0.0.1"}}, "jsonrpc": "2.0", "id": 0}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "marion", "version": "0.0.0"}}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "method": "notifications/initialized"}}
+{"dir": "in", "frame": {"method": "prompts/list", "params": {}, "jsonrpc": "2.0", "id": 1}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "no method prompts/list"}}}
+{"dir": "in", "frame": {"method": "resources/list", "params": {}, "jsonrpc": "2.0", "id": 2}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 2, "error": {"code": -32601, "message": "no method resources/list"}}}
+{"dir": "in", "frame": {"method": "tools/list", "params": {}, "jsonrpc": "2.0", "id": 3}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 3, "result": {"tools": [{"name": "report", "description": "Report the outcome of this task back to marion.", "inputSchema": {"type": "object", "properties": {"narrative": {"type": "string"}, "result_commits": {"type": "array", "items": {"type": "string"}}}, "required": ["narrative"]}}]}}}
+{"dir": "in", "frame": {"method": "tools/call", "params": {"name": "report", "arguments": {"narrative": "hello from qwen under a canned provider"}, "_meta": {"progressToken": 4}}, "jsonrpc": "2.0", "id": 4}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 4, "result": {"content": [{"type": "text", "text": "recorded"}], "isError": false}}}

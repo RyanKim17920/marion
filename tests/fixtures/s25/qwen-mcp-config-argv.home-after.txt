@@ -1,0 +1,10 @@
+.openai-logs-cleanup-e0f27537f3c17b70	24
+installation_id	36
+output-language.md	841
+settings.json	75
+usage_record.jsonl	763
+extension-store/lock	0
+extension-store/state.json	151
+extensions/extension-enablement.json	2
+projects/<RUN-DIR-SLUG>-mcp-config-argv-work/chats/<UUID-1>.jsonl	10435
+usage/token-usage-2026-09.jsonl	1081

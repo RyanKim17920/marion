@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "marion": {
+      "command": "<PYTHON>",
+      "args": [
+        "<REPO>/spikes/s25/mcp_report_server.py",
+        "<RUN-DIR>/visible-tools/mcp.jsonl"
+      ],
+      "env": {}
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false
+  },
+  "tools": {
+    "visible": [
+      "mcp__marion__report"
+    ]
+  },
+  "$version": 4
+}

@@ -1,0 +1,11 @@
+{
+  "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
+  "HOME": "<HOME>",
+  "QWEN_HOME": "<RUN-DIR>/core-plus-exclude/home",
+  "TERM": "dumb",
+  "NO_COLOR": "1",
+  "OPENAI_BASE_URL": "http://127.0.0.1:63552/v1",
+  "OPENAI_API_KEY": "<key>",
+  "OPENAI_MODEL": "canned-1",
+  "QWEN_CODE_LEGACY_MCP_BLOCKING": "1"
+}

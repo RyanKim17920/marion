@@ -1,0 +1,206 @@
+{
+  "seq": 1,
+  "path": "/v1/chat/completions",
+  "method": "POST",
+  "kind": "turn-call-write",
+  "headers": {
+    "host": "127.0.0.1:63380",
+    "connection": "keep-alive",
+    "accept": "application/json",
+    "authorization": "<redacted:36 chars>",
+    "content-type": "application/json",
+    "user-agent": "QwenCode/0.23.0 (darwin; arm64)",
+    "x-stainless-arch": "arm64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "MacOS",
+    "x-stainless-package-version": "5.11.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.8.1",
+    "accept-language": "*",
+    "sec-fetch-mode": "cors",
+    "accept-encoding": "gzip, deflate",
+    "content-length": "71796"
+  },
+  "tool_names": [
+    "agent",
+    "enter_worktree",
+    "exit_worktree",
+    "get_goal",
+    "list_agents",
+    "mcp__marion__report",
+    "record_artifact",
+    "report_findings",
+    "send_message",
+    "skill",
+    "task_stop",
+    "tool_search",
+    "update_goal",
+    "write_file"
+  ],
+  "body": {
+    "model": "canned-1",
+    "messages": [
+      {
+        "role": "system",
+        "content": "<elided: 23564 chars>"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "<elided: 9080 chars>"
+          },
+          {
+            "type": "text",
+            "text": "<elided: 585 chars>"
+          },
+          {
+            "type": "text",
+            "text": "<elided: 226 chars>"
+          },
+          {
+            "type": "text",
+            "text": "Write the file s25-note.txt if you have a tool for it, then call the report tool with a one-line narrative. Do nothing else."
+          }
+        ]
+      }
+    ],
+    "max_tokens": 32000,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "agent",
+          "description": "<elided: 10313 chars>",
+          "parameters": "<elided: 3988 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "enter_worktree",
+          "description": "<elided: 976 chars>",
+          "parameters": "<elided: 181 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "exit_worktree",
+          "description": "<elided: 744 chars>",
+          "parameters": "<elided: 484 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_goal",
+          "description": "<elided: 1041 chars>",
+          "parameters": "<elided: 329 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_agents",
+          "description": "<elided: 699 chars>",
+          "parameters": "<elided: 67 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "mcp__marion__report",
+          "description": "Report the outcome of this task back to marion.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "narrative": {
+                "type": "string"
+              },
+              "result_commits": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "narrative"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "record_artifact",
+          "description": "<elided: 1873 chars>",
+          "parameters": "<elided: 1455 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "report_findings",
+          "description": "<elided: 1330 chars>",
+          "parameters": "<elided: 2698 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "send_message",
+          "description": "<elided: 1210 chars>",
+          "parameters": "<elided: 654 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "skill",
+          "description": "<elided: 1471 chars>",
+          "parameters": "<elided: 258 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "task_stop",
+          "description": "<elided: 135 chars>",
+          "parameters": "<elided: 221 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "tool_search",
+          "description": "<elided: 1016 chars>",
+          "parameters": "<elided: 368 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "update_goal",
+          "description": "<elided: 1801 chars>",
+          "parameters": "<elided: 1169 chars>"
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "write_file",
+          "description": "<elided: 1180 chars>",
+          "parameters": "<elided: 546 chars>"
+        }
+      }
+    ]
+  }
+}
