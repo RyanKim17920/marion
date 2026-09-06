@@ -1040,8 +1040,7 @@ sleep 15"#,
         let script = format!(
             r#"read init
 printf '%s\n' '{HELLO_NO_LOAD}'
-read next
-printf '%s\n' "$next" > '{seen}'
+read next && printf '%s\n' "$next" > '{seen}'
 sleep 15"#,
             seen = seen.display(),
         );
