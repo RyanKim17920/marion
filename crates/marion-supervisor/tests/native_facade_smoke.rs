@@ -207,8 +207,23 @@ fn the_shipped_binary_relays_a_real_harness_help_screen_and_restores_the_termina
         "the operator's terminal was not restored after the relay"
     );
 
-    // And the node is on the record: one native root, exited as the harness exited.
-    let replayed = Registry::boot(&project_dir).expect("the journal replays");
+    // And the node is on the record: one native root, exited as the harness exited. The client's
+    // exit and the lifecycle worker's `Exited` append are unordered observers of the vendor's
+    // death (see `native_bootstrap.rs::replay_until_a_node_is_terminal`), so wait on the journal,
+    // which is the barrier the supervisor itself exits on.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let replayed = loop {
+        let replayed = Registry::boot(&project_dir).expect("the journal replays");
+        let terminal = replayed
+            .tree()
+            .nodes()
+            .iter()
+            .any(|node| node.exit.is_some());
+        if terminal || Instant::now() >= deadline {
+            break replayed;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     let nodes = replayed.tree().nodes().to_vec();
     assert_eq!(
         nodes.len(),
