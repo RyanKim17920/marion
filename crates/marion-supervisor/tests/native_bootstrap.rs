@@ -213,6 +213,32 @@ mod enabled_launch {
         }
     }
 
+    /// Replay the journal until it carries a terminal record for a node, or `bound` passes.
+    ///
+    /// The client's exit and the `Exited` append are two observers of one event with no order
+    /// between them. The vendor's death hangs up the pty, which ends the relay and the client;
+    /// the supervisor's lifecycle worker (`native_exec::prepare_lifecycle`) sees the same death
+    /// through `poll_exited_unreaped`'s 25 ms poll, reaps, finishes the pane and only then
+    /// appends and fsyncs `Exited`. A replay taken at the client's wait status races that append
+    /// and loses under load. The supervisor itself does not exit on its threads here but on the
+    /// journal (§5.7 residency reads the replayed tree, `NonTerminalNode`), so the test waits on
+    /// that same predicate and lets the assertions below read the settled tree.
+    fn replay_until_a_node_is_terminal(project_dir: &ProjectDir, bound: Duration) -> Registry {
+        let deadline = Instant::now() + bound;
+        loop {
+            let replayed = Registry::boot(project_dir).expect("the journal replays");
+            let terminal = replayed
+                .tree()
+                .nodes()
+                .iter()
+                .any(|node| node.exit.is_some() || node.spawn_aborted.is_some());
+            if terminal || Instant::now() >= deadline {
+                return replayed;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn reap_with_watchdog(
         mut child: std::process::Child,
         ceiling: Duration,
@@ -411,7 +437,7 @@ mod enabled_launch {
 
         // The native node is a node: §6.1 step 7's intent, confirmation and terminal record are
         // in this project's journal, so the tree, restart and `node/attach` all know it.
-        let replayed = Registry::boot(&project_dir).expect("the journal replays");
+        let replayed = replay_until_a_node_is_terminal(&project_dir, Duration::from_secs(10));
         let nodes = replayed.tree().nodes().to_vec();
         assert_eq!(nodes.len(), 1, "exactly one node was journaled: {nodes:?}");
         let node = &nodes[0];
