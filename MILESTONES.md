@@ -1374,10 +1374,26 @@ acceptance evidence, so every marker remains unchanged.
     and is not built here. Stop/resume stays covered where it is observable: the isolated
     `suspend_probe` tests in `native_relay.rs`. No E2E claim is made about TSTP.
 
+    **The `opencode` and `copilot` native lanes are enabled on measurement (2026-09-05); no
+    marker moves.** Their rows had said the declaration channel was measured only on the headless
+    surface. Measured now on the interactive shape, through the shipped facade and the matrix
+    fixture on darwin 25.5.0: **opencode 1.17.3** (`OPENCODE_CONFIG_CONTENT`) — its `/mcp` dialog
+    lists `marion connected ✓ Enabled` beside the operator's own `pencil` and `semble` servers, so
+    the inline document merges with the user's config rather than replacing it, and the status bar
+    counts marion in `⊙ 2 MCP`; **copilot 1.0.83** (`--additional-mcp-config @<path>`) — its `/mcp`
+    view lists `marion · User · mcp:marion · 646 tokens` beside the built-in `github-mcp-server`,
+    `2/2 enabled`, and a token count is a `tools/list` the bridge answered. With the two flags
+    flipped, `every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade` runs four
+    lanes and passes all clauses for each (`opencode` first word `anything`, `copilot` first word
+    `Sessions`), and the registry pin
+    `production_facades_cover_every_terminal_harness_exactly_once` now names the four. One
+    side-effect to know about: opencode's first screen was an *update prompt*, and the probe's
+    first attempt pressed Enter on it, which started opencode's self-update on this machine; the
+    committed matrix never presses Enter.
+
     What remains for C1 is unchanged and cannot be automated: the recorded 10-minute manual
     session, now to be run through `marion claude` rather than `marion attach`. Still dark: the
-    `gemini` lane (system-settings merge unmeasured), the `opencode` and `copilot` lanes (their
-    TUIs' reading of the declaration unmeasured), and TSTP/CONT through this fixture.
+    `gemini` lane (system-settings merge unmeasured) and TSTP/CONT through this fixture.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance

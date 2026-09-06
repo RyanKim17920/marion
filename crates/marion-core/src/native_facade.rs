@@ -751,14 +751,21 @@ fn executable_error(executable: &str) -> Result<(), NativeFacadeExecutableError>
 /// and the reason is stated where it is not:
 ///
 /// * `claude`, `codex` — the row's TUI shape was measured with its declaration flag
-///   (`--mcp-config`, `-c mcp_servers.marion.*`) for M3's pane work.
+///   (`--mcp-config`, `-c mcp_servers.marion.*`) for M3's pane work, and again through the shipped
+///   facade by `tests/native_facade_e2e.rs` (2026-09-05).
 /// * `gemini` — disabled: the system-settings layer the declaration rides **outranks the
 ///   operator's own**, and whether it merges per key or replaces `mcpServers` wholesale is an
 ///   unmeasured question (`marion_harness::gemini::settings_json_with_auth`); a native node that
 ///   silently lost the operator's servers would be §6.4's failure.
-/// * `opencode`, `copilot` — disabled: the declaration channel was measured on the headless
-///   surface (S13's `run`, s24's `-p`) and its reading by the TUI has not been; a flag the TUI
-///   ignored would be a node with no bridge wearing a green check.
+/// * `opencode`, `copilot` — enabled 2026-09-05, on measurement of the TUI's own reading of the
+///   declaration through the shipped facade (`tests/native_facade_e2e.rs` fixture, darwin
+///   25.5.0). opencode 1.17.3 with `OPENCODE_CONFIG_CONTENT`: its `/mcp` dialog lists
+///   `marion connected ✓ Enabled` **beside the operator's own servers** (`pencil`, `semble`), so
+///   the inline document merges rather than replaces; the status bar counts marion in `⊙ 2 MCP`.
+///   copilot 1.0.83 with `--additional-mcp-config @<path>`: its `/mcp` view lists
+///   `marion · User · mcp:marion · 646 tokens` beside the built-in `github-mcp-server`, `2/2
+///   enabled` — a token count is a `tools/list` the bridge answered. Both lanes pass the full
+///   matrix (first screen through `marion_term`, opaque keystroke, resize, detach, kill).
 ///
 /// No structured lanes: `marion run <agent-type>` is that surface, and it is not this registry's.
 pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
@@ -797,7 +804,7 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         command: "opencode",
         aliases: &[],
         native: Some(Lane::new(
-            false,
+            true,
             NativeLane::new("opencode", "opencode", NativeAdapterId::new("opencode")),
         )),
         structured: None,
@@ -807,7 +814,7 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         command: "copilot",
         aliases: &[],
         native: Some(Lane::new(
-            false,
+            true,
             NativeLane::new("copilot", "copilot", NativeAdapterId::new("copilot")),
         )),
         structured: None,
@@ -1216,8 +1223,10 @@ mod tests {
         );
         assert_eq!(
             registry.enabled_native_commands(),
-            vec!["claude", "codex"],
-            "the enabled lanes are the two whose interactive shape was measured"
+            vec!["claude", "codex", "opencode", "copilot"],
+            "the enabled lanes are exactly those whose interactive shape was measured \
+             (`tests/native_facade_e2e.rs`); `gemini` stays dark until its settings merge is \
+             measured"
         );
         assert!(registry.enabled_structured_commands().is_empty());
         for word in RESERVED_COMMANDS
