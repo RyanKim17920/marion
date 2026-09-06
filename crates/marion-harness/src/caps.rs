@@ -270,6 +270,16 @@ pub fn advertised(harness: Harness, version: &str) -> Capabilities {
         // the ten; `--resume` exists on 1.49.0's `--help` and no frame carries the id it takes, so
         // nothing is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
         Harness::Goose => Capabilities::NONE,
+        // Nothing measured through the `--json` surface. S27 drove it to a tool call and back and
+        // watched `isError`, a provider 500 and `--auto-approve false`, none of which is one of the
+        // ten; `--id` exists and exits 1 headless, so `resume` is measured *absent* rather than
+        // unmeasured, and the answer is the same `false`.
+        Harness::Cline => Capabilities::NONE,
+        // Nothing measured through the `-p` surface beyond what the row compiles. S25 drove
+        // `--resume <session_id>` to a second turn that replayed the first — which is the row's
+        // `resume` grammar, not this table's `resume` capability, whose meaning §3.3 keys on a
+        // supervisor-driven surface no LaunchOnly row has. `false` here is "not measured".
+        Harness::Qwen => Capabilities::NONE,
         // **The one row where `advertised` describes a protocol rather than a program**, because
         // §5.2's `acp` adapter serves many agents and the version here is not even readable until
         // one of them has answered `initialize`. So `version` is deliberately unused: it keys the

@@ -832,6 +832,30 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         )),
         structured: None,
     },
+    // Disabled 2026-09-05: the `CLINE_MCP_SETTINGS_PATH` declaration channel was measured on the
+    // headless `--json` surface (S27) and its reading by cline's interactive TUI has not been.
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("cline"),
+        command: "cline",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("cline", "cline", NativeAdapterId::new("cline")),
+        )),
+        structured: None,
+    },
+    // Disabled 2026-09-05: the `--mcp-config` declaration channel was measured on the headless
+    // `-p` surface (S25) and its reading by qwen's interactive TUI has not been.
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("qwen"),
+        command: "qwen",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("qwen", "qwen", NativeAdapterId::new("qwen")),
+        )),
+        structured: None,
+    },
 ];
 
 /// The production registry: [`PRODUCTION_NATIVE_FACADES`], validated.

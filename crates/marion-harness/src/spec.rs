@@ -168,6 +168,13 @@ pub enum Arg {
     /// one; nothing where it does not. A shape whose argv has no `Resume` slot, or a row whose
     /// `resume` is `None`, **refuses** a launch that asks for one.
     Resume,
+    /// `<flag> <config_dir>/<child>` **under [`When::Canned`] only** — an isolation flag, the argv
+    /// counterpart of an [`Env`] row whose `val` is [`Val::Under`] and whose `when` is `Canned`.
+    /// cline's `--config`/`--data-dir`, which s27 measured as load-bearing *beside* the relocation
+    /// variables (flags alone leak `~/.cline/data/db/sessions.db`; variables alone fork a hub
+    /// daemon), and which a live node must not carry: pointing them at marion's directory is what
+    /// hides the operator's own configuration.
+    Isolation(&'static str, &'static str),
 }
 
 /// How a harness names a session to resume on argv, as `<harness> --help` spells it.
@@ -392,6 +399,12 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
             Arg::Pos(field) => args.extend(f.value(field)),
             Arg::PosIfNonEmpty(field) => args.extend(f.value(field).filter(|v| !v.is_empty())),
             Arg::Items(field) => args.extend(f.items(field)),
+            Arg::Isolation(flag, child) => {
+                if f.auth == Auth::Canned {
+                    args.push(flag.into());
+                    args.push(f.config_dir.join(child).to_string_lossy().into_owned());
+                }
+            }
             Arg::Resume => {
                 if let (Some(id), Some(how)) = (f.value(Field::Resume), spec.resume) {
                     match how {

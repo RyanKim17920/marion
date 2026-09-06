@@ -627,6 +627,42 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // `GOOSE_CONFIG_DIR` relocating nothing. See `marion_harness::goose`.
         accepted: &["1.49.0"],
     },
+    PinnedHarness {
+        program: "cline",
+        // 3.0.61 is the pin: the npm `cline` present on this machine on 2026-09-05 (a Node
+        // launcher around a Bun-compiled `bin/.cline`, `@cline/core 0.0.82`), and the version
+        // every S27 probe ran against — each against a canned local provider at $0.00
+        // (`tests/fixtures/s27/`).
+        //
+        // What was measured on it: the positional headless surface with `--json` (no `task`
+        // subcommand, no `-y`), native OpenAI `tools[]` with 26 built-ins no flag narrows, the
+        // `marion__report` spelling in `tools[]` and in `content_start.toolName`, `providers.json`
+        // read from `<data>/settings/` and nowhere else (a misplaced one falls back to the vendor
+        // at exit 1), `CLINE_MCP_SETTINGS_PATH` honoured, relocation needing `CLINE_DIR` +
+        // `CLINE_DATA_DIR` + `HOME` *and* `--config`/`--data-dir` to leave no hub daemon and
+        // nothing under `~/.cline`, `content_end.output.isError` at exit 0, `run_result
+        // finishReason: "error"` at exit 1 on a provider 500, and `--id` exiting 1 headless. See
+        // `marion_harness::cline`.
+        accepted: &["3.0.61"],
+    },
+    PinnedHarness {
+        program: "qwen",
+        // 0.23.0 is the pin: the npm `@qwen-code/qwen-code` present on this machine on 2026-09-05
+        // (a launcher that `spawnSync`s `node --expose-gc cli.js`; kill the process group), and the
+        // version every S25 probe ran against — each against a canned local provider at $0.00
+        // (`tests/fixtures/s25/`).
+        //
+        // What was measured on it: env-only provider selection (`OPENAI_BASE_URL` verbatim,
+        // `OPENAI_API_KEY`, `OPENAI_MODEL`), Claude Code's stream shape rather than Gemini CLI's,
+        // MCP tools deferred behind `tool_search` unless `QWEN_CODE_LEGACY_MCP_BLOCKING=1`, the
+        // `mcp__marion__report` spelling, `--core-tools` with twelve exempt survivors that
+        // `--exclude-tools` removes and an *empty* `--core-tools` that is silently no allowlist,
+        // `--mcp-config` inline on argv without `--bare`, `--yolo` versus a classifier request per
+        // call, `is_error: true` at exit 0 for an MCP `isError`, 28 retries then `success` on a dead
+        // provider, and `--resume <session_id>` replaying the session under the same `QWEN_HOME`
+        // and cwd. See `marion_harness::qwen`.
+        accepted: &["0.23.0"],
+    },
 ];
 
 /// The pinned version of `program` — entry zero of its [`PinnedHarness::accepted`].
@@ -661,6 +697,8 @@ pub fn pinned_version(program: &str) -> &'static str {
 /// | `opencode` | `1.17.3`                                                                 |
 /// | `copilot`  | `GitHub Copilot CLI 1.0.83.` then `Run 'copilot update' to check for updates.` |
 /// | `goose`    | ` 1.49.0` — a leading space, no name (measured 2026-09-05)                 |
+/// | `cline`    | `3.0.61` — bare (measured 2026-09-05)                                      |
+/// | `qwen`     | `0.23.0` — bare (measured 2026-09-05)                                      |
 ///
 /// Three carry a name and two do not, and the name comes first where it is present — so the rule
 /// is "first token that is digits and dots", which skips `codex-cli` and `GitHub` (no leading

@@ -448,6 +448,8 @@ fn script(root: &Node, child: &Node) -> Script {
                 args: json!({ "path": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
             });
         }
+        Harness::Cline => unreachable!("no cell of this matrix names `cline` yet"),
+        Harness::Qwen => unreachable!("no cell of this matrix names `qwen` yet"),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s

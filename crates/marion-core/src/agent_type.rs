@@ -55,6 +55,21 @@ pub const COPILOT_DEFAULT_MODEL: &str = "marion-canned";
 /// real OpenAI endpoint and name nothing.
 pub const GOOSE_DEFAULT_MODEL: &str = "marion-canned";
 
+/// The `cline` built-in's default model.
+///
+/// cline's provider is a `providers.json` document whose `model` field is mandatory, and marion's
+/// canned endpoint ignores the name — so, as with [`COPILOT_DEFAULT_MODEL`], this names marion's
+/// own plumbing, and the adapter refuses it by name under `--live`, where a real model rides `-m`
+/// (measured to win over the operator's `providers.json`, S27) and none at all leaves theirs.
+pub const CLINE_DEFAULT_MODEL: &str = "marion-canned";
+
+/// The `qwen` built-in's default model.
+///
+/// qwen's OpenAI provider names its model from `OPENAI_MODEL` and marion's canned endpoint ignores
+/// the name — so this names marion's own plumbing, as [`COPILOT_DEFAULT_MODEL`] does, and the
+/// adapter refuses it by name under `--live`.
+pub const QWEN_DEFAULT_MODEL: &str = "marion-canned";
+
 /// The first entry in §3.1's `tools:` vocabulary: *may create or overwrite a file*.
 ///
 /// **A vocabulary of two words, and the second arrived the way the first did.** §3.1's example line
@@ -388,6 +403,39 @@ pub fn builtin(name: &str) -> Option<AgentType> {
                 Harness::Goose,
             )
         }),
+        // The seventh binary, on opencode's footing: one type in both roles, because cline grants
+        // its 26 built-ins unconditionally and a `-impl` flavour would declare a grant marion does
+        // not compile (S27 item 12). A model because `providers.json` needs one.
+        "cline" => Some(AgentType {
+            model: Some(CLINE_DEFAULT_MODEL.into()),
+            ..AgentType::defaults(
+                "cline",
+                "Implements a well-specified change on the Cline CLI.",
+                Harness::Cline,
+            )
+        }),
+        // The eighth binary. A model because `OPENAI_MODEL` is how the provider is told what to
+        // name, and the adapter refuses to launch canned without one.
+        "qwen" => Some(AgentType {
+            model: Some(QWEN_DEFAULT_MODEL.into()),
+            ..AgentType::defaults(
+                "qwen",
+                "Implements a well-specified change on Qwen Code.",
+                Harness::Qwen,
+            )
+        }),
+        // The implementer flavour, for the reason `claude-impl` and `copilot-impl` exist: the
+        // adapter offers only what `--core-tools` names, so a `qwen` child has no route to a file
+        // at all, and the grant has to live on a type.
+        "qwen-impl" => Some(AgentType {
+            model: Some(QWEN_DEFAULT_MODEL.into()),
+            tools: vec![TOOL_READ.into(), TOOL_WRITE.into()],
+            ..AgentType::defaults(
+                "qwen-impl",
+                "Implements a well-specified change on Qwen Code.",
+                Harness::Qwen,
+            )
+        }),
         // **One built-in per ACP agent, and no built-in named `acp`.** The other four harnesses
         // get a type named after the harness because there the harness *is* the program. Here it
         // is not: a type named `acp` would have to pick an agent, and §6.4 says marion may not.
@@ -454,6 +502,7 @@ pub fn builtin_names() -> &'static [&'static str] {
         "acp-opencode",
         "claude",
         "claude-impl",
+        "cline",
         "codex",
         "codex-impl",
         "copilot",
@@ -463,6 +512,8 @@ pub fn builtin_names() -> &'static [&'static str] {
         "goose",
         "goose-impl",
         "opencode",
+        "qwen",
+        "qwen-impl",
     ]
 }
 
@@ -554,6 +605,7 @@ mod tests {
             ("acp-opencode", Harness::Acp),
             ("claude", Harness::ClaudeCode),
             ("claude-impl", Harness::ClaudeCode),
+            ("cline", Harness::Cline),
             ("codex", Harness::Codex),
             ("codex-impl", Harness::Codex),
             ("copilot", Harness::Copilot),
@@ -563,13 +615,15 @@ mod tests {
             ("goose", Harness::Goose),
             ("goose-impl", Harness::Goose),
             ("opencode", Harness::OpenCode),
+            ("qwen", Harness::Qwen),
+            ("qwen-impl", Harness::Qwen),
         ] {
             assert_eq!(builtin(name).unwrap().harness, h, "{name}");
             assert!(builtin_names().contains(&name), "{name} must be listed");
         }
         assert_eq!(
             builtin_names().len(),
-            12,
+            15,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
@@ -709,7 +763,7 @@ mod tests {
         for name in builtin_names() {
             let declared = builtin(name).unwrap().tools;
             let expected: Vec<String> = match *name {
-                "claude-impl" | "gemini-impl" | "copilot-impl" => {
+                "claude-impl" | "gemini-impl" | "copilot-impl" | "qwen-impl" => {
                     vec![TOOL_READ.into(), TOOL_WRITE.into()]
                 }
                 // `write` alone: goose's developer extension has no read-only tool to answer

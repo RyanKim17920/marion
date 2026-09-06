@@ -28,6 +28,12 @@ pub enum Harness {
     /// Block's goose, headless `run -t` (measured on 1.49.0, `tests/fixtures/s26/`). The seventh
     /// name and the sixth binary.
     Goose,
+    /// Cline CLI, headless positional prompt with `--json` (measured on 3.0.61,
+    /// `tests/fixtures/s27/`). The eighth name and the seventh binary.
+    Cline,
+    /// Qwen Code, headless `-p` (measured on 0.23.0, `tests/fixtures/s25/`). The ninth name and
+    /// the eighth binary; a Gemini CLI fork whose headless surface is Claude Code's shape.
+    Qwen,
     /// **A protocol, not a vendor** — §5.2's `acp` adapter row, *"one adapter serving many
     /// agents"*. The other four name a binary; this one names Agent Client Protocol and the binary
     /// arrives per launch (`Extras::acp_agent`), because the agent supplies its own identity in
@@ -48,6 +54,8 @@ impl Harness {
             Harness::OpenCode => "opencode",
             Harness::Copilot => "copilot",
             Harness::Goose => "goose",
+            Harness::Cline => "cline",
+            Harness::Qwen => "qwen",
             Harness::Acp => "acp",
         }
     }
@@ -103,21 +111,31 @@ impl Harness {
     /// `the_harnesses_that_write_without_a_grant_are_the_ones_that_compile_no_constraint`.
     pub const fn writes_without_a_declaration(self) -> bool {
         match self {
-            Harness::Codex | Harness::OpenCode | Harness::Acp => true,
+            // cline: 26 built-ins including `editor` and `run_commands`, offered whatever the launch
+            // says — no flag or setting narrows them (S27).
+            Harness::Codex | Harness::OpenCode | Harness::Cline | Harness::Acp => true,
             // goose: `--no-profile` loads no extension but marion's, and the file tools arrive
             // only with `--with-builtin developer`, which a `write` declaration compiles (S26).
-            Harness::ClaudeCode | Harness::Gemini | Harness::Copilot | Harness::Goose => false,
+            // qwen: `--core-tools` plus `--exclude-tools` offers exactly the declared names, and
+            // `write_file` is offered only when declared (S25).
+            Harness::ClaudeCode
+            | Harness::Gemini
+            | Harness::Copilot
+            | Harness::Goose
+            | Harness::Qwen => false,
         }
     }
 
     /// Every harness marion can name — what `marion doctor` would list.
-    pub const ALL: [Harness; 7] = [
+    pub const ALL: [Harness; 9] = [
         Harness::ClaudeCode,
         Harness::Codex,
         Harness::Gemini,
         Harness::OpenCode,
         Harness::Copilot,
         Harness::Goose,
+        Harness::Cline,
+        Harness::Qwen,
         Harness::Acp,
     ];
 }
@@ -128,7 +146,7 @@ impl Harness {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
     "unknown harness {0:?}; known harnesses are claude-code, codex, gemini, opencode, copilot, \
-     goose, acp"
+     goose, cline, qwen, acp"
 )]
 pub struct UnknownHarness(pub String);
 
@@ -186,6 +204,8 @@ mod tests {
         assert_eq!(Harness::OpenCode.as_str(), "opencode");
         assert_eq!(Harness::Copilot.as_str(), "copilot");
         assert_eq!(Harness::Goose.as_str(), "goose");
+        assert_eq!(Harness::Cline.as_str(), "cline");
+        assert_eq!(Harness::Qwen.as_str(), "qwen");
         // §5.2's adapter row is spelled `acp`, and it names the protocol rather than an agent.
         assert_eq!(Harness::Acp.as_str(), "acp");
     }
@@ -207,6 +227,12 @@ mod tests {
                 // Measured on 1.49.0 (`tests/fixtures/s26/`): under `--no-profile` the model is
                 // offered marion's tools and nothing else; `write` arrives with `--with-builtin`.
                 ("goose", false),
+                // Measured on 3.0.61 (`tests/fixtures/s27/`): `editor` and `run_commands` are among
+                // the 26 tools every launch offers, and nothing marion compiles withholds them.
+                ("cline", true),
+                // Measured on 0.23.0 (`tests/fixtures/s25/`): `--core-tools` names what the model is
+                // offered, and `write_file` is in `tools[]` only when the launch names it.
+                ("qwen", false),
                 ("acp", true),
             ]
         );

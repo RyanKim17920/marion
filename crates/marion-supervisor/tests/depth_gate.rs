@@ -289,6 +289,8 @@ fn script(node: &Node) -> Script {
         // says so rather than scripting something that would not be an ACP run.
         Harness::Copilot => unreachable!("no cell of this matrix names `copilot` yet"),
         Harness::Goose => unreachable!("no cell of this matrix names `goose` yet"),
+        Harness::Cline => unreachable!("no cell of this matrix names `cline` yet"),
+        Harness::Qwen => unreachable!("no cell of this matrix names `qwen` yet"),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s

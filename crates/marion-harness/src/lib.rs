@@ -13,6 +13,7 @@ pub mod adapter;
 pub(crate) mod auth;
 pub mod caps;
 pub mod claude_code;
+pub mod cline;
 pub mod codex;
 pub mod copilot;
 pub mod gemini;
@@ -22,15 +23,16 @@ pub mod invocation;
 pub mod mcp_bridge;
 pub mod native;
 pub mod opencode;
+pub mod qwen;
 pub mod spec;
 pub mod stream;
 pub mod surfaces;
 
 pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
-    AcpAdapter, ClaudeCodeAdapter, CodexAdapter, CopilotAdapter, Extras, GeminiAdapter,
-    GooseAdapter, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, McpRoute,
-    OpenCodeAdapter, SpawnCtx, adapter_for, adapter_for_type,
+    AcpAdapter, ClaudeCodeAdapter, ClineAdapter, CodexAdapter, CopilotAdapter, Extras,
+    GeminiAdapter, GooseAdapter, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration,
+    McpRoute, OpenCodeAdapter, QwenAdapter, SpawnCtx, adapter_for, adapter_for_type,
 };
 pub use auth::Auth;
 pub use caps::{Capabilities, advertised, static_caps};

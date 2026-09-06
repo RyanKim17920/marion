@@ -723,6 +723,7 @@ mod tests {
                 ("acp-opencode", Some(LaunchPath::Acp)),
                 ("claude", Some(LaunchPath::Duplex)),
                 ("claude-impl", Some(LaunchPath::Duplex)),
+                ("cline", Some(LaunchPath::LaunchOnly)),
                 ("codex", Some(LaunchPath::LaunchOnly)),
                 ("codex-impl", Some(LaunchPath::LaunchOnly)),
                 ("copilot", Some(LaunchPath::LaunchOnly)),
@@ -732,6 +733,8 @@ mod tests {
                 ("goose", Some(LaunchPath::LaunchOnly)),
                 ("goose-impl", Some(LaunchPath::LaunchOnly)),
                 ("opencode", Some(LaunchPath::LaunchOnly)),
+                ("qwen", Some(LaunchPath::LaunchOnly)),
+                ("qwen-impl", Some(LaunchPath::LaunchOnly)),
             ]
         );
     }

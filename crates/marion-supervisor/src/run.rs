@@ -2825,6 +2825,9 @@ mod tests {
             ("copilot-impl", Harness::Copilot),
             ("goose", Harness::Goose),
             ("goose-impl", Harness::Goose),
+            ("cline", Harness::Cline),
+            ("qwen", Harness::Qwen),
+            ("qwen-impl", Harness::Qwen),
         ] {
             let t = builtin(name).expect("built-in resolves");
             assert_eq!(t.harness, expected, "{name}");
@@ -2986,6 +2989,13 @@ mod tests {
             // The builtin grammar: `write` is one of the developer extension's tools, and the
             // extension is the unit goose grants.
             (Harness::Goose, vec!["with-builtin:developer"]),
+            // opencode's record, for opencode's reason: the 26 built-ins are offered regardless.
+            (Harness::Cline, vec!["harness-default:unconstrained"]),
+            // The `--core-tools` list itself: marion's verb, then the declared built-in.
+            (
+                Harness::Qwen,
+                vec!["core-tools:mcp__marion__report", "core-tools:write_file"],
+            ),
         ] {
             let adapter = adapter_for(harness).unwrap();
             let launch = LaunchSpec {
@@ -3053,6 +3063,8 @@ mod tests {
             ("opencode", Harness::OpenCode),
             ("copilot", Harness::Copilot),
             ("goose", Harness::Goose),
+            ("cline", Harness::Cline),
+            ("qwen", Harness::Qwen),
         ] {
             let adapter = adapter_for(builtin(name).unwrap().harness).unwrap();
             let err: SpawnError = adapter

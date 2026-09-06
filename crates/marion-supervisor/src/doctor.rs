@@ -303,6 +303,7 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
         ));
     }
     let program = probe_spec(opts.model.clone(), McpDeclaration::None, agent)
+        .map(|spec| child_shaped(adapter.as_ref(), spec))
         .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok())
         .map(|inv| inv.program);
     let resolved = match &program {
@@ -337,6 +338,7 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
             .as_deref()
             .zip(
                 probe_spec(opts.model.clone(), McpDeclaration::None, agent)
+                    .map(|spec| child_shaped(adapter.as_ref(), spec))
                     .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok()),
             )
             .and_then(|(p, inv)| acp_handshake(p, &inv, &mut notes)),
@@ -481,7 +483,9 @@ fn micro_contract(
     // Step: the declaration route the adapter promises is actually taken. No process, no model
     // call, and it catches §6.1 step 8's failure class — an adapter that forgets its declaration
     // and launches a node with no bridge at all.
-    match probe_spec(opts.model.clone(), McpDeclaration::Marion, agent) {
+    match probe_spec(opts.model.clone(), McpDeclaration::Marion, agent)
+        .map(|spec| child_shaped(adapter, spec))
+    {
         None => notes.push("declaration: NOT RUN — no spec could be built".into()),
         Some(spec) => {
             let ctx = probe_ctx();
@@ -545,7 +549,9 @@ fn micro_contract(
     // agent and not marion's idea of a handshake. That is exactly the objection that keeps
     // claude-code's `stream-json` turn out of this probe, and it does not apply.
     if let Some(a) = agent {
-        let Some(spec) = probe_spec(opts.model.clone(), McpDeclaration::None, agent) else {
+        let Some(spec) = probe_spec(opts.model.clone(), McpDeclaration::None, agent)
+            .map(|spec| child_shaped(adapter, spec))
+        else {
             notes.push("live turn: NOT RUN — no spec could be built".into());
             return ok;
         };
@@ -1349,6 +1355,16 @@ fn probe_spec(
     })
 }
 
+/// A probe shaped like a child: marion's `report` verb in **this harness's** spelling on the
+/// permission axis, as `run_spawn` gives every child. A launch with no marion verb at all is one no
+/// real spawn builds — and one qwen refuses by name, because an empty `--core-tools` is silently no
+/// allowlist at all (s25 item 16), so a probe that carried none would print marion's own omission
+/// as a finding about the operator's binary.
+fn child_shaped(adapter: &dyn HarnessAdapter, mut spec: LaunchSpec) -> LaunchSpec {
+    spec.allowed_tools = vec![adapter.marion_tool_name("report")];
+    spec
+}
+
 /// The same spec carrying the micro-prompt in argv. `None` where the harness needs a model marion
 /// has not been given — checked here rather than at `compile`, so the refusal reads as a *reason*
 /// instead of as a `HarnessError` an operator has to interpret.
@@ -1909,6 +1925,8 @@ mod tests {
             Harness::OpenCode,
             Harness::Copilot,
             Harness::Goose,
+            Harness::Cline,
+            Harness::Qwen,
         ] {
             let rows = caps_rows(Some(h));
             let notes = rows[0].report.notes.join("\n");
@@ -2003,10 +2021,13 @@ mod tests {
                 _ => vec![None],
             } {
                 let agent = agent.as_ref();
-                let spec = probe_spec(None, McpDeclaration::Marion, agent).expect("a spec");
                 // Bound the way `probe_one` binds it: the spec names an agent, so the adapter must
                 // too, or this sweep asserts about a pairing no probe ever builds.
                 let a = adapter_for_type(h, agent.map(acp::Binding::selector)).unwrap();
+                let spec = child_shaped(
+                    &*a,
+                    probe_spec(None, McpDeclaration::Marion, agent).expect("a spec"),
+                );
                 let inv = a.compile(&spec, &ctx).unwrap_or_else(|e| {
                     panic!(
                         "{h}: the probe handed the adapter a spec no real spawn would build — this \

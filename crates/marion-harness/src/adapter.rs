@@ -20,6 +20,7 @@ use marion_core::harness::Harness;
 use crate::acp;
 pub use crate::auth::Auth;
 use crate::claude_code;
+use crate::cline;
 use crate::codex;
 use crate::copilot;
 use crate::gemini;
@@ -28,6 +29,7 @@ use crate::grammar;
 use crate::invocation::Invocation;
 use crate::mcp_bridge::BridgeEnv;
 use crate::opencode;
+use crate::qwen;
 use crate::spec::{self, Constraint, Spelling};
 use crate::stream::{ChildExit, MarionCall, StreamOutcome};
 use crate::surfaces::ExecutionSurfaces;
@@ -739,6 +741,8 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
         Harness::OpenCode => &opencode::SPEC,
         Harness::Copilot => &copilot::SPEC,
         Harness::Goose => &goose::SPEC,
+        Harness::Cline => &cline::SPEC,
+        Harness::Qwen => &qwen::SPEC,
         Harness::Acp => &acp::SPEC,
     }
 }
@@ -1389,6 +1393,211 @@ impl HarnessAdapter for GooseAdapter {
     }
 }
 
+/// cline 3.0.61, headless `--json <prompt>` (fixture `tests/fixtures/s27/`).
+///
+/// opencode's shape: the provider is a document marion writes, the tool set is the harness's own
+/// and unconstrained, and the declaration is a document too. See [`cline`]'s module docs for why
+/// the provider document may sit in exactly one place and why the isolation is flags and
+/// variables together.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClineAdapter;
+
+impl ClineAdapter {
+    /// The `providers.json` values, or the refusal each missing one is owed.
+    fn provider(spec: &LaunchSpec) -> Result<cline::ProviderSpec, HarnessError> {
+        // A document with no base URL would select the vendor's own endpoint through cline's
+        // default — s27 item 14 measured a missing provider file as exactly that fallback.
+        let base_url = spec.base_url.clone().ok_or(HarnessError::MissingInput {
+            harness: Harness::Cline,
+            what: "a canned node needs a provider base URL: providers.json is the only provider \
+                   selection cline reads, and without one it falls back to its own vendor with no \
+                   credential (s27 item 14)",
+        })?;
+        let model = spec.model.clone().ok_or(HarnessError::MissingInput {
+            harness: Harness::Cline,
+            what: "an explicit model is mandatory: providers.json names one, and marion will not \
+                   guess it",
+        })?;
+        let api_key = spec.api_key.clone().ok_or(HarnessError::MissingInput {
+            harness: Harness::Cline,
+            what: "a canned node needs a credential: providers.json carries apiKey as a string and \
+                   an absent one is not a spelling the document has",
+        })?;
+        Ok(cline::ProviderSpec {
+            model,
+            base_url,
+            api_key,
+        })
+    }
+}
+
+impl HarnessAdapter for ClineAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Cline
+    }
+
+    /// The refusals this harness owes. Nothing else: the row's argv reads the launch verbatim, the
+    /// provider is a document, and the declaration rides an env-named document.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned => {
+                Self::provider(spec)?;
+            }
+            // The canned default names marion's own endpoint's plumbing; a live node has none. Any
+            // other model rides `-m`, measured to win over the operator's `providers.json` (s27
+            // item 15); none at all leaves the operator's own.
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::CLINE_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Cline,
+                        what: "the built-in default model names marion's canned endpoint, which a \
+                               --live node does not talk to. Name a real model instead \
+                               (marion run --live -m …), or none to use providers.json's own",
+                    });
+                }
+            }
+        }
+        // The trait's default `axes` runs the refusal owed to a `tools:` declaration; nothing in
+        // the row reads the result — see `Self::tool_name`'s row entry for why a declaration
+        // compiles nothing.
+        Ok(neutral_fields(spec, self.axes(spec)?))
+    }
+
+    /// The MCP document **first** — [`McpRoute::Document`] reads the first file as the
+    /// declaration — then, under `Canned`, the provider document at the one path cline reads it.
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        let mut files = Vec::new();
+        if spec.mcp == McpDeclaration::Marion {
+            files.push((
+                cline::mcp_settings_path(&spec.config_dir),
+                cline::mcp_settings_document(&bridge_env(spec, ctx)),
+            ));
+        }
+        if spec.auth == Auth::Canned {
+            files.push((
+                cline::providers_path(&spec.config_dir),
+                serde_json::to_string_pretty(&cline::providers_json(&Self::provider(spec)?))
+                    .expect("a Value always serialises"),
+            ));
+        }
+        Ok(files)
+    }
+}
+
+/// qwen 0.23.0, headless `-p` (fixture `tests/fixtures/s25/`).
+///
+/// Claude Code's shape over an OpenAI provider: both of §3.1's axes are one list — what
+/// `--core-tools` names is both what the model sees and what runs under `--yolo` — and the
+/// declaration is one argv token. See [`qwen`]'s module docs for the deferred-discovery switch and
+/// the twelve exempt survivors.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QwenAdapter;
+
+impl HarnessAdapter for QwenAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Qwen
+    }
+
+    /// One list on both axes: marion's verbs (already in this harness's spelling) plus the declared
+    /// built-ins, as `--core-tools` names them — and the audit record is that same list.
+    ///
+    /// **Never empty.** `--core-tools` with no names is silently no allowlist at all: the run
+    /// starts, nothing warns, and the model is offered every built-in but the twelve excluded
+    /// (`qwen-core-tools-empty.provider-request-1.json`). A launch with no marion verb and no
+    /// declaration is refused by name rather than compiled into that.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let mut tools = spec.allowed_tools.clone();
+        tools.extend(self.native_tools(spec)?);
+        if tools.is_empty() {
+            return Err(HarnessError::MissingInput {
+                harness: Harness::Qwen,
+                what: "a launch must name at least one tool: `--core-tools` with no names is \
+                       silently no allowlist, and the model would be offered every built-in \
+                       (s25 item 16)",
+            });
+        }
+        Ok(spec::Axes {
+            allowed: tools.clone(),
+            tools,
+            mode: None,
+        })
+    }
+
+    /// The refusals this harness owes, and the declaration token.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned => {
+                // Without a base URL the OpenAI provider posts to the vendor with marion's
+                // placeholder key; without a model it has nothing to name.
+                if spec.base_url.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Qwen,
+                        what: "a canned node needs a provider base URL: without OPENAI_BASE_URL \
+                               the provider posts to the vendor's own endpoint",
+                    });
+                }
+                if spec.model.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Qwen,
+                        what: "an explicit model is mandatory: OPENAI_MODEL is how the provider is \
+                               told what to name, and marion will not guess one",
+                    });
+                }
+            }
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::QWEN_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Qwen,
+                        what: "the built-in default model names marion's canned endpoint, which a \
+                               --live node does not talk to. Name a real model instead \
+                               (marion run --live -m …)",
+                    });
+                }
+            }
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        // **Under `Inherited` the declaration is compiled onto argv, not written to a file** —
+        // codex's arrangement, for codex's reason: a live node's settings document is the
+        // operator's own, and `--mcp-config` was measured carrying the same block inline.
+        f.mcp_config = (spec.auth == Auth::Inherited && spec.mcp == McpDeclaration::Marion)
+            .then(|| qwen::mcp_config_document(&bridge_env(spec, ctx)));
+        Ok(f)
+    }
+
+    /// Under `Canned`, the settings document: the memory side turn switched off, and the
+    /// declaration where one was asked for. **Nothing at all under `Inherited`** — see
+    /// [`HarnessAdapter::mcp_route`], which is what keeps that from reading as "no bridge".
+    fn config_files(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        if spec.auth == Auth::Inherited {
+            return Ok(Vec::new());
+        }
+        let bridge = (spec.mcp == McpDeclaration::Marion).then(|| bridge_env(spec, ctx));
+        Ok(vec![(
+            qwen::settings_path(&spec.config_dir),
+            serde_json::to_string_pretty(&qwen::settings_json(bridge.as_ref()))
+                .expect("a Value always serialises"),
+        )])
+    }
+}
+
 /// §5.2's `acp` row: **one adapter, many agents** (§9's M5).
 ///
 /// # What the surfaces are, and why
@@ -1782,6 +1991,8 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
         Harness::OpenCode => Ok(Box::new(OpenCodeAdapter)),
         Harness::Copilot => Ok(Box::new(CopilotAdapter)),
         Harness::Goose => Ok(Box::new(GooseAdapter)),
+        Harness::Cline => Ok(Box::new(ClineAdapter)),
+        Harness::Qwen => Ok(Box::new(QwenAdapter)),
         // The **protocol** row, bound to no agent. Enough for every question a harness name can
         // answer — the surfaces, the declaration route, the ceiling — and unlaunchable, because a
         // harness name is not enough to say what a model will call marion's verbs. See
@@ -2039,6 +2250,24 @@ mod tests {
             model: Some("canned-1".into()),
             api_key: Some("sk-fake".into()),
             allowed_tools: vec!["marion__report".into()],
+            ..codex_spec()
+        }
+    }
+
+    fn cline_spec() -> LaunchSpec {
+        LaunchSpec {
+            model: Some("canned-1".into()),
+            api_key: Some("sk-fake".into()),
+            allowed_tools: vec!["marion__report".into()],
+            ..codex_spec()
+        }
+    }
+
+    fn qwen_spec() -> LaunchSpec {
+        LaunchSpec {
+            model: Some("canned-1".into()),
+            api_key: Some("sk-fake".into()),
+            allowed_tools: vec!["mcp__marion__report".into()],
             ..codex_spec()
         }
     }
@@ -3141,6 +3370,8 @@ mod tests {
             Harness::OpenCode => opencode_spec(),
             Harness::Copilot => copilot_spec(),
             Harness::Goose => goose_spec(),
+            Harness::Cline => cline_spec(),
+            Harness::Qwen => qwen_spec(),
             Harness::Acp => acp_spec(),
         }
     }
@@ -4687,6 +4918,13 @@ mod tests {
         "/../../tests/fixtures/s26/goose-report.stdout.jsonl"
     ));
 
+    /// A cline `--json` run, verbatim from `tests/fixtures/s27/` — marion's report called and
+    /// answered, then the model's closing text.
+    const CLINE_STREAM: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/s27/cline-report-ok.stdout.jsonl"
+    ));
+
     #[test]
     fn a_copilot_report_is_read_from_the_execution_start_frame_in_copilots_own_spelling() {
         let out = CopilotAdapter.parse_stream(COPILOT_STREAM, ChildExit::default());
@@ -4859,6 +5097,14 @@ mod tests {
                 Harness::Goose => format!(
                     r#"{{"type":"message","message":{{"role":"assistant","content":[{{"type":"toolRequest","id":"c1","toolCall":{{"status":"success","value":{{"name":"{tool}","arguments":{args}}}}}}}]}}}}"#
                 ),
+                // S27's `content_start`: the arguments arrive parsed under `event.input`.
+                Harness::Cline => format!(
+                    r#"{{"type":"agent_event","event":{{"type":"content_start","contentType":"tool","toolName":"{tool}","toolCallId":"c1","input":{args}}}}}"#
+                ),
+                // S25: Claude Code's `assistant` `tool_use`, frame for frame.
+                Harness::Qwen => format!(
+                    r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"c1","name":"{tool}","input":{args}}}]}}}}"#
+                ),
                 // Two frames, because ACP is the one wire where the verb and the arguments never
                 // arrive together: S21's opening `tool_call` carries the title and an empty
                 // `rawInput`, and the closing update carries the arguments and an empty title.
@@ -4920,6 +5166,7 @@ mod tests {
             (Harness::OpenCode, OPENCODE_STREAM),
             (Harness::Copilot, COPILOT_STREAM),
             (Harness::Goose, GOOSE_STREAM),
+            (Harness::Cline, CLINE_STREAM),
         ];
         for (owner, stream) in streams {
             for h in Harness::ALL {
@@ -5031,9 +5278,13 @@ mod tests {
         for (owner, stream) in streams {
             for h in Harness::ALL {
                 let got = launch_adapter(h).unwrap().marion_tool_calls(stream);
+                // qwen's headless stream **is** Claude Code's, frame for frame and spelling for
+                // spelling (s25 item 2), so its row reads `claude_code::STREAM`; the one pair that
+                // legitimately reads each other's stream, and stated here so it stays the only one.
+                let reads = h == owner || (owner == Harness::ClaudeCode && h == Harness::Qwen);
                 assert_eq!(
                     got,
-                    if h == owner {
+                    if reads {
                         vec!["spawn".to_string()]
                     } else {
                         vec![]
@@ -6251,6 +6502,87 @@ mod tests {
                     outcome: CallOutcome::Unknown,
                 }],
             ),
+            (
+                Harness::Cline,
+                "s27/cline-report-ok.stdout.jsonl",
+                fixture!("s27/cline-report-ok.stdout.jsonl"),
+                outcome(Some("hello from cline under a canned provider"), None),
+                answered("report"),
+            ),
+            (
+                Harness::Cline,
+                "s27/cline-report-iserror.stdout.jsonl",
+                fixture!("s27/cline-report-iserror.stdout.jsonl"),
+                outcome(
+                    Some("hello from cline under a canned provider"),
+                    Some("the child's marion__report call ended in error: refused: not authorized"),
+                ),
+                refused("report", "refused: not authorized"),
+            ),
+            (
+                Harness::Cline,
+                "s27/cline-provider-500.stdout.jsonl",
+                fixture!("s27/cline-provider-500.stdout.jsonl"),
+                outcome(None, Some("canned failure")),
+                vec![],
+            ),
+            (
+                Harness::Qwen,
+                "s25/qwen-write-then-report.stdout.jsonl",
+                fixture!("s25/qwen-write-then-report.stdout.jsonl"),
+                outcome(Some("hello from qwen under a canned provider"), None),
+                answered("report"),
+            ),
+            // Claude Code's grammar records a refused report on the call and lets the result frame
+            // decide the run — and qwen's result frame says `success` at exit 0 (s25 item 7).
+            (
+                Harness::Qwen,
+                "s25/qwen-report-iserror.stdout.jsonl",
+                fixture!("s25/qwen-report-iserror.stdout.jsonl"),
+                outcome(Some("hello from qwen under a canned provider"), None),
+                refused(
+                    "report",
+                    "MCP tool 'report' reported tool error for function call: \
+                     {\"name\":\"report\",\"args\":{\"narrative\":\"hello from qwen under a canned \
+                     provider\"}} with response: [{\"functionResponse\":{\"name\":\"report\",\
+                     \"response\":{\"error\":{\"content\":[{\"type\":\"text\",\"text\":\"refused: \
+                     not authorized\"}],\"isError\":true},\"content\":[{\"type\":\"text\",\"text\":\
+                     \"refused: not authorized\"}]}}}]",
+                ),
+            ),
+            // 28 retries, then `result.subtype: "success"`: nothing to read but the missing report.
+            (
+                Harness::Qwen,
+                "s25/qwen-provider-500.stdout.jsonl",
+                fixture!("s25/qwen-provider-500.stdout.jsonl"),
+                outcome(None, None),
+                vec![],
+            ),
+            (
+                Harness::Qwen,
+                "s25/qwen-no-auth.stdout.jsonl",
+                fixture!("s25/qwen-no-auth.stdout.jsonl"),
+                // The subtype, not the message: qwen's `error.message` is a field Claude Code's
+                // frame does not carry, and the shared grammar reads `result`/`subtype`.
+                outcome(None, Some("error_during_execution")),
+                vec![],
+            ),
+            // Declined inside cline: `output.error` and no `isError`, so the call reads as
+            // answered, and the `agent_event error` that follows is what fails the run.
+            (
+                Harness::Cline,
+                "s27/cline-report-denied-no-auto-approve.stdout.jsonl",
+                fixture!("s27/cline-report-denied-no-auto-approve.stdout.jsonl"),
+                outcome(
+                    Some("hello from cline under a canned provider"),
+                    Some(
+                        "1 tool call(s) failed: [marion__report] {\"error\":\"Tool \
+                         \\\"marion__report\\\" requires approval in a TTY session -- NOT a tool or \
+                         system failure. Clarify with user before proceeding.\"}",
+                    ),
+                ),
+                answered("report"),
+            ),
         ];
         for (h, name, stdout, expected_outcome, expected_calls) in cases {
             let a = adapter_for(h).unwrap();
@@ -6579,7 +6911,7 @@ mod tests {
                     );
                     assert_eq!(prefix.len(), 2, "{h}: `{flag} <token>` and nothing else");
                     assert_eq!(prefix[0], flag, "{h}");
-                    assert!(prefix[1].starts_with(key), "{h}: {}", prefix[1]);
+                    assert!(prefix[1].contains(key), "{h}: {}", prefix[1]);
                     assert!(
                         inv.args.windows(2).any(|w| w == prefix.as_slice()),
                         "{h}: the live launch does not carry `{flag}` the same way: {:?}",
@@ -6965,7 +7297,7 @@ mod tests {
             });
             assert_eq!(
                 claims_early,
-                !matches!(h, Harness::Copilot | Harness::Goose),
+                !matches!(h, Harness::Copilot | Harness::Goose | Harness::Cline),
                 "{h}"
             );
         }
