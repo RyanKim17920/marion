@@ -1,0 +1,1 @@
+Warning: Working directory differs from session (current: <RUN-DIR>/work, session: <RUNS>/session-first/work). Staying in current directory.

@@ -1,0 +1,25 @@
+== no relocation
+   Config dir: <HOME>/.config/goose
+   Config yaml: <HOME>/.config/goose/config.yaml missing (can create)
+   Sessions DB (sqlite): <HOME>/.local/share/goose/sessions/sessions.db
+   Logs dir: <HOME>/.local/state/goose/logs
+== GOOSE_CONFIG_DIR=<SB>/gcd
+   Config dir: <HOME>/.config/goose
+   Config yaml: <HOME>/.config/goose/config.yaml missing (can create)
+   Sessions DB (sqlite): <HOME>/.local/share/goose/sessions/sessions.db
+   Logs dir: <HOME>/.local/state/goose/logs
+== XDG_CONFIG_HOME=<SB>/xc
+   Config dir: <SB>/xc/goose missing (can create)
+   Config yaml: <SB>/xc/goose/config.yaml missing (can create)
+   Sessions DB (sqlite): <HOME>/.local/share/goose/sessions/sessions.db
+   Logs dir: <HOME>/.local/state/goose/logs
+== HOME=<SB>/home
+   Config dir: <SB>/home/.config/goose missing (can create)
+   Config yaml: <SB>/home/.config/goose/config.yaml missing (can create)
+   Sessions DB (sqlite): <SB>/home/.local/share/goose/sessions/sessions.db missing (can create)
+   Logs dir: <SB>/home/.local/state/goose/logs
+== HOME=<SB>/home2 XDG_CONFIG_HOME=<SB>/home2/c XDG_DATA_HOME=<SB>/home2/d XDG_STATE_HOME=<SB>/home2/s
+   Config dir: <SB>/home2/c/goose missing (can create)
+   Config yaml: <SB>/home2/c/goose/config.yaml missing (can create)
+   Sessions DB (sqlite): <SB>/home2/d/goose/sessions/sessions.db missing (can create)
+   Logs dir: <SB>/home2/s/goose/logs

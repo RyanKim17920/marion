@@ -1,0 +1,82 @@
+{
+  "path": "/v1/chat/completions",
+  "headers": {
+    "agent-session-id": "20260906_35",
+    "authorization": "<redacted:36 chars>",
+    "content-type": "application/json",
+    "accept": "*/*",
+    "accept-encoding": "zstd,gzip,deflate,br",
+    "host": "127.0.0.1:<PORT>",
+    "content-length": "2807"
+  },
+  "body": {
+    "model": "canned-1",
+    "messages": [
+      {
+        "role": "system",
+        "content": "<system prompt elided: 1380 chars>"
+      },
+      {
+        "role": "user",
+        "content": "Call the marion report tool. Do nothing else.\n<turn-context>\n<current-time><TS></current-time>\n<working-directory><RUNS>/session-first/work</working-directory>\n</turn-context>"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_s26_marion_1",
+            "type": "function",
+            "function": {
+              "name": "marion__report",
+              "arguments": "{\"narrative\":\"hello from goose under a canned provider\"}"
+            }
+          }
+        ],
+        "content": null
+      },
+      {
+        "role": "tool",
+        "content": "recorded",
+        "tool_call_id": "call_s26_marion_1"
+      },
+      {
+        "role": "assistant",
+        "content": "S26-OK"
+      },
+      {
+        "role": "user",
+        "content": "Say the word done.\n<turn-context>\n<current-time><TS></current-time>\n<working-directory><RUNS>/session-first/work</working-directory>\n</turn-context>"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "marion__report",
+          "description": "Report the outcome of this task back to marion.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "narrative": {
+                "type": "string"
+              },
+              "result_commits": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "narrative"
+            ]
+          }
+        }
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

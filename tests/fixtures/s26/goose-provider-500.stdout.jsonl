@@ -1,0 +1,2 @@
+{"type":"message","message":{"id":"msg_<UUID>","role":"assistant","created":"<TS>","content":[{"type":"text","text":"Ran into this error: Server error: Server error (500 Internal Server Error) at http://127.0.0.1:<PORT>/v1/chat/completions: canned 500 from s26.\n\nPlease retry if you think this is a transient or recoverable error."}],"metadata":{"userVisible":true,"agentVisible":true}}}
+{"type":"complete","total_tokens":0,"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_write_input_tokens":0}

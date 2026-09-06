@@ -1,0 +1,1 @@
+Error: Tool approval required in non-interactive mode with GooseMode::approve. This is an invalid configuration — Approve/SmartApprove modes require an interactive terminal. Use GooseMode::Auto for headless sessions.

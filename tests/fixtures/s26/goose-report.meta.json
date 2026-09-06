@@ -1,0 +1,29 @@
+{
+  "goose_version": "1.49.0",
+  "argv": [
+    "run",
+    "-t",
+    "Call the marion report tool. Do nothing else.",
+    "--output-format",
+    "stream-json",
+    "-q",
+    "--no-session",
+    "--no-profile",
+    "--with-builtin",
+    "developer",
+    "--with-extension",
+    "marion:S26_MCP_LOG=<RUN-DIR>/mcp.jsonl python3 <REPO>/spikes/s26/mcp_report_server.py"
+  ],
+  "env": {
+    "HOME": "<HOME>",
+    "GOOSE_CONFIG_DIR": "<RUN-DIR>/cfg",
+    "GOOSE_PROVIDER": "openai",
+    "GOOSE_MODEL": "canned-1",
+    "OPENAI_API_KEY": "<redacted>",
+    "OPENAI_HOST": "http://127.0.0.1:<PORT>",
+    "GOOSE_MODE": "auto"
+  },
+  "cwd": "<RUN-DIR>/work",
+  "exit_code": 0,
+  "duration_s": 0.25
+}

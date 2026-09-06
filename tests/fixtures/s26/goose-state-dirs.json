@@ -1,0 +1,65 @@
+{
+  "report": {
+    "relocation_env": {
+      "HOME": "<HOME>",
+      "GOOSE_CONFIG_DIR": "<RUNS>/report/cfg"
+    },
+    "created": [
+      "<HOME>/.local/state/goose/logs/cli/2026-09-05/20260905_195641.log"
+    ],
+    "modified": [
+      "<HOME>/.local/share/goose/sessions/sessions.db-shm",
+      "<HOME>/.local/share/goose/sessions/sessions.db-wal",
+      "<HOME>/.local/state/goose/logs/llm_request.0.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.1.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.2.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.3.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.4.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.5.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.6.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.7.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.8.jsonl",
+      "<HOME>/.local/state/goose/logs/llm_request.9.jsonl"
+    ]
+  },
+  "isolation-xdg": {
+    "relocation_env": {
+      "HOME": "<RUNS>/isolation-xdg/sandbox",
+      "GOOSE_CONFIG_DIR": "<RUNS>/isolation-xdg/cfg",
+      "XDG_CONFIG_HOME": "<RUNS>/isolation-xdg/sandbox/config",
+      "XDG_DATA_HOME": "<RUNS>/isolation-xdg/sandbox/data",
+      "XDG_STATE_HOME": "<RUNS>/isolation-xdg/sandbox/state",
+      "XDG_CACHE_HOME": "<RUNS>/isolation-xdg/sandbox/cache"
+    },
+    "created": [
+      "<RUNS>/isolation-xdg/sandbox/data/goose/sessions/sessions.db",
+      "<RUNS>/isolation-xdg/sandbox/data/goose/sessions/sessions.db-shm",
+      "<RUNS>/isolation-xdg/sandbox/data/goose/sessions/sessions.db-wal",
+      "<RUNS>/isolation-xdg/sandbox/state/goose/logs/cli/2026-09-05/20260905_195653.log",
+      "<RUNS>/isolation-xdg/sandbox/state/goose/logs/llm_request.0.jsonl",
+      "<RUNS>/isolation-xdg/sandbox/state/goose/logs/llm_request.1.jsonl",
+      "<RUNS>/isolation-xdg/sandbox/state/goose/logs/llm_request.2.jsonl"
+    ],
+    "modified": []
+  },
+  "isolation-xdg-chat": {
+    "relocation_env": {
+      "HOME": "<RUNS>/isolation-xdg-chat/sandbox",
+      "GOOSE_CONFIG_DIR": "<RUNS>/isolation-xdg-chat/cfg",
+      "XDG_CONFIG_HOME": "<RUNS>/isolation-xdg-chat/sandbox/config",
+      "XDG_DATA_HOME": "<RUNS>/isolation-xdg-chat/sandbox/data",
+      "XDG_STATE_HOME": "<RUNS>/isolation-xdg-chat/sandbox/state",
+      "XDG_CACHE_HOME": "<RUNS>/isolation-xdg-chat/sandbox/cache"
+    },
+    "created": [
+      "<RUNS>/isolation-xdg-chat/sandbox/data/goose/sessions/sessions.db",
+      "<RUNS>/isolation-xdg-chat/sandbox/data/goose/sessions/sessions.db-shm",
+      "<RUNS>/isolation-xdg-chat/sandbox/data/goose/sessions/sessions.db-wal",
+      "<RUNS>/isolation-xdg-chat/sandbox/state/goose/logs/cli/2026-09-05/20260905_195653.log",
+      "<RUNS>/isolation-xdg-chat/sandbox/state/goose/logs/llm_request.0.jsonl",
+      "<RUNS>/isolation-xdg-chat/sandbox/state/goose/logs/llm_request.1.jsonl",
+      "<RUNS>/isolation-xdg-chat/sandbox/state/goose/logs/llm_request.2.jsonl"
+    ],
+    "modified": []
+  }
+}

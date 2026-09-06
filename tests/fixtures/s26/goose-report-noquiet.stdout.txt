@@ -1,0 +1,8 @@
+
+    __( O)>  ● new session · openai canned-1
+   \____)    20260906_24 · <RUN-DIR>/work
+     L L     goose is ready
+{"type":"message","message":{"id":"chatcmpl-s26-tool","role":"assistant","created":"<TS>","content":[{"type":"toolRequest","id":"call_s26_marion_1","toolCall":{"status":"success","value":{"name":"marion__report","arguments":{"narrative":"hello from goose under a canned provider"}}},"_meta":{"goose.toolCall.providerIndex":0,"goose_extension":"marion"}}],"metadata":{"userVisible":true,"agentVisible":true,"inference":{"provider":"openai","requestedModel":"canned-1"}}}}
+{"type":"message","message":{"id":"msg_<UUID>","role":"user","created":"<TS>","content":[{"type":"toolResponse","id":"call_s26_marion_1","toolResult":{"status":"success","value":{"content":[{"type":"text","text":"recorded"}],"isError":false}}}],"metadata":{"userVisible":true,"agentVisible":true}}}
+{"type":"message","message":{"id":"chatcmpl-s26-after","role":"assistant","created":"<TS>","content":[{"type":"text","text":"S26-OK"}],"metadata":{"userVisible":true,"agentVisible":true,"inference":{"provider":"openai","requestedModel":"canned-1"}}}}
+{"type":"complete","total_tokens":30,"input_tokens":20,"output_tokens":10,"cache_read_input_tokens":0,"cache_write_input_tokens":0}

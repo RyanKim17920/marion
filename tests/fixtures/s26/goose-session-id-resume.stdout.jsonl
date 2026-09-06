@@ -1,0 +1,2 @@
+{"type":"message","message":{"id":"chatcmpl-s26-after","role":"assistant","created":"<TS>","content":[{"type":"text","text":"S26-OK"}],"metadata":{"userVisible":true,"agentVisible":true,"inference":{"provider":"openai","requestedModel":"canned-1"}}}}
+{"type":"complete","total_tokens":60,"input_tokens":40,"output_tokens":20,"cache_read_input_tokens":0,"cache_write_input_tokens":0}

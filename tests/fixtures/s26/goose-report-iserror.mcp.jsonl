@@ -1,0 +1,8 @@
+{"dir": "meta", "frame": {"argv": ["<REPO>/spikes/s26/mcp_report_server.py"], "cwd": "<RUN-DIR>/work", "env_seen": {"S26_MCP_ISERROR": "1", "S26_MCP_LOG": "<RUN-DIR>/mcp.jsonl"}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {"extensions": {}, "roots": {}, "sampling": {}, "elicitation": {}}, "clientInfo": {"name": "goose-cli", "version": "1.49.0"}}}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "marion", "version": "0.0.0"}}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "method": "notifications/initialized"}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": {"agent-session-id": "20260906_25", "progressToken": 0}}}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 1, "result": {"tools": [{"name": "report", "description": "Report the outcome of this task back to marion.", "inputSchema": {"type": "object", "properties": {"narrative": {"type": "string"}, "result_commits": {"type": "array", "items": {"type": "string"}}}, "required": ["narrative"]}}]}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"_meta": {"agent-session-id": "20260906_25", "agent-working-dir": "<RUN-DIR>/work", "agent-tool-call-request-id": "call_s26_marion_1", "progressToken": 1}, "name": "report", "arguments": {"narrative": "hello from goose under a canned provider"}}}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "refused: not authorized"}], "isError": true}}}

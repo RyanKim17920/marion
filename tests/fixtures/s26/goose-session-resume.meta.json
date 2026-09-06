@@ -1,0 +1,65 @@
+{
+  "session-first": {
+    "argv": [
+      "run",
+      "-t",
+      "Call the marion report tool. Do nothing else.",
+      "--output-format",
+      "stream-json",
+      "-q",
+      "-n",
+      "s26-sess",
+      "--no-profile",
+      "--with-extension",
+      "marion:S26_MCP_LOG=<RUNS>/session-first/mcp.jsonl python3 <REPO>/spikes/s26/mcp_report_server.py"
+    ],
+    "exit_code": 0
+  },
+  "session-resume-redeclare": {
+    "argv": [
+      "run",
+      "-t",
+      "Say the word done.",
+      "--output-format",
+      "stream-json",
+      "-q",
+      "--resume",
+      "-n",
+      "s26-sess",
+      "--no-profile",
+      "--with-extension",
+      "marion:S26_MCP_LOG=<RUNS>/session-resume-redeclare/mcp.jsonl python3 <REPO>/spikes/s26/mcp_report_server.py"
+    ],
+    "exit_code": 1
+  },
+  "session-resume": {
+    "argv": [
+      "run",
+      "-t",
+      "Say the word done.",
+      "--output-format",
+      "stream-json",
+      "-q",
+      "--resume",
+      "-n",
+      "s26-sess",
+      "--no-profile"
+    ],
+    "exit_code": 0
+  },
+  "session-id-resume": {
+    "argv": [
+      "run",
+      "-t",
+      "Say the word done again.",
+      "--output-format",
+      "stream-json",
+      "-q",
+      "--resume",
+      "--session-id",
+      "20260906_35",
+      "--no-profile"
+    ],
+    "exit_code": 0
+  }
+}
