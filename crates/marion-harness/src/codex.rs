@@ -64,8 +64,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     program: Some("codex"),
     argv: &[
         Arg::Lit("exec"),
+        // **Ahead of the subcommand, because `exec resume` does not take it** (0.147.0,
+        // `tests/fixtures/s29/`): `-C/--cd` is on `codex exec --help` and absent from `codex exec
+        // resume --help`, and `exec resume <id> … -C <dir>` exits 2 with "unexpected argument
+        // '-C'". `codex exec [OPTIONS] <COMMAND> [ARGS]` accepts it before `resume`, and a fresh
+        // `exec` reads its flags in any order, so one position serves both launches.
+        Arg::Flag("-C", Field::Cwd),
         // `codex exec resume [SESSION_ID] [PROMPT]` (0.147.0): a subcommand of `exec`, ahead of
-        // its flags, which the resume help lists unchanged (`--json`, `-c`, `-C`, `-m`).
+        // the flags below, every one of which the resume help lists too (`--json`,
+        // `--skip-git-repo-check`, `-c`, `-m`, `--output-schema`, `-o`) and the s29 probe accepted
+        // after `resume <id>`.
         Arg::Resume,
         Arg::Lit("--json"),
         Arg::Lit("--skip-git-repo-check"),
@@ -81,7 +89,6 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         // unset.
         Arg::Flag("--output-schema", Field::OutputSchema),
         Arg::Flag("--output-last-message", Field::OutputLastMessage),
-        Arg::Flag("-C", Field::Cwd),
         Arg::Pos(Field::Prompt),
     ],
     pane: Some(&[
@@ -444,6 +451,47 @@ mod tests {
                 .any(|(k, v)| k == "CODEX_HOME" && v == "/tmp/ch")
         );
         assert!(!inv.args.iter().any(|a| a.contains("CODEX_HOME")));
+    }
+
+    /// **`-C` is an `exec` flag that `exec resume` does not take.** Measured on 0.147.0
+    /// (`tests/fixtures/s29/`): `codex exec resume --help` lists no `-C/--cd`, and
+    /// `exec resume <id> … -C <dir>` exits 2 with *"unexpected argument '-C' found"* — the exit the
+    /// demo's `marion resume` relaunch died with. `codex exec [OPTIONS] <COMMAND> [ARGS]` takes it
+    /// ahead of the subcommand, so the row places `-C` before `Arg::Resume`; the rest of the flags
+    /// are listed by both helps and were probed accepted after `resume <id>`. Pinned as the whole
+    /// vector so a reordering has to re-measure.
+    #[test]
+    fn a_resume_places_the_working_root_ahead_of_the_subcommand_that_does_not_take_it() {
+        let inv = compile_exec(&Fields {
+            resume: Some("019a-thread".into()),
+            ..spec()
+        });
+        assert_eq!(
+            inv.args,
+            [
+                "exec",
+                "-C",
+                "/tmp/wt",
+                "resume",
+                "019a-thread",
+                "--json",
+                "--skip-git-repo-check",
+                "do the task",
+            ]
+        );
+        let fresh = compile_exec(&spec());
+        assert_eq!(
+            fresh.args,
+            [
+                "exec",
+                "-C",
+                "/tmp/wt",
+                "--json",
+                "--skip-git-repo-check",
+                "do the task"
+            ],
+            "a fresh launch is the same row without the subcommand"
+        );
     }
 
     /// **The interactive command is not `exec` with a flag off.** Every name below is an `exec`

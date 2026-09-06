@@ -1,0 +1,39 @@
+codex-cli 0.147.0
+### codex exec resume 00000000-0000-4000-8000-000000000000 --json --skip-git-repo-check -c model_provider=canned -C <SCRATCH>/wd hello
+error: unexpected argument '-C' found
+
+  tip: to pass '-C' as a value, use '-- -C'
+
+Usage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]
+
+exit=2
+
+### codex exec -C <SCRATCH>/wd resume 00000000-0000-4000-8000-000000000000 --json --skip-git-repo-check -c model_provider=canned hello
+Error: Model provider `canned` not found
+exit=1
+
+### codex exec -C <SCRATCH>/wd --json --skip-git-repo-check -c model_provider=canned resume 00000000-0000-4000-8000-000000000000 hello
+Error: Model provider `canned` not found
+exit=1
+
+### codex exec -C <SCRATCH>/wd --json --skip-git-repo-check resume 00000000-0000-4000-8000-000000000000 -c model_provider=canned -m gpt-5 hello
+Error: Model provider `canned` not found
+exit=1
+
+### codex exec resume --json -C <SCRATCH>/wd 00000000-0000-4000-8000-000000000000 hello
+error: unexpected argument '-C' found
+
+  tip: to pass '-C' as a value, use '-- -C'
+
+Usage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]
+
+exit=2
+
+### codex exec -C <SCRATCH>/wd resume 00000000-0000-4000-8000-000000000000 --json --skip-git-repo-check -c model_provider=canned --output-last-message <SCRATCH>/last.txt --output-schema <SCRATCH>/none.json hello
+Error: Model provider `canned` not found
+exit=1
+
+### codex exec -C <SCRATCH>/wd resume 00000000-0000-4000-8000-000000000000 hello --json
+Not inside a trusted directory and --skip-git-repo-check was not specified.
+exit=1
+

@@ -2307,8 +2307,10 @@ mod tests {
     ));
 
     /// M1's child, pinned token for token: the `codex exec --json` launch S6 measured on 0.146.0,
-    /// which `codex::SPEC` renders. A canned launch compiles no `-m` however loudly one is asked
-    /// for, and records `None`.
+    /// which `codex::SPEC` renders, with `-C` moved ahead of the flags because that is the one
+    /// position a resume can share (s29: `exec resume` does not take `-C`, and a fresh `exec` reads
+    /// its flags in any order). A canned launch compiles no `-m` however loudly one is asked for,
+    /// and records `None`.
     #[test]
     fn the_codex_adapter_compiles_the_measured_m1_child() {
         assert_eq!(
@@ -2317,10 +2319,10 @@ mod tests {
                 program: "codex".into(),
                 args: [
                     "exec",
-                    "--json",
-                    "--skip-git-repo-check",
                     "-C",
                     "/wt",
+                    "--json",
+                    "--skip-git-repo-check",
                     "do the task",
                 ]
                 .map(String::from)
@@ -2407,10 +2409,10 @@ mod tests {
                 "codex",
                 vec![
                     "exec",
-                    "--json",
-                    "--skip-git-repo-check",
                     "-C",
                     "/wt",
+                    "--json",
+                    "--skip-git-repo-check",
                     "do the task",
                 ],
             ),
@@ -7103,9 +7105,9 @@ mod tests {
         }
         let args = resumed(Harness::Codex, Shape::Headless);
         assert_eq!(
-            &args[..3],
-            ["exec", "resume", "SID"],
-            "the subcommand follows exec: {args:?}"
+            &args[..5],
+            ["exec", "-C", "/wt", "resume", "SID"],
+            "the subcommand follows exec and its `-C`, which `exec resume` does not take (s29): {args:?}"
         );
         assert!(args.contains(&"--json".to_string()));
         let args = resumed(Harness::OpenCode, Shape::Headless);
@@ -7219,7 +7221,10 @@ mod tests {
                 "claude (pane: {pane}): {got:?}"
             );
         }
-        assert_eq!(&args(Harness::Codex, false)[..3], ["exec", "resume", "SID"]);
+        assert_eq!(
+            &args(Harness::Codex, false)[..5],
+            ["exec", "-C", "/wt", "resume", "SID"]
+        );
         assert_eq!(
             &args(Harness::OpenCode, false)[..3],
             ["run", "--session", "SID"]

@@ -150,7 +150,10 @@ no other per-harness branch. qwen's row reads `claude_code::STREAM` outright, be
 and `every_committed_fixture_reads_the_same_through_the_grammar` pin every row to the hand-written
 adapter it replaced, byte for byte on every committed fixture. **Resume flags, measured on the
 installed binaries' `--help` and carried as row data** (plan step 5): claude `--resume <id>`, codex
-`exec resume <id>`, opencode `run --session <id>`, copilot `--resume=<id>`, qwen `--resume <id>`
+`exec -C <cwd> resume <id>` (S29, 0.147.0: `exec resume` has no `-C`, and the demo's relaunch died
+at exit 2 with `unexpected argument '-C'` until the row put `-C` ahead of the subcommand; pinned by
+`codex::tests::a_resume_places_the_working_root_ahead_of_the_subcommand_that_does_not_take_it`),
+opencode `run --session <id>`, copilot `--resume=<id>`, qwen `--resume <id>`
 (the id off `init.session_id`, replayed under the same `QWEN_HOME` and cwd, S25); gemini's
 `--resume` takes `latest` or an index rather than a session id, goose's `--resume --session-id <id>`
 takes an id no frame of its stream carries (S26), and cline's `--id <id>` forces interactive mode
@@ -864,8 +867,9 @@ honestly still open. Per milestone:
   `harness_version` and no field for an ACP agent's own `initialize` identity, so a tree node can
   be greyed only at the protocol's static ceiling, never at the agent's. The greying mechanism
   itself is built and measured (`tree.rs::the_trees_greying_is_doctors_own_answer_at_every_key`).
-- **Spikes** — S8, S9, S12, S13 stay `[partial]` for the reasons given; S24–S28 (copilot, qwen,
-  goose, cline, ACP agents) are measured with fixtures under `tests/fixtures/s24..s28/`. One
+- **Spikes** — S8, S9, S12, S13 stay `[partial]` for the reasons given; S24–S29 (copilot, qwen,
+  goose, cline, ACP agents, codex `exec resume` argv) are measured with fixtures under
+  `tests/fixtures/s24..s29/`. One
   reading in that set has no Rust assertion behind it and is fixture-only: qwen 0.23.0's
   `write_file` refusing a relative path (`tests/fixtures/s25/`), which is why `cross_product` has
   a qwen row and no qwen column.
