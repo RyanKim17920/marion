@@ -1,0 +1,20 @@
+[
+  {
+    "time": "<TS>",
+    "msg": "[ai-sdk] stream error",
+    "providerId": "cline",
+    "error": "AI_APICallError",
+    "message": "Unauthorized",
+    "url": "https://api.cline.bot/api/v1/chat/completions",
+    "requested_model": "anthropic/claude-fable-5.1"
+  },
+  {
+    "time": "<TS>",
+    "msg": "[ai-sdk] stream error",
+    "providerId": "cline",
+    "error": "AI_APICallError",
+    "message": "Unauthorized",
+    "url": "https://api.cline.bot/api/v1/chat/completions",
+    "requested_model": "anthropic/claude-fable-5.1"
+  }
+]

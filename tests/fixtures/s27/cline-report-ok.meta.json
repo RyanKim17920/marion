@@ -1,0 +1,40 @@
+{
+  "argv": [
+    "cline",
+    "--json",
+    "-c",
+    "<RUN-DIR>/work",
+    "--config",
+    "<RUN-DIR>/cfg",
+    "--data-dir",
+    "<RUN-DIR>/data",
+    "Call the marion report tool with a one-line narrative. Do nothing else."
+  ],
+  "env_added": {
+    "HOME": "<RUN-DIR>/home",
+    "CLINE_DIR": "<RUN-DIR>/cfg",
+    "CLINE_DATA_DIR": "<RUN-DIR>/data"
+  },
+  "cwd": "<RUN-DIR>/work",
+  "rc": 0,
+  "timed_out": false,
+  "elapsed_s": 1.31,
+  "home_cline_changed": false,
+  "cline_procs_before": [],
+  "cline_procs_after": [],
+  "data_tree_after": [
+    "cache/feature-flags.json",
+    "db/sessions.db",
+    "db/sessions.db-shm",
+    "db/sessions.db-wal",
+    "db/teams.db",
+    "db/teams.db-shm",
+    "db/teams.db-wal",
+    "logs/cline.log",
+    "sessions/<SESSION-ID>/<SESSION-ID>.json",
+    "sessions/<SESSION-ID>/<SESSION-ID>.messages.json",
+    "settings/cline_mcp_settings.json",
+    "settings/providers.json"
+  ],
+  "home_tree_after": []
+}

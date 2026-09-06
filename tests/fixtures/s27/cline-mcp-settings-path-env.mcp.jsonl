@@ -1,0 +1,7 @@
+{"dir": "in", "frame": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "@cline/core", "version": "0.0.0"}}}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "marion", "version": "0.0.0"}}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "method": "notifications/initialized"}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "report", "description": "Report the outcome of this task back to marion.", "inputSchema": {"type": "object", "properties": {"narrative": {"type": "string"}, "result_commits": {"type": "array", "items": {"type": "string"}}}, "required": ["narrative"]}}]}}}
+{"dir": "in", "frame": {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "report", "arguments": {"narrative": "hello from cline under a canned provider"}}}}
+{"dir": "out", "frame": {"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "recorded"}], "isError": false}}}

@@ -1,0 +1,1 @@
+{"ts":"<TS>","type":"error","message":"JSON output mode requires a prompt argument or piped stdin (interactive mode is unsupported)"}

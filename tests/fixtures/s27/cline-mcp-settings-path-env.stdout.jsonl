@@ -1,0 +1,16 @@
+{"ts":"<TS>","type":"hook_event","hookEventName":"agent_start","agentId":"<AGENT-ID>","taskId":"<CONV-ID>","parentAgentId":null}
+{"ts":"<TS>","type":"agent_event","event":{"type":"iteration_start","iteration":1}}
+{"ts":"<TS>","type":"agent_event","event":{"type":"usage","inputTokens":0,"outputTokens":0,"totalInputTokens":0,"totalOutputTokens":0,"totalCost":0}}
+{"ts":"<TS>","type":"hook_event","hookEventName":"tool_call","agentId":"<AGENT-ID>","taskId":"<CONV-ID>","parentAgentId":null}
+{"ts":"<TS>","type":"agent_event","event":{"type":"content_start","contentType":"tool","toolName":"marion__report","toolCallId":"call_s27_marion_1","input":{"narrative":"hello from cline under a canned provider"}}}
+{"ts":"<TS>","type":"hook_event","hookEventName":"tool_result","agentId":"<AGENT-ID>","taskId":"<CONV-ID>","parentAgentId":null}
+{"ts":"<TS>","type":"agent_event","event":{"type":"content_end","contentType":"tool","toolName":"marion__report","toolCallId":"call_s27_marion_1","output":{"content":[{"type":"text","text":"recorded"}],"isError":false},"durationMs":4}}
+{"ts":"<TS>","type":"agent_event","event":{"type":"iteration_end","iteration":1,"hadToolCalls":true,"toolCallCount":1}}
+{"ts":"<TS>","type":"agent_event","event":{"type":"iteration_start","iteration":2}}
+{"ts":"<TS>","type":"agent_event","event":{"type":"content_start","contentType":"text","text":"S27-OK","accumulated":"S27-OK"}}
+{"ts":"<TS>","type":"agent_event","event":{"type":"usage","inputTokens":0,"outputTokens":0,"totalInputTokens":0,"totalOutputTokens":0,"totalCost":0}}
+{"ts":"<TS>","type":"agent_event","event":{"type":"content_end","contentType":"text","text":"S27-OK"}}
+{"ts":"<TS>","type":"agent_event","event":{"type":"iteration_end","iteration":2,"hadToolCalls":false,"toolCallCount":0}}
+{"ts":"<TS>","type":"hook_event","hookEventName":"agent_end","agentId":"<AGENT-ID>","taskId":"<CONV-ID>","parentAgentId":null}
+{"ts":"<TS>","type":"agent_event","event":{"type":"done","reason":"completed","text":"S27-OK","iterations":2,"usage":{"inputTokens":0,"outputTokens":0,"totalCost":0}}}
+{"ts":"<TS>","type":"run_result","finishReason":"completed","iterations":2,"usage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"totalCost":0},"aggregateUsage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"totalCost":0},"durationMs":69,"text":"S27-OK","model":{"id":"canned-1","provider":"openai-compatible"}}

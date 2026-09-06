@@ -1,0 +1,1 @@
+{"ts":"<TS>","type":"error","message":"Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account."}

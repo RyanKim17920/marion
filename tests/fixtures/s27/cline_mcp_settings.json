@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "marion": {
+      "transport": {
+        "type": "stdio",
+        "command": "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "args": [
+          "<REPO>/spikes/s27/mcp_report_server.py",
+          "<RUN-DIR>/mcp.jsonl"
+        ]
+      }
+    }
+  }
+}

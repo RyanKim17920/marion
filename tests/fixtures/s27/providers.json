@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "lastUsedProvider": "openai-compatible",
+  "modes": {},
+  "providers": {
+    "openai-compatible": {
+      "settings": {
+        "provider": "openai-compatible",
+        "apiKey": "<API-KEY>",
+        "model": "canned-1",
+        "baseUrl": "http://127.0.0.1:8127/v1"
+      },
+      "updatedAt": "<TS>",
+      "tokenSource": "manual"
+    }
+  }
+}

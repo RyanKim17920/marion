@@ -1,0 +1,47 @@
+[
+  {
+    "sessionId": "<SESSION-ID>",
+    "source": "cli",
+    "pid": 97348,
+    "startedAt": "<TS>",
+    "endedAt": "<TS>",
+    "exitCode": 0,
+    "status": "completed",
+    "interactive": false,
+    "provider": "openai-compatible",
+    "model": "canned-1",
+    "cwd": "<RUN-DIR>/work",
+    "workspaceRoot": "<RUN-DIR>/work",
+    "teamName": "<TEAM-NAME>",
+    "enableTools": true,
+    "enableSpawn": true,
+    "enableTeams": true,
+    "isSubagent": false,
+    "prompt": "Call the marion report tool with a one-line narrative. Do nothing else.",
+    "metadata": {
+      "sessionHistoryOrigin": {
+        "mode": "user",
+        "version": "3.0.61"
+      },
+      "title": "Call the marion report tool with a one-line narrative. Do nothing else.",
+      "totalCost": 0,
+      "aggregatedAgentsCost": 0,
+      "usage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "totalCost": 0
+      },
+      "aggregateUsage": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "totalCost": 0
+      }
+    },
+    "messagesPath": "<RUN-DIR>/data/sessions/<SESSION-ID>/<SESSION-ID>.messages.json",
+    "updatedAt": "<TS>"
+  }
+]

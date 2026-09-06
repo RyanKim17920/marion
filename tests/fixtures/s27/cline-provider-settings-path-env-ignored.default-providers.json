@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "lastUsedProvider": "cline",
+  "modes": {},
+  "providers": {
+    "cline": {
+      "settings": {
+        "provider": "cline",
+        "model": "anthropic/claude-fable-5.1"
+      },
+      "updatedAt": "<TS>",
+      "tokenSource": "manual"
+    }
+  }
+}

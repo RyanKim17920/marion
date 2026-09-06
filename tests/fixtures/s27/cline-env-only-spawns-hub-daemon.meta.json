@@ -1,0 +1,60 @@
+{
+  "argv": [
+    "cline",
+    "--json",
+    "-c",
+    "<RUN-DIR>/work",
+    "Call the marion report tool with a one-line narrative. Do nothing else."
+  ],
+  "env_added": {
+    "HOME": "<RUN-DIR>/home",
+    "CLINE_DIR": "<RUN-DIR>/cfg",
+    "CLINE_DATA_DIR": "<RUN-DIR>/data"
+  },
+  "cwd": "<RUN-DIR>/work",
+  "rc": 0,
+  "timed_out": false,
+  "elapsed_s": 10.29,
+  "home_cline_changed": false,
+  "cline_procs_before": [],
+  "cline_procs_after": [
+    "66054 /opt/homebrew/lib/node_modules/cline/bin/.cline --cline-hub-daemon --cwd <RUN-DIR>/work --host 127.0.0.1 --port 25463 --pathname /hub"
+  ],
+  "data_tree_after": [
+    "cache/feature-flags.json",
+    "db/connectors.db",
+    "db/connectors.db-shm",
+    "db/connectors.db-wal",
+    "db/cron.db",
+    "db/cron.db-shm",
+    "db/cron.db-wal",
+    "db/hub-events-hub-production.db",
+    "db/hub-events-hub-production.db-shm",
+    "db/hub-events-hub-production.db-wal",
+    "db/hub-runs-hub-production.db",
+    "db/hub-runs-hub-production.db-shm",
+    "db/hub-runs-hub-production.db-wal",
+    "db/session-search.db",
+    "db/session-search.db-shm",
+    "db/session-search.db-wal",
+    "db/sessions.db",
+    "db/sessions.db-shm",
+    "db/sessions.db-wal",
+    "db/tasks.db",
+    "db/tasks.db-shm",
+    "db/tasks.db-wal",
+    "db/teams.db",
+    "db/teams.db-shm",
+    "db/teams.db-wal",
+    "locks/hub/production.json",
+    "locks/hub/production.json.instance.lock",
+    "locks/hub/production.json.instance.lock-journal",
+    "logs/cline.log",
+    "logs/hub-daemon.log",
+    "sessions/<SESSION-ID>/<SESSION-ID>.json",
+    "sessions/<SESSION-ID>/<SESSION-ID>.messages.json",
+    "settings/cline_mcp_settings.json",
+    "settings/providers.json"
+  ],
+  "home_tree_after": []
+}
