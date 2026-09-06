@@ -1362,6 +1362,18 @@ acceptance evidence, so every marker remains unchanged.
     "survives for ordinary reconnect"), and a confirmed `KillTree` then ends it with `Exited{signal
     9}`. Green for claude and codex.
 
+    **`SIGTSTP`/`SIGCONT` through this fixture: measured not observable, and not asserted
+    (2026-09-05).** A probe on the same fixture sent `kill(SIGTSTP)` to the `marion codex` client
+    at its first screen and polled `waitpid(WUNTRACED)` for 5 s: no stop was ever reported, the
+    client kept running in raw mode. That is the caveat the TSTP commits named, now measured:
+    `spawn_pty` makes the client a session leader whose parent lives in another session, so its
+    process group is *orphaned* and the kernel discards stop signals for it (Darwin `issignal`,
+    Linux `do_signal_stop`) whether Marion reveals the pending stop or not. A fixture that can see
+    the stop needs a parent in the client's own session and a different process group (a job-control
+    shell as session leader running the client as a foreground job), which is a different fixture
+    and is not built here. Stop/resume stays covered where it is observable: the isolated
+    `suspend_probe` tests in `native_relay.rs`. No E2E claim is made about TSTP.
+
     What remains for C1 is unchanged and cannot be automated: the recorded 10-minute manual
     session, now to be run through `marion claude` rather than `marion attach`. Still dark: the
     `gemini` lane (system-settings merge unmeasured), the `opencode` and `copilot` lanes (their
