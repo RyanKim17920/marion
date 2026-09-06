@@ -376,8 +376,45 @@ pub fn builtin(name: &str) -> Option<AgentType> {
                 Harness::Acp,
             )
         }),
-        _ => None,
+        // The one open-ended family: any ACP agent, named by its command. See [`acp_command`].
+        _ => acp_command(name),
     }
+}
+
+/// The prefix that makes an agent-type string an ACP **command** rather than a name:
+/// `acp:<command> [args…]`, e.g. `acp:copilot --acp`, `acp:goose acp`, `acp:npx -y some-acp-agent`.
+///
+/// This is the baseline §9's M5 rests on — *any* agent that speaks ACP over stdio runs as a marion
+/// node with no row anywhere naming it. The protocol supplies everything a row would: the agent's
+/// identity arrives in `initialize`, marion's bridge is declared in `session/new`'s `mcpServers`,
+/// and the agent's spelling of marion's verbs is read off its own `tool_call` frames. The built-in
+/// `acp-opencode` and the rows in `marion_harness::acp::AGENTS` are **refinements** over this path
+/// (a measured spelling, a canned recipe, a known quirk), not prerequisites for it.
+///
+/// The prefix carries a colon and the tail carries spaces, so such a name deliberately fails
+/// [`is_valid_name`]: it is a command line, and §3.1's name rule exists so that a *name* can never
+/// become a surprising path or flag. Here the operator is stating the path and flags on purpose.
+pub const ACP_COMMAND_PREFIX: &str = "acp:";
+
+/// `acp:<command>` as a type: the ACP row, the whole tail as [`AgentType::acp_agent`]. `None` for
+/// any other string, and for a prefix with nothing after it — a command with no program is not a
+/// command, and refusing it here keeps the launch from ever building an empty argv.
+///
+/// The tail is not tokenised here: `marion_harness::acp` owns the split, so the one place that
+/// turns the selector into argv is the one that also resolves a refinement row by id.
+fn acp_command(name: &str) -> Option<AgentType> {
+    let command = name.strip_prefix(ACP_COMMAND_PREFIX)?.trim();
+    if command.is_empty() {
+        return None;
+    }
+    Some(AgentType {
+        acp_agent: Some(command.to_string()),
+        ..AgentType::defaults(
+            name,
+            "Runs an ACP agent named by its command, over the Agent Client Protocol.",
+            Harness::Acp,
+        )
+    })
 }
 
 /// Every built-in name, aliases included — what `marion doctor` would list.
@@ -534,6 +571,42 @@ mod tests {
             }
         }
         assert!(acp > 0, "both sides of this must be exercised");
+    }
+
+    /// **Any ACP agent, by command.** `acp:<command>` resolves with no built-in naming it, the whole
+    /// tail is carried as the agent selector, and the two degenerate spellings — a bare prefix and
+    /// a prefix over whitespace — resolve to nothing rather than to a type with no program.
+    #[test]
+    fn an_acp_command_resolves_to_the_acp_row_with_the_command_as_its_agent() {
+        let t = builtin("acp:copilot --acp").expect("a command is a type");
+        assert_eq!(t.harness, Harness::Acp);
+        assert_eq!(t.acp_agent.as_deref(), Some("copilot --acp"));
+        assert_eq!(
+            t.name, "acp:copilot --acp",
+            "the name is what the operator wrote"
+        );
+        assert_eq!(t.model, None, "ACP chooses the model inside the session");
+        assert!(
+            !is_valid_name(&t.name),
+            "a command line is not a name, and must never be taken for one"
+        );
+        // Surrounding whitespace is not part of the command.
+        assert_eq!(
+            builtin("acp:  goose acp ").unwrap().acp_agent.as_deref(),
+            Some("goose acp")
+        );
+        for bare in ["acp:", "acp:   ", "acp", "acp-", "ACP:copilot"] {
+            assert!(
+                builtin(bare).is_none(),
+                "`{bare}` names no program, so it is not a type"
+            );
+        }
+        // A command whose first word is a refinement id is the same selector the built-in carries,
+        // so `acp:opencode` and `acp-opencode` bind the same agent (the built-in adds a model).
+        assert_eq!(
+            builtin("acp:opencode").unwrap().acp_agent,
+            builtin("acp-opencode").unwrap().acp_agent
+        );
     }
 
     /// The two harnesses whose adapters refuse without a model must carry one, and the two that
