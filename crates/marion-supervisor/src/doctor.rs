@@ -99,6 +99,11 @@ pub struct Options {
     /// The model `--adapter`'s live turn runs against, where the adapter requires one. Never
     /// defaulted (§6.4).
     pub model: Option<String>,
+    /// One more ACP row, for an agent marion has no refinement row for: the agent's own command,
+    /// bound the generic way (`acp::Binding::resolve`). The table's rows are probed regardless;
+    /// this is how an operator asks doctor about the fifth agent, the way `acp:<command>` asks
+    /// `spawn` to run it.
+    pub acp_command: Option<acp::Binding>,
 }
 
 /// Which of a harness's surfaces a row is keyed on.
@@ -192,6 +197,7 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
     let mut mode = None;
     let mut harness = None;
     let mut model = None;
+    let mut acp_command = None;
     let mut it = argv.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -204,6 +210,14 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
             "--model" => {
                 model = Some(it.next().ok_or("--model needs a model id")?.clone());
             }
+            // Bound here rather than in `probe`, so a selector with no program is refused where
+            // the operator typed it instead of printing as a row about an agent that was never run.
+            "--acp-command" => {
+                let v = it
+                    .next()
+                    .ok_or("--acp-command needs the agent's command, e.g. \"copilot --acp\"")?;
+                acp_command = Some(acp::Binding::resolve(v).map_err(|e| e.to_string())?);
+            }
             other => return Err(format!("unknown doctor flag `{other}`")),
         }
     }
@@ -215,6 +229,7 @@ pub fn parse_args(argv: &[String]) -> Result<Options, String> {
         mode: mode.ok_or("marion doctor needs a mode: --capabilities or --adapter")?,
         harness,
         model,
+        acp_command,
     })
 }
 
@@ -229,35 +244,38 @@ pub fn run(opts: &Options) -> Vec<Row> {
 }
 
 /// One harness, one call — except `acp`, which is **one adapter over many agents** (§5.2) and so
-/// contributes one row set per agent it knows.
+/// contributes one row set per agent it knows, plus one for the agent the operator named.
 ///
 /// This is where M5's second clause becomes reachable. `Harness::ALL` gaining an `Acp` member would
 /// otherwise have produced a *single* ACP row, and *"`marion doctor` reporting their differing
 /// capabilities"* needs one row per agent to have anything to differ between. The agents are not
 /// marion choosing anything (§6.4): the list is `acp::AGENTS`, a table of what marion has
-/// measured, and a probe enumerating what is installed is the opposite of a probe picking one.
+/// measured, plus `--acp-command`, which is the operator naming one — and a probe enumerating what
+/// is installed is the opposite of a probe picking one.
 fn probe(h: Harness, opts: &Options) -> Vec<Row> {
     match h {
         Harness::Acp => acp::AGENTS
             .iter()
-            .flat_map(|a| probe_one(h, opts, Some(*a)))
+            .map(|a| acp::Binding::refined(*a))
+            .chain(opts.acp_command.clone())
+            .flat_map(|b| probe_one(h, opts, Some(&b)))
             .collect(),
         _ => probe_one(h, opts, None),
     }
 }
 
-fn probe_one(h: Harness, opts: &Options, agent: Option<acp::Agent>) -> Vec<Row> {
+fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Row> {
     let started = Instant::now();
     let mut notes = Vec::new();
-    if let Some(a) = agent {
-        notes.push(format!("acp agent: `{}` — {}", a.id, a.note));
+    if let Some(b) = agent {
+        notes.push(format!("acp agent: {}", b.describe()));
     }
 
     // Bound to the row's agent, not to the harness name. `adapter_for` answers `acp` with the
     // protocol row, which is unlaunchable by construction, so every ACP row would have reported
     // marion's own omission — "this adapter refused to compile an invocation at all" — in the
     // column an operator reads as a finding about their installed binary.
-    let adapter = match adapter_for_type(h, agent.map(|a| a.id)) {
+    let adapter = match adapter_for_type(h, agent.map(acp::Binding::selector)) {
         Ok(a) => a,
         Err(e) => {
             return vec![Row {
@@ -435,7 +453,7 @@ fn micro_contract(
     adapter: &dyn HarnessAdapter,
     program: Option<&Path>,
     opts: &Options,
-    agent: Option<acp::Agent>,
+    agent: Option<&acp::Binding>,
     notes: &mut Vec<String>,
 ) -> bool {
     let mut ok = true;
@@ -967,7 +985,7 @@ fn acp_handshake(
 /// the declaration *route* is real is checked separately and without a process, by the declaration
 /// step above.
 fn acp_live_turn(
-    agent_spec: acp::Agent,
+    agent_spec: &acp::Binding,
     program: &Path,
     inv: &Invocation,
     notes: &mut Vec<String>,
@@ -976,7 +994,7 @@ fn acp_live_turn(
         "live turn: {} {} (acp agent `{}`)",
         program.display(),
         inv.args.join(" "),
-        agent_spec.id
+        agent_spec.selector()
     ));
     let mut agent = match AcpChild::spawn(program, inv) {
         Ok(c) => c,
@@ -1069,7 +1087,8 @@ fn acp_live_turn(
     }
 
     let stdout = agent.stdout();
-    let shape = shape.unwrap_or_else(|| acp_shape_finding(agent_spec, &stdout, timed_out));
+    let shape =
+        shape.unwrap_or_else(|| acp_shape_finding(agent_spec.reading(), &stdout, timed_out));
     let clean = agent.finish();
     trailing.push(if clean {
         "termination: the agent exited on SIGINT".into()
@@ -1102,7 +1121,7 @@ fn acp_live_turn(
 /// Three things, and the third is the one that would catch drift: the agent wrote frames, one of
 /// them is the `session/prompt` response carrying a `stopReason`, and marion's own ACP reader does
 /// not find a failure in the transcript.
-fn acp_shape_finding(agent_spec: acp::Agent, stdout: &str, timed_out: bool) -> (bool, String) {
+fn acp_shape_finding(reading: acp::Reading, stdout: &str, timed_out: bool) -> (bool, String) {
     let frames = marion_harness::json_frames(stdout);
     if frames.is_empty() {
         return (
@@ -1117,16 +1136,13 @@ fn acp_shape_finding(agent_spec: acp::Agent, stdout: &str, timed_out: bool) -> (
     let stop = frames
         .iter()
         .find_map(|f| f.pointer("/result/stopReason")?.as_str());
-    // **This agent's spelling, not the one agent marion measured first.** The doctor probes every
-    // row in `acp::AGENTS`, and the three measured ones spell marion's verbs three different ways
-    // (S21, S22). Reading them all in opencode's is the s14 trap with marion on the reading end: a
-    // transcript in which the model called `mcp.marion.report` and a reader that reports no call.
-    // An agent with no measured spelling gets no reader at all rather than a neighbour's, which is
-    // the same refusal `AcpAdapter` makes.
-    let outcome = match agent_spec.tools {
-        Some(spelling) => acp::parse_stream(stdout, marion_harness::ChildExit::default(), spelling),
-        None => marion_harness::StreamOutcome::default(),
-    };
+    // **This agent's reading, not the one agent marion measured first.** The doctor probes every
+    // row in `acp::AGENTS` and whatever `--acp-command` named, and the four measured rows spell
+    // marion's verbs four different ways (S21, S22, S25). Reading them all in opencode's is the s14
+    // trap with marion on the reading end: a transcript in which the model called
+    // `mcp.marion.report` and a reader that reports no call. A measured row is read in its own
+    // spelling; everything else in the generic reading, exactly as `AcpAdapter` reads a launch.
+    let outcome = acp::parse_stream(stdout, marion_harness::ChildExit::default(), reading);
     match (stop, &outcome.failure) {
         (_, Some(f)) => (
             false,
@@ -1305,7 +1321,7 @@ const PLACEHOLDER_MODEL: &str = "marion-doctor/no-model-chosen";
 fn probe_spec(
     model: Option<String>,
     mcp: McpDeclaration,
-    agent: Option<acp::Agent>,
+    agent: Option<&acp::Binding>,
 ) -> Option<LaunchSpec> {
     Some(LaunchSpec {
         cwd: std::env::temp_dir(),
@@ -1327,7 +1343,7 @@ fn probe_spec(
             // would print marion's own omission as a finding about the operator's binary — the
             // failure `the_probes_own_spec_is_complete_enough_for_every_adapter_to_compile` exists
             // to catch, one harness later.
-            acp_agent: agent.map(|a| a.id.to_string()),
+            acp_agent: agent.map(|b| b.selector().to_string()),
             ..Extras::default()
         },
     })
@@ -1479,7 +1495,75 @@ mod tests {
             mode: ProbeMode::Capabilities,
             harness,
             model: None,
+            acp_command: None,
         })
+    }
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    /// **The fifth agent, from the operator's own command.** `--acp-command` adds one ACP row to
+    /// the table's, bound the generic way, and its capability column comes from that agent's own
+    /// `initialize` — here the fake agent `tests/acp_child.rs` runs, so this spends nothing and
+    /// proves the row is keyed on what the agent said (`fake-acp-agent 0.1.0`) rather than on any
+    /// row marion carries. A selector with no program is refused at the flag.
+    #[test]
+    fn an_acp_command_gets_its_own_doctor_row_keyed_on_its_own_handshake() {
+        if !marion_testsupport::on_path("python3") {
+            eprintln!("skipped: `python3` is not installed");
+            return;
+        }
+        let fake = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acp/fake_acp_agent.py"
+        );
+        let command = format!("python3 {fake}");
+        let opts = parse_args(&argv(&[
+            "--capabilities",
+            "--harness",
+            "acp",
+            "--acp-command",
+            &command,
+        ]))
+        .unwrap();
+        assert_eq!(
+            opts.acp_command.as_ref().map(|b| b.argv().to_vec()),
+            Some(vec!["python3".to_string(), fake.to_string()])
+        );
+        let rows = run(&opts);
+        assert_eq!(
+            rows.len(),
+            acp::AGENTS.len() + 1,
+            "the table's rows, plus the one the operator named"
+        );
+        let generic = rows.last().unwrap();
+        assert!(
+            generic
+                .report
+                .notes
+                .iter()
+                .any(|n| n.contains("no refinement row")),
+            "{:?}",
+            generic.report.notes
+        );
+        assert_eq!(
+            generic.report.harness_version.as_deref(),
+            Some("fake-acp-agent 0.1.0"),
+            "the row is keyed on the agent's own `initialize`: {}",
+            render(&rows)
+        );
+        assert_eq!(generic.surfaces, acp::surfaces());
+
+        for bad in ["", "   "] {
+            let e = parse_args(&argv(&["--capabilities", "--acp-command", bad])).unwrap_err();
+            assert!(e.contains("no program"), "{bad:?}: {e}");
+        }
+        assert!(
+            parse_args(&argv(&["--capabilities", "--acp-command"]))
+                .unwrap_err()
+                .contains("--acp-command needs")
+        );
     }
 
     /// §8's filter *is* performed — it is the difference between spawning one real agent and four.
@@ -1686,6 +1770,7 @@ mod tests {
             mode: ProbeMode::Adapter,
             harness: Some(Harness::ClaudeCode),
             model: None,
+            acp_command: None,
         });
         let pane = rows
             .iter()
@@ -1906,13 +1991,17 @@ mod tests {
             // probe fills it per row (`probe`), so the sweep does too — a shared spec here would
             // assert about a launch the probe never builds.
             for agent in match h {
-                Harness::Acp => acp::AGENTS.map(Some).to_vec(),
+                Harness::Acp => acp::AGENTS
+                    .iter()
+                    .map(|a| Some(acp::Binding::refined(*a)))
+                    .collect(),
                 _ => vec![None],
             } {
+                let agent = agent.as_ref();
                 let spec = probe_spec(None, McpDeclaration::Marion, agent).expect("a spec");
                 // Bound the way `probe_one` binds it: the spec names an agent, so the adapter must
                 // too, or this sweep asserts about a pairing no probe ever builds.
-                let a = adapter_for_type(h, agent.map(|x| x.id)).unwrap();
+                let a = adapter_for_type(h, agent.map(acp::Binding::selector)).unwrap();
                 let inv = a.compile(&spec, &ctx).unwrap_or_else(|e| {
                     panic!(
                         "{h}: the probe handed the adapter a spec no real spawn would build — this \
@@ -1931,7 +2020,7 @@ mod tests {
                     Err(e) => {
                         assert!(
                             matches!(e, marion_harness::HarnessError::AcpAgent(_))
-                                && agent.is_some_and(|ag| e.to_string().contains(ag.id)),
+                                && agent.is_some_and(|ag| e.to_string().contains(ag.selector())),
                             "{h}: {e}"
                         );
                         continue;
@@ -1957,6 +2046,7 @@ mod tests {
             mode: ProbeMode::Adapter,
             harness: None,
             model: None,
+            acp_command: None,
         }) {
             let notes = r.report.notes.join("\n");
             assert!(
@@ -1977,6 +2067,7 @@ mod tests {
             mode: ProbeMode::Adapter,
             harness: Some(Harness::ClaudeCode),
             model: None,
+            acp_command: None,
         });
         let notes = rows[0].report.notes.join("\n");
         assert!(

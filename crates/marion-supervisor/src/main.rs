@@ -45,7 +45,7 @@ fn main() {
             Err(e) => {
                 eprintln!("marion doctor: {e}");
                 eprintln!(
-                    "usage: marion-supervisor doctor <--capabilities|--adapter> [--harness <name>] [--model <id>]"
+                    "usage: marion-supervisor doctor <--capabilities|--adapter> [--harness <name>] [--model <id>] [--acp-command <cmd>]"
                 );
                 std::process::exit(2);
             }
