@@ -16,6 +16,7 @@ pub mod claude_code;
 pub mod codex;
 pub mod copilot;
 pub mod gemini;
+pub mod goose;
 pub mod grammar;
 pub mod invocation;
 pub mod mcp_bridge;
@@ -28,8 +29,8 @@ pub mod surfaces;
 pub use acp::{AcpError, AgentHandshake};
 pub use adapter::{
     AcpAdapter, ClaudeCodeAdapter, CodexAdapter, CopilotAdapter, Extras, GeminiAdapter,
-    HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, McpRoute, OpenCodeAdapter, SpawnCtx,
-    adapter_for, adapter_for_type,
+    GooseAdapter, HarnessAdapter, HarnessError, LaunchSpec, McpDeclaration, McpRoute,
+    OpenCodeAdapter, SpawnCtx, adapter_for, adapter_for_type,
 };
 pub use auth::Auth;
 pub use caps::{Capabilities, advertised, static_caps};

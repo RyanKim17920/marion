@@ -47,6 +47,14 @@ pub const OPENCODE_DEFAULT_MODEL: &str = "marion/default";
 /// model through `spawn`'s `model` / `marion run -m`.
 pub const COPILOT_DEFAULT_MODEL: &str = "marion-canned";
 
+/// The `goose` built-in's default model.
+///
+/// goose's `openai` provider names its model from `GOOSE_MODEL` and nothing else, and marion's
+/// canned endpoint ignores the name — so, as with [`COPILOT_DEFAULT_MODEL`], this names marion's
+/// own plumbing, and the adapter refuses it by name under `--live`, where the string would go to a
+/// real OpenAI endpoint and name nothing.
+pub const GOOSE_DEFAULT_MODEL: &str = "marion-canned";
+
 /// The first entry in §3.1's `tools:` vocabulary: *may create or overwrite a file*.
 ///
 /// **A vocabulary of two words, and the second arrived the way the first did.** §3.1's example line
@@ -357,6 +365,29 @@ pub fn builtin(name: &str) -> Option<AgentType> {
                 Harness::Copilot,
             )
         }),
+        // The sixth binary. A model because `GOOSE_MODEL` is how the `openai` provider is told
+        // which model to name, and the adapter refuses to launch canned without one.
+        "goose" => Some(AgentType {
+            model: Some(GOOSE_DEFAULT_MODEL.into()),
+            ..AgentType::defaults(
+                "goose",
+                "Implements a well-specified change on goose.",
+                Harness::Goose,
+            )
+        }),
+        // The implementer flavour: under `--no-profile` a `goose` child has no route to a file at
+        // all, and `write` is what compiles `--with-builtin developer`. `read` is deliberately
+        // absent — the developer extension has no read-only tool, and answering `read` with an
+        // extension that also carries `shell` and `write` would mislabel the node (S26).
+        "goose-impl" => Some(AgentType {
+            model: Some(GOOSE_DEFAULT_MODEL.into()),
+            tools: vec![TOOL_WRITE.into()],
+            ..AgentType::defaults(
+                "goose-impl",
+                "Implements a well-specified change on goose.",
+                Harness::Goose,
+            )
+        }),
         // **One built-in per ACP agent, and no built-in named `acp`.** The other four harnesses
         // get a type named after the harness because there the harness *is* the program. Here it
         // is not: a type named `acp` would have to pick an agent, and §6.4 says marion may not.
@@ -429,6 +460,8 @@ pub fn builtin_names() -> &'static [&'static str] {
         "copilot-impl",
         "gemini",
         "gemini-impl",
+        "goose",
+        "goose-impl",
         "opencode",
     ]
 }
@@ -527,6 +560,8 @@ mod tests {
             ("copilot-impl", Harness::Copilot),
             ("gemini", Harness::Gemini),
             ("gemini-impl", Harness::Gemini),
+            ("goose", Harness::Goose),
+            ("goose-impl", Harness::Goose),
             ("opencode", Harness::OpenCode),
         ] {
             assert_eq!(builtin(name).unwrap().harness, h, "{name}");
@@ -534,7 +569,7 @@ mod tests {
         }
         assert_eq!(
             builtin_names().len(),
-            10,
+            12,
             "a new built-in must be listed here too, or `marion doctor` would not name it"
         );
     }
@@ -677,6 +712,9 @@ mod tests {
                 "claude-impl" | "gemini-impl" | "copilot-impl" => {
                     vec![TOOL_READ.into(), TOOL_WRITE.into()]
                 }
+                // `write` alone: goose's developer extension has no read-only tool to answer
+                // `read` with, and the grant is the whole extension (S26).
+                "goose-impl" => vec![TOOL_WRITE.into()],
                 _ => vec![],
             };
             assert_eq!(

@@ -198,6 +198,10 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                         .push(OsString::from(format!("{k}={v}")));
                 }
             }
+            LiveDeclaration::ArgvInline { flag, body, .. } => {
+                injection.argv_prefix =
+                    vec![OsString::from(flag), OsString::from(body(context.bridge))];
+            }
         }
         Ok(injection)
     }

@@ -729,6 +729,8 @@ mod tests {
                 ("copilot-impl", Some(LaunchPath::LaunchOnly)),
                 ("gemini", Some(LaunchPath::LaunchOnly)),
                 ("gemini-impl", Some(LaunchPath::LaunchOnly)),
+                ("goose", Some(LaunchPath::LaunchOnly)),
+                ("goose-impl", Some(LaunchPath::LaunchOnly)),
                 ("opencode", Some(LaunchPath::LaunchOnly)),
             ]
         );

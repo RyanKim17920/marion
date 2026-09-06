@@ -23,6 +23,7 @@ use crate::claude_code;
 use crate::codex;
 use crate::copilot;
 use crate::gemini;
+use crate::goose;
 use crate::grammar;
 use crate::invocation::Invocation;
 use crate::mcp_bridge::BridgeEnv;
@@ -255,6 +256,12 @@ pub enum HarnessError {
         harness: Harness,
         what: &'static str,
     },
+    /// A value the launch needs cannot be spelled in this harness's declaration grammar — goose's
+    /// `--with-extension` token is split on whitespace, so a bridge path with a space in it would
+    /// be declared as two arguments. **Refused by name, quoting the value**, never split: the
+    /// resulting node would start no bridge and take a turn with none of marion's tools.
+    #[error("{harness}: {what}")]
+    Unspellable { harness: Harness, what: String },
     /// An agent type declared a tool this harness has no mapping for (§3.1's availability axis).
     ///
     /// **Loud, at compile time, naming both halves** — never a silent drop. Dropping it is the
@@ -731,6 +738,7 @@ pub fn harness_spec(h: Harness) -> &'static spec::HarnessSpec {
         Harness::Gemini => &gemini::SPEC,
         Harness::OpenCode => &opencode::SPEC,
         Harness::Copilot => &copilot::SPEC,
+        Harness::Goose => &goose::SPEC,
         Harness::Acp => &acp::SPEC,
     }
 }
@@ -1284,6 +1292,103 @@ impl HarnessAdapter for CopilotAdapter {
     }
 }
 
+/// goose 1.49.0, headless `run -t` (fixture `tests/fixtures/s26/`).
+///
+/// The `LaunchOnly` shape gemini and copilot take, with gemini's kind of availability axis — a
+/// mode, not a list: the developer extension is loaded whole or not at all — and a declaration
+/// that is one argv token rather than a document. See [`goose`]'s module docs for why the bridge's
+/// node token rides the process environment and not that token.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GooseAdapter;
+
+impl HarnessAdapter for GooseAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Goose
+    }
+
+    /// §3.1's availability axis, in the only form this harness has one: **a builtin, not a
+    /// list.** `mode` is `Some(developer)` exactly when the declaration names a developer-extension
+    /// tool, and `None` — no `--with-builtin`, nothing but marion — otherwise.
+    fn axes(&self, spec: &LaunchSpec) -> Result<spec::Axes, HarnessError> {
+        let tools = self.native_tools(spec)?;
+        let relaxed = tools.iter().any(|t| goose::is_developer_tool(t));
+        Ok(spec::Axes {
+            tools,
+            allowed: Vec::new(),
+            mode: relaxed.then(|| goose::DEVELOPER_BUILTIN.to_string()),
+        })
+    }
+
+    /// The refusals this harness owes, the declaration token, and the environment the bridge
+    /// inherits.
+    fn fields(
+        &self,
+        spec: &LaunchSpec,
+        ctx: &SpawnCtx,
+        _shape: spec::Shape,
+    ) -> Result<spec::Fields, HarnessError> {
+        match spec.auth {
+            Auth::Canned => {
+                // Without a host the `openai` provider posts to api.openai.com with marion's
+                // placeholder key — a real vendor call on a run premised on making none.
+                if spec.base_url.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Goose,
+                        what: "a canned node needs a provider base URL: without OPENAI_HOST the \
+                               openai provider posts to the vendor's own endpoint",
+                    });
+                }
+                if spec.model.is_none() {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Goose,
+                        what: "an explicit model is mandatory: GOOSE_MODEL is how the openai \
+                               provider is told what to name, it has no default, and marion will \
+                               not guess one",
+                    });
+                }
+            }
+            // The canned default names marion's own endpoint's plumbing; a live node has none.
+            Auth::Inherited => {
+                if spec.model.as_deref() == Some(agent_type::GOOSE_DEFAULT_MODEL) {
+                    return Err(HarnessError::MissingInput {
+                        harness: Harness::Goose,
+                        what: "the built-in default model names marion's canned endpoint, which a \
+                               --live node does not talk to. Name a real model instead \
+                               (marion run --live -m …)",
+                    });
+                }
+            }
+        }
+        let mut f = neutral_fields(spec, self.axes(spec)?);
+        if spec.mcp == McpDeclaration::Marion {
+            let bridge = bridge_env(spec, ctx);
+            // goose splits the token on whitespace; a path it would split is refused by name
+            // rather than declared as two arguments.
+            if let Some(token) = goose::unspellable(&bridge) {
+                return Err(HarnessError::Unspellable {
+                    harness: Harness::Goose,
+                    what: format!(
+                        "`--with-extension` is split on whitespace, and {token:?} contains some"
+                    ),
+                });
+            }
+            f.mcp_config = Some(goose::extension_declaration(&bridge));
+            f.extra_env = goose::inherited_env(&bridge);
+        }
+        Ok(f)
+    }
+
+    /// No file at all — see [`HarnessAdapter::mcp_route`], which is what keeps that from reading
+    /// as "this node got no bridge".
+    fn config_files(
+        &self,
+        _spec: &LaunchSpec,
+        _ctx: &SpawnCtx,
+    ) -> Result<Vec<(PathBuf, String)>, HarnessError> {
+        Ok(Vec::new())
+    }
+}
+
 /// §5.2's `acp` row: **one adapter, many agents** (§9's M5).
 ///
 /// # What the surfaces are, and why
@@ -1676,6 +1781,7 @@ pub fn adapter_for(h: Harness) -> Result<Box<dyn HarnessAdapter + Send + Sync>, 
         Harness::Gemini => Ok(Box::new(GeminiAdapter)),
         Harness::OpenCode => Ok(Box::new(OpenCodeAdapter)),
         Harness::Copilot => Ok(Box::new(CopilotAdapter)),
+        Harness::Goose => Ok(Box::new(GooseAdapter)),
         // The **protocol** row, bound to no agent. Enough for every question a harness name can
         // answer — the surfaces, the declaration route, the ceiling — and unlaunchable, because a
         // harness name is not enough to say what a model will call marion's verbs. See
@@ -1924,6 +2030,15 @@ mod tests {
             model: Some("canned-1".into()),
             api_key: Some("sk-fake".into()),
             allowed_tools: vec!["marion-report".into()],
+            ..codex_spec()
+        }
+    }
+
+    fn goose_spec() -> LaunchSpec {
+        LaunchSpec {
+            model: Some("canned-1".into()),
+            api_key: Some("sk-fake".into()),
+            allowed_tools: vec!["marion__report".into()],
             ..codex_spec()
         }
     }
@@ -3025,6 +3140,7 @@ mod tests {
             Harness::Gemini => gemini_spec(),
             Harness::OpenCode => opencode_spec(),
             Harness::Copilot => copilot_spec(),
+            Harness::Goose => goose_spec(),
             Harness::Acp => acp_spec(),
         }
     }
@@ -3461,11 +3577,28 @@ mod tests {
                 .find(|(n, _)| *n == k)
                 .map(|(_, v)| v.clone())
                 .unwrap_or_else(|| panic!("{h}: claims ${k} and did not set it")),
-            McpRoute::Argv(_) => a
-                .compile(spec, ctx)
-                .unwrap_or_else(|e| panic!("{h}: {e}"))
-                .args
-                .join(" "),
+            // The argv tokens, plus the compiled environment as `K="V"` lines: on goose the
+            // declaration is one whitespace-split token whose pairs are unquoted (`MARION_DEPTH=7`)
+            // and whose capability token deliberately rides the process environment instead
+            // (`goose::extension_declaration`), so "the bytes the bridge receives" are both. Each
+            // `K=V` token is also re-spelled `K="V"` so the value-quoting assertions below read
+            // the same across TOML, JSON and this grammar.
+            McpRoute::Argv(_) => {
+                let inv = a.compile(spec, ctx).unwrap_or_else(|e| panic!("{h}: {e}"));
+                let mut bytes = inv.args.join(" ");
+                for pair in inv
+                    .args
+                    .iter()
+                    .flat_map(|arg| arg.split_whitespace())
+                    .filter_map(|tok| tok.split_once('='))
+                {
+                    bytes.push_str(&format!("\n{}=\"{}\"", pair.0, pair.1));
+                }
+                for (k, v) in &inv.env {
+                    bytes.push_str(&format!("\n{k}=\"{v}\""));
+                }
+                bytes
+            }
             McpRoute::Session(_) => a
                 .session_declaration(spec, ctx)
                 .unwrap_or_else(|e| panic!("{h}: {e}"))
@@ -4547,6 +4680,13 @@ mod tests {
         "/../../tests/fixtures/s24/copilot-write-then-report.stdout.jsonl"
     ));
 
+    /// A goose `run --output-format stream-json -q` run, verbatim from `tests/fixtures/s26/` —
+    /// marion's report requested and answered, then the model's closing text.
+    const GOOSE_STREAM: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/s26/goose-report.stdout.jsonl"
+    ));
+
     #[test]
     fn a_copilot_report_is_read_from_the_execution_start_frame_in_copilots_own_spelling() {
         let out = CopilotAdapter.parse_stream(COPILOT_STREAM, ChildExit::default());
@@ -4715,6 +4855,10 @@ mod tests {
                 Harness::Copilot => format!(
                     r#"{{"type":"tool.execution_start","data":{{"toolCallId":"c1","toolName":"{tool}","arguments":{args}}}}}"#
                 ),
+                // S26's `toolRequest` item: the arguments arrive parsed under `toolCall.value`.
+                Harness::Goose => format!(
+                    r#"{{"type":"message","message":{{"role":"assistant","content":[{{"type":"toolRequest","id":"c1","toolCall":{{"status":"success","value":{{"name":"{tool}","arguments":{args}}}}}}}]}}}}"#
+                ),
                 // Two frames, because ACP is the one wire where the verb and the arguments never
                 // arrive together: S21's opening `tool_call` carries the title and an empty
                 // `rawInput`, and the closing update carries the arguments and an empty title.
@@ -4775,6 +4919,7 @@ mod tests {
             (Harness::Gemini, GEMINI_STREAM),
             (Harness::OpenCode, OPENCODE_STREAM),
             (Harness::Copilot, COPILOT_STREAM),
+            (Harness::Goose, GOOSE_STREAM),
         ];
         for (owner, stream) in streams {
             for h in Harness::ALL {
@@ -6068,6 +6213,44 @@ mod tests {
                 ),
                 answered("report"),
             ),
+            (
+                Harness::Goose,
+                "s26/goose-report.stdout.jsonl",
+                fixture!("s26/goose-report.stdout.jsonl"),
+                outcome(Some("hello from goose under a canned provider"), None),
+                answered("report"),
+            ),
+            (
+                Harness::Goose,
+                "s26/goose-report-iserror.stdout.jsonl",
+                fixture!("s26/goose-report-iserror.stdout.jsonl"),
+                outcome(
+                    Some("hello from goose under a canned provider"),
+                    Some("the child's marion__report call ended in error: refused: not authorized"),
+                ),
+                refused("report", "refused: not authorized"),
+            ),
+            // No frame claims the fault: the stream is a text message and a zero-token
+            // `complete`, and the only reading is the report that never came.
+            (
+                Harness::Goose,
+                "s26/goose-provider-500.stdout.jsonl",
+                fixture!("s26/goose-provider-500.stdout.jsonl"),
+                outcome(None, None),
+                vec![],
+            ),
+            // `approve` aborts after the request: a call with no result is `Unknown`, and the
+            // narrative it carried is still read off the request.
+            (
+                Harness::Goose,
+                "s26/goose-approve-mode.stdout.jsonl",
+                fixture!("s26/goose-approve-mode.stdout.jsonl"),
+                outcome(Some("hello from goose under a canned provider"), None),
+                vec![MarionCall {
+                    verb: "report".into(),
+                    outcome: CallOutcome::Unknown,
+                }],
+            ),
         ];
         for (h, name, stdout, expected_outcome, expected_calls) in cases {
             let a = adapter_for(h).unwrap();
@@ -6386,6 +6569,21 @@ mod tests {
                     assert!(
                         native_pairs.iter().filter(|p| p.starts_with(key)).count() >= 3,
                         "{h}: command, args and env must all sit under `{key}`: {native_pairs:?}"
+                    );
+                }
+                LiveDeclaration::ArgvInline { flag, key, .. } => {
+                    assert!(files.is_empty() && injection.documents.is_empty(), "{h}");
+                    assert!(
+                        overlay.is_empty(),
+                        "{h}: a native root's bridge has no token, so nothing rides the env"
+                    );
+                    assert_eq!(prefix.len(), 2, "{h}: `{flag} <token>` and nothing else");
+                    assert_eq!(prefix[0], flag, "{h}");
+                    assert!(prefix[1].starts_with(key), "{h}: {}", prefix[1]);
+                    assert!(
+                        inv.args.windows(2).any(|w| w == prefix.as_slice()),
+                        "{h}: the live launch does not carry `{flag}` the same way: {:?}",
+                        inv.args
                     );
                 }
             }
@@ -6757,14 +6955,19 @@ mod tests {
                 "type": "assistant", "session_id": "no", "thread_id": "no", "sessionId": "no"
             });
             assert_eq!(session_id(g, &v), None, "{h}");
-            // Copilot's earlier frames carry no session id; every other row reads its first frame.
+            // Copilot's earlier frames carry no session id, and goose's stream carries none at
+            // all (S26); every other row reads its first frame.
             let claims_early = g.session.as_ref().is_some_and(|s| {
                 !s.at
                     .frame
                     .iter()
                     .any(|c| matches!(c, Cond::Eq("/type", "result")))
             });
-            assert_eq!(claims_early, h != Harness::Copilot, "{h}");
+            assert_eq!(
+                claims_early,
+                !matches!(h, Harness::Copilot | Harness::Goose),
+                "{h}"
+            );
         }
     }
 }

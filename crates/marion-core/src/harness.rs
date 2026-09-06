@@ -25,6 +25,9 @@ pub enum Harness {
     /// name and the fifth binary; added after `Acp`'s doc comment below was written, so where that
     /// comment says "the other four" read "the other five".
     Copilot,
+    /// Block's goose, headless `run -t` (measured on 1.49.0, `tests/fixtures/s26/`). The seventh
+    /// name and the sixth binary.
+    Goose,
     /// **A protocol, not a vendor** — §5.2's `acp` adapter row, *"one adapter serving many
     /// agents"*. The other four name a binary; this one names Agent Client Protocol and the binary
     /// arrives per launch (`Extras::acp_agent`), because the agent supplies its own identity in
@@ -44,6 +47,7 @@ impl Harness {
             Harness::Gemini => "gemini",
             Harness::OpenCode => "opencode",
             Harness::Copilot => "copilot",
+            Harness::Goose => "goose",
             Harness::Acp => "acp",
         }
     }
@@ -100,17 +104,20 @@ impl Harness {
     pub const fn writes_without_a_declaration(self) -> bool {
         match self {
             Harness::Codex | Harness::OpenCode | Harness::Acp => true,
-            Harness::ClaudeCode | Harness::Gemini | Harness::Copilot => false,
+            // goose: `--no-profile` loads no extension but marion's, and the file tools arrive
+            // only with `--with-builtin developer`, which a `write` declaration compiles (S26).
+            Harness::ClaudeCode | Harness::Gemini | Harness::Copilot | Harness::Goose => false,
         }
     }
 
     /// Every harness marion can name — what `marion doctor` would list.
-    pub const ALL: [Harness; 6] = [
+    pub const ALL: [Harness; 7] = [
         Harness::ClaudeCode,
         Harness::Codex,
         Harness::Gemini,
         Harness::OpenCode,
         Harness::Copilot,
+        Harness::Goose,
         Harness::Acp,
     ];
 }
@@ -120,7 +127,8 @@ impl Harness {
 /// marion has never heard of.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unknown harness {0:?}; known harnesses are claude-code, codex, gemini, opencode, copilot, acp"
+    "unknown harness {0:?}; known harnesses are claude-code, codex, gemini, opencode, copilot, \
+     goose, acp"
 )]
 pub struct UnknownHarness(pub String);
 
@@ -177,6 +185,7 @@ mod tests {
         assert_eq!(Harness::Gemini.as_str(), "gemini");
         assert_eq!(Harness::OpenCode.as_str(), "opencode");
         assert_eq!(Harness::Copilot.as_str(), "copilot");
+        assert_eq!(Harness::Goose.as_str(), "goose");
         // §5.2's adapter row is spelled `acp`, and it names the protocol rather than an agent.
         assert_eq!(Harness::Acp.as_str(), "acp");
     }
@@ -195,6 +204,9 @@ mod tests {
                 // Measured on 1.0.83 (`tests/fixtures/s24/`): `--available-tools` withholds every
                 // built-in it does not name, and an ungranted `create` is denied at exit 0.
                 ("copilot", false),
+                // Measured on 1.49.0 (`tests/fixtures/s26/`): under `--no-profile` the model is
+                // offered marion's tools and nothing else; `write` arrives with `--with-builtin`.
+                ("goose", false),
                 ("acp", true),
             ]
         );

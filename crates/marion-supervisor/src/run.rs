@@ -2823,6 +2823,8 @@ mod tests {
             ("opencode", Harness::OpenCode),
             ("copilot", Harness::Copilot),
             ("copilot-impl", Harness::Copilot),
+            ("goose", Harness::Goose),
+            ("goose-impl", Harness::Goose),
         ] {
             let t = builtin(name).expect("built-in resolves");
             assert_eq!(t.harness, expected, "{name}");
@@ -2981,6 +2983,9 @@ mod tests {
                 Harness::Copilot,
                 vec!["allow-tool:marion(report)", "allow-tool:write"],
             ),
+            // The builtin grammar: `write` is one of the developer extension's tools, and the
+            // extension is the unit goose grants.
+            (Harness::Goose, vec!["with-builtin:developer"]),
         ] {
             let adapter = adapter_for(harness).unwrap();
             let launch = LaunchSpec {
@@ -3047,6 +3052,7 @@ mod tests {
             ("gemini", Harness::Gemini),
             ("opencode", Harness::OpenCode),
             ("copilot", Harness::Copilot),
+            ("goose", Harness::Goose),
         ] {
             let adapter = adapter_for(builtin(name).unwrap().harness).unwrap();
             let err: SpawnError = adapter

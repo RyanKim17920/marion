@@ -422,6 +422,7 @@ fn script(root: &Node, child: &Node) -> Script {
                 args: json!({ "path": CHILD_FILE, "file_text": CHILD_FILE_CONTENT }),
             });
         }
+        Harness::Goose => unreachable!("no cell of this matrix names `goose` yet"),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s

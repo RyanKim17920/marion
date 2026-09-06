@@ -265,6 +265,11 @@ pub fn advertised(harness: Harness, version: &str) -> Capabilities {
         // `--session-id` and `--acp` exist on 1.0.83's `--help` and none has been driven, so none
         // is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
         Harness::Copilot => Capabilities::NONE,
+        // Nothing measured through the `run -t` surface. S26 drove it to a tool call and back and
+        // watched `isError`, a provider 500 and the three approval modes, none of which is one of
+        // the ten; `--resume` exists on 1.49.0's `--help` and no frame carries the id it takes, so
+        // nothing is claimed. §3.3: a `false` here is "not measured", and it degrades visibly.
+        Harness::Goose => Capabilities::NONE,
         // **The one row where `advertised` describes a protocol rather than a program**, because
         // §5.2's `acp` adapter serves many agents and the version here is not even readable until
         // one of them has answered `initialize`. So `version` is deliberately unused: it keys the

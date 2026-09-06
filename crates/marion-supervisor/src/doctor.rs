@@ -1904,7 +1904,12 @@ mod tests {
     /// model still report a version, and they report a *read* one rather than a claimed one.
     #[test]
     fn a_harness_that_requires_a_model_still_reports_a_version_without_one() {
-        for h in [Harness::Gemini, Harness::OpenCode, Harness::Copilot] {
+        for h in [
+            Harness::Gemini,
+            Harness::OpenCode,
+            Harness::Copilot,
+            Harness::Goose,
+        ] {
             let rows = caps_rows(Some(h));
             let notes = rows[0].report.notes.join("\n");
             assert!(

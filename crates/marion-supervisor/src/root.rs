@@ -3214,16 +3214,24 @@ mod tests {
             }
             let node = prepare(&root_spec(&dir, name))
                 .unwrap_or_else(|e| panic!("{name} cannot be a root: {e}"));
-            // Canned: every harness declares marion's bridge in a document here.
-            let declaration = node
-                .mcp_config
-                .as_ref()
-                .unwrap_or_else(|| panic!("{name}: no MCP declaration document"));
-            assert!(
-                declaration.is_file(),
-                "{name}: the MCP declaration marion compiled a path to must exist: {}",
-                declaration.display()
-            );
+            // Canned: every harness declares marion's bridge here — in a document, or, on goose,
+            // as the one `--with-extension marion:…` argv token its row routes through
+            // (`McpRoute::Argv`), which `verify` has already checked the argv for.
+            match node.mcp_config.as_ref() {
+                Some(declaration) => assert!(
+                    declaration.is_file(),
+                    "{name}: the MCP declaration marion compiled a path to must exist: {}",
+                    declaration.display()
+                ),
+                None => assert!(
+                    node.invocation
+                        .args
+                        .iter()
+                        .any(|a| a.starts_with("marion:")),
+                    "{name}: no MCP declaration document and none on argv: {:?}",
+                    node.invocation.args
+                ),
+            }
             let in_argv = node.invocation.args.iter().any(|a| a == "delegate it");
             match node.path {
                 RootPath::LaunchOnly => {

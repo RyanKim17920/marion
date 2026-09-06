@@ -451,6 +451,7 @@ impl Surfaces {
 /// | opencode 1.17.3, `opencode acp` | `marion_report` | S13, S21 |
 /// | copilot 1.0.83 | `marion-report` | s24 |
 /// | `codex-acp` 1.1.14 | `mcp.marion.report` | S22 |
+/// | goose 1.49.0, cline 3.0.61 | `marion__report` | S26, S27 |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSpelling {
     /// `mcp__<server>__<tool>`.
@@ -463,6 +464,8 @@ pub enum ToolSpelling {
     ServerHyphenTool,
     /// `mcp.<server>.<tool>`.
     McpDotted,
+    /// `<server>__<tool>` — the `mcp__` form without its prefix.
+    ServerDoubleUnderscoreTool,
 }
 
 impl ToolSpelling {
@@ -473,6 +476,7 @@ impl ToolSpelling {
             Self::ServerUnderscoreTool => format!("{MCP_ALIAS}_{tool}"),
             Self::ServerHyphenTool => format!("{MCP_ALIAS}-{tool}"),
             Self::McpDotted => format!("mcp.{MCP_ALIAS}.{tool}"),
+            Self::ServerDoubleUnderscoreTool => format!("{MCP_ALIAS}__{tool}"),
         }
     }
 }
@@ -528,6 +532,14 @@ pub enum LiveDeclaration {
         key: &'static str,
         pairs: fn(&BridgeEnv) -> Vec<(String, String)>,
     },
+    /// `<flag> <body>` once on argv, the whole declaration in one token; nothing is written —
+    /// goose's `--with-extension "marion:<command> <args>"`. `key` is the text the token must
+    /// carry, the needle [`McpRoute::Argv`] checks argv for (`marion:`, the extension's name).
+    ArgvInline {
+        flag: &'static str,
+        key: &'static str,
+        body: fn(&BridgeEnv) -> String,
+    },
 }
 
 impl LiveDeclaration {
@@ -539,7 +551,9 @@ impl LiveDeclaration {
                 McpRoute::Document
             }
             LiveDeclaration::EnvInline { key, .. } => McpRoute::Environment(key),
-            LiveDeclaration::ArgvPairs { key, .. } => McpRoute::Argv(key),
+            LiveDeclaration::ArgvPairs { key, .. } | LiveDeclaration::ArgvInline { key, .. } => {
+                McpRoute::Argv(key)
+            }
         }
     }
 }

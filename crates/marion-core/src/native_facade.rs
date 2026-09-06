@@ -819,6 +819,19 @@ pub const PRODUCTION_NATIVE_FACADES: &[NativeFacadeDescriptor] = &[
         )),
         structured: None,
     },
+    // Disabled 2026-09-05: the `--with-extension` declaration channel was measured on the headless
+    // `run -t` surface (S26) and its reading by goose's interactive TUI has not been — the same
+    // reason opencode's and copilot's lanes ship off.
+    NativeFacadeDescriptor {
+        identity: VendorIdentity::new("goose"),
+        command: "goose",
+        aliases: &[],
+        native: Some(Lane::new(
+            false,
+            NativeLane::new("goose", "goose", NativeAdapterId::new("goose")),
+        )),
+        structured: None,
+    },
 ];
 
 /// The production registry: [`PRODUCTION_NATIVE_FACADES`], validated.

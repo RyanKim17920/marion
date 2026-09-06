@@ -611,6 +611,22 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // `marion_harness::copilot`.
         accepted: &["1.0.83"],
     },
+    PinnedHarness {
+        program: "goose",
+        // 1.49.0 is the pin: the Homebrew `block-goose-cli` bottle present on this machine on
+        // 2026-09-05, and the version every S26 probe ran against — each against a canned local
+        // provider at $0.00 (`tests/fixtures/s26/`).
+        //
+        // What was measured on it: env-only provider selection (`GOOSE_PROVIDER`, `GOOSE_MODEL`,
+        // `OPENAI_HOST` verbatim + `OPENAI_BASE_PATH`), the `--with-extension "marion:…"` token as
+        // the declaration with the extension child inheriting goose's environment, `--no-profile`
+        // as the only way to withhold the five default extensions, the `marion__report` spelling
+        // in `tools[]` and in `toolCall.value.name`, `toolResult.value.isError` under a
+        // `status: "success"` at exit 0, a provider 500 delivered as an ordinary text message at
+        // exit 0, `GOOSE_MODE=approve` aborting headless at exit 1, no session-id frame, and
+        // `GOOSE_CONFIG_DIR` relocating nothing. See `marion_harness::goose`.
+        accepted: &["1.49.0"],
+    },
 ];
 
 /// The pinned version of `program` — entry zero of its [`PinnedHarness::accepted`].
@@ -644,6 +660,7 @@ pub fn pinned_version(program: &str) -> &'static str {
 /// | `gemini`   | `0.53.0`                                                                 |
 /// | `opencode` | `1.17.3`                                                                 |
 /// | `copilot`  | `GitHub Copilot CLI 1.0.83.` then `Run 'copilot update' to check for updates.` |
+/// | `goose`    | ` 1.49.0` — a leading space, no name (measured 2026-09-05)                 |
 ///
 /// Three carry a name and two do not, and the name comes first where it is present — so the rule
 /// is "first token that is digits and dots", which skips `codex-cli` and `GitHub` (no leading
