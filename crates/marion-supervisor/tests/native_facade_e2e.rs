@@ -56,6 +56,9 @@ const RESIZED: WinSize = WinSize {
     rows: 31,
 };
 
+/// `SIGTERM` on both supported targets.
+const SIGTERM: i32 = 15;
+
 /// Keys a first screen may answer, tried in order: an arrow (a dialog moves its selection), then a
 /// letter (a composer echoes it). Neither submits anything.
 const KEYS: &[&[u8]] = &[b"\x1b[B", b"x"];
@@ -311,6 +314,10 @@ impl Operator {
             .master()
             .set_size(size)
             .expect("resizing the operator's terminal");
+    }
+
+    fn pid(&self) -> i32 {
+        self.host.child_pid().expect("the client was adopted")
     }
 
     fn exited(&self) -> bool {
@@ -588,5 +595,58 @@ fn every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade() {
             node.exit
         );
         eprintln!("[{harness}] native facade E2E: first screen, keystroke, resize, detach, kill");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step 10: SIGTERM at the client
+// ---------------------------------------------------------------------------------------------
+
+/// `docs/superpowers/specs/2026-08-13-native-relay-synchronous-signals-design.md`: an owned
+/// termination restores the terminal, then delivers the **selected default** so the client dies by
+/// that signal; marion neither kills nor signals the node, which survives for ordinary reconnect.
+#[test]
+fn native_facade_sigterm_restores_the_operator_terminal_and_exits_by_signal() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let registry = marion_core::production_native_facades();
+    for harness in registry.enabled_native_commands() {
+        let bed = Bed::new(&format!("native-e2e-sigterm-{harness}"));
+        let Some((op, agent)) = first_screen(&bed, harness) else {
+            continue;
+        };
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        // SAFETY: `pid` is the exact adopted client, still unreaped by the host.
+        assert_eq!(unsafe { kill(op.pid(), SIGTERM) }, 0);
+        assert!(
+            until(|| op.exited()),
+            "[{harness}] the client did not exit after SIGTERM"
+        );
+        let restored = op.termios();
+        let baseline = op.baseline.clone();
+        let status = op.finish().expect("the client's wait status");
+        assert_eq!(
+            status.signal(),
+            Some(SIGTERM),
+            "[{harness}] the client did not die by SIGTERM's default action: {status}"
+        );
+        assert_eq!(
+            restored, baseline,
+            "[{harness}] the operator's terminal was not restored before the default delivery"
+        );
+        // The node was neither killed nor signalled, and is alive to be ended by the supervisor.
+        let nodes = bed.replayed_nodes();
+        assert!(
+            nodes.len() == 1 && nodes[0].exit.is_none(),
+            "[{harness}] the node did not survive the client's termination: {nodes:?}"
+        );
+        let node = bed.kill_and_await_exit(&agent);
+        assert_eq!(
+            node.exit.as_ref().and_then(|exit| exit.signal),
+            Some(9),
+            "[{harness}] the node was not alive for the supervisor to end: {:?}",
+            node.exit
+        );
     }
 }

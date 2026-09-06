@@ -1353,6 +1353,15 @@ acceptance evidence, so every marker remains unchanged.
     in a probe child (no child of the client exists; the SIGTERM test below asserts the observable
     consequence). It skips loudly per lane when the harness is not on `PATH`.
 
+    **`SIGTERM` at the shipped client, per the synchronous-signals design (2026-09-05); no marker
+    moves.** `native_facade_sigterm_restores_the_operator_terminal_and_exits_by_signal`, same
+    fixture, every enabled lane: `kill(SIGTERM)` to `marion <harness>` at its first screen; the
+    client's wait status is *terminated by signal 15* (only possible once the relay restored
+    `SIG_DFL` and unblocked the signal), the operator's termios equals the pre-spawn baseline, the
+    journal still holds one unexited node (marion neither kills nor signals the node — the design's
+    "survives for ordinary reconnect"), and a confirmed `KillTree` then ends it with `Exited{signal
+    9}`. Green for claude and codex.
+
     What remains for C1 is unchanged and cannot be automated: the recorded 10-minute manual
     session, now to be run through `marion claude` rather than `marion attach`. Still dark: the
     `gemini` lane (system-settings merge unmeasured), the `opencode` and `copilot` lanes (their
