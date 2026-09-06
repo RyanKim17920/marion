@@ -751,6 +751,23 @@ acceptance evidence, so every marker remains unchanged.
 - **M3 [partial]** — tree UI + embedded terminal. **Re-audited against the code 2026-08-08 after
   C2 was closed.** Two of §9's three criteria are met; the third is not, and what is missing from
   it is one thing only and cannot be automated. It stays off `[done]` for that one reason.
+
+  **Native facade activation, state as of 2026-09-05 (details in the dated paragraphs below).**
+  *Now true:* the shipped `marion <harness>` runs a real native TUI through the relay for every
+  enabled lane — `claude`, `codex`, `opencode`, `copilot` — and `tests/native_facade_e2e.rs`
+  proves per lane, from the shipped binary on a controlling PTY: a harness cell on the operator's
+  grid through `marion_term`; an opaque keystroke (output grows, no `i` record); a resize `r`
+  record; `^]d` exits 0 with termios at baseline and the node still in the tree; `SIGTERM` ends the
+  client by signal 15 with termios at baseline and the node untouched; a confirmed `KillTree`
+  ends the node with `Exited{signal 9}`. The relay's terminal writer blocks on writability instead
+  of dying on a full pty queue, a bug the matrix found on its first run. The `opencode` and
+  `copilot` lanes were enabled on measurement of their TUIs' `/mcp` views. *Still open:* C1's
+  recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
+  merge unmeasured); `SIGTSTP`/`SIGCONT` through the facade, not observable from the `spawn_pty`
+  fixture (orphaned process group) and covered only by the isolated relay probes; the pre-existing
+  parallel-run flake of `native_relay_sigterm_restores_terminal_and_redelivers_to_itself`; and
+  single-use re-attach plus default-action restoration, proved at the bootstrap and unit
+  boundaries but not re-observable end to end.
   - **Criterion 1 (a real `claude` TUI in a marion pane) — NOT MET, and the only thing left is the
     recorded session.** Every clause a test can reach is now reached; the criterion's own words
     end with *"over a recorded 10-minute manual session"*, and a human has to sit at a screen for
