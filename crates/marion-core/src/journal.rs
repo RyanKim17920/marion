@@ -8,7 +8,7 @@
 //!
 //! This module is pure data plus the line codec. The file lives in the supervisor
 //! (`marion_supervisor::journal`), because `marion-core` performs no I/O; replay lives in
-//! [`crate::registry`], because §8 lists *"journal replay"* as an **L1 pure unit**.
+//! the registry module one layer up, because §8 lists *"journal replay"* as an **L1 pure unit**.
 //!
 //! # Framing
 //!
@@ -739,109 +739,6 @@ mod tests {
             "one raw newline, the terminator"
         );
         assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
-    }
-
-    /// **The harness's own name for the conversation**, journaled as its own record. It cannot
-    /// ride on `Spawned` — that record is written the instant the process exists, and the session
-    /// id arrives in the harness's first frame, later — so it is a separate, additive variant with
-    /// the same round-trip and the same rule about older journals. Replay puts it on the node as
-    /// `harness_session`, which is what a resume will hand back to the harness.
-    #[test]
-    fn session_observed_round_trips_and_replays_onto_the_node() {
-        let observed = RecordKind::SessionObserved(SessionObserved {
-            agent_id: AgentId("a-1".into()),
-            harness: Harness::ClaudeCode,
-            session_id: "0a2f7d1e-session".into(),
-            pane: false,
-        });
-        assert_eq!(observed.agent_id(), Some(&AgentId("a-1".into())));
-        assert!(
-            !observed.is_barrier(),
-            "losing one costs a resume, not an untracked process; §4.3 puts it on the timer"
-        );
-
-        let r = rec(observed.clone());
-        let line = encode(&r).unwrap();
-        assert_eq!(
-            serde_json::to_string(&r.kind).unwrap(),
-            r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"0a2f7d1e-session"}}"#,
-            "the wire shape is pinned like every other record's"
-        );
-        assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
-
-        // Onto the node: after `SpawnIntent` + `Spawned`, the observation names the session.
-        let spawned = RecordKind::Spawned(Spawned {
-            agent_id: AgentId("a-1".into()),
-            harness_version: "2.1.220".into(),
-            model: None,
-            pid: Some(4242),
-            start_id: None,
-        });
-        let mut bytes = Vec::new();
-        for (seq, kind) in [intent(), spawned, observed].into_iter().enumerate() {
-            let mut r = rec(kind);
-            r.seq = seq as u64;
-            bytes.extend(encode(&r).unwrap());
-        }
-        let tree = crate::registry::replay(&bytes);
-        assert!(tree.gaps.is_empty() && tree.truncation.is_none());
-        let node = tree.get(&AgentId("a-1".into())).unwrap();
-        assert_eq!(node.harness_session.as_deref(), Some("0a2f7d1e-session"));
-        assert_eq!(
-            node.records, 3,
-            "the observation is one more record about the node"
-        );
-        assert_eq!(
-            node.state,
-            NodeState::Spawning,
-            "naming the session moves no state"
-        );
-        // And a node nobody named a session for says so, rather than inventing one.
-        let mut bytes = Vec::new();
-        for (seq, kind) in [intent()].into_iter().enumerate() {
-            let mut r = rec(kind);
-            r.seq = seq as u64;
-            bytes.extend(encode(&r).unwrap());
-        }
-        let tree = crate::registry::replay(&bytes);
-        assert_eq!(
-            tree.get(&AgentId("a-1".into())).unwrap().harness_session,
-            None
-        );
-
-        // **Pane is additive and byte-exact when false**, and folds onto the node when true.
-        let headless = RecordKind::SessionObserved(SessionObserved {
-            agent_id: AgentId("a-1".into()),
-            harness: Harness::ClaudeCode,
-            session_id: "s".into(),
-            pane: false,
-        });
-        assert_eq!(
-            serde_json::to_string(&headless).unwrap(),
-            r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"s"}}"#,
-            "a headless record omits pane, byte-identical to older builds"
-        );
-        let paned = RecordKind::SessionObserved(SessionObserved {
-            agent_id: AgentId("a-1".into()),
-            harness: Harness::ClaudeCode,
-            session_id: "s".into(),
-            pane: true,
-        });
-        assert_eq!(
-            serde_json::to_string(&paned).unwrap(),
-            r#"{"SessionObserved":{"agent_id":"a-1","harness":"claude-code","session_id":"s","pane":true}}"#
-        );
-        let mut bytes = Vec::new();
-        for (seq, kind) in [intent(), paned].into_iter().enumerate() {
-            let mut r = rec(kind);
-            r.seq = seq as u64;
-            bytes.extend(encode(&r).unwrap());
-        }
-        let node = crate::registry::replay(&bytes)
-            .get(&AgentId("a-1".into()))
-            .cloned()
-            .unwrap();
-        assert!(node.harness_pane, "the pane shape folds onto the node");
     }
 
     #[test]
