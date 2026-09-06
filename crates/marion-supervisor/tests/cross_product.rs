@@ -301,6 +301,32 @@ const GOOSE: Node = Node {
     program: "goose",
 };
 
+const CLINE: Node = Node {
+    // One type in both roles, as opencode: cline grants its 26 built-ins unconditionally, so there
+    // is no `-impl` flavour to declare a grant marion does not compile.
+    agent_type: "cline",
+    child_agent_type: "cline",
+    harness: Harness::Cline,
+    // Explicit: `providers.json` names a model and the adapter refuses to write one that names
+    // none; `-m` carries the same name and is measured to win (s27 item 15).
+    model: "canned-1",
+    child_model: Some("canned-1"),
+    wire: "openai",
+    program: "cline",
+};
+
+const QWEN: Node = Node {
+    agent_type: "qwen",
+    child_agent_type: "qwen-impl",
+    harness: Harness::Qwen,
+    // Explicit: `OPENAI_MODEL` is how the provider is told what to name, and the adapter refuses a
+    // canned launch without one. The canned provider ignores the name.
+    model: "canned-1",
+    child_model: Some("canned-1"),
+    wire: "openai",
+    program: "qwen",
+};
+
 /// marion's `spawn`, in the spelling **this harness's wire** dispatches on.
 ///
 /// Three of the four are the adapter's own `marion_tool_name`, which is the whole point of §3.1
@@ -448,8 +474,27 @@ fn script(root: &Node, child: &Node) -> Script {
                 args: json!({ "path": CHILD_FILE, "content": CHILD_FILE_CONTENT }),
             });
         }
-        Harness::Cline => unreachable!("no cell of this matrix names `cline` yet"),
-        Harness::Qwen => unreachable!("no cell of this matrix names `qwen` yet"),
+        // The cline child writes through `editor` — `{path, new_text}` with no `old_text` is the
+        // create-a-missing-file shape, read off the live `tools[]` schema — one of the 26 built-ins
+        // every cline launch carries (s27 item 12), so no grant is compiled and none is recorded.
+        // The path is **relative** deliberately: cline's own description demands an absolute one,
+        // and this cell is what measures a relative `editor` path resolving against `-c`.
+        Harness::Cline => {
+            s.openai_report_tool = report;
+            s.openai_report_args = json!({ "narrative": NARRATIVE });
+            s.openai_edit = Some(EditTurn {
+                tool: "editor".into(),
+                args: json!({ "path": CHILD_FILE, "new_text": CHILD_FILE_CONTENT }),
+            });
+        }
+        // **Not a child of this matrix, and that is a measured refusal.** qwen 0.23.0's
+        // `write_file` refuses a relative `file_path` (`File path must be absolute`, s25 item 17),
+        // and the worktree's absolute path does not exist until `spawn` creates it, so no canned
+        // script can name it. qwen is driven as a **root** here and as a child in `harness_matrix`.
+        Harness::Qwen => unreachable!(
+            "no cell names a qwen child: its write_file refuses the relative path every child \
+             cell writes (s25 item 17)"
+        ),
         Harness::Acp => unreachable!("no cell of this matrix names `acp`"),
     }
     s
@@ -850,16 +895,28 @@ fn tool_result_on(root: &Node, body: &Value) -> Option<String> {
                 .unwrap_or(output);
             Some(inner.trim().to_string())
         }
-        // Chat Completions: the `role: "tool"` message answering our `tool_call_id`, whose content
-        // is the MCP text flattened by opencode itself.
-        "openai" => Some(
-            body["messages"]
+        // Chat Completions: the `role: "tool"` message answering our `tool_call_id`. Three
+        // harnesses, three framings of one MCP result, each measured off these cells' own request
+        // logs: opencode, copilot and goose flatten it to the text; qwen 0.23.0 hands the block
+        // list through unflattened; cline 3.0.61 serialises the **whole MCP envelope**
+        // (`{"content": [...], "isError": false}`) as one string. Unwrapped structurally in each
+        // case rather than by hunting for a `{`: the contract itself is full of braces.
+        "openai" => {
+            let content = &body["messages"]
                 .as_array()?
                 .iter()
-                .find(|m| m["role"] == "tool" && m["tool_call_id"] == ROOT_CALL_ID)?["content"]
-                .as_str()?
-                .to_string(),
-        ),
+                .find(|m| m["role"] == "tool" && m["tool_call_id"] == ROOT_CALL_ID)?["content"];
+            match content {
+                Value::String(s) => match serde_json::from_str::<Value>(s) {
+                    Ok(envelope) if envelope["content"].is_array() => {
+                        mcp_blocks_text(&envelope["content"])
+                    }
+                    _ => Some(s.clone()),
+                },
+                blocks @ Value::Array(_) => mcp_blocks_text(blocks),
+                _ => None,
+            }
+        }
         w => panic!("no reader for wire {w:?}; a fifth wire needs its own frame here"),
     }
 }
@@ -1409,4 +1466,116 @@ fn zj_goose_root_spawns_a_copilot_child_and_receives_its_contract() {
 #[test]
 fn zk_goose_root_spawns_a_goose_child_and_receives_its_contract() {
     cell(&GOOSE, &GOOSE);
+}
+
+// The cline column and row: the seventh harness as a child of each of the six, and as a root over
+// each of the seven. Same wire again; what these thirteen add is a root and a child whose tool set
+// marion does not narrow at all, reading marion's verbs under the `marion__` spelling.
+
+#[test]
+fn zl_claude_root_spawns_a_cline_child_and_receives_its_contract() {
+    cell(&CLAUDE, &CLINE);
+}
+
+#[test]
+fn zm_codex_root_spawns_a_cline_child_and_receives_its_contract() {
+    cell(&CODEX, &CLINE);
+}
+
+#[test]
+fn zn_gemini_root_spawns_a_cline_child_and_receives_its_contract() {
+    cell(&GEMINI, &CLINE);
+}
+
+#[test]
+fn zo_opencode_root_spawns_a_cline_child_and_receives_its_contract() {
+    cell(&OPENCODE, &CLINE);
+}
+
+#[test]
+fn zp_copilot_root_spawns_a_cline_child_and_receives_its_contract() {
+    cell(&COPILOT, &CLINE);
+}
+
+#[test]
+fn zq_goose_root_spawns_a_cline_child_and_receives_its_contract() {
+    cell(&GOOSE, &CLINE);
+}
+
+#[test]
+fn zr_cline_root_spawns_a_claude_child_and_receives_its_contract() {
+    cell(&CLINE, &CLAUDE);
+}
+
+#[test]
+fn zs_cline_root_spawns_a_codex_child_and_receives_its_contract() {
+    cell(&CLINE, &CODEX);
+}
+
+#[test]
+fn zt_cline_root_spawns_a_gemini_child_and_receives_its_contract() {
+    cell(&CLINE, &GEMINI);
+}
+
+#[test]
+fn zu_cline_root_spawns_an_opencode_child_and_receives_its_contract() {
+    cell(&CLINE, &OPENCODE);
+}
+
+#[test]
+fn zv_cline_root_spawns_a_copilot_child_and_receives_its_contract() {
+    cell(&CLINE, &COPILOT);
+}
+
+#[test]
+fn zw_cline_root_spawns_a_goose_child_and_receives_its_contract() {
+    cell(&CLINE, &GOOSE);
+}
+
+#[test]
+fn zx_cline_root_spawns_a_cline_child_and_receives_its_contract() {
+    cell(&CLINE, &CLINE);
+}
+
+// The qwen **row**: the eighth harness as a root over each of the other seven. What these add is Claude
+// Code's spelling and stream read off a different binary over a different wire, with
+// `--core-tools` as the root's whole tool set. **There is no qwen column, and that is a measured
+// refusal rather than an omission**: qwen 0.23.0's `write_file` refuses a relative path outright
+// (`File path must be absolute`, s25 item 17), the worktree a child writes into does not exist
+// until `spawn` creates it, and a canned script that cannot name the path cannot script the write
+// every child cell asserts. Its `harness_matrix` cell is the child-side witness instead.
+
+#[test]
+fn zzf_qwen_root_spawns_a_claude_child_and_receives_its_contract() {
+    cell(&QWEN, &CLAUDE);
+}
+
+#[test]
+fn zzg_qwen_root_spawns_a_codex_child_and_receives_its_contract() {
+    cell(&QWEN, &CODEX);
+}
+
+#[test]
+fn zzh_qwen_root_spawns_a_gemini_child_and_receives_its_contract() {
+    cell(&QWEN, &GEMINI);
+}
+
+#[test]
+fn zzi_qwen_root_spawns_an_opencode_child_and_receives_its_contract() {
+    cell(&QWEN, &OPENCODE);
+}
+
+#[test]
+fn zzj_qwen_root_spawns_a_copilot_child_and_receives_its_contract() {
+    cell(&QWEN, &COPILOT);
+}
+
+#[test]
+fn zzk_qwen_root_spawns_a_goose_child_and_receives_its_contract() {
+    cell(&QWEN, &GOOSE);
+}
+
+#[test]
+fn zzl_qwen_root_spawns_a_cline_child_and_receives_its_contract() {
+    cell(&QWEN, &CLINE);
 }

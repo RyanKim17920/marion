@@ -80,9 +80,10 @@ Enter hit its update prompt mid-experiment), and Codex removed `wire_api = "chat
 
 Baseline: **Claude Code 2.1.220 · opencode 1.17.3 · Gemini CLI 0.53.0 · Codex CLI — 0.145.0 for S3
 and the alt-screen/`/diff` capture, 0.146.0 for S5 · GitHub Copilot CLI 1.0.83 (S24, 2026-09-05) ·
-goose 1.49.0 (S26, 2026-09-05)**.
+goose 1.49.0 (S26, 2026-09-05) · Cline CLI 3.0.61 (S27, 2026-09-05) · Qwen Code 0.23.0 (S25,
+2026-09-05)**.
 (The 0.146.0 captures contain no `?1049h` at all; the alt-screen evidence is the 0.145.0 file.)
-Qwen Code and Amp claims are **unstamped and unverified locally**.
+Amp claims are **unstamped and unverified locally**.
 
 **Harness support is registry data, not per-harness code paths (2026-09-05).** Each harness is a
 `HarnessSpec` row in `crates/marion-harness/src/<harness>.rs` — program, argv and env as closed
@@ -91,20 +92,23 @@ tools, its MCP declaration route per auth mode, its audit constraint, and its re
 by one `spec::render` and read by one `grammar` engine. The adapter keeps only what no table can
 hold: the measured refusals (claude's argv prompt, gemini's missing model, copilot's BYOK inputs),
 the model rules, the derived base URLs, the document emitters, and ACP's agent binding. A sixth
-harness is a row plus those hooks — and goose landed as exactly that on 2026-09-05: one row, an
-`axes`/`fields` hook pair, two new closed shapes (`ToolSpelling::ServerDoubleUnderscoreTool`,
-`LiveDeclaration::ArgvInline`), and no other per-harness branch.
+harness is a row plus those hooks — and goose, cline and qwen landed as exactly that on 2026-09-05:
+one row each, an `axes`/`fields`/`config_files` hook or two, three new closed shapes
+(`ToolSpelling::ServerDoubleUnderscoreTool`, `LiveDeclaration::ArgvInline`, `Arg::Isolation`), and
+no other per-harness branch. qwen's row reads `claude_code::STREAM` outright, because its stream
+**is** Claude Code's (S25).
 `adapter::tests::spec_render_matches_the_adapter_that_measured_it`
 and `every_committed_fixture_reads_the_same_through_the_grammar` pin every row to the hand-written
 adapter it replaced, byte for byte on every committed fixture. **Resume flags, measured on the
 installed binaries' `--help` and carried as row data** (plan step 5): claude `--resume <id>`, codex
-`exec resume <id>`, opencode `run --session <id>`, copilot `--resume=<id>`; gemini's `--resume`
-takes `latest` or an index rather than a session id, so its row says `None` and a resume on it is
-refused by name; goose's `--resume --session-id <id>` takes an id no frame of its stream carries
-(S26), so its row says `None` too; ACP's row says `None` as well, and its resume is the protocol's
-`session/load`, built by `AcpAdapter::session_declaration` with the same `mcpServers` block and sent
-by the driver only to an agent whose `initialize` advertised `loadSession` (2026-09-05). **Wired
-2026-09-05:**
+`exec resume <id>`, opencode `run --session <id>`, copilot `--resume=<id>`, qwen `--resume <id>`
+(the id off `init.session_id`, replayed under the same `QWEN_HOME` and cwd, S25); gemini's
+`--resume` takes `latest` or an index rather than a session id, goose's `--resume --session-id <id>`
+takes an id no frame of its stream carries (S26), and cline's `--id <id>` forces interactive mode
+and exits 1 headless (S27), so those three rows say `None` and a resume on them is refused by name;
+ACP's row says `None` too, and its resume is the protocol's `session/load`, built by
+`AcpAdapter::session_declaration` with the same `mcpServers` block and sent by the driver only to an
+agent whose `initialize` advertised `loadSession` (2026-09-05). **Wired 2026-09-05:**
 `LaunchSpec::resume: Option<String>` is seeded into `Fields::resume` by the one neutral seeding, so
 `compile`/`compile_pane` render the row's grammar or refuse by name with no per-harness branch
 (`a_harness_whose_row_refuses_resume_is_refused_by_name`, RED with `no field named resume`).
@@ -402,6 +406,119 @@ Not measured, and so not claimed: a 404 or empty list on the `/v1/models` probe,
 lane ships disabled), and the `journal_wiring`, `depth_gate` and `launch_only_root` matrices, whose
 matches name `goose` as *not yet* a cell.
 
+**Cline CLI runs as a marion child and root at $0.00 — the seventh binary, on the opencode cell's
+wire, and the one whose remembered surface no longer exists.** *(cline 3.0.61 via `npm i -g cline`,
+macOS darwin 25.5.0, measured 2026-09-05 against the canned provider; fixture `tests/fixtures/s27/`;
+witnessed end to end by `harness_matrix`'s seventh cell and `cross_product`'s cline column and row
+— thirteen cells, `zl`–`zx`, all green on this machine.)* The binary present was the latest; no
+install was needed. The facts the row rests on:
+
+- **3.0.61 is not the Cline the plan remembered.** No `task` subcommand, no `-y`, no `cline-core`
+  gRPC host. Headless is the bare positional prompt under `--json`, act mode with
+  `--auto-approve` **on by default** (`false` declines every call inside cline — `requires approval
+  in a TTY session` — at exit 0), `-c <cwd>`, `--config <dir>`, `--data-dir <dir>`, `-m <model>`.
+- **The provider is a document, and a misplaced one is a silent vendor fallback.**
+  `<CLINE_DATA_DIR>/settings/providers.json` — byte-for-byte what `cline auth openai-compatible
+  -k … -m … -b …` writes — selects `openai-compatible` with key, model and base URL (marion's `…/v1`
+  form verbatim; the CLI appends `/chat/completions`). A `providers.json` anywhere else, including
+  at `CLINE_PROVIDER_SETTINGS_PATH`, is **not read**: cline writes a default selecting its own
+  `cline` provider and POSTs to `api.cline.bot` with no credential, 401, exit 1, nothing at marion's
+  endpoint. `-m` is measured to **win** over the document's model (and cline rewrites the document
+  with it), which is a live node's channel for one; the `cline` built-in carries
+  `CLINE_DEFAULT_MODEL` and the adapter refuses that default under `--live`.
+- **⚠ Isolation is three variables *and* two flags, together.** `CLINE_DIR` + `CLINE_DATA_DIR` +
+  `HOME` relocate config, state and the rules/skills roots; `--config`/`--data-dir` are what set
+  `sandbox` and stop the CLI **forking a hub daemon that outlives the run** (`bin/.cline
+  --cline-hub-daemon --port 25463`, alive ten minutes later, a lock file with its pid and auth
+  token; `cline doctor fix` or `kill -TERM` clears it). Flags alone still write
+  `$HOME/.cline/data/db/sessions.db`. Only the combination left `home/` empty, `pgrep` empty and
+  `~/.cline` untouched — hence `Arg::Isolation`, a canned-only argv flag, so a live node never
+  points them at marion's directory.
+- **The MCP document is honoured at `CLINE_MCP_SETTINGS_PATH`, outside the data dir** — the shape
+  `cline mcp install marion --yes --transport stdio -- <cmd> <args>` writes
+  (`mcpServers.marion.transport.{type, command, args}`), resolved independently of the data dir, so
+  it is the injection route in both auth modes. The model sees `marion__report` (goose's spelling)
+  and the wire carries the bare `report`; the handshake is protocol `2024-11-05`.
+- **The built-in tool set cannot be narrowed.** 26 `type: "function"` tools — `editor`,
+  `run_commands`, `read_files`, `spawn_agent` and nineteen `team_*` — are offered whatever
+  `global-settings.json` says and whatever flag is passed; `-s` replaces the system prompt, not
+  `tools[]`. So `writes_without_a_declaration` is `true`, the record is
+  `harness-default:unconstrained`, and there is one `cline` type in both roles.
+- **⚠ Neither fault is an exit code on its own.** `content_end.output.isError: true` is forwarded
+  to the model, `run_result.finishReason` stays `completed`, exit 0. A provider 500 is three tries
+  over ~6 s, then `agent_event error {recoverable: false}`, `run_result finishReason: "error"`,
+  exit 1. stderr carries AI SDK deprecation warnings on **every** run.
+- **The session id is in no frame, and headless resume does not exist.** `hook_event` carries
+  `agentId`/`taskId` (not it); the id is a `data/sessions/<id>/` directory name and a field of
+  `cline history --json`. `--id <id>` sets the startup target to interactive before the prompt is
+  read and exits 1 under both `--json` and plain output. `cline --version` prints a bare `3.0.61`.
+
+Not measured, and so not claimed: a cwd-local `.cline/` MCP file, `run_result.model.provider` as a
+compile-time check, the interactive TUI's reading of `CLINE_MCP_SETTINGS_PATH` (the native lane
+ships disabled), and the `journal_wiring`, `depth_gate` and `launch_only_root` matrices.
+
+**Qwen Code runs as a marion child and root at $0.00 — the eighth binary, and a Gemini CLI fork
+whose headless surface is Claude Code's.** *(qwen 0.23.0 via `npm i -g @qwen-code/qwen-code`, macOS
+darwin 25.5.0, measured 2026-09-05 against the canned provider; fixture `tests/fixtures/s25/`;
+witnessed end to end by `harness_matrix`'s eighth cell and `cross_product`'s qwen **row** — seven
+cells, `zzf`–`zzl`, a qwen root over each of the other seven harnesses, all green on this machine. There
+is no qwen column: 0.23.0's `write_file` refuses a relative path (`File path must be absolute`), the
+worktree a child writes into does not exist until `spawn` creates it, and a canned script that
+cannot name the path cannot script the write every child cell asserts — so the child side rests on
+the `harness_matrix` cell alone, and the matrix says so rather than faking a cell.)* The binary
+present was the latest; no install was needed. The facts the row rests on, and the reason the row is
+nothing like gemini's:
+
+- **Env alone selects the provider; no login.** `OPENAI_BASE_URL` (marion's `…/v1` verbatim; the
+  CLI appends `/chat/completions`), `OPENAI_API_KEY`, `OPENAI_MODEL`; without them a single
+  `result` frame, `error_during_execution`, `No auth type is selected`, exit 1. `OPENAI_MODEL` has
+  no default, so the `qwen` built-in carries `QWEN_DEFAULT_MODEL` and the adapter refuses it under
+  `--live`.
+- **The stream is Claude Code's, not Gemini CLI's.** `system`/`init` (`session_id`, `tools[]`,
+  `mcp_servers[]`, `permission_mode`), `assistant` `tool_use {id, name, input}`, `user`
+  `tool_result {tool_use_id, is_error, content}`, `result {subtype, is_error, permission_denials[]}`;
+  the spelling is `mcp__marion__report`; `--resume <session_id>` replays the history and repeats
+  the id, keyed by `QWEN_HOME` **and** cwd. The row reads `claude_code::STREAM` and says so, and
+  `each_adapter_recognises_a_marion_call_in_its_own_stream_and_no_others` names the pair as the
+  one legitimate overlap.
+- **⚠ MCP tools are deferred behind `tool_search` by default.** Discovery runs in the background;
+  anything that connects after the first declaration list is built is announced in a
+  `<system-reminder>` and reachable only through `tool_search` for the whole session — `init`
+  lists `mcp__marion__report` while `tools[]` does not. `QWEN_CODE_LEGACY_MCP_BLOCKING=1` makes
+  discovery block startup and the tool is in `tools[]` on request one; the row carries it under
+  both auth modes.
+- **⚠ Three axes of tool restriction, and an empty one is silently none.** Default `--yolo` offers
+  28 built-ins. `--core-tools <names…>` is a legacy allowlist with **twelve exempt survivors**
+  (`agent enter_worktree exit_worktree get_goal list_agents record_artifact report_findings
+  send_message skill task_stop tool_search update_goal`); `--exclude-tools` naming those twelve on
+  top yields exactly the declared list; `--bare` ignores `--core-tools`. And `--core-tools` with
+  **no names** starts fine and offers every built-in but the excluded twelve — no error, no
+  warning — so the adapter refuses a launch that names no tool, and the doctor's probe became
+  child-shaped (marion's `report` verb in each harness's spelling) to stay a launch a real spawn
+  builds. The record is the list itself, `core-tools:<name>`.
+- **Without `--yolo`, headless mode asks a model.** `permission_mode: "auto"` sends the provider a
+  classifier request (one tool, `respond_in_schema`) per call and, unanswered in schema, declines
+  it with `is_error: true` at exit 0, the denial in `result.permission_denials[]`. `--yolo` runs
+  everything; `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` silences its one stderr line.
+- **Two declaration routes, as codex has.** A canned node's `$QWEN_HOME/settings.json` carries
+  `mcpServers` beside `memory.enableManagedAutoMemory: false` — without that switch an env-only run
+  makes a hidden second request, a "managed memory extraction subagent" offered `write_file`,
+  `edit`, `run_shell_command`. A live node's `~/.qwen/settings.json` is the operator's, so its
+  declaration rides `--mcp-config '{"mcpServers": …}'` inline on argv, measured without `--bare`.
+  `QWEN_HOME` relocates settings, sessions (`projects/<cwd-slug>/chats/`), usage and memories, and
+  qwen rewrites the settings document it is given (`"$version": 4`); `HOME` still contributes
+  `~/.agents/skills` to the prompt and is left alone.
+- **⚠ A dead provider is retried 28 times over 86 s and then reported as success.** Seven outer
+  attempts of four inner tries, backoff to 27 s, then `assistant` text `[API Error: 500 …]` and
+  `result.is_error: false`, exit 0. An MCP `isError` is a `tool_result` with `is_error: true`
+  whose content embeds the MCP response, `result.subtype` still `success`, exit 0. `qwen` is a
+  launcher (`spawnSync` of `node --expose-gc cli.js`): kill the process group, not the PID.
+  `qwen --version` prints a bare `0.23.0`.
+
+Not measured, and so not claimed: the file-path form of `--mcp-config`, a bare positional prompt in
+place of the deprecated `-p`, the interactive TUI's reading of `--mcp-config` (the native lane ships
+disabled), and the `journal_wiring`, `depth_gate` and `launch_only_root` matrices.
+
 Full protocol details, launcher requirements, and per-harness caveats: design doc §5–§6.
 
 ---
@@ -445,7 +562,8 @@ routing third-party clients through Pro/Max OAuth — is prohibited and enforced
 |---|---|---|---|---|
 | opencode | `provider{}` JSON | `OPENCODE_CONFIG_CONTENT` (inline) | **nothing** — speaks all 4 wire formats natively | trivial |
 | Claude Code | `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` | `--settings` + `--setting-sources ""` / env (**not** `CLAUDE_CONFIG_DIR` — breaks OAuth) | Anthropic Messages, SSE mandatory | easy |
-| Qwen Code † | `OPENAI_BASE_URL/_API_KEY/_MODEL` | `QWEN_HOME` | OpenAI Chat Completions | easy |
+| Qwen Code | `OPENAI_BASE_URL` (verbatim) + `OPENAI_API_KEY` + `OPENAI_MODEL` — env only, **no login**; `QWEN_CODE_LEGACY_MCP_BLOCKING=1` or the MCP tool is deferred behind `tool_search` | `QWEN_HOME` (settings, sessions, usage, memories; `HOME` still lends `~/.agents/skills` to the prompt) | OpenAI Chat Completions; a `respond_in_schema` classifier call per tool unless `--yolo`; a hidden memory turn unless `memory.enableManagedAutoMemory: false` | easy — **verified 2026-09-05 on 0.23.0, `harness_matrix`'s eighth cell and `cross_product` `zzf`–`zzl`** |
+| Cline CLI | `<CLINE_DATA_DIR>/settings/providers.json` (the file `cline auth openai-compatible` writes; **nowhere else is read** — a misplaced file falls back to the vendor) + `-m` | `CLINE_DIR` + `CLINE_DATA_DIR` + `HOME` **and** `--config`/`--data-dir` (env alone forks a hub daemon that outlives the run; flags alone write `~/.cline/data/db/sessions.db`) | OpenAI Chat Completions | easy — **verified 2026-09-05 on 3.0.61, `harness_matrix`'s seventh cell and `cross_product` `zl`–`zx`** |
 | Gemini CLI | `GOOGLE_GEMINI_BASE_URL` | `GEMINI_CLI_HOME` | Gemini `v1beta` + mandatory `:countTokens`, `:embedContent` | medium — **but blocked vendor-side on a personal login; see below** |
 | Codex | `[model_providers.X]` | `CODEX_HOME` / `-c` inline / `-p` profile (isolating `CODEX_HOME` **also** breaks auth — but copying `auth.json` in fully restores it) | **OpenAI Responses ONLY** | hardest |
 | Copilot CLI | `COPILOT_PROVIDER_BASE_URL` + `COPILOT_PROVIDER_API_KEY` + `--model` (BYOK; **no GitHub login needed**) | `COPILOT_HOME` (never `HOME` — the launcher's package cache lives under it) | OpenAI Chat Completions by default; Responses via `COPILOT_PROVIDER_WIRE_API=responses`, Anthropic Messages via `COPILOT_PROVIDER_TYPE=anthropic` — **the one harness that can be pointed at three of the four wires** | easy — **verified 2026-09-05 on 1.0.83, `harness_matrix`'s fifth cell** |
@@ -454,7 +572,8 @@ routing third-party clients through Pro/Max OAuth — is prohibited and enforced
 
 † unverified locally.
 
-Order of attack for model injection: opencode → Claude Code → Copilot → goose → Qwen → Gemini → Codex.
+Order of attack for model injection: opencode → Claude Code → Copilot → goose → Qwen → Cline →
+Gemini → Codex.
 (Distinct from adapter build order: claude-code → codex → acp → opencode → copilot.)
 
 **Codex is hardest**: `wire_api="chat"` removed; sends `include:["reasoning.encrypted_content"]`

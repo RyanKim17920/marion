@@ -589,3 +589,80 @@ fn a_goose_child_reports_through_marions_bridge_over_the_openai_wire() {
     let ev = drive(&cell);
     assert_cell(&cell, &ev);
 }
+
+/// **The seventh binary, on the same wire.** cline 3.0.61's `openai-compatible` provider speaks
+/// OpenAI Chat Completions from a `providers.json` the adapter writes into the node's own data
+/// dir, so the same `Script` fields drive it — with the tool under cline's `marion__report`
+/// spelling, goose's double underscore again.
+///
+/// What this cell witnesses that `tests/fixtures/s27/` alone cannot: marion's **own** bridge behind
+/// `CLINE_MCP_SETTINGS_PATH`, started by cline from the document `ClineAdapter::config_files`
+/// writes, answering `tools/list` and `tools/call` — with `--config`/`--data-dir` **and** the three
+/// relocation variables together, which is the one combination s27 measured leaving no hub daemon
+/// behind and nothing under `~/.cline`; (6)'s survivor sweep is what holds that here.
+#[test]
+fn a_cline_child_reports_through_marions_bridge_over_the_openai_wire() {
+    assert!(
+        on_path("cline"),
+        "this cell drives a REAL cline child; put `cline` ({}) on PATH",
+        pinned_version("cline")
+    );
+    let cell = Cell {
+        agent_type: "cline",
+        // The model is a field of `providers.json`, and the adapter refuses a canned launch
+        // without one rather than writing a document that names none.
+        model: Some("canned-1"),
+        script: Script {
+            // cline's own spelling: `<serverName>__<toolName>`.
+            openai_report_tool: "marion__report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        expected_harness: Harness::Cline,
+        expected_model: Some("canned-1"),
+        // marion compiles no tool or permission constraint for cline at all — s27 measured
+        // `disabledTools` and `tools.*.enabled` in `global-settings.json` changing nothing on the
+        // wire and no flag narrowing the 26 built-ins — so the record says so, as opencode's does.
+        expected_allowed_tools: &["harness-default:unconstrained"],
+        expected_wire: "openai",
+    };
+    let ev = drive(&cell);
+    assert_cell(&cell, &ev);
+}
+/// **The eighth binary, on the same wire.** qwen 0.23.0's OpenAI provider is env-only
+/// (`OPENAI_BASE_URL`/`OPENAI_API_KEY`/`OPENAI_MODEL`), so the same `Script` fields drive it — with
+/// the tool under `mcp__marion__report`, Claude Code's spelling, because qwen's headless surface is
+/// Claude Code's shape and not its Gemini CLI ancestor's (s25 item 2).
+///
+/// What this cell witnesses that `tests/fixtures/s25/` alone cannot: marion's **own** bridge behind
+/// the `settings.json` `QwenAdapter::config_files` writes under the relocated `QWEN_HOME`, connected
+/// **before** turn one under `QWEN_CODE_LEGACY_MCP_BLOCKING=1` — without which the tool is deferred
+/// behind `tool_search` and a canned model that never calls that never reaches it.
+#[test]
+fn a_qwen_child_reports_through_marions_bridge_over_the_openai_wire() {
+    assert!(
+        on_path("qwen"),
+        "this cell drives a REAL qwen child; put `qwen` ({}) on PATH",
+        pinned_version("qwen")
+    );
+    let cell = Cell {
+        agent_type: "qwen",
+        // `OPENAI_MODEL` is how the provider is told what to name; the adapter refuses a canned
+        // launch without one. The canned provider ignores the name.
+        model: Some("canned-1"),
+        script: Script {
+            openai_report_tool: "mcp__marion__report".into(),
+            openai_report_args: json!({ "narrative": NARRATIVE }),
+            ..Script::default()
+        },
+        expected_harness: Harness::Qwen,
+        expected_model: Some("canned-1"),
+        // A real allowlist: `--core-tools` is what the model is offered (s25 item 5), and the
+        // record is its literal contents prefixed with the axis. `qwen` declares no tools, so
+        // marion's own verb is the whole list.
+        expected_allowed_tools: &["core-tools:mcp__marion__report"],
+        expected_wire: "openai",
+    };
+    let ev = drive(&cell);
+    assert_cell(&cell, &ev);
+}
