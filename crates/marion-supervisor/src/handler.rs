@@ -6420,6 +6420,7 @@ mod tests {
             crate::native_bootstrap::context_hash(
                 &crate::native_bootstrap::DirectNativeRequestContext::new(
                     PathBuf::from("/project"),
+                    PathBuf::from("/project"),
                     "atlas".into(),
                     Vec::new(),
                     "xterm".into(),

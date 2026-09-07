@@ -659,6 +659,7 @@ mod tests {
             NativeLaunchDescriptor::new("atlas", "atlas", "atlas-native"),
             context_hash(&DirectNativeRequestContext::new(
                 PathBuf::from("/project"),
+                PathBuf::from("/project"),
                 OsString::from("atlas"),
                 vec![],
                 OsString::from("xterm-256color"),
@@ -813,6 +814,7 @@ mod tests {
         environment: Vec<(OsString, OsString)>,
     ) -> DirectNativeRequestContext {
         DirectNativeRequestContext::new(
+            project.to_path_buf(),
             project.to_path_buf(),
             OsString::from("atlas"),
             tail,

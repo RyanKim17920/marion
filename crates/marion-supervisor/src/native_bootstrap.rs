@@ -112,7 +112,7 @@ const MAX_CONTEXT_ENVIRONMENT_ENTRIES: usize = 4096;
 const MAX_CONTEXT_BYTES: usize = 192 * 1024;
 const MAX_SELECTOR_BYTES: usize = 255;
 const MAX_CAPABILITY_GENERATION_ATTEMPTS: usize = 128;
-pub(crate) const NATIVE_WIRE_VERSION: u32 = 1;
+pub(crate) const NATIVE_WIRE_VERSION: u32 = 2;
 
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,13 +165,15 @@ pub(crate) fn observe_native_route_test_stage(stage: NativeRouteTestStage) {
 pub struct NativeBootstrapClient {
     stream: UnixStream,
     canonical_project: PathBuf,
+    /// The working directory the project was resolved from — what the vendor must run in.
+    client_cwd: PathBuf,
 }
 
 impl NativeBootstrapClient {
     /// Resolve the current project and connect to its private native-bootstrap sibling socket.
     pub fn connect_for_cwd() -> Result<Self, BootstrapError> {
-        let (_, paths) = resolve_for_cwd()?;
-        Self::connect(&paths)
+        let (_, cwd, paths) = resolve_for_cwd()?;
+        Self::connect(&paths, cwd)
     }
 
     /// [`Self::connect_for_cwd`], after making sure this project has a supervisor to connect to.
@@ -185,26 +187,31 @@ impl NativeBootstrapClient {
     pub fn ensure_for_cwd(
         launch: impl FnOnce(&Path, &Path) -> crate::detach::Launch,
     ) -> Result<Self, BootstrapError> {
-        let (state, paths) = resolve_for_cwd()?;
+        let (state, cwd, paths) = resolve_for_cwd()?;
         let ensured =
             crate::detach::ensure_supervisor(&paths, &launch(&state, paths.canonical_project()))
                 .map_err(|error| BootstrapError::SupervisorUnavailable(error.to_string()))?;
-        let client = Self::connect(&paths)?;
+        let client = Self::connect(&paths, cwd)?;
         drop(ensured);
         Ok(client)
     }
 
-    fn connect(paths: &socket::SocketPaths) -> Result<Self, BootstrapError> {
+    fn connect(paths: &socket::SocketPaths, client_cwd: PathBuf) -> Result<Self, BootstrapError> {
         let stream = UnixStream::connect(paths.native_bootstrap())
             .map_err(BootstrapError::NativeTransportIo)?;
         Ok(Self {
             stream,
             canonical_project: paths.canonical_project().to_path_buf(),
+            client_cwd,
         })
     }
 
     pub(crate) fn canonical_project(&self) -> &std::path::Path {
         &self.canonical_project
+    }
+
+    pub(crate) fn client_cwd(&self) -> &std::path::Path {
+        &self.client_cwd
     }
 
     pub(crate) fn request(
@@ -223,14 +230,15 @@ impl NativeBootstrapClient {
     }
 }
 
-/// `(<state>, this project's socket paths)` for the calling process's working directory.
-fn resolve_for_cwd() -> Result<(PathBuf, socket::SocketPaths), BootstrapError> {
+/// `(<state>, the physical working directory, this project's socket paths)` for the calling
+/// process — one `getcwd`, so the directory the project was resolved from is the one sent.
+fn resolve_for_cwd() -> Result<(PathBuf, PathBuf, socket::SocketPaths), BootstrapError> {
     let cwd = std::env::current_dir().map_err(BootstrapError::NativeTransportIo)?;
     let state = socket::resolve_state_dir().map_err(|error| {
         BootstrapError::NativeTransportIo(std::io::Error::other(error.to_string()))
     })?;
     let paths = socket::socket_paths(&state, &socket::project_root(&cwd), own_uid());
-    Ok((state, paths))
+    Ok((state, cwd, paths))
 }
 
 /// One issued capability kept on the authenticated connection that issued it.
@@ -416,9 +424,17 @@ const _: () = assert!(LINUX_ATOMIC_RECEIVE_FLAGS.contains(RecvFlags::CMSG_CLOEXE
 /// the only way that state can reach a process the supervisor spawns. It is carried, budgeted, and
 /// stripped of `MARION_*` identity, but it is deliberately **not** a hash input (§5 runtime spec:
 /// "Secrets and environment values are never hash inputs").
+///
+/// The client's working directory **is** a hash input. It is exact process state like the project
+/// identity — neither a secret nor an environment value — and it is where the vendor runs, so a
+/// capability issued for one directory must not be consumable from another. The canonical project
+/// is the git common dir (`<repo>/.git`, or the directory itself outside git), which is a key and
+/// not a place to run anything; the supervisor checks the working directory resolves to that same
+/// key and lies outside it before any side effect (`NativeBootstrapService::validate_context`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectNativeRequestContext {
     canonical_project: PathBuf,
+    client_cwd: PathBuf,
     selector: OsString,
     opaque_tail: Vec<OsString>,
     terminal_profile: OsString,
@@ -429,6 +445,7 @@ pub struct DirectNativeRequestContext {
 impl DirectNativeRequestContext {
     pub fn new(
         canonical_project: PathBuf,
+        client_cwd: PathBuf,
         selector: OsString,
         opaque_tail: Vec<OsString>,
         terminal_profile: OsString,
@@ -436,6 +453,7 @@ impl DirectNativeRequestContext {
     ) -> Self {
         Self {
             canonical_project,
+            client_cwd,
             selector,
             opaque_tail,
             terminal_profile,
@@ -461,6 +479,11 @@ impl DirectNativeRequestContext {
 
     pub(crate) fn canonical_project(&self) -> &std::path::Path {
         &self.canonical_project
+    }
+
+    /// Where the operator invoked the facade, and therefore where the vendor runs.
+    pub(crate) fn client_cwd(&self) -> &std::path::Path {
+        &self.client_cwd
     }
 
     pub(crate) const fn native_wire_version(&self) -> u32 {
@@ -511,6 +534,7 @@ fn context_hash_for_domain(domain: &[u8], context: &DirectNativeRequestContext) 
     }
     bytes(&mut hasher, &context.terminal_profile);
     hasher.update(&context.native_wire_version.to_be_bytes());
+    bytes(&mut hasher, context.client_cwd.as_os_str());
     ContextHash(*hasher.finalize().as_bytes())
 }
 
@@ -2312,6 +2336,9 @@ fn write_context<W: Write>(
         field(stream, name)?;
         field(stream, value)?;
     }
+    // Last on the wire so a version-1 supervisor still finds the version field where it expects it
+    // and refuses by version rather than by a misparse.
+    field(stream, context.client_cwd.as_os_str())?;
     Ok(())
 }
 
@@ -2409,8 +2436,10 @@ fn read_context<R: Read>(stream: &mut R) -> Result<DirectNativeRequestContext, B
         let value = field(stream, &mut budget)?;
         environment.push((name, value));
     }
+    let client_cwd = PathBuf::from(field(stream, &mut budget)?);
     Ok(DirectNativeRequestContext {
         canonical_project,
+        client_cwd,
         selector,
         opaque_tail,
         terminal_profile,
@@ -2483,7 +2512,10 @@ fn checked_context_wire_size(
                     .environment
                     .iter()
                     .flat_map(|(name, value)| [name.as_bytes().len(), value.as_bytes().len()]),
-            ),
+            )
+            .chain(std::iter::once(
+                context.client_cwd.as_os_str().as_bytes().len(),
+            )),
         context.opaque_tail.len(),
         context.environment.len(),
     )
@@ -3158,7 +3190,32 @@ impl NativeBootstrapService {
         if context.native_wire_version() != self.supported_wire_version {
             return Err(BootstrapError::NativeWireVersionUnsupported);
         }
-        Ok(())
+        self.validate_client_cwd(context.client_cwd())
+    }
+
+    /// The working directory the vendor will run in belongs to the project this supervisor serves.
+    ///
+    /// "Belongs to" is §2's own derivation and no other: the directory's git common dir is this
+    /// supervisor's canonical project, which admits every linked worktree of the repository (one
+    /// supervisor serves them all) and, outside git, exactly the project directory itself. A
+    /// directory *inside* the common dir resolves to the same key and is refused all the same —
+    /// `.git` is where marion keys a project, not a place a harness should be told is its
+    /// workspace. Checked on the physical path, and before the handler sees the request.
+    fn validate_client_cwd(&self, client_cwd: &Path) -> Result<(), BootstrapError> {
+        let physical = std::fs::canonicalize(client_cwd)
+            .map_err(|_| BootstrapError::NativeWireClientCwdOutsideProject)?;
+        let inside_project = match socket::git_common_dir(&physical) {
+            Some(common) => {
+                let common = common.canonicalize().unwrap_or(common);
+                common == self.expected_project && !physical.starts_with(&common)
+            }
+            None => physical == self.expected_project,
+        };
+        if inside_project {
+            Ok(())
+        } else {
+            Err(BootstrapError::NativeWireClientCwdOutsideProject)
+        }
     }
 
     #[allow(
@@ -3369,6 +3426,8 @@ pub enum BootstrapError {
     NativeWireProtocol,
     #[error("native bootstrap canonical project does not match this supervisor")]
     NativeWireProjectMismatch,
+    #[error("native bootstrap client working directory is not inside this supervisor's project")]
+    NativeWireClientCwdOutsideProject,
     #[error("native bootstrap wire version is not supported by this supervisor")]
     NativeWireVersionUnsupported,
     #[error("native bootstrap request context exceeds the aggregate wire budget")]

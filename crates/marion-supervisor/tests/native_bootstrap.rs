@@ -16,6 +16,7 @@ use marion_testsupport::scratch;
 fn request_context(selector: &str, tail: Vec<OsString>) -> DirectNativeRequestContext {
     DirectNativeRequestContext::new(
         PathBuf::from(OsString::from_vec(b"/canonical/project-\xff".to_vec())),
+        PathBuf::from(OsString::from_vec(b"/canonical/project-\xff/work".to_vec())),
         OsString::from(selector),
         tail,
         OsString::from_vec(b"xterm-\xfe".to_vec()),

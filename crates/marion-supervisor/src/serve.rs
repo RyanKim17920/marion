@@ -2303,6 +2303,7 @@ mod tests {
         // binary line) proves both were already handled when the counters are read.
         let context = crate::native_bootstrap::DirectNativeRequestContext::new(
             paths.canonical_project().to_path_buf(),
+            paths.canonical_project().to_path_buf(),
             OsString::from("atlas"),
             vec![OsString::from("--opaque")],
             OsString::from("xterm-256color"),
@@ -2408,7 +2409,11 @@ mod tests {
 
         const GRACE: Duration = Duration::ZERO;
         let dir = marion_testsupport::scratch("native-dispatch");
-        let paths = crate::socket::socket_paths(&dir, std::path::Path::new("/p"), 1);
+        // A directory that exists: the service checks the request's working directory is one of
+        // the project's before it hands the request on.
+        let project = dir.join("p");
+        std::fs::create_dir_all(&project).unwrap();
+        let paths = crate::socket::socket_paths(&dir, &project, 1);
         let Acquired::Serving(serving) = acquire(&paths).unwrap() else {
             panic!("nothing was listening")
         };
@@ -2449,10 +2454,11 @@ mod tests {
             .unwrap();
         let context = crate::native_bootstrap::DirectNativeRequestContext::new(
             paths.canonical_project().to_path_buf(),
+            paths.canonical_project().to_path_buf(),
             std::ffi::OsString::from("atlas"),
             Vec::new(),
             std::ffi::OsString::from("xterm"),
-            1,
+            crate::native_bootstrap::NATIVE_WIRE_VERSION,
         );
         let capability = crate::native_bootstrap::request_direct_cli_capability(
             &mut client,

@@ -153,6 +153,7 @@ pub fn dispatch_native_facade_or_legacy<'a>(
 
     let context = DirectNativeRequestContext::new(
         connection.canonical_project().to_path_buf(),
+        connection.client_cwd().to_path_buf(),
         OsString::from(request.requested_selector()),
         request.opaque_tail().to_vec(),
         std::env::var_os("TERM").unwrap_or_default(),

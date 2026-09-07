@@ -130,11 +130,19 @@ corresponding local peer-pid credential; platforms without peer credentials plus
 passing report native mode unsupported.
 
 `DirectNativeRequestContext` is distinct from the later `NativeNodeContext`: it contains canonical
-project identity, selector, opaque argument tail, terminal profile, and native wire version, but no
-not-yet-minted agent id and no secret. Its hash is BLAKE3 with a fixed domain tag over
-length-prefixed raw Unix `OsStr` bytes and fixed-width semantic fields; argument boundaries and
-empty arguments are therefore unambiguous. Both peers compute it from the same authenticated
-envelope. Secrets and environment values are never hash inputs.
+project identity, the client's working directory, selector, opaque argument tail, terminal profile,
+and native wire version, but no not-yet-minted agent id and no secret. Its hash is BLAKE3 with a
+fixed domain tag over length-prefixed raw Unix `OsStr` bytes and fixed-width semantic fields;
+argument boundaries and empty arguments are therefore unambiguous. Both peers compute it from the
+same authenticated envelope. Secrets and environment values are never hash inputs; the working
+directory is process state, not an environment value, and is one, so a capability issued for one
+directory cannot be consumed from another.
+
+The working directory is where the vendor runs. The canonical project is §2's key — the git common
+dir, or the directory itself outside git — and is not a place to run anything; the supervisor
+refuses, before any side effect, a working directory whose physical path does not resolve to that
+same key or lies inside it. Every linked worktree of a repository therefore passes, and `.git`
+itself never does.
 
 Only that `ConnectionKind::NativeBootstrap` handler can issue a `DirectCliCapability`. The
 capability is a random 256-bit opaque id stored server-side and bound to the authenticated

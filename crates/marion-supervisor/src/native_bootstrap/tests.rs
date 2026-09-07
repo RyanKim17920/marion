@@ -1020,9 +1020,32 @@ fn failed_claim_callback_preserves_the_ticket_for_retry() {
         .unwrap();
 }
 
+/// A project directory that **exists**, and is the same path in every process of this test binary.
+///
+/// The service refuses a request whose working directory is not a real directory of its project
+/// before the handler sees it, so the fixture context has to name one; and the re-executed probes
+/// compare a context they built against one the parent built, so the path cannot carry a pid. It is
+/// created and never removed: a `Scratch` guard here would take the directory away from every
+/// other test in the process the moment one of them returned. Non-UTF-8 bytes stay on the tail
+/// and profile, where the platform's filesystem has no say.
+fn request_project() -> PathBuf {
+    let project = PathBuf::from(format!(
+        "{}-{}",
+        marion_testsupport::SCRATCH_ROOT,
+        own_uid()
+    ))
+    .join("native-ctx");
+    std::fs::create_dir_all(&project).expect("the fixture project directory exists");
+    project
+        .canonicalize()
+        .expect("the fixture project directory canonicalises")
+}
+
 fn request_context() -> DirectNativeRequestContext {
+    let project = request_project();
     DirectNativeRequestContext::new(
-        PathBuf::from(OsString::from_vec(b"/project-\xff".to_vec())),
+        project.clone(),
+        project,
         OsString::from("atlas"),
         vec![OsString::from_vec(vec![b'a', 0xfe]), OsString::new()],
         OsString::from("xterm-256color"),
@@ -1109,6 +1132,7 @@ fn server_tty_verifier_refuses_nonterminal_rights_before_downstream_effects() {
 fn context_hash_has_a_fixed_vector_and_every_semantic_boundary_is_load_bearing() {
     let base = DirectNativeRequestContext::new(
         PathBuf::from(OsString::from_vec(b"/project-\xff".to_vec())),
+        PathBuf::from(OsString::from_vec(b"/project-\xff/work-\xfd".to_vec())),
         OsString::from("atlas"),
         vec![OsString::from_vec(vec![b'a', 0xfe]), OsString::new()],
         OsString::from("xterm-256color"),
@@ -1117,8 +1141,8 @@ fn context_hash_has_a_fixed_vector_and_every_semantic_boundary_is_load_bearing()
     assert_eq!(
         context_hash(&base).0,
         [
-            100, 208, 119, 25, 123, 215, 168, 248, 160, 18, 90, 119, 53, 179, 18, 216, 227, 150,
-            157, 8, 55, 78, 242, 24, 14, 101, 243, 103, 90, 5, 234, 230,
+            33, 190, 77, 123, 145, 157, 2, 180, 92, 210, 231, 2, 173, 235, 169, 172, 179, 211, 99,
+            38, 149, 224, 29, 136, 202, 163, 70, 85, 169, 17, 253, 208,
         ]
     );
     assert_ne!(
@@ -1140,6 +1164,11 @@ fn context_hash_has_a_fixed_vector_and_every_semantic_boundary_is_load_bearing()
     assert_ne!(context_hash(&changed), context_hash(&base));
     changed = base.clone();
     changed.native_wire_version += 1;
+    assert_ne!(context_hash(&changed), context_hash(&base));
+    // The working directory is process state, not an environment value: a capability issued for
+    // one directory is not consumable from another.
+    changed = base.clone();
+    changed.client_cwd = PathBuf::from(OsString::from_vec(b"/project-\xff/other".to_vec()));
     assert_ne!(context_hash(&changed), context_hash(&base));
 
     // Environment values are carried but are never hash inputs.
@@ -1205,12 +1234,14 @@ fn encoded_context(context: &DirectNativeRequestContext) -> Vec<u8> {
         field(&mut bytes, name);
         field(&mut bytes, value);
     }
+    field(&mut bytes, context.client_cwd.as_os_str());
     bytes
 }
 
 fn budget_context(argument_bytes: usize) -> DirectNativeRequestContext {
     DirectNativeRequestContext::new(
         PathBuf::from(OsString::from_vec(vec![b'p'; MAX_CONTEXT_FIELD_BYTES])),
+        PathBuf::from("c"),
         OsString::from("s"),
         vec![OsString::from_vec(vec![b'a'; argument_bytes])],
         OsString::from_vec(vec![b't'; MAX_CONTEXT_FIELD_BYTES]),
@@ -1219,9 +1250,9 @@ fn budget_context(argument_bytes: usize) -> DirectNativeRequestContext {
 }
 
 /// Fixed framing (argc, version, env count) plus the project and profile fields at their caps,
-/// the one-byte selector, and one length-prefixed argument.
+/// the one-byte selector, the one-byte working directory, and one length-prefixed argument.
 const BUDGET_FRAMING_BYTES: usize =
-    12 + (4 + MAX_CONTEXT_FIELD_BYTES) + (4 + 1) + 4 + (4 + MAX_CONTEXT_FIELD_BYTES);
+    12 + (4 + MAX_CONTEXT_FIELD_BYTES) + (4 + 1) + 4 + (4 + MAX_CONTEXT_FIELD_BYTES) + (4 + 1);
 
 #[test]
 fn aggregate_context_budget_accepts_exact_boundary_and_rejects_cumulative_and_checked_overflow() {
@@ -1291,6 +1322,26 @@ fn environment_debits_the_same_aggregate_budget_and_is_bounded_by_count() {
         read_context(&mut encoded),
         Err(BootstrapError::NativeWireProtocol)
     ));
+}
+
+/// Mutation: leave the working directory outside the aggregate budget. It trails the environment
+/// on the wire and costs its length prefix plus its bytes like every other field.
+#[test]
+fn the_client_cwd_debits_the_same_aggregate_budget() {
+    let exact = budget_context(MAX_CONTEXT_BYTES - BUDGET_FRAMING_BYTES);
+    let mut over = exact.clone();
+    over.client_cwd = PathBuf::from("cc");
+    assert!(matches!(
+        checked_context_wire_size(&over),
+        Err(BootstrapError::NativeWireContextTooLarge)
+    ));
+    let mut encoded = std::io::Cursor::new(encoded_context(&over));
+    assert!(matches!(
+        read_context(&mut encoded),
+        Err(BootstrapError::NativeWireContextTooLarge)
+    ));
+    let mut encoded = std::io::Cursor::new(encoded_context(&exact));
+    assert_eq!(read_context(&mut encoded).unwrap(), exact);
 }
 
 /// Mutation: strip `MARION_*` only on the client. A frame that still carries reserved identity is
@@ -1946,9 +1997,11 @@ fn real_tty_bootstrap_alias_probe() {
     eprintln!("TTY_IDENTITY_READY");
 
     let handler = Arc::new(SelectingRouteHandler::new());
+    let work = marion_testsupport::scratch("native-alias-probe");
+    let project = work.to_path_buf();
     let (client_stream, server_stream) = UnixStream::pair().expect("bootstrap socket pair");
     let service = Arc::new(NativeBootstrapService::new(
-        PathBuf::from("/project"),
+        project.clone(),
         NATIVE_WIRE_VERSION,
         Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
     ));
@@ -1963,7 +2016,8 @@ fn real_tty_bootstrap_alias_probe() {
     };
     let client = NativeBootstrapClient {
         stream: client_stream,
-        canonical_project: PathBuf::from("/project"),
+        canonical_project: project.clone(),
+        client_cwd: project.clone(),
     };
     let registry = NativeFacadeRegistry::new(&[ROUTE_DESCRIPTOR]).expect("client registry");
     let opaque = OsString::from_vec(b"--opaque-\xff".to_vec());
@@ -2007,7 +2061,8 @@ fn real_tty_bootstrap_alias_probe() {
     assert_eq!(selector, OsString::from("at"));
     assert_eq!(opaque_tail, [opaque]);
     let canonical = DirectNativeRequestContext::new(
-        PathBuf::from("/project"),
+        project.clone(),
+        project,
         OsString::from("atlas"),
         opaque_tail,
         std::env::var_os("TERM").unwrap_or_default(),
@@ -2302,9 +2357,11 @@ fn real_tty_revalidation_probe() {
         terminal_verifications: AtomicU64::new(0),
         effects: Arc::clone(&effects),
     });
+    let work = marion_testsupport::scratch("native-revalidation-probe");
+    let project = work.to_path_buf();
     let (client_stream, server_stream) = UnixStream::pair().expect("bootstrap socket pair");
     let service = Arc::new(NativeBootstrapService::new(
-        PathBuf::from("/project"),
+        project.clone(),
         NATIVE_WIRE_VERSION,
         Arc::clone(&handler) as Arc<dyn NativeBootstrapHandler>,
     ));
@@ -2315,10 +2372,12 @@ fn real_tty_revalidation_probe() {
     };
     let client = NativeBootstrapClient {
         stream: client_stream,
-        canonical_project: PathBuf::from("/project"),
+        canonical_project: project.clone(),
+        client_cwd: project.clone(),
     };
     let context = DirectNativeRequestContext::new(
-        PathBuf::from("/project"),
+        project.clone(),
+        project,
         OsString::from("atlas"),
         vec![OsString::from("--opaque")],
         std::env::var_os("TERM").unwrap_or_default(),
@@ -2345,6 +2404,7 @@ fn service_policy_rejects_wrong_project_and_wire_version() {
     let service = NativeBootstrapService::disabled(PathBuf::from("/expected"));
     let wrong_project = DirectNativeRequestContext::new(
         PathBuf::from("/wrong"),
+        PathBuf::from("/wrong"),
         OsString::from("atlas"),
         Vec::new(),
         OsString::from("xterm"),
@@ -2356,6 +2416,7 @@ fn service_policy_rejects_wrong_project_and_wire_version() {
     ));
     let wrong_version = DirectNativeRequestContext::new(
         PathBuf::from("/expected"),
+        PathBuf::from("/expected"),
         OsString::from("atlas"),
         Vec::new(),
         OsString::from("xterm"),
@@ -2365,6 +2426,69 @@ fn service_policy_rejects_wrong_project_and_wire_version() {
         service.validate_context(&wrong_version),
         Err(BootstrapError::NativeWireVersionUnsupported)
     ));
+}
+
+/// Mutation: run the vendor wherever the client says, check only that the directory exists, or
+/// accept every directory whose §2 key matches — which admits the common dir itself, the exact
+/// `.git` the demo saw every harness print as its workspace.
+#[test]
+fn a_client_cwd_outside_the_project_is_refused() {
+    let work = marion_testsupport::scratch("native-client-cwd");
+    let project = work.join("project");
+    let inside = project.join("src");
+    let elsewhere = work.join("elsewhere");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let context = |cwd: &Path, project: &Path| {
+        DirectNativeRequestContext::new(
+            project.to_path_buf(),
+            cwd.to_path_buf(),
+            OsString::from("atlas"),
+            Vec::new(),
+            OsString::from("xterm"),
+            NATIVE_WIRE_VERSION,
+        )
+    };
+    let refused = |service: &NativeBootstrapService, cwd: &Path, project: &Path| {
+        assert!(
+            matches!(
+                service.validate_context(&context(cwd, project)),
+                Err(BootstrapError::NativeWireClientCwdOutsideProject)
+            ),
+            "{} was accepted as a working directory of {}",
+            cwd.display(),
+            project.display()
+        );
+    };
+
+    // Outside git the key is the directory itself, so that directory alone belongs to it.
+    let service = NativeBootstrapService::disabled(project.clone());
+    service
+        .validate_context(&context(&project, &project))
+        .expect("the project directory is its own working tree");
+    for cwd in [&inside, &elsewhere, &work.join("missing")] {
+        refused(&service, cwd, &project);
+    }
+
+    // In a repository the key is the common dir: every directory of the working tree resolves to
+    // it, and so does the common dir itself, which is refused for lying inside the key.
+    let status = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&project)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "git init: {status}");
+    let key = socket::project_root(&project);
+    assert_eq!(key, project.join(".git"));
+    let service = NativeBootstrapService::disabled(key.clone());
+    for cwd in [&project, &inside] {
+        service
+            .validate_context(&context(cwd, &key))
+            .unwrap_or_else(|error| panic!("{} was refused: {error}", cwd.display()));
+    }
+    for cwd in [&key, &key.join("objects"), &elsewhere] {
+        refused(&service, cwd, &key);
+    }
 }
 
 #[test]
