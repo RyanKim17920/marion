@@ -192,9 +192,13 @@ updates.` line under `--version` is static text and stays). **gemini** 0.53.0 ha
 switch; `general.enableAutoUpdate=false` and `general.enableAutoUpdateNotification=false` ride the
 system-settings document the row already emits, applied from the row (`UpdatePolicy::Document`).
 **qwen** 0.23.0 `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true` (read as the exact string on every launch
-despite `_ONCE`). **goose** 1.49.0 and **cline** 3.0.61 never update themselves — `goose update` is
-an explicit subcommand and neither binary carries a check-for-update path or an update variable —
-so their rows say `UpdatePolicy::None` with that finding, and ACP's says `None` because the program
+despite `_ONCE`). **cline** 3.0.61 `CLINE_NO_AUTO_UPDATE=1` (strict string `1`; without it
+`autoUpdateOnStartup` runs before argv parsing on every invocation, headless and `--acp`, fetches
+npm's latest and spawns the package-manager update detached at exit — silently, no banner, so a
+first `strings` pass that looked for banner text missed it and called the row `None`; the second
+pass read the startup function). **goose** 1.49.0 never updates itself — `goose update` is an
+explicit subcommand, the binary carries no check-for-update path and no `GOOSE_*` update variable —
+so its row says `UpdatePolicy::None` with that finding, and ACP's says `None` because the program
 is the bound agent's. Verified live on 2026-09-06: the `--version` probes above under their switches, and
 `harness_matrix` with the switches rendered — codex, copilot, gemini, goose, cline and qwen green;
 the claude and opencode cells stopped at the version gate (2.1.263 and 1.18.29 installed against

@@ -150,14 +150,20 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `--id <session-id>` sets the startup target to interactive before the prompt is read, and
     // headless it exits 1 under both `--json` and plain output (s27 item 11).
     resume: None,
-    // cline 3.0.61 has no measured self-update or update banner: the Node launcher (`bin/cline`)
-    // only harvests CA certificates and warns about old Node, and the Bun bundle (`bin/.cline`)
-    // carries no `update-notifier`, `NO_UPDATE_NOTIFIER`, `checkForUpdate`, "new version" or
-    // `CLINE_*UPDATE` text — the only "update"/"outdated" strings are bun's own subcommand help.
-    // Nothing to switch off; the row says so.
-    updates: UpdatePolicy::None {
-        note: "3.0.61: no update check found in `bin/cline` or the `bin/.cline` bundle (no \
-               update-notifier, no `CLINE_*UPDATE` variable); it never updates itself",
+    // cline 3.0.61 updates itself **silently, on every invocation** — headless prompt and `--acp`
+    // alike: `autoUpdateOnStartup` runs in `runCli` before argv is parsed, fetches npm's latest
+    // version, and `applyDeferredUpdate` spawns the package-manager update detached at exit
+    // (unless the hub reports other live sessions). Nothing is printed, so there is no banner to
+    // notice; the binary just changes under the next node. The bundle's check, verbatim:
+    // `if(process.env.CLINE_NO_AUTO_UPDATE==="1")return;` — the strict string `1`, and the only
+    // update-related `CLINE_*` variable. The other gate, `autoUpdateEnabled: false` in the data
+    // dir's `globalState.json`, is a file a live node does not let marion write.
+    updates: UpdatePolicy::Env {
+        key: "CLINE_NO_AUTO_UPDATE",
+        value: "1",
+        note: "3.0.61 `bin/.cline` bundle: `autoUpdateOnStartup` returns on \
+               `CLINE_NO_AUTO_UPDATE === \"1\"` before fetching npm's latest; no update-notifier, \
+               no banner headless",
     },
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
