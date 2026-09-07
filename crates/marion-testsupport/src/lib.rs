@@ -505,8 +505,26 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         //
         // **Not re-run:** the s10/s11/s14/s16 probes under `spikes/`. This entry rests on the suite
         // alone; those readings are still 2.1.226's.
+        //
+        // 2.1.263: observed green on darwin 25.5.0, 2026-09-06, at `ccf13bc`, one day after
+        // 2.1.261 was admitted — the installed binary moved again overnight. Every gated suite
+        // that drives a real `claude` passed with only this entry widened (codex held at 0.147.0
+        // by the runner shim; opencode 1.18.29 widened in the same run): `harness_matrix` (8),
+        // `cross_product` (57), `journal_wiring` (18), `m1_hop` (1), `m4_fan_in` (1), `depth_gate`
+        // (4), `no_git` (5), `pane_attach` (2), `acp_child` (3), `permission_round_trip` (8),
+        // `native_facade_smoke` (1), `client_run` (7), `node_attach` (2), `timeout_kill` (1),
+        // `worktree_reap` (8), and the claude lane of `native_facade_e2e` (its copilot lane failed
+        // on copilot's own trust dialog, pinned 1.0.83, unrelated). `pane_attach`'s claude cell is
+        // green here, so the double-painted trust dialog that 2.1.261 introduced (see the
+        // paragraph above and `MILESTONES.md`) is still the shape on 2.1.263 and the fixture's
+        // settle wait still covers it; the cursor still defaults to "No, exit". 2.1.261 remains on
+        // disk under `~/.local/share/claude/versions/`, so a one-axis A/B is possible again, and
+        // was used to separate this version's gate refusal from a semantic failure before the
+        // widen.
+        //
+        // **Not re-run:** the s10/s11/s14/s16 probes; those readings are still 2.1.226's.
         accepted: &[
-            "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261",
+            "2.1.220", "2.1.222", "2.1.223", "2.1.224", "2.1.225", "2.1.226", "2.1.261", "2.1.263",
         ],
     },
     PinnedHarness {

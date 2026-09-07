@@ -85,7 +85,7 @@ one runs as a child and a root through `run_spawn` (`harness_matrix` 8 cells; `c
 cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launches any ACP agent
 with no row (`acp_child.rs`), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
-own handshake. Pinned versions: claude 2.1.220–2.1.226 and 2.1.261; codex 0.146.0/0.146.1/0.147.0;
+own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261 and 2.1.263; codex 0.146.0/0.146.1/0.147.0;
 gemini 0.53.0; opencode 1.17.3; copilot 1.0.83; goose 1.49.0; cline 3.0.61; qwen 0.23.0.
 
 **Native facade.** `marion <harness> <its own flags>` runs the harness's real TUI through the
@@ -260,6 +260,19 @@ marker) rather than the recording. The delivery leg the
 into a real child and was the first test to assert an *admitted* opaque write is delivered (every
 prior opaque-input test was a refusal). The s10/s11/s14/s16 probes were **not** re-run; those
 readings remain 2.1.226's.
+
+**2.1.263, admitted 2026-09-06 at `ccf13bc`.** claude moved again overnight, one day after 2.1.261
+was admitted. The gate caught it first — every claude-driving cell refused at the pin — and 2.1.261
+is still on disk, so a `PATH` shim showed the same tree green on 2.1.261 before the entry was
+widened. With the entry widened (codex held at 0.147.0 by the runner shim, opencode 1.18.29 widened
+in the same run): `harness_matrix` (8), `cross_product` (57), `journal_wiring` (18), `m1_hop` (1),
+`m4_fan_in` (1), `depth_gate` (4), `no_git` (5), `pane_attach` (2), `acp_child` (3),
+`permission_round_trip` (8), `native_facade_smoke` (1), `client_run` (7), `node_attach` (2),
+`timeout_kill` (1), `worktree_reap` (8), and the claude lane of `native_facade_e2e` (its copilot
+lane failed on copilot's own trust dialog, pinned 1.0.83, unrelated). `pane_attach`'s claude cell is
+green, so the double-painted trust dialog is still 2.1.263's shape and the fixture's settle wait
+still covers it; the cursor still defaults to "No, exit". The s10/s11/s14/s16 probes were not re-
+run.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in
