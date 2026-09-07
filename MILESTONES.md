@@ -1101,7 +1101,11 @@ acceptance evidence, so every marker remains unchanged.
   client by signal 15 with termios at baseline and the node untouched; a confirmed `KillTree`
   ends the node with `Exited{signal 9}`. The relay's terminal writer blocks on writability instead
   of dying on a full pty queue, a bug the matrix found on its first run. The `opencode` and
-  `copilot` lanes were enabled on measurement of their TUIs' `/mcp` views. *Still open:* C1's
+  `copilot` lanes were enabled on measurement of their TUIs' `/mcp` views. Since 2026-09-06 the
+  facade from a cold project starts the supervisor itself through `detach::ensure_supervisor` —
+  the one spawn path `marion run` and `marion resume` already take — instead of refusing when
+  nothing serves the project (the demo found it refusing); `native_facade_smoke.rs` now begins
+  with nothing serving and reads the identity file the started supervisor published. *Still open:* C1's
   recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
   merge unmeasured); `SIGTSTP`/`SIGCONT` through the shipped facade, not observable from the
   `spawn_pty` fixture (orphaned process group) — a real kernel stop and continue through the relay

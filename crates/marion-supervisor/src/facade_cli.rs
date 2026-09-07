@@ -141,10 +141,10 @@ pub fn dispatch_native_facade_or_legacy<'a>(
 
     let connection = match connect_native() {
         Ok(connection) => connection,
-        Err(_) => {
+        Err(error) => {
             writeln!(
                 stderr,
-                "marion: native facade bootstrap authorization was refused"
+                "marion: native facade bootstrap authorization was refused: {error}"
             )
             .expect("write native facade refusal to stderr");
             return ExitCode::FAILURE;

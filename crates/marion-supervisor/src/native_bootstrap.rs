@@ -65,7 +65,7 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -170,10 +170,31 @@ pub struct NativeBootstrapClient {
 impl NativeBootstrapClient {
     /// Resolve the current project and connect to its private native-bootstrap sibling socket.
     pub fn connect_for_cwd() -> Result<Self, BootstrapError> {
-        let cwd = std::env::current_dir().map_err(BootstrapError::NativeTransportIo)?;
-        let paths = socket::resolve(&cwd).map_err(|error| {
-            BootstrapError::NativeTransportIo(std::io::Error::other(error.to_string()))
-        })?;
+        let (_, paths) = resolve_for_cwd()?;
+        Self::connect(&paths)
+    }
+
+    /// [`Self::connect_for_cwd`], after making sure this project has a supervisor to connect to.
+    ///
+    /// The one spawn path: `crate::detach::ensure_supervisor`, which `marion run` and `marion
+    /// resume` take — dial, and start stage 1 **only** if nothing answers. `launch` is told the
+    /// resolved `<state>` and canonical project root and builds what stage 3 must be told, because
+    /// the binary to start and the provider choice are the launcher's to state, never this
+    /// client's to infer. The ordinary-socket connection `ensure_supervisor` returns is held until
+    /// the native sibling is dialed, so the supervisor has a client for every instant in between.
+    pub fn ensure_for_cwd(
+        launch: impl FnOnce(&Path, &Path) -> crate::detach::Launch,
+    ) -> Result<Self, BootstrapError> {
+        let (state, paths) = resolve_for_cwd()?;
+        let ensured =
+            crate::detach::ensure_supervisor(&paths, &launch(&state, paths.canonical_project()))
+                .map_err(|error| BootstrapError::SupervisorUnavailable(error.to_string()))?;
+        let client = Self::connect(&paths)?;
+        drop(ensured);
+        Ok(client)
+    }
+
+    fn connect(paths: &socket::SocketPaths) -> Result<Self, BootstrapError> {
         let stream = UnixStream::connect(paths.native_bootstrap())
             .map_err(BootstrapError::NativeTransportIo)?;
         Ok(Self {
@@ -200,6 +221,16 @@ impl NativeBootstrapClient {
             tty,
         })
     }
+}
+
+/// `(<state>, this project's socket paths)` for the calling process's working directory.
+fn resolve_for_cwd() -> Result<(PathBuf, socket::SocketPaths), BootstrapError> {
+    let cwd = std::env::current_dir().map_err(BootstrapError::NativeTransportIo)?;
+    let state = socket::resolve_state_dir().map_err(|error| {
+        BootstrapError::NativeTransportIo(std::io::Error::other(error.to_string()))
+    })?;
+    let paths = socket::socket_paths(&state, &socket::project_root(&cwd), own_uid());
+    Ok((state, paths))
 }
 
 /// One issued capability kept on the authenticated connection that issued it.
@@ -3308,6 +3339,8 @@ pub enum BootstrapError {
     PeerUidMismatch,
     #[error("native bootstrap transport I/O failed: {0}")]
     NativeTransportIo(std::io::Error),
+    #[error("no supervisor serves this project and none could be started: {0}")]
+    SupervisorUnavailable(String),
     #[error("native bootstrap descriptor message was malformed")]
     DescriptorMessage,
     #[error("native bootstrap requires exactly stdin and stdout descriptors")]

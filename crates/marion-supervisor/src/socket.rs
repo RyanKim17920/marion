@@ -330,18 +330,24 @@ pub fn git_common_dir(cwd: &Path) -> Option<PathBuf> {
 /// testable without mutating process-global environment state, which is a data race in a threaded
 /// test binary.
 pub fn resolve(cwd: &Path) -> Result<SocketPaths, SocketError> {
-    let state = state_dir(
-        std::env::var("MARION_STATE_DIR").ok().as_deref(),
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
-    .ok_or(SocketError::NoStateDir)?;
     Ok(socket_paths(
-        &state,
+        &resolve_state_dir()?,
         &project_root(cwd),
         // SAFETY: `getuid` reads the calling process's real uid and cannot fail.
         unsafe { getuid() },
     ))
+}
+
+/// `<state>` by §4.3's precedence, read from this process's environment — the one lookup
+/// [`resolve`] performs that a caller who must also *start* a supervisor needs on its own, because
+/// [`crate::detach::Launch::state_dir`] carries it onto stage 3's argv.
+pub fn resolve_state_dir() -> Result<PathBuf, SocketError> {
+    state_dir(
+        std::env::var("MARION_STATE_DIR").ok().as_deref(),
+        std::env::var("XDG_STATE_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+    .ok_or(SocketError::NoStateDir)
 }
 
 /// What [`acquire`] settled: this caller serves, or someone else already does.

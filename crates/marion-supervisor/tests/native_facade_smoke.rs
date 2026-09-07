@@ -1,27 +1,26 @@
 //! The shipped `marion <harness> …` binary in front of a real harness, on a real terminal.
 //!
 //! Not the M3 E2E matrix (a TUI cell on screen, keystrokes, resize, detach — `plan-native-
-//! activation.md` step 9). One smoke proof for the composition: the production registry, the
-//! row-derived adapter table and the production factory in a supervisor wired the way
-//! `detach.rs` stage 3 wires it; the **shipped** `marion` binary as the client, on its own
-//! controlling PTY, running `codex --help` through the facade; and the harness's own help text on
-//! the operator's terminal with termios back where it started.
+//! activation.md` step 9). One smoke proof for the composition, **from a cold project**: nothing
+//! serves the project when the operator types `marion codex --help`, so the shipped binary must
+//! start this project's supervisor the way `marion run` does (`detach::ensure_supervisor`, whose
+//! stage 3 composes the production registry, the row-derived adapter table and the production
+//! factory), then bootstrap through it on its own controlling PTY; and the harness's own help text
+//! lands on the operator's terminal with termios back where it started.
 
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use marion_core::paths::ProjectDir;
-use marion_supervisor::handler::RegistryHandle;
 use marion_supervisor::pty::{PtyMaster, WinSize};
-use marion_supervisor::registry::{LiveRegistry, Registry};
-use marion_supervisor::serve::{NativeLaunchConfig, Server, own_uid};
-use marion_supervisor::socket::{Acquired, acquire, project_root, socket_paths};
+use marion_supervisor::registry::Registry;
+use marion_supervisor::serve::own_uid;
+use marion_supervisor::socket::{nobody_is_serving, project_root, read_identity, socket_paths};
 use marion_testsupport::{on_path, scratch};
 
 #[cfg(target_os = "linux")]
@@ -78,8 +77,10 @@ fn the_shipped_binary_relays_a_real_harness_help_screen_and_restores_the_termina
     let project = work.join("project");
     std::fs::create_dir_all(&project).unwrap();
 
-    // The supervisor, composed exactly as `detach::run_stage_three` composes it: production
-    // descriptors, the harness registry's adapter table, the production factory.
+    // A cold project: the socket the client will resolve for `project` under `state`, with nothing
+    // serving it. The supervisor the client starts is stage 3's composition — production
+    // descriptors, the harness registry's adapter table, the production factory — and its
+    // stderr lands in `paths.log()`, which is read back as evidence if anything below fails.
     let key = project_root(&project);
     let paths = socket_paths(&state, &key, own_uid());
     assert!(
@@ -87,34 +88,12 @@ fn the_shipped_binary_relays_a_real_harness_help_screen_and_restores_the_termina
         "this bed's socket must live under <state>; {:?} overflowed to /tmp",
         paths.socket()
     );
-    let Acquired::Serving(serving) = acquire(&paths).expect("bind both listeners") else {
-        panic!("fresh project unexpectedly dialed an existing supervisor")
-    };
+    assert!(
+        nobody_is_serving(&paths),
+        "a fresh scratch project already had a supervisor: {:?}",
+        paths.socket()
+    );
     let project_dir = ProjectDir::new(&state, paths.canonical_project());
-    let live = Arc::new(LiveRegistry::follow(
-        Registry::boot(&project_dir).expect("an absent journal is an empty tree"),
-        Duration::from_millis(10),
-    ));
-    let env = marion_supervisor::run::Env {
-        project_dir: project_dir.clone(),
-        state: state.clone(),
-        project_root: key.clone(),
-        bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-        base_url: Some("http://127.0.0.1:8099/v1".into()),
-        auth: marion_harness::Auth::Canned,
-    };
-    let handle = RegistryHandle::owning(live, env.clone());
-    let server = Server::start_with_native_launch(
-        serving,
-        Arc::clone(&handle),
-        NativeLaunchConfig {
-            descriptors: marion_core::PRODUCTION_NATIVE_FACADES,
-            adapter_for: marion_harness::native_adapter,
-            env,
-        },
-        Duration::from_secs(300),
-    )
-    .expect("the enabled native bootstrap service installs once");
 
     // The operator's terminal, and the shipped binary on it as a foreground session leader.
     let terminal = Arc::new(PtyMaster::open(WinSize::new(140, 45)).expect("operator PTY"));
@@ -177,8 +156,10 @@ fn the_shipped_binary_relays_a_real_harness_help_screen_and_restores_the_termina
     let screen =
         String::from_utf8_lossy(&screen.join().expect("join the screen reader")).into_owned();
     // Evidence for the run log, whichever way the assertions below go.
+    let supervisor_log = std::fs::read_to_string(paths.log()).unwrap_or_default();
     eprintln!(
-        "SMOKE status={status} screen_bytes={} stderr={stderr:?} first_line={:?}",
+        "SMOKE status={status} screen_bytes={} stderr={stderr:?} first_line={:?} \
+         supervisor_log={supervisor_log:?}",
         screen.len(),
         screen.lines().find(|line| !line.trim().is_empty())
     );
@@ -189,7 +170,8 @@ fn the_shipped_binary_relays_a_real_harness_help_screen_and_restores_the_termina
     );
     assert!(
         !stderr.contains("not enabled") && !stderr.contains("refused"),
-        "the shipped client refused the facade: {stderr}"
+        "the shipped client refused the facade instead of starting this project's supervisor: \
+         {stderr}; supervisor log: {supervisor_log}"
     );
     assert!(
         status.success(),
@@ -243,6 +225,17 @@ fn the_shipped_binary_relays_a_real_harness_help_screen_and_restores_the_termina
         node.exit
     );
 
-    server.stop();
+    // The supervisor the client started is still serving — proof that the shipped binary, not
+    // this test, brought it up — and it is not left behind for five minutes of idle grace.
+    let identity = read_identity(&paths).expect("the client's supervisor serves this project");
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    // SAFETY: `pid` names the supervisor whose identity file this test just read under its lock.
+    assert_eq!(
+        unsafe { kill(identity.pid, 9) },
+        0,
+        "stop the started supervisor"
+    );
     drop(terminal);
 }
