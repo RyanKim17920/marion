@@ -245,6 +245,34 @@ be machine load after all: re-run on the same machine an hour apart, 2.1.223 gav
 from the machine** — where the reading is a duration rather than a shape, take the spread on both
 versions before attributing the difference to either.
 
+**The gate chooses the binary now, not only the verdict (2026-09-06).** Overnight three of the
+eight pinned harnesses auto-updated at once — claude 2.1.261 → 2.1.263, codex 0.147.0 → 0.153.4,
+opencode 1.17.3 → 1.18.29 — and every suite that gates on `on_path` went red for a reason that was
+not marion's. Two of the three installers had left the admitted release on disk beside the new one;
+nothing put it first on `PATH`. So the suite now resolves pinned harnesses through a **shim**
+(`marion_testsupport::Shim`, `crates/marion-testsupport/src/shim.rs`): `.cargo/config.toml`
+installs `scripts/cargo-runner.sh` as the cargo `runner`, which starts every test binary with an
+empty per-process directory first on `PATH` (`MARION_HARNESS_SHIM`, removed when the process
+ends); the first `on_path(<harness>)` in that process lays a symlink there to the **newest
+admitted release still on disk** — claude's under `~/.local/share/claude/versions/<ver>`, codex's
+under `~/.codex/packages/standalone/releases/<ver>-<target>/bin/codex`, an npm harness's
+(copilot, gemini, qwen, cline) under `<marion state>/harness-pins/<program>/<ver>`, installed with
+`npm install -g --prefix` only when the binary first on `PATH` is not admitted — and then probes
+`--version` *through* the shim. Because the runner's directory is the process's own `PATH`
+prefix, every spawn the test causes (`run_spawn` in-process, a `marion` binary, the supervisor it
+detaches, the native facade client's `vars_os()`) resolves the same binary the gate passed. A
+harness with no per-version store (opencode, goose — Homebrew formulae) or none of whose admitted
+releases is on disk falls through to `PATH`, and the gate refuses with its usual diagnosis plus
+*"no pinned release on disk"* and where it looked; drift stays loud, only the choice of binary is
+taken back from the auto-updater. Proved in `shim::tests` with a fake versions store and a fake
+newer `--version` script first on `PATH` — the shim picks the pinned release, and an absent one
+falls through to the refusal — and live: `harness_matrix` 7/8 with claude resolved to 2.1.261 and
+codex to 0.147.0 through the shim, the opencode cell refused by name because 1.17.3 is no longer
+on disk. The shipped binary does none of this: `marion doctor --capabilities` measures the
+installed harness at runtime and the `caps:` strip dims what it has not measured, which is how
+marion itself adapts to a version the suite has never seen — the pin is a property of the
+evidence, not of the product.
+
 **Session ownership.** Neither Codex nor Claude Code locks a session. Two concurrent `codex resume`
 processes on one id both start and neither is refused; writes are `O_APPEND` so records survive,
 but the two conversations diverge irreconcilably (Codex rollout records carry `turn_id` and no

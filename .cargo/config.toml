@@ -1,0 +1,6 @@
+# Every binary cargo runs in this workspace goes through the harness shim runner, so tests that
+# spawn a real `claude`/`codex`/… resolve the release `marion_testsupport::PINNED_HARNESSES` admits
+# instead of whatever an auto-update left first on PATH. See scripts/cargo-runner.sh and
+# crates/marion-testsupport/src/shim.rs.
+[target.'cfg(unix)']
+runner = "scripts/cargo-runner.sh"

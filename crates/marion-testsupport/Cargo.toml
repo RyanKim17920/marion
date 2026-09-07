@@ -9,4 +9,7 @@ name = "marion_testsupport"
 path = "src/lib.rs"
 
 [dependencies]
+# For `paths::state_dir`: the shim keeps npm-pinned harnesses under the same state directory the
+# shipped `marion` uses, resolved by the same rule rather than a second spelling of it.
+marion-core = { path = "../marion-core" }
 serde_json.workspace = true

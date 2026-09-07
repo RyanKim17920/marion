@@ -47,6 +47,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+mod shim;
+pub use shim::{
+    GateFailure, ReleaseStore, ReleaseStores, Resolution, SHIM_DIR_VAR, Shim, process_shim,
+};
+
 // --- processes ----------------------------------------------------------------------------------
 
 unsafe extern "C" {
@@ -229,6 +234,9 @@ pub struct PinnedHarness {
     /// comments name, and the one a failure message quotes as expected. The rest are versions
     /// since observed green, each with the observation beside it in [`PINNED_HARNESSES`].
     pub accepted: &'static [&'static str],
+    /// Where the installer keeps releases side by side, so [`Shim`] can `exec` an admitted one
+    /// while a newer release sits first on `PATH` — or that it keeps none.
+    pub store: ReleaseStore,
 }
 
 /// **The one table.** Every version check reads from here; nothing else in the workspace decides
@@ -250,6 +258,7 @@ pub struct PinnedHarness {
 pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "claude",
+        store: ReleaseStore::ClaudeVersions,
         // 2.1.220 is the pin: it is the version that sends turn one `"tools":[]` when the prompt
         // rides argv, and whose `can_use_tool` frame `tests/fixtures/s9` was captured from.
         //
@@ -502,6 +511,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     },
     PinnedHarness {
         program: "codex",
+        store: ReleaseStore::CodexReleases,
         // 0.146.0 is the pin: the version that accepts a bogus `-c` key with a clean exit, that
         // leaks the background `git fetch` MILESTONES records, and that `tests/fixtures/s6`, `s7`
         // and `s14`'s codex halves were captured from.
@@ -586,16 +596,19 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     },
     PinnedHarness {
         program: "gemini",
+        store: ReleaseStore::Npm("@google/gemini-cli"),
         // The version that omits MCP tools entirely without `trust: true`, silently.
         accepted: &["0.53.0"],
     },
     PinnedHarness {
         program: "opencode",
+        store: ReleaseStore::PathOnly,
         // The version that never exits on a provider hang.
         accepted: &["1.17.3"],
     },
     PinnedHarness {
         program: "copilot",
+        store: ReleaseStore::Npm("@github/copilot"),
         // 1.0.83 is the pin: the first version on this machine with BYOK (`COPILOT_PROVIDER_*`),
         // `--output-format json` and `--acp` at all — the 0.0.367 that Homebrew's npm tree had
         // installed has none of the three, so nothing about copilot was measurable before it.
@@ -613,6 +626,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     },
     PinnedHarness {
         program: "goose",
+        store: ReleaseStore::PathOnly,
         // 1.49.0 is the pin: the Homebrew `block-goose-cli` bottle present on this machine on
         // 2026-09-05, and the version every S26 probe ran against — each against a canned local
         // provider at $0.00 (`tests/fixtures/s26/`).
@@ -629,6 +643,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     },
     PinnedHarness {
         program: "cline",
+        store: ReleaseStore::Npm("cline"),
         // 3.0.61 is the pin: the npm `cline` present on this machine on 2026-09-05 (a Node
         // launcher around a Bun-compiled `bin/.cline`, `@cline/core 0.0.82`), and the version
         // every S27 probe ran against — each against a canned local provider at $0.00
@@ -647,6 +662,7 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     },
     PinnedHarness {
         program: "qwen",
+        store: ReleaseStore::Npm("@qwen-code/qwen-code"),
         // 0.23.0 is the pin: the npm `@qwen-code/qwen-code` present on this machine on 2026-09-05
         // (a launcher that `spawnSync`s `node --expose-gc cli.js`; kill the process group), and the
         // version every S25 probe ran against — each against a canned local provider at $0.00
@@ -754,28 +770,32 @@ fn parse_version(output: &str) -> Option<&str> {
 /// 0.146.0 that were produced by whatever else was installed. A hard pin does cost a red suite the
 /// day a CLI is upgraded; that cost is the correct one and it is bounded to a one-line edit next to
 /// the reason, made after re-running. The alternative cost is unbounded and silent.
+///
+/// # Why a pinned harness is probed through the shim
+///
+/// Since 2026-09-06 the probe for a pinned harness goes through [`process_shim`]: the directory the
+/// cargo runner put first on this process's `PATH`, into which the shim lays a symlink to the
+/// **admitted release still on disk** before asking `--version`. So when the installer has moved
+/// `claude` on, the gate and every spawn that follows it both resolve to the same pinned binary,
+/// and the gate passes because the right release answered — not because the table was widened.
+/// When no admitted release is on disk the probe falls through to `PATH` and this panics with the
+/// diagnosis below plus where the shim looked. See `shim.rs` for the mechanism and its limits.
 pub fn on_path(program: &str) -> bool {
-    let Ok(out) = Command::new(program).arg("--version").output() else {
-        return false;
-    };
-    if !out.status.success() {
-        return false;
-    }
-    let Some(pin) = PINNED_HARNESSES.iter().find(|p| p.program == program) else {
+    if !PINNED_HARNESSES.iter().any(|p| p.program == program) {
         // Not a harness this suite pins — `git`, and anything else a caller probes for. Presence is
         // the whole question for those.
-        return true;
-    };
+        return Command::new(program)
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success());
+    }
     // Only stdout is parsed, because that is where all four measurably print it; stderr is carried
     // into the diagnosis so a harness that *moved* its version there fails with the evidence in
     // hand, rather than being read out of a stream this has never checked.
-    match check_version(
-        pin,
-        &String::from_utf8_lossy(&out.stdout),
-        &String::from_utf8_lossy(&out.stderr),
-    ) {
+    match process_shim().gate(program) {
         Ok(()) => true,
-        Err(diagnosis) => panic!("{diagnosis}"),
+        Err(GateFailure::Absent) => false,
+        Err(GateFailure::Refused(diagnosis)) => panic!("{diagnosis}"),
     }
 }
 
@@ -1511,6 +1531,7 @@ mod tests {
         let only_the_pin = PinnedHarness {
             program: "claude",
             accepted: &["2.1.220"],
+            store: ReleaseStore::ClaudeVersions,
         };
         let e = check_version(&only_the_pin, "2.1.222 (Claude Code)\n", "")
             .expect_err("a table that lists only 2.1.220 must not accept 2.1.222");

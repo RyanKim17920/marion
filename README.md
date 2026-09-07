@@ -33,6 +33,19 @@ marion-supervisor doctor --capabilities --harness acp --acp-command "<cmd>"   # 
 
 Child agent types include `acp:<command> [args…]` for any ACP agent with no adapter code.
 
+**Running the E2E suites against a harness that auto-updated.** `cargo test --workspace` drives
+the real `claude`, `codex`, … binaries, gated by `marion_testsupport::PINNED_HARNESSES`: a version
+the table does not admit fails by name, never skips. Since 2026-09-06 the gate also *chooses* the
+binary: `.cargo/config.toml` runs every test through `scripts/cargo-runner.sh`, which puts an empty
+per-process directory first on `PATH`, and the first `on_path(<harness>)` fills it with a symlink to
+the newest admitted release still on disk (claude's `~/.local/share/claude/versions/<ver>`, codex's
+`~/.codex/packages/standalone/releases/<ver>-*/bin/codex`, npm harnesses under
+`~/.local/state/marion/harness-pins/`), so the suite runs the release it was measured on while the
+updater's binary stays where it is. A harness with no admitted release on disk (Homebrew's
+`opencode`, `goose`) falls through to `PATH` and the gate says so. Run the suite from the workspace
+root, through cargo — a test binary started any other way panics at its first gate rather than
+probe `PATH` and call it pinned.
+
 ---
 
 ## Read these, in this order
