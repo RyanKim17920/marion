@@ -44,7 +44,12 @@ the newest admitted release still on disk (claude's `~/.local/share/claude/versi
 updater's binary stays where it is. A harness with no admitted release on disk (Homebrew's
 `opencode`, `goose`) falls through to `PATH` and the gate says so. Run the suite from the workspace
 root, through cargo — a test binary started any other way panics at its first gate rather than
-probe `PATH` and call it pinned.
+probe `PATH` and call it pinned. When a harness has genuinely moved on, admit it with
+`scripts/admit-harness.sh <harness> <version>`: it widens that entry in the table (entry zero, the
+pin, never moves), re-runs every suite that drives the harness — sequentially, each bounded by
+`MARION_ADMIT_BOUND` seconds — restores the table on any red, and on green writes the dated
+observation beside the entry and prints the MILESTONES paragraph and commit message. It never
+commits; read the diff, re-run the `spikes/` probes the entry's evidence calls for, then commit.
 
 ---
 

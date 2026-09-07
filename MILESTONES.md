@@ -269,10 +269,18 @@ taken back from the auto-updater. Proved in `shim::tests` with a fake versions s
 newer `--version` script first on `PATH` — the shim picks the pinned release, and an absent one
 falls through to the refusal — and live: `harness_matrix` 7/8 with claude resolved to 2.1.261 and
 codex to 0.147.0 through the shim, the opencode cell refused by name because 1.17.3 is no longer
-on disk. The shipped binary does none of this: `marion doctor --capabilities` measures the
-installed harness at runtime and the `caps:` strip dims what it has not measured, which is how
-marion itself adapts to a version the suite has never seen — the pin is a property of the
-evidence, not of the product.
+on disk. **The admission ritual is a script:** `scripts/admit-harness.sh <harness> <version>`
+widens that harness's `accepted` entry (entry zero untouched), runs `marion-testsupport --lib` and
+every suite under `crates/marion-supervisor/tests` that names the harness and gates on `on_path(`
+— sequentially, each bounded by `MARION_ADMIT_BOUND` (default 1800 s) with the whole process group
+killed at the bound — restores the table on any red, and on all green writes the dated observation
+beside the entry and prints this section's paragraph and the commit message; it never commits. So
+drift is handled in four parts, each with one owner: the **gate** refuses an unadmitted version by
+name; the **shim** runs the admitted release while it is still on disk; the **ritual** admits a new
+version only with the suites re-run beside it; and at runtime the shipped binary trusts none of
+this — `marion doctor --capabilities` measures the installed harness and the `caps:` strip dims
+what it has not measured, which is how marion itself adapts to a version the suite has never seen.
+The pin is a property of the evidence, not of the product.
 
 **Session ownership.** Neither Codex nor Claude Code locks a session. Two concurrent `codex resume`
 processes on one id both start and neither is refused; writes are `O_APPEND` so records survive,
