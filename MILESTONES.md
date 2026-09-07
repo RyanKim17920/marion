@@ -108,12 +108,14 @@ seconds with the exit quoted; the pre-fix row fails it at exit 2). Live ACP: `--
 --ignored` spends Copilot tokens. Cross-harness: `--test harness_matrix`, `--test cross_product`,
 `--test journal_wiring`, `--test m4_fan_in`. Panes: `--test pane_attach`.
 
-**Structure.** `sentrux` quality signal 6456 at `b85ea30` (cycles 0, redundancy 9170,
-modularity 5057, equality 5441, **depth 4444 — the bottleneck**); the day started at 4856 with
-three import cycles. The signal was measured at `b85ea30`; the commits from there to `d914eb7`
-are tests and docs only, so it is not re-measured. The depth is the one spawn path — CLI → detach → serve → handler → run →
-harness row → grammar — and the design has exactly one such path, so the remaining headroom is
-the tool's formula over a chain marion will not shorten; do not chase the number past that.
+**Structure.** `sentrux` 0.5.7 quality signal 6542 at `24f4821` (cycles 0, redundancy 9168,
+modularity 5100, equality 5452, depth 4706 at raw 9); the day started at 4856 with three import
+cycles and depth 10. The remaining depth is a real client path, `bin/marion` → `facade_cli` →
+`native_relay` → `native_tty` → `pty` → `run` → core, whose only test-side shortcut would recreate
+the native_tty↔native_relay cycle broken earlier; and the score's own formulas (fifth root of five
+sub-scores, depth = 1/(1+n/8)) put the ceiling for this architecture near 7100 even at depth 8.
+Do not chase the number past that; every structural commit today also removed a real defect or
+duplication.
 
 **Open, honestly:** C1's recording; the four disabled lanes; `SIGTSTP`/`SIGCONT` from the
 *shipped* binary (a real kernel stop and continue through the relay is observed by
