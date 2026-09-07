@@ -232,8 +232,9 @@ and read a red pin as the ordinary weather rather than as an incident. The maint
 fixed and is not "widen the set": re-run the probes that a green suite would *not* re-run, compare
 against the committed captures, and add the version with what was compared beside it. The gap that
 makes this necessary is that only `tests/fixtures/s9` and codex's `s6`/`s7` shapes are asserted by
-a test at all — `s10`, `s11`, `s14` and `s16` are prose, and `child_stream`, `child_events` and
-`node_attach` drive real harnesses without going through the gate — so a green suite is always the
+a test at all — `s10`, `s11`, `s14` and `s16` are prose (`child_stream`, `child_events` and `node_attach` drove
+real harnesses without going through the gate until 2026-09-06, when
+`common::script::require_claude_and_codex` put them behind it) — so a green suite is always the
 weaker half of the evidence. Two conveniences make the re-measurement cheap and are worth
 preserving: every spike keeps a runnable probe under `spikes/`, and both CLIs keep old releases
 side by side under a repointed symlink, so **the previous version is still on disk and one axis can

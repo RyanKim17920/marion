@@ -216,6 +216,7 @@ impl Drop for Supervisor {
 /// **M2 criterion 4, all three clauses, on a node that is still running.**
 #[test]
 fn a_re_attaching_client_replays_the_detached_window_and_then_hears_what_the_node_says_next() {
+    common::script::require_claude_and_codex();
     let dir = scratch("attach-live");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
@@ -356,6 +357,7 @@ fn a_re_attaching_client_replays_the_detached_window_and_then_hears_what_the_nod
 /// a client its whole life from disk.
 #[test]
 fn a_node_that_lived_and_died_while_nobody_watched_replays_with_its_terminal_bookend() {
+    common::script::require_claude_and_codex();
     let dir = scratch("attach-dead");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");

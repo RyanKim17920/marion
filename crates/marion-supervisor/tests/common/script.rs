@@ -56,3 +56,20 @@ pub fn claude_delegates_to_codex(d: Delegation<'_>) -> Script {
         ..Script::default()
     }
 }
+
+/// The two real binaries this script drives, gated **before** anything is spawned.
+///
+/// These suites are the ones MILESTONES named as driving real harnesses "without going through the
+/// gate": a missing or drifted binary surfaced as a timeout downstream rather than by name here.
+/// Since the shim, the gate is also what lays the pinned release into the process's `PATH` prefix,
+/// so a run that skipped it would spawn whatever an auto-update left first on `PATH` while every
+/// gated suite in the same tree spawned the admitted one. See `marion_testsupport::on_path`.
+pub fn require_claude_and_codex() {
+    for program in ["claude", "codex"] {
+        assert!(
+            marion_testsupport::on_path(program),
+            "this test drives a REAL {program}; put `{program}` ({}) on PATH",
+            marion_testsupport::pinned_version(program)
+        );
+    }
+}

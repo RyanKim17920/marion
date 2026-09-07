@@ -72,6 +72,7 @@ fn first(lines: &[String], pred: impl Fn(&str) -> bool) -> Option<usize> {
 
 #[test]
 fn a_childs_start_reaches_the_terminal_before_the_spawn_that_created_it_returns() {
+    common::script::require_claude_and_codex();
     let dir = scratch("child-stream");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");
