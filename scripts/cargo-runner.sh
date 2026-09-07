@@ -17,4 +17,8 @@ root="/tmp/mn-$(id -u)"
 mkdir -p -m 700 "$root" || exit 1
 dir=$(mktemp -d "$root/shim-XXXXXX") || exit 1
 trap 'rm -rf "$dir"' EXIT
+# A signal's default action skips the EXIT trap; a bounded `admit-harness.sh` run ends this way.
+trap 'rm -rf "$dir"; exit 143' TERM
+trap 'rm -rf "$dir"; exit 130' INT
+trap 'rm -rf "$dir"; exit 129' HUP
 MARION_HARNESS_SHIM="$dir" PATH="$dir:$PATH" "$@"
