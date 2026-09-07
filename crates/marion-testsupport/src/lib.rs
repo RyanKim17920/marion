@@ -621,8 +621,20 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
     PinnedHarness {
         program: "opencode",
         store: ReleaseStore::PathOnly,
-        // The version that never exits on a provider hang.
-        accepted: &["1.17.3"],
+        // 1.17.3 is the pin: the version that never exits on a provider hang, and the one S13's
+        // `tests/fixtures/s13/` captures and the `/mcp` dialog reading were taken from.
+        //
+        // 1.18.29: observed green on darwin 25.5.0, 2026-09-06, at `ccf13bc`. Homebrew replaced
+        // the 1.17.3 binary in place (`/opt/homebrew/Cellar/opencode/1.18.29`), so unlike claude
+        // there is **no pinned build left on disk** to vary one axis against. Every gated suite
+        // that drives a real `opencode` passed with only this entry widened: `harness_matrix` (8),
+        // `cross_product` (57), `journal_wiring` (18), `acp_child` (3), `no_git` (5), `depth_gate`
+        // (4), `client_run` (7), `worktree_reap` (8), and the opencode lane of
+        // `native_facade_e2e`. That covers opencode as root and child in `cross_product`, its
+        // `harness_matrix` cell, its ACP row in `acp_child`, its journal cells, and the `opencode`
+        // native facade lane in `native_facade_e2e`. The s13 probe was not re-run, so the
+        // provider-hang and `/mcp` readings are still 1.17.3's.
+        accepted: &["1.17.3", "1.18.29"],
     },
     PinnedHarness {
         program: "copilot",

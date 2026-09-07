@@ -86,7 +86,7 @@ cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launch
 with no row (`acp_child.rs`), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261 and 2.1.263; codex 0.146.0/0.146.1/0.147.0;
-gemini 0.53.0; opencode 1.17.3; copilot 1.0.83; goose 1.49.0; cline 3.0.61; qwen 0.23.0.
+gemini 0.53.0; opencode 1.17.3 and 1.18.29; copilot 1.0.83; goose 1.49.0; cline 3.0.61; qwen 0.23.0.
 
 **Native facade.** `marion <harness> <its own flags>` runs the harness's real TUI through the
 relay as a journaled root. Enabled lanes: `claude`, `codex`, `opencode`, `copilot`. Disabled by
@@ -214,8 +214,8 @@ evidence beside each. claude's set is `["2.1.220", "2.1.222", "2.1.223", "2.1.22
 "2.1.226", "2.1.261"]` and codex's is
 `["0.146.0", "0.146.1", "0.147.0"]` — both auto-updated mid-session on 2026-08-06 and codex again
 on 2026-08-07, §7.7's hazard arriving live, and each new version was admitted only after its probes
-were re-run and compared against the committed captures field for field; gemini and opencode each
-pin exactly one. So
+were re-run and compared against the committed captures field for field; gemini pins exactly one and
+opencode gained 1.18.29 on 2026-09-06. So
 read "2.1.220" as *"the version the turn-one `\"tools\":[]` shape and the
 `tests/fixtures/s9` `can_use_tool` frame were captured from"*, and read a green suite as *"and
 2.1.222 through 2.1.226 and 2.1.261 were checked against them too."*
@@ -273,6 +273,14 @@ lane failed on copilot's own trust dialog, pinned 1.0.83, unrelated). `pane_atta
 green, so the double-painted trust dialog is still 2.1.263's shape and the fixture's settle wait
 still covers it; the cursor still defaults to "No, exit". The s10/s11/s14/s16 probes were not re-
 run.
+
+**opencode 1.18.29, admitted 2026-09-06 at `ccf13bc`.** Homebrew replaced 1.17.3 in place during the
+day, so every opencode cell refused at the pin and there is no pinned build left on disk to A/B
+against. With the entry widened (codex held at 0.147.0): `harness_matrix` (8), `cross_product` (57),
+`journal_wiring` (18), `acp_child` (3), `no_git` (5), `depth_gate` (4), `client_run` (7),
+`worktree_reap` (8), and the opencode lane of `native_facade_e2e`, covering opencode as root and
+child, its ACP row, its journal cells and its native facade lane. The s13 probe was not re-run, so
+the provider-hang and `/mcp` dialog readings are still 1.17.3's.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in
