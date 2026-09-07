@@ -1111,7 +1111,9 @@ acceptance evidence, so every marker remains unchanged.
   key and lies outside it) and the production factory runs the vendor there, telling the bridge
   the enclosing working tree — the demo had every harness print `.git` as its workspace because
   the node ran in the canonical project, which is the git common dir
-  (`tests/native_bootstrap.rs::the_native_command_runs_in_the_clients_working_directory_not_the_common_dir`).
+  (`tests/native_bootstrap.rs::the_native_command_runs_in_the_clients_working_directory_not_the_common_dir`;
+  `native_facade_smoke.rs` reads the real codex's `pwd -P` through a recording shim over a
+  git-initialised project).
   *Still open:* C1's
   recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
   merge unmeasured); `SIGTSTP`/`SIGCONT` through the shipped facade, not observable from the
