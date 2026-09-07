@@ -19,7 +19,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Spelling,
-    Surfaces, ToolSpelling, Val, When,
+    Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
 /// The live node's system-settings document, as bytes: [`settings_json_with_auth`] under the
@@ -131,6 +131,20 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `--session-id` **starts** a session with a given UUID. Resuming a named session is unmeasured,
     // so a launch that asks is refused rather than pointed at whichever session is "latest".
     resume: None,
+    // gemini 0.53.0 has **no** environment switch; both keys are settings booleans and ride the
+    // system-settings document this row already emits on every route ([`settings_json_with_auth`]
+    // applies them). `enableAutoUpdateNotification=false` skips the check, the banner and the
+    // install; `enableAutoUpdate=false` alone stops the install and keeps the banner. Both, so
+    // neither reading of the merge granularity (see the emitter) leaves a node updating itself:
+    // this is an npm-global install and does self-update by default.
+    updates: UpdatePolicy::Document {
+        keys: &[
+            ("general.enableAutoUpdate", false),
+            ("general.enableAutoUpdateNotification", false),
+        ],
+        note: "0.53.0 bundle: `checkForUpdates` reads `general.enableAutoUpdate` and \
+               `general.enableAutoUpdateNotification`; no `GEMINI_CLI_*` update variable exists",
+    },
     note: "S12 on gemini CLI 0.53.0: the -p surface, the four load-bearing env vars and the \
            system-settings injection route; §11 item 24 for --approval-mode auto_edit. \
            harness_matrix's gemini cell runs this row end to end",
@@ -437,10 +451,11 @@ pub fn settings_json_with_auth(mcp: Option<&BridgeEnv>, selected_type: &str) -> 
         // Defaults to true and ships to Clearcut every 60 s, calling `systeminformation.graphics()`
         // on the way (S12).
         "privacy": { "usageStatisticsEnabled": false },
-        // Both default true. `checkForUpdates()` was only found in the interactive chunks, so it
-        // likely never runs on the `-p` path — disabled anyway, because "likely" is not a measurement.
-        "general": { "enableAutoUpdate": false, "enableAutoUpdateNotification": false },
     });
+    // `general.enableAutoUpdate` / `general.enableAutoUpdateNotification`, both `false`: the row's
+    // [`UpdatePolicy::Document`](crate::spec::UpdatePolicy), applied here so the emitter and the
+    // row cannot disagree about which keys keep gemini from updating itself.
+    SPEC.updates.apply_to_json(&mut settings);
 
     if let Some(b) = mcp {
         settings["mcpServers"] = json!({

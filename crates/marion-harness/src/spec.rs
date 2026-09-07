@@ -94,9 +94,97 @@ pub struct HarnessSpec {
     /// **Data, so the resume feature has no per-harness branch**: [`Fields::resume`] is seeded from
     /// `LaunchSpec::resume` for every adapter alike, and this row decides how it is spelled.
     pub resume: Option<Resume>,
+    /// How a node of this harness is kept from **updating itself under marion**, measured on the
+    /// installed binary — an environment variable, a pair on the row's override channel, keys in
+    /// the declaration document the row already emits, or the explicit statement that none is
+    /// known. Rendered into every shape (headless, pane) and into the native overlay by the one
+    /// renderer, so `marion <harness>` sessions carry it too. **Data, so no launch can forget
+    /// it**: a binary that replaces itself mid-run (opencode 1.17.3's `Updating to v1.18.29...`;
+    /// codex 0.147.0's `Update available` prompt, which an Enter installs; claude's background
+    /// updater) changes the program under a running node and interrupts a facade session.
+    pub updates: UpdatePolicy,
     /// **Mandatory.** The spike that measured this row, so a reader can tell a transcription from
     /// a guess. The spec sweep refuses an empty one.
     pub note: &'static str,
+}
+
+/// The measured switch that keeps a harness from updating itself, or the honest absence of one.
+///
+/// Every variant carries a `note` naming where in the installed binary (help text, its strings, a
+/// runtime type check) the switch was found — or, for [`Self::None`], what was searched — because
+/// an update switch is exactly the kind of row a reader would otherwise guess from another
+/// harness's. The sweep `every_row_states_its_update_policy_and_renders_it_into_every_launch_shape`
+/// refuses an empty note and checks the switch reaches every launch the row can render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdatePolicy {
+    /// An environment variable: appended to every shape's env after the row's own [`Env`] rows
+    /// (which must not repeat it) and to the native injection's overlay.
+    Env {
+        key: &'static str,
+        value: &'static str,
+        note: &'static str,
+    },
+    /// A `key=value` pair on the row's override channel — rendered **first** among
+    /// [`Field::Pairs`] wherever the row's argv places that field (codex's `-c`), and first in a
+    /// native [`LiveDeclaration::ArgvPairs`] prefix. A row with this policy and no `Pairs` slot
+    /// in a shape's argv would drop it silently; the sweep catches that.
+    Pair {
+        key: &'static str,
+        value: &'static str,
+        note: &'static str,
+    },
+    /// Boolean keys, as dotted paths, in the JSON declaration document the row already emits —
+    /// gemini's system settings. The document emitter applies them with
+    /// [`UpdatePolicy::apply_to_json`], and the sweep reads them back from every emitted document.
+    Document {
+        keys: &'static [(&'static str, bool)],
+        note: &'static str,
+    },
+    /// The installed binary has no measured switch, or never updates itself. `note` says which,
+    /// and what was searched.
+    None { note: &'static str },
+}
+
+impl UpdatePolicy {
+    /// The environment this policy contributes to a launch — one variable, or nothing.
+    pub fn env(self) -> Option<(String, String)> {
+        match self {
+            UpdatePolicy::Env { key, value, .. } => Some((key.to_string(), value.to_string())),
+            _ => None,
+        }
+    }
+
+    /// The pair this policy contributes to the row's override channel — one, or nothing.
+    pub fn pair(self) -> Option<(String, String)> {
+        match self {
+            UpdatePolicy::Pair { key, value, .. } => Some((key.to_string(), value.to_string())),
+            _ => None,
+        }
+    }
+
+    /// Write a [`Self::Document`] policy's keys into a JSON object, creating the intermediate
+    /// objects a dotted path names. A no-op for every other variant.
+    pub fn apply_to_json(self, doc: &mut serde_json::Value) {
+        let UpdatePolicy::Document { keys, .. } = self else {
+            return;
+        };
+        for (path, value) in keys {
+            let mut node = &mut *doc;
+            let mut parts = path.split('.').peekable();
+            while let Some(part) = parts.next() {
+                if !node.is_object() {
+                    *node = serde_json::Value::Object(Default::default());
+                }
+                let object = node.as_object_mut().expect("just made an object");
+                node = object
+                    .entry(part)
+                    .or_insert_with(|| serde_json::Value::Object(Default::default()));
+                if parts.peek().is_none() {
+                    *node = serde_json::Value::Bool(*value);
+                }
+            }
+        }
+    }
 }
 
 /// The neutral values a row's [`Arg`]s and [`Env`]s read from.
@@ -366,6 +454,15 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     if f.resume.is_some() && !(spec.resume.is_some() && argv.contains(&Arg::Resume)) {
         return Err(Refusal::NoResume);
     }
+    // The row's update policy rides its override channel ahead of the launch's own pairs
+    // ([`UpdatePolicy::Pair`]); every other field reads from `f` alone.
+    let items = |field: Field| -> Vec<String> {
+        let mut items = f.items(field);
+        if let (Field::Pairs, Some((k, v))) = (field, spec.updates.pair()) {
+            items.insert(0, format!("{k}={v}"));
+        }
+        items
+    };
     let mut args: Vec<String> = Vec::new();
     for arg in argv {
         match *arg {
@@ -382,23 +479,23 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
                 }
             }
             Arg::Each(flag, field) => {
-                for item in f.items(field) {
+                for item in items(field) {
                     args.push(flag.into());
                     args.push(item);
                 }
             }
             Arg::EachEq(flag, field) => {
-                for item in f.items(field) {
+                for item in items(field) {
                     args.push(format!("{flag}={item}"));
                 }
             }
             Arg::Joined(flag, field) => {
                 args.push(flag.into());
-                args.push(f.items(field).join(","));
+                args.push(items(field).join(","));
             }
             Arg::Pos(field) => args.extend(f.value(field)),
             Arg::PosIfNonEmpty(field) => args.extend(f.value(field).filter(|v| !v.is_empty())),
-            Arg::Items(field) => args.extend(f.items(field)),
+            Arg::Items(field) => args.extend(items(field)),
             Arg::Isolation(flag, child) => {
                 if f.auth == Auth::Canned {
                     args.push(flag.into());
@@ -419,6 +516,7 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
         }
     }
     let mut env = render_env(spec.env, f);
+    env.extend(spec.updates.env());
     env.extend(f.extra_env.iter().cloned());
     Ok(Invocation {
         program,

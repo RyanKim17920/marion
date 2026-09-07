@@ -39,7 +39,7 @@ pub use crate::mcp_bridge::BridgeEnv;
 use crate::mcp_bridge::NODE_TOKEN_ENV;
 use crate::spec::{
     Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Spelling,
-    Surfaces, ToolSpelling, Val, When,
+    Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
 /// `$HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and [`home`].
@@ -140,6 +140,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // stream carries the id (`goose-session-first.stdout.jsonl` is byte-identical to the
     // no-session run), so marion has nothing to hand back and a resume is refused by name.
     resume: None,
+    // goose 1.49.0 does not update itself: `goose update` is an explicit subcommand (`--help`:
+    // "Update the goose CLI version"; its strings carry the Sigstore-verified replace path and
+    // nothing else), the binary contains no check-for-update, "new version" or "update
+    // available" text, and its `GOOSE_*` variable list has no update entry. There is nothing to
+    // switch off, and the row says so rather than inventing a variable.
+    updates: UpdatePolicy::None {
+        note: "1.49.0 never updates itself on `run`/`session`: no update check in the binary's \
+               strings, no `GOOSE_*` update variable; `goose update` is explicit only",
+    },
     note: "S26 on goose 1.49.0: the run -t surface, env-only provider selection, --no-profile \
            with --with-builtin developer as the one availability unit, the --with-extension token \
            as the declaration route with the bridge's environment inherited; harness_matrix's \

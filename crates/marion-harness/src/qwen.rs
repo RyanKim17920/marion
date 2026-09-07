@@ -47,7 +47,7 @@ use serde_json::{Value, json};
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
-    Spelling, Surfaces, ToolSpelling, Val, When,
+    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
 /// `$QWEN_HOME`'s name under the node's config dir — one spelling for [`SPEC`]'s env row and
@@ -167,6 +167,16 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `--resume <session_id>`, the id off `init.session_id`, keyed by `QWEN_HOME` **and** cwd
     // (item 13): turn two replays turn one's history and repeats the id.
     resume: Some(Resume::Flag("--resume")),
+    // qwen 0.23.0 reads `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE` as the exact string `"true"` on
+    // **every** launch despite the `_ONCE` in its name, and skips the check, the banner and the
+    // install. The settings spelling (`general.enableAutoUpdate=false`) does the same; the
+    // variable is preferred because it needs no document on the live route.
+    updates: UpdatePolicy::Env {
+        key: "QWEN_CODE_SKIP_UPDATE_CHECK_ONCE",
+        value: "true",
+        note: "0.23.0 bundle: the update check returns on `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE === \
+               \"true\"` at every launch",
+    },
     note: "S25 on qwen 0.23.0: the -p surface as Claude Code's shape over an env-only OpenAI \
            provider, blocking MCP discovery, --core-tools plus --exclude-tools as the one \
            combination that offers the declared names, --mcp-config inline as the declaration \

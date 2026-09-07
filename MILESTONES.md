@@ -168,6 +168,39 @@ agent whose `initialize` advertised `loadSession` (2026-09-05). **Wired 2026-09-
 `compile`/`compile_pane` render the row's grammar or refuse by name with no per-harness branch
 (`a_harness_whose_row_refuses_resume_is_refused_by_name`, RED with `no field named resume`).
 
+**No node marion spawns updates itself mid-run, and the switch is row data (2026-09-06).**
+codex 0.147.0's TUI showed `Update available -> 0.153.4` and an Enter installed it; opencode 1.17.3
+printed `Updating to v1.18.29...` on launch; claude updates in the background. Each `HarnessSpec`
+row now carries `updates: UpdatePolicy`, measured on the installed binary and rendered by the one
+`spec::render` into the headless shape, the pane shape and — through `SpecNativeAdapter` — the
+native facade's overlay, so a `marion <harness>` session carries it too; the sweep
+`every_row_states_its_update_policy_and_renders_it_into_every_launch_shape` (RED first with
+`no field updates on HarnessSpec`) reads it back from every launch and refuses a row that says
+nothing. Per harness: **claude** 2.1.263 `DISABLE_AUTOUPDATER=1` (the binary's own
+disabled-reason check reads it first; `"1"` is what claude sets for its own children; it gates the
+background updater and the `Update available!` banner). **codex** 0.147.0 has no `CODEX_*` update
+variable; the switch is the config boolean `check_for_update_on_startup=false`, rendered first on
+the row's `-c` channel on `exec`, `exec resume`, the TUI and the native prefix (`-c
+check_for_update_on_startup=notabool debug models` fails with *expected a boolean*, where an
+unknown key is ignored silently — the type error is the proof the key exists; `--version` prints
+no banner either way, the check is TUI-only). **opencode** 1.18.29 `OPENCODE_DISABLE_AUTOUPDATE=1`
+(the upgrade check returns before any fetch on it; unset, a patch is installed silently — the
+`Updating to…` line — and a minor prompts; moved out of the `Env` rows into the policy so the ACP
+opencode recipe and the native overlay carry it too). **copilot** 1.0.83 `COPILOT_AUTO_UPDATE=false`
+(exactly lower-case `false`; `0` leaves the updater on; the `Run 'copilot update' to check for
+updates.` line under `--version` is static text and stays). **gemini** 0.53.0 has no environment
+switch; `general.enableAutoUpdate=false` and `general.enableAutoUpdateNotification=false` ride the
+system-settings document the row already emits, applied from the row (`UpdatePolicy::Document`).
+**qwen** 0.23.0 `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true` (read as the exact string on every launch
+despite `_ONCE`). **goose** 1.49.0 and **cline** 3.0.61 never update themselves — `goose update` is
+an explicit subcommand and neither binary carries a check-for-update path or an update variable —
+so their rows say `UpdatePolicy::None` with that finding, and ACP's says `None` because the program
+is the bound agent's. Verified live on 2026-09-06: the `--version` probes above under their switches, and
+`harness_matrix` with the switches rendered — codex, copilot, gemini, goose, cline and qwen green;
+the claude and opencode cells stopped at the version gate (2.1.263 and 1.18.29 installed against
+pins of 2.1.220–2.1.261 and 1.17.3), not at the launch. Not verified: a codex TUI session long
+enough to observe the banner's absence, which needs a stale install and a pty.
+
 **A version here names the binary a behaviour was measured on, not the binary that will run.** The
 installed `claude` on this machine is **2.1.261**, not the 2.1.220 stamped above and throughout this
 file. `5792140` replaced the exact pin with a **set** — `marion_testsupport::PINNED_HARNESSES`, the

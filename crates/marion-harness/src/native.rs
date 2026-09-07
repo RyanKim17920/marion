@@ -120,10 +120,14 @@ pub trait NativeInjectionAdapter: Send + Sync {
 /// One type for every harness, because the injection a native node needs is a fact the row
 /// already states — which flag or variable carries marion's declaration, and what it says — and
 /// stating it a second time in an impl is how a lane drifts from the launch it is supposed to
-/// mirror. Nothing else from the row is read: not its argv (every other flag is the operator's),
-/// not its env (relocating `HOME` is isolation, and a native node is not isolated). The sweep
-/// `every_native_row_injects_only_marions_mcp_server_and_no_managed_flags` holds this to what the
-/// managed live launch of the same row writes.
+/// mirror. One more field of the row is read, [`HarnessSpec::updates`]: the measured switch that
+/// keeps the harness from updating itself, because a binary that replaces itself or offers to
+/// mid-session interrupts exactly the operator this lane fronts. Nothing else is: not the row's
+/// argv (every other flag is the operator's), not its env (relocating `HOME` is isolation, and a
+/// native node is not isolated). The sweep
+/// `every_native_row_injects_only_marions_mcp_server_and_no_managed_flags` holds the declaration
+/// to what the managed live launch of the same row writes, and
+/// `every_row_states_its_update_policy_and_renders_it_into_every_launch_shape` holds the switch.
 #[derive(Debug)]
 pub struct SpecNativeAdapter {
     row: &'static HarnessSpec,
@@ -191,7 +195,15 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                     .push((OsString::from(key), OsString::from(body(context.bridge))));
             }
             LiveDeclaration::ArgvPairs { flag, pairs, .. } => {
-                for (k, v) in pairs(context.bridge) {
+                // The update policy's pair first, exactly where the managed launch renders it
+                // ([`crate::spec::render`]'s `Field::Pairs`), then the declaration's own.
+                for (k, v) in self
+                    .row
+                    .updates
+                    .pair()
+                    .into_iter()
+                    .chain(pairs(context.bridge))
+                {
                     injection.argv_prefix.push(OsString::from(flag));
                     injection
                         .argv_prefix
@@ -202,6 +214,13 @@ impl NativeInjectionAdapter for SpecNativeAdapter {
                 injection.argv_prefix =
                     vec![OsString::from(flag), OsString::from(body(context.bridge))];
             }
+        }
+        // The row's no-self-update switch is the one thing beside marion's declaration a native
+        // node carries: a facade session is exactly where an update prompt interrupts the operator.
+        if let Some((k, v)) = self.row.updates.env() {
+            injection
+                .env_overlay
+                .push((OsString::from(k), OsString::from(v)));
         }
         Ok(injection)
     }

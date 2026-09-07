@@ -50,7 +50,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Spelling,
-    Surfaces, ToolSpelling, Val, When,
+    Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
 /// [`mcp_settings_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -150,6 +150,15 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `--id <session-id>` sets the startup target to interactive before the prompt is read, and
     // headless it exits 1 under both `--json` and plain output (s27 item 11).
     resume: None,
+    // cline 3.0.61 has no measured self-update or update banner: the Node launcher (`bin/cline`)
+    // only harvests CA certificates and warns about old Node, and the Bun bundle (`bin/.cline`)
+    // carries no `update-notifier`, `NO_UPDATE_NOTIFIER`, `checkForUpdate`, "new version" or
+    // `CLINE_*UPDATE` text — the only "update"/"outdated" strings are bun's own subcommand help.
+    // Nothing to switch off; the row says so.
+    updates: UpdatePolicy::None {
+        note: "3.0.61: no update check found in `bin/cline` or the `bin/.cline` bundle (no \
+               update-notifier, no `CLINE_*UPDATE` variable); it never updates itself",
+    },
     note: "S27 on cline 3.0.61: the positional headless surface, providers.json under the data dir \
            as the provider, CLINE_MCP_SETTINGS_PATH as the declaration route in both modes, the \
            three variables plus two flags that leave no daemon and nothing under ~/.cline; \

@@ -1784,7 +1784,12 @@ impl HarnessAdapter for AcpAdapter {
             // and `PWD` (placement, not isolation — S13 measured a child re-entering `$PWD`
             // whatever it was `chdir`'d to). Nothing inline, because the bridge rides `session/new`.
             (Auth::Canned, Some(acp::CannedRecipe::OpencodeConfigDocument)) => {
-                (spec::render_env(opencode::SPEC.env, &f), spec.model.clone())
+                let mut env = spec::render_env(opencode::SPEC.env, &f);
+                // And opencode's no-self-update switch, which is that row's policy rather than one
+                // of its `Env` rows — the same binary, one subcommand over, updates itself the same
+                // way.
+                env.extend(opencode::SPEC.updates.env());
+                (env, spec.model.clone())
             }
             // **Refused by name, per agent — and this is the one thing the baseline cannot do.**
             // The protocol has no provider channel anywhere in its handshake, so a generic agent
@@ -2323,6 +2328,9 @@ mod tests {
                     "/wt",
                     "--json",
                     "--skip-git-repo-check",
+                    // The row's update policy on codex's own override channel.
+                    "-c",
+                    "check_for_update_on_startup=false",
                     "do the task",
                 ]
                 .map(String::from)
@@ -2413,6 +2421,8 @@ mod tests {
                     "/wt",
                     "--json",
                     "--skip-git-repo-check",
+                    "-c",
+                    "check_for_update_on_startup=false",
                     "do the task",
                 ],
             ),
@@ -2470,7 +2480,10 @@ mod tests {
         let expected_env: Vec<(&str, Vec<(&str, &str)>)> = vec![
             (
                 "claude",
-                vec![("ANTHROPIC_BASE_URL", "http://127.0.0.1:8099")],
+                vec![
+                    ("ANTHROPIC_BASE_URL", "http://127.0.0.1:8099"),
+                    ("DISABLE_AUTOUPDATER", "1"),
+                ],
             ),
             ("codex", vec![("CODEX_HOME", "/state/x/config")]),
             (
@@ -2500,10 +2513,11 @@ mod tests {
                     ("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
                     ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
                     ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
-                    ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
                     ("OPENCODE_DISABLE_SHARE", "1"),
                     ("OPENCODE_DB", ":memory:"),
                     ("PWD", "/wt"),
+                    // The row's update policy, rendered after its `Env` rows.
+                    ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
                 ],
             ),
             (
@@ -3151,6 +3165,7 @@ mod tests {
                 ),
                 ("ANTHROPIC_AUTH_TOKEN".to_string(), "dummy".to_string()),
                 ("ANTHROPIC_API_KEY".to_string(), String::new()),
+                ("DISABLE_AUTOUPDATER".to_string(), "1".to_string()),
             ]
         );
         // And its MCP declaration is written, carrying the marker the gate waits on.
@@ -3202,7 +3217,10 @@ mod tests {
                 .map(String::from)
                 .to_vec(),
                 // The supervisor used to derive the `/v1`-less form itself; the adapter does.
-                env: vec![("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:8099".into())],
+                env: vec![
+                    ("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:8099".into()),
+                    ("DISABLE_AUTOUPDATER".into(), "1".into()),
+                ],
                 cwd: "/repo".into(),
                 model: Some("haiku".into()),
             }
@@ -3601,9 +3619,11 @@ mod tests {
                 inv.env
             );
         }
-        assert!(
-            inv.env.is_empty(),
-            "the three are the whole overlay, so a live node's env additions are empty: {:?}",
+        assert_eq!(
+            inv.env,
+            vec![("DISABLE_AUTOUPDATER".to_string(), "1".to_string())],
+            "the three are the whole provider overlay, so a live node's env additions are the \
+             row's no-self-update switch and nothing else: {:?}",
             inv.env
         );
         // And the isolation that was never an overlay is untouched.
@@ -4064,7 +4084,6 @@ mod tests {
                 "OPENCODE_DISABLE_PROJECT_CONFIG",
                 "OPENCODE_DISABLE_MODELS_FETCH",
                 "OPENCODE_DISABLE_LSP_DOWNLOAD",
-                "OPENCODE_DISABLE_AUTOUPDATE",
                 "OPENCODE_DISABLE_SHARE",
                 "OPENCODE_DB",
                 // Placement, not isolation: opencode resolves its project directory from the
@@ -4072,6 +4091,8 @@ mod tests {
                 // directory marion was launched from. See
                 // `opencode::tests::the_node_is_placed_in_its_own_cwd_by_pwd_too_not_only_by_chdir`.
                 "PWD",
+                // The row's `UpdatePolicy`, after its `Env` rows.
+                "OPENCODE_DISABLE_AUTOUPDATE",
             ]
         );
     }
@@ -4252,11 +4273,21 @@ mod tests {
                 &ctx(),
             )
             .unwrap();
-        assert!(
-            !inv.args.iter().any(|a| a == "-c" || a == "-m"),
+        // The one `-c` a canned launch carries is the row's update policy, which is not an
+        // override of anything canned configures; every other pair would be a live override.
+        let pairs: Vec<&String> = inv
+            .args
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| &w[1])
+            .collect();
+        assert_eq!(
+            pairs,
+            vec!["check_for_update_on_startup=false"],
             "{:?}",
             inv.args
         );
+        assert!(!inv.args.iter().any(|a| a == "-m"), "{:?}", inv.args);
         assert_eq!(inv.model, None);
         assert_eq!(
             inv.env,
@@ -6802,11 +6833,24 @@ mod tests {
             let files = managed.config_files(&live, &ctx).unwrap();
             let lossy = |v: &OsString| v.to_string_lossy().into_owned();
             let prefix: Vec<String> = injection.argv_prefix.iter().map(lossy).collect();
-            let overlay: Vec<(String, String)> = injection
+            let mut overlay: Vec<(String, String)> = injection
                 .env_overlay
                 .iter()
                 .map(|(k, v)| (lossy(k), lossy(v)))
                 .collect();
+            // The row's no-self-update switch is the one variable beside the declaration a native
+            // node carries (pinned per row by
+            // `every_row_states_its_update_policy_and_renders_it_into_every_launch_shape`); what
+            // follows compares the declaration channel alone.
+            if let Some(hygiene) = row.updates.env() {
+                let before = overlay.len();
+                overlay.retain(|e| *e != hygiene);
+                assert_eq!(
+                    overlay.len() + 1,
+                    before,
+                    "{h}: the switch is set exactly once"
+                );
+            }
 
             // 1. The injection is the live launch's declaration, byte for byte.
             match declaration {
@@ -6979,6 +7023,177 @@ mod tests {
             covered, expected,
             "every harness but ACP has a native adapter"
         );
+    }
+
+    /// **Every row states how its harness is kept from updating itself under marion, and every
+    /// launch shape carries that switch.** A harness binary that self-updates mid-run (opencode
+    /// 1.17.3 printed `Updating to v1.18.29...` on launch; codex 0.147.0's TUI offered
+    /// `Update available -> 0.153.4` and an Enter installed it; claude updates in the background)
+    /// changes the program under a running node and interrupts a native facade session, so the
+    /// switch is row **data** ([`spec::UpdatePolicy`]), measured on the installed binary, and
+    /// rendered by the one renderer into the headless shape, the pane shape and the native
+    /// overlay alike — never a per-harness branch, never a duplicate `Env` row beside it.
+    ///
+    /// A row with no measured switch says so **explicitly**: `UpdatePolicy::None` with a note
+    /// naming what was searched. Silence is the one answer the sweep refuses.
+    #[test]
+    fn every_row_states_its_update_policy_and_renders_it_into_every_launch_shape() {
+        use std::ffi::OsString;
+
+        use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
+        use crate::spec::UpdatePolicy;
+
+        /// One launch the row rendered: its name, the invocation, the documents beside it.
+        type Launch = (String, Invocation, Vec<(PathBuf, String)>);
+
+        let document_dir = PathBuf::from("/state/agents/019f-root");
+        let operator_env = vec![(OsString::from("PATH"), OsString::from("/usr/bin"))];
+        let lossy = |v: &OsString| v.to_string_lossy().into_owned();
+        /// The value at a dotted path of a JSON document, if the document is one.
+        fn at<'a>(doc: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+            key.split('.').try_fold(doc, |v, k| v.get(k))
+        }
+        for h in Harness::ALL {
+            let row = harness_spec(h);
+            let a = launch_adapter(h).unwrap();
+            let note = match row.updates {
+                UpdatePolicy::Env { note, .. }
+                | UpdatePolicy::Pair { note, .. }
+                | UpdatePolicy::Document { note, .. }
+                | UpdatePolicy::None { note } => note,
+            };
+            assert!(
+                !note.trim().is_empty(),
+                "{h}: an update policy without the measurement behind it"
+            );
+            // Every launch this row can render, under both auth modes.
+            let mut launches: Vec<Launch> = Vec::new();
+            for auth in [Auth::Canned, Auth::Inherited] {
+                let launch = LaunchSpec {
+                    auth,
+                    model: match h {
+                        Harness::OpenCode => Some("anthropic/claude-sonnet-4-5".into()),
+                        _ => spec_for(h).model,
+                    },
+                    config_dir: document_dir.clone(),
+                    ..spec_for(h)
+                };
+                let files = a.config_files(&launch, &ctx()).unwrap();
+                launches.push((
+                    format!("{auth:?} headless"),
+                    a.compile(&launch, &ctx())
+                        .unwrap_or_else(|e| panic!("{h}: {e}")),
+                    files.clone(),
+                ));
+                if row.pane.is_some() {
+                    launches.push((
+                        format!("{auth:?} pane"),
+                        a.compile_pane(&launch, &ctx())
+                            .unwrap_or_else(|e| panic!("{h}: {e}")),
+                        files,
+                    ));
+                }
+            }
+            // And the native injection, where the row has a native lane.
+            let live = LaunchSpec {
+                auth: Auth::Inherited,
+                config_dir: document_dir.clone(),
+                ..spec_for(h)
+            };
+            let bridge = bridge_env(&live, &ctx());
+            let native = native_adapter(h).map(|adapter| {
+                adapter
+                    .prepare_native(&NativeNodeContext {
+                        bridge: &bridge,
+                        document_dir: &document_dir,
+                        allowed_marion_tools: &["spawn", "wait", "status"],
+                        environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
+                    })
+                    .unwrap_or_else(|e| panic!("{h}: {e}"))
+            });
+            match row.updates {
+                UpdatePolicy::Env { key, value, .. } => {
+                    assert!(
+                        row.env.iter().all(|e| e.key != key),
+                        "{h}: `{key}` is the update policy and must not also be an `Env` row"
+                    );
+                    for (shape, inv, _) in &launches {
+                        assert!(
+                            inv.env.contains(&(key.to_string(), value.to_string())),
+                            "{h} {shape}: no `{key}={value}` in {:?}",
+                            inv.env
+                        );
+                    }
+                    if let Some(native) = &native {
+                        let overlay: Vec<(String, String)> = native
+                            .env_overlay
+                            .iter()
+                            .map(|(k, v)| (lossy(k), lossy(v)))
+                            .collect();
+                        assert!(
+                            overlay.contains(&(key.to_string(), value.to_string())),
+                            "{h} native: no `{key}={value}` in the overlay {overlay:?}"
+                        );
+                    }
+                }
+                UpdatePolicy::Pair { key, value, .. } => {
+                    let token = format!("{key}={value}");
+                    for (shape, inv, _) in &launches {
+                        assert!(
+                            inv.args.contains(&token),
+                            "{h} {shape}: no `{token}` on argv {:?}",
+                            inv.args
+                        );
+                    }
+                    if let Some(native) = &native {
+                        let prefix: Vec<String> = native.argv_prefix.iter().map(lossy).collect();
+                        assert!(
+                            prefix.contains(&token),
+                            "{h} native: no `{token}` in the prefix {prefix:?}"
+                        );
+                    }
+                }
+                UpdatePolicy::Document { keys, .. } => {
+                    assert!(!keys.is_empty(), "{h}: a document policy with no keys");
+                    let carries = |text: &str| -> bool {
+                        let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
+                            return false;
+                        };
+                        keys.iter()
+                            .all(|(k, v)| at(&doc, k) == Some(&serde_json::Value::Bool(*v)))
+                    };
+                    for (shape, _, files) in &launches {
+                        assert!(
+                            files.iter().any(|(_, body)| carries(body)),
+                            "{h} {shape}: no document carries {keys:?}: {files:?}"
+                        );
+                    }
+                    if let Some(native) = &native {
+                        assert!(
+                            native
+                                .documents
+                                .iter()
+                                .any(|d| carries(std::str::from_utf8(&d.contents).unwrap())),
+                            "{h} native: no injected document carries {keys:?}"
+                        );
+                    }
+                }
+                UpdatePolicy::None { note } => {
+                    // The row does not know a switch — so it must also not smuggle one in as an
+                    // ordinary `Env` row, where nothing would check it against the binary.
+                    assert!(
+                        !row.env
+                            .iter()
+                            .any(|e| e.key.to_ascii_uppercase().contains("UPDATE")),
+                        "{h}: an update-shaped `Env` row on a row that states no update policy"
+                    );
+                    assert!(
+                        note.contains("no") || note.contains("never"),
+                        "{h}: `None` must say what was searched and not found: {note}"
+                    );
+                }
+            }
+        }
     }
 
     /// **Every row is a complete, measured declaration** — the whole of what the trait used to

@@ -23,7 +23,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
-    Spelling, Surfaces, ToolSpelling, Val, When,
+    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
 /// [`live_config_json`] as the one-line value `OPENCODE_CONFIG_CONTENT` carries: the live
@@ -134,11 +134,6 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             when: When::Always,
         },
         Env {
-            key: "OPENCODE_DISABLE_AUTOUPDATE",
-            val: Val::Lit("1"),
-            when: When::Always,
-        },
-        Env {
             key: "OPENCODE_DISABLE_SHARE",
             val: Val::Lit("1"),
             when: When::Always,
@@ -199,6 +194,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         value: NO_COMPILED_TOOL_CONSTRAINT,
     },
     resume: Some(Resume::Flag("--session")),
+    // 1.18.29's check, verbatim from the binary: `if (j.autoupdate === false ||
+    // T.OPENCODE_DISABLE_AUTOUPDATE) return;` ahead of any network call, where the variable is
+    // read as `toLowerCase() === "true" || === "1"`. Unset, a patch release is installed
+    // **silently** — the `Updating to v1.18.29...` a 1.17.3 node printed on launch — and a
+    // minor/major one prompts. The config spelling (`"autoupdate": false`) counts only in the
+    // *global* `~/.config/opencode/opencode.json`, which a live node does not let marion write, so
+    // the variable is the switch on both routes and the native overlay.
+    updates: UpdatePolicy::Env {
+        key: "OPENCODE_DISABLE_AUTOUPDATE",
+        value: "1",
+        note: "1.18.29 binary strings: the upgrade check returns on `OPENCODE_DISABLE_AUTOUPDATE` \
+               (`\"1\"`/`\"true\"`) before any fetch",
+    },
     note: "S13 on opencode 1.17.3: the run surface, the exhaustive OPENCODE_* scan behind the env, \
            the PWD placement measured through marion's own spawn; harness_matrix's opencode cell \
            runs this row end to end",

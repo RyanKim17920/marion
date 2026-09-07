@@ -19,7 +19,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
-    Spelling, Surfaces, ToolSpelling, Val, When,
+    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
 /// Codex's row: the `exec` shape (S6, 0.146.0) and the TUI (M3 C2, 0.147.0), two argv grammars of
@@ -151,6 +151,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // The TUI's `codex resume` is a different grammar and unmeasured, so the pane row carries no
     // `Arg::Resume` and a paned resume is refused.
     resume: Some(Resume::Subcommand("resume")),
+    // codex 0.147.0 has **no** update-related variable in its `CODEX_*` list; the switch is the
+    // config key `check_for_update_on_startup` (a boolean in its `ConfigToml` field list, and
+    // runtime-typed: `-c check_for_update_on_startup=notabool` fails with "expected a boolean",
+    // where an unknown key is ignored silently). `-c` is a global flag, so the pair rides the
+    // row's own override channel on `exec`, on `exec resume` and on the TUI, and in the native
+    // prefix. What it silences is the TUI-only startup check that shows `Update available!` and
+    // installs on Enter — the prompt a scripted Enter hit mid-experiment (0.145.0 → 0.146.0).
+    updates: UpdatePolicy::Pair {
+        key: "check_for_update_on_startup",
+        value: "false",
+        note: "0.147.0 binary strings (`ConfigToml` field list) and a runtime type check on the \
+               key; no `CODEX_*` update variable exists",
+    },
     note: "S6 on codex 0.146.0 for exec --json (tests/fixtures/s6); the TUI row and its \
            omissions measured on 0.147.0 for M3 C2; harness_matrix's codex cell and M1's hop run \
            the exec row end to end",
@@ -476,6 +489,9 @@ mod tests {
                 "019a-thread",
                 "--json",
                 "--skip-git-repo-check",
+                // The row's update policy, on the `-c` channel both helps list.
+                "-c",
+                "check_for_update_on_startup=false",
                 "do the task",
             ]
         );
@@ -488,6 +504,8 @@ mod tests {
                 "/tmp/wt",
                 "--json",
                 "--skip-git-repo-check",
+                "-c",
+                "check_for_update_on_startup=false",
                 "do the task"
             ],
             "a fresh launch is the same row without the subcommand"
@@ -808,14 +826,18 @@ mod tests {
     #[test]
     fn config_overrides_ride_argv_one_flag_per_pair() {
         let inv = compile_exec(&live_spec());
-        let expected: Vec<String> = live_config_overrides(&BridgeEnv {
-            auth: Auth::Inherited,
-            base_url: None,
-            ..bridge_env()
-        })
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+        // The row's update policy leads, then the live declaration's pairs in their own order.
+        let expected: Vec<String> = SPEC
+            .updates
+            .pair()
+            .into_iter()
+            .chain(live_config_overrides(&BridgeEnv {
+                auth: Auth::Inherited,
+                base_url: None,
+                ..bridge_env()
+            }))
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
         assert_eq!(
             pairs(&inv),
             expected,

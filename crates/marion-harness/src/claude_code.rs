@@ -18,7 +18,7 @@ pub use crate::mcp_bridge::{
 };
 use crate::spec::{
     Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
-    Spelling, Surfaces, ToolSpelling, Val, When,
+    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 use crate::surfaces::TypedKind;
 
@@ -139,6 +139,19 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // `-r, --resume [value]  Resume a conversation by session ID` (2.1.224 `--help`); the same flag
     // on the TUI.
     resume: Some(Resume::Flag("--resume")),
+    // 2.1.263's own read, from the binary: `if (Ie(process.env.DISABLE_AUTOUPDATER)) return {type:
+    // "env", envVar: "DISABLE_AUTOUPDATER"}` — a truthy parse (`1`/`true`/`yes`/`on`), and `"1"`
+    // is the value claude sets for the children it launches itself. It gates the background
+    // updater **and** the `Update available!` banner. `DISABLE_UPDATES` and
+    // `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` disable it too and more besides; the settings
+    // boolean `autoUpdates: false` survives only as a migration into this very variable.
+    updates: UpdatePolicy::Env {
+        key: "DISABLE_AUTOUPDATER",
+        value: "1",
+        note: "2.1.263 binary strings: the updater's disabled-reason check reads \
+               `DISABLE_AUTOUPDATER` first among the switches; claude sets `\"1\"` for its own \
+               children",
+    },
     note: "S1/S9/S11 on 2.1.220; s14 on 2.1.222 for --tools/--allowedTools. The pane shape was \
            measured on 2.1.220 for M3 C1 (MILESTONES: the recorded manual session)",
 };
@@ -409,6 +422,8 @@ mod tests {
                 ("ANTHROPIC_AUTH_TOKEN".to_string(), "dummy".to_string()),
                 // Non-empty, it would silently win — and would be the operator's own key.
                 ("ANTHROPIC_API_KEY".to_string(), String::new()),
+                // The row's update policy: no background updater under a running node.
+                ("DISABLE_AUTOUPDATER".to_string(), "1".to_string()),
             ]
         );
     }
@@ -419,7 +434,7 @@ mod tests {
     fn a_node_with_no_credential_in_its_spec_carries_no_anthropic_pair() {
         let inv = compile(&root());
         let names: Vec<&str> = inv.env.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(names, vec!["ANTHROPIC_BASE_URL"]);
+        assert_eq!(names, vec!["ANTHROPIC_BASE_URL", "DISABLE_AUTOUPDATER"]);
     }
 
     #[test]

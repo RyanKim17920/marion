@@ -49,7 +49,9 @@ use serde_json::{Value, json};
 use marion_core::harness::Harness;
 
 use crate::caps::Capabilities;
-use crate::spec::{Arg, Constraint, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces};
+use crate::spec::{
+    Arg, Constraint, Field, HarnessSpec, McpRoute, McpRoutes, Spelling, Surfaces, UpdatePolicy,
+};
 use crate::stream::{
     CallOutcome, ChildExit, MarionCall, StreamOutcome, json_frames, report_commits,
 };
@@ -91,6 +93,14 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // ACP resumes through `session/load` where the agent advertises `loadSession` — a protocol
     // request, not argv — so the row names no flag and an argv resume is refused.
     resume: None,
+    // The program is the agent's own, chosen at bind time, so no one switch fits the row: an
+    // opencode agent's would be opencode's and a codex-acp agent's codex-acp's. The row states no
+    // policy; the opencode agent's canned recipe reuses opencode's row, switch included
+    // (`AcpAdapter::fields`), and every other agent runs with whatever its own binary does.
+    updates: UpdatePolicy::None {
+        note: "no single program: the switch is the bound agent's; only the opencode agent's \
+               canned recipe carries one (opencode's row)",
+    },
     note: "S20 (initialize on gemini --acp and opencode acp), S21 (a full opencode acp session \
            with a real marion_report call), S22 (the claude-agent-acp and codex-acp shims to \
            end_turn), S28 (copilot --acp to a real marion-report call; qwen, goose and gemini \

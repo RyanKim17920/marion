@@ -40,7 +40,7 @@ use crate::grammar::{
 pub use crate::mcp_bridge::BridgeEnv;
 use crate::spec::{
     Arg, Constraint, Env, Field, HarnessSpec, LiveDeclaration, McpRoute, McpRoutes, Resume,
-    Spelling, Surfaces, ToolSpelling, Val, When,
+    Spelling, Surfaces, ToolSpelling, UpdatePolicy, Val, When,
 };
 
 /// [`mcp_config_json`]'s file name under the node's own directory — one spelling for [`SPEC`]'s
@@ -127,11 +127,6 @@ pub const SPEC: HarnessSpec = HarnessSpec {
             val: Val::Lit("true"),
             when: When::Canned,
         },
-        Env {
-            key: AUTO_UPDATE_ENV,
-            val: Val::Lit("false"),
-            when: When::Always,
-        },
     ],
     stream: Some(&STREAM),
     // `read` → `view`, `write` → `create`, measured on 1.0.83 (`tests/fixtures/s24/`):
@@ -168,6 +163,18 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         prefix: "allow-tool:",
     },
     resume: Some(Resume::FlagEq("--resume")),
+    // 1.0.83's check, verbatim from `app.js`: `let e = process.env.COPILOT_AUTO_UPDATE; return
+    // !(e && e.toLowerCase() === "false")` — so the value is exactly `false`, and `0` would leave
+    // the updater **on**. Gates the start-up check-and-download of a newer build and plugin
+    // auto-update; `--no-auto-update` is the argv spelling of the same switch and `COPILOT_OFFLINE`
+    // a broader one that also severs GitHub auth, so neither replaces it. The `Run 'copilot update'
+    // to check for updates.` line under `--version` is static text and stays.
+    updates: UpdatePolicy::Env {
+        key: AUTO_UPDATE_ENV,
+        value: "false",
+        note: "1.0.83 `app.js`: the updater runs unless `COPILOT_AUTO_UPDATE` lower-cases to \
+               `false`",
+    },
     note: "s24 on copilot 1.0.83: the -p surface, BYOK by env, both tool axes in their two \
            spellings, the @-file declaration route; harness_matrix's copilot cell runs this row \
            end to end",
@@ -271,8 +278,9 @@ pub const PROVIDER_API_KEY_ENV: &str = "COPILOT_PROVIDER_API_KEY";
 /// **dropped under [`Auth::Inherited`]**, where GitHub auth is the whole point.
 pub const OFFLINE_ENV: &str = "COPILOT_OFFLINE";
 /// `false` disables the CLI downloading a newer build of itself on start-up — the §7.7 hazard that
-/// moved codex and claude under the suite three times in five days. Kept under **both** modes: it
-/// is hygiene, not isolation.
+/// moved codex and claude under the suite three times in five days. The row's
+/// [`UpdatePolicy`], so it reaches **both** modes, both shapes and the native overlay: it is
+/// hygiene, not isolation.
 pub const AUTO_UPDATE_ENV: &str = "COPILOT_AUTO_UPDATE";
 
 /// The provider type marion compiles: marion's canned server speaks OpenAI Chat Completions, which
