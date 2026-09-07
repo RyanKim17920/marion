@@ -176,27 +176,15 @@ impl NativeBootstrapClient {
         Self::connect(&paths, cwd)
     }
 
-    /// [`Self::connect_for_cwd`], after making sure this project has a supervisor to connect to.
+    /// Connect to the native-bootstrap sibling of an already-resolved project.
     ///
-    /// The one spawn path: `crate::detach::ensure_supervisor`, which `marion run` and `marion
-    /// resume` take — dial, and start stage 1 **only** if nothing answers. `launch` is told the
-    /// resolved `<state>` and canonical project root and builds what stage 3 must be told, because
-    /// the binary to start and the provider choice are the launcher's to state, never this
-    /// client's to infer. The ordinary-socket connection `ensure_supervisor` returns is held until
-    /// the native sibling is dialed, so the supervisor has a client for every instant in between.
-    pub fn ensure_for_cwd(
-        launch: impl FnOnce(&Path, &Path) -> crate::detach::Launch,
+    /// `client_cwd` is the working directory `paths` was resolved from — what the vendor must run
+    /// in. Crate-private so the shipped path stays `crate::facade_cli`, which resolves, makes sure
+    /// a supervisor serves, then dials; this module never learns how a supervisor is started.
+    pub(crate) fn connect(
+        paths: &socket::SocketPaths,
+        client_cwd: PathBuf,
     ) -> Result<Self, BootstrapError> {
-        let (state, cwd, paths) = resolve_for_cwd()?;
-        let ensured =
-            crate::detach::ensure_supervisor(&paths, &launch(&state, paths.canonical_project()))
-                .map_err(|error| BootstrapError::SupervisorUnavailable(error.to_string()))?;
-        let client = Self::connect(&paths, cwd)?;
-        drop(ensured);
-        Ok(client)
-    }
-
-    fn connect(paths: &socket::SocketPaths, client_cwd: PathBuf) -> Result<Self, BootstrapError> {
         let stream = UnixStream::connect(paths.native_bootstrap())
             .map_err(BootstrapError::NativeTransportIo)?;
         Ok(Self {
@@ -232,7 +220,7 @@ impl NativeBootstrapClient {
 
 /// `(<state>, the physical working directory, this project's socket paths)` for the calling
 /// process — one `getcwd`, so the directory the project was resolved from is the one sent.
-fn resolve_for_cwd() -> Result<(PathBuf, PathBuf, socket::SocketPaths), BootstrapError> {
+pub(crate) fn resolve_for_cwd() -> Result<(PathBuf, PathBuf, socket::SocketPaths), BootstrapError> {
     let cwd = std::env::current_dir().map_err(BootstrapError::NativeTransportIo)?;
     let state = socket::resolve_state_dir().map_err(|error| {
         BootstrapError::NativeTransportIo(std::io::Error::other(error.to_string()))

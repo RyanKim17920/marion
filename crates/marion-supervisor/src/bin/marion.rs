@@ -1737,16 +1737,16 @@ fn main() -> ExitCode {
         // stage 3 is told is the zero-configuration pair — the operator's own login and no
         // endpoint — and the grace every other client leaves to the supervisor.
         || {
-            marion_supervisor::native_bootstrap::NativeBootstrapClient::ensure_for_cwd(
-                |state, project_root| detach::Launch {
+            marion_supervisor::facade_cli::ensure_supervisor_then_connect(|state, project_root| {
+                detach::Launch {
                     program: supervisor_binary(),
                     state_dir: state.to_path_buf(),
                     project_root: project_root.to_path_buf(),
                     idle_grace: RUN_IDLE_GRACE,
                     auth: marion_harness::Auth::Inherited,
                     base_url: None,
-                },
-            )
+                }
+            })
         },
         marion_supervisor::facade_cli::relay_native_facade,
         io::stderr(),

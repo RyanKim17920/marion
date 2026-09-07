@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[cfg(test)]
@@ -9,10 +9,11 @@ use marion_core::NativeFacadeRegistry;
 use marion_harness::validate_native_process_values;
 use marion_proto::{NativeEnvVarV1, NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1};
 
+use crate::detach::Launch;
 use crate::native_binding::{NativeBindingError, resolve_declared_executable};
 use crate::native_bootstrap::{
     BootstrapError, DirectNativeRequestContext, NATIVE_WIRE_VERSION, NativeBootstrapClient,
-    NativeFacadeHandoff,
+    NativeFacadeHandoff, resolve_for_cwd,
 };
 use crate::native_intent::SelectedNativeFacade;
 use crate::native_tty::capture_process_stdio;
@@ -107,6 +108,30 @@ pub fn relay_native_facade(handoff: NativeFacadeHandoff) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// [`NativeBootstrapClient::connect_for_cwd`], after making sure this project has a supervisor to
+/// connect to — the shipped facade's connect step.
+///
+/// The one spawn path: [`crate::detach::ensure_supervisor`], which `marion run` and `marion
+/// resume` take — dial, and start stage 1 **only** if nothing answers. `launch` is told the
+/// resolved `<state>` and canonical project root and builds what stage 3 must be told, because the
+/// binary to start and the provider choice are the launcher's to state, never this client's to
+/// infer. The ordinary-socket connection `ensure_supervisor` returns is held until the native
+/// sibling is dialed, so the supervisor has a client for every instant in between.
+///
+/// This composition lives on the client side, not in `native_bootstrap`: the bootstrap module is
+/// what `serve` builds on, and a module `serve` depends on must not reach back through `detach`.
+pub fn ensure_supervisor_then_connect(
+    launch: impl FnOnce(&Path, &Path) -> Launch,
+) -> Result<NativeBootstrapClient, BootstrapError> {
+    let (state, cwd, paths) = resolve_for_cwd()?;
+    let ensured =
+        crate::detach::ensure_supervisor(&paths, &launch(&state, paths.canonical_project()))
+            .map_err(|error| BootstrapError::SupervisorUnavailable(error.to_string()))?;
+    let client = NativeBootstrapClient::connect(&paths, cwd)?;
+    drop(ensured);
+    Ok(client)
 }
 
 /// Run the untrusted native-facade match before handing unmatched argv to the legacy CLI.
