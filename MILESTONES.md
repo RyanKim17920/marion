@@ -1105,7 +1105,14 @@ acceptance evidence, so every marker remains unchanged.
   facade from a cold project starts the supervisor itself through `detach::ensure_supervisor` —
   the one spawn path `marion run` and `marion resume` already take — instead of refusing when
   nothing serves the project (the demo found it refusing); `native_facade_smoke.rs` now begins
-  with nothing serving and reads the identity file the started supervisor published. *Still open:* C1's
+  with nothing serving and reads the identity file the started supervisor published. Same day,
+  the native root runs where the operator invoked the facade: the bootstrap wire carries the
+  client's working directory (hashed, budgeted, refused unless it resolves to this project's §2
+  key and lies outside it) and the production factory runs the vendor there, telling the bridge
+  the enclosing working tree — the demo had every harness print `.git` as its workspace because
+  the node ran in the canonical project, which is the git common dir
+  (`tests/native_bootstrap.rs::the_native_command_runs_in_the_clients_working_directory_not_the_common_dir`).
+  *Still open:* C1's
   recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
   merge unmeasured); `SIGTSTP`/`SIGCONT` through the shipped facade, not observable from the
   `spawn_pty` fixture (orphaned process group) — a real kernel stop and continue through the relay

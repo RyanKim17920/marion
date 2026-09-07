@@ -97,7 +97,7 @@ fn context_hash_is_byte_safe_and_preserves_argument_boundaries() {
 /// The production descriptor slice is still empty, so the supervisor here is composed in-process
 /// through the same public constructor `detach.rs` stage 3 calls, with one test-registered facade
 /// and a fixture adapter. The vendor process is a `claude` shim on the **client's** `PATH` that
-/// records its argv and environment byte-exact and exits 37.
+/// records its argv and environment byte-exact and its working directory, and exits 37.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod enabled_launch {
     use std::ffi::OsString;
@@ -156,11 +156,23 @@ mod enabled_launch {
     impl NativeInjectionAdapter for ProbeAdapter {
         fn prepare_native(
             &self,
-            _context: &marion_harness::NativeNodeContext<'_>,
+            context: &marion_harness::NativeNodeContext<'_>,
         ) -> Result<NativeInjection, NativeInjectionError> {
+            // The repository the bridge was told, echoed where the shim's environment record can
+            // show it: `MARION_REPO` itself never reaches the vendor.
+            let repo = context
+                .bridge
+                .pairs()
+                .into_iter()
+                .find(|(name, _)| name == "MARION_REPO")
+                .map(|(_, value)| OsString::from(value))
+                .expect("the bridge declaration names a repository");
             Ok(NativeInjection {
                 argv_prefix: vec![OsString::from(INJECTED_PREFIX)],
-                env_overlay: vec![(OsString::from("PROBE_INJECTED"), OsString::from("1"))],
+                env_overlay: vec![
+                    (OsString::from("PROBE_INJECTED"), OsString::from("1")),
+                    (OsString::from("PROBE_REPO"), repo),
+                ],
                 documents: vec![],
             })
         }
@@ -188,6 +200,7 @@ mod enabled_launch {
                 "#!/bin/sh\n\
                  printf '%s\\0' \"$@\" > {marker}.argv\n\
                  /usr/bin/env > {marker}.env\n\
+                 pwd -P > {marker}.cwd\n\
                  : > {marker}\n\
                  printf '{greeting}\\n'\n\
                  exit 37\n",
@@ -268,146 +281,240 @@ mod enabled_launch {
         outcome
     }
 
+    /// The shim's record of one run, read back off disk once the completion marker exists.
+    struct VendorRecord {
+        argv: Vec<u8>,
+        env: String,
+        cwd: PathBuf,
+    }
+
+    /// What the re-executed client half did, as its parent observed it.
+    struct ProbeRun {
+        status: std::process::ExitStatus,
+        timed_out: bool,
+        stderr: String,
+        screen: String,
+    }
+
+    /// One supervisor composed the way stage 3 composes it, over a scratch project, with the
+    /// vendor shim on a `PATH` of its own.
+    struct Bed {
+        work: marion_testsupport::Scratch,
+        state: PathBuf,
+        project: PathBuf,
+        bin: PathBuf,
+        marker: PathBuf,
+        project_dir: ProjectDir,
+        server: Server,
+    }
+
+    impl Bed {
+        /// `prepare_project` runs on the empty project directory before the project is keyed, so a
+        /// test can make it a repository and have the supervisor key on its common dir.
+        fn start(tag: &str, prepare_project: impl FnOnce(&Path)) -> Self {
+            let work = scratch(tag);
+            let state = work.join("state");
+            let project = work.join("project");
+            let bin = work.join("bin");
+            let marker = work.join("vendor-ran");
+            std::fs::create_dir_all(&project).unwrap();
+            prepare_project(&project);
+            write_shim(&bin, &marker);
+
+            let key = project_root(&project);
+            let paths = socket_paths(&state, &key, own_uid());
+            assert!(
+                paths.overflow().is_none(),
+                "this bed's socket must live under <state>; {:?} overflowed to /tmp",
+                paths.socket()
+            );
+            let Acquired::Serving(serving) = acquire(&paths).expect("bind both listeners") else {
+                panic!("fresh project unexpectedly dialed an existing supervisor")
+            };
+            let project_dir = ProjectDir::new(&state, paths.canonical_project());
+            let live = Arc::new(LiveRegistry::follow(
+                Registry::boot(&project_dir).expect("an absent journal is an empty tree"),
+                Duration::from_millis(10),
+            ));
+            let env = marion_supervisor::run::Env {
+                project_dir: project_dir.clone(),
+                state: state.clone(),
+                project_root: paths.canonical_project().to_path_buf(),
+                bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
+                base_url: Some("http://127.0.0.1:8099/v1".into()),
+                auth: marion_harness::Auth::Canned,
+            };
+            let handle = RegistryHandle::owning(live, env.clone());
+            let server = Server::start_with_native_launch(
+                serving,
+                Arc::clone(&handle),
+                NativeLaunchConfig {
+                    descriptors: DESCRIPTORS,
+                    adapter_for: probe_adapter,
+                    env,
+                },
+                Duration::from_secs(300),
+            )
+            .expect("the enabled native bootstrap service installs once");
+            Self {
+                work,
+                state,
+                project,
+                bin,
+                marker,
+                project_dir,
+                server,
+            }
+        }
+
+        /// The client's `PATH`: the shim's directory first, then the directory `git` lives in,
+        /// because resolving the project from a working directory asks git for the common dir and
+        /// a client that cannot find git would key a repository's subdirectory as a project of its
+        /// own. Nothing else — the supervisor process has a PATH this one must not be confused with.
+        fn client_path(&self) -> std::ffi::OsString {
+            let git_dir = std::env::var_os("PATH")
+                .into_iter()
+                .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+                .find(|dir| dir.join("git").is_file())
+                .expect("git is on this test's PATH");
+            std::env::join_paths([self.bin.as_path(), git_dir.as_path()]).unwrap()
+        }
+
+        /// Run the re-executed client half from `cwd`, on its own controlling terminal, with a
+        /// `PATH` that names the shim and an environment the supervisor process does not have.
+        fn run_probe(&self, cwd: &Path) -> ProbeRun {
+            let terminal = PtyMaster::open(WinSize::new(117, 43)).expect("client PTY");
+            let stdin: OwnedFd = terminal.open_slave().expect("stdin slave");
+            let stdout: OwnedFd = terminal.open_slave().expect("stdout slave");
+            let mut command = Command::new(std::env::current_exe().expect("test binary"));
+            command
+                .args([
+                    "--exact",
+                    "enabled_launch::native_launch_probe",
+                    "--nocapture",
+                ])
+                .current_dir(cwd)
+                .env_clear()
+                .env(PROBE_ENV, "1")
+                .env(MARKER_ENV, &self.marker)
+                .env(LEAK_ENV, "leaked")
+                .env("MARION_STATE_DIR", &self.state)
+                .env("TERM", "xterm-256color")
+                .env("HOME", &*self.work)
+                .env("PATH", self.client_path())
+                .stdin(Stdio::from(stdin))
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::piped());
+            unsafe extern "C" {
+                fn setsid() -> i32;
+                fn ioctl(fd: i32, request: usize, ...) -> i32;
+            }
+            // SAFETY: runs after fork and before exec, performs only async-signal-safe session and
+            // ioctl syscalls, and reports refusal as the OS error.
+            unsafe {
+                command.pre_exec(|| {
+                    if setsid() < 0 || ioctl(0, TIOCSCTTY, 0_i32) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut child = command.spawn().expect("spawn the native launch probe");
+            drop(command);
+            let stderr = child.stderr.take().expect("probe stderr pipe");
+            let reader = std::thread::spawn(move || {
+                let mut output = Vec::new();
+                let _ =
+                    std::io::Read::read_to_end(&mut std::io::BufReader::new(stderr), &mut output);
+                output
+            });
+            // The operator's screen: whatever the client process writes to its terminal. Read
+            // until the last slave closes (the child has exited) or the watchdog ceiling.
+            let terminal = Arc::new(terminal);
+            let screen = {
+                let terminal = Arc::clone(&terminal);
+                std::thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(35);
+                    let mut screen = Vec::new();
+                    let mut bytes = [0u8; 4096];
+                    while Instant::now() < deadline {
+                        match terminal.read(&mut bytes) {
+                            Ok(0) => break,
+                            Ok(count) => screen.extend_from_slice(&bytes[..count]),
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    screen
+                })
+            };
+            let (status, timed_out) = reap_with_watchdog(child, Duration::from_secs(30));
+            let stderr =
+                String::from_utf8_lossy(&reader.join().expect("join stderr reader")).into_owned();
+            let screen = String::from_utf8_lossy(&screen.join().expect("join the screen reader"))
+                .into_owned();
+            drop(terminal);
+            ProbeRun {
+                status,
+                timed_out,
+                stderr,
+                screen,
+            }
+        }
+
+        /// The probe relayed a native launch to completion and the vendor's own output crossed to
+        /// the operator's terminal; then what the shim recorded.
+        fn assert_relayed(&self, run: &ProbeRun) -> VendorRecord {
+            let ProbeRun {
+                status,
+                timed_out,
+                stderr,
+                screen,
+            } = run;
+            assert!(!timed_out, "the probe exceeded its watchdog: {stderr}");
+            assert!(status.success(), "the probe failed: {stderr}");
+            assert!(
+                stderr.contains("NATIVE_HANDOFF"),
+                "the client never received a native handoff: {stderr}"
+            );
+            assert!(
+                !stderr.contains("not enabled"),
+                "the shipped seam still refuses the relay: {stderr}"
+            );
+            assert!(
+                screen.contains(VENDOR_GREETING),
+                "the vendor's own output never reached the operator's terminal; screen: \
+                 {screen:?}; stderr: {stderr}"
+            );
+            assert!(
+                wait_for(&self.marker, Duration::from_secs(5)),
+                "the shim on the client's PATH never ran: {stderr}"
+            );
+            VendorRecord {
+                argv: std::fs::read(self.marker.with_extension("argv")).unwrap(),
+                env: std::fs::read_to_string(self.marker.with_extension("env")).unwrap(),
+                cwd: PathBuf::from(
+                    std::fs::read_to_string(self.marker.with_extension("cwd"))
+                        .unwrap()
+                        .trim_end_matches('\n'),
+                ),
+            }
+        }
+
+        /// The settled journal, once it carries the native node's terminal record.
+        fn replayed(&self) -> Registry {
+            replay_until_a_node_is_terminal(&self.project_dir, Duration::from_secs(10))
+        }
+    }
+
     #[test]
     fn a_detached_supervisor_authorizes_a_native_launch_for_a_registered_facade() {
-        let work = scratch("native-enabled-launch");
-        let state = work.join("state");
-        let project = work.join("project");
-        let bin = work.join("bin");
-        let marker = work.join("vendor-ran");
-        std::fs::create_dir_all(&project).unwrap();
-        write_shim(&bin, &marker);
+        let bed = Bed::start("native-enabled-launch", |_| {});
+        let run = bed.run_probe(&bed.project);
+        let vendor = bed.assert_relayed(&run);
 
-        let key = project_root(&project);
-        let paths = socket_paths(&state, &key, own_uid());
-        assert!(
-            paths.overflow().is_none(),
-            "this bed's socket must live under <state>; {:?} overflowed to /tmp",
-            paths.socket()
-        );
-        let Acquired::Serving(serving) = acquire(&paths).expect("bind both listeners") else {
-            panic!("fresh project unexpectedly dialed an existing supervisor")
-        };
-        let project_dir = ProjectDir::new(&state, paths.canonical_project());
-        let live = Arc::new(LiveRegistry::follow(
-            Registry::boot(&project_dir).expect("an absent journal is an empty tree"),
-            Duration::from_millis(10),
-        ));
-        let env = marion_supervisor::run::Env {
-            project_dir: project_dir.clone(),
-            state: state.clone(),
-            project_root: paths.canonical_project().to_path_buf(),
-            bridge: PathBuf::from(env!("CARGO_BIN_EXE_marion-supervisor")),
-            base_url: Some("http://127.0.0.1:8099/v1".into()),
-            auth: marion_harness::Auth::Canned,
-        };
-        let handle = RegistryHandle::owning(live, env.clone());
-        let server = Server::start_with_native_launch(
-            serving,
-            Arc::clone(&handle),
-            NativeLaunchConfig {
-                descriptors: DESCRIPTORS,
-                adapter_for: probe_adapter,
-                env,
-            },
-            Duration::from_secs(300),
-        )
-        .expect("the enabled native bootstrap service installs once");
-
-        // The client runs on its own controlling terminal, from the project, with a PATH that
-        // names the shim and an environment the supervisor process does not have.
-        let terminal = PtyMaster::open(WinSize::new(117, 43)).expect("client PTY");
-        let stdin: OwnedFd = terminal.open_slave().expect("stdin slave");
-        let stdout: OwnedFd = terminal.open_slave().expect("stdout slave");
-        let mut command = Command::new(std::env::current_exe().expect("test binary"));
-        command
-            .args([
-                "--exact",
-                "enabled_launch::native_launch_probe",
-                "--nocapture",
-            ])
-            .current_dir(&project)
-            .env_clear()
-            .env(PROBE_ENV, "1")
-            .env(MARKER_ENV, &marker)
-            .env(LEAK_ENV, "leaked")
-            .env("MARION_STATE_DIR", &state)
-            .env("TERM", "xterm-256color")
-            .env("HOME", &*work)
-            .env("PATH", &bin)
-            .stdin(Stdio::from(stdin))
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::piped());
-        unsafe extern "C" {
-            fn setsid() -> i32;
-            fn ioctl(fd: i32, request: usize, ...) -> i32;
-        }
-        // SAFETY: runs after fork and before exec, performs only async-signal-safe session and
-        // ioctl syscalls, and reports refusal as the OS error.
-        unsafe {
-            command.pre_exec(|| {
-                if setsid() < 0 || ioctl(0, TIOCSCTTY, 0_i32) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = command.spawn().expect("spawn the native launch probe");
-        drop(command);
-        let stderr = child.stderr.take().expect("probe stderr pipe");
-        let reader = std::thread::spawn(move || {
-            let mut output = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut std::io::BufReader::new(stderr), &mut output);
-            output
-        });
-        // The operator's screen: whatever the client process writes to its terminal. Read until
-        // the last slave closes (the child has exited) or the watchdog ceiling.
-        let terminal = Arc::new(terminal);
-        let screen = {
-            let terminal = Arc::clone(&terminal);
-            std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(35);
-                let mut screen = Vec::new();
-                let mut bytes = [0u8; 4096];
-                while Instant::now() < deadline {
-                    match terminal.read(&mut bytes) {
-                        Ok(0) => break,
-                        Ok(count) => screen.extend_from_slice(&bytes[..count]),
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(_) => break,
-                    }
-                }
-                screen
-            })
-        };
-        let (status, timed_out) = reap_with_watchdog(child, Duration::from_secs(30));
-        let stderr =
-            String::from_utf8_lossy(&reader.join().expect("join stderr reader")).into_owned();
-        let screen =
-            String::from_utf8_lossy(&screen.join().expect("join the screen reader")).into_owned();
-        drop(terminal);
-        assert!(!timed_out, "the probe exceeded its watchdog: {stderr}");
-        assert!(status.success(), "the probe failed: {stderr}");
-        assert!(
-            stderr.contains("NATIVE_HANDOFF"),
-            "the client never received a native handoff: {stderr}"
-        );
-        assert!(
-            !stderr.contains("not enabled"),
-            "the shipped seam still refuses the relay: {stderr}"
-        );
-        assert!(
-            screen.contains(VENDOR_GREETING),
-            "the vendor's own output never reached the operator's terminal; screen: {screen:?}; \
-             stderr: {stderr}"
-        );
-
-        assert!(
-            wait_for(&marker, Duration::from_secs(5)),
-            "the shim on the client's PATH never ran: {stderr}"
-        );
         let mut expected_argv = Vec::new();
         expected_argv.extend_from_slice(INJECTED_PREFIX.as_bytes());
         expected_argv.push(0);
@@ -416,15 +523,15 @@ mod enabled_launch {
             expected_argv.push(0);
         }
         assert_eq!(
-            std::fs::read(marker.with_extension("argv")).unwrap(),
-            expected_argv,
+            vendor.argv, expected_argv,
             "the vendor argv is not program + prefix + opaque tail, byte for byte"
         );
-        let vendor_env = std::fs::read_to_string(marker.with_extension("env")).unwrap();
+        let vendor_env = &vendor.env;
+        let client_path = bed.client_path();
         assert!(
             vendor_env
                 .lines()
-                .any(|line| line == format!("PATH={}", bin.display())),
+                .any(|line| line == format!("PATH={}", client_path.to_string_lossy())),
             "the vendor did not inherit the client's PATH: {vendor_env}"
         );
         assert!(
@@ -438,7 +545,7 @@ mod enabled_launch {
 
         // The native node is a node: §6.1 step 7's intent, confirmation and terminal record are
         // in this project's journal, so the tree, restart and `node/attach` all know it.
-        let replayed = replay_until_a_node_is_terminal(&project_dir, Duration::from_secs(10));
+        let replayed = bed.replayed();
         let nodes = replayed.tree().nodes().to_vec();
         assert_eq!(nodes.len(), 1, "exactly one node was journaled: {nodes:?}");
         let node = &nodes[0];
@@ -461,11 +568,66 @@ mod enabled_launch {
         assert_eq!(exit.code, Some(37), "{exit:?}");
         assert!(node.state.is_exited(), "{:?}", node.state);
         assert!(
-            project_dir.agents_dir().read_dir().unwrap().count() == 1,
+            bed.project_dir.agents_dir().read_dir().unwrap().count() == 1,
             "exactly one agent directory holds the native session's cast"
         );
 
-        server.stop();
+        bed.server.stop();
+    }
+
+    /// In a repository §2 keys the project on the git common dir, so the canonical project the
+    /// bootstrap authenticates is `<repo>/.git` — a key, not a place. The vendor runs where the
+    /// operator invoked the facade, and the bridge is told the working tree that directory is in.
+    ///
+    /// Mutation: run the vendor in the canonical project (the demo saw Claude Code, Codex and
+    /// copilot each print `.git` as their workspace), or hand the bridge the key or the
+    /// subdirectory as the repository.
+    #[test]
+    fn the_native_command_runs_in_the_clients_working_directory_not_the_common_dir() {
+        let bed = Bed::start("native-launch-cwd", |project| {
+            let status = Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(project)
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git init: {status}");
+        });
+        let key = project_root(&bed.project);
+        assert_eq!(
+            key,
+            bed.project.join(".git"),
+            "the project is keyed on its common dir"
+        );
+        let cwd = bed.project.join("crates").join("deep");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let run = bed.run_probe(&cwd);
+        let vendor = bed.assert_relayed(&run);
+
+        assert_eq!(
+            vendor.cwd, cwd,
+            "the vendor did not run where the operator invoked the facade"
+        );
+        assert!(
+            vendor
+                .env
+                .lines()
+                .any(|line| line == format!("PROBE_REPO={}", bed.project.display())),
+            "the bridge was not told the working tree as the repository: {}",
+            vendor.env
+        );
+
+        let replayed = bed.replayed();
+        let nodes = replayed.tree().nodes().to_vec();
+        assert_eq!(nodes.len(), 1, "exactly one node was journaled: {nodes:?}");
+        assert_eq!(
+            nodes[0].exit.as_ref().and_then(|exit| exit.code),
+            Some(37),
+            "{:?}",
+            nodes[0].exit
+        );
+
+        bed.server.stop();
     }
 
     /// The re-executed client half of the test above; a no-op unless it was spawned as one.

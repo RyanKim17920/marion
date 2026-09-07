@@ -76,6 +76,9 @@ impl ProductionNativeCommandFactory {
     /// The declaration of marion's own MCP server for this node — the same keys a managed node's
     /// declaration carries (`claude_code::mcp_config_json`), minus the readiness file a native
     /// session has no use for, and minus a node token no owner has minted yet.
+    ///
+    /// `repo` is the working tree the operator stood in, which is what `marion run` records for a
+    /// managed root (`default_repo`) — never §2's key, which is the git common dir.
     fn bridge_for(
         &self,
         agent_id: &AgentId,
@@ -101,6 +104,15 @@ impl ProductionNativeCommandFactory {
 
 fn native_command_error(error: impl std::fmt::Display) -> BootstrapError {
     BootstrapError::NativeCommand(error.to_string())
+}
+
+/// The working tree `cwd` is in: its nearest ancestor holding a `.git` entry — a directory in the
+/// main worktree, a file in a linked one — or `cwd` itself outside git. The same walk `marion run`
+/// takes for a managed root's repository, so the two kinds of root record the same thing.
+fn working_tree_root(cwd: &std::path::Path) -> PathBuf {
+    cwd.ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map_or_else(|| cwd.to_path_buf(), std::path::Path::to_path_buf)
 }
 
 /// Write a native launch's declaration documents **under the node's own directory and nowhere
@@ -179,7 +191,10 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
     ) -> Result<PreparedNativeCommand, BootstrapError> {
         let lane = selected.native_lane();
         let environment = context.environment();
-        let cwd = context.canonical_project().to_path_buf();
+        // Where the operator invoked the facade, never the canonical project: that is §2's key —
+        // the git common dir — and a harness run there prints `.git` as its workspace. The
+        // bootstrap service has already checked this directory belongs to the project.
+        let cwd = context.client_cwd().to_path_buf();
         // The client's PATH, never this detached process's: the operator's shell decides which
         // `claude` they get, exactly as it would without marion in front.
         let program = resolve_declared_executable(lane.executable(), &cwd, environment)
@@ -192,7 +207,7 @@ impl NativeCommandFactory for ProductionNativeCommandFactory {
             ))
         })?;
         let agent_dir = self.env.project_dir.agent(agent_id);
-        let bridge = self.bridge_for(agent_id, agent_type, &cwd);
+        let bridge = self.bridge_for(agent_id, agent_type, &working_tree_root(&cwd));
         let injection = adapter
             .prepare_native(&NativeNodeContext {
                 bridge: &bridge,
@@ -822,6 +837,65 @@ mod tests {
             crate::native_bootstrap::NATIVE_WIRE_VERSION,
         )
         .with_environment(environment)
+    }
+
+    /// Mutation: run the vendor in the canonical project (§2's key, `<repo>/.git`) instead of
+    /// where the operator invoked the facade, or tell the bridge that key — or the subdirectory —
+    /// is the repository.
+    #[test]
+    fn production_factory_runs_the_vendor_where_the_client_stood_and_names_its_working_tree() {
+        let work = marion_testsupport::scratch("native-factory-cwd");
+        let (bin, _) = fixture_executable(&work);
+        let env = factory_env(&work);
+        let project = work.join("project");
+        let cwd = project.join("crates").join("deep");
+        std::fs::create_dir_all(&cwd).unwrap();
+        // A linked worktree's `.git` is a file; the walk must stop at either.
+        std::fs::write(
+            project.join(".git"),
+            b"gitdir: /elsewhere/.git/worktrees/x\n",
+        )
+        .unwrap();
+        let key = project.join(".git");
+        let agent_id = AgentId("native-cwd".into());
+        let registry = marion_core::NativeFacadeRegistry::new(ATLAS_DESCRIPTORS).unwrap();
+        let selected = crate::native_intent::select_test_native(&registry, "atlas").unwrap();
+        let context = DirectNativeRequestContext::new(
+            key.clone(),
+            cwd.clone(),
+            OsString::from("atlas"),
+            vec![OsString::from("--tail")],
+            OsString::from("xterm"),
+            crate::native_bootstrap::NATIVE_WIRE_VERSION,
+        )
+        .with_environment(vec![(OsString::from("PATH"), bin.as_os_str().to_owned())]);
+
+        let prepared = ProductionNativeCommandFactory::new(env, fixture_adapter)
+            .prepare(
+                &selected,
+                &context,
+                NativeTerminalGeometry {
+                    cols: 80,
+                    rows: 24,
+                    xpixel: 0,
+                    ypixel: 0,
+                },
+                &agent_id,
+            )
+            .expect("the fixture facade assembles");
+
+        assert_eq!(prepared.invocation.cwd, cwd);
+        let repo_flag = prepared
+            .invocation
+            .args
+            .iter()
+            .position(|argument| argument == "--marion-repo")
+            .expect("the adapter echoed the repository it was told");
+        assert_eq!(prepared.invocation.args[repo_flag + 1], project.as_os_str());
+        assert_eq!(
+            working_tree_root(&work.join("nowhere")),
+            work.join("nowhere")
+        );
     }
 
     /// Mutation: reorder prefix and tail, parse or normalize the tail, resolve the executable on
