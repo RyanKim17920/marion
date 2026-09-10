@@ -37,8 +37,8 @@ use crate::contract::{AgentId, ExitStatus, ProcessExit, ResultStatus, TaskId};
 use crate::harness::Harness;
 use crate::ir::SrcSeq;
 use crate::journal::{
-    ContractPersisted, JournalRecord, PermissionDenied, RecordKind, SessionObserved, SpawnIntent,
-    WriterId, decode,
+    ContractPersisted, Exited, JournalRecord, KillConfirmed, PermissionDenied, RecordKind,
+    SessionObserved, SpawnIntent, Spawned, StateChanged, WriterId, decode,
 };
 use crate::node::{NodeState, ReapState};
 use crate::root_change::{RootChanged, RootGrant, RootObservation};
@@ -284,6 +284,133 @@ impl ReplayedNode {
     }
 }
 
+/// **The fold of one record kind onto one node** — [`Replay::apply`]'s arms, one function per kind
+/// that has a rule about what it may overwrite, so each rule is read on its own. `apply` keeps
+/// everything that is about the record rather than its kind: the count, the first timestamp, and
+/// the two derived readings (`state_ts`, the `Orphaned` retraction) that must hold whatever kind
+/// was folded.
+impl ReplayedNode {
+    /// Select the kind's fold. Pure dispatch: one arm per [`RecordKind`], with a kind whose whole
+    /// fold is one assignment written in its arm rather than behind a name.
+    fn fold(&mut self, kind: RecordKind) {
+        match kind {
+            RecordKind::SpawnIntent(i) => self.fold_spawn_intent(i),
+            RecordKind::Spawned(s) => self.fold_spawned(s),
+            RecordKind::SpawnAborted(a) => self.spawn_aborted = Some(a.reason),
+            RecordKind::StateChanged(s) => self.fold_state_changed(s),
+            RecordKind::Exited(e) => self.fold_exited(e),
+            RecordKind::ReapIntent(i) => self.reap_intent = Some(i.reason),
+            RecordKind::ReapConfirmed(_) => self.fold_reap_confirmed(),
+            RecordKind::KillIntent(_) => {}
+            RecordKind::KillConfirmed(k) => self.fold_kill_confirmed(k),
+            RecordKind::ContractPersisted(c) => self.fold_contract_persisted(c),
+            RecordKind::PermissionDenied(d) => self.denied_permissions.push(d),
+            // Last record wins. A root is snapshotted twice in one run and journalled once, so a
+            // second record for one node means a *re*-run of the same agent id, which cannot
+            // happen, or a rewrite marion made deliberately — either way the later reading is the
+            // one that was true last.
+            RecordKind::RootChanged(c) => self.root_change = Some(c),
+            // Written once, in `prepare`, before the process exists. Overwriting rather than
+            // keeping the first has the same justification as the arm above: a second record for
+            // one agent id cannot happen in a run, so the later one is the one that was true last.
+            RecordKind::RootGrantDecided(g) => self.root_grant = Some(g),
+            RecordKind::SessionObserved(s) => self.fold_session_observed(s),
+            RecordKind::SupervisorExited(_) => {
+                unreachable!("the process-wide record returned before selecting a node")
+            }
+        }
+    }
+
+    /// First writer wins: §7.5 makes `parent_id` immutable, and a duplicate intent for one agent
+    /// id is a bug in the writer, not a re-parenting the tree should follow.
+    fn fold_spawn_intent(&mut self, intent: SpawnIntent) {
+        if self.intent.is_none() {
+            self.intent = Some(intent);
+        }
+    }
+
+    /// **A second `Spawned` is a resume**: marion relaunched this node under its own agent id, and
+    /// the record names the new process. That is a decision about the node's fate — the only one
+    /// §7.2's `Orphaned` was ever waiting for — so the marking goes, and a new process lifetime
+    /// begins where every lifetime does: `Spawning`, with no exit and no reap outstanding, until
+    /// this process's own records say otherwise. Everything that is about the *node* rather than
+    /// the *process* — the intent, the contracts, the denials, the root readings, the record count,
+    /// when it first appeared — is left exactly as the earlier records built it.
+    fn fold_spawned(&mut self, s: Spawned) {
+        self.spawn_confirmed = true;
+        self.spawn_generation += 1;
+        self.harness_version = Some(s.harness_version);
+        self.model = s.model;
+        self.pid = s.pid;
+        self.start_id = s.start_id;
+        if self.spawn_generation > 1 {
+            self.state = NodeState::Spawning;
+            self.exit = None;
+            self.reap_state = ReapState::Live;
+            self.reap_intent = None;
+        }
+    }
+
+    /// `Exited` is written by the `Exited` record, which carries the `ProcessExit` too. A
+    /// `StateChanged` naming an exit is accepted all the same — it is what the journal says — but
+    /// it cannot un-exit a node.
+    fn fold_state_changed(&mut self, s: StateChanged) {
+        if !self.state.is_exited() {
+            self.state = s.state;
+        }
+    }
+
+    fn fold_exited(&mut self, e: Exited) {
+        self.state = NodeState::Exited(e.status);
+        self.exit = Some(e.exit);
+    }
+
+    fn fold_reap_confirmed(&mut self) {
+        self.reap_state = ReapState::ReapedIdle;
+        self.reap_intent = None;
+    }
+
+    fn fold_kill_confirmed(&mut self, k: KillConfirmed) {
+        self.state = NodeState::Exited(crate::contract::ExitStatus::Cancelled);
+        self.exit = Some(k.exit);
+    }
+
+    /// A contract is written once per run and may be *updated* — §6.7 finalizes it at the
+    /// terminal transition — so a second record for the same task id replaces the first rather
+    /// than appearing twice.
+    fn fold_contract_persisted(&mut self, c: ContractPersisted) {
+        let ContractPersisted {
+            task_id,
+            requester,
+            status,
+            ..
+        } = c;
+        match self.contracts.iter_mut().find(|c| c.task_id == task_id) {
+            Some(existing) => {
+                existing.requester = requester;
+                existing.status = status;
+            }
+            None => self.contracts.push(ReplayedContract {
+                task_id,
+                requester,
+                status,
+            }),
+        }
+    }
+
+    /// Last record wins, and it says nothing about state: the harness named the conversation, and
+    /// a later observation — a resumed process re-announcing the same session, or a harness that
+    /// forks one — is the one that was true last. `harness` is carried on the record for the
+    /// reader; the node already knows its own from the intent.
+    fn fold_session_observed(&mut self, s: SessionObserved) {
+        let SessionObserved {
+            session_id, pane, ..
+        } = s;
+        self.harness_session = Some(session_id);
+        self.harness_pane = pane;
+    }
+}
+
 /// A per-writer ordinal gap: §4.2's `Ordinal` loss detection, applied to marion's own records.
 ///
 /// Distinct from a torn tail. A tail is the end of the file; a gap is a record that was written
@@ -436,105 +563,7 @@ impl Replay {
         // (see the arm below), and a clock that moved for it would report a transition that did not
         // happen.
         let before = (node.state, node.reap_state);
-        match r.kind {
-            RecordKind::SpawnIntent(i) => {
-                // First writer wins: §7.5 makes `parent_id` immutable, and a duplicate intent for
-                // one agent id is a bug in the writer, not a re-parenting the tree should follow.
-                if node.intent.is_none() {
-                    node.intent = Some(i);
-                }
-            }
-            RecordKind::Spawned(s) => {
-                node.spawn_confirmed = true;
-                node.spawn_generation += 1;
-                node.harness_version = Some(s.harness_version);
-                node.model = s.model;
-                node.pid = s.pid;
-                node.start_id = s.start_id;
-                // **A second `Spawned` is a resume**: marion relaunched this node under its own
-                // agent id, and the record names the new process. That is a decision about the
-                // node's fate — the only one §7.2's `Orphaned` was ever waiting for — so the
-                // marking goes, and a new process lifetime begins where every lifetime does:
-                // `Spawning`, with no exit and no reap outstanding, until this process's own
-                // records say otherwise. Everything that is about the *node* rather than the
-                // *process* — the intent, the contracts, the denials, the root readings, the record
-                // count, when it first appeared — is left exactly as the earlier records built it.
-                if node.spawn_generation > 1 {
-                    node.state = NodeState::Spawning;
-                    node.exit = None;
-                    node.reap_state = ReapState::Live;
-                    node.reap_intent = None;
-                }
-            }
-            RecordKind::SpawnAborted(a) => node.spawn_aborted = Some(a.reason),
-            RecordKind::StateChanged(s) => {
-                // `Exited` is written by the `Exited` record, which carries the `ProcessExit` too.
-                // A `StateChanged` naming an exit is accepted all the same — it is what the
-                // journal says — but it cannot un-exit a node.
-                if !node.state.is_exited() {
-                    node.state = s.state;
-                }
-            }
-            RecordKind::Exited(e) => {
-                node.state = NodeState::Exited(e.status);
-                node.exit = Some(e.exit);
-            }
-            RecordKind::ReapIntent(i) => node.reap_intent = Some(i.reason),
-            RecordKind::ReapConfirmed(_) => {
-                node.reap_state = ReapState::ReapedIdle;
-                node.reap_intent = None;
-            }
-            RecordKind::KillIntent(_) => {}
-            RecordKind::KillConfirmed(k) => {
-                node.state = NodeState::Exited(crate::contract::ExitStatus::Cancelled);
-                node.exit = Some(k.exit);
-            }
-            RecordKind::ContractPersisted(c) => {
-                let ContractPersisted {
-                    task_id,
-                    requester,
-                    status,
-                    ..
-                } = c;
-                // A contract is written once per run and may be *updated* — §6.7 finalizes it at
-                // the terminal transition — so a second record for the same task id replaces the
-                // first rather than appearing twice.
-                match node.contracts.iter_mut().find(|c| c.task_id == task_id) {
-                    Some(existing) => {
-                        existing.requester = requester;
-                        existing.status = status;
-                    }
-                    None => node.contracts.push(ReplayedContract {
-                        task_id,
-                        requester,
-                        status,
-                    }),
-                }
-            }
-            RecordKind::PermissionDenied(d) => node.denied_permissions.push(d),
-            // Last record wins. A root is snapshotted twice in one run and journalled once, so a
-            // second record for one node means a *re*-run of the same agent id, which cannot
-            // happen, or a rewrite marion made deliberately — either way the later reading is the
-            // one that was true last.
-            RecordKind::RootChanged(c) => node.root_change = Some(c),
-            // Written once, in `prepare`, before the process exists. Overwriting rather than
-            // keeping the first has the same justification as the arm above: a second record for
-            // one agent id cannot happen in a run, so the later one is the one that was true last.
-            RecordKind::RootGrantDecided(g) => node.root_grant = Some(g),
-            // Last record wins, and it says nothing about state: the harness named the
-            // conversation, and a later observation — a resumed process re-announcing the same
-            // session, or a harness that forks one — is the one that was true last. `harness` is
-            // carried on the record for the reader; the node already knows its own from the intent.
-            RecordKind::SessionObserved(SessionObserved {
-                session_id, pane, ..
-            }) => {
-                node.harness_session = Some(session_id);
-                node.harness_pane = pane;
-            }
-            RecordKind::SupervisorExited(_) => {
-                unreachable!("the process-wide record returned before selecting a node")
-            }
-        }
+        node.fold(r.kind);
         // **§7.2's derived marking, superseded by the record it was derived in the absence of.**
         //
         // `Orphaned` is a judgement a policy wrote over this tree, and its whole premise is that
