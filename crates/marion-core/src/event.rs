@@ -721,13 +721,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_rather_than_guesses() {
-        assert!(decode(b"").is_none());
-        assert!(decode(b"{\"agent_id\":\"a\"").is_none(), "a torn prefix");
-        assert!(decode(b"not json").is_none());
-        assert!(
-            decode(&[0xff, 0xfe]).is_none(),
-            "invalid UTF-8 must not panic"
-        );
+        crate::encoding::assert_decode_rejects_rather_than_guesses(decode, b"{\"agent_id\":\"a\"");
     }
 
     /// The journal refuses an over-large record; this file **shortens** and says so. The event

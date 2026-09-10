@@ -138,6 +138,24 @@ fn unix_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// What every line decoder in this crate owes a reader: `None`, never a guess and never a panic,
+/// for an empty line, a torn prefix (the writer died mid-record), a line that is not JSON at all,
+/// and bytes that are not UTF-8. `torn_prefix` is the caller's own record shape cut short, so the
+/// assertion exercises that codec's fields and not a generic one.
+#[cfg(test)]
+pub(crate) fn assert_decode_rejects_rather_than_guesses<T: std::fmt::Debug>(
+    decode: fn(&[u8]) -> Option<T>,
+    torn_prefix: &[u8],
+) {
+    assert!(decode(b"").is_none(), "an empty line");
+    assert!(decode(torn_prefix).is_none(), "a torn prefix");
+    assert!(decode(b"not json").is_none(), "a line that is not JSON");
+    assert!(
+        decode(&[0xff, 0xfe]).is_none(),
+        "invalid UTF-8 must not panic"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
