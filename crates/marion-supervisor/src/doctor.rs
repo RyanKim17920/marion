@@ -1136,97 +1136,21 @@ fn acp_live_turn(
     ));
     let mut agent = match AcpChild::spawn(program, inv) {
         Ok(c) => c,
-        Err(e) => {
-            return TurnOutcome {
-                spawned: false,
-                spawn_line: format!("spawn: FAILED — {e}"),
-                shape_ok: false,
-                shape_line: None,
-                trailing: vec![],
-                no_leak: true,
-                leak_line: "leak check: nothing was started".into(),
-            };
-        }
+        Err(e) => return not_spawned(&e),
     };
     let pid = agent.pid;
     let mut trailing = Vec::new();
-    let mut shape: Option<(bool, String)> = None;
 
     // `initialize`, then `session/new`, then the prompt. Each step reports itself and stops the
     // sequence, because a step that could not run is not a step that failed a *later* one.
-    agent.send(&acp::initialize_request(0));
-    let handshake = agent
-        .response(0, HANDSHAKE_BUDGET)
-        .map(|f| marion_harness::AgentHandshake::parse(&f));
-    match &handshake {
-        Some(Ok(h)) => trailing.push(format!("initialize: ok — {}", h.key())),
-        Some(Err(e)) => shape = Some((false, format!("initialize: FAILED — {e}"))),
-        None => {
-            shape = Some((
-                false,
-                format!("initialize: FAILED — no answer within {HANDSHAKE_BUDGET:?}"),
-            ))
-        }
-    }
-
-    let mut session = None;
-    if shape.is_none() {
-        agent.send(&acp::session_new_request(
-            marion_harness::adapter::SESSION_NEW_ID,
-            &inv.cwd,
-            &[],
-        ));
-        match agent.response(marion_harness::adapter::SESSION_NEW_ID, SESSION_BUDGET) {
-            None => {
-                shape = Some((
-                    false,
-                    format!("session/new: FAILED — no answer within {SESSION_BUDGET:?}"),
-                ))
-            }
-            Some(f) => match acp::session_id(&f) {
-                Ok(id) => {
-                    trailing.push("session/new: ok — the agent opened a session".into());
-                    session = Some(id);
-                }
-                // **The S20 blocker, reported as the vendor's own sentence.** It is not an adapter
-                // fault and no adapter can route around it, so it must not read as marion failing
-                // to understand the answer.
-                Err(e) => shape = Some((false, format!("session/new: REFUSED by the agent — {e}"))),
-            },
-        }
-    }
-
-    let mut timed_out = false;
-    if let Some(sid) = &session {
-        agent.send(&acp::prompt_request(2, sid, MICRO_PROMPT));
-        match agent.response(2, TURN_BUDGET) {
-            Some(f) => trailing.push(format!(
-                "session/prompt: answered — stopReason {}",
-                serde_json::from_str::<serde_json::Value>(&f)
-                    .ok()
-                    .and_then(|v| v
-                        .pointer("/result/stopReason")?
-                        .as_str()
-                        .map(str::to_string))
-                    .unwrap_or_else(|| "absent".into())
-            )),
-            None => {
-                timed_out = true;
-                // §8's interrupt step, in ACP's own vocabulary. `session/cancel` is a
-                // notification: the pending `session/prompt` answers it with
-                // `stopReason: "cancelled"`, which is a cleaner interrupt than a signal and is the
-                // one this protocol documents.
-                agent.send(&acp::cancel_notification(sid));
-                trailing.push(format!(
-                    "interrupt: session/cancel sent after the {TURN_BUDGET:?} turn budget"
-                ));
-            }
-        }
-    }
+    let (timed_out, failed) = match acp_turn_steps(&mut agent, &inv.cwd, &mut trailing) {
+        Ok(timed_out) => (timed_out, None),
+        Err(finding) => (false, Some(finding)),
+    };
 
     let stdout = agent.stdout();
     let shape =
-        shape.unwrap_or_else(|| acp_shape_finding(agent_spec.reading(), &stdout, timed_out));
+        failed.unwrap_or_else(|| acp_shape_finding(agent_spec.reading(), &stdout, timed_out));
     let clean = agent.finish();
     trailing.push(if clean {
         "termination: the agent exited on SIGINT".into()
@@ -1251,6 +1175,101 @@ fn acp_live_turn(
                  different problems; this is the former."
             )
         },
+    }
+}
+
+/// The three protocol steps of an ACP turn, each stopping the sequence with its own finding. `Ok`
+/// is whether the prompt ran out its budget, which the shape finding needs to know.
+fn acp_turn_steps(
+    agent: &mut AcpChild,
+    cwd: &Path,
+    trailing: &mut Vec<String>,
+) -> Result<bool, (bool, String)> {
+    acp_initialize_step(agent, trailing)?;
+    let sid = acp_session_step(agent, cwd, trailing)?;
+    Ok(acp_prompt_step(agent, &sid, trailing))
+}
+
+/// `initialize`: the agent answers within [`HANDSHAKE_BUDGET`] with a handshake marion can read.
+fn acp_initialize_step(
+    agent: &mut AcpChild,
+    trailing: &mut Vec<String>,
+) -> Result<(), (bool, String)> {
+    agent.send(&acp::initialize_request(0));
+    let handshake = agent
+        .response(0, HANDSHAKE_BUDGET)
+        .map(|f| marion_harness::AgentHandshake::parse(&f));
+    match &handshake {
+        Some(Ok(h)) => {
+            trailing.push(format!("initialize: ok — {}", h.key()));
+            Ok(())
+        }
+        Some(Err(e)) => Err((false, format!("initialize: FAILED — {e}"))),
+        None => Err((
+            false,
+            format!("initialize: FAILED — no answer within {HANDSHAKE_BUDGET:?}"),
+        )),
+    }
+}
+
+/// `session/new`: the agent opens a session within [`SESSION_BUDGET`] and names it.
+fn acp_session_step(
+    agent: &mut AcpChild,
+    cwd: &Path,
+    trailing: &mut Vec<String>,
+) -> Result<String, (bool, String)> {
+    agent.send(&acp::session_new_request(
+        marion_harness::adapter::SESSION_NEW_ID,
+        cwd,
+        &[],
+    ));
+    match agent.response(marion_harness::adapter::SESSION_NEW_ID, SESSION_BUDGET) {
+        None => Err((
+            false,
+            format!("session/new: FAILED — no answer within {SESSION_BUDGET:?}"),
+        )),
+        Some(f) => match acp::session_id(&f) {
+            Ok(id) => {
+                trailing.push("session/new: ok — the agent opened a session".into());
+                Ok(id)
+            }
+            // **The S20 blocker, reported as the vendor's own sentence.** It is not an adapter
+            // fault and no adapter can route around it, so it must not read as marion failing
+            // to understand the answer.
+            Err(e) => Err((false, format!("session/new: REFUSED by the agent — {e}"))),
+        },
+    }
+}
+
+/// `session/prompt`: the turn itself, cancelled if it runs out [`TURN_BUDGET`]. Answers whether it
+/// did.
+fn acp_prompt_step(agent: &mut AcpChild, sid: &str, trailing: &mut Vec<String>) -> bool {
+    agent.send(&acp::prompt_request(2, sid, MICRO_PROMPT));
+    match agent.response(2, TURN_BUDGET) {
+        Some(f) => {
+            trailing.push(format!(
+                "session/prompt: answered — stopReason {}",
+                serde_json::from_str::<serde_json::Value>(&f)
+                    .ok()
+                    .and_then(|v| v
+                        .pointer("/result/stopReason")?
+                        .as_str()
+                        .map(str::to_string))
+                    .unwrap_or_else(|| "absent".into())
+            ));
+            false
+        }
+        None => {
+            // §8's interrupt step, in ACP's own vocabulary. `session/cancel` is a
+            // notification: the pending `session/prompt` answers it with
+            // `stopReason: "cancelled"`, which is a cleaner interrupt than a signal and is the
+            // one this protocol documents.
+            agent.send(&acp::cancel_notification(sid));
+            trailing.push(format!(
+                "interrupt: session/cancel sent after the {TURN_BUDGET:?} turn budget"
+            ));
+            true
+        }
     }
 }
 
