@@ -1568,6 +1568,18 @@ pub fn run_spawn_watched(
         run.exit,
         run.stderr.clone(),
     );
+    // **§7.6's descendant gate, at the only moment it can run**: the process has stopped and
+    // nothing terminal is written yet — no `Exited`, no contract, no closing bookend. A voluntary,
+    // unreported stop with a live descendant is *held* here, on the remainder of `bound`, and the
+    // verdict is applied to the contract below once `build_contract` has assembled it.
+    let gated = crate::descendant_gate::gate(
+        observer,
+        &agent_id,
+        &env.project_dir,
+        &outcome,
+        spawned_at.0,
+        bound,
+    );
 
     // **§6.7's honest degradation, and the `Option` is the whole of it.**
     //
@@ -1644,6 +1656,9 @@ pub fn run_spawn_watched(
     // refused first — and it is propagated rather than swallowed because an audit record that
     // silently guesses is worse than a spawn that stops.
     contract.allowed_tools = adapter.compiled_permissions(&launch)?;
+    // §7.6's flags, from the gate that ran above — `reported_early`, `held_to_timeout`,
+    // `died_before_gate` and the live set — written onto the completion before it reaches disk.
+    gated.apply(&mut contract);
     let returned = persist_contract_and_close_stream(
         env,
         &agent_dir,

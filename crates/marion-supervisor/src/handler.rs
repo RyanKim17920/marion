@@ -988,6 +988,18 @@ impl crate::run::SpawnObserver for NodeOwner {
         self.handle.mark_started(agent_id, pid);
         let _ = self.tx.send(Progress::Started);
     }
+
+    /// §7.6's subtree scan, off the registry this supervisor already follows. Refreshed first: the
+    /// registry is a follower of the journal, and a descendant's `Exited` that landed since the last
+    /// poll is exactly the transition a held node is waiting to see.
+    fn live_descendants(&self, agent_id: &AgentId) -> Option<Vec<AgentId>> {
+        self.handle.live.refresh();
+        Some(
+            self.handle
+                .live
+                .read(|r| crate::descendant_gate::live_descendants(r.tree(), agent_id)),
+        )
+    }
 }
 
 /// **What authorizes `agent/spawn` with no caller — open question 3, decided.**

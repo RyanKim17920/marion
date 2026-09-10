@@ -128,8 +128,9 @@ duplication.
 *shipped* binary (a real kernel stop and continue through the relay is observed by
 `native_relay_stop_and_continue_are_observed_by_a_job_control_leader`, commit acb1cc5, but the
 `spawn_pty` facade fixture cannot observe it); child resume and a linked
-worktree's cwd on resume; Linux `/proc` start identity unmeasured; descendant gating (§7.6) and
-`verification` execution still not in code; the ACP agent identity on `NodeSummary`.
+worktree's cwd on resume; Linux `/proc` start identity unmeasured; `verification` execution still
+not in code (descendant gating §7.6 came off this line 2026-09-10 — see "Not done"); the ACP agent
+identity on `NodeSummary`.
 
 ---
 
@@ -2507,7 +2508,9 @@ to this one. *(2026-09-05: the journal sentence is history — the journal exist
 supervisor's boot path, and a lost root is relaunched under its own id by `marion resume`. The
 descendant-gating and `verification` sentences are still true at `b85ea30`:
 `spawn.rs` writes `live_descendants_at_report: vec![]` and a `spawn` carrying `verification` is
-refused by name.)*
+refused by name.)* *(2026-09-10: the descendant-gating sentence is history as well —
+`crates/marion-supervisor/src/descendant_gate.rs` is the gate, and the dated line under "Not done"
+names its tests. `verification` is the one sentence of the three still true.)*
 
 ### Not started — what a working M1 does *not* imply
 
@@ -2637,9 +2640,34 @@ grouping.
   `registry::replay` is the detached supervisor's boot path over the on-disk journal (M2
   criterion 2, `client_run.rs`), `watch.rs` reads through it on a live run, and `node/resume`
   rebuilds a `RootSpec` from what it replayed. It is a pure function; it is not a test-only one.
-- **Descendant gating (§7.6) is not in code** — principle 11 above is specified, not enforced.
-  Unchanged, and now visible in the artifact: `spawn.rs` writes `live_descendants_at_report:
-  vec![]` on every contract, so the field a gate would read is a hardcoded empty list.
+- ~~**Descendant gating (§7.6) is not in code**~~ — **built 2026-09-10**, as the rule §7.6 states it
+  and with the exemptions L1 carries: a child's `Exited` is held while any descendant is live
+  unless it reported early or its own bound expires. `crates/marion-supervisor/src/descendant_gate.rs`
+  runs at the terminal transition inside `run_spawn`, *before* the contract, the `Exited` record
+  and the closing bookend exist; it reads the live set off the registry the supervisor already
+  follows (`SpawnObserver::live_descendants`, answered by `handler::NodeOwner` — no new state) with
+  §7.6's gating set stated totally (`Exited(_)`, `Orphaned`, `ReapedIdle`, or an aborted intent is
+  terminal), journals `Blocked(Descendants)` on entering the hold, and writes `reported_early`,
+  `held_to_timeout`, `died_before_gate` and `live_descendants_at_report` onto the completion with
+  the rule named in `ProcessExit.description`. Steps 2 and 4 — the `Stop`-hook re-prompt and the
+  grace turn — are still not built; a hookless voluntary stop goes straight to the step-3 hold, as
+  §7.6 says it must. Unit (`--lib descendant_gate`, 7):
+  `live_descendants_scans_the_whole_subtree_and_counts_only_the_gating_live_set`,
+  `a_stop_is_classified_by_whether_the_node_got_to_choose`,
+  `the_verdict_admits_holds_or_marks_early_per_the_rule`,
+  `a_hold_releases_when_the_set_empties_and_expires_with_the_set_it_last_saw`,
+  `an_expired_hold_lands_unreported_with_the_flag_the_set_and_the_rule_named`,
+  `an_early_report_keeps_its_status_and_names_the_live_set`,
+  `an_owner_without_a_registry_gates_nothing_but_still_records_a_death`. End to end, a **real
+  codex** child under a detached supervisor backgrounding a shim grandchild (`--test
+  descendant_gate`, 3, ~36 s):
+  `a_codex_child_that_reports_with_a_live_grandchild_exits_reported_early_naming_it`,
+  `a_codex_child_that_stops_unreported_with_a_live_grandchild_is_held_until_it_is_terminal` (the
+  grandchild's `Exited` precedes the child's in the journal's byte order), and
+  `a_codex_child_held_to_its_bound_exits_held_to_timeout_and_its_grandchild_outlives_it`. RED
+  first against `b5d631e`: the first landed `reported_early: false, live_descendants_at_report: []`
+  on a contract whose grandchild was live; the other two saw the child's `Exited` land with no
+  `Blocked(Descendants)` ever journaled.
 - **`verification` command execution, so a contract's `evidence` is always empty.** Unchanged, and
   as of `77557e3` a `spawn` carrying `verification` is now **refused by name** rather than accepted
   and dropped — the commands still never run, but a caller can no longer be told they did.
@@ -2701,10 +2729,11 @@ re-check date, so each line now carries its own.
   Some(pid) }` from the owner that has the child, and `root.rs` does the same for a root. The
   sentence "every production writer sets `None`" no longer describes any writer.
 
-**Descendant gating (§7.6) is the absence that did not move**, and it is the one principle 11 calls
-non-negotiable: `spawn.rs:1048` still writes `live_descendants_at_report: vec![]`, so the field a
-gate would read is a hardcoded empty list. It is listed above under "not done" and repeated here
-because it is the item most likely to be lost among five corrections.
+~~**Descendant gating (§7.6) is the absence that did not move**~~ — **FALSE since 2026-09-10.**
+`spawn.rs` still assembles the completion with the flags unset, and `descendant_gate::Gated::apply`
+overwrites them from the gate that ran before the contract existed; the "not done" bullet above
+names the module and its ten tests. What is still absent of §7.6 is steps 2 and 4 (the hook
+re-prompt and the grace turn), and a root's own gating — `root.rs` does not call the gate.
 
 What does exist: `marion run <agent-type> --prompt …` launches the root (and, since 2026-09-05,
 `marion <harness> <its own flags>` runs a native TUI as a root through the relay, `marion resume
