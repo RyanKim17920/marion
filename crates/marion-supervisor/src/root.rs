@@ -1851,9 +1851,7 @@ where
         Ok(waited) => waited,
         Err(error) => {
             let _ = shutdown(false);
-            if let Some(owner) = pane {
-                owner.failed(agent_id, host);
-            }
+            tell_pane_owner_failed(pane, agent_id, host);
             return Err(error);
         }
     };
@@ -1861,9 +1859,7 @@ where
     let status = match shutdown(timed_out) {
         Ok(status) => status,
         Err(error) => {
-            if let Some(owner) = pane {
-                owner.failed(agent_id, host);
-            }
+            tell_pane_owner_failed(pane, agent_id, host);
             return Err(error);
         }
     };
@@ -1876,6 +1872,18 @@ where
     }
 
     Ok((status, timed_out))
+}
+
+/// The pane's terminal transition on a failed teardown, for an owner that has one. A caller with
+/// nowhere to put a pty (`None`) has nobody to tell.
+fn tell_pane_owner_failed(
+    pane: Option<&dyn PaneOwner>,
+    agent_id: &AgentId,
+    host: &std::sync::Arc<crate::pty::PtyHost>,
+) {
+    if let Some(owner) = pane {
+        owner.failed(agent_id, host);
+    }
 }
 
 /// **§9's M3 criterion C1: the root, in a terminal marion owns.**
