@@ -1220,9 +1220,6 @@ fn render_event(event: StreamEvent<'_>, out: &mut dyn Write) -> io::Result<()> {
 /// here instead is what marion already wrote down — the journal — read back by
 /// [`marion_supervisor::watch`].
 fn render_child(event: &ChildEvent, out: &mut dyn Write) -> io::Result<()> {
-    // A child with no intent record is a real case, not a defect: its intent may predate this
-    // watch's cursor. Naming it "a child" is honest; inventing an agent type would not be.
-    let name = |t: &Option<String>| t.clone().unwrap_or_else(|| "a child".into());
     match event {
         ChildEvent::Started {
             agent_type,
@@ -1230,61 +1227,20 @@ fn render_child(event: &ChildEvent, out: &mut dyn Write) -> io::Result<()> {
             depth,
             pid,
             ..
-        } => {
-            let mut facts = Vec::new();
-            if let Some(h) = harness {
-                facts.push(h.to_string());
-            }
-            if let Some(d) = depth {
-                facts.push(format!("depth {d}"));
-            }
-            if let Some(p) = pid {
-                facts.push(format!("pid {p}"));
-            }
-            say(
-                out,
-                "CHILD",
-                &format!("{} started ({})", name(agent_type), facts.join(", ")),
-            )
-        }
+        } => render_child_started(agent_type, harness.as_ref(), *depth, *pid, out),
         ChildEvent::Aborted {
             agent_type, reason, ..
         } => say(
             out,
             "FAILED",
-            &format!("{} never started: {reason}", name(agent_type)),
+            &format!("{} never started: {reason}", child_name(agent_type)),
         ),
         ChildEvent::Exited {
             agent_type,
             status,
             exit,
             ..
-        } => {
-            let verdict = match status {
-                Some(s) => format!("{s:?}"),
-                None => "an unrecorded status".into(),
-            };
-            let ok = *status == Some(ExitStatus::Ok);
-            let detail = match exit {
-                Some(e) if !e.description.trim().is_empty() => {
-                    // The same rule the rest of this renderer follows, and it earns its keep here:
-                    // §6.7's description carries the child's own stderr, so a *successful* child
-                    // that merely warned would otherwise drag its warnings across the terminal. A
-                    // failure keeps every byte — that is the text that explains it.
-                    let d = e.description.trim();
-                    match ok {
-                        true => format!(" — {}", brief(d, LINE_CHARS)),
-                        false => format!(" — {d}"),
-                    }
-                }
-                _ => String::new(),
-            };
-            say(
-                out,
-                if ok { "CHILD" } else { "FAILED" },
-                &format!("{} exited {verdict}{detail}", name(agent_type)),
-            )
-        }
+        } => render_child_exited(agent_type, *status, exit.as_ref(), out),
         ChildEvent::Denied {
             agent_type,
             tool,
@@ -1293,11 +1249,82 @@ fn render_child(event: &ChildEvent, out: &mut dyn Write) -> io::Result<()> {
         } => say(
             out,
             "PERMIT",
-            &format!("{} was denied {tool}: {reason}", name(agent_type)),
+            &format!("{} was denied {tool}: {reason}", child_name(agent_type)),
         ),
         // The viewer stopping is news in its own right — the alternative is a view that quietly
         // stops updating, which reads exactly like a run in which nothing further happened.
         ChildEvent::Stopped { reason } => say(out, "view", reason),
+    }
+}
+
+/// What a child is called in its line.
+///
+/// A child with no intent record is a real case, not a defect: its intent may predate this
+/// watch's cursor. Naming it "a child" is honest; inventing an agent type would not be.
+fn child_name(agent_type: &Option<String>) -> String {
+    agent_type.clone().unwrap_or_else(|| "a child".into())
+}
+
+/// The `CHILD … started` line: the facts the intent record had, and only those.
+fn render_child_started(
+    agent_type: &Option<String>,
+    harness: Option<&marion_core::harness::Harness>,
+    depth: Option<u32>,
+    pid: Option<i32>,
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    let mut facts = Vec::new();
+    if let Some(h) = harness {
+        facts.push(h.to_string());
+    }
+    if let Some(d) = depth {
+        facts.push(format!("depth {d}"));
+    }
+    if let Some(p) = pid {
+        facts.push(format!("pid {p}"));
+    }
+    say(
+        out,
+        "CHILD",
+        &format!("{} started ({})", child_name(agent_type), facts.join(", ")),
+    )
+}
+
+/// The `exited` line: `CHILD` for a success, `FAILED` otherwise, with [`exit_detail`]'s text.
+fn render_child_exited(
+    agent_type: &Option<String>,
+    status: Option<ExitStatus>,
+    exit: Option<&marion_core::contract::ProcessExit>,
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    let verdict = match status {
+        Some(s) => format!("{s:?}"),
+        None => "an unrecorded status".into(),
+    };
+    let ok = status == Some(ExitStatus::Ok);
+    let detail = exit_detail(exit, ok);
+    say(
+        out,
+        if ok { "CHILD" } else { "FAILED" },
+        &format!("{} exited {verdict}{detail}", child_name(agent_type)),
+    )
+}
+
+/// The exit record's description as the tail of the `exited` line, or nothing when it has none.
+fn exit_detail(exit: Option<&marion_core::contract::ProcessExit>, ok: bool) -> String {
+    match exit {
+        Some(e) if !e.description.trim().is_empty() => {
+            // The same rule the rest of this renderer follows, and it earns its keep here:
+            // §6.7's description carries the child's own stderr, so a *successful* child
+            // that merely warned would otherwise drag its warnings across the terminal. A
+            // failure keeps every byte — that is the text that explains it.
+            let d = e.description.trim();
+            match ok {
+                true => format!(" — {}", brief(d, LINE_CHARS)),
+                false => format!(" — {d}"),
+            }
+        }
+        _ => String::new(),
     }
 }
 
