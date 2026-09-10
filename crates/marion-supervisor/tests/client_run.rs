@@ -46,7 +46,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use marion_core::contract::AgentId;
 use marion_core::event::{Lifecycle, Payload};
@@ -225,15 +225,8 @@ fn until(cond: impl FnMut() -> bool) -> bool {
 /// [`BOUND`] would turn a follower that has permanently lost a record — the seam defect criterion 2
 /// is about — into a three-minute timeout instead of a named failure. So the caller gives it a
 /// short budget and then *asserts about the numbers*, which is what says which record went missing.
-fn until_within(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + budget;
-    while Instant::now() < deadline {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    cond()
+fn until_within(budget: Duration, cond: impl FnMut() -> bool) -> bool {
+    marion_testsupport::until_within(budget, Duration::from_millis(5), cond)
 }
 
 /// [`until_within`] with **§9 criterion 4's clause (i) as a standing invariant of the wait**, not
