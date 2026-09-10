@@ -1200,11 +1200,7 @@ pub fn run_spawn_watched(
     // parent that backgrounds more children than its type allows is refused here — before the
     // worktree, before the process — rather than served.
     check_spawn_gates(&caller.agent_type, caller.depth, caller.live_children)?;
-    let requested: Vec<Glob> = if req.writable_scope.is_empty() {
-        vec![Glob("**".into())]
-    } else {
-        req.writable_scope.iter().cloned().map(Glob).collect()
-    };
+    let requested = requested_scope(req);
     check_spawn_scope(&agent_type.scope_ceiling, &requested)?;
 
     let spawned_at = SystemTime(std::time::SystemTime::now());
@@ -1252,63 +1248,10 @@ pub fn run_spawn_watched(
     let agent_dir = env.project_dir.agent(&agent_id);
     let ch = agent_dir.config_dir();
     std::fs::create_dir_all(&ch)?;
-    // **§6.6's two workspaces, selected by §5.4's `isolation` and by nothing else.**
-    //
-    // `make_worktree` used to run here unconditionally, which is what made git a *precondition* for
-    // running marion at all rather than one strategy for containing a child: §2 keys a project on
-    // *"the git common-dir, falling back to cwd"* and is explicit that the alternative was
-    // "refusing to run outside git", but a `spawn` in a directory with no repository died on git's
-    // own stderr several steps further in. The two arms below are the whole of that fix.
-    //
-    // The order matters. Everything that can be refused is refused before `make_worktree`, because
-    // a worktree is the first *irreversible* thing a spawn does — a failed spawn that already added
-    // one leaves a directory, a `.git/worktrees/` entry and a branch behind.
-    let (workspace, base, cwd_claim) = match req.isolation {
-        Isolation::Worktree => {
-            // **Asked before it is attempted**, so the answer is marion's sentence and not git's.
-            // `git_common_dir` is §2's own derivation, so "not a repository" here and "keyed on cwd"
-            // there are one determination rather than two that could drift.
-            if crate::socket::git_common_dir(&req.repo).is_none() {
-                return Err(SpawnError::NotAGitRepo {
-                    cwd: req.repo.clone(),
-                });
-            }
-            let wt = agent_dir.worktree();
-            std::fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
-            let branch = format!("marion/{}", task_id.0);
-            let base = make_worktree(&req.repo, &wt, &branch)?;
-            (
-                Workspace::Worktree { path: wt, branch },
-                Some(base),
-                crate::spawn::CwdClaim::none(),
-            )
-        }
-        Isolation::SharedCwd => {
-            // **The caller's own directory, untouched.** No worktree, no branch, and deliberately
-            // no `git init`: §6.6 says marion never auto-merges, and creating a repository in
-            // someone's directory is a larger uninvited act than merging into one.
-            //
-            // `base_commit` is HEAD *if there is a HEAD* — a `shared-cwd` child in a repository
-            // still affords §6.7's diff. Outside a repository there is no commit, and `None` is the
-            // honest value; `head_commit` returns it rather than inventing a zero oid, and
-            // everything downstream that needs a base is `Option`-typed for exactly this case.
-            let base = crate::spawn::head_commit(&req.repo);
-            // §6.6: at most one write-capable node per cwd. Taken *before* the child exists and
-            // released when this claim drops, which is every exit from this function.
-            let claim = if agent_type.writes_files() && !req.allow_concurrent_writes {
-                crate::spawn::CwdClaim::claim(&req.repo, &agent_id)?
-            } else {
-                crate::spawn::CwdClaim::none()
-            };
-            (
-                Workspace::SharedCwd {
-                    path: req.repo.clone(),
-                },
-                base,
-                claim,
-            )
-        }
-    };
+    // Everything that can be refused is refused before this line — see [`select_workspace`] for
+    // why a worktree is the first irreversible thing a spawn does.
+    let (workspace, base, cwd_claim) =
+        select_workspace(req, &agent_type, &agent_dir, task_id, &agent_id)?;
     // Held for the child's whole run. Named rather than `_`, because `let _ = ..` drops immediately
     // and would release §6.6's claim before the child it is protecting had started — the guard would
     // still compile, still be tested by a single-spawn test, and protect nothing.
@@ -1337,109 +1280,8 @@ pub fn run_spawn_watched(
     // one with `"tools":[]` and exited 0 having called nothing.
     let path = launch_path(&adapter.surfaces())
         .ok_or(SpawnError::UnsupportedChildSurface(agent_type.harness))?;
-    // Not one of §4.3's normative files: marion's own start-up handshake with a process it did not
-    // spawn. Only the duplex path has a frame to withhold, so only it has a marker to wait on.
-    let ready_file = match path {
-        LaunchPath::Duplex => {
-            let f = agent_dir.path().join("mcp-ready");
-            let _ = std::fs::remove_file(&f);
-            Some(f)
-        }
-        // **The ACP gate is `session/new`'s own response, and it is the agent's rather than
-        // marion's.** marion does not start this bridge: the agent does, off the `mcpServers` block
-        // in the declaration, and it answers `session/new` when the session — its declared MCP
-        // servers included — is open. That answer is what `run_acp_child` waits on before a prompt
-        // goes out, so the frame *is* withheld behind a gate; the gate is just not a file marion
-        // touches. S21 and S23 both measured the tool call landing after it, on two different
-        // providers, which is the evidence a marker would otherwise be standing in for.
-        //
-        // A marker would also be a second gate with nothing behind it: the bridge writes it, and on
-        // this path marion has no way to tell whether the agent even intends to start the bridge
-        // before it has answered.
-        LaunchPath::Acp => None,
-        // §9 gives a child a `TaskContract`, and a pane node takes no turn until a human presses
-        // return — so there is no readiness gate to hold, and see the launch arm below for why a
-        // contracted child does not get one at all.
-        LaunchPath::LaunchOnly | LaunchPath::Terminal => None,
-    };
-    let launch = LaunchSpec {
-        cwd: wt.clone(),
-        // Was a hard `None` until now, which is why a gemini or opencode agent type could be named,
-        // resolved and dispatched — and then refused at `compile`, since both adapters make an
-        // explicit model a MUST. See `resolve_model`.
-        model: resolve_model(req, &agent_type),
-        // §6.1 step 8: on a typed control plane the prompt is a frame written **after** the
-        // readiness gate, so nothing is compiled into argv and the adapter is told so by the empty
-        // string — the neutral vocabulary's own signal for "written after launch".
-        prompt: match path {
-            // ACP for the same reason, one protocol over: the prompt is a `session/prompt` frame
-            // and reaches argv on no ACP agent. `AcpAdapter::compile` ignores this field entirely,
-            // and passing `req.prompt` here would put the task text in the audit record's argv
-            // where the launch never put it.
-            LaunchPath::Duplex | LaunchPath::Acp => String::new(),
-            LaunchPath::LaunchOnly | LaunchPath::Terminal => req.prompt.clone(),
-        },
-        // The **availability** axis (§3.1), straight off the resolved agent type and still in
-        // marion's vocabulary — the adapter about to run maps it, and refuses by name what its
-        // harness cannot provide (`HarnessError::UnsupportedTool`).
-        //
-        // **This is the field `--tools ""` was hardcoded for want of** (§11 item 24). Until it
-        // existed a claude or gemini child was read-only by construction: marion spawned it to do
-        // work and declared it no tool with which to change anything, and the contract it persisted
-        // — `changed_paths: []`, `scope_violations: []`, `scope_enforced: true` — was byte-identical
-        // to a child whose write escaped its worktree. Empty on every built-in, so nothing marion
-        // spawns today is launched any differently.
-        tools: agent_type.tools.clone(),
-        // The **permission** axis (§3.1), in marion's vocabulary translated by the adapter that is
-        // about to run. A child's one load-bearing call is `report`; on Claude Code an unlisted
-        // tool is auto-denied *in process*, and on a `LaunchOnly` child there is no control plane
-        // for the denial to be asked about — so an empty list here is a run that completes having
-        // reported nothing, with no error anywhere. The three harnesses whose adapters read no
-        // permission list are unaffected: they ignore it, exactly as they did when it was empty.
-        //
-        // **marion's own verbs only, and the declared tools are unioned in by the adapter.** §3.1's
-        // table compiles this axis from *"the same list, plus marion's own `mcp__marion__*`"*, and
-        // doing the union at the one place both axes are compiled is what makes them unable to
-        // disagree. Appending here instead would grant permission without availability — the mirror
-        // of item 24's dead end, and just as silent.
-        allowed_tools: vec![adapter.marion_tool_name("report")],
-        mcp: McpDeclaration::Marion,
-        base_url: env.base_url.clone(),
-        // **Present, and deliberately a placeholder.** The endpoint is marion's own, so this
-        // authenticates nothing — but a credential *slot* that is empty is not the same as one that
-        // is unused, and two of the four harnesses refuse outright when it is: gemini's adapter
-        // selects `security.auth.selectedType = "gemini-api-key"` (without which S12 measured
-        // `Invalid auth method selected.`, code 41), and 0.53.0 then exits **41** with *"you must
-        // specify the GEMINI_API_KEY environment variable"* when the variable it named is absent.
-        // A hard `None` here made that harness unlaunchable through `spawn` no matter what the
-        // adapter compiled. codex has always been seeded the same way — its generated config names
-        // `env_key = "MARION_DUMMY_KEY"` and the run below pushes it — so this generalises an
-        // existing decision rather than making a new one.
-        //
-        // Under `Auth::Inherited` there is nothing to placehold: the endpoint is the vendor's, the
-        // credential is the operator's already-established login, and a placeholder pushed beside it
-        // would be a second credential competing with the real one.
-        api_key: match env.auth {
-            Auth::Canned => Some(PLACEHOLDER_API_KEY.to_string()),
-            Auth::Inherited => None,
-        },
-        auth: env.auth,
-        config_dir: ch.clone(),
-        // **The agent type's own `acp_agent`, and the reason it is stated twice.** The adapter was
-        // bound from this same value above, and `AcpAdapter::agent` refuses a launch where the two
-        // disagree rather than letting one win. That is not redundancy: they are two routes to one
-        // answer, and a launch that compiled agent A's argv while reading agent B's tool spelling
-        // out of the transcript is precisely the bug the `HarnessAdapter` seam exists to end. One
-        // assignment here keeps them the same value by construction, and the adapter's check is
-        // what catches a second assignment appearing later.
-        //
-        // `None` on the other four, where nothing reads it.
-        resume: None,
-        extra: Extras {
-            acp_agent: agent_type.acp_agent.clone(),
-            ..Extras::default()
-        },
-    };
+    let ready_file = child_ready_file(path, &agent_dir);
+    let launch = child_launch_spec(env, req, &agent_type, adapter.as_ref(), path, &wt, &ch);
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The **canonical** name, read off the resolved type rather than off `req.agent_type`: the
@@ -1479,17 +1321,7 @@ pub fn run_spawn_watched(
         bridge: env.bridge.clone(),
         bridge_args: vec!["mcp".into()],
     };
-    for (path, contents) in adapter.config_files(&launch, &ctx)? {
-        // The adapter decides *what and where*; the caller writes. "Where" is not always directly
-        // under `config_dir`: opencode's document lands at
-        // `<config_dir>/config/opencode/opencode.json`, because `$XDG_CONFIG_HOME` is a directory
-        // the harness owns the layout of. Writing without creating that layout failed the whole
-        // spawn with a bare `No such file or directory` naming nothing.
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(path, contents)?;
-    }
+    write_config_documents(adapter.config_files(&launch, &ctx)?)?;
     let inv = adapter.compile(&launch, &ctx)?;
     // **The caller's number, clamped once, here.** Everything downstream — the child's wall clock,
     // the MCP readiness cap, the contract's recorded `timeout` — reads this one value, so the bound
@@ -1584,38 +1416,7 @@ pub fn run_spawn_watched(
     let announce_started = |pid: i32| {
         let appended = crate::journal::append(
             &env.project_dir,
-            RecordKind::Spawned(Spawned {
-                agent_id: agent_id.clone(),
-                harness_version: version.clone(),
-                // The **compiled** value, for §6.7's reason: what went on the wire, never what was
-                // asked for. `None` on codex, whose `exec` surface carries no model argument.
-                model: inv.model.clone(),
-                // A real signal target: where to send a signal *now*.
-                pid: Some(pid),
-                // **And what makes it an identity, read here and nowhere else.**
-                //
-                // This closure is the only instant at which the read is race-free by
-                // construction: marion holds the `Child`, so the pid cannot be reaped and cannot
-                // be recycled between `command.spawn()` returning it and this line. Reading it
-                // later — at the exit, on a restart, from any other thread — would be reading a
-                // number that may already belong to someone else, which is the very confusion the
-                // field exists to end. Measured: a zombie still resolves, but a *reaped* pid does
-                // not, so anywhere after the reap is too late.
-                //
-                // `None` on a platform that cannot read one. That is not a failure of the spawn
-                // and must not be treated as one: it resolves to *cannot-tell* later, which is the
-                // honest answer, and refusing to launch over it would take marion off every
-                // platform whose start-time read has not been measured yet.
-                start_id: match crate::procid::read(pid) {
-                    crate::procid::Read::Id(id) => Some(id),
-                    // The process was spawned moments ago and marion is holding it, so neither of
-                    // these should be reachable here — but a `Spawned` record is not the place to
-                    // assert that, and a wrong identity would be far worse than a missing one.
-                    crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => {
-                        None
-                    }
-                },
-            }),
+            child_spawned_record(&agent_id, &version, inv.model.as_deref(), pid),
         );
         match appended {
             // **After the append, never before.** The owner's whole reason for wanting this instant
@@ -1708,21 +1509,7 @@ pub fn run_spawn_watched(
         });
     }
     let run = run?;
-    // **The `LaunchOnly` half of the same wiring, and the asymmetry is the harness's, not marion's.**
-    // codex, gemini and opencode have no live seam at all — the prompt rides argv and `run_bounded`
-    // drains the pipe whole — so their stream can only be recovered from the capture, after the
-    // fact, and every event it produces is honestly `observed_live: false`. Never both: the duplex
-    // path already recorded these frames live, and recording them again here would be the duplicate
-    // §7.3.3's seam is stated in ordinals to prevent.
-    // ACP is here and not on the live side: the driver owns the frame loop for the whole turn and
-    // hands the transcript back at the end, so every event recovered from it is honestly
-    // `observed_live: false`. It is a *typed* plane whose events are nonetheless after the fact,
-    // which is why this branches on where the frames came from rather than on `has_typed_control_plane`.
-    if matches!(path, LaunchPath::LaunchOnly | LaunchPath::Acp)
-        && let Some(es) = events.as_mut()
-    {
-        es.record_capture(&run.stdout);
-    }
+    record_capture_after_the_fact(path, events.as_mut(), &run.stdout);
     // **Every permission marion refused on this child's behalf**, through the same emitter the root
     // uses (`journal::record_permission_denials`), which is also where the argument for the journal
     // being the *only* destination lives. Until this call existed `duplex_child` discarded
@@ -1792,14 +1579,7 @@ pub fn run_spawn_watched(
         diff,
         vec![],
     );
-    // Say so when the capture is a prefix. §6.7's rule for caps is that shortening is always
-    // recorded; a drain abandoned with the pipe still open shortens stdout and stderr the same way,
-    // and the reader would otherwise see a truncated transcript as a complete one.
-    if run.capture_truncated
-        && let Some(completion) = contract.completion.as_mut()
-    {
-        completion.exit.description = note_truncated_capture(&completion.exit.description);
-    }
+    note_capture_truncated(&mut contract, run.capture_truncated);
     // Read off the **adapter**, not off `agent_type`: the contract is §6.7's audit record, so the
     // harness it names must be the one that actually produced the work, never the one that was
     // asked for. The two agree today precisely because the dispatch above reads the same field —
@@ -1830,51 +1610,14 @@ pub fn run_spawn_watched(
     // refused first — and it is propagated rather than swallowed because an audit record that
     // silently guesses is worse than a spawn that stops.
     contract.allowed_tools = adapter.compiled_permissions(&launch)?;
-    // **The contract reaches disk before the stream says the node is over**, and since §11 item 28
-    // step 5 that ordering is load-bearing rather than incidental.
-    //
-    // The bridge's synchronous `spawn` is now a composition over this stream: `agent/spawn`,
-    // `node/attach`, read until the closing bookend, then read `contracts/<task_id>.json`. With the
-    // bookend written first there is a window — one `create` plus one `write` wide — in which a
-    // reader that did exactly what the stream told it to would open a file that does not exist yet
-    // and report a finished child as one that produced nothing. That is a race no reader can close
-    // from its own side: it cannot distinguish "not written yet" from "never written", which is the
-    // absence-versus-silence distinction §4.1 exists to keep. Writing the file first makes the
-    // bookend mean what a reader needs it to mean — *everything about this node is now on disk*.
-    let persisted =
-        persist_contract_then_record_exit(&env.project_dir, &agent_dir, &agent_id, &contract);
-    let returned = match persisted {
-        Ok(returned) => returned,
-        Err(e) => {
-            // **And the failing half must close the stream too**, or the invariant above holds only
-            // when nothing goes wrong. Before this, a contract marion could not write still got an
-            // `Exited` bookend, so the stream asserted a finished node whose contract was never
-            // there — the false-success shape, arriving in the one place a reader trusts. The abort
-            // says what actually happened; `AbortOnDrop` writes the matching `SpawnAborted` on the
-            // way out, so the journal and the stream agree.
-            if let Some(es) = &events {
-                es.lifecycle(marion_core::event::Lifecycle::Aborted {
-                    reason: format!(
-                        "the {} node ran to a terminal state and marion could not persist its task \
-                         contract: {e}",
-                        req.agent_type
-                    ),
-                });
-            }
-            return Err(e);
-        }
-    };
-    // The closing bookend, off the **same** `completion` the journal record above is read from: two
-    // derivations of one status are two chances to disagree about the same run. Without it a
-    // replayed stream cannot tell a node that finished from one whose stream stopped mid-turn,
-    // which is the single question §7.3.3's replay leg exists to answer about a node the client
-    // never saw.
-    if let (Some(completion), Some(es)) = (contract.completion.as_ref(), events.as_ref()) {
-        es.lifecycle(marion_core::event::Lifecycle::Exited {
-            status: completion.status,
-            exit: completion.exit.clone(),
-        });
-    }
+    let returned = persist_contract_and_close_stream(
+        env,
+        &agent_dir,
+        &agent_id,
+        &contract,
+        events.as_ref(),
+        &req.agent_type,
+    )?;
     // §4.3: the journal records **that a contract exists and how it ended**, never its contents —
     // the file is the contract (§6.7), and copying it here would be a second source of truth.
     // Written after `persist_then_cap` returns, so the record cannot claim a file that was never
@@ -1893,6 +1636,352 @@ pub fn run_spawn_watched(
     // guard would otherwise write would contradict them.
     resolution.armed = false;
     cleanup(&req.repo, &wt);
+    Ok(returned)
+}
+
+/// The scope a child asked for, in §5.4's vocabulary: an empty `writable_scope` is the whole
+/// workspace, not nothing.
+fn requested_scope(req: &SpawnRequest) -> Vec<Glob> {
+    if req.writable_scope.is_empty() {
+        vec![Glob("**".into())]
+    } else {
+        req.writable_scope.iter().cloned().map(Glob).collect()
+    }
+}
+
+/// **§6.6's two workspaces, selected by §5.4's `isolation` and by nothing else.**
+///
+/// `make_worktree` used to run unconditionally, which is what made git a *precondition* for
+/// running marion at all rather than one strategy for containing a child: §2 keys a project on
+/// *"the git common-dir, falling back to cwd"* and is explicit that the alternative was
+/// "refusing to run outside git", but a `spawn` in a directory with no repository died on git's
+/// own stderr several steps further in. The two arms below are the whole of that fix.
+///
+/// The order matters. Everything that can be refused is refused before `make_worktree`, because
+/// a worktree is the first *irreversible* thing a spawn does — a failed spawn that already added
+/// one leaves a directory, a `.git/worktrees/` entry and a branch behind.
+///
+/// Returns the workspace, the commit §6.7's diff is taken against (`None` where there is none),
+/// and the cwd claim the caller must hold for the child's whole run.
+fn select_workspace(
+    req: &SpawnRequest,
+    agent_type: &AgentType,
+    agent_dir: &AgentDir,
+    task_id: &TaskId,
+    agent_id: &AgentId,
+) -> Result<(Workspace, Option<Oid>, crate::spawn::CwdClaim), SpawnError> {
+    match req.isolation {
+        Isolation::Worktree => {
+            // **Asked before it is attempted**, so the answer is marion's sentence and not git's.
+            // `git_common_dir` is §2's own derivation, so "not a repository" here and "keyed on cwd"
+            // there are one determination rather than two that could drift.
+            if crate::socket::git_common_dir(&req.repo).is_none() {
+                return Err(SpawnError::NotAGitRepo {
+                    cwd: req.repo.clone(),
+                });
+            }
+            let wt = agent_dir.worktree();
+            std::fs::create_dir_all(wt.parent().expect("agent worktree has a parent"))?;
+            let branch = format!("marion/{}", task_id.0);
+            let base = make_worktree(&req.repo, &wt, &branch)?;
+            Ok((
+                Workspace::Worktree { path: wt, branch },
+                Some(base),
+                crate::spawn::CwdClaim::none(),
+            ))
+        }
+        Isolation::SharedCwd => {
+            // **The caller's own directory, untouched.** No worktree, no branch, and deliberately
+            // no `git init`: §6.6 says marion never auto-merges, and creating a repository in
+            // someone's directory is a larger uninvited act than merging into one.
+            //
+            // `base_commit` is HEAD *if there is a HEAD* — a `shared-cwd` child in a repository
+            // still affords §6.7's diff. Outside a repository there is no commit, and `None` is the
+            // honest value; `head_commit` returns it rather than inventing a zero oid, and
+            // everything downstream that needs a base is `Option`-typed for exactly this case.
+            let base = crate::spawn::head_commit(&req.repo);
+            // §6.6: at most one write-capable node per cwd. Taken *before* the child exists and
+            // released when this claim drops, which is every exit from `run_spawn_watched`.
+            let claim = if agent_type.writes_files() && !req.allow_concurrent_writes {
+                crate::spawn::CwdClaim::claim(&req.repo, agent_id)?
+            } else {
+                crate::spawn::CwdClaim::none()
+            };
+            Ok((
+                Workspace::SharedCwd {
+                    path: req.repo.clone(),
+                },
+                base,
+                claim,
+            ))
+        }
+    }
+}
+
+/// Not one of §4.3's normative files: marion's own start-up handshake with a process it did not
+/// spawn. Only the duplex path has a frame to withhold, so only it has a marker to wait on.
+fn child_ready_file(path: LaunchPath, agent_dir: &AgentDir) -> Option<PathBuf> {
+    match path {
+        LaunchPath::Duplex => {
+            let f = agent_dir.path().join("mcp-ready");
+            let _ = std::fs::remove_file(&f);
+            Some(f)
+        }
+        // **The ACP gate is `session/new`'s own response, and it is the agent's rather than
+        // marion's.** marion does not start this bridge: the agent does, off the `mcpServers` block
+        // in the declaration, and it answers `session/new` when the session — its declared MCP
+        // servers included — is open. That answer is what `run_acp_child` waits on before a prompt
+        // goes out, so the frame *is* withheld behind a gate; the gate is just not a file marion
+        // touches. S21 and S23 both measured the tool call landing after it, on two different
+        // providers, which is the evidence a marker would otherwise be standing in for.
+        //
+        // A marker would also be a second gate with nothing behind it: the bridge writes it, and on
+        // this path marion has no way to tell whether the agent even intends to start the bridge
+        // before it has answered.
+        LaunchPath::Acp => None,
+        // §9 gives a child a `TaskContract`, and a pane node takes no turn until a human presses
+        // return — so there is no readiness gate to hold, and see `run_spawn_watched`'s launch arm
+        // for why a contracted child does not get one at all.
+        LaunchPath::LaunchOnly | LaunchPath::Terminal => None,
+    }
+}
+
+/// The child's launch, in the neutral vocabulary the adapter compiles from. Every field is either
+/// read off the resolved agent type or decided by the launch path — never by a harness name.
+fn child_launch_spec(
+    env: &Env,
+    req: &SpawnRequest,
+    agent_type: &AgentType,
+    adapter: &dyn marion_harness::HarnessAdapter,
+    path: LaunchPath,
+    wt: &Path,
+    ch: &Path,
+) -> LaunchSpec {
+    LaunchSpec {
+        cwd: wt.to_path_buf(),
+        // Was a hard `None` until now, which is why a gemini or opencode agent type could be named,
+        // resolved and dispatched — and then refused at `compile`, since both adapters make an
+        // explicit model a MUST. See `resolve_model`.
+        model: resolve_model(req, agent_type),
+        // §6.1 step 8: on a typed control plane the prompt is a frame written **after** the
+        // readiness gate, so nothing is compiled into argv and the adapter is told so by the empty
+        // string — the neutral vocabulary's own signal for "written after launch".
+        prompt: match path {
+            // ACP for the same reason, one protocol over: the prompt is a `session/prompt` frame
+            // and reaches argv on no ACP agent. `AcpAdapter::compile` ignores this field entirely,
+            // and passing `req.prompt` here would put the task text in the audit record's argv
+            // where the launch never put it.
+            LaunchPath::Duplex | LaunchPath::Acp => String::new(),
+            LaunchPath::LaunchOnly | LaunchPath::Terminal => req.prompt.clone(),
+        },
+        // The **availability** axis (§3.1), straight off the resolved agent type and still in
+        // marion's vocabulary — the adapter about to run maps it, and refuses by name what its
+        // harness cannot provide (`HarnessError::UnsupportedTool`).
+        //
+        // **This is the field `--tools ""` was hardcoded for want of** (§11 item 24). Until it
+        // existed a claude or gemini child was read-only by construction: marion spawned it to do
+        // work and declared it no tool with which to change anything, and the contract it persisted
+        // — `changed_paths: []`, `scope_violations: []`, `scope_enforced: true` — was byte-identical
+        // to a child whose write escaped its worktree. Empty on every built-in, so nothing marion
+        // spawns today is launched any differently.
+        tools: agent_type.tools.clone(),
+        // The **permission** axis (§3.1), in marion's vocabulary translated by the adapter that is
+        // about to run. A child's one load-bearing call is `report`; on Claude Code an unlisted
+        // tool is auto-denied *in process*, and on a `LaunchOnly` child there is no control plane
+        // for the denial to be asked about — so an empty list here is a run that completes having
+        // reported nothing, with no error anywhere. The three harnesses whose adapters read no
+        // permission list are unaffected: they ignore it, exactly as they did when it was empty.
+        //
+        // **marion's own verbs only, and the declared tools are unioned in by the adapter.** §3.1's
+        // table compiles this axis from *"the same list, plus marion's own `mcp__marion__*`"*, and
+        // doing the union at the one place both axes are compiled is what makes them unable to
+        // disagree. Appending here instead would grant permission without availability — the mirror
+        // of item 24's dead end, and just as silent.
+        allowed_tools: vec![adapter.marion_tool_name("report")],
+        mcp: McpDeclaration::Marion,
+        base_url: env.base_url.clone(),
+        // **Present, and deliberately a placeholder.** The endpoint is marion's own, so this
+        // authenticates nothing — but a credential *slot* that is empty is not the same as one that
+        // is unused, and two of the four harnesses refuse outright when it is: gemini's adapter
+        // selects `security.auth.selectedType = "gemini-api-key"` (without which S12 measured
+        // `Invalid auth method selected.`, code 41), and 0.53.0 then exits **41** with *"you must
+        // specify the GEMINI_API_KEY environment variable"* when the variable it named is absent.
+        // A hard `None` here made that harness unlaunchable through `spawn` no matter what the
+        // adapter compiled. codex has always been seeded the same way — its generated config names
+        // `env_key = "MARION_DUMMY_KEY"` and the run below pushes it — so this generalises an
+        // existing decision rather than making a new one.
+        //
+        // Under `Auth::Inherited` there is nothing to placehold: the endpoint is the vendor's, the
+        // credential is the operator's already-established login, and a placeholder pushed beside it
+        // would be a second credential competing with the real one.
+        api_key: match env.auth {
+            Auth::Canned => Some(PLACEHOLDER_API_KEY.to_string()),
+            Auth::Inherited => None,
+        },
+        auth: env.auth,
+        config_dir: ch.to_path_buf(),
+        // **The agent type's own `acp_agent`, and the reason it is stated twice.** The adapter was
+        // bound from this same value above, and `AcpAdapter::agent` refuses a launch where the two
+        // disagree rather than letting one win. That is not redundancy: they are two routes to one
+        // answer, and a launch that compiled agent A's argv while reading agent B's tool spelling
+        // out of the transcript is precisely the bug the `HarnessAdapter` seam exists to end. One
+        // assignment here keeps them the same value by construction, and the adapter's check is
+        // what catches a second assignment appearing later.
+        //
+        // `None` on the other four, where nothing reads it.
+        resume: None,
+        extra: Extras {
+            acp_agent: agent_type.acp_agent.clone(),
+            ..Extras::default()
+        },
+    }
+}
+
+/// Write the configuration documents an adapter decided on, creating each document's directory.
+///
+/// The adapter decides *what and where*; marion writes. "Where" is not always directly under
+/// `config_dir`: opencode's document lands at `<config_dir>/config/opencode/opencode.json`,
+/// because `$XDG_CONFIG_HOME` is a directory whose layout the harness owns. Creating only
+/// `config_dir` failed the whole launch with a bare `No such file or directory` naming nothing.
+///
+/// Returns the paths written, in order, for a caller that checks the declaration against them.
+pub(crate) fn write_config_documents(
+    files: Vec<(PathBuf, String)>,
+) -> std::io::Result<Vec<PathBuf>> {
+    let mut written = Vec::with_capacity(files.len());
+    for (path, contents) in files {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, contents)?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
+/// §6.1 step 7's confirmation for a child, built at the one instant `pid` is an identity.
+///
+/// **The identity is read here and nowhere else.** `announce_started` is the only instant at which
+/// the read is race-free by construction: marion holds the `Child`, so the pid cannot be reaped and
+/// cannot be recycled between `command.spawn()` returning it and this line. Reading it later — at
+/// the exit, on a restart, from any other thread — would be reading a number that may already
+/// belong to someone else, which is the very confusion the field exists to end. Measured: a zombie
+/// still resolves, but a *reaped* pid does not, so anywhere after the reap is too late.
+///
+/// `None` on a platform that cannot read one. That is not a failure of the spawn and must not be
+/// treated as one: it resolves to *cannot-tell* later, which is the honest answer, and refusing to
+/// launch over it would take marion off every platform whose start-time read has not been measured
+/// yet.
+fn child_spawned_record(
+    agent_id: &AgentId,
+    version: &str,
+    model: Option<&str>,
+    pid: i32,
+) -> RecordKind {
+    RecordKind::Spawned(Spawned {
+        agent_id: agent_id.clone(),
+        harness_version: version.to_string(),
+        // The **compiled** value, for §6.7's reason: what went on the wire, never what was asked
+        // for. `None` on codex, whose `exec` surface carries no model argument.
+        model: model.map(str::to_string),
+        // A real signal target: where to send a signal *now*.
+        pid: Some(pid),
+        start_id: match crate::procid::read(pid) {
+            crate::procid::Read::Id(id) => Some(id),
+            // The process was spawned moments ago and marion is holding it, so neither of these
+            // should be reachable here — but a `Spawned` record is not the place to assert that,
+            // and a wrong identity would be far worse than a missing one.
+            crate::procid::Read::NoSuchProcess | crate::procid::Read::Unavailable(_) => None,
+        },
+    })
+}
+
+/// **The `LaunchOnly` half of §7.3.3's wiring, and the asymmetry is the harness's, not marion's.**
+///
+/// codex, gemini and opencode have no live seam at all — the prompt rides argv and `run_bounded`
+/// drains the pipe whole — so their stream can only be recovered from the capture, after the fact,
+/// and every event it produces is honestly `observed_live: false`. Never both: the duplex path
+/// already recorded these frames live, and recording them again here would be the duplicate
+/// §7.3.3's seam is stated in ordinals to prevent.
+///
+/// ACP is here and not on the live side: the driver owns the frame loop for the whole turn and
+/// hands the transcript back at the end, so every event recovered from it is honestly
+/// `observed_live: false`. It is a *typed* plane whose events are nonetheless after the fact, which
+/// is why this branches on where the frames came from rather than on `has_typed_control_plane`.
+fn record_capture_after_the_fact(
+    path: LaunchPath,
+    events: Option<&mut crate::events::EventSink>,
+    stdout: &str,
+) {
+    if matches!(path, LaunchPath::LaunchOnly | LaunchPath::Acp)
+        && let Some(es) = events
+    {
+        es.record_capture(stdout);
+    }
+}
+
+/// Say so when the capture is a prefix. §6.7's rule for caps is that shortening is always
+/// recorded; a drain abandoned with the pipe still open shortens stdout and stderr the same way,
+/// and the reader would otherwise see a truncated transcript as a complete one.
+fn note_capture_truncated(contract: &mut TaskContract, capture_truncated: bool) {
+    if capture_truncated && let Some(completion) = contract.completion.as_mut() {
+        completion.exit.description = note_truncated_capture(&completion.exit.description);
+    }
+}
+
+/// **The contract reaches disk before the stream says the node is over**, and since §11 item 28
+/// step 5 that ordering is load-bearing rather than incidental.
+///
+/// The bridge's synchronous `spawn` is now a composition over this stream: `agent/spawn`,
+/// `node/attach`, read until the closing bookend, then read `contracts/<task_id>.json`. With the
+/// bookend written first there is a window — one `create` plus one `write` wide — in which a
+/// reader that did exactly what the stream told it to would open a file that does not exist yet
+/// and report a finished child as one that produced nothing. That is a race no reader can close
+/// from its own side: it cannot distinguish "not written yet" from "never written", which is the
+/// absence-versus-silence distinction §4.1 exists to keep. Writing the file first makes the
+/// bookend mean what a reader needs it to mean — *everything about this node is now on disk*.
+///
+/// **And the failing half must close the stream too**, or the invariant above holds only when
+/// nothing goes wrong. Before this, a contract marion could not write still got an `Exited`
+/// bookend, so the stream asserted a finished node whose contract was never there — the
+/// false-success shape, arriving in the one place a reader trusts. The abort says what actually
+/// happened; `AbortOnDrop` writes the matching `SpawnAborted` on the way out, so the journal and
+/// the stream agree.
+///
+/// The closing bookend is read off the **same** `completion` the journal record is read from: two
+/// derivations of one status are two chances to disagree about the same run. Without it a replayed
+/// stream cannot tell a node that finished from one whose stream stopped mid-turn, which is the
+/// single question §7.3.3's replay leg exists to answer about a node the client never saw.
+fn persist_contract_and_close_stream(
+    env: &Env,
+    agent_dir: &AgentDir,
+    agent_id: &AgentId,
+    contract: &TaskContract,
+    events: Option<&crate::events::EventSink>,
+    requested_agent_type: &str,
+) -> Result<TaskContract, SpawnError> {
+    let persisted =
+        persist_contract_then_record_exit(&env.project_dir, agent_dir, agent_id, contract);
+    let returned = match persisted {
+        Ok(returned) => returned,
+        Err(e) => {
+            if let Some(es) = events {
+                es.lifecycle(marion_core::event::Lifecycle::Aborted {
+                    reason: format!(
+                        "the {requested_agent_type} node ran to a terminal state and marion could \
+                         not persist its task contract: {e}"
+                    ),
+                });
+            }
+            return Err(e);
+        }
+    };
+    if let (Some(completion), Some(es)) = (contract.completion.as_ref(), events) {
+        es.lifecycle(marion_core::event::Lifecycle::Exited {
+            status: completion.status,
+            exit: completion.exit.clone(),
+        });
+    }
     Ok(returned)
 }
 
