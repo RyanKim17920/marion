@@ -347,36 +347,15 @@ impl Drain {
             let mut buf = [0u8; 8192];
             // The start of the first byte not yet forwarded as part of a line.
             let mut forwarded = 0usize;
-            let forward = |bytes: &[u8], forwarded: &mut usize, at_eof: bool| {
-                let Some(tx) = &lines else { return };
-                while let Some(nl) = bytes[*forwarded..].iter().position(|b| *b == b'\n') {
-                    let line = &bytes[*forwarded..*forwarded + nl];
-                    let _ = tx.send(String::from_utf8_lossy(line).into_owned());
-                    *forwarded += nl + 1;
-                }
-                if at_eof && *forwarded < bytes.len() {
-                    let _ = tx.send(String::from_utf8_lossy(&bytes[*forwarded..]).into_owned());
-                    *forwarded = bytes.len();
-                }
-            };
             loop {
                 if flag.load(Ordering::Relaxed) {
                     // Abandoned with the pipe still open: what we have is a prefix.
                     return (bytes, false);
                 }
-                let mut pfd = PollFd {
-                    fd,
-                    events: POLLIN,
-                    revents: 0,
-                };
-                let ready = unsafe { poll(&mut pfd, 1, DRAIN_POLL_MS) };
-                if ready < 0 {
-                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                        continue;
-                    }
+                let Ok(readable) = poll_readable(fd) else {
                     return (bytes, false);
-                }
-                if ready == 0 {
+                };
+                if !readable {
                     continue;
                 }
                 // Readable, hung up, or errored. Only `read` can tell the three apart, and with a
@@ -384,12 +363,12 @@ impl Drain {
                 match pipe.read(&mut buf) {
                     Ok(0) => {
                         // EOF: every write end is closed.
-                        forward(&bytes, &mut forwarded, true);
+                        forward_lines(lines.as_ref(), &bytes, &mut forwarded, true);
                         return (bytes, true);
                     }
                     Ok(n) => {
                         bytes.extend_from_slice(&buf[..n]);
-                        forward(&bytes, &mut forwarded, false);
+                        forward_lines(lines.as_ref(), &bytes, &mut forwarded, false);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(_) => return (bytes, false),
@@ -410,6 +389,48 @@ impl Drain {
         self.stop.store(true, Ordering::Relaxed);
         // Bounded by one `poll` interval: the thread checks `stop` every `DRAIN_POLL_MS`.
         self.handle.join().unwrap_or((Vec::new(), false))
+    }
+}
+
+/// Wait at most [`DRAIN_POLL_MS`] for `fd` to become readable, hung up or errored.
+///
+/// `Ok(true)` is any of those three — only `read` can tell them apart. `Ok(false)` is a poll that
+/// timed out or was interrupted, which the caller treats alike: check `stop`, then ask again. `Err`
+/// is a `poll` that failed for any other reason, on which the drain gives up with what it has.
+fn poll_readable(fd: std::os::fd::RawFd) -> Result<bool, ()> {
+    let mut pfd = PollFd {
+        fd,
+        events: POLLIN,
+        revents: 0,
+    };
+    let ready = unsafe { poll(&mut pfd, 1, DRAIN_POLL_MS) };
+    if ready < 0 {
+        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            return Ok(false);
+        }
+        return Err(());
+    }
+    Ok(ready > 0)
+}
+
+/// Forward every complete line in `bytes[*forwarded..]` on `lines`, advancing `forwarded` past
+/// them. At EOF the bytes after the last newline are forwarded too, so a stream whose final frame
+/// has no trailing newline is not read one frame short. A `None` sender forwards nothing.
+fn forward_lines(
+    lines: Option<&std::sync::mpsc::Sender<String>>,
+    bytes: &[u8],
+    forwarded: &mut usize,
+    at_eof: bool,
+) {
+    let Some(tx) = lines else { return };
+    while let Some(nl) = bytes[*forwarded..].iter().position(|b| *b == b'\n') {
+        let line = &bytes[*forwarded..*forwarded + nl];
+        let _ = tx.send(String::from_utf8_lossy(line).into_owned());
+        *forwarded += nl + 1;
+    }
+    if at_eof && *forwarded < bytes.len() {
+        let _ = tx.send(String::from_utf8_lossy(&bytes[*forwarded..]).into_owned());
+        *forwarded = bytes.len();
     }
 }
 
