@@ -607,6 +607,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::native_bootstrap::fakes::{ManualClock, SequenceRng};
     use crate::native_bootstrap::{
         DirectNativeRequestContext, NativeLaunchBinding, NativeLaunchDescriptor,
         NativeLaunchTicket, PeerIdentity, TerminalFingerprint, TerminalGeometry, context_hash,
@@ -614,25 +615,6 @@ mod tests {
     use crate::native_exec::{NativeLifecycleSpawner, NativeLifecycleTask};
     use crate::registry::{LiveRegistry, Registry};
     use crate::serve::ConnId;
-
-    #[derive(Default)]
-    struct TestClock;
-    impl crate::native_bootstrap::MonotonicClock for TestClock {
-        fn now(&self) -> Duration {
-            Duration::ZERO
-        }
-    }
-
-    #[derive(Default)]
-    struct TestRng(std::sync::atomic::AtomicU64);
-    impl crate::native_bootstrap::CapabilityRng for TestRng {
-        fn fill(&self, bytes: &mut [u8]) -> Result<(), BootstrapError> {
-            let value = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            bytes.fill(0);
-            bytes[..8].copy_from_slice(&value.to_be_bytes());
-            Ok(())
-        }
-    }
 
     fn invocation(work: &std::path::Path) -> NativeInvocation {
         assemble_native(
@@ -1179,8 +1161,8 @@ mod tests {
         let handle = crate::handler::RegistryHandle::new(live);
         let authority = Arc::new(
             crate::native_bootstrap::PendingNativeLaunches::with_sources(
-                Arc::new(TestRng::default()),
-                Arc::new(TestClock),
+                Arc::new(SequenceRng::default()),
+                Arc::new(ManualClock::default()),
                 Duration::from_secs(60),
             ),
         );

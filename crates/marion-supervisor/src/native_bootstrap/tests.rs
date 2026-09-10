@@ -1,3 +1,4 @@
+use super::fakes::{ManualClock, SequenceRng};
 use super::*;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStringExt;
@@ -11,33 +12,6 @@ use marion_core::{
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rustix::process::{Pid, getpgrp, getsid};
-
-#[derive(Default)]
-struct ManualClock(AtomicU64);
-
-impl ManualClock {
-    fn set(&self, now: Duration) {
-        self.0.store(now.as_nanos() as u64, Ordering::SeqCst);
-    }
-}
-
-impl MonotonicClock for ManualClock {
-    fn now(&self) -> Duration {
-        Duration::from_nanos(self.0.load(Ordering::SeqCst))
-    }
-}
-
-#[derive(Default)]
-struct SequenceRng(AtomicU64);
-
-impl CapabilityRng for SequenceRng {
-    fn fill(&self, bytes: &mut [u8]) -> Result<(), BootstrapError> {
-        let next = self.0.fetch_add(1, Ordering::SeqCst) + 1;
-        bytes.fill(0);
-        bytes[..8].copy_from_slice(&next.to_be_bytes());
-        Ok(())
-    }
-}
 
 #[derive(Default)]
 struct Effects {

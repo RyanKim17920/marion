@@ -1131,6 +1131,49 @@ pub(crate) trait CapabilityRng: Send + Sync + 'static {
     fn fill(&self, bytes: &mut [u8]) -> Result<(), BootstrapError>;
 }
 
+/// The injected clock and entropy every test of the capability lifetime shares.
+///
+/// One copy, beside the traits it implements, because the same two fakes were declared inside
+/// six tests across three files and had already begun to drift: one `fill` wrote the counter
+/// into the leading eight bytes, another smeared it across the whole buffer. Both only ever
+/// needed *distinct* tickets per call, which [`SequenceRng`] gives.
+#[cfg(test)]
+pub(crate) mod fakes {
+    use super::{BootstrapError, CapabilityRng, MonotonicClock};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    /// A clock that reads whatever the test last [`set`](Self::set); zero until then.
+    #[derive(Default)]
+    pub(crate) struct ManualClock(AtomicU64);
+
+    impl ManualClock {
+        pub(crate) fn set(&self, now: Duration) {
+            self.0.store(now.as_nanos() as u64, Ordering::SeqCst);
+        }
+    }
+
+    impl MonotonicClock for ManualClock {
+        fn now(&self) -> Duration {
+            Duration::from_nanos(self.0.load(Ordering::SeqCst))
+        }
+    }
+
+    /// Entropy that counts: call *n* fills the buffer with zeros and *n* big-endian in its first
+    /// eight bytes, so every ticket is distinct and a test can say which one it was handed.
+    #[derive(Default)]
+    pub(crate) struct SequenceRng(AtomicU64);
+
+    impl CapabilityRng for SequenceRng {
+        fn fill(&self, bytes: &mut [u8]) -> Result<(), BootstrapError> {
+            let next = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+            bytes.fill(0);
+            bytes[..8].copy_from_slice(&next.to_be_bytes());
+            Ok(())
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SystemClock(Instant);
 

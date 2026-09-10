@@ -4110,6 +4110,7 @@ pub fn read_point(live: &LiveRegistry) -> ReplayPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_bootstrap::fakes::{ManualClock, SequenceRng};
     use marion_core::contract::{ExitStatus, ProcessExit};
     use marion_core::encoding::SystemTime;
     use marion_core::harness::Harness;
@@ -6419,32 +6420,12 @@ mod tests {
 
     #[test]
     fn pending_native_reservation_gates_both_attach_modes_until_atomic_ticket_claim() {
-        #[derive(Default)]
-        struct TestClock;
-        impl crate::native_bootstrap::MonotonicClock for TestClock {
-            fn now(&self) -> Duration {
-                Duration::ZERO
-            }
-        }
-        #[derive(Default)]
-        struct TestRng(std::sync::atomic::AtomicU64);
-        impl crate::native_bootstrap::CapabilityRng for TestRng {
-            fn fill(
-                &self,
-                bytes: &mut [u8],
-            ) -> Result<(), crate::native_bootstrap::BootstrapError> {
-                let value = self.0.fetch_add(1, Ordering::SeqCst) + 1;
-                bytes.fill(0);
-                bytes[..8].copy_from_slice(&value.to_be_bytes());
-                Ok(())
-            }
-        }
         let w = Wired::new("handler-native-writer-priority");
         let host = unregistered_pane(&w, "root", "sleep 30");
         let launches = Arc::new(
             crate::native_bootstrap::PendingNativeLaunches::with_sources(
-                Arc::new(TestRng::default()),
-                Arc::new(TestClock),
+                Arc::new(SequenceRng::default()),
+                Arc::new(ManualClock::default()),
                 Duration::from_secs(60),
             ),
         );
@@ -6510,33 +6491,12 @@ mod tests {
 
     #[test]
     fn unacknowledged_native_claim_releases_lease_and_preserves_ticket_for_retry() {
-        #[derive(Default)]
-        struct TestClock;
-        impl crate::native_bootstrap::MonotonicClock for TestClock {
-            fn now(&self) -> Duration {
-                Duration::ZERO
-            }
-        }
-        #[derive(Default)]
-        struct TestRng(std::sync::atomic::AtomicU64);
-        impl crate::native_bootstrap::CapabilityRng for TestRng {
-            fn fill(
-                &self,
-                bytes: &mut [u8],
-            ) -> Result<(), crate::native_bootstrap::BootstrapError> {
-                let value = self.0.fetch_add(1, Ordering::SeqCst) + 1;
-                bytes.fill(0);
-                bytes[..8].copy_from_slice(&value.to_be_bytes());
-                Ok(())
-            }
-        }
-
         let w = Wired::new("handler-native-claim-ack-rollback");
         let host = unregistered_pane(&w, "root", "sleep 30");
         let launches = Arc::new(
             crate::native_bootstrap::PendingNativeLaunches::with_sources(
-                Arc::new(TestRng::default()),
-                Arc::new(TestClock),
+                Arc::new(SequenceRng::default()),
+                Arc::new(ManualClock::default()),
                 Duration::from_secs(60),
             ),
         );
@@ -6589,35 +6549,14 @@ mod tests {
 
     #[test]
     fn blocked_native_claim_ack_does_not_block_an_unrelated_pane_attach() {
-        #[derive(Default)]
-        struct TestClock;
-        impl crate::native_bootstrap::MonotonicClock for TestClock {
-            fn now(&self) -> Duration {
-                Duration::ZERO
-            }
-        }
-        #[derive(Default)]
-        struct TestRng(std::sync::atomic::AtomicU64);
-        impl crate::native_bootstrap::CapabilityRng for TestRng {
-            fn fill(
-                &self,
-                bytes: &mut [u8],
-            ) -> Result<(), crate::native_bootstrap::BootstrapError> {
-                let value = self.0.fetch_add(1, Ordering::SeqCst) + 1;
-                bytes.fill(0);
-                bytes[..8].copy_from_slice(&value.to_be_bytes());
-                Ok(())
-            }
-        }
-
         let w = Wired::new("handler-native-blocked-claim-ack");
         let root = unregistered_pane(&w, "root", "sleep 30");
         let other = unregistered_pane(&w, "other", "sleep 30");
         w.fx.handle.register_pane(&id("other"), Arc::clone(&other));
         let launches = Arc::new(
             crate::native_bootstrap::PendingNativeLaunches::with_sources(
-                Arc::new(TestRng::default()),
-                Arc::new(TestClock),
+                Arc::new(SequenceRng::default()),
+                Arc::new(ManualClock::default()),
                 Duration::from_secs(60),
             ),
         );
@@ -6686,29 +6625,11 @@ mod tests {
 
     #[test]
     fn native_ticket_is_revoked_by_replacement_and_terminal_lifecycle() {
-        #[derive(Default)]
-        struct TestClock;
-        impl crate::native_bootstrap::MonotonicClock for TestClock {
-            fn now(&self) -> Duration {
-                Duration::ZERO
-            }
-        }
-        struct TestRng(std::sync::atomic::AtomicU64);
-        impl crate::native_bootstrap::CapabilityRng for TestRng {
-            fn fill(
-                &self,
-                bytes: &mut [u8],
-            ) -> Result<(), crate::native_bootstrap::BootstrapError> {
-                let value = self.0.fetch_add(1, Ordering::SeqCst) + 1;
-                bytes.fill(value as u8);
-                Ok(())
-            }
-        }
         let w = Wired::new("handler-native-writer-replacement");
         let launches = Arc::new(
             crate::native_bootstrap::PendingNativeLaunches::with_sources(
-                Arc::new(TestRng(std::sync::atomic::AtomicU64::new(0))),
-                Arc::new(TestClock),
+                Arc::new(SequenceRng::default()),
+                Arc::new(ManualClock::default()),
                 Duration::from_secs(60),
             ),
         );
