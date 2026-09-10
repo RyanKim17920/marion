@@ -256,106 +256,39 @@ fn parse_resume(argv: &[String]) -> Option<ResumeArgs> {
 /// silent fallback — it is the operation. The relaunch reads the node from the on-disk journal the
 /// new supervisor boots over, so the node is exactly as re-findable as it was before.
 fn resume_main(argv: &[String]) -> ExitCode {
+    match resume(argv) {
+        Ok(code) | Err(code) => code,
+    }
+}
+
+/// The resume's stages in order: parse, resolve, dial, `node/resume`, announce, attach. Each
+/// refusal has already printed its sentence and carries only the code, as [`run`]'s do.
+fn resume(argv: &[String]) -> Result<ExitCode, ExitCode> {
     let Some(args) = parse_resume(argv) else {
         usage()
     };
-    let Some((repo, state)) = resolve_project(args.repo, args.state_dir.as_deref()) else {
-        return ExitCode::FAILURE;
-    };
-    let base_url = match resolve_base_url(
-        args.canned,
-        args.base_url.clone(),
-        std::env::var("MARION_BASE_URL").ok(),
-    ) {
-        Ok(u) => u,
-        Err(e) => {
-            eprintln!("marion: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (repo, state) =
+        resolve_project(args.repo.clone(), args.state_dir.as_deref()).ok_or(ExitCode::FAILURE)?;
+    let base_url = resume_base_url(&args)?;
     let auth = if args.canned {
         marion_harness::Auth::Canned
     } else {
         marion_harness::Auth::Inherited
     };
-    let bridge = supervisor_binary();
     let project_key = socket::project_root(&repo);
     let sock = socket::socket_paths(&state, &project_key, uid());
-    let ensured = match detach::ensure_supervisor(
-        &sock,
-        &detach::Launch {
-            program: bridge,
-            state_dir: state.clone(),
-            project_root: project_key,
-            idle_grace: RUN_IDLE_GRACE,
-            auth,
-            base_url,
-        },
-    ) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("{}", supervisor_unreachable(sock.socket(), &e.to_string()));
-            return ExitCode::FAILURE;
-        }
+    let launch = detach::Launch {
+        program: supervisor_binary(),
+        state_dir: state.clone(),
+        project_root: project_key,
+        idle_grace: RUN_IDLE_GRACE,
+        auth,
+        base_url,
     };
-    let started = ensured.started;
-    let lines = match ensured.stream.try_clone() {
-        Ok(half) => io::BufReader::new(half),
-        Err(e) => {
-            eprintln!(
-                "{}",
-                supervisor_unreachable(
-                    sock.socket(),
-                    &format!("its connection could not be split for reading: {e}")
-                )
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut session = SupervisorSession {
-        stream: ensured.stream,
-        lines,
-        socket: sock.socket().to_path_buf(),
-        next_id: 1,
-    };
-    let resumed = (|| -> Result<marion_proto::result::NodeResumeResult, String> {
-        let id = session.send(marion_proto::Call::NodeResume(
-            marion_proto::params::NodeResumeParams {
-                agent_id: marion_core::contract::AgentId(args.agent_id.clone()),
-                prompt: args.prompt.clone(),
-            },
-        ))?;
-        match session.pump(Awaited::Response(id), &mut |_| {})? {
-            marion_proto::Outcome::Result(body) => {
-                match marion_proto::Method::NodeResume.decode_result(&body) {
-                    Ok(marion_proto::MethodResult::NodeResume(r)) => Ok(r),
-                    _ => Err(
-                        "marion: this project's supervisor answered `node/resume` with a \
-                              result marion cannot read"
-                            .to_string(),
-                    ),
-                }
-            }
-            marion_proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
-        }
-    })();
-    let resumed = match resumed {
+    let (mut session, started) = connect_supervisor(&sock, &launch)?;
+    let resumed = match resume_node(&mut session, &args) {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("{e}");
-            // **If this command is what started the supervisor, it is what ends it.** A resume that
-            // could not happen must not leave a supervisor an operator did not have before — the
-            // node it was for is still gone, and an empty supervisor lingering out its idle grace
-            // is a surprise, not a service. A supervisor that was already serving is left alone.
-            if started {
-                let _ = session.send(marion_proto::Call::SessionQuit(
-                    marion_proto::params::SessionQuitParams {
-                        disposition: marion_proto::QuitDisposition::KillTree { confirmed: vec![] },
-                    },
-                ));
-            }
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return Err(resume_refused(&mut session, started, &e)),
     };
     eprintln!(
         "marion: resumed {} (generation {})",
@@ -365,13 +298,73 @@ fn resume_main(argv: &[String]) -> ExitCode {
     // supervisor is serving the relaunched node. The resume session's `Drop` detaches (§7.3.1
     // leaves the node untouched), so the supervisor keeps running for the attach to watch.
     drop(session);
-    match marion_supervisor::attach::run(&resumed.agent_id.0, &repo, &state) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("marion: {e}");
-            ExitCode::FAILURE
+    Ok(
+        match marion_supervisor::attach::run(&resumed.agent_id.0, &repo, &state) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("marion: {e}");
+                ExitCode::FAILURE
+            }
+        },
+    )
+}
+
+/// The resume's base URL, by [`resolve_base_url`]'s rule; a refusal is its sentence and the code.
+fn resume_base_url(args: &ResumeArgs) -> Result<Option<String>, ExitCode> {
+    resolve_base_url(
+        args.canned,
+        args.base_url.clone(),
+        std::env::var("MARION_BASE_URL").ok(),
+    )
+    .map_err(|e| {
+        eprintln!("marion: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+/// Send `node/resume` and read its answer. The error is the whole sentence to print, `marion: `
+/// prefix included.
+fn resume_node(
+    session: &mut SupervisorSession,
+    args: &ResumeArgs,
+) -> Result<marion_proto::result::NodeResumeResult, String> {
+    let id = session.send(marion_proto::Call::NodeResume(
+        marion_proto::params::NodeResumeParams {
+            agent_id: marion_core::contract::AgentId(args.agent_id.clone()),
+            prompt: args.prompt.clone(),
+        },
+    ))?;
+    match session.pump(Awaited::Response(id), &mut |_| {})? {
+        marion_proto::Outcome::Result(body) => {
+            match marion_proto::Method::NodeResume.decode_result(&body) {
+                Ok(marion_proto::MethodResult::NodeResume(r)) => Ok(r),
+                _ => Err(
+                    "marion: this project's supervisor answered `node/resume` with a \
+                              result marion cannot read"
+                        .to_string(),
+                ),
+            }
         }
+        marion_proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
     }
+}
+
+/// Print a refused resume's sentence and, when this command is what started the supervisor, end
+/// it. Always the failure code.
+fn resume_refused(session: &mut SupervisorSession, started: bool, reason: &str) -> ExitCode {
+    eprintln!("{reason}");
+    // **If this command is what started the supervisor, it is what ends it.** A resume that
+    // could not happen must not leave a supervisor an operator did not have before — the
+    // node it was for is still gone, and an empty supervisor lingering out its idle grace
+    // is a surprise, not a service. A supervisor that was already serving is left alone.
+    if started {
+        let _ = session.send(marion_proto::Call::SessionQuit(
+            marion_proto::params::SessionQuitParams {
+                disposition: marion_proto::QuitDisposition::KillTree { confirmed: vec![] },
+            },
+        ));
+    }
+    ExitCode::FAILURE
 }
 
 /// `marion tree [--repo <path>] [--state-dir <path>]` — §5.6's tree pane, and the screen §9's M5
@@ -2166,6 +2159,16 @@ fn connect_run_supervisor(
     sock: &socket::SocketPaths,
     launch: &detach::Launch,
 ) -> Result<SupervisorSession, ExitCode> {
+    connect_supervisor(sock, launch).map(|(session, _started)| session)
+}
+
+/// [`connect_run_supervisor`], also answering whether this command is what started the
+/// supervisor — which `marion resume` needs, because a resume that fails must not leave behind a
+/// supervisor the operator did not have before.
+fn connect_supervisor(
+    sock: &socket::SocketPaths,
+    launch: &detach::Launch,
+) -> Result<(SupervisorSession, bool), ExitCode> {
     match detach::ensure_supervisor(sock, launch) {
         Ok(ensured) => {
             let lines = match ensured.stream.try_clone() {
@@ -2181,12 +2184,13 @@ fn connect_run_supervisor(
                     return Err(ExitCode::FAILURE);
                 }
             };
-            Ok(SupervisorSession {
+            let session = SupervisorSession {
                 stream: ensured.stream,
                 lines,
                 socket: sock.socket().to_path_buf(),
                 next_id: 1,
-            })
+            };
+            Ok((session, ensured.started))
         }
         // **A refusal, and the whole reason step 6 had to change this line.** See
         // [`supervisor_unreachable`]: the root is not driven in this process any more, so there is
