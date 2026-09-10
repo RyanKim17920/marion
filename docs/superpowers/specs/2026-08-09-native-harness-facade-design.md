@@ -251,9 +251,13 @@ precedence behavior is measured against every accepted pinned version before rel
 
 ### Gemini merge gate
 
-Gemini's system-settings merge granularity is not yet proven. Before its descriptor is
-advertised, a pinned live, credential-free experiment must establish whether an MCP-only
-system document deep-merges or replaces user/project `mcpServers` and unrelated settings.
+**Resolved 2026-09-10 (S30, `tests/fixtures/s30/`).** Gemini 0.53.0 merges `mcpServers` per key
+(`mergeStrategy: "shallow_merge"`, order defaults → user → workspace → system) and merges `general`
+per leaf; a same-named `marion` in the operator's layer is shadowed by the system layer for the
+node's life, every other server survives. The lane is advertised on that evidence. The original
+gate text follows for the record: the merge granularity was unproven, and a pinned live,
+credential-free experiment had to establish whether an MCP-only system document deep-merges or
+replaces user/project `mcpServers` and unrelated settings.
 
 - If it deep-merges, use the minimal overlay.
 - If it replaces, build a transient effective document that preserves every user/project
