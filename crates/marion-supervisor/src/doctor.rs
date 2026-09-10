@@ -757,28 +757,51 @@ fn live_turn(
     }
     let mut child = match crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(&mut cmd) {
         Ok(c) => c,
-        Err(e) => {
-            return TurnOutcome {
-                spawned: false,
-                spawn_line: format!("spawn: FAILED — {e}"),
-                shape_ok: false,
-                shape_line: None,
-                trailing: vec![],
-                // Nothing was started, so nothing can have leaked. Reporting a leak here would be
-                // a second failure invented from the first.
-                no_leak: true,
-                leak_line: "leak check: nothing was started".into(),
-            };
-        }
+        Err(e) => return not_spawned(&e),
     };
     let pid = child.id() as i32;
 
     let (out, timed_out) = read_bounded(&mut child, TURN_BUDGET);
     let mut trailing = Vec::new();
+    let interrupted = interrupt_if_alive(&mut child, pid, timed_out, &mut trailing);
+    let exit = terminate(&mut child, interrupted, &mut trailing);
+    let (no_leak, leak_line) = leak_check(&mut child, pid, exit.is_some());
 
-    // §8: "kill *if it is still alive*, since a clean termination means it usually is not — the
-    // step is a leak check, not a sequenced expectation".
-    let interrupted = match child.try_wait() {
+    let shape = shape_finding(adapter, &out, exit, interrupted, timed_out);
+    TurnOutcome {
+        spawned: true,
+        spawn_line: format!("spawn: ok — pid {pid}"),
+        shape_ok: shape.0,
+        shape_line: Some(shape.1),
+        trailing,
+        no_leak,
+        leak_line,
+    }
+}
+
+/// The turn that never began. Nothing was started, so nothing can have leaked: reporting a leak
+/// here would be a second failure invented from the first.
+fn not_spawned(e: &std::io::Error) -> TurnOutcome {
+    TurnOutcome {
+        spawned: false,
+        spawn_line: format!("spawn: FAILED — {e}"),
+        shape_ok: false,
+        shape_line: None,
+        trailing: vec![],
+        no_leak: true,
+        leak_line: "leak check: nothing was started".into(),
+    }
+}
+
+/// §8: "kill *if it is still alive*, since a clean termination means it usually is not — the step
+/// is a leak check, not a sequenced expectation". Answers whether SIGINT was sent.
+fn interrupt_if_alive(
+    child: &mut std::process::Child,
+    pid: i32,
+    timed_out: bool,
+    trailing: &mut Vec<String>,
+) -> bool {
+    match child.try_wait() {
         Ok(Some(_)) => {
             trailing.push(
                 "interrupt: not needed — the run terminated on its own before the budget".into(),
@@ -797,9 +820,16 @@ fn live_turn(
             ));
             true
         }
-    };
+    }
+}
 
-    let exit = wait_bounded(&mut child, INTERRUPT_GRACE);
+/// Wait out [`INTERRUPT_GRACE`] and say how the child ended, or that it did not.
+fn terminate(
+    child: &mut std::process::Child,
+    interrupted: bool,
+    trailing: &mut Vec<String>,
+) -> Option<std::process::ExitStatus> {
+    let exit = wait_bounded(child, INTERRUPT_GRACE);
     match &exit {
         Some(s) => trailing.push(format!(
             "termination: exit {}{}",
@@ -816,11 +846,14 @@ fn live_turn(
             "termination: FAILED — still running {INTERRUPT_GRACE:?} after SIGINT"
         )),
     }
+    exit
+}
 
-    // The leak check, and it is unconditional: an ACP-style long-lived stdio agent that ignores
-    // SIGINT is exactly the shape this exists to catch, and a probe that leaves one behind has
-    // done more harm than the check was worth.
-    let (no_leak, leak_line) = if exit.is_some() {
+/// The leak check, and it is unconditional: an ACP-style long-lived stdio agent that ignores
+/// SIGINT is exactly the shape this exists to catch, and a probe that leaves one behind has done
+/// more harm than the check was worth.
+fn leak_check(child: &mut std::process::Child, pid: i32, exited: bool) -> (bool, String) {
+    if exited {
         (true, "leak check: no process outlived the probe".into())
     } else {
         unsafe { kill(pid, SIGKILL) };
@@ -833,17 +866,6 @@ fn live_turn(
                  different problems; this is the former."
             ),
         )
-    };
-
-    let shape = shape_finding(adapter, &out, exit, interrupted, timed_out);
-    TurnOutcome {
-        spawned: true,
-        spawn_line: format!("spawn: ok — pid {pid}"),
-        shape_ok: shape.0,
-        shape_line: Some(shape.1),
-        trailing,
-        no_leak,
-        leak_line,
     }
 }
 
