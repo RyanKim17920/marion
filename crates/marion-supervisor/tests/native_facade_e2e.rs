@@ -39,6 +39,7 @@ use marion_supervisor::socket::{Acquired, SocketPaths, acquire, project_root, so
 use marion_testsupport::{on_path, scratch, until_within};
 
 mod common;
+use common::cast::{cast_records, cast_text};
 use common::client::Client;
 
 /// Every wait in this file is bounded by this and none is a verdict.
@@ -341,31 +342,6 @@ impl Operator {
 // ---------------------------------------------------------------------------------------------
 // Reading a cast
 // ---------------------------------------------------------------------------------------------
-
-fn cast_records(path: &Path) -> Vec<(String, String)> {
-    let Ok(s) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    s.lines()
-        .skip(1)
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter_map(|v| {
-            let a = v.as_array()?;
-            Some((
-                a.get(1)?.as_str()?.to_string(),
-                a.get(2)?.as_str()?.to_string(),
-            ))
-        })
-        .collect()
-}
-
-fn cast_text(path: &Path, code: &str) -> String {
-    cast_records(path)
-        .into_iter()
-        .filter(|(c, _)| c == code)
-        .map(|(_, d)| d)
-        .collect()
-}
 
 fn geometries(path: &Path) -> Vec<String> {
     cast_records(path)
