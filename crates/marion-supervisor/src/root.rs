@@ -1136,27 +1136,7 @@ fn launch_inner(
     let spawned = std::cell::Cell::new(false);
     let unaccountable: std::cell::Cell<Option<crate::journal::JournalError>> =
         std::cell::Cell::new(None);
-    let started = |pid: i32| {
-        match crate::journal::append(&node.project, spawned_record(node, Some(pid))) {
-            Ok(_) => {
-                spawned.set(true);
-                // The owner is told **after** the record is durable-ordered, so a supervisor that
-                // answers its caller on this hook is making a claim the journal already backs. On
-                // the failure arm it is deliberately not told at all: the claim would not be
-                // backed, and there is about to be no process to make it about.
-                if let Some(hook) = on_started {
-                    hook(pid);
-                }
-            }
-            Err(e) => {
-                // The whole tree, not the pid alone: a root is a group leader and may already have
-                // descendants, and they are as unnameable as it is. Not `_and_wait` — the driver
-                // below is already waiting on this exact child.
-                crate::run::kill_process_tree(pid);
-                unaccountable.set(Some(e));
-            }
-        }
-    };
+    let started = |pid: i32| confirm_root_started(node, on_started, &spawned, &unaccountable, pid);
     // **§7.3.3's replay leg for a root**, alongside the journal's record of the same run and for the
     // complementary reason: the journal says a root existed and how it ended, this says what it
     // said. `None` on an open failure — a viewer may never fail a run (`events::EventSink::open`).
@@ -1193,13 +1173,7 @@ fn launch_inner(
         // still be re-attachable afterwards — and a run nobody watched must be re-attachable too.
         RootPath::Duplex => {
             let tee = |ev: duplex::StreamEvent<'_>| {
-                if let Some(es) = &events {
-                    es.record(ev);
-                }
-                session.observe_event(ev);
-                if let Some(w) = watcher {
-                    w(ev);
-                }
+                tee_root_frame(events.as_ref(), &session, watcher, ev)
             };
             launch_duplex(
                 node,
@@ -1240,6 +1214,54 @@ fn launch_inner(
         es.lifecycle(roots_terminal_lifecycle(&result));
     }
     result
+}
+
+/// `launch_inner`'s `on_started` hook: `Spawned { pid: Some(_) }` through the fallible barrier,
+/// then the owner — or the tree killed and the run marked unaccountable.
+///
+/// The owner is told **after** the record is durable-ordered, so a supervisor that answers its
+/// caller on this hook is making a claim the journal already backs. On the failure arm it is
+/// deliberately not told at all: the claim would not be backed, and there is about to be no
+/// process to make it about.
+fn confirm_root_started(
+    node: &RootNode,
+    on_started: Option<&dyn Fn(i32)>,
+    spawned: &std::cell::Cell<bool>,
+    unaccountable: &std::cell::Cell<Option<crate::journal::JournalError>>,
+    pid: i32,
+) {
+    match crate::journal::append(&node.project, spawned_record(node, Some(pid))) {
+        Ok(_) => {
+            spawned.set(true);
+            if let Some(hook) = on_started {
+                hook(pid);
+            }
+        }
+        Err(e) => {
+            // The whole tree, not the pid alone: a root is a group leader and may already have
+            // descendants, and they are as unnameable as it is. Not `_and_wait` — the driver in
+            // `launch_inner` is already waiting on this exact child.
+            crate::run::kill_process_tree(pid);
+            unaccountable.set(Some(e));
+        }
+    }
+}
+
+/// One duplex frame to its three readers, in order: the event file keeps it, the session watch
+/// reads the session id off it, and the watcher renders it for a human and keeps nothing.
+fn tee_root_frame(
+    events: Option<&crate::events::EventSink>,
+    session: &crate::session_watch::SessionWatch<'_>,
+    watcher: Option<duplex::StreamSink<'_>>,
+    ev: duplex::StreamEvent<'_>,
+) {
+    if let Some(es) = events {
+        es.record(ev);
+    }
+    session.observe_event(ev);
+    if let Some(w) = watcher {
+        w(ev);
+    }
 }
 
 /// §6.1 step 7's second half and the node's terminal transition, for a root.
