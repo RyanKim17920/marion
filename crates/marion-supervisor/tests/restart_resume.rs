@@ -34,11 +34,11 @@
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use marion_core::contract::AgentId;
 use marion_provider::{CannedServer, Config, RootScript, RootTurn, Script, TurnGate};
-use marion_testsupport::{Liveness, fixture_repo, liveness, on_path, scratch};
+use marion_testsupport::{Liveness, fixture_repo, liveness, on_path, scratch, until_within};
 use serde_json::json;
 
 unsafe extern "C" {
@@ -92,15 +92,8 @@ fn supervisor_pid(state: &Path, repo: &Path) -> Option<i32> {
         .and_then(|p| p.parse().ok())
 }
 
-fn until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + BOUND;
-    while Instant::now() < deadline {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    cond()
+fn until(cond: impl FnMut() -> bool) -> bool {
+    until_within(BOUND, Duration::from_millis(10), cond)
 }
 
 /// A codex root that spawns a codex child, both answered by the canned provider. The child writes
