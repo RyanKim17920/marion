@@ -146,28 +146,46 @@ impl ScreenBackend {
 /// because [`ScreenBackend::style`] has already emitted `\x1b[0m`.
 fn sgr_color(c: Color, fg: bool) -> String {
     let base = if fg { 30 } else { 40 };
-    let bright = if fg { 90 } else { 100 };
     match c {
         Color::Reset => String::new(),
-        Color::Black => (base).to_string(),
-        Color::Red => (base + 1).to_string(),
-        Color::Green => (base + 2).to_string(),
-        Color::Yellow => (base + 3).to_string(),
-        Color::Blue => (base + 4).to_string(),
-        Color::Magenta => (base + 5).to_string(),
-        Color::Cyan => (base + 6).to_string(),
-        Color::Gray => (base + 7).to_string(),
-        Color::DarkGray => (bright).to_string(),
-        Color::LightRed => (bright + 1).to_string(),
-        Color::LightGreen => (bright + 2).to_string(),
-        Color::LightYellow => (bright + 3).to_string(),
-        Color::LightBlue => (bright + 4).to_string(),
-        Color::LightMagenta => (bright + 5).to_string(),
-        Color::LightCyan => (bright + 6).to_string(),
-        Color::White => (bright + 7).to_string(),
         Color::Indexed(i) => format!("{};5;{i}", base + 8),
         Color::Rgb(r, g, b) => format!("{};2;{r};{g};{b}", base + 8),
+        named => (base + named_offset(named)).to_string(),
     }
+}
+
+/// The sixteen named colours as distances from the SGR base (`30` foreground, `40` background):
+/// the normal eight are `0..=7` and the bright eight `60..=67`, because `90`/`100` are `30`/`40`
+/// plus sixty. A table rather than sixteen arms, for the same reason [`ScreenBackend::style`]'s
+/// modifiers are one.
+const NAMED_OFFSETS: [(Color, u16); 16] = [
+    (Color::Black, 0),
+    (Color::Red, 1),
+    (Color::Green, 2),
+    (Color::Yellow, 3),
+    (Color::Blue, 4),
+    (Color::Magenta, 5),
+    (Color::Cyan, 6),
+    (Color::Gray, 7),
+    (Color::DarkGray, 60),
+    (Color::LightRed, 61),
+    (Color::LightGreen, 62),
+    (Color::LightYellow, 63),
+    (Color::LightBlue, 64),
+    (Color::LightMagenta, 65),
+    (Color::LightCyan, 66),
+    (Color::White, 67),
+];
+
+/// A named colour's row in [`NAMED_OFFSETS`]. Only [`sgr_color`] calls this, after it has taken
+/// `Reset`, `Indexed` and `Rgb` itself, so the sixteen colours that can reach here are exactly the
+/// table's rows and a miss is a table edit, not a colour.
+fn named_offset(named: Color) -> u16 {
+    NAMED_OFFSETS
+        .iter()
+        .find(|(c, _)| *c == named)
+        .map(|(_, offset)| *offset)
+        .expect("every named ratatui colour has a row in NAMED_OFFSETS")
 }
 
 impl Backend for ScreenBackend {
@@ -394,6 +412,37 @@ mod tests {
         assert_eq!(sgr_color(Color::White, true), "97");
         assert_eq!(sgr_color(Color::Indexed(200), true), "38;5;200");
         assert_eq!(sgr_color(Color::Rgb(1, 2, 3), false), "48;2;1;2;3");
+    }
+
+    /// Every named colour, against the codes the sixteen-arm `match` this table replaced produced:
+    /// `30`–`37` and `90`–`97` foreground, `40`–`47` and `100`–`107` background, in ratatui's
+    /// declaration order.
+    #[test]
+    fn every_named_colour_keeps_its_sgr_code() {
+        let named = [
+            Color::Black,
+            Color::Red,
+            Color::Green,
+            Color::Yellow,
+            Color::Blue,
+            Color::Magenta,
+            Color::Cyan,
+            Color::Gray,
+            Color::DarkGray,
+            Color::LightRed,
+            Color::LightGreen,
+            Color::LightYellow,
+            Color::LightBlue,
+            Color::LightMagenta,
+            Color::LightCyan,
+            Color::White,
+        ];
+        let fg = (30..=37).chain(90..=97);
+        let bg = (40..=47).chain(100..=107);
+        for ((colour, fg), bg) in named.into_iter().zip(fg).zip(bg) {
+            assert_eq!(sgr_color(colour, true), fg.to_string(), "{colour:?} fg");
+            assert_eq!(sgr_color(colour, false), bg.to_string(), "{colour:?} bg");
+        }
     }
 
     /// `set_size` is what a `SIGWINCH` reaches, and `Terminal::autoresize` reads it back.
