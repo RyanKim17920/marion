@@ -252,18 +252,8 @@ impl Hold for Rendezvous {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marion_testsupport::until;
     use serde_json::json;
-
-    fn until(mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if cond() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        cond()
-    }
 
     #[test]
     fn the_turns_before_the_hold_pass_and_the_hold_stops_the_rest_until_released() {

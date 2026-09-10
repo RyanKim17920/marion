@@ -7,31 +7,13 @@
 
 use super::*;
 use marion_harness::{ControlTransport, ExecutionSurfaces, TypedKind};
+use marion_testsupport::until;
 use std::io::Read;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------------------------
-
-/// Poll `cond` for at most five seconds, then answer.
-///
-/// Five is `handler.rs`'s own bound, and this matches it rather than inventing a second one. It is
-/// not a timeout in the "the suite hung" sense: every caller turns the `false` into an assertion
-/// whose message names what did not happen, and most of them ask `kill(pid, 0)` first so the
-/// message separates "the child died" from "the event never came". A tighter bound was tried at two
-/// seconds and produced one failure in roughly twenty full-suite runs, on a `fork`/`exec` under a
-/// fully loaded machine — which is a measurement of the laptop, not of the code.
-fn until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    cond()
-}
 
 fn bounded_hook_gate() -> (
     Box<dyn Fn() + Send + Sync>,

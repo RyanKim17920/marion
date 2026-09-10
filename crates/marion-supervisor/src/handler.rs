@@ -4118,7 +4118,7 @@ mod tests {
     };
     use marion_core::node::BlockReason;
     use marion_proto::Frame;
-    use marion_testsupport::scratch;
+    use marion_testsupport::{scratch, until};
     use std::io::Write;
     use std::path::Path;
     use std::time::Duration;
@@ -4467,17 +4467,6 @@ mod tests {
         let mut line = String::new();
         assert!(r.read_line(&mut line).unwrap() > 0, "the socket closed");
         Frame::from_line(&line).expect("well-formed")
-    }
-
-    fn until(mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            if cond() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        cond()
     }
 
     /// `node/get` over the socket, against a tree that came out of a journal — the request/response

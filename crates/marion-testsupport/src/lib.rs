@@ -52,6 +52,48 @@ pub use shim::{
     GateFailure, ReleaseStore, ReleaseStores, Resolution, SHIM_DIR_VAR, Shim, process_shim,
 };
 
+// --- waiting ------------------------------------------------------------------------------------
+
+/// The bound [`until`] polls under, and the one every `#[cfg(test)]` module in marion-supervisor
+/// shares rather than inventing its own.
+///
+/// A tighter bound was tried at two seconds and produced one failure in roughly twenty full-suite
+/// runs, on a `fork`/`exec` under a fully loaded machine — which is a measurement of the laptop,
+/// not of the code.
+pub const UNTIL_BOUND: Duration = Duration::from_secs(5);
+
+/// The interval [`until`] re-asks `cond` at: short, because the waits it serves are for a
+/// transition another thread is about to make, and a coarse step only adds latency to a pass.
+pub const UNTIL_STEP: Duration = Duration::from_millis(2);
+
+/// Poll `cond` for at most [`UNTIL_BOUND`], then answer.
+///
+/// Assert that something **happens**, never how long it takes: the bound is headroom the test
+/// does not decide the answer with, so a fast machine does not pay for a slow one's, and no test
+/// may be fixed by widening it. It is not a timeout in the "the suite hung" sense either — every
+/// caller turns the `false` into an assertion whose message names what did not happen, and the
+/// process-facing ones ask [`alive`] first so the message separates "the child died" from "the
+/// event never came".
+pub fn until(cond: impl FnMut() -> bool) -> bool {
+    until_within(UNTIL_BOUND, UNTIL_STEP, cond)
+}
+
+/// [`until`] with its own budget and step, for a wait whose *expiry is itself a defect report* or
+/// whose transition is known to be coarser than [`UNTIL_STEP`].
+///
+/// `cond` is asked one last time after the budget so a transition that lands exactly at the
+/// deadline is still seen, and the answer is the condition's, never the clock's.
+pub fn until_within(budget: Duration, step: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + budget;
+    while Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(step);
+    }
+    cond()
+}
+
 // --- processes ----------------------------------------------------------------------------------
 
 unsafe extern "C" {

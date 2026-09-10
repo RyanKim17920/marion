@@ -502,7 +502,7 @@ mod tests {
     use marion_core::journal::{
         Exited, JournalRecord, RecordKind, SpawnIntent, Spawned, WriterId, encode,
     };
-    use marion_testsupport::scratch;
+    use marion_testsupport::{scratch, until};
     use std::io::Write;
     use std::path::Path;
 
@@ -1125,19 +1125,5 @@ mod tests {
         assert!(until(
             || live.read(|r| r.tree().get(&id("second-root")).is_some())
         ));
-    }
-
-    /// Wait for a condition, checking often, up to a bound generous enough that a loaded machine
-    /// does not decide the answer. Returns whether it became true — never a bare sleep, so a fast
-    /// machine does not pay for a slow one's headroom.
-    fn until(mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            if cond() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        cond()
     }
 }

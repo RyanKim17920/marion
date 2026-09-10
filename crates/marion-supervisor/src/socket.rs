@@ -1130,7 +1130,7 @@ fn ensure_dir(paths: &SocketPaths, uid: u32) -> Result<(), SocketError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marion_testsupport::scratch;
+    use marion_testsupport::{scratch, until};
     use std::sync::{Arc, Barrier};
 
     /// §2/§4.3's path, and the `/tmp` fallback, from one rule with no environment involved.
@@ -1443,20 +1443,6 @@ mod tests {
         );
         assert!(!paths.socket().exists());
         assert!(!paths.native_bootstrap().exists());
-    }
-
-    /// Wait for a condition, checking often, up to a bound generous enough that a loaded machine
-    /// does not decide the answer — `registry.rs`'s helper, and used here for the same reason it is
-    /// used there: to assert that a transition **happens**, never how long it takes.
-    fn until(mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if cond() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        cond()
     }
 
     /// What a SIGKILLed supervisor leaves: a socket file with nobody behind it.
