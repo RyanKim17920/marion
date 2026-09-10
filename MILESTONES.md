@@ -86,7 +86,8 @@ cells; qwen has a row and no column, see the audit). ACP: `acp:<command>` launch
 with no row (`acp_child.rs`), with five refinement rows in `acp::AGENTS` — `opencode`, `gemini`,
 `claude-acp`, `codex-acp`, `copilot` — and `marion doctor --acp-command "<cmd>"` probes one by its
 own handshake. Pinned versions: claude 2.1.220–2.1.226, 2.1.261 and 2.1.263; codex 0.146.0/0.146.1/0.147.0;
-gemini 0.53.0; opencode 1.17.3 and 1.18.29; copilot 1.0.83; goose 1.49.0; cline 3.0.61; qwen 0.23.0.
+gemini 0.53.0; opencode 1.17.3, 1.18.29 and 1.18.30; copilot 1.0.83; goose 1.49.0 and 1.50.0; cline 3.0.61;
+qwen 0.23.0.
 
 **Native facade.** `marion <harness> <its own flags>` runs the harness's real TUI through the
 relay as a journaled root. Enabled lanes: `claude`, `codex`, `opencode`, `copilot`. Disabled by
@@ -223,8 +224,9 @@ evidence beside each. claude's set is `["2.1.220", "2.1.222", "2.1.223", "2.1.22
 "2.1.226", "2.1.261"]` and codex's is
 `["0.146.0", "0.146.1", "0.147.0"]` — both auto-updated mid-session on 2026-08-06 and codex again
 on 2026-08-07, §7.7's hazard arriving live, and each new version was admitted only after its probes
-were re-run and compared against the committed captures field for field; gemini pins exactly one and
-opencode gained 1.18.29 on 2026-09-06. So
+were re-run and compared against the committed captures field for field; gemini pins exactly one,
+opencode gained 1.18.29 on 2026-09-06 and 1.18.30 on 2026-09-09, and goose gained 1.50.0 the same
+day. So
 read "2.1.220" as *"the version the turn-one `\"tools\":[]` shape and the
 `tests/fixtures/s9` `can_use_tool` frame were captured from"*, and read a green suite as *"and
 2.1.222 through 2.1.226 and 2.1.261 were checked against them too."*
@@ -295,6 +297,19 @@ against. With the entry widened (codex held at 0.147.0): `harness_matrix` (8), `
 `worktree_reap` (8), and the opencode lane of `native_facade_e2e`, covering opencode as root and
 child, its ACP row, its journal cells and its native facade lane. The s13 probe was not re-run, so
 the provider-hang and `/mcp` dialog readings are still 1.17.3's.
+
+**opencode 1.18.30 and goose 1.50.0, admitted together 2026-09-09 via `scripts/admit-harness.sh`.**
+Homebrew moved both in place (1.18.29 and 1.49.0 are no longer on disk), so every opencode and
+goose cell refused at its pin — and because `cross_product` drives every pinned harness in one
+binary, neither could be admitted alone: the first run, for opencode only, went RED with 14 goose
+cells refusing at goose's own pin. The script now takes several pairs, and one bounded run with both
+entries widened (claude, codex and copilot at their existing pins) was green: `marion-testsupport`
+(32), `acp_child` (3), `cross_product` (57), `depth_gate` (4), `harness_matrix` (8),
+`journal_wiring` (18), `native_facade_e2e` (2, every enabled lane including opencode's and
+copilot's). That covers each as root and as child, opencode's ACP row, both harnesses' journal
+cells and depth cells, and opencode's native facade lane. No drift was observed: no suite needed a
+fixture, dialog or output-shape change. The s13 and s26 probes were not re-run, so the readings
+beside each pin are still 1.17.3's and 1.49.0's.
 
 **How fast this goes stale, now that there is a rate rather than an anecdote.** On 2026-08-06 two
 of the four pinned harnesses auto-updated underneath a single session — codex 0.146.0 → 0.146.1 in

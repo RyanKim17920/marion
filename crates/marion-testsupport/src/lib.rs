@@ -634,7 +634,11 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // `harness_matrix` cell, its ACP row in `acp_child`, its journal cells, and the `opencode`
         // native facade lane in `native_facade_e2e`. The s13 probe was not re-run, so the
         // provider-hang and `/mcp` readings are still 1.17.3's.
-        accepted: &["1.17.3", "1.18.29"],
+        // 1.18.30: observed green on Darwin 25.5.0, 2026-09-09, via scripts/admit-harness.sh
+        // (opencode 1.18.30 and goose 1.50.0 in one run): marion-testsupport (32), acp_child (3),
+        // cross_product (57), depth_gate (4), harness_matrix (8), journal_wiring (18),
+        // native_facade_e2e (2).
+        accepted: &["1.17.3", "1.18.29", "1.18.30"],
     },
     PinnedHarness {
         program: "copilot",
@@ -669,7 +673,11 @@ pub const PINNED_HARNESSES: &[PinnedHarness] = &[
         // `status: "success"` at exit 0, a provider 500 delivered as an ordinary text message at
         // exit 0, `GOOSE_MODE=approve` aborting headless at exit 1, no session-id frame, and
         // `GOOSE_CONFIG_DIR` relocating nothing. See `marion_harness::goose`.
-        accepted: &["1.49.0"],
+        // 1.50.0: observed green on Darwin 25.5.0, 2026-09-09, via scripts/admit-harness.sh
+        // (opencode 1.18.30 and goose 1.50.0 in one run): marion-testsupport (32), acp_child (3),
+        // cross_product (57), depth_gate (4), harness_matrix (8), journal_wiring (18),
+        // native_facade_e2e (2).
+        accepted: &["1.49.0", "1.50.0"],
     },
     PinnedHarness {
         program: "cline",
