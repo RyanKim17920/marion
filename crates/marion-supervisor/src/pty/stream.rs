@@ -388,45 +388,7 @@ impl Record {
 
     fn encode_for(&self, format: RecordFormat) -> Result<Vec<u8>, StreamError> {
         let encoded_len = self.encoded_len_for(format)?;
-        let (kind, payload) = match &self.kind {
-            RecordKind::Output(bytes) => (OUTPUT_KIND, bytes.clone()),
-            RecordKind::Resize { rows, cols } => {
-                let mut payload = Vec::with_capacity(4);
-                payload.extend_from_slice(&rows.to_le_bytes());
-                payload.extend_from_slice(&cols.to_le_bytes());
-                (RESIZE_KIND, payload)
-            }
-            RecordKind::InputEvidence {
-                input_seq,
-                byte_len,
-            } => {
-                if *input_seq != self.input_seq {
-                    return Err(StreamError::InputSequenceMismatch);
-                }
-                let mut payload = Vec::with_capacity(match format {
-                    RecordFormat::SessionV2 => size_of::<u32>() + CHECKSUM_BYTES,
-                    RecordFormat::LegacyV1 | RecordFormat::SessionV3 => size_of::<u32>(),
-                });
-                payload.extend_from_slice(&byte_len.to_le_bytes());
-                if format == RecordFormat::SessionV2 {
-                    // v2's historical digest is retired. This path exists only to keep the frozen
-                    // representation explicit; current writers always use v3.
-                    payload.extend_from_slice(&[0; CHECKSUM_BYTES]);
-                }
-                (INPUT_EVIDENCE_KIND, payload)
-            }
-            RecordKind::DisplayIncomplete => (DISPLAY_INCOMPLETE_KIND, Vec::new()),
-            RecordKind::LegacyEnd => (END_KIND, Vec::new()),
-            RecordKind::End(outcome) => {
-                let encoded = outcome.encode()?;
-                let len = match format {
-                    RecordFormat::SessionV2 => LEGACY_TERMINAL_OUTCOME_BYTES,
-                    RecordFormat::SessionV3 => TERMINAL_OUTCOME_BYTES,
-                    RecordFormat::LegacyV1 => unreachable!(),
-                };
-                (END_KIND, encoded[..len].to_vec())
-            }
-        };
+        let (kind, payload) = self.encode_payload(format)?;
 
         let record_len = FRAME_FIXED_BYTES + payload.len();
         if record_len > MAX_RECORD_BYTES {
@@ -450,6 +412,38 @@ impl Record {
         encoded.extend_from_slice(&payload);
         encoded.extend_from_slice(blake3::hash(&encoded[FRAME_LEN_BYTES..]).as_bytes());
         Ok(encoded)
+    }
+
+    /// The kind byte and payload bytes this record's kind writes under `format`.
+    fn encode_payload(&self, format: RecordFormat) -> Result<(u8, Vec<u8>), StreamError> {
+        Ok(match &self.kind {
+            RecordKind::Output(bytes) => (OUTPUT_KIND, bytes.clone()),
+            RecordKind::Resize { rows, cols } => {
+                let mut payload = Vec::with_capacity(4);
+                payload.extend_from_slice(&rows.to_le_bytes());
+                payload.extend_from_slice(&cols.to_le_bytes());
+                (RESIZE_KIND, payload)
+            }
+            RecordKind::InputEvidence {
+                input_seq,
+                byte_len,
+            } => {
+                self.check_input_seq(*input_seq)?;
+                (
+                    INPUT_EVIDENCE_KIND,
+                    encode_input_evidence_payload(*byte_len, format),
+                )
+            }
+            RecordKind::DisplayIncomplete => (DISPLAY_INCOMPLETE_KIND, Vec::new()),
+            RecordKind::LegacyEnd => (END_KIND, Vec::new()),
+            RecordKind::End(outcome) => {
+                let encoded = outcome.encode()?;
+                (
+                    END_KIND,
+                    encoded[..typed_terminal_outcome_len(format)].to_vec(),
+                )
+            }
+        })
     }
 
     pub(crate) fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
@@ -532,6 +526,18 @@ fn input_evidence_payload_len(format: RecordFormat) -> usize {
         RecordFormat::SessionV2 => size_of::<u32>() + CHECKSUM_BYTES,
         RecordFormat::LegacyV1 | RecordFormat::SessionV3 => size_of::<u32>(),
     }
+}
+
+/// The accepted byte length, followed under v2 only by the retired digest's zeroed slot.
+fn encode_input_evidence_payload(byte_len: u32, format: RecordFormat) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(input_evidence_payload_len(format));
+    payload.extend_from_slice(&byte_len.to_le_bytes());
+    if format == RecordFormat::SessionV2 {
+        // v2's historical digest is retired. This path exists only to keep the frozen
+        // representation explicit; current writers always use v3.
+        payload.extend_from_slice(&[0; CHECKSUM_BYTES]);
+    }
+    payload
 }
 
 fn decode_input_evidence_payload(
