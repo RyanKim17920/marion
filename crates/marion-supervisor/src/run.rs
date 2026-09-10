@@ -1156,6 +1156,19 @@ pub trait SpawnObserver: Sync {
     /// A process exists. `pid` is a signal target, not an identity — see the `Spawned` writer below
     /// and `restart.rs` for why those are different claims.
     fn started(&self, agent_id: &AgentId, pid: i32);
+    /// **§7.6's subtree scan, answered by whoever holds the tree.** The live descendants of
+    /// `agent_id` — the whole subtree, in the gating sense `descendant_gate::live_descendants`
+    /// states — or `None` for an owner that holds no registry and so cannot see the tree at all.
+    ///
+    /// `None` and `Some(vec![])` are different answers on purpose: the second is a check that ran
+    /// and found nothing, the first is a check that could not run. Defaulted to `None` so an owner
+    /// that cannot look never reports a clean bill of health by failing to.
+    ///
+    /// Unlike the two hooks above this **may block the spawning thread**: the gate's hold polls it
+    /// until the descendants are terminal or the node's bound expires, which is §7.6 step 3.
+    fn live_descendants(&self, _agent_id: &AgentId) -> Option<Vec<AgentId>> {
+        None
+    }
 }
 
 /// The observer for a caller that owns the node **by holding this call** — which is every caller

@@ -27,6 +27,9 @@ pub(crate) mod clock;
 /// rather than owning a process.
 pub mod courier;
 pub(crate) mod depth;
+/// §7.6's descendant-gated completion: a child's `Exited` is held while a descendant is live,
+/// unless it reported early or its own bound expires.
+pub mod descendant_gate;
 /// §5.7's start and S15's detach: how a `marion-supervisor` comes to exist detached, and how a
 /// client that finds nothing listening asks for one without becoming a second start race.
 pub mod detach;
