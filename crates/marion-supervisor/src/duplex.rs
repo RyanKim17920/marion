@@ -507,58 +507,12 @@ pub fn run_duplex(
     // leaves neither a live thread nor a live fd behind.
     let stderr = Drain::start(child.stderr.take().expect("stderr was piped"));
     let mut lines = BufReader::new(stdout).lines();
-
-    // The wall clock, if there is one. A watchdog rather than a bound on each read: the reads are
-    // blocking and a node that hangs *between* frames must still be killed.
-    let finished = Arc::new(AtomicBool::new(false));
-    let expired = Arc::new(AtomicBool::new(false));
-    let watchdog = spec.wall_clock.map(|bound| {
-        let finished = Arc::clone(&finished);
-        let expired = Arc::clone(&expired);
-        std::thread::spawn(move || {
-            let deadline = Instant::now() + bound;
-            while Instant::now() < deadline {
-                if finished.load(Ordering::Relaxed) {
-                    return;
-                }
-                std::thread::sleep(StdDuration::from_millis(20));
-            }
-            if finished.load(Ordering::Relaxed) {
-                return;
-            }
-            expired.store(true, Ordering::Relaxed);
-            kill_process_tree(pid);
-        })
-    });
-    // Every exit from here on goes through this, so no path can leave the watchdog running or the
-    // stderr drain wedged. `kill` is set on the paths that abandon a live node: killing the direct
-    // child alone would leave its bridge holding the pipe, which is the deadlock described above.
-    let stop = |kill: bool,
-                watchdog: Option<std::thread::JoinHandle<()>>,
-                child: &mut std::process::Child,
-                stderr: Drain| {
-        if kill {
-            if spec.wall_clock.is_some() {
-                // A group of our own exists, so the whole tree can be addressed (S7's two-step
-                // kill). Without one, `signal_targets` would refuse marion's own pgid and the
-                // sweep would reach nothing, so the direct kill below is all there is.
-                kill_process_tree(pid);
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        finished.store(true, Ordering::Relaxed);
-        if let Some(h) = watchdog {
-            let _ = h.join();
-        }
-        let (bytes, _complete) = stderr.finish(Instant::now() + DRAIN_GRACE);
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
+    let guard = RunGuard::start(pid, spec.wall_clock, stderr);
 
     let mut outcome = DuplexOutcome::default();
 
     if !wait_for_ready(spec.ready_file, spec.mcp_ready_timeout) {
-        stop(true, watchdog, &mut child, stderr);
+        guard.stop(true, &mut child);
         return Err(DuplexError::McpNeverReady(
             spec.mcp_ready_timeout,
             spec.ready_file.to_path_buf(),
@@ -566,90 +520,200 @@ pub fn run_duplex(
     }
 
     // One round trip through the harness's event loop, after the tool list was flushed to it.
-    // Every stdout line the driver reads passes through here, which is the one place a live
-    // observer can be fed without any handler downstream having to remember to. The sink is called
-    // *before* the frame is dispatched or recorded, so what a watcher sees is the arrival order,
-    // not marion's handling order — and a frame that makes a later step fail has still been shown.
-    let record = |outcome: &mut DuplexOutcome, line: &str| -> Option<Value> {
-        outcome.stdout.push_str(line);
-        outcome.stdout.push('\n');
-        let frame = serde_json::from_str::<Value>(line).ok();
-        if let Some(sink) = spec.sink {
-            match &frame {
-                Some(v) => sink(StreamEvent::Frame(v)),
-                None => sink(StreamEvent::Unparsed(line)),
-            }
-        }
-        frame
-    };
     writeln!(stdin, "{}", initialize_request(&spec.init_id))?;
     stdin.flush()?;
-    let mut initialized = false;
-    for line in lines.by_ref() {
-        let line = line?;
-        let Some(frame) = record(&mut outcome, &line) else {
-            continue;
-        };
-        let done = is_control_response_to(&frame, &spec.init_id);
-        outcome.transcript.push(frame);
-        if done {
-            initialized = true;
-            break;
-        }
-    }
-    if !initialized {
-        stop(true, watchdog, &mut child, stderr);
+    if !await_initialize(&mut lines, spec, &mut outcome)? {
+        guard.stop(true, &mut child);
         return Err(DuplexError::DiedBeforeInitialize);
     }
 
     writeln!(stdin, "{}", user_message(spec.prompt))?;
     stdin.flush()?;
+    drive_turn(&mut lines, &mut stdin, spec, &mut outcome)?;
 
-    for line in lines.by_ref() {
+    // Closing stdin is what ends a `--input-format stream-json` session.
+    drop(stdin);
+    let status = child.wait()?;
+    let (stderr, timed_out) = guard.stop(false, &mut child);
+    outcome.stderr = stderr;
+    outcome.exit_code = status.code();
+    outcome.signal = status.signal();
+    outcome.timed_out = timed_out;
+    Ok(outcome)
+}
+
+/// Everything `run_duplex` must settle before it may return: the wall-clock watchdog, if there is
+/// one, and the stderr drain. Every exit from the run goes through [`RunGuard::stop`], so no path
+/// can leave the watchdog running or the stderr drain wedged.
+struct RunGuard {
+    pid: i32,
+    /// The node was launched in its own process group, so an expiry or abandon kill can address
+    /// the whole tree (S7's two-step kill). Without one, `signal_targets` would refuse marion's
+    /// own pgid and the sweep would reach nothing, so the direct kill is all there is.
+    own_group: bool,
+    finished: Arc<AtomicBool>,
+    expired: Arc<AtomicBool>,
+    watchdog: Option<std::thread::JoinHandle<()>>,
+    stderr: Drain,
+}
+
+impl RunGuard {
+    /// Start the wall clock, if there is one. A watchdog rather than a bound on each read: the
+    /// reads are blocking and a node that hangs *between* frames must still be killed.
+    fn start(pid: i32, wall_clock: Option<StdDuration>, stderr: Drain) -> Self {
+        let finished = Arc::new(AtomicBool::new(false));
+        let expired = Arc::new(AtomicBool::new(false));
+        let watchdog = wall_clock.map(|bound| {
+            let finished = Arc::clone(&finished);
+            let expired = Arc::clone(&expired);
+            std::thread::spawn(move || watchdog(pid, bound, &finished, &expired))
+        });
+        Self {
+            pid,
+            own_group: wall_clock.is_some(),
+            finished,
+            expired,
+            watchdog,
+            stderr,
+        }
+    }
+
+    /// Settle the run and return the drained stderr and whether the wall clock expired.
+    ///
+    /// `kill` is set on the paths that abandon a live node: killing the direct child alone would
+    /// leave its bridge holding the stderr pipe, which is the deadlock [`Drain`] exists to avoid.
+    fn stop(self, kill: bool, child: &mut std::process::Child) -> (String, bool) {
+        if kill {
+            if self.own_group {
+                kill_process_tree(self.pid);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.finished.store(true, Ordering::Relaxed);
+        if let Some(h) = self.watchdog {
+            let _ = h.join();
+        }
+        let (bytes, _complete) = self.stderr.finish(Instant::now() + DRAIN_GRACE);
+        let stderr = String::from_utf8_lossy(&bytes).into_owned();
+        (stderr, self.expired.load(Ordering::Relaxed))
+    }
+}
+
+/// The watchdog thread's body: kill the node's tree once `bound` passes unless the run finished
+/// first.
+fn watchdog(pid: i32, bound: StdDuration, finished: &AtomicBool, expired: &AtomicBool) {
+    let deadline = Instant::now() + bound;
+    while Instant::now() < deadline {
+        if finished.load(Ordering::Relaxed) {
+            return;
+        }
+        std::thread::sleep(StdDuration::from_millis(20));
+    }
+    if finished.load(Ordering::Relaxed) {
+        return;
+    }
+    expired.store(true, Ordering::Relaxed);
+    kill_process_tree(pid);
+}
+
+/// Record one stdout line and hand it to the live observer, returning the parsed frame if any.
+///
+/// Every stdout line the driver reads passes through here, which is the one place a live observer
+/// can be fed without any handler downstream having to remember to. The sink is called *before*
+/// the frame is dispatched or recorded, so what a watcher sees is the arrival order, not marion's
+/// handling order — and a frame that makes a later step fail has still been shown.
+fn record_line(spec: &DuplexSpec<'_>, outcome: &mut DuplexOutcome, line: &str) -> Option<Value> {
+    outcome.stdout.push_str(line);
+    outcome.stdout.push('\n');
+    let frame = serde_json::from_str::<Value>(line).ok();
+    if let Some(sink) = spec.sink {
+        match &frame {
+            Some(v) => sink(StreamEvent::Frame(v)),
+            None => sink(StreamEvent::Unparsed(line)),
+        }
+    }
+    frame
+}
+
+/// Read frames until the node answers marion's `initialize` control request. `false` means stdout
+/// ended first.
+fn await_initialize(
+    lines: &mut std::io::Lines<BufReader<std::process::ChildStdout>>,
+    spec: &DuplexSpec<'_>,
+    outcome: &mut DuplexOutcome,
+) -> std::io::Result<bool> {
+    for line in lines {
         let line = line?;
-        let Some(frame) = record(&mut outcome, &line) else {
+        let Some(frame) = record_line(spec, outcome, &line) else {
             continue;
         };
-        if let Some((request_id, tool)) = can_use_tool_request(&frame) {
-            let reason = match decided_permission(spec.depth, &tool) {
-                // marion already knows the answer, so there is nothing for a wait to produce.
-                Some(refusal) => refusal,
-                None => {
-                    // Nobody to ask. Consume the episode's budget, then deny and let the node
-                    // proceed.
-                    std::thread::sleep(spec.blocked_bound);
-                    NO_ANSWERER
-                }
-            };
-            writeln!(stdin, "{}", deny_response(&request_id, reason))?;
-            stdin.flush()?;
-            outcome.denied_permissions.push(tool);
-        } else if let Some((request_id, subtype)) = unanswerable_control_request(&frame) {
-            // **Answered, not dropped.** See [`unsupported_request_response`]: a `control_request`
-            // marion leaves unanswered hangs a root indefinitely, because a root has no wall clock.
-            writeln!(
-                stdin,
-                "{}",
-                unsupported_request_response(&request_id, &subtype)
-            )?;
-            stdin.flush()?;
-            outcome.unanswered_control_requests.push(subtype);
+        let done = is_control_response_to(&frame, &spec.init_id);
+        outcome.transcript.push(frame);
+        if done {
+            return Ok(true);
         }
+    }
+    Ok(false)
+}
+
+/// Read frames until the terminal `result`, answering every inbound `control_request` on the way.
+fn drive_turn(
+    lines: &mut std::io::Lines<BufReader<std::process::ChildStdout>>,
+    stdin: &mut std::process::ChildStdin,
+    spec: &DuplexSpec<'_>,
+    outcome: &mut DuplexOutcome,
+) -> std::io::Result<()> {
+    for line in lines {
+        let line = line?;
+        let Some(frame) = record_line(spec, outcome, &line) else {
+            continue;
+        };
+        answer_control_request(stdin, spec, &frame, outcome)?;
         let terminal = frame.get("type").and_then(Value::as_str) == Some("result");
         outcome.transcript.push(frame);
         if terminal {
             break;
         }
     }
+    Ok(())
+}
 
-    // Closing stdin is what ends a `--input-format stream-json` session.
-    drop(stdin);
-    let status = child.wait()?;
-    outcome.stderr = stop(false, watchdog, &mut child, stderr);
-    outcome.exit_code = status.code();
-    outcome.signal = status.signal();
-    outcome.timed_out = expired.load(Ordering::Relaxed);
-    Ok(outcome)
+/// Answer `frame` if it is a `control_request`: `can_use_tool` is denied with marion's reason, and
+/// every other kind is refused by name, because §5.2 says each of them expects a `control_response`
+/// and one that never arrives hangs a root forever. Any other frame is left alone.
+fn answer_control_request(
+    stdin: &mut std::process::ChildStdin,
+    spec: &DuplexSpec<'_>,
+    frame: &Value,
+    outcome: &mut DuplexOutcome,
+) -> std::io::Result<()> {
+    if let Some((request_id, tool)) = can_use_tool_request(frame) {
+        let reason = match decided_permission(spec.depth, &tool) {
+            // marion already knows the answer, so there is nothing for a wait to produce.
+            Some(refusal) => refusal,
+            None => {
+                // Nobody to ask. Consume the episode's budget, then deny and let the node
+                // proceed.
+                std::thread::sleep(spec.blocked_bound);
+                NO_ANSWERER
+            }
+        };
+        writeln!(stdin, "{}", deny_response(&request_id, reason))?;
+        stdin.flush()?;
+        outcome.denied_permissions.push(tool);
+    } else if let Some((request_id, subtype)) = unanswerable_control_request(frame) {
+        // **Answered, not dropped.** See [`unsupported_request_response`]: a `control_request`
+        // marion leaves unanswered hangs a root indefinitely, because a root has no wall clock.
+        writeln!(
+            stdin,
+            "{}",
+            unsupported_request_response(&request_id, &subtype)
+        )?;
+        stdin.flush()?;
+        outcome.unanswered_control_requests.push(subtype);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
