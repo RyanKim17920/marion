@@ -58,7 +58,12 @@ const IN_SCOPE: &str = "src/marion_m1.txt";
 /// The text of the `tool_result` the root sent back for `tool_use_id`, from a recorded request.
 fn tool_result_text(request: &Value, tool_use_id: &str) -> Option<String> {
     for message in request.pointer("/body/messages")?.as_array()? {
-        for block in message.get("content")?.as_array()? {
+        // Claude Code 2.1.263 also sends `role: "system"` messages whose `content` is a plain
+        // string (the environment block, the token budget); they carry no tool result.
+        let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for block in blocks {
             if block.get("type").and_then(Value::as_str) != Some("tool_result") {
                 continue;
             }

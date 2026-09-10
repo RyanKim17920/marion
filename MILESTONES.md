@@ -108,6 +108,13 @@ seconds with the exit quoted; the pre-fix row fails it at exit 2). Live ACP: `--
 --ignored` spends Copilot tokens. Cross-harness: `--test harness_matrix`, `--test cross_product`,
 `--test journal_wiring`, `--test m4_fan_in`. Panes: `--test pane_attach`.
 
+**Request-shape drift a pin cannot catch (2026-09-09).** The same shimmed claude 2.1.263 that
+passed `m1_hop` on 2026-09-06 failed it 3/3 on 2026-09-09: the request body now carries
+`role: "system"` messages with plain-string `content` (the environment block, the
+`<total_tokens>` budget) inside `messages`, and the test's `tool_result_text` stopped at the first
+non-array content. Same binary, different shape on different days, so the switch is remote. The
+helper now skips string-content messages; the fact lives here because no version gate detects it.
+
 **Structure.** `sentrux` 0.5.7 quality signal 6542 at `24f4821` (cycles 0, redundancy 9168,
 modularity 5100, equality 5452, depth 4706 at raw 9); the day started at 4856 with three import
 cycles and depth 10. The remaining depth is a real client path, `bin/marion` → `facade_cli` →
