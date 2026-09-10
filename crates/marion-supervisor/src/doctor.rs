@@ -277,80 +277,18 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
     // column an operator reads as a finding about their installed binary.
     let adapter = match adapter_for_type(h, agent.map(acp::Binding::selector)) {
         Ok(a) => a,
-        Err(e) => {
-            return vec![Row {
-                report: HarnessReport {
-                    harness: h,
-                    harness_version: None,
-                    adapter_check: matches!(opts.mode, ProbeMode::Adapter).then_some(false),
-                    notes: vec![format!("adapter: {e}")],
-                    elapsed: Millis(started.elapsed()),
-                },
-                role: SurfaceRole::Node,
-                surfaces: ExecutionSurfaces::opaque(),
-                capabilities: Capabilities::NONE,
-            }];
-        }
+        Err(e) => return vec![adapter_refused_row(h, opts, &e, started)],
     };
     let surfaces = adapter.surfaces();
 
-    // The binary the adapter would actually launch, read off a compiled `Invocation` rather than
-    // from a table of names here. A second list of program names is a second thing to keep true.
-    if opts.model.is_none() {
-        notes.push(format!(
-            "model: none given, so argv is compiled with the placeholder `{PLACEHOLDER_MODEL}` \
-             for the steps that launch nothing. No process is ever started from it."
-        ));
-    }
-    let program = probe_spec(opts.model.clone(), McpDeclaration::None, agent)
-        .map(|spec| child_shaped(adapter.as_ref(), spec))
-        .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok())
-        .map(|inv| inv.program);
-    let resolved = match &program {
-        Some(p) => match which(p) {
-            Some(path) => {
-                notes.push(format!("binary: {} ({})", p, path.display()));
-                Some(path)
-            }
-            None => {
-                notes.push(format!("binary: `{p}` not found on $PATH"));
-                None
-            }
-        },
-        None => {
-            notes.push(
-                "binary: this adapter refused to compile an invocation at all, so marion cannot \
-                 name the program it would launch"
-                    .into(),
-            );
-            None
-        }
-    };
-
-    // **For ACP the handshake *is* the version read**, and there is no second source for it. §3.3
-    // keys `(harness, harness_version, surfaces)`, and this is the row where the middle component
-    // arrives from the agent rather than from a table: `opencode --version` answers `1.17.3` about
-    // a *binary*, while `initialize` answers `OpenCode 1.17.3` about the **agent behind the
-    // protocol**, which is what the capability column is keyed on. Running both would put two
-    // versions on one row with nothing saying which the capabilities came from.
-    let handshake = match agent {
-        Some(_) => resolved
-            .as_deref()
-            .zip(
-                probe_spec(opts.model.clone(), McpDeclaration::None, agent)
-                    .map(|spec| child_shaped(adapter.as_ref(), spec))
-                    .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok()),
-            )
-            .and_then(|(p, inv)| acp_handshake(p, &inv, &mut notes)),
-        None => None,
-    };
-    let version = match agent {
-        Some(_) => handshake.as_ref().map(AgentHandshake::key),
-        None => resolved
-            .as_deref()
-            .and_then(|p| read_version(p, &mut notes)),
-    };
-
+    let resolved = locate_binary(adapter.as_ref(), opts, agent, &mut notes);
+    let identity = identify(
+        adapter.as_ref(),
+        opts,
+        agent,
+        resolved.as_deref(),
+        &mut notes,
+    );
     let adapter_check = match opts.mode {
         ProbeMode::Capabilities => None,
         ProbeMode::Adapter => Some(micro_contract(
@@ -372,81 +310,213 @@ fn probe_one(h: Harness, opts: &Options, agent: Option<&acp::Binding>) -> Vec<Ro
     let elapsed = Millis(started.elapsed());
     keys.into_iter()
         .map(|(role, s)| {
-            let mut notes = notes.clone();
-            notes.push(format!(
-                "surfaces ({}): control={:?} display={:?} observations={:?}",
-                role.as_str(),
-                s.control,
-                s.display,
-                s.observations
-            ));
-            // §3.3's two stages. For four harnesses stage one is the whole answer; for ACP the
-            // static set is *refined* by the handshake, which is the only reason two agents behind
-            // one adapter can publish different rows. A handshake that did not happen refines
-            // nothing and narrows nothing — the row then publishes the protocol's own unnarrowed
-            // set, which the note below says in as many words.
-            let stage_one = capabilities_at(h, version.as_deref(), &s);
-            let capabilities = match &handshake {
-                Some(hs) => hs.refine(stage_one),
-                None => stage_one,
-            };
-            if agent.is_some() {
-                notes.push(match &handshake {
-                    Some(hs) => format!(
-                        "capabilities: refined by this agent's own `initialize` (§3.3 stage two): loadSession={}, sessionCapabilities={:?}",
-                        hs.load_session, hs.session_capabilities
-                    ),
-                    None => "capabilities: NOT refined — no `initialize` answer, so this row is the protocol's static set with nothing narrowed off it"
-                        .to_string(),
-                });
-            }
-            notes.push(format!(
-                "capabilities on these surfaces: {}",
-                match capabilities.granted().as_slice() {
-                    [] => "none".to_string(),
-                    g => g.join(", "),
-                }
-            ));
-            let unmeasured: Vec<&str> = Capabilities::FIELDS
-                .iter()
-                .copied()
-                .filter(|f| !capabilities.granted().contains(f))
-                .collect();
-            notes.push(format!(
-                "not published here: {} — a false is \"marion has not measured it on this \
-                 surface\", never \"the harness cannot\"",
-                unmeasured.join(", ")
-            ));
-            if role == SurfaceRole::Pane && adapter_check.is_some() {
-                notes.push(
-                    "adapter check: NOT RUN on this surface — §8's micro-contract ran against the \
-                     `node` row's invocation, and `compile_pane` produces different argv. This \
-                     row's capabilities are the same binary at a different key, not a second \
-                     contract test."
-                        .into(),
-                );
-            }
-            Row {
-                report: HarnessReport {
-                    harness: h,
-                    harness_version: version.clone(),
-                    // §8's micro-contract exercises the invocation the *node* row names, so only
-                    // that row carries its verdict. Copying it onto the pane row would report a
-                    // check as having run against argv it never saw — `compile_pane` produces
-                    // different argv, and on claude-code a different control plane entirely.
-                    adapter_check: match role {
-                        SurfaceRole::Node => adapter_check,
-                        SurfaceRole::Pane => None,
-                    },
-                    notes,
-                    elapsed,
-                },
-                role,
-                surfaces: s,
-                capabilities,
-            }
+            surface_row(
+                h,
+                (role, s),
+                agent.is_some(),
+                &identity,
+                adapter_check,
+                notes.clone(),
+                elapsed,
+            )
         })
         .collect()
+}
+
+/// The one row a harness gets when no adapter could be bound to it at all.
+fn adapter_refused_row(
+    h: Harness,
+    opts: &Options,
+    e: &impl std::fmt::Display,
+    started: Instant,
+) -> Row {
+    Row {
+        report: HarnessReport {
+            harness: h,
+            harness_version: None,
+            adapter_check: matches!(opts.mode, ProbeMode::Adapter).then_some(false),
+            notes: vec![format!("adapter: {e}")],
+            elapsed: Millis(started.elapsed()),
+        },
+        role: SurfaceRole::Node,
+        surfaces: ExecutionSurfaces::opaque(),
+        capabilities: Capabilities::NONE,
+    }
+}
+
+/// The binary the adapter would actually launch, read off a compiled `Invocation` rather than from
+/// a table of names here. A second list of program names is a second thing to keep true.
+fn locate_binary(
+    adapter: &dyn HarnessAdapter,
+    opts: &Options,
+    agent: Option<&acp::Binding>,
+    notes: &mut Vec<String>,
+) -> Option<PathBuf> {
+    if opts.model.is_none() {
+        notes.push(format!(
+            "model: none given, so argv is compiled with the placeholder `{PLACEHOLDER_MODEL}` \
+             for the steps that launch nothing. No process is ever started from it."
+        ));
+    }
+    let program = probe_spec(opts.model.clone(), McpDeclaration::None, agent)
+        .map(|spec| child_shaped(adapter, spec))
+        .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok())
+        .map(|inv| inv.program);
+    match &program {
+        Some(p) => match which(p) {
+            Some(path) => {
+                notes.push(format!("binary: {} ({})", p, path.display()));
+                Some(path)
+            }
+            None => {
+                notes.push(format!("binary: `{p}` not found on $PATH"));
+                None
+            }
+        },
+        None => {
+            notes.push(
+                "binary: this adapter refused to compile an invocation at all, so marion cannot \
+                 name the program it would launch"
+                    .into(),
+            );
+            None
+        }
+    }
+}
+
+/// The row's version, and for ACP the handshake it came from.
+struct Identity {
+    handshake: Option<AgentHandshake>,
+    version: Option<String>,
+}
+
+/// Read the row's [`Identity`] off the resolved binary.
+///
+/// **For ACP the handshake *is* the version read**, and there is no second source for it. §3.3
+/// keys `(harness, harness_version, surfaces)`, and this is the row where the middle component
+/// arrives from the agent rather than from a table: `opencode --version` answers `1.17.3` about
+/// a *binary*, while `initialize` answers `OpenCode 1.17.3` about the **agent behind the
+/// protocol**, which is what the capability column is keyed on. Running both would put two
+/// versions on one row with nothing saying which the capabilities came from.
+fn identify(
+    adapter: &dyn HarnessAdapter,
+    opts: &Options,
+    agent: Option<&acp::Binding>,
+    resolved: Option<&Path>,
+    notes: &mut Vec<String>,
+) -> Identity {
+    let handshake = match agent {
+        Some(_) => resolved
+            .zip(
+                probe_spec(opts.model.clone(), McpDeclaration::None, agent)
+                    .map(|spec| child_shaped(adapter, spec))
+                    .and_then(|spec| adapter.compile(&spec, &probe_ctx()).ok()),
+            )
+            .and_then(|(p, inv)| acp_handshake(p, &inv, notes)),
+        None => None,
+    };
+    let version = match agent {
+        Some(_) => handshake.as_ref().map(AgentHandshake::key),
+        None => resolved.and_then(|p| read_version(p, notes)),
+    };
+    Identity { handshake, version }
+}
+
+/// One row: the binary's shared facts at one surface key.
+fn surface_row(
+    h: Harness,
+    (role, s): (SurfaceRole, ExecutionSurfaces),
+    agent_probed: bool,
+    identity: &Identity,
+    adapter_check: Option<bool>,
+    mut notes: Vec<String>,
+    elapsed: Millis,
+) -> Row {
+    let version = identity.version.as_deref();
+    let handshake = identity.handshake.as_ref();
+    notes.push(format!(
+        "surfaces ({}): control={:?} display={:?} observations={:?}",
+        role.as_str(),
+        s.control,
+        s.display,
+        s.observations
+    ));
+    // §3.3's two stages. For four harnesses stage one is the whole answer; for ACP the
+    // static set is *refined* by the handshake, which is the only reason two agents behind
+    // one adapter can publish different rows. A handshake that did not happen refines
+    // nothing and narrows nothing — the row then publishes the protocol's own unnarrowed
+    // set, which the note below says in as many words.
+    let stage_one = capabilities_at(h, version, &s);
+    let capabilities = match handshake {
+        Some(hs) => hs.refine(stage_one),
+        None => stage_one,
+    };
+    capability_notes(agent_probed, handshake, &capabilities, &mut notes);
+    if role == SurfaceRole::Pane && adapter_check.is_some() {
+        notes.push(
+            "adapter check: NOT RUN on this surface — §8's micro-contract ran against the \
+             `node` row's invocation, and `compile_pane` produces different argv. This \
+             row's capabilities are the same binary at a different key, not a second \
+             contract test."
+                .into(),
+        );
+    }
+    Row {
+        report: HarnessReport {
+            harness: h,
+            harness_version: version.map(str::to_string),
+            // §8's micro-contract exercises the invocation the *node* row names, so only
+            // that row carries its verdict. Copying it onto the pane row would report a
+            // check as having run against argv it never saw — `compile_pane` produces
+            // different argv, and on claude-code a different control plane entirely.
+            adapter_check: match role {
+                SurfaceRole::Node => adapter_check,
+                SurfaceRole::Pane => None,
+            },
+            notes,
+            elapsed,
+        },
+        role,
+        surfaces: s,
+        capabilities,
+    }
+}
+
+/// The three capability lines every row carries: how the set was refined (ACP only), what is
+/// published, and what is not — with the meaning of a `false` said in as many words.
+fn capability_notes(
+    agent_probed: bool,
+    handshake: Option<&AgentHandshake>,
+    capabilities: &Capabilities,
+    notes: &mut Vec<String>,
+) {
+    if agent_probed {
+        notes.push(match handshake {
+            Some(hs) => format!(
+                "capabilities: refined by this agent's own `initialize` (§3.3 stage two): loadSession={}, sessionCapabilities={:?}",
+                hs.load_session, hs.session_capabilities
+            ),
+            None => "capabilities: NOT refined — no `initialize` answer, so this row is the protocol's static set with nothing narrowed off it"
+                .to_string(),
+        });
+    }
+    notes.push(format!(
+        "capabilities on these surfaces: {}",
+        match capabilities.granted().as_slice() {
+            [] => "none".to_string(),
+            g => g.join(", "),
+        }
+    ));
+    let unmeasured: Vec<&str> = Capabilities::FIELDS
+        .iter()
+        .copied()
+        .filter(|f| !capabilities.granted().contains(f))
+        .collect();
+    notes.push(format!(
+        "not published here: {} — a false is \"marion has not measured it on this \
+         surface\", never \"the harness cannot\"",
+        unmeasured.join(", ")
+    ));
 }
 
 /// §8's micro-contract. Returns whether every step that **ran** passed; each step that did not run
