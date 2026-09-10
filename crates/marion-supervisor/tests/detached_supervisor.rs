@@ -14,10 +14,11 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use marion_supervisor::detach::{Launch, ensure_supervisor, ensure_supervisor_within};
 use marion_supervisor::socket::{SocketPaths, SupervisorIdentity, read_identity, socket_paths};
+use marion_testsupport::until_within;
 
 unsafe extern "C" {
     fn getuid() -> u32;
@@ -125,15 +126,8 @@ impl Drop for Bed {
 
 /// Assert that something **happens**, never how long it takes — `registry.rs`'s helper, used here
 /// for the same reason and with the same rule: no test in this file may be fixed by widening a bound.
-fn until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    cond()
+fn until(cond: impl FnMut() -> bool) -> bool {
+    until_within(Duration::from_secs(10), Duration::from_millis(5), cond)
 }
 
 fn ps_field(pid: i32, field: &str) -> Option<String> {
