@@ -529,10 +529,6 @@ fn micro_contract(
     notes: &mut Vec<String>,
 ) -> bool {
     let mut ok = true;
-    let mut step = |passed: bool, line: String, notes: &mut Vec<String>| {
-        ok &= passed;
-        notes.push(line);
-    };
 
     // §8 requires it and this probe cannot do it. Named on every report, in the same place a
     // failure would be named, so it can never read as "checked and fine".
@@ -550,101 +546,139 @@ fn micro_contract(
         return false;
     };
 
-    // Step: the declaration route the adapter promises is actually taken. No process, no model
-    // call, and it catches §6.1 step 8's failure class — an adapter that forgets its declaration
-    // and launches a node with no bridge at all.
-    match probe_spec(opts.model.clone(), McpDeclaration::Marion, agent)
-        .map(|spec| child_shaped(adapter, spec))
-    {
-        None => notes.push("declaration: NOT RUN — no spec could be built".into()),
-        Some(spec) => {
-            let ctx = probe_ctx();
-            let compiled = adapter
-                .config_files(&spec, &ctx)
-                .and_then(|files| Ok((files, adapter.compile(&spec, &ctx)?)));
-            match compiled {
-                Err(e) => step(false, format!("declaration: FAILED — compile: {e}"), notes),
-                Ok((files, inv)) => {
-                    let written: Vec<PathBuf> = files.into_iter().map(|(p, _)| p).collect();
-                    // **Reported under its own name, not folded into the route check.** An adapter
-                    // that *refuses* to declare marion's bridge to this agent has said something
-                    // specific — today, that it has never measured what the agent calls a tool —
-                    // and collapsing that into "the route was not taken" would print a fact about
-                    // the agent as a fact about marion's plumbing. §8: the probe says *why*.
-                    let session = match adapter.session_declaration(&spec, &ctx) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            step(
-                                false,
-                                format!(
-                                    "declaration: REFUSED — this adapter will not put marion's \
-                                     verbs in front of this agent: {e}"
-                                ),
-                                notes,
-                            );
-                            return ok;
-                        }
-                    };
-                    match adapter
-                        .mcp_route(&spec)
-                        .verify(&written, &inv, session.as_ref())
-                    {
-                        Ok(_) => step(
-                            true,
-                            format!(
-                                "declaration: ok — marion's MCP declaration is present on the \
-                                 route this adapter states ({:?})",
-                                adapter.mcp_route(&spec)
-                            ),
-                            notes,
-                        ),
-                        Err(route) => step(
-                            false,
-                            format!(
-                                "declaration: FAILED — the adapter promised {route} and the \
-                                 compiled launch does not carry it; a node launched this way \
-                                 would have no bridge"
-                            ),
-                            notes,
-                        ),
-                    }
-                }
-            }
-        }
+    match declaration_step(adapter, opts, agent, notes) {
+        Declaration::NotRun => {}
+        Declaration::Checked(passed) => ok &= passed,
+        Declaration::Refused => return false,
     }
 
-    // Step: the live turn. **ACP is the one typed plane a probe can drive**, and the reason is
-    // that its post-launch protocol is a published one rather than marion's own: `initialize`,
-    // `session/new`, `session/prompt` are the agent's contract, so driving them here tests the
-    // agent and not marion's idea of a handshake. That is exactly the objection that keeps
-    // claude-code's `stream-json` turn out of this probe, and it does not apply.
-    if let Some(a) = agent {
-        let Some(spec) = probe_spec(opts.model.clone(), McpDeclaration::None, agent)
-            .map(|spec| child_shaped(adapter, spec))
-        else {
-            notes.push("live turn: NOT RUN — no spec could be built".into());
-            return ok;
-        };
-        let inv = match adapter.compile(&spec, &probe_ctx()) {
-            Ok(i) => i,
-            Err(e) => {
-                step(false, format!("live turn: FAILED — compile: {e}"), notes);
-                return ok;
-            }
-        };
-        let turn = acp_live_turn(a, program, &inv, notes);
-        step(turn.spawned, turn.spawn_line, notes);
-        if let Some(l) = turn.shape_line {
-            step(turn.shape_ok, l, notes);
-        }
-        for l in turn.trailing {
-            notes.push(l);
-        }
-        step(turn.no_leak, turn.leak_line, notes);
-        return ok;
+    let live = match agent {
+        Some(a) => acp_live_turn_step(adapter, a, program, opts, agent, notes),
+        None => argv_live_turn_step(adapter, program, opts, notes),
+    };
+    if let Some(passed) = live {
+        ok &= passed;
     }
-    // Only where the prompt rides argv — see this module's header for why a typed plane's
-    // post-launch prompt frame is `duplex`'s protocol and not a probe's.
+    ok
+}
+
+/// What the declaration step decided, and whether the micro-contract continues past it.
+enum Declaration {
+    /// No spec could be built; nothing was decided either way.
+    NotRun,
+    /// The route was verified, and this is whether it held; the live turn follows.
+    Checked(bool),
+    /// The adapter refused to declare marion's bridge to this agent; the live turn does not run.
+    Refused,
+}
+
+/// Step: the declaration route the adapter promises is actually taken. No process, no model call,
+/// and it catches §6.1 step 8's failure class — an adapter that forgets its declaration and
+/// launches a node with no bridge at all.
+fn declaration_step(
+    adapter: &dyn HarnessAdapter,
+    opts: &Options,
+    agent: Option<&acp::Binding>,
+    notes: &mut Vec<String>,
+) -> Declaration {
+    let Some(spec) = probe_spec(opts.model.clone(), McpDeclaration::Marion, agent)
+        .map(|spec| child_shaped(adapter, spec))
+    else {
+        notes.push("declaration: NOT RUN — no spec could be built".into());
+        return Declaration::NotRun;
+    };
+    let ctx = probe_ctx();
+    let compiled = adapter
+        .config_files(&spec, &ctx)
+        .and_then(|files| Ok((files, adapter.compile(&spec, &ctx)?)));
+    let (files, inv) = match compiled {
+        Ok(v) => v,
+        Err(e) => {
+            notes.push(format!("declaration: FAILED — compile: {e}"));
+            return Declaration::Checked(false);
+        }
+    };
+    let written: Vec<PathBuf> = files.into_iter().map(|(p, _)| p).collect();
+    // **Reported under its own name, not folded into the route check.** An adapter that *refuses*
+    // to declare marion's bridge to this agent has said something specific — today, that it has
+    // never measured what the agent calls a tool — and collapsing that into "the route was not
+    // taken" would print a fact about the agent as a fact about marion's plumbing. §8: the probe
+    // says *why*.
+    let session = match adapter.session_declaration(&spec, &ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            notes.push(format!(
+                "declaration: REFUSED — this adapter will not put marion's verbs in front of this \
+                 agent: {e}"
+            ));
+            return Declaration::Refused;
+        }
+    };
+    match adapter
+        .mcp_route(&spec)
+        .verify(&written, &inv, session.as_ref())
+    {
+        Ok(_) => {
+            notes.push(format!(
+                "declaration: ok — marion's MCP declaration is present on the route this adapter \
+                 states ({:?})",
+                adapter.mcp_route(&spec)
+            ));
+            Declaration::Checked(true)
+        }
+        Err(route) => {
+            notes.push(format!(
+                "declaration: FAILED — the adapter promised {route} and the compiled launch does \
+                 not carry it; a node launched this way would have no bridge"
+            ));
+            Declaration::Checked(false)
+        }
+    }
+}
+
+/// Step: the live turn, over a real ACP session. Returns `None` when the step could not run and
+/// so decides nothing; `Some` is whether every part of the turn passed.
+///
+/// **ACP is the one typed plane a probe can drive**, and the reason is that its post-launch
+/// protocol is a published one rather than marion's own: `initialize`, `session/new`,
+/// `session/prompt` are the agent's contract, so driving them here tests the agent and not
+/// marion's idea of a handshake. That is exactly the objection that keeps claude-code's
+/// `stream-json` turn out of this probe, and it does not apply.
+fn acp_live_turn_step(
+    adapter: &dyn HarnessAdapter,
+    a: &acp::Binding,
+    program: &Path,
+    opts: &Options,
+    agent: Option<&acp::Binding>,
+    notes: &mut Vec<String>,
+) -> Option<bool> {
+    let Some(spec) = probe_spec(opts.model.clone(), McpDeclaration::None, agent)
+        .map(|spec| child_shaped(adapter, spec))
+    else {
+        notes.push("live turn: NOT RUN — no spec could be built".into());
+        return None;
+    };
+    let inv = match adapter.compile(&spec, &probe_ctx()) {
+        Ok(i) => i,
+        Err(e) => {
+            notes.push(format!("live turn: FAILED — compile: {e}"));
+            return Some(false);
+        }
+    };
+    Some(record_turn(acp_live_turn(a, program, &inv, notes), notes))
+}
+
+/// Step: the live turn, where the prompt rides argv. Returns `None` when the step could not run
+/// and so decides nothing; `Some` is whether every part of the turn passed.
+///
+/// Only where the prompt rides argv — see this module's header for why a typed plane's
+/// post-launch prompt frame is `duplex`'s protocol and not a probe's.
+fn argv_live_turn_step(
+    adapter: &dyn HarnessAdapter,
+    program: &Path,
+    opts: &Options,
+    notes: &mut Vec<String>,
+) -> Option<bool> {
     if adapter.surfaces().has_typed_control_plane() {
         notes.push(format!(
             "live turn: NOT RUN — {} runs on a typed control plane, where §6.1 step 8 writes the \
@@ -652,7 +686,7 @@ fn micro_contract(
              would test marion's idea of the handshake, not the handshake.",
             adapter.harness()
         ));
-        return ok;
+        return None;
     }
     let Some(spec) = probe_spec_with_prompt(opts.model.clone()) else {
         notes.push(
@@ -661,24 +695,30 @@ fn micro_contract(
              an explicit `-m`). Pass --model to run it."
                 .into(),
         );
-        return ok;
+        return None;
     };
     let inv = match adapter.compile(&spec, &probe_ctx()) {
         Ok(i) => i,
         Err(e) => {
-            step(false, format!("live turn: FAILED — compile: {e}"), notes);
-            return ok;
+            notes.push(format!("live turn: FAILED — compile: {e}"));
+            return Some(false);
         }
     };
-    let turn = live_turn(adapter, program, &inv, notes);
-    step(turn.spawned, turn.spawn_line, notes);
+    Some(record_turn(live_turn(adapter, program, &inv, notes), notes))
+}
+
+/// Write a turn's findings into `notes` in §8's order and answer whether every one of them passed.
+/// The shape line is absent when the child never started, and then decides nothing.
+fn record_turn(turn: TurnOutcome, notes: &mut Vec<String>) -> bool {
+    let mut ok = turn.spawned;
+    notes.push(turn.spawn_line);
     if let Some(l) = turn.shape_line {
-        step(turn.shape_ok, l, notes);
-    }
-    for l in turn.trailing {
+        ok &= turn.shape_ok;
         notes.push(l);
     }
-    step(turn.no_leak, turn.leak_line, notes);
+    notes.extend(turn.trailing);
+    ok &= turn.no_leak;
+    notes.push(turn.leak_line);
     ok
 }
 
