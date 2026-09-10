@@ -1,0 +1,2 @@
+{"type":"init","timestamp":"2026-09-10T18:14:58.641Z","session_id":"dfeb512b-505a-44f2-b630-90dfa8609ead","model":"gemini-2.5-flash"}
+{"type":"message","timestamp":"2026-09-10T18:14:58.641Z","role":"user","content":"say hi"}

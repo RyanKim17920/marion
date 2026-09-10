@@ -90,9 +90,8 @@ gemini 0.53.0; opencode 1.17.3, 1.18.29 and 1.18.30; copilot 1.0.83; goose 1.49.
 qwen 0.23.0.
 
 **Native facade.** `marion <harness> <its own flags>` runs the harness's real TUI through the
-relay as a journaled root. Enabled lanes: `claude`, `codex`, `opencode`, `copilot`. Disabled by
-name: `gemini` (system-settings merge unmeasured), `goose`, `cline`, `qwen` (interactive shape
-unmeasured). Resume: `marion resume <agent-id>` relaunches a lost root under its own id where its
+relay as a journaled root. Enabled lanes: `claude`, `codex`, `gemini`, `opencode`, `copilot`.
+Disabled by name: `goose`, `cline`, `qwen` (interactive shape unmeasured). Resume: `marion resume <agent-id>` relaunches a lost root under its own id where its
 row carries a resume flag and a session was journaled (claude, codex, opencode, copilot, qwen);
 gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree, detail pane,
 `caps:` strip dimming what doctor has not measured, status row) and `marion attach`.
@@ -969,12 +968,12 @@ honestly still open. Per milestone:
   (`pane_attach.rs::a_real_codex_tui_keeps_its_scrollback_across_a_resize_in_a_marion_pane`); C3
   met (`.githooks/pre-commit` over `l45_driver` and `l45_tree`). Every automatable clause of C1 is
   asserted (`pane_attach.rs::a_real_claude_runs_in_a_pane…`), and the native facade the session
-  is to be recorded through is live from the shipped binary for four lanes —
+  is to be recorded through is live from the shipped binary for five lanes —
   `native_facade_e2e.rs::every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade`
   and `…::native_facade_sigterm_restores_the_operator_terminal_and_exits_by_signal` over
-  `claude`, `codex`, `opencode`, `copilot`. Open, stated: the recording itself; the `gemini` lane
-  (disabled: system-settings merge granularity unmeasured, `native_facade.rs`); `goose`, `cline`
-  and `qwen` lanes (disabled: interactive shape unmeasured); `SIGTSTP`/`SIGCONT` through the
+  `claude`, `codex`, `gemini` (since S30, 2026-09-10), `opencode`, `copilot`. Open, stated: the
+  recording itself; `goose`, `cline` and `qwen` lanes (disabled: interactive shape unmeasured);
+  `SIGTSTP`/`SIGCONT` through the
   *facade* E2E fixture, still not asserted (its `spawn_pty` client is an orphaned process group by
   construction, so the kernel discards the stop). Closed after the audit, same day: a real kernel
   stop and continue through the relay is observed by
@@ -1917,6 +1916,31 @@ acceptance evidence, so every marker remains unchanged.
     What remains for C1 is unchanged and cannot be automated: the recorded 10-minute manual
     session, now to be run through `marion claude` rather than `marion attach`. Still dark: the
     `gemini` lane (system-settings merge unmeasured) and TSTP/CONT through this fixture.
+
+    **The `gemini` lane is enabled on a measured per-key merge (2026-09-10, S30); M3 stays
+    `[partial]`.** The question that kept it dark — marion declares its bridge through
+    `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, the layer that outranks the operator's own, and whether
+    that layer's `mcpServers` sits beside or replaces the operator's servers was unmeasured — is
+    answered in `tests/fixtures/s30/`: gemini 0.53.0, an isolated home whose user layer declares
+    `pencil` and a system-settings file declaring `marion` as `settings_json_with_auth` emits it.
+    The real TUI on a 117×43 PTY, `/mcp`: `🟢 pencil - Ready (1 tool)` **and** `🟢 marion - Ready
+    (1 tool)`, status bar `2 MCP servers`; and the composer came up in `[INSERT]`, the user
+    layer's `general.vimMode` surviving the system layer's own `general.*` keys. `gemini mcp list`
+    connects both. The bundle agrees — `SETTINGS_SCHEMA.mcpServers.mergeStrategy =
+    "shallow_merge"`, `{...user, ...system}`, system merged last — and the one consequence of
+    "last" is measured too: an operator-owned server *named* `marion` is shadowed for the node's
+    life (`s30/mcp-list.collision.txt`). Two facts that were assumptions until now: the headless
+    `stream-json` `init` frame on 0.53.0 carries `session_id` and `model` only, **no**
+    `mcp_servers` (that field is Claude Code's and qwen's), so `gemini mcp list` is the headless
+    oracle; and `gemini --help` has no `--mcp-config` flag, so the system layer remains the only
+    per-process declaration route. With `enabled: true`,
+    `every_enabled_native_lane_runs_its_real_tui_through_the_shipped_facade` runs **five** lanes
+    and passes every clause for each (gemini's first word `authenticate` — under the operator's
+    real login the first screen is gemini's auth dialog, which the generic word oracle reads like
+    any other screen), `native_facade_sigterm_restores_the_operator_terminal_and_exits_by_signal`
+    passes over five, `native_facade_smoke` 1/1, `marion-core --lib native_facade` 20/20 (the
+    registry pin now names five; it was run RED first against the disabled row),
+    `marion-harness --lib gemini` 26/26.
 
     What the tree does correct is a count this repo had written down twice and got wrong twice.
     `marion-tui/src/lib.rs` and `view.rs` both justified deferring the tree with *"M3's acceptance

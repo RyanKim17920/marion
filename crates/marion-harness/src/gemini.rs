@@ -113,9 +113,9 @@ pub const SPEC: HarnessSpec = HarnessSpec {
         canned: McpRoute::Document,
         live: McpRoute::Document,
     },
-    // The system-settings layer, which **outranks the operator's own** — see
-    // [`settings_json_with_auth`]'s unresolved merge-granularity question. That is why the native
-    // lane for this harness ships disabled until the merge is measured.
+    // The system-settings layer, which **outranks the operator's own** per key and merges
+    // `mcpServers` per key — measured S30, see [`settings_json_with_auth`]. That measurement is
+    // what let the native lane for this harness ship enabled.
     live_declaration: Some(LiveDeclaration::EnvDocument {
         key: SYSTEM_SETTINGS_PATH_ENV,
         file: SETTINGS_FILE,
@@ -134,9 +134,10 @@ pub const SPEC: HarnessSpec = HarnessSpec {
     // gemini 0.53.0 has **no** environment switch; both keys are settings booleans and ride the
     // system-settings document this row already emits on every route ([`settings_json_with_auth`]
     // applies them). `enableAutoUpdateNotification=false` skips the check, the banner and the
-    // install; `enableAutoUpdate=false` alone stops the install and keeps the banner. Both, so
-    // neither reading of the merge granularity (see the emitter) leaves a node updating itself:
-    // this is an npm-global install and does self-update by default.
+    // install; `enableAutoUpdate=false` alone stops the install and keeps the banner. Both, and
+    // since the merge is per leaf key (S30) each one lands on the operator's own `general` block
+    // without disturbing its other keys: this is an npm-global install and does self-update by
+    // default.
     updates: UpdatePolicy::Document {
         keys: &[
             ("general.enableAutoUpdate", false),
@@ -436,15 +437,18 @@ pub fn settings_json(mcp: Option<&BridgeEnv>) -> Value {
 
 /// [`settings_json`] with the `security.auth.selectedType` stated rather than assumed.
 ///
-/// **UNKNOWN, and deliberately not guessed at in code: whether gemini's system-settings layer
-/// deep-merges with the user layer or replaces it per key.** S12 fixtured the *precedence* (system
-/// settings win) but not the *granularity*. If the merge is per-key replacement, then for the
-/// duration of one live run this document's `general` block silently replaces the operator's own
-/// `general` — and, worse, a marion node's `mcpServers` replaces theirs, so a live gemini child
-/// would see marion's bridge and none of the servers the operator configured. Nothing here depends
-/// on which it is: marion writes the keys it needs either way and states the ambiguity rather than
-/// encoding a belief about it. Resolving it is a measurement (declare a distinctive user-layer key,
-/// run with a system-settings file that omits it, and read it back), not a reading of this file.
+/// **The merge granularity, measured (S30, gemini 0.53.0, 2026-09-10, `tests/fixtures/s30/`).**
+/// S12 fixtured the *precedence* (system settings win); what was open was whether this document's
+/// `mcpServers` sits **beside** the operator's own servers or **replaces** them for the node's
+/// life. It sits beside them: with the user layer declaring `pencil` and this document declaring
+/// `marion`, the TUI's `/mcp` lists both as `Ready` and its status bar counts `2 MCP servers`;
+/// `gemini mcp list` connects both. The bundle's `SETTINGS_SCHEMA.mcpServers` carries
+/// `mergeStrategy: "shallow_merge"` — `{...user.mcpServers, ...system.mcpServers}` — and every key
+/// this document writes under `general`, `security` and `privacy` lands on the operator's block
+/// leaf by leaf (`general.vimMode: true` in the user layer survived this document's two
+/// `general.*` keys: the TUI came up in `[INSERT]`). The one shadow: a same-named entry — an
+/// operator-owned server called `marion` — is replaced by this one for the node's life, since the
+/// system layer is merged last (`s30/mcp-list.collision.txt`).
 pub fn settings_json_with_auth(mcp: Option<&BridgeEnv>, selected_type: &str) -> Value {
     let mut settings = json!({
         "security": { "auth": { "selectedType": selected_type } },

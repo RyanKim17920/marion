@@ -1,0 +1,13 @@
+{
+  "security": { "auth": { "selectedType": "gemini-api-key" } },
+  "privacy": { "usageStatisticsEnabled": false },
+  "general": { "enableAutoUpdate": false, "enableAutoUpdateNotification": false },
+  "mcpServers": {
+    "marion": {
+      "command": "node",
+      "args": ["/private/tmp/claude-501/-Users-ryankim-Desktop-CODING-marion/d0851ffa-1d87-449b-ad18-eebc26b60703/scratchpad/s30/stdio-mcp.js", "marion"],
+      "env": { "MARION_AGENT_ID": "a-00000000", "MARION_SOCKET": "/nonexistent.sock" },
+      "trust": true
+    }
+  }
+}

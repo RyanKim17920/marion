@@ -1,0 +1,26 @@
+[STARTUP] Phase 'cleanup_ops' was started but never ended. Skipping metrics.
+Attempt 1 failed. Retrying with backoff... Error: exception TypeError: fetch failed sending request
+    at file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:267022:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async Models.generateContentStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:268043:16)
+    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:310219:19
+    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:287129:23
+    at async retryWithBackoff (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:307097:23)
+    at async GeminiChat.makeApiCallAndProcessStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330668:28)
+    at async GeminiChat.streamWithRetries (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330485:29)
+    at async Turn.run (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:331255:24)
+    at async GeminiClient.processTurn (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:344762:22)
+[STARTUP] Cannot measure phase 'cleanup_ops': start mark 'startup:cleanup_ops:start' not found (likely cleared by reset).
+Attempt 2 failed. Retrying with backoff... Error: exception TypeError: fetch failed sending request
+    at file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:267022:13
+    at async Models.generateContentStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:268043:16)
+    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:310219:19
+    at async file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:287129:23
+    at async retryWithBackoff (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:307097:23)
+    at async GeminiChat.makeApiCallAndProcessStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330668:28)
+    at async GeminiChat.streamWithRetries (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:330485:29)
+    at async Turn.run (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:331255:24)
+    at async GeminiClient.processTurn (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:344762:22)
+    at async GeminiClient.sendMessageStream (file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7C53.js:344859:14)
+Attempt 3 failed. Retrying with backoff... Error: exception TypeError: fetch failed sending request
+    at file:///opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/chunk-F3VE7
