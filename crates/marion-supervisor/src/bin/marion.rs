@@ -1126,65 +1126,23 @@ fn render_result(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
 
 /// Everything `marion run` shows a person, from one [`StreamEvent`].
 fn render_event(event: StreamEvent<'_>, out: &mut dyn Write) -> io::Result<()> {
-    let frame = match event {
+    match event {
         // A line the node wrote that was not JSON at all is almost always a crash or a warning from
         // the harness. Verbatim, and marked as coming from the node rather than from marion.
-        StreamEvent::Unparsed(line) => return say(out, "stdout", line.trim_end()),
-        StreamEvent::Frame(f) => f,
-    };
+        StreamEvent::Unparsed(line) => say(out, "stdout", line.trim_end()),
+        StreamEvent::Frame(frame) => render_frame(frame, out),
+    }
+}
+
+/// One parsed frame, by its `type`; each kind has a renderer of its own.
+fn render_frame(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
     let subtype = frame["subtype"].as_str().unwrap_or_default();
     match frame["type"].as_str().unwrap_or_default() {
         "assistant" => render_assistant(frame, out),
         "user" => render_user(frame, out),
         "result" => render_result(frame, out),
-        "system" if subtype == "init" => {
-            let model = frame["model"].as_str().unwrap_or("(unnamed)");
-            let tools = frame["tools"].as_array().map_or(0, Vec::len);
-            let mcp: Vec<String> = frame["mcp_servers"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|s| {
-                    format!(
-                        "{}={}",
-                        s["name"].as_str().unwrap_or("?"),
-                        s["status"].as_str().unwrap_or("?")
-                    )
-                })
-                .collect();
-            say(
-                out,
-                "session",
-                &format!(
-                    "model {model}, {tools} tools, mcp: {}",
-                    if mcp.is_empty() {
-                        "none".to_string()
-                    } else {
-                        mcp.join(" ")
-                    }
-                ),
-            )
-        }
-        "control_request" if frame["request"]["subtype"] == "can_use_tool" => say(
-            out,
-            "PERMIT",
-            &format!(
-                "{} — marion has nobody to ask (§9); it will be denied when the Blocked bound expires",
-                frame["request"]["tool_name"]
-                    .as_str()
-                    .unwrap_or("(unnamed tool)")
-            ),
-        ),
-        "control_request" => say(
-            out,
-            "control",
-            &format!(
-                "{} — marion does not implement it and is answering with an error",
-                frame["request"]["subtype"]
-                    .as_str()
-                    .unwrap_or("(no subtype)")
-            ),
-        ),
+        "system" if subtype == "init" => render_session_init(frame, out),
+        "control_request" => render_control_request(frame, out),
         // Never its body: the `initialize` reply alone is ~30 kB of session catalogue.
         "control_response" => say(
             out,
@@ -1199,17 +1157,75 @@ fn render_event(event: StreamEvent<'_>, out: &mut dyn Write) -> io::Result<()> {
                     .unwrap_or("(no request_id)")
             ),
         ),
-        // Rule 1. Not a dump and not silence: the kind, and its subtype when it has one.
-        "" => say(out, "frame", "a stdout frame with no `type` field"),
-        other => say(
-            out,
-            "frame",
-            &match subtype {
-                "" => other.to_string(),
-                s => format!("{other}/{s}"),
-            },
-        ),
+        kind => render_unknown_frame(kind, subtype, out),
     }
+}
+
+/// The `system/init` frame as one `session` line: model, tool count and each MCP server's status.
+fn render_session_init(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let model = frame["model"].as_str().unwrap_or("(unnamed)");
+    let tools = frame["tools"].as_array().map_or(0, Vec::len);
+    let mcp: Vec<String> = frame["mcp_servers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| {
+            format!(
+                "{}={}",
+                s["name"].as_str().unwrap_or("?"),
+                s["status"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    say(
+        out,
+        "session",
+        &format!(
+            "model {model}, {tools} tools, mcp: {}",
+            if mcp.is_empty() {
+                "none".to_string()
+            } else {
+                mcp.join(" ")
+            }
+        ),
+    )
+}
+
+/// A `control_request`: a permission ask is `PERMIT` and says what marion will do about it; any
+/// other request is `control` and says marion is refusing it.
+fn render_control_request(frame: &Value, out: &mut dyn Write) -> io::Result<()> {
+    if frame["request"]["subtype"] == "can_use_tool" {
+        return say(
+            out,
+            "PERMIT",
+            &format!(
+                "{} — marion has nobody to ask (§9); it will be denied when the Blocked bound expires",
+                frame["request"]["tool_name"]
+                    .as_str()
+                    .unwrap_or("(unnamed tool)")
+            ),
+        );
+    }
+    say(
+        out,
+        "control",
+        &format!(
+            "{} — marion does not implement it and is answering with an error",
+            frame["request"]["subtype"]
+                .as_str()
+                .unwrap_or("(no subtype)")
+        ),
+    )
+}
+
+/// Rule 1. Not a dump and not silence: the kind, and its subtype when it has one.
+fn render_unknown_frame(kind: &str, subtype: &str, out: &mut dyn Write) -> io::Result<()> {
+    let body = match (kind, subtype) {
+        ("", _) => "a stdout frame with no `type` field".to_string(),
+        (other, "") => other.to_string(),
+        (other, s) => format!("{other}/{s}"),
+    };
+    say(out, "frame", &body)
 }
 
 /// One [`ChildEvent`], as the line a watcher sees.
