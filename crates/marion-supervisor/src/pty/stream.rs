@@ -362,31 +362,22 @@ impl Record {
             RecordKind::Output(bytes) => bytes.len(),
             RecordKind::Resize { .. } => 2 * size_of::<u16>(),
             RecordKind::InputEvidence { input_seq, .. } => {
-                if *input_seq != self.input_seq {
-                    return Err(StreamError::InputSequenceMismatch);
-                }
-                match format {
-                    RecordFormat::SessionV2 => size_of::<u32>() + CHECKSUM_BYTES,
-                    RecordFormat::LegacyV1 | RecordFormat::SessionV3 => size_of::<u32>(),
-                }
+                self.check_input_seq(*input_seq)?;
+                input_evidence_payload_len(format)
             }
-            RecordKind::DisplayIncomplete if format == RecordFormat::SessionV3 => 0,
-            RecordKind::DisplayIncomplete => return Err(StreamError::InvalidRecordPayload),
-            RecordKind::LegacyEnd if format == RecordFormat::LegacyV1 => 0,
-            RecordKind::LegacyEnd => return Err(StreamError::MissingTerminalOutcome),
-            RecordKind::End(outcome) => {
-                if format == RecordFormat::LegacyV1 {
-                    return Err(StreamError::TypedTerminalOutcomeInLegacySegment);
-                }
-                outcome.validate()?;
-                match format {
-                    RecordFormat::SessionV2 => LEGACY_TERMINAL_OUTCOME_BYTES,
-                    RecordFormat::SessionV3 => TERMINAL_OUTCOME_BYTES,
-                    RecordFormat::LegacyV1 => unreachable!(),
-                }
-            }
+            RecordKind::DisplayIncomplete => display_incomplete_payload_len(format)?,
+            RecordKind::LegacyEnd => legacy_end_payload_len(format)?,
+            RecordKind::End(outcome) => typed_end_payload_len(outcome, format)?,
         };
         encoded_record_len(payload_len)
+    }
+
+    /// An input-evidence record's payload must repeat the header's input sequence.
+    fn check_input_seq(&self, input_seq: u64) -> Result<(), StreamError> {
+        if input_seq != self.input_seq {
+            return Err(StreamError::InputSequenceMismatch);
+        }
+        Ok(())
     }
 
     /// `u32 frame_len` (little-endian), then record bytes, followed by a BLAKE3 checksum of those
@@ -568,6 +559,34 @@ fn decode_display_incomplete_payload(
         return Ok(RecordKind::DisplayIncomplete);
     }
     Err(StreamError::InvalidRecordPayload)
+}
+
+/// `DisplayIncomplete` is a v3 control record and has no representation in any other format.
+fn display_incomplete_payload_len(format: RecordFormat) -> Result<usize, StreamError> {
+    if format == RecordFormat::SessionV3 {
+        return Ok(0);
+    }
+    Err(StreamError::InvalidRecordPayload)
+}
+
+/// The empty v1 terminator; a versioned session format rejects this representation.
+fn legacy_end_payload_len(format: RecordFormat) -> Result<usize, StreamError> {
+    if format == RecordFormat::LegacyV1 {
+        return Ok(0);
+    }
+    Err(StreamError::MissingTerminalOutcome)
+}
+
+/// A typed End's payload width under `format`, after validating the outcome it would carry.
+fn typed_end_payload_len(
+    outcome: &TerminalOutcome,
+    format: RecordFormat,
+) -> Result<usize, StreamError> {
+    if format == RecordFormat::LegacyV1 {
+        return Err(StreamError::TypedTerminalOutcomeInLegacySegment);
+    }
+    outcome.validate()?;
+    Ok(typed_terminal_outcome_len(format))
 }
 
 /// The on-disk width of a typed terminal outcome under a versioned session `format`.
