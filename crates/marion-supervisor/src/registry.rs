@@ -502,8 +502,7 @@ mod tests {
     use marion_core::journal::{
         Exited, JournalRecord, RecordKind, SpawnIntent, Spawned, WriterId, encode,
     };
-    use marion_testsupport::{scratch, until};
-    use std::io::Write;
+    use marion_testsupport::{append, scratch, until};
     use std::path::Path;
 
     fn line(writer: &str, seq: u64, kind: RecordKind) -> Vec<u8> {
@@ -554,15 +553,6 @@ mod tests {
                 description: "clean exit".into(),
             },
         })
-    }
-
-    fn append(path: &Path, bytes: &[u8]) {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .unwrap();
-        f.write_all(bytes).unwrap();
     }
 
     /// A journal with a root, a child and both terminals — written with the ordinals a real writer

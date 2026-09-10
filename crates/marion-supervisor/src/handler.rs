@@ -4118,7 +4118,7 @@ mod tests {
     };
     use marion_core::node::BlockReason;
     use marion_proto::Frame;
-    use marion_testsupport::{scratch, until};
+    use marion_testsupport::{append, scratch, until};
     use std::io::Write;
     use std::path::Path;
     use std::time::Duration;
@@ -4154,15 +4154,6 @@ mod tests {
             depth,
             task_id: None,
         })
-    }
-
-    fn append(path: &Path, bytes: &[u8]) {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .unwrap();
-        f.write_all(bytes).unwrap();
     }
 
     fn replay_of(records: &[Vec<u8>]) -> Replay {

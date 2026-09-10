@@ -245,8 +245,7 @@ mod tests {
         Exited, JournalRecord, PermissionDenied, RecordKind, SpawnAborted, SpawnIntent, Spawned,
         WriterId, encode,
     };
-    use marion_testsupport::scratch;
-    use std::io::Write;
+    use marion_testsupport::{append, scratch};
 
     fn root_id() -> AgentId {
         AgentId("00000000-0000-7000-8000-00000000root".into())
@@ -294,15 +293,6 @@ mod tests {
                 description: "child exited with code 0".into(),
             },
         })
-    }
-
-    fn append(path: &Path, bytes: &[u8]) {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .unwrap();
-        f.write_all(bytes).unwrap();
     }
 
     /// The property the whole module exists for: a child's start and end are **read back out of the

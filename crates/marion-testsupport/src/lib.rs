@@ -1007,6 +1007,21 @@ pub fn scratch(tag: &str) -> Scratch {
     Scratch(p.canonicalize().expect("scratch dir canonicalises"))
 }
 
+/// Append `bytes` to the file at `path`, creating it if need be, as a journal writer's `O_APPEND`
+/// `write` would land them — including a partial line or a line that is not a record at all,
+/// which is why this takes bytes and not a record: the tests that use it are about what a reader
+/// does with what a writer *actually* left behind, torn tails and garbage included.
+pub fn append(path: &Path, bytes: &[u8]) {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap_or_else(|e| panic!("open {} for append: {e}", path.display()));
+    f.write_all(bytes)
+        .unwrap_or_else(|e| panic!("append to {}: {e}", path.display()));
+}
+
 /// The directory name, **bounded**, because a caller cannot be asked to count bytes.
 ///
 /// A scratch directory is where a test's supervisor socket ends up, and §2 gives that path 103
