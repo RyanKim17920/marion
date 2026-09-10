@@ -898,58 +898,14 @@ fn accept_loop(
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     while !stop.load(Ordering::SeqCst) && !handle.exiting() {
         handle.tick();
-        let no_clients = lock(&conns).is_empty();
-        if no_clients && handle.idle_exit_eligible() {
-            let since = idle_since.get_or_insert_with(Instant::now);
-            let waited = since.elapsed() >= idle_grace || handle.idle_exit_grace_waived();
-            if waited && handle.begin_idle_exit() {
-                break;
-            }
-        } else {
-            idle_since = None;
+        if idle_grace_elapsed(&*handle, &conns, &mut idle_since, idle_grace)
+            && handle.begin_idle_exit()
+        {
+            break;
         }
-        match serving.listener().accept() {
-            Ok((stream, _)) => {
-                let id = ConnId(next.fetch_add(1, Ordering::SeqCst));
-                let _ = stream.set_nonblocking(false);
-                if let Ok(dup) = stream.try_clone() {
-                    lock(&conns).insert(id, dup);
-                }
-                handle.connected(id);
-                let handle = Arc::clone(&handle);
-                let conns = Arc::clone(&conns);
-                let stopping = Arc::clone(&stop);
-                threads.push(std::thread::spawn(move || {
-                    serve_conn(id, stream, handle, &stopping);
-                    lock(&conns).remove(&id);
-                }));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(ACCEPT_POLL);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => std::thread::sleep(ACCEPT_POLL),
-        }
+        accept_client(&serving, &handle, &stop, &conns, &next, &mut threads);
         if let Some(listener) = serving.native_bootstrap_listener() {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let id = ConnId(next.fetch_add(1, Ordering::SeqCst));
-                    let Some((dup, active)) = prepare_native_connection(&native, &mut stream)
-                    else {
-                        continue;
-                    };
-                    lock(&conns).insert(id, dup);
-                    let native = Arc::clone(&native);
-                    let conns = Arc::clone(&conns);
-                    threads.push(std::thread::spawn(move || {
-                        native.serve_connection(id, stream, active);
-                        lock(&conns).remove(&id);
-                    }));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => std::thread::sleep(ACCEPT_POLL),
-            }
+            accept_native(listener, &native, &conns, &next, &mut threads);
         }
         threads.retain(|t| !t.is_finished());
     }
@@ -964,6 +920,87 @@ fn accept_loop(
     }
     for t in threads {
         let _ = t.join();
+    }
+}
+
+/// Whether the loop has sat with no clients and an idle-exit-eligible handle for the whole grace
+/// (or the handle waived it). `idle_since` starts the first pass this holds and is cleared on any
+/// pass it does not.
+fn idle_grace_elapsed(
+    handle: &dyn Handle,
+    conns: &Conns,
+    idle_since: &mut Option<Instant>,
+    idle_grace: Duration,
+) -> bool {
+    let no_clients = lock(conns).is_empty();
+    if !(no_clients && handle.idle_exit_eligible()) {
+        *idle_since = None;
+        return false;
+    }
+    let since = idle_since.get_or_insert_with(Instant::now);
+    since.elapsed() >= idle_grace || handle.idle_exit_grace_waived()
+}
+
+/// One non-blocking pass over the client socket: admit a connection onto its own thread, or sleep
+/// one poll interval when there is nothing to accept.
+fn accept_client(
+    serving: &Serving,
+    handle: &Arc<dyn Handle>,
+    stop: &Arc<AtomicBool>,
+    conns: &Conns,
+    next: &AtomicU64,
+    threads: &mut Vec<std::thread::JoinHandle<()>>,
+) {
+    match serving.listener().accept() {
+        Ok((stream, _)) => {
+            let id = ConnId(next.fetch_add(1, Ordering::SeqCst));
+            let _ = stream.set_nonblocking(false);
+            if let Ok(dup) = stream.try_clone() {
+                lock(conns).insert(id, dup);
+            }
+            handle.connected(id);
+            let handle = Arc::clone(handle);
+            let conns = Arc::clone(conns);
+            let stopping = Arc::clone(stop);
+            threads.push(std::thread::spawn(move || {
+                serve_conn(id, stream, handle, &stopping);
+                lock(&conns).remove(&id);
+            }));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            std::thread::sleep(ACCEPT_POLL);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+        Err(_) => std::thread::sleep(ACCEPT_POLL),
+    }
+}
+
+/// One non-blocking pass over the native-bootstrap socket: admit an authenticated connection onto
+/// its own thread. A connection the bootstrap refuses still consumed its `ConnId`.
+fn accept_native(
+    listener: &std::os::unix::net::UnixListener,
+    native: &Arc<NativeBootstrapService>,
+    conns: &Conns,
+    next: &AtomicU64,
+    threads: &mut Vec<std::thread::JoinHandle<()>>,
+) {
+    match listener.accept() {
+        Ok((mut stream, _)) => {
+            let id = ConnId(next.fetch_add(1, Ordering::SeqCst));
+            let Some((dup, active)) = prepare_native_connection(native, &mut stream) else {
+                return;
+            };
+            lock(conns).insert(id, dup);
+            let native = Arc::clone(native);
+            let conns = Arc::clone(conns);
+            threads.push(std::thread::spawn(move || {
+                native.serve_connection(id, stream, active);
+                lock(&conns).remove(&id);
+            }));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+        Err(_) => std::thread::sleep(ACCEPT_POLL),
     }
 }
 
