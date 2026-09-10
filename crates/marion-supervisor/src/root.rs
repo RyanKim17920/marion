@@ -66,8 +66,8 @@ use marion_core::root_change::{
     Reason, RootChange, RootChanged, RootDelta, RootGrant, RootObservation, RootScope,
 };
 use marion_harness::{
-    Auth, CallOutcome, ChildExit, Extras, Invocation, LaunchSpec, MarionCall, McpDeclaration,
-    SpawnCtx, adapter_for, json_frames,
+    Auth, CallOutcome, ChildExit, ExecutionSurfaces, Extras, HarnessAdapter, Invocation,
+    LaunchSpec, MarionCall, McpDeclaration, SpawnCtx, adapter_for, json_frames,
 };
 use marion_proto::NativeLaunchContext;
 use serde_json::Value;
@@ -643,12 +643,7 @@ pub fn prepare_watched(
     // `Invocation` below and the launch path are both derived from this one value, and it is
     // carried onto the node so `launch_terminal` reads the same surfaces that chose it rather than
     // asking the adapter a second question.
-    let surfaces = match spec.pane {
-        false => adapter.surfaces(),
-        true => adapter
-            .pane_surfaces()
-            .ok_or(marion_harness::HarnessError::NoPaneSurface(harness))?,
-    };
+    let surfaces = root_surfaces(adapter.as_ref(), spec.pane, harness)?;
     let path = root_path(&surfaces).ok_or(RootError::UnsupportedRootSurface(harness))?;
     // **Here, and not further down.** Nothing has been created yet — no worktree, no config
     // document, no process — so the refusal leaves the filesystem as it found it. The same
@@ -657,36 +652,7 @@ pub fn prepare_watched(
         return Err(RootError::AcpIsNotARootHarness(agent_type.name.clone()));
     }
 
-    // Not one of §4.3's normative files: this is marion's own start-up handshake with a process it
-    // did not spawn, so it lives beside the node's state rather than in the layout. Only the duplex
-    // path has a frame to withhold, so only it has a marker to wait on (§6.1 step 8).
-    let ready_file = match path {
-        // **Dead, and kept honest rather than wildcarded.** `prepare` refused this path by name
-        // before anything was created (`RootError::AcpIsNotARootHarness`), so control never reaches
-        // here. Spelling the arm out means the day ACP becomes a root harness, the compiler asks
-        // this question again instead of a `_` answering it silently.
-        RootPath::Acp => None,
-        // **The marker is minted on the pane path too, and it is deliberately not a gate there.**
-        //
-        // Two different things have been collapsed under one name: the *file*, which the bridge
-        // touches when the harness fetches marion's tool list, and the *wait* on it, which is §6.1
-        // step 8's gate. A pane needs no wait — its prompt is seeded into the composer and the
-        // operator presses return, so there is no frame being withheld for a marker to release —
-        // but Claude Code's declaration requires somewhere to write it, and `compile_pane` emits
-        // the same `--mcp-config` document the headless shape does. Withholding the path here
-        // failed the whole launch with a sentence about a readiness gate this path does not have.
-        //
-        // It is not wasted either way: the file's existence afterwards is the pane's only evidence
-        // that the bridge was ever reached, and it is the only such evidence a TUI can leave.
-        RootPath::Duplex | RootPath::Terminal => {
-            let f = agent_dir.path().join("mcp-ready");
-            let _ = std::fs::remove_file(&f);
-            Some(f)
-        }
-        // A `LaunchOnly` node's readiness is asserted post hoc, over its stream
-        // (`assert_a_verb_was_answered`), and its adapters ask for no marker.
-        RootPath::LaunchOnly => None,
-    };
+    let ready_file = root_ready_file(path, &agent_dir);
 
     // **§9's change record, first half — taken before anything decides what the root may do.**
     //
@@ -694,43 +660,9 @@ pub fn prepare_watched(
     // it can record what the root did *before* it decides what the root is allowed to do. Taking
     // the snapshot after compiling the launch would put the two in the other order and make the
     // gate a comment rather than a control flow.
-    //
-    // A failure here is fatal **only for a type that declares a tool** — `availability_axis` turns
-    // it into `RootError::NoChangeRecord` there and into an empty axis everywhere else. So a root
-    // in a directory that is not a git worktree still runs when it asked for nothing, and its
-    // record still says `Failed` with git's own words.
-    let change_base = match spec.no_change_record {
-        // Not even attempted: `TreeSnapshot::open` is not called, so `--no-change-record` really
-        // does mean marion does not walk the operator's tree — not "walks it and discards the
-        // result", which would cost exactly as much and be a different claim from the one the flag
-        // makes.
-        true => RootChangeBase::NotAttempted {
-            reason: "the operator passed --no-change-record".into(),
-        },
-        false => match crate::spawn::TreeSnapshot::open(&spec.repo, agent_dir.path()) {
-            Ok(snapshot) => {
-                let base_commit = snapshot.head(&spec.repo);
-                match snapshot.take(&spec.repo) {
-                    Ok(pre_tree) => RootChangeBase::Taken {
-                        snapshot: std::sync::Arc::new(snapshot),
-                        base_commit,
-                        pre_tree,
-                    },
-                    Err(e) => RootChangeBase::Unavailable {
-                        reason: format!("snapshotting the working tree at launch: {e}"),
-                    },
-                }
-            }
-            Err(e) => RootChangeBase::Unavailable {
-                reason: format!(
-                    "preparing an isolated git environment for {}: {e}",
-                    spec.repo.display()
-                ),
-            },
-        },
-    };
+    let change_base = root_change_base(spec, &agent_dir);
 
-    // §9's grant gate, evaluated **here** rather than inside the `LaunchSpec` literal below, so the
+    // §9's grant gate, evaluated **here** rather than inside the `LaunchSpec` literal, so the
     // refusal precedes every side effect the launch has — no configuration written, no journal
     // record, no process. A gate whose failure left files behind would be a gate that ran too late.
     let tools = availability_axis(&agent_type.tools, &change_base, &spec.repo)?;
@@ -739,65 +671,7 @@ pub fn prepare_watched(
     // The adapter decides argv, env, and which configuration files exist. marion writes what it is
     // handed and derives none of those paths itself — one derivation, so `--mcp-config` can never
     // name a document nobody wrote.
-    let launch = LaunchSpec {
-        cwd: spec.repo.clone(),
-        model: spec.model.clone(),
-        prompt: match path {
-            // Written after launch, not compiled into argv (§6.1 step 8). `Acp` is dead here —
-            // refused in `prepare` — and would be the same answer: the prompt is a
-            // `session/prompt` frame and reaches argv on no ACP agent.
-            RootPath::Duplex | RootPath::Acp => String::new(),
-            // A positional, and what the harness then does with it **differs by harness** —
-            // stated rather than generalised, because marion compiles the same field twice and
-            // gets two behaviours. Claude Code seeds its composer and waits for a return
-            // (`marion_harness::claude_code::SPEC`'s pane row); codex 0.147.0 **submits** it, so a
-            // paned codex has taken a turn before anybody attaches
-            // (`marion_harness::codex::SPEC`'s pane row). Neither is a race the way an argv prompt on
-            // `--print` is: a TUI's MCP servers are connected before it accepts the turn.
-            //
-            // Both are safe for the reason the headless refusal is not: see the same two doc
-            // comments for the measurement.
-            RootPath::LaunchOnly | RootPath::Terminal => spec.prompt.clone(),
-        },
-        // §3.1's availability axis: the agent type's own `tools:` list, exactly as
-        // `run::run_spawn` gives a child — but only ever through `availability_axis`, which is
-        // where the list and the audit that justifies it are decided together rather than in two
-        // places. `ROOT_VERBS` below stays a constant, and for a different reason: it carries
-        // marion's own verbs, which no agent type may widen — spelled per harness by the adapter.
-        tools,
-        allowed_tools: ROOT_VERBS
-            .iter()
-            .map(|verb| adapter.marion_tool_name(verb))
-            .collect(),
-        mcp: McpDeclaration::Marion,
-        // The session this launch resumes, handed to the row's measured resume flag — or `None`
-        // for a fresh run. A row with no measured flag for this shape refuses at `compile`, by
-        // name, rather than starting fresh under the resumed session's id.
-        resume: spec.resume.as_ref().map(|(_, session)| session.clone()),
-        base_url: spec.base_url.clone(),
-        // On the duplex path the root's credential is the per-run `ANTHROPIC_AUTH_TOKEN` pushed
-        // onto the invocation below. On the other three it is **not** an env var marion can push
-        // after the fact — gemini wants `GEMINI_API_KEY`, opencode wants it *inside* the generated
-        // config — so it goes through the neutral field and each adapter puts it where that harness
-        // reads it.
-        //
-        // Under `Inherited` there is no credential to place at all, on any path: the node is meant
-        // to present the login the operator already has, and a placeholder beside it would be a
-        // second credential competing with the real one.
-        api_key: match (spec.auth, path) {
-            // `Acp` is dead here — refused in `prepare`. Under a canned provider the credential
-            // travels in the agent's own config document (S23), never in this field, so `None` is
-            // also the answer it would have if the refusal were lifted.
-            (Auth::Inherited, _) | (Auth::Canned, RootPath::Duplex | RootPath::Acp) => None,
-            // The pane shape compiles the credential itself, exactly as the `LaunchOnly` adapters
-            // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
-            // — so there is nothing for the post-`compile` push below to do.
-            (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.clone()),
-        },
-        auth: spec.auth,
-        config_dir: agent_dir.config_dir(),
-        extra: Extras::default(),
-    };
+    let launch = root_launch_spec(spec, path, tools, &token, adapter.as_ref(), &agent_dir);
     let ctx = SpawnCtx {
         agent_id: agent_id.clone(),
         // The canonical name, not `spec.agent_type`: `marion run codex` and `marion run codex-impl`
@@ -825,26 +699,8 @@ pub fn prepare_watched(
         bridge: spec.bridge.clone(),
         bridge_args: vec!["mcp".into()],
     };
-    let mut written = Vec::new();
-    for (path, contents) in adapter.config_files(&launch, &ctx)? {
-        // The adapter decides *what and where*; marion writes. "Where" is not always directly under
-        // `config_dir`: opencode's document lands at `<config_dir>/config/opencode/opencode.json`,
-        // because `$XDG_CONFIG_HOME` is a directory whose layout the harness owns. Creating only
-        // `config_dir` failed the whole launch with a bare `No such file or directory` naming
-        // nothing.
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, contents)?;
-        written.push(path);
-    }
-    // The compile half of the same selection. Two methods rather than a flag inside one, for the
-    // reason `HarnessAdapter::pane_surfaces` states: the pane's argv is a different launch of the
-    // same harness (a TUI with a seeded composer), not the headless launch with a switch on it.
-    let mut invocation = match spec.pane {
-        false => adapter.compile(&launch, &ctx)?,
-        true => adapter.compile_pane(&launch, &ctx)?,
-    };
+    let written = crate::run::write_config_documents(adapter.config_files(&launch, &ctx)?)?;
+    let mut invocation = compile_root(adapter.as_ref(), spec.pane, &launch, &ctx)?;
 
     // §6.1 step 8, checked against the route the adapter *stated* rather than against the presence
     // of a file. Every branch here is a refusal except the two that positively found the
@@ -914,21 +770,7 @@ pub fn prepare_watched(
     // `<agent-dir>/objects`, so it can be read back after the run that produced no post-tree.
     crate::journal::record(
         &project,
-        RecordKind::RootGrantDecided(RootGrant {
-            agent_id: agent_id.clone(),
-            base_commit: match &change_base {
-                RootChangeBase::Taken { base_commit, .. } => base_commit.clone(),
-                _ => None,
-            },
-            pre_tree: match &change_base {
-                RootChangeBase::Taken { pre_tree, .. } => Some(pre_tree.clone()),
-                _ => None,
-            },
-            // The **compiled** axis, not `agent_type.tools`: what a crash investigator needs is
-            // what the root was actually handed, and those two differ in exactly the case this
-            // record is most useful in — a declaration the gate withheld.
-            granted: Reason::new(launch.tools.join(", ")),
-        }),
+        root_grant_record(&agent_id, &change_base, &launch.tools),
     );
 
     Ok(RootNode {
@@ -955,6 +797,215 @@ pub fn prepare_watched(
 /// distinct per run so a request log attributes traffic to one run.
 fn per_run_token() -> Result<String, RootError> {
     Ok(format!("marion-run-{}", uuid_v7(unix_millis(), entropy()?)))
+}
+
+/// **§3.4's two shapes, and which one this *run* asked for.** `surfaces()` is a fact about the
+/// harness; the pane is a fact about the run. Selecting once, before anything is compiled, is what
+/// keeps the two from being decided in two places and disagreeing: the `Invocation` and the launch
+/// path are both derived from this one value, and it is carried onto the node so `launch_terminal`
+/// reads the same surfaces that chose it rather than asking the adapter a second question.
+fn root_surfaces(
+    adapter: &dyn HarnessAdapter,
+    pane: bool,
+    harness: Harness,
+) -> Result<ExecutionSurfaces, RootError> {
+    Ok(match pane {
+        false => adapter.surfaces(),
+        true => adapter
+            .pane_surfaces()
+            .ok_or(marion_harness::HarnessError::NoPaneSurface(harness))?,
+    })
+}
+
+/// The compile half of [`root_surfaces`]'s selection. Two methods rather than a flag inside one,
+/// for the reason `HarnessAdapter::pane_surfaces` states: the pane's argv is a different launch of
+/// the same harness (a TUI with a seeded composer), not the headless launch with a switch on it.
+fn compile_root(
+    adapter: &dyn HarnessAdapter,
+    pane: bool,
+    launch: &LaunchSpec,
+    ctx: &SpawnCtx,
+) -> Result<Invocation, RootError> {
+    Ok(match pane {
+        false => adapter.compile(launch, ctx)?,
+        true => adapter.compile_pane(launch, ctx)?,
+    })
+}
+
+/// Not one of §4.3's normative files: this is marion's own start-up handshake with a process it
+/// did not spawn, so it lives beside the node's state rather than in the layout. Only the duplex
+/// path has a frame to withhold, so only it has a marker to wait on (§6.1 step 8).
+fn root_ready_file(path: RootPath, agent_dir: &AgentDir) -> Option<PathBuf> {
+    match path {
+        // **Dead, and kept honest rather than wildcarded.** `prepare` refused this path by name
+        // before anything was created (`RootError::AcpIsNotARootHarness`), so control never reaches
+        // here. Spelling the arm out means the day ACP becomes a root harness, the compiler asks
+        // this question again instead of a `_` answering it silently.
+        RootPath::Acp => None,
+        // **The marker is minted on the pane path too, and it is deliberately not a gate there.**
+        //
+        // Two different things have been collapsed under one name: the *file*, which the bridge
+        // touches when the harness fetches marion's tool list, and the *wait* on it, which is §6.1
+        // step 8's gate. A pane needs no wait — its prompt is seeded into the composer and the
+        // operator presses return, so there is no frame being withheld for a marker to release —
+        // but Claude Code's declaration requires somewhere to write it, and `compile_pane` emits
+        // the same `--mcp-config` document the headless shape does. Withholding the path here
+        // failed the whole launch with a sentence about a readiness gate this path does not have.
+        //
+        // It is not wasted either way: the file's existence afterwards is the pane's only evidence
+        // that the bridge was ever reached, and it is the only such evidence a TUI can leave.
+        RootPath::Duplex | RootPath::Terminal => {
+            let f = agent_dir.path().join("mcp-ready");
+            let _ = std::fs::remove_file(&f);
+            Some(f)
+        }
+        // A `LaunchOnly` node's readiness is asserted post hoc, over its stream
+        // (`assert_a_verb_was_answered`), and its adapters ask for no marker.
+        RootPath::LaunchOnly => None,
+    }
+}
+
+/// **§9's change record, first half: the operator's tree as it stood at launch.**
+///
+/// A failure here is fatal **only for a type that declares a tool** — `availability_axis` turns
+/// it into `RootError::NoChangeRecord` there and into an empty axis everywhere else. So a root
+/// in a directory that is not a git worktree still runs when it asked for nothing, and its
+/// record still says `Failed` with git's own words.
+fn root_change_base(spec: &RootSpec, agent_dir: &AgentDir) -> RootChangeBase {
+    match spec.no_change_record {
+        // Not even attempted: `TreeSnapshot::open` is not called, so `--no-change-record` really
+        // does mean marion does not walk the operator's tree — not "walks it and discards the
+        // result", which would cost exactly as much and be a different claim from the one the flag
+        // makes.
+        true => RootChangeBase::NotAttempted {
+            reason: "the operator passed --no-change-record".into(),
+        },
+        false => match crate::spawn::TreeSnapshot::open(&spec.repo, agent_dir.path()) {
+            Ok(snapshot) => {
+                let base_commit = snapshot.head(&spec.repo);
+                match snapshot.take(&spec.repo) {
+                    Ok(pre_tree) => RootChangeBase::Taken {
+                        snapshot: std::sync::Arc::new(snapshot),
+                        base_commit,
+                        pre_tree,
+                    },
+                    Err(e) => RootChangeBase::Unavailable {
+                        reason: format!("snapshotting the working tree at launch: {e}"),
+                    },
+                }
+            }
+            Err(e) => RootChangeBase::Unavailable {
+                reason: format!(
+                    "preparing an isolated git environment for {}: {e}",
+                    spec.repo.display()
+                ),
+            },
+        },
+    }
+}
+
+/// The root's launch, in the neutral vocabulary the adapter compiles from. `tools` is the axis
+/// [`availability_axis`] already gated, and `token` the per-run credential [`per_run_token`] minted.
+fn root_launch_spec(
+    spec: &RootSpec,
+    path: RootPath,
+    tools: Vec<String>,
+    token: &str,
+    adapter: &dyn HarnessAdapter,
+    agent_dir: &AgentDir,
+) -> LaunchSpec {
+    LaunchSpec {
+        cwd: spec.repo.clone(),
+        model: spec.model.clone(),
+        prompt: match path {
+            // Written after launch, not compiled into argv (§6.1 step 8). `Acp` is dead here —
+            // refused in `prepare` — and would be the same answer: the prompt is a
+            // `session/prompt` frame and reaches argv on no ACP agent.
+            RootPath::Duplex | RootPath::Acp => String::new(),
+            // A positional, and what the harness then does with it **differs by harness** —
+            // stated rather than generalised, because marion compiles the same field twice and
+            // gets two behaviours. Claude Code seeds its composer and waits for a return
+            // (`marion_harness::claude_code::SPEC`'s pane row); codex 0.147.0 **submits** it, so a
+            // paned codex has taken a turn before anybody attaches
+            // (`marion_harness::codex::SPEC`'s pane row). Neither is a race the way an argv prompt on
+            // `--print` is: a TUI's MCP servers are connected before it accepts the turn.
+            //
+            // Both are safe for the reason the headless refusal is not: see the same two doc
+            // comments for the measurement.
+            RootPath::LaunchOnly | RootPath::Terminal => spec.prompt.clone(),
+        },
+        // §3.1's availability axis: the agent type's own `tools:` list, exactly as
+        // `run::run_spawn` gives a child — but only ever through `availability_axis`, which is
+        // where the list and the audit that justifies it are decided together rather than in two
+        // places. `ROOT_VERBS` below stays a constant, and for a different reason: it carries
+        // marion's own verbs, which no agent type may widen — spelled per harness by the adapter.
+        tools,
+        allowed_tools: ROOT_VERBS
+            .iter()
+            .map(|verb| adapter.marion_tool_name(verb))
+            .collect(),
+        mcp: McpDeclaration::Marion,
+        // The session this launch resumes, handed to the row's measured resume flag — or `None`
+        // for a fresh run. A row with no measured flag for this shape refuses at `compile`, by
+        // name, rather than starting fresh under the resumed session's id.
+        resume: spec.resume.as_ref().map(|(_, session)| session.clone()),
+        base_url: spec.base_url.clone(),
+        // On the duplex path the root's credential is the per-run `ANTHROPIC_AUTH_TOKEN` pushed
+        // onto the invocation below. On the other three it is **not** an env var marion can push
+        // after the fact — gemini wants `GEMINI_API_KEY`, opencode wants it *inside* the generated
+        // config — so it goes through the neutral field and each adapter puts it where that harness
+        // reads it.
+        //
+        // Under `Inherited` there is no credential to place at all, on any path: the node is meant
+        // to present the login the operator already has, and a placeholder beside it would be a
+        // second credential competing with the real one.
+        api_key: match (spec.auth, path) {
+            // `Acp` is dead here — refused in `prepare`. Under a canned provider the credential
+            // travels in the agent's own config document (S23), never in this field, so `None` is
+            // also the answer it would have if the refusal were lifted.
+            (Auth::Inherited, _) | (Auth::Canned, RootPath::Duplex | RootPath::Acp) => None,
+            // The pane shape compiles the credential itself, exactly as the `LaunchOnly` adapters
+            // do — `compile_pane` emits `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` from this field
+            // — so there is nothing for the post-`compile` push below to do.
+            (Auth::Canned, RootPath::LaunchOnly | RootPath::Terminal) => Some(token.to_string()),
+        },
+        auth: spec.auth,
+        config_dir: agent_dir.config_dir(),
+        extra: Extras::default(),
+    }
+}
+
+/// **§6.1 step 7's shape, applied to the other thing `prepare` decides.**
+///
+/// `journal_the_roots_outcome` writes the change record when `launch_watched` *returns*, so until
+/// this record existed a marion that panicked, was SIGKILLed or lost power mid-run left the journal
+/// saying nothing at all — not that a grant had been issued, not what the operator's tree looked
+/// like when it was. Written **after** the intent, because a record about a node the journal has
+/// not yet introduced is a record with nowhere to attach; written **before** the process, because
+/// that is the whole point, and it is a barrier so "before" survives the crash it is about.
+///
+/// The oid is recoverable evidence and not a bare number: the tree object lives in
+/// `<agent-dir>/objects`, so it can be read back after the run that produced no post-tree.
+fn root_grant_record(
+    agent_id: &AgentId,
+    change_base: &RootChangeBase,
+    granted: &[String],
+) -> RecordKind {
+    RecordKind::RootGrantDecided(RootGrant {
+        agent_id: agent_id.clone(),
+        base_commit: match change_base {
+            RootChangeBase::Taken { base_commit, .. } => base_commit.clone(),
+            _ => None,
+        },
+        pre_tree: match change_base {
+            RootChangeBase::Taken { pre_tree, .. } => Some(pre_tree.clone()),
+            _ => None,
+        },
+        // The **compiled** axis, not `agent_type.tools`: what a crash investigator needs is what
+        // the root was actually handed, and those two differ in exactly the case this record is
+        // most useful in — a declaration the gate withheld.
+        granted: Reason::new(granted.join(", ")),
+    })
 }
 
 /// Start the root and run it to completion, on whichever path its **surfaces** select (§3.4).
