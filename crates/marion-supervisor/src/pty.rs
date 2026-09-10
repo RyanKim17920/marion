@@ -1608,6 +1608,20 @@ impl DurableRecorder {
         }
     }
 
+    /// Seal `outcome`, then refuse an outcome that sealed but is not replay-eligible, so a known
+    /// bad ending is recorded and still reported.
+    fn seal_replayable(&mut self, outcome: stream::TerminalOutcome) -> Result<(), String> {
+        self.seal(outcome).and_then(|()| {
+            if outcome.replay_eligible() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "authoritative PTY stream sealed with an ineligible terminal outcome: {outcome:?}"
+                ))
+            }
+        })
+    }
+
     fn qualify_outcome(&self, mut outcome: stream::TerminalOutcome) -> stream::TerminalOutcome {
         outcome.stream_complete &= self.output_complete;
         outcome
@@ -3572,17 +3586,17 @@ impl PtyHost {
         // `resize` from an attached client behind however long the child takes to die, and the
         // client cannot know that is what it is waiting for.
         let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let status = match child.as_mut() {
-            None => None,
-            // Through `PtyChild`'s own idempotent call, so this and the `Drop` net below cannot
-            // drift — and so the `Drop` that runs when the local below goes out of scope finds the
-            // process already reaped instead of signalling a pid the kernel may have reissued.
-            Some(child) => {
+        // Through `PtyChild`'s own idempotent call, so this and the `Drop` net below cannot drift
+        // — and so the `Drop` that runs when the local above goes out of scope finds the process
+        // already reaped instead of signalling a pid the kernel may have reissued.
+        let status = child
+            .as_mut()
+            .map(|child| {
                 #[cfg(test)]
                 self.observe_before_child_sweep_hook();
-                Some(child.kill_and_reap()?)
-            }
-        };
+                child.kill_and_reap()
+            })
+            .transpose()?;
         // Killing/reaping closes the slave first, which unblocks an already-admitted master write.
         // The wait is host-local and never runs under the global pane registry lock. Once it
         // returns, no admitted input or resize can append cast/splice state ahead of End and `x`.
@@ -3592,6 +3606,41 @@ impl PtyHost {
             .wait_input_deliveries(Instant::now() + CONTROL_DELIVERY_GRACE);
         #[cfg(test)]
         self.observe_before_reader_stop_hook();
+        let (reader_disposition, reader_failure) = self.stop_reader();
+        // Kernel EOF is necessary but no longer sufficient to publish pane End: an opaque input
+        // selected before closing may still be resolving outside the recorder lock. The delivery
+        // barrier above either observed its outcome or visibly failed its exact socket on grace
+        // expiry, so End can only become visible after both facts are settled.
+        if reader_disposition == stream::ReaderDisposition::CleanEof {
+            self.shared.retain_end();
+        }
+        let (cast_result, stream_completion) = self.seal_terminal_records(
+            status,
+            timed_out,
+            reader_disposition,
+            input_delivery_failure.is_none(),
+        );
+
+        let completion_failure = reader_failure
+            .or(input_delivery_failure)
+            .or_else(|| stream_completion.and_then(Result::err));
+        let eligibility =
+            completion_failure.map_or_else(|| self.retention_completion_charge(), Err);
+        let mut completion = self
+            .replay_completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if completion.is_none() {
+            *completion = Some(eligibility);
+        }
+        self.control.mark_ended();
+        cast_result?;
+        Ok(status)
+    }
+
+    /// Give the reader thread the drain grace to reach EOF, force it if it does not, and join it.
+    /// Returns how it ended and, unless that was a clean EOF, why End cannot be trusted.
+    fn stop_reader(&self) -> (stream::ReaderDisposition, Option<String>) {
         let has_reader = self
             .reader
             .lock()
@@ -3609,121 +3658,104 @@ impl PtyHost {
             self.stopped.store(true, Ordering::SeqCst);
         }
         let reader = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let (reader_disposition, reader_failure) = match reader {
-            Some(t) => match t.join() {
-                Ok(Ok(())) => (stream::ReaderDisposition::CleanEof, None),
-                Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => (
-                    stream::ReaderDisposition::ForcedStop,
-                    Some(format!(
-                        "pty reader was forced before terminal End: {error}"
-                    )),
-                ),
-                Ok(Err(error)) => (
-                    stream::ReaderDisposition::ReadError,
-                    Some(format!("pty reader failed before terminal End: {error}")),
-                ),
-                Err(_) => (
-                    stream::ReaderDisposition::ReadError,
-                    Some("pty reader thread panicked before terminal End".to_string()),
-                ),
-            },
+        match reader {
+            Some(t) => reader_join_disposition(t.join()),
             None => (
                 stream::ReaderDisposition::ForcedStop,
                 Some("pty host had no reader completion proof".to_string()),
             ),
-        };
-        // Kernel EOF is necessary but no longer sufficient to publish pane End: an opaque input
-        // selected before closing may still be resolving outside the recorder lock. The delivery
-        // barrier above either observed its outcome or visibly failed its exact socket on grace
-        // expiry, so End can only become visible after both facts are settled.
-        if reader_disposition == stream::ReaderDisposition::CleanEof {
-            self.shared.retain_end();
         }
-        // `x` is synced first. The typed End then records whether that compatibility write, the
-        // reader, and the child status collectively proved a replayable terminal outcome. Even an
-        // ineligible forced/read/cast outcome is sealed when storage remains healthy, so recovery
-        // can distinguish a known bad ending from a torn file.
-        let input_complete = input_delivery_failure.is_none();
-        let (cast_result, stream_completion) = {
-            let mut recorders = self
-                .shared
-                .recorders
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let cast_result = recorders.cast.exit(&exit_word(status));
-            if let Err(error) = &cast_result {
-                recorders.note_cast_failure("exit", error);
-            }
-            let cast_complete = recorders.cast_failure.is_none();
-            let stream_completion = status.as_ref().map(|status| {
-                let mut outcome = recorders.durable.qualify_outcome(terminal_outcome(
-                    status,
-                    timed_out,
-                    reader_disposition,
-                    cast_complete,
-                ));
-                outcome.stream_complete &= input_complete;
-                recorders.durable.seal(outcome).and_then(|()| {
-                    if outcome.replay_eligible() {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "authoritative PTY stream sealed with an ineligible terminal outcome: {outcome:?}"
-                        ))
-                    }
-                })
-            });
-            (cast_result, stream_completion)
-        };
+    }
 
-        let completion_failure = reader_failure
-            .or(input_delivery_failure)
-            .or_else(|| stream_completion.and_then(Result::err));
-        let eligibility = completion_failure.map_or_else(
-            || {
-                if let Some(error) = self
-                    .shared
-                    .splice_error
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone()
-                {
-                    Err(format!("pty retention failed before completion: {error}"))
-                } else {
-                    match self.shared.splice.completion_charge() {
-                        Err(error) => Err(format!(
-                            "pty retention completion charge failed: {error}"
-                        )),
-                        Ok(None) => Err(
-                            "pty retention ended without a terminal End record".to_string(),
-                        ),
-                        Ok(Some(splice_charge)) => completed_host_charge_from(
-                            splice_charge,
-                            self.shared.splice.subscriber_limit(),
-                        )
-                        .ok_or_else(|| {
-                            "pty retention completion charge overflowed conservative host, registry, or PaneStreams reserve"
-                                .to_string()
-                        }),
-                    }
-                }
-            },
-            Err,
-        );
-        let mut completion = self
-            .replay_completion
+    /// Write the asciicast `x` record, then seal the typed End.
+    ///
+    /// `x` is synced first. The typed End then records whether that compatibility write, the
+    /// reader, and the child status collectively proved a replayable terminal outcome. Even an
+    /// ineligible forced/read/cast outcome is sealed when storage remains healthy, so recovery can
+    /// distinguish a known bad ending from a torn file. The second value is `None` when there was
+    /// no child status to seal.
+    fn seal_terminal_records(
+        &self,
+        status: Option<std::process::ExitStatus>,
+        timed_out: bool,
+        reader_disposition: stream::ReaderDisposition,
+        input_complete: bool,
+    ) -> (io::Result<()>, Option<Result<(), String>>) {
+        let mut recorders = self
+            .shared
+            .recorders
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if completion.is_none() {
-            *completion = Some(eligibility);
+        let cast_result = recorders.cast.exit(&exit_word(status));
+        if let Err(error) = &cast_result {
+            recorders.note_cast_failure("exit", error);
         }
-        self.control.mark_ended();
-        cast_result?;
-        Ok(status)
+        let cast_complete = recorders.cast_failure.is_none();
+        let stream_completion = status.as_ref().map(|status| {
+            let mut outcome = recorders.durable.qualify_outcome(terminal_outcome(
+                status,
+                timed_out,
+                reader_disposition,
+                cast_complete,
+            ));
+            outcome.stream_complete &= input_complete;
+            recorders.durable.seal_replayable(outcome)
+        });
+        (cast_result, stream_completion)
+    }
+
+    /// The host's replay-completion verdict once every completion step succeeded: the retention
+    /// splice must have recorded no error, reached a terminal End, and left a completion charge the
+    /// conservative host, registry, and PaneStreams reserves can hold.
+    fn retention_completion_charge(&self) -> Result<usize, String> {
+        if let Some(error) = self
+            .shared
+            .splice_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return Err(format!("pty retention failed before completion: {error}"));
+        }
+        match self.shared.splice.completion_charge() {
+            Err(error) => Err(format!("pty retention completion charge failed: {error}")),
+            Ok(None) => Err("pty retention ended without a terminal End record".to_string()),
+            Ok(Some(splice_charge)) => {
+                completed_host_charge_from(splice_charge, self.shared.splice.subscriber_limit())
+                    .ok_or_else(|| {
+                        "pty retention completion charge overflowed conservative host, registry, or PaneStreams reserve"
+                            .to_string()
+                    })
+            }
+        }
     }
 
     pub(crate) fn seal_controls(&self) {
         self.control.seal();
+    }
+}
+
+/// How a joined reader thread ended, and the failure text End must carry unless it was a clean
+/// EOF.
+fn reader_join_disposition(
+    joined: std::thread::Result<io::Result<()>>,
+) -> (stream::ReaderDisposition, Option<String>) {
+    match joined {
+        Ok(Ok(())) => (stream::ReaderDisposition::CleanEof, None),
+        Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => (
+            stream::ReaderDisposition::ForcedStop,
+            Some(format!(
+                "pty reader was forced before terminal End: {error}"
+            )),
+        ),
+        Ok(Err(error)) => (
+            stream::ReaderDisposition::ReadError,
+            Some(format!("pty reader failed before terminal End: {error}")),
+        ),
+        Err(_) => (
+            stream::ReaderDisposition::ReadError,
+            Some("pty reader thread panicked before terminal End".to_string()),
+        ),
     }
 }
 
