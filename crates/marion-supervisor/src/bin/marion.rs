@@ -1770,8 +1770,8 @@ fn legacy_main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // **The whole of the second verb's dispatch.** A `match` on argv[0] would read better and
-    // would mean restructuring the bare-picker branch below, which is `run`'s and has its own
-    // stdin-is-a-terminal rule; this adds a verb without touching what `run` does.
+    // would mean restructuring the bare-picker branch ([`pick_args`]), which is `run`'s and has
+    // its own stdin-is-a-terminal rule; this adds a verb without touching what `run` does.
     if argv.first().map(String::as_str) == Some("attach") {
         return attach_main(&argv);
     }
@@ -1790,59 +1790,93 @@ fn legacy_main() -> ExitCode {
             None => usage(),
         };
     }
-    let args = if argv.is_empty() {
-        // **Only** with a terminal on the other end. A picker that read from a pipe would block
-        // forever on input nothing is going to send, which is a hang, not a prompt.
-        if !io::stdin().is_terminal() {
-            usage()
-        }
-        let stdin = io::stdin();
-        let mut input = stdin.lock();
-        let mut out = io::stderr();
-        match pick(&mut input, &mut out) {
-            Ok(Some(chosen)) => Args {
-                agent_type: chosen.agent_type,
-                prompt: chosen.prompt,
-                repo: None,
-                state_dir: None,
-                base_url: None,
-                model: chosen.model,
-                timeout_secs: None,
-                no_change_record: false,
-                pane: false,
-                canned: false,
-            },
-            // EOF: the operator changed their mind, which is not an error.
-            Ok(None) => return ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("marion: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        match parse_args(&argv) {
-            Some(a) => a,
-            None => usage(),
-        }
-    };
+    run_main(&argv)
+}
 
+/// The bare verb — `marion [<agent-type> <prompt> …]`, or the picker with no argv at all: start a
+/// root over the socket and render it until it ends.
+///
+/// [`run`] answers with a `Result` so that every stage's refusal is one `?`. A refusal has already
+/// printed its sentence and carries only the exit code, so `Err` and `Ok` are both an exit code and
+/// folding them here loses nothing.
+fn run_main(argv: &[String]) -> ExitCode {
+    match run(argv) {
+        Ok(code) | Err(code) => code,
+    }
+}
+
+/// The run's arguments: parsed from argv, or picked interactively when there is none.
+fn run_args(argv: &[String]) -> Result<Args, ExitCode> {
+    if argv.is_empty() {
+        return pick_args();
+    }
+    match parse_args(argv) {
+        Some(a) => Ok(a),
+        None => usage(),
+    }
+}
+
+/// The bare-picker branch, which is `run`'s and has its own stdin-is-a-terminal rule.
+fn pick_args() -> Result<Args, ExitCode> {
+    // **Only** with a terminal on the other end. A picker that read from a pipe would block
+    // forever on input nothing is going to send, which is a hang, not a prompt.
+    if !io::stdin().is_terminal() {
+        usage()
+    }
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let mut out = io::stderr();
+    match pick(&mut input, &mut out) {
+        Ok(Some(chosen)) => Ok(Args {
+            agent_type: chosen.agent_type,
+            prompt: chosen.prompt,
+            repo: None,
+            state_dir: None,
+            base_url: None,
+            model: chosen.model,
+            timeout_secs: None,
+            no_change_record: false,
+            pane: false,
+            canned: false,
+        }),
+        // EOF: the operator changed their mind, which is not an error.
+        Ok(None) => Err(ExitCode::SUCCESS),
+        Err(e) => {
+            eprintln!("marion: {e}");
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// What a run resolves before it can name a supervisor: the agent type, the repository, the state
+/// directory and the vendor endpoint.
+struct RunTarget {
+    agent_type: marion_core::agent_type::AgentType,
+    repo: PathBuf,
+    state: PathBuf,
+    base_url: Option<String>,
+}
+
+/// Resolve [`RunTarget`] from the arguments and the environment. Each refusal prints its own
+/// sentence and answers the exit code.
+fn resolve_run_target(args: &Args) -> Result<RunTarget, ExitCode> {
     let Some(agent_type) = builtin(&args.agent_type) else {
         eprintln!(
             "marion: unknown agent type {:?}; known: {}",
             args.agent_type,
             builtin_names().join(", ")
         );
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
 
-    let repo = args.repo.unwrap_or_else(|| {
+    let repo = args.repo.clone().unwrap_or_else(|| {
         default_repo(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     });
     let repo = match repo.canonicalize() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("marion: cannot resolve repo {}: {e}", repo.display());
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     let Some(state) = state_dir(
@@ -1851,7 +1885,7 @@ fn legacy_main() -> ExitCode {
         std::env::var("HOME").ok().as_deref(),
     ) else {
         eprintln!("marion: cannot resolve a state directory (set --state-dir or $HOME)");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     let base_url = match resolve_base_url(
         args.canned,
@@ -1861,9 +1895,25 @@ fn legacy_main() -> ExitCode {
         Ok(u) => u,
         Err(e) => {
             eprintln!("marion: {e}");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
+    Ok(RunTarget {
+        agent_type,
+        repo,
+        state,
+        base_url,
+    })
+}
+
+fn run(argv: &[String]) -> Result<ExitCode, ExitCode> {
+    let args = run_args(argv)?;
+    let RunTarget {
+        agent_type,
+        repo,
+        state,
+        base_url,
+    } = resolve_run_target(&args)?;
     let bridge = supervisor_binary();
 
     // **§10's ownership move, completed.** The table moves the socket exactly once — M1 *"the
@@ -1939,63 +1989,32 @@ fn legacy_main() -> ExitCode {
     } else {
         marion_harness::Auth::Inherited
     };
-    let mut supervisor = match detach::ensure_supervisor(
-        &sock,
-        &detach::Launch {
-            program: bridge.clone(),
-            state_dir: state.clone(),
-            project_root: project_key.clone(),
-            // **§5.7's own default, because the grace is not this client's to choose.** `marion
-            // run` used to pass zero on the argument that it knows no successor is coming from
-            // *it*. That argument is about one client and the grace is a property of the
-            // supervisor: whichever client happens to *start* one fixes the number for every later
-            // client, so a TUI attaching to a run's supervisor inherited a zero it never asked for
-            // and identical behaviour depended on a startup race. §5.7 chose 300 s for precisely
-            // the case that produced — *"an operator closing one window to open another"* — and a
-            // run that ends moments before a TUI attaches is that case.
-            //
-            // It does not make this run's supervisor linger: the run's exit is an explicit
-            // `session/quit` (see [`SupervisorSession`]), and §5.7's grace is what bridges between
-            // clients that did **not** say they were leaving. `Handle::idle_exit_grace_waived` is
-            // where that distinction is spent.
-            idle_grace: RUN_IDLE_GRACE,
-            // Carried onto the supervisor's argv rather than left to its environment: see
-            // `detach::Launch::auth`. `resolve_base_url` already makes these a pair — `--canned`
-            // yields an endpoint and nothing else does — which is the same pairing `parse_serve`
-            // re-checks on the far side.
-            auth,
-            base_url: base_url.clone(),
-        },
-    ) {
-        Ok(ensured) => {
-            let lines = match ensured.stream.try_clone() {
-                Ok(half) => io::BufReader::new(half),
-                Err(e) => {
-                    eprintln!(
-                        "{}",
-                        supervisor_unreachable(
-                            sock.socket(),
-                            &format!("its connection could not be split for reading: {e}")
-                        )
-                    );
-                    return ExitCode::FAILURE;
-                }
-            };
-            SupervisorSession {
-                stream: ensured.stream,
-                lines,
-                socket: sock.socket().to_path_buf(),
-                next_id: 1,
-            }
-        }
-        // **A refusal, and the whole reason step 6 had to change this line.** See
-        // [`supervisor_unreachable`]: the root is not driven in this process any more, so there is
-        // nothing left for a missing supervisor to cost *except* the work.
-        Err(e) => {
-            eprintln!("{}", supervisor_unreachable(sock.socket(), &e.to_string()));
-            return ExitCode::FAILURE;
-        }
+    let launch = detach::Launch {
+        program: bridge.clone(),
+        state_dir: state.clone(),
+        project_root: project_key.clone(),
+        // **§5.7's own default, because the grace is not this client's to choose.** `marion
+        // run` used to pass zero on the argument that it knows no successor is coming from
+        // *it*. That argument is about one client and the grace is a property of the
+        // supervisor: whichever client happens to *start* one fixes the number for every later
+        // client, so a TUI attaching to a run's supervisor inherited a zero it never asked for
+        // and identical behaviour depended on a startup race. §5.7 chose 300 s for precisely
+        // the case that produced — *"an operator closing one window to open another"* — and a
+        // run that ends moments before a TUI attaches is that case.
+        //
+        // It does not make this run's supervisor linger: the run's exit is an explicit
+        // `session/quit` (see [`SupervisorSession`]), and §5.7's grace is what bridges between
+        // clients that did **not** say they were leaving. `Handle::idle_exit_grace_waived` is
+        // where that distinction is spent.
+        idle_grace: RUN_IDLE_GRACE,
+        // Carried onto the supervisor's argv rather than left to its environment: see
+        // `detach::Launch::auth`. `resolve_base_url` already makes these a pair — `--canned`
+        // yields an endpoint and nothing else does — which is the same pairing `parse_serve`
+        // re-checks on the far side.
+        auth,
+        base_url: base_url.clone(),
     };
+    let mut supervisor = connect_run_supervisor(&sock, &launch)?;
 
     // The bound the node will run under, resolved with the **same** function the supervisor
     // resolves it with. Not sent as a number and not binding here: the wire carries `--timeout`
@@ -2030,101 +2049,16 @@ fn legacy_main() -> ExitCode {
     // supervisor read. Steps 5 and 6 changed only *who writes* the records this tails; the reader is
     // unmoved, which is `events.rs`'s argument for a file cursor holding whoever the writer is.
     let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let poller = {
-        let journal = project.journal();
-        let terminal = std::sync::Arc::clone(&terminal);
-        let stop = std::sync::Arc::clone(&stop);
-        // The root is excluded by id, and its id does not exist yet — so the watch is handed a
-        // channel to learn it on rather than the value. Until it arrives nothing this run caused is
-        // in the file at all, because the first record of the run *is* the root's own intent.
-        let (id_tx, id_rx) = std::sync::mpsc::channel::<marion_core::contract::AgentId>();
-        let handle = std::thread::spawn(move || {
-            let root_id = match id_rx.recv() {
-                Ok(id) => id,
-                // The spawn never got an id, so there is nothing to watch and nothing to report.
-                Err(_) => return,
-            };
-            let mut watch = JournalWatch::at_end(&journal, root_id);
-            follow_journal(
-                &mut watch,
-                &|| stop.load(Ordering::Relaxed),
-                &|| std::thread::sleep(JOURNAL_POLL),
-                &mut |event| {
-                    terminal.show(&|w| {
-                        let _ = render_child(event, w);
-                    })
-                },
-            );
-        });
-        (handle, id_tx)
-    };
-    let (poller, poller_id) = poller;
+    let (poller, poller_id) = tail_children(project.journal(), &terminal, &stop);
 
-    // **§11 item 28 step 6: the root is created over the socket, not in this process.**
-    //
-    // `caller: None` is what makes this a root — see `marion_proto::AgentSpawnParams`. The `repo`
-    // is required with it and is computed here because only this client knows which of the trees
-    // one supervisor serves the operator meant (§2 keys the supervisor on the git common dir, so
-    // `<state>/<project-hash>` names the repository and every linked worktree of it at once).
-    let spawned = (|| -> Result<marion_proto::result::AgentSpawnResult, String> {
-        let id = supervisor.send(marion_proto::Call::AgentSpawn(
-            marion_proto::params::AgentSpawnParams {
-                agent_type: args.agent_type.clone(),
-                prompt: args.prompt.clone(),
-                native_launch: None,
-                caller: None,
-                repo: Some(repo.clone()),
-                // A root states none: §9's contract terms belong to a child's `spawn`, and a root
-                // has no contract to carry them.
-                acceptance_criteria: vec![],
-                writable_scope: vec![],
-                // Stated as the operator stated it. The supervisor resolves it, so a number
-                // invented here would be a second source of truth for §3.1's own key.
-                timeout_secs: args.timeout_secs,
-                model: args.model.clone(),
-                // Root-only, and stated rather than defaulted so the supervisor can tell an
-                // operator who declined the snapshot from one who said nothing.
-                no_change_record: Some(args.no_change_record),
-                // **Stated only when asked for**, exactly as `no_change_record` is: absent and
-                // `false` must stay distinguishable on the wire, or the supervisor's root-only
-                // pairing refusal would fire on every operator who never mentioned a pane.
-                pane: args.pane.then_some(true),
-                // **Child-only, and the supervisor refuses either of them beside `caller: None`.**
-                // A root's workspace is not a choice: it is the operator's own checkout at `repo`,
-                // which is what §9's change record measures. `marion run` therefore has no
-                // `--isolation` flag to forward and states neither field.
-                isolation: None,
-                allow_concurrent_writes: None,
-            },
-        ))?;
-        // Nothing can be notified before the first attach, so the sink here is unreachable — and it
-        // is a real sink rather than a panic, because a supervisor speaking early is not a reason
-        // to lose a run.
-        let outcome = supervisor.pump(Awaited::Response(id), &mut |_| {})?;
-        match outcome {
-            marion_proto::Outcome::Result(body) => {
-                match marion_proto::Method::AgentSpawn.decode_result(&body) {
-                    Ok(marion_proto::MethodResult::AgentSpawn(r)) => Ok(r),
-                    _ => Err(
-                        "marion: this project's supervisor answered `agent/spawn` with a \
-                              result marion cannot read"
-                            .to_string(),
-                    ),
-                }
-            }
-            // The supervisor's own sentence, verbatim. It already names the rule and the field;
-            // re-wording it here would put marion's guess in front of marion's answer.
-            marion_proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
-        }
-    })();
-    let spawned = match spawned {
+    let spawned = match spawn_root(&mut supervisor, &args, &repo) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{e}");
             stop.store(true, Ordering::Relaxed);
             drop(poller_id);
             let _ = poller.join();
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     let root_id = spawned.agent_id.clone();
@@ -2154,7 +2088,7 @@ fn legacy_main() -> ExitCode {
              `marion tree` for the forest",
             root_id.0, args.agent_type, root_id.0
         );
-        return ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     }
     eprintln!(
         "marion: root {} ({}) in {}",
@@ -2176,7 +2110,7 @@ fn legacy_main() -> ExitCode {
         Ok(w) => w,
         Err(e) => {
             eprintln!("{e}");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     for frame in &watched.transcript {
@@ -2196,7 +2130,150 @@ fn legacy_main() -> ExitCode {
              it cannot ask about"
         );
     }
-    match watched.terminal {
+    Ok(run_verdict(watched.terminal, blocked_bound))
+}
+
+/// Dial the supervisor this run may start, and split its connection for reading. Either failure
+/// is [`supervisor_unreachable`]'s sentence and a refusal.
+fn connect_run_supervisor(
+    sock: &socket::SocketPaths,
+    launch: &detach::Launch,
+) -> Result<SupervisorSession, ExitCode> {
+    match detach::ensure_supervisor(sock, launch) {
+        Ok(ensured) => {
+            let lines = match ensured.stream.try_clone() {
+                Ok(half) => io::BufReader::new(half),
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        supervisor_unreachable(
+                            sock.socket(),
+                            &format!("its connection could not be split for reading: {e}")
+                        )
+                    );
+                    return Err(ExitCode::FAILURE);
+                }
+            };
+            Ok(SupervisorSession {
+                stream: ensured.stream,
+                lines,
+                socket: sock.socket().to_path_buf(),
+                next_id: 1,
+            })
+        }
+        // **A refusal, and the whole reason step 6 had to change this line.** See
+        // [`supervisor_unreachable`]: the root is not driven in this process any more, so there is
+        // nothing left for a missing supervisor to cost *except* the work.
+        Err(e) => {
+            eprintln!("{}", supervisor_unreachable(sock.socket(), &e.to_string()));
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Start the thread that tails the journal for this run's children and renders them on
+/// `terminal`, and answer it with the channel its root id arrives on.
+///
+/// The root is excluded by id, and its id does not exist yet — so the watch is handed a channel
+/// to learn it on rather than the value. Until it arrives nothing this run caused is in the file
+/// at all, because the first record of the run *is* the root's own intent.
+fn tail_children(
+    journal: PathBuf,
+    terminal: &std::sync::Arc<Terminal<io::Stderr>>,
+    stop: &std::sync::Arc<AtomicBool>,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Sender<marion_core::contract::AgentId>,
+) {
+    let terminal = std::sync::Arc::clone(terminal);
+    let stop = std::sync::Arc::clone(stop);
+    let (id_tx, id_rx) = std::sync::mpsc::channel::<marion_core::contract::AgentId>();
+    let handle = std::thread::spawn(move || {
+        let root_id = match id_rx.recv() {
+            Ok(id) => id,
+            // The spawn never got an id, so there is nothing to watch and nothing to report.
+            Err(_) => return,
+        };
+        let mut watch = JournalWatch::at_end(&journal, root_id);
+        follow_journal(
+            &mut watch,
+            &|| stop.load(Ordering::Relaxed),
+            &|| std::thread::sleep(JOURNAL_POLL),
+            &mut |event| {
+                terminal.show(&|w| {
+                    let _ = render_child(event, w);
+                })
+            },
+        );
+    });
+    (handle, id_tx)
+}
+
+/// **§11 item 28 step 6: the root is created over the socket, not in this process.**
+///
+/// `caller: None` is what makes this a root — see `marion_proto::AgentSpawnParams`. The `repo`
+/// is required with it and is computed by the caller because only this client knows which of the
+/// trees one supervisor serves the operator meant (§2 keys the supervisor on the git common dir,
+/// so `<state>/<project-hash>` names the repository and every linked worktree of it at once).
+fn spawn_root(
+    supervisor: &mut SupervisorSession,
+    args: &Args,
+    repo: &Path,
+) -> Result<marion_proto::result::AgentSpawnResult, String> {
+    let id = supervisor.send(marion_proto::Call::AgentSpawn(
+        marion_proto::params::AgentSpawnParams {
+            agent_type: args.agent_type.clone(),
+            prompt: args.prompt.clone(),
+            native_launch: None,
+            caller: None,
+            repo: Some(repo.to_path_buf()),
+            // A root states none: §9's contract terms belong to a child's `spawn`, and a root
+            // has no contract to carry them.
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            // Stated as the operator stated it. The supervisor resolves it, so a number
+            // invented here would be a second source of truth for §3.1's own key.
+            timeout_secs: args.timeout_secs,
+            model: args.model.clone(),
+            // Root-only, and stated rather than defaulted so the supervisor can tell an
+            // operator who declined the snapshot from one who said nothing.
+            no_change_record: Some(args.no_change_record),
+            // **Stated only when asked for**, exactly as `no_change_record` is: absent and
+            // `false` must stay distinguishable on the wire, or the supervisor's root-only
+            // pairing refusal would fire on every operator who never mentioned a pane.
+            pane: args.pane.then_some(true),
+            // **Child-only, and the supervisor refuses either of them beside `caller: None`.**
+            // A root's workspace is not a choice: it is the operator's own checkout at `repo`,
+            // which is what §9's change record measures. `marion run` therefore has no
+            // `--isolation` flag to forward and states neither field.
+            isolation: None,
+            allow_concurrent_writes: None,
+        },
+    ))?;
+    // Nothing can be notified before the first attach, so the sink here is unreachable — and it
+    // is a real sink rather than a panic, because a supervisor speaking early is not a reason
+    // to lose a run.
+    let outcome = supervisor.pump(Awaited::Response(id), &mut |_| {})?;
+    match outcome {
+        marion_proto::Outcome::Result(body) => {
+            match marion_proto::Method::AgentSpawn.decode_result(&body) {
+                Ok(marion_proto::MethodResult::AgentSpawn(r)) => Ok(r),
+                _ => Err(
+                    "marion: this project's supervisor answered `agent/spawn` with a \
+                          result marion cannot read"
+                        .to_string(),
+                ),
+            }
+        }
+        // The supervisor's own sentence, verbatim. It already names the rule and the field;
+        // re-wording it here would put marion's guess in front of marion's answer.
+        marion_proto::Outcome::Error(e) => Err(format!("marion: {}", e.message)),
+    }
+}
+
+/// The run's exit code, read off how the root's stream ended.
+fn run_verdict(terminal: Terminal_, blocked_bound: StdDuration) -> ExitCode {
+    match terminal {
         Terminal_::Aborted(reason) => {
             eprintln!("marion: {reason}");
             ExitCode::FAILURE
