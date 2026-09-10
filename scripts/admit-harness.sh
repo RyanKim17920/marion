@@ -149,10 +149,14 @@ rm -f "$log"
 stamp=$(date +%Y-%m-%d)
 platform=$(uname -sr | tr -s ' ' ' ')
 names=$(printf '%s' "$pairs" | awk '{printf "%s%s %s", (NR>1?" and ":""), $1, $2}')
+# rustfmt never rewraps a comment, so the note is folded here to the table's 100-column width
+# (8 spaces of indent + `// ` + 88).
 annotate() {
-    ADMIT_HARNESS=$1 ADMIT_NOTE="// $2: observed green on $platform, $stamp, via scripts/admit-harness.sh ($names in one run): $(printf '%s' "$counts" | tr -d '`')." perl -0pi -e '
+    body="$2: observed green on $platform, $stamp, via scripts/admit-harness.sh ($names in one run): $(printf '%s' "$counts" | tr -d '`')."
+    note=$(printf '%s' "$body" | fold -s -w 88 | sed 's/ *$//; s|^|        // |')
+    ADMIT_HARNESS=$1 ADMIT_NOTE="$note" perl -0pi -e '
         my $h = $ENV{ADMIT_HARNESS};
-        s{(program: "\Q$h\E",.*?)(\n[ \t]*accepted: &\[)}{$1\n        $ENV{ADMIT_NOTE}$2}s or die;
+        s{(program: "\Q$h\E",.*?)(\n[ \t]*accepted: &\[)}{$1\n$ENV{ADMIT_NOTE}$2}s or die;
     ' "$table"
 }
 printf '%s' "$pairs" | while read -r h v; do annotate "$h" "$v" || exit 1; done || { restore; exit 1; }
