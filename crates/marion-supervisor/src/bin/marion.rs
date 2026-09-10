@@ -1696,59 +1696,14 @@ fn detach_report(
 
 impl Drop for SupervisorSession {
     fn drop(&mut self) {
-        use std::io::{BufRead, Write};
         // Nothing below may panic: this can run during an unwind, and a panic there aborts the
         // process before the run's own error is printed. `writeln!` to a locked stderr rather than
         // `eprintln!`, which panics on a write failure, and every result is deliberately dropped.
         let mut err = io::stderr();
-        let frame = marion_proto::Frame::Request(marion_proto::Request::new(
-            marion_proto::RequestId::Number(1),
-            marion_proto::Call::SessionQuit(marion_proto::params::SessionQuitParams {
-                disposition: marion_proto::QuitDisposition::DetachAll,
-            }),
-        ));
-        if self
-            .stream
-            .write_all(frame.to_line().as_bytes())
-            .and_then(|()| self.stream.flush())
-            .is_err()
-        {
-            // The supervisor is already gone or unreachable. Nothing to report and nothing to do:
-            // §7.3.1's invariant means the nodes are untouched either way.
+        if !self.request_detach_all() {
             return;
         }
-        if self
-            .stream
-            .set_read_timeout(Some(SUPERVISOR_REPLY_WAIT))
-            .is_err()
-        {
-            // See [`SUPERVISOR_REPLY_WAIT`]: reading without a bound is the one option that is
-            // worse than not reading at all.
-            return;
-        }
-        // **Skipping notifications rather than reading one line.** This connection is subscribed to
-        // the root's stream, so the next line is quite as likely to be a `node/event` as the
-        // answer — and a guard that read exactly one line would report nothing on every run whose
-        // node said one more thing on the way out. Bounded twice over: by the read timeout set
-        // above, which applies per read, and by the count, so a supervisor that streams for ever
-        // cannot hold an unwinding process.
-        let mut response = None;
-        for _ in 0..QUIT_REPLY_FRAMES {
-            let mut line = String::new();
-            match self.lines.read_line(&mut line) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {}
-            }
-            match marion_proto::Frame::from_line(&line) {
-                Ok(marion_proto::Frame::Response(r)) => {
-                    response = Some(r);
-                    break;
-                }
-                Ok(_) => continue,
-                Err(_) => return,
-            }
-        }
-        let Some(response) = response else {
+        let Some(response) = self.quit_response() else {
             return;
         };
         let marion_proto::Outcome::Result(body) = response.outcome else {
@@ -1764,19 +1719,78 @@ impl Drop for SupervisorSession {
         };
         let _ = write!(err, "{report}");
         if supervisor == marion_proto::SupervisorDisposition::Exiting {
-            let deadline = std::time::Instant::now() + SUPERVISOR_EXIT_WAIT;
-            while self.socket.exists() && std::time::Instant::now() < deadline {
-                std::thread::sleep(StdDuration::from_millis(2));
+            self.wait_for_supervisor_exit(&mut err);
+        }
+    }
+}
+
+impl SupervisorSession {
+    /// Send `session/quit DetachAll` and bound the wait for its answer. `false` when either step
+    /// failed, and then there is nothing more this session can do or say.
+    fn request_detach_all(&mut self) -> bool {
+        let frame = marion_proto::Frame::Request(marion_proto::Request::new(
+            marion_proto::RequestId::Number(1),
+            marion_proto::Call::SessionQuit(marion_proto::params::SessionQuitParams {
+                disposition: marion_proto::QuitDisposition::DetachAll,
+            }),
+        ));
+        if self
+            .stream
+            .write_all(frame.to_line().as_bytes())
+            .and_then(|()| self.stream.flush())
+            .is_err()
+        {
+            // The supervisor is already gone or unreachable. Nothing to report and nothing to do:
+            // §7.3.1's invariant means the nodes are untouched either way.
+            return false;
+        }
+        // See [`SUPERVISOR_REPLY_WAIT`]: reading without a bound is the one option that is
+        // worse than not reading at all.
+        self.stream
+            .set_read_timeout(Some(SUPERVISOR_REPLY_WAIT))
+            .is_ok()
+    }
+
+    /// The quit's response, skipping the notifications that may arrive ahead of it.
+    ///
+    /// **Skipping notifications rather than reading one line.** This connection is subscribed to
+    /// the root's stream, so the next line is quite as likely to be a `node/event` as the
+    /// answer — and a guard that read exactly one line would report nothing on every run whose
+    /// node said one more thing on the way out. Bounded twice over: by the read timeout
+    /// [`request_detach_all`](Self::request_detach_all) set, which applies per read, and by the
+    /// count, so a supervisor that streams for ever cannot hold an unwinding process. `None` on
+    /// EOF, a read failure, an unreadable line or the count running out.
+    fn quit_response(&mut self) -> Option<marion_proto::Response> {
+        for _ in 0..QUIT_REPLY_FRAMES {
+            let mut line = String::new();
+            match self.lines.read_line(&mut line) {
+                Ok(0) | Err(_) => return None,
+                Ok(_) => {}
             }
-            if self.socket.exists() {
-                let _ = writeln!(
-                    err,
-                    "marion: this project's supervisor said it was exiting and {} is still there \
-                     after {} s; it may still be shutting down",
-                    self.socket.display(),
-                    SUPERVISOR_EXIT_WAIT.as_secs()
-                );
+            match marion_proto::Frame::from_line(&line) {
+                Ok(marion_proto::Frame::Response(r)) => return Some(r),
+                Ok(_) => continue,
+                Err(_) => return None,
             }
+        }
+        None
+    }
+
+    /// Wait up to [`SUPERVISOR_EXIT_WAIT`] for an exiting supervisor's socket to go, and say so
+    /// on `err` if it is still there.
+    fn wait_for_supervisor_exit(&self, err: &mut io::Stderr) {
+        let deadline = std::time::Instant::now() + SUPERVISOR_EXIT_WAIT;
+        while self.socket.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(StdDuration::from_millis(2));
+        }
+        if self.socket.exists() {
+            let _ = writeln!(
+                err,
+                "marion: this project's supervisor said it was exiting and {} is still there \
+                 after {} s; it may still be shutting down",
+                self.socket.display(),
+                SUPERVISOR_EXIT_WAIT.as_secs()
+            );
         }
     }
 }
