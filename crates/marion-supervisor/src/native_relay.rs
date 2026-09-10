@@ -654,76 +654,87 @@ struct PollFd {
 const POLLOUT: i16 = 0x0004;
 const POLLNVAL: i16 = 0x0020;
 
-impl OwnedFdWriter {
-    /// Block until the terminal will take more bytes, or `deadline` passes. `Ok(true)` is
-    /// writable; `Ok(false)` is the deadline; a closed descriptor is an error.
-    fn wait_writable(&self, deadline: std::time::Instant) -> std::io::Result<bool> {
-        use std::os::fd::AsRawFd;
-        loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                return Ok(false);
+/// Block until `fd` will take more bytes, or `deadline` passes. `Ok(true)` is writable;
+/// `Ok(false)` is the deadline; a closed descriptor is an error.
+fn wait_writable(
+    fd: std::os::fd::BorrowedFd<'_>,
+    deadline: std::time::Instant,
+) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        let mut pfd = PollFd {
+            fd: fd.as_raw_fd(),
+            events: POLLOUT,
+            revents: 0,
+        };
+        let timeout_ms =
+            std::ffi::c_int::try_from(remaining.as_millis().max(1)).unwrap_or(std::ffi::c_int::MAX);
+        // SAFETY: `pfd` is a live, correctly laid out `struct pollfd` for the duration of the
+        // call, and `fd` is a live borrowed descriptor.
+        let ready = unsafe { poll(&mut pfd, 1, timeout_ms) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
             }
-            let mut pfd = PollFd {
-                fd: self.0.as_raw_fd(),
-                events: POLLOUT,
-                revents: 0,
-            };
-            let timeout_ms = std::ffi::c_int::try_from(remaining.as_millis().max(1))
-                .unwrap_or(std::ffi::c_int::MAX);
-            // SAFETY: `pfd` is a live, correctly laid out `struct pollfd` for the duration of the
-            // call, and `self.0` owns the descriptor it names.
-            let ready = unsafe { poll(&mut pfd, 1, timeout_ms) };
-            if ready < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
+            return Err(error);
+        }
+        if ready == 0 {
+            return Ok(false);
+        }
+        if pfd.revents & POLLNVAL != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the terminal output descriptor was closed under the relay",
+            ));
+        }
+        // `POLLOUT`, `POLLHUP` or `POLLERR`: the write decides, and cannot block after any.
+        return Ok(true);
+    }
+}
+
+/// One write to the operator's terminal. **`WouldBlock` is a full queue, not a failure.** The
+/// descriptor is nonblocking while the relay runs, and a TUI paints its frame in one burst larger
+/// than a pty's output queue; a writer that reported the first refusal would end the relay
+/// mid-frame whenever the operator's terminal drained a little slower than the harness painted
+/// (`native_facade_e2e.rs` caught exactly that: the client gone, the frame's tail never written),
+/// and would fail the finish stage's passive cleanup bytes whenever a detach landed under a frame
+/// still draining (the same file's copilot lane: a clean `^]d` exited 1 with `EAGAIN`). A refused
+/// write blocks on the descriptor's writability, not on time, and only a queue nobody drains within
+/// [`OUTPUT_STALL`] becomes an error, named as a stall.
+fn write_waiting_out_a_full_queue(
+    fd: std::os::fd::BorrowedFd<'_>,
+    bytes: &[u8],
+) -> std::io::Result<usize> {
+    let deadline = std::time::Instant::now() + OUTPUT_STALL;
+    loop {
+        match rustix::io::write(fd, bytes) {
+            Ok(written) => return Ok(written),
+            // `EWOULDBLOCK` is `EAGAIN` on both supported targets.
+            Err(rustix::io::Errno::AGAIN) => {
+                if !wait_writable(fd, deadline)? {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!(
+                            "the terminal's output queue stayed full for {OUTPUT_STALL:?}; \
+                             nothing is reading the operator's terminal"
+                        ),
+                    ));
                 }
-                return Err(error);
             }
-            if ready == 0 {
-                return Ok(false);
-            }
-            if pfd.revents & POLLNVAL != 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "the terminal output descriptor was closed under the relay",
-                ));
-            }
-            // `POLLOUT`, `POLLHUP` or `POLLERR`: the write decides, and cannot block after any.
-            return Ok(true);
+            Err(error) => return Err(error.into()),
         }
     }
 }
 
 impl Write for OwnedFdWriter {
-    /// **`WouldBlock` is a full queue, not a failure.** The descriptor is nonblocking while the
-    /// relay runs, and a TUI paints its frame in one burst larger than a pty's output queue; a
-    /// writer that reported the first refusal would end the relay mid-frame whenever the operator's
-    /// terminal drained a little slower than the harness painted (`native_facade_e2e.rs` caught
-    /// exactly that: the client gone, the frame's tail never written). A refused write blocks on
-    /// the descriptor's writability, not on time, and only a queue nobody drains within
-    /// [`OUTPUT_STALL`] becomes an error, named as a stall.
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let deadline = std::time::Instant::now() + OUTPUT_STALL;
-        loop {
-            match rustix::io::write(&self.0, bytes) {
-                Ok(written) => return Ok(written),
-                // `EWOULDBLOCK` is `EAGAIN` on both supported targets.
-                Err(rustix::io::Errno::AGAIN) => {
-                    if !self.wait_writable(deadline)? {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            format!(
-                                "the terminal's output queue stayed full for {OUTPUT_STALL:?}; \
-                                 nothing is reading the operator's terminal"
-                            ),
-                        ));
-                    }
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
+        use std::os::fd::AsFd;
+        write_waiting_out_a_full_queue(self.0.as_fd(), bytes)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -941,16 +952,20 @@ fn resolve_relay_finish(
 fn write_passive_terminal_cleanup(
     terminal: &crate::native_tty::NativeRelayTerminal,
 ) -> std::io::Result<()> {
-    struct BorrowedTerminalWriter<'a>(std::os::fd::BorrowedFd<'a>);
-    impl Write for BorrowedTerminalWriter<'_> {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            rustix::io::write(self.0, bytes).map_err(Into::into)
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
     write_passive_terminal_cleanup_to(BorrowedTerminalWriter(terminal.stdout()))
+}
+
+/// The operator's terminal output, borrowed for the cleanup bytes the finish stages write.
+struct BorrowedTerminalWriter<'a>(std::os::fd::BorrowedFd<'a>);
+
+impl Write for BorrowedTerminalWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        write_waiting_out_a_full_queue(self.0, bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn write_passive_terminal_cleanup_to(mut output: impl Write) -> std::io::Result<()> {
@@ -1511,15 +1526,15 @@ mod tests {
 
     use super::{
         AFTER_RELAY_SIGNAL_RESTORE, AFTER_RESIZE_SIGNAL_ACQUIRE,
-        BEFORE_REDELIVERY_WHILE_OWNER_HELD, FIRST_RELAY_SIGNAL, HANDLED_SIGNALS, HUNG_UP,
-        INTERRUPTED, RELAY_SIGNAL_EVENTS, RESIZED, RawPaneSession, RelaySignalGuard, RelayStop,
-        SIG_BLOCK, SIG_DFL, SIG_IGN, SIGHUP, SIGINT, SIGTERM, SIGTSTP, SIGWINCH, SigSet, Sigaction,
-        TERMINATED, WHILE_STOPPED_WITH_TERMINATIONS_BLOCKED, current_thread_signal_mask,
-        empty_sigset, fail_relay_signal_install_at, fail_relay_signal_restore_at,
-        fail_relay_signal_restore_at_attempts, finish_claimed_relay, on_relay_signal,
-        owned_stop_pending, pthread_sigmask, raise, redeliver_signal, relay_claimed,
-        resolve_relay_finish, setup_after_signal_acquire, sigaction, signal, signal_in_set,
-        signal_set, suspend_until_continued, write_passive_terminal_cleanup_to,
+        BEFORE_REDELIVERY_WHILE_OWNER_HELD, BorrowedTerminalWriter, FIRST_RELAY_SIGNAL,
+        HANDLED_SIGNALS, HUNG_UP, INTERRUPTED, RELAY_SIGNAL_EVENTS, RESIZED, RawPaneSession,
+        RelaySignalGuard, RelayStop, SIG_BLOCK, SIG_DFL, SIG_IGN, SIGHUP, SIGINT, SIGTERM, SIGTSTP,
+        SIGWINCH, SigSet, Sigaction, TERMINATED, WHILE_STOPPED_WITH_TERMINATIONS_BLOCKED,
+        current_thread_signal_mask, empty_sigset, fail_relay_signal_install_at,
+        fail_relay_signal_restore_at, fail_relay_signal_restore_at_attempts, finish_claimed_relay,
+        on_relay_signal, owned_stop_pending, pthread_sigmask, raise, redeliver_signal,
+        relay_claimed, resolve_relay_finish, setup_after_signal_acquire, sigaction, signal,
+        signal_in_set, signal_set, suspend_until_continued, write_passive_terminal_cleanup_to,
     };
     use crate::native_tty::test_support::{
         RawRelayTerminal, fail_next_stdin_flag_restore, queue_status_flag_results,
@@ -4292,6 +4307,44 @@ mod tests {
             reader.join().unwrap(),
             expected,
             "every byte of the burst arrived"
+        );
+    }
+
+    /// The same descriptor is nonblocking when the finish stage writes its passive cleanup bytes,
+    /// and at a detach the queue is whatever the harness's last frame left in it — a full one when
+    /// the operator detaches under a large dialog (`native_facade_e2e.rs`'s copilot lane, 1.0.83's
+    /// folder-trust dialog: `passive terminal bytes` failed with `EAGAIN` and the clean detach
+    /// exited 1). A full queue at cleanup is waited out exactly as it is mid-relay.
+    #[test]
+    fn passive_cleanup_waits_out_a_full_nonblocking_terminal_queue() {
+        let (writer_end, mut reader_end) = UnixStream::pair().unwrap();
+        writer_end.set_nonblocking(true).unwrap();
+        // Fill the queue the way a frame larger than the terminal drains would leave it.
+        let mut filled = 0usize;
+        loop {
+            match rustix::io::write(&writer_end, &[0x41u8; 4096]) {
+                Ok(written) => filled += written,
+                Err(rustix::io::Errno::AGAIN) => break,
+                Err(error) => panic!("filling the terminal queue: {error}"),
+            }
+        }
+        let mut expected = vec![0x41u8; filled];
+        write_passive_terminal_cleanup_to(&mut expected).unwrap();
+        let reader = std::thread::spawn(move || {
+            // The terminal drains only once the cleanup write is already refused.
+            std::thread::sleep(Duration::from_millis(100));
+            let mut received = Vec::new();
+            reader_end.read_to_end(&mut received).unwrap();
+            received
+        });
+        use std::os::fd::AsFd;
+        write_passive_terminal_cleanup_to(BorrowedTerminalWriter(writer_end.as_fd()))
+            .expect("a full terminal queue at cleanup is waited out, not reported");
+        drop(writer_end);
+        assert_eq!(
+            reader.join().unwrap(),
+            expected,
+            "the cleanup bytes followed the frame that filled the queue"
         );
     }
 }

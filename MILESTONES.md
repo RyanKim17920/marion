@@ -278,7 +278,12 @@ in the same run): `harness_matrix` (8), `cross_product` (57), `journal_wiring` (
 `m4_fan_in` (1), `depth_gate` (4), `no_git` (5), `pane_attach` (2), `acp_child` (3),
 `permission_round_trip` (8), `native_facade_smoke` (1), `client_run` (7), `node_attach` (2),
 `timeout_kill` (1), `worktree_reap` (8), and the claude lane of `native_facade_e2e` (its copilot
-lane failed on copilot's own trust dialog, pinned 1.0.83, unrelated). `pane_attach`'s claude cell is
+lane failed at `^]d` with exit 1 — first read as copilot's own trust dialog, actually the relay's
+finish stage: the passive cleanup bytes were written raw to the nonblocking terminal and copilot's
+folder-trust frame still filled the pty queue, so `EAGAIN` surfaced as `passive terminal bytes`
+failed. Fixed 2026-09-09: the cleanup writer waits out a full queue exactly as the relay's frame
+writer does, proved by `passive_cleanup_waits_out_a_full_nonblocking_terminal_queue`, and the
+copilot lane runs green after claude and codex in one process). `pane_attach`'s claude cell is
 green, so the double-painted trust dialog is still 2.1.263's shape and the fixture's settle wait
 still covers it; the cursor still defaults to "No, exit". The s10/s11/s14/s16 probes were not re-
 run.
