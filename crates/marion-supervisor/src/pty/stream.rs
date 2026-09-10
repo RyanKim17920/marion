@@ -466,26 +466,7 @@ impl Record {
     }
 
     fn decode_for(encoded: &[u8], format: RecordFormat) -> Result<Self, StreamError> {
-        if encoded.len() < FRAME_LEN_BYTES + CHECKSUM_BYTES {
-            return Err(StreamError::TruncatedFrame);
-        }
-        let record_len =
-            u32::from_le_bytes(encoded[..FRAME_LEN_BYTES].try_into().unwrap()) as usize;
-        if record_len > MAX_RECORD_BYTES {
-            return Err(StreamError::RecordTooLarge {
-                actual: record_len,
-                max: MAX_RECORD_BYTES,
-            });
-        }
-        let expected_len = FRAME_LEN_BYTES + record_len + CHECKSUM_BYTES;
-        if encoded.len() != expected_len || record_len < FRAME_FIXED_BYTES {
-            return Err(StreamError::TruncatedFrame);
-        }
-        let record = &encoded[FRAME_LEN_BYTES..FRAME_LEN_BYTES + record_len];
-        if blake3::hash(record).as_bytes() != &encoded[FRAME_LEN_BYTES + record_len..] {
-            return Err(StreamError::ChecksumMismatch);
-        }
-
+        let record = checked_record_bytes(encoded)?;
         let kind = record[0];
         let record_seq = u64::from_le_bytes(record[1..9].try_into().unwrap());
         let display_seq = u64::from_le_bytes(record[9..17].try_into().unwrap());
@@ -495,67 +476,127 @@ impl Record {
             return Err(StreamError::InvalidRecordPayload);
         }
         let payload = &record[FRAME_FIXED_BYTES..];
-        let kind = match kind {
-            OUTPUT_KIND => RecordKind::Output(payload.to_vec()),
-            RESIZE_KIND => {
-                if payload.len() != 4 {
-                    return Err(StreamError::InvalidRecordPayload);
-                }
-                RecordKind::Resize {
-                    rows: u16::from_le_bytes(payload[..2].try_into().unwrap()),
-                    cols: u16::from_le_bytes(payload[2..].try_into().unwrap()),
-                }
-            }
-            INPUT_EVIDENCE_KIND
-                if payload.len()
-                    == match format {
-                        RecordFormat::SessionV2 => size_of::<u32>() + CHECKSUM_BYTES,
-                        RecordFormat::LegacyV1 | RecordFormat::SessionV3 => size_of::<u32>(),
-                    } =>
-            {
-                // v2 appended a keyed content fingerprint after this length. Its key was stored in
-                // the same header, so exposing it preserved offline guess verification. Recover its
-                // honest ordering/length while deliberately discarding the unsafe legacy digest.
-                RecordKind::InputEvidence {
-                    input_seq,
-                    byte_len: u32::from_le_bytes(payload[..4].try_into().unwrap()),
-                }
-            }
-            INPUT_EVIDENCE_KIND => return Err(StreamError::InvalidRecordPayload),
-            DISPLAY_INCOMPLETE_KIND if format == RecordFormat::SessionV3 && payload.is_empty() => {
-                RecordKind::DisplayIncomplete
-            }
-            DISPLAY_INCOMPLETE_KIND => return Err(StreamError::InvalidRecordPayload),
-            END_KIND if format == RecordFormat::LegacyV1 && payload.is_empty() => {
-                RecordKind::LegacyEnd
-            }
-            END_KIND if format == RecordFormat::LegacyV1 => {
-                return Err(StreamError::InvalidRecordPayload);
-            }
-            END_KIND if payload.is_empty() => return Err(StreamError::MissingTerminalOutcome),
-            END_KIND
-                if payload.len()
-                    == match format {
-                        RecordFormat::SessionV2 => LEGACY_TERMINAL_OUTCOME_BYTES,
-                        RecordFormat::SessionV3 => TERMINAL_OUTCOME_BYTES,
-                        RecordFormat::LegacyV1 => unreachable!(),
-                    } =>
-            {
-                RecordKind::End(TerminalOutcome::decode(
-                    payload,
-                    format == RecordFormat::SessionV2,
-                )?)
-            }
-            END_KIND => return Err(StreamError::InvalidRecordPayload),
-            other => return Err(StreamError::UnknownRecordKind(other)),
-        };
         Ok(Self {
             record_seq,
             display_seq,
             input_seq,
-            kind,
+            kind: decode_record_kind(kind, payload, input_seq, format)?,
         })
     }
+}
+
+/// Validate a frame's length prefix, bounds, and checksum; return the record bytes it protects.
+fn checked_record_bytes(encoded: &[u8]) -> Result<&[u8], StreamError> {
+    if encoded.len() < FRAME_LEN_BYTES + CHECKSUM_BYTES {
+        return Err(StreamError::TruncatedFrame);
+    }
+    let record_len = u32::from_le_bytes(encoded[..FRAME_LEN_BYTES].try_into().unwrap()) as usize;
+    if record_len > MAX_RECORD_BYTES {
+        return Err(StreamError::RecordTooLarge {
+            actual: record_len,
+            max: MAX_RECORD_BYTES,
+        });
+    }
+    let expected_len = FRAME_LEN_BYTES + record_len + CHECKSUM_BYTES;
+    if encoded.len() != expected_len || record_len < FRAME_FIXED_BYTES {
+        return Err(StreamError::TruncatedFrame);
+    }
+    let record = &encoded[FRAME_LEN_BYTES..FRAME_LEN_BYTES + record_len];
+    if blake3::hash(record).as_bytes() != &encoded[FRAME_LEN_BYTES + record_len..] {
+        return Err(StreamError::ChecksumMismatch);
+    }
+    Ok(record)
+}
+
+/// Interpret a checked record's kind byte and payload under `format`.
+fn decode_record_kind(
+    kind: u8,
+    payload: &[u8],
+    input_seq: u64,
+    format: RecordFormat,
+) -> Result<RecordKind, StreamError> {
+    match kind {
+        OUTPUT_KIND => Ok(RecordKind::Output(payload.to_vec())),
+        RESIZE_KIND => decode_resize_payload(payload),
+        INPUT_EVIDENCE_KIND => decode_input_evidence_payload(payload, input_seq, format),
+        DISPLAY_INCOMPLETE_KIND => decode_display_incomplete_payload(payload, format),
+        END_KIND => decode_end_payload(payload, format),
+        other => Err(StreamError::UnknownRecordKind(other)),
+    }
+}
+
+fn decode_resize_payload(payload: &[u8]) -> Result<RecordKind, StreamError> {
+    if payload.len() != 4 {
+        return Err(StreamError::InvalidRecordPayload);
+    }
+    Ok(RecordKind::Resize {
+        rows: u16::from_le_bytes(payload[..2].try_into().unwrap()),
+        cols: u16::from_le_bytes(payload[2..].try_into().unwrap()),
+    })
+}
+
+/// The on-disk width of an input-evidence payload under `format`.
+fn input_evidence_payload_len(format: RecordFormat) -> usize {
+    match format {
+        RecordFormat::SessionV2 => size_of::<u32>() + CHECKSUM_BYTES,
+        RecordFormat::LegacyV1 | RecordFormat::SessionV3 => size_of::<u32>(),
+    }
+}
+
+fn decode_input_evidence_payload(
+    payload: &[u8],
+    input_seq: u64,
+    format: RecordFormat,
+) -> Result<RecordKind, StreamError> {
+    if payload.len() != input_evidence_payload_len(format) {
+        return Err(StreamError::InvalidRecordPayload);
+    }
+    // v2 appended a keyed content fingerprint after this length. Its key was stored in the same
+    // header, so exposing it preserved offline guess verification. Recover its honest
+    // ordering/length while deliberately discarding the unsafe legacy digest.
+    Ok(RecordKind::InputEvidence {
+        input_seq,
+        byte_len: u32::from_le_bytes(payload[..4].try_into().unwrap()),
+    })
+}
+
+fn decode_display_incomplete_payload(
+    payload: &[u8],
+    format: RecordFormat,
+) -> Result<RecordKind, StreamError> {
+    if format == RecordFormat::SessionV3 && payload.is_empty() {
+        return Ok(RecordKind::DisplayIncomplete);
+    }
+    Err(StreamError::InvalidRecordPayload)
+}
+
+/// The on-disk width of a typed terminal outcome under a versioned session `format`.
+fn typed_terminal_outcome_len(format: RecordFormat) -> usize {
+    match format {
+        RecordFormat::SessionV2 => LEGACY_TERMINAL_OUTCOME_BYTES,
+        RecordFormat::SessionV3 => TERMINAL_OUTCOME_BYTES,
+        RecordFormat::LegacyV1 => unreachable!(),
+    }
+}
+
+fn decode_end_payload(payload: &[u8], format: RecordFormat) -> Result<RecordKind, StreamError> {
+    if format == RecordFormat::LegacyV1 {
+        return if payload.is_empty() {
+            Ok(RecordKind::LegacyEnd)
+        } else {
+            Err(StreamError::InvalidRecordPayload)
+        };
+    }
+    if payload.is_empty() {
+        return Err(StreamError::MissingTerminalOutcome);
+    }
+    if payload.len() != typed_terminal_outcome_len(format) {
+        return Err(StreamError::InvalidRecordPayload);
+    }
+    Ok(RecordKind::End(TerminalOutcome::decode(
+        payload,
+        format == RecordFormat::SessionV2,
+    )?))
 }
 
 fn encoded_record_len(payload_len: usize) -> Result<usize, StreamError> {
