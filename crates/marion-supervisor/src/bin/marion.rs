@@ -475,32 +475,59 @@ fn parse_args(argv: &[String]) -> Option<Args> {
     };
     let mut rest = argv[2..].iter();
     while let Some(flag) = rest.next() {
-        let mut take = || rest.next().cloned();
-        match flag.as_str() {
-            "--prompt" => args.prompt = take()?,
-            "--repo" => args.repo = Some(PathBuf::from(take()?)),
-            "--state-dir" => args.state_dir = Some(take()?),
-            "--base-url" => args.base_url = Some(take()?),
-            "--model" => args.model = Some(take()?),
-            "--timeout" => args.timeout_secs = Some(take()?.parse().ok()?),
-            // The one flag with no value. Deliberately not `--canned=true`: which provider a run
-            // talks to should read as a decision at the call site, not as a setting.
-            "--canned" => args.canned = true,
-            // Also valueless, and for the same reason: declining the audit that a grant is
-            // conditional on is a decision, and it should read as one at the call site.
-            "--no-change-record" => args.no_change_record = true,
-            "--pane" => args.pane = true,
-            // Accepted and inert. It used to select real auth, which is now the default; every
-            // script and note already carrying it keeps working, and refusing it would break
-            // them to say nothing the run does not already do.
-            "--live" => {}
-            _ => return None,
-        }
+        apply_run_flag(&mut args, flag, &mut rest)?;
     }
     if args.prompt.is_empty() {
         return None;
     }
     Some(args)
+}
+
+/// One flag of `run`, taking its value from `rest` when it has one. `None` is the refusal: a flag
+/// `run` does not know, a valued flag with nothing after it, or a `--timeout` that is not a number.
+fn apply_run_flag(
+    args: &mut Args,
+    flag: &str,
+    rest: &mut std::slice::Iter<'_, String>,
+) -> Option<()> {
+    if set_valueless_flag(args, flag) {
+        return Some(());
+    }
+    set_valued_flag(args, flag, rest.next()?.clone())
+}
+
+/// The flags that are a decision by their presence. `true` if `flag` was one of them.
+fn set_valueless_flag(args: &mut Args, flag: &str) -> bool {
+    match flag {
+        // The one flag with no value. Deliberately not `--canned=true`: which provider a run
+        // talks to should read as a decision at the call site, not as a setting.
+        "--canned" => args.canned = true,
+        // Also valueless, and for the same reason: declining the audit that a grant is
+        // conditional on is a decision, and it should read as one at the call site.
+        "--no-change-record" => args.no_change_record = true,
+        "--pane" => args.pane = true,
+        // Accepted and inert. It used to select real auth, which is now the default; every
+        // script and note already carrying it keeps working, and refusing it would break
+        // them to say nothing the run does not already do.
+        "--live" => {}
+        _ => return false,
+    }
+    true
+}
+
+/// The flags that take the word after them. `None` for a flag `run` does not know, or a
+/// `--timeout` that is not a number.
+fn set_valued_flag(args: &mut Args, flag: &str, value: String) -> Option<()> {
+    match flag {
+        "--prompt" => args.prompt = value,
+        "--repo" => args.repo = Some(PathBuf::from(value)),
+        "--state-dir" => args.state_dir = Some(value),
+        "--base-url" => args.base_url = Some(value),
+        "--model" => args.model = Some(value),
+        "--timeout" => args.timeout_secs = Some(value.parse().ok()?),
+        _ => return None,
+    }
+    Some(())
 }
 
 /// §9: "`marion run --timeout`, else its agent type's `timeout_secs`, else the same 900 s".
