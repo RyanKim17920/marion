@@ -44,13 +44,13 @@
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use marion_core::contract::AgentId;
 use marion_proto::notify::Event as Note;
 use marion_provider::{CannedServer, Config, Script, TurnGate};
 use marion_supervisor::socket::{SocketPaths, read_identity};
-use marion_testsupport::{fixture_repo, scratch, sweep};
+use marion_testsupport::{fixture_repo, scratch, sweep, until_within};
 
 mod common;
 use common::client::{Client, paths_for};
@@ -148,15 +148,8 @@ fn asked_on(server: &CannedServer, wire: &str) -> usize {
         .count()
 }
 
-fn until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + BOUND;
-    while Instant::now() < deadline {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    cond()
+fn until(cond: impl FnMut() -> bool) -> bool {
+    until_within(BOUND, Duration::from_millis(5), cond)
 }
 
 fn the_child(nodes: &[marion_proto::NodeSummary]) -> AgentId {
