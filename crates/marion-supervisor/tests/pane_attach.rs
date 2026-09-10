@@ -96,7 +96,7 @@ use std::time::{Duration, Instant};
 use marion_core::contract::AgentId;
 use marion_provider::{CannedServer, Config, Script};
 use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
-use marion_testsupport::{fixture_repo, on_path, pinned_version, scratch, sweep};
+use marion_testsupport::{fixture_repo, on_path, pinned_version, scratch, sweep, until_within};
 
 mod common;
 use common::client::{Client, paths_for};
@@ -443,15 +443,8 @@ fn cast_records(path: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
-fn until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + BOUND;
-    while Instant::now() < deadline {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    cond()
+fn until(cond: impl FnMut() -> bool) -> bool {
+    until_within(BOUND, Duration::from_millis(50), cond)
 }
 
 /// **An empty script, and that is the design rather than an omission.**
