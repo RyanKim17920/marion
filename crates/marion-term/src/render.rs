@@ -89,26 +89,82 @@ fn convert(color: AnsiColor) -> Color {
     match color {
         AnsiColor::Spec(rgb) => Color::Rgb(rgb.r, rgb.g, rgb.b),
         AnsiColor::Indexed(i) => Color::Indexed(i),
-        AnsiColor::Named(named) => match named {
-            NamedColor::Black => Color::Black,
-            NamedColor::Red => Color::Red,
-            NamedColor::Green => Color::Green,
-            NamedColor::Yellow => Color::Yellow,
-            NamedColor::Blue => Color::Blue,
-            NamedColor::Magenta => Color::Magenta,
-            NamedColor::Cyan => Color::Cyan,
-            NamedColor::White => Color::Gray,
-            NamedColor::BrightBlack => Color::DarkGray,
-            NamedColor::BrightRed => Color::LightRed,
-            NamedColor::BrightGreen => Color::LightGreen,
-            NamedColor::BrightYellow => Color::LightYellow,
-            NamedColor::BrightBlue => Color::LightBlue,
-            NamedColor::BrightMagenta => Color::LightMagenta,
-            NamedColor::BrightCyan => Color::LightCyan,
-            NamedColor::BrightWhite => Color::White,
-            // Foreground/Background/Cursor and the dim/bright aliases have no ratatui equivalent;
-            // the terminal's own default is the honest mapping.
-            _ => Color::Reset,
-        },
+        AnsiColor::Named(named) => convert_named(named),
+    }
+}
+
+/// The sixteen ANSI names that have a ratatui colour, in ANSI order. Note the two off-by-one
+/// names: ANSI's `White` is ratatui's `Gray`, and `BrightBlack` is `DarkGray`.
+const NAMED: [(NamedColor, Color); 16] = [
+    (NamedColor::Black, Color::Black),
+    (NamedColor::Red, Color::Red),
+    (NamedColor::Green, Color::Green),
+    (NamedColor::Yellow, Color::Yellow),
+    (NamedColor::Blue, Color::Blue),
+    (NamedColor::Magenta, Color::Magenta),
+    (NamedColor::Cyan, Color::Cyan),
+    (NamedColor::White, Color::Gray),
+    (NamedColor::BrightBlack, Color::DarkGray),
+    (NamedColor::BrightRed, Color::LightRed),
+    (NamedColor::BrightGreen, Color::LightGreen),
+    (NamedColor::BrightYellow, Color::LightYellow),
+    (NamedColor::BrightBlue, Color::LightBlue),
+    (NamedColor::BrightMagenta, Color::LightMagenta),
+    (NamedColor::BrightCyan, Color::LightCyan),
+    (NamedColor::BrightWhite, Color::White),
+];
+
+fn convert_named(named: NamedColor) -> Color {
+    NAMED
+        .iter()
+        .find(|(ansi, _)| *ansi == named)
+        .map(|(_, color)| *color)
+        // Foreground/Background/Cursor and the dim/bright aliases have no ratatui equivalent;
+        // the terminal's own default is the honest mapping.
+        .unwrap_or(Color::Reset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The table against the sixteen-arm `match` it replaced, name by name, plus the fallthrough
+    /// for a name ratatui cannot express.
+    #[test]
+    fn every_ansi_name_keeps_its_ratatui_colour() {
+        let expected = [
+            (NamedColor::Black, Color::Black),
+            (NamedColor::Red, Color::Red),
+            (NamedColor::Green, Color::Green),
+            (NamedColor::Yellow, Color::Yellow),
+            (NamedColor::Blue, Color::Blue),
+            (NamedColor::Magenta, Color::Magenta),
+            (NamedColor::Cyan, Color::Cyan),
+            (NamedColor::White, Color::Gray),
+            (NamedColor::BrightBlack, Color::DarkGray),
+            (NamedColor::BrightRed, Color::LightRed),
+            (NamedColor::BrightGreen, Color::LightGreen),
+            (NamedColor::BrightYellow, Color::LightYellow),
+            (NamedColor::BrightBlue, Color::LightBlue),
+            (NamedColor::BrightMagenta, Color::LightMagenta),
+            (NamedColor::BrightCyan, Color::LightCyan),
+            (NamedColor::BrightWhite, Color::White),
+        ];
+        for (ansi, color) in expected {
+            assert_eq!(convert(AnsiColor::Named(ansi)), color, "{ansi:?}");
+        }
+        for unmapped in [
+            NamedColor::Foreground,
+            NamedColor::Background,
+            NamedColor::Cursor,
+            NamedColor::DimRed,
+            NamedColor::BrightForeground,
+        ] {
+            assert_eq!(
+                convert(AnsiColor::Named(unmapped)),
+                Color::Reset,
+                "{unmapped:?}"
+            );
+        }
     }
 }
