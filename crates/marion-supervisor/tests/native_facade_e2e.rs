@@ -36,7 +36,7 @@ use marion_supervisor::pty::{PtyHost, PtyMaster, StdinPlan, WinSize, spawn_pty};
 use marion_supervisor::registry::{LiveRegistry, Registry};
 use marion_supervisor::serve::{NativeLaunchConfig, Server, own_uid};
 use marion_supervisor::socket::{Acquired, SocketPaths, acquire, project_root, socket_paths};
-use marion_testsupport::{on_path, scratch};
+use marion_testsupport::{on_path, scratch, until_within};
 
 mod common;
 use common::client::Client;
@@ -391,15 +391,8 @@ fn tail(s: &str) -> String {
     s[n..].escape_debug().to_string()
 }
 
-fn until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + BOUND;
-    while Instant::now() < deadline {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    cond()
+fn until(cond: impl FnMut() -> bool) -> bool {
+    until_within(BOUND, Duration::from_millis(50), cond)
 }
 
 /// A word the harness painted: the longest run of letters on the operator's screen that the
