@@ -12,7 +12,8 @@
 #      (entry zero — the pin — is never touched);
 #   2. runs `cargo test -p marion-testsupport --lib` (the table's own sanity tests), then every
 #      integration suite under crates/marion-supervisor/tests that names <harness> AND gates on
-#      `on_path(` — sequentially, each bounded by MARION_ADMIT_BOUND seconds (default 1800);
+#      `on_path(`, plus the suites that walk every enabled native lane when <harness>'s lane is
+#      on — sequentially, each bounded by MARION_ADMIT_BOUND seconds (default 1800);
 #   3. on all green, writes the dated observation comment above the `accepted` list, formats the
 #      file, and prints the MILESTONES "Verified harness facts" paragraph and the commit message.
 #      On any red, restores the table exactly as it was and exits non-zero with the suite named.
@@ -68,7 +69,16 @@ echo "admit-harness: $harness $version added to PINNED_HARNESSES (not yet commit
 # Named by grep, not by hand: a suite that mentions the harness as a whole word and gates on
 # `on_path(` drives a real one (cross_product gates on `n.program`, so the word match carries it).
 suites=$(grep -lw "$harness" "$tests_dir"/*.rs | xargs grep -l 'on_path(' | xargs -n1 basename | sed 's/\.rs$//' | sort)
+# A suite that iterates `production_native_facades().enabled_native_commands()` drives every
+# enabled native lane without ever naming one, so the word grep cannot see it. When this harness's
+# lane is on (`Lane::new(true, NativeLane::new("<h>", …))` in the facade table), add those too.
+facades="$here/crates/marion-core/src/native_facade.rs"
+if perl -0ne 'exit !(/Lane::new\(\s*true,\s*NativeLane::new\("\Q$ENV{ADMIT_HARNESS}\E"/)' "$facades"; then
+    lane_suites=$(grep -l 'enabled_native_commands()' "$tests_dir"/*.rs | xargs grep -l 'on_path(' | xargs -n1 basename | sed 's/\.rs$//')
+    suites=$(printf '%s\n%s\n' "$suites" "$lane_suites" | sort -u)
+fi
 [ -n "$suites" ] || { echo "no suite under $tests_dir names $harness and gates on on_path(" >&2; restore; exit 1; }
+echo "admit-harness: suites driving $harness:" $suites
 
 # One command, bounded: the child is put in its own process group (perl's setpgrp) so the bound can
 # kill the whole tree — cargo, the test binary, the harnesses it spawned — and not the script.
