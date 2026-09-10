@@ -1158,6 +1158,31 @@ fn launch_bound_expired(agent_id: Option<&AgentId>) -> RpcError {
     )
 }
 
+/// One bounded wait on a launch thread's progress channel: whatever time is left of `deadline`, so
+/// the two waits a launch makes share one `LAUNCH_BOUND` rather than each getting their own.
+fn recv_progress(
+    progress: &std::sync::mpsc::Receiver<Progress>,
+    deadline: std::time::Instant,
+) -> Result<Progress, std::sync::mpsc::RecvTimeoutError> {
+    progress.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+}
+
+/// A launch's first wait: the node's id, or the refusal that it never had one.
+///
+/// Anything but `Identified` here means the launch refused before it minted an id — there is no
+/// node and nothing to report on — or the bound expired first. Shared by the child and root paths
+/// because the two answers are the same sentence on both.
+fn await_identified(
+    progress: &std::sync::mpsc::Receiver<Progress>,
+    deadline: std::time::Instant,
+) -> Result<AgentId, RpcError> {
+    match recv_progress(progress, deadline) {
+        Ok(Progress::Identified(id)) => Ok(id),
+        Ok(_) => Err(spawn_refused_before_the_node_existed()),
+        Err(_) => Err(launch_bound_expired(None)),
+    }
+}
+
 trait QuitRuntime: Send + Sync {
     fn kill_process_tree_and_wait(&self, pid: i32) -> bool;
 }
@@ -3049,46 +3074,66 @@ impl RegistryHandle {
         });
 
         let deadline = std::time::Instant::now() + LAUNCH_BOUND;
-        let recv = |deadline: std::time::Instant| {
-            progress.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-        };
-        let agent_id = match recv(deadline) {
-            Ok(Progress::Identified(id)) => id,
-            // `prepare_watched` calls `identified` before its first side effect, so nothing but
-            // minting the id itself can fail ahead of it — an unreadable entropy source.
-            Ok(_) => return Err(spawn_refused_before_the_node_existed()),
-            Err(_) => return Err(launch_bound_expired(None)),
-        };
-        if let Some(node) = lock(&self.nodes).get_mut(&agent_id) {
+        // `prepare_watched` calls `identified` before its first side effect, so nothing but
+        // minting the id itself can fail ahead of it — an unreadable entropy source.
+        let agent_id = await_identified(&progress, deadline)?;
+        self.file_join(&agent_id, join);
+        self.await_root_started(&progress, deadline, &agent_id)?;
+        self.live.refresh();
+        let state = self.spawned_state(&agent_id);
+        Ok((agent_id, state))
+    }
+
+    /// **Park a launch thread's handle under the node it has just identified.**
+    ///
+    /// Filed now rather than at `spawn`, because the table's key is the id the launch has only just
+    /// learned. Nothing races: `Progress::Identified` is sent from inside `claim`, so the entry
+    /// exists before this can run. A launch that gave up before this point leaves the thread
+    /// detached, and that is deliberate rather than overlooked: the node is still claimed, so §5.7
+    /// still refuses to exit while it runs, and the alternative — holding the handle somewhere
+    /// keyed by nothing — would be a second table to keep consistent with this one.
+    fn file_join(&self, agent_id: &AgentId, join: std::thread::JoinHandle<()>) {
+        if let Some(node) = lock(&self.nodes).get_mut(agent_id) {
             node.join = Some(join);
         }
-        match recv(deadline) {
-            Ok(Progress::Started) => {}
-            // The launch failed between the identity and the process: a working tree marion could
-            // not snapshot, a `<state>` inside the repository, a configuration document that would
-            // not compile, an unsupported root surface.
-            //
-            // **Answered with the reason, not merely with the fact.** Every one of those is a
-            // `RootError` marion wrote as a sentence for an operator — it names the directory, the
-            // declaration and the way through — and until step 6 `marion run` printed it from the
-            // error in its own hand. The supervisor holds it now, so a client that got the generic
-            // sentence back would be told a run failed and never told what to change.
-            // [`Self::owned_failure`] is where the thread filed it, and it is filed before
-            // `Progress::Finished` is sent, so it is there by the time this reads.
-            Ok(_) => {
-                return Err(root_launch_failed(
-                    &agent_id,
-                    self.owned_failure(&agent_id).as_deref(),
-                ));
-            }
-            Err(_) => return Err(launch_bound_expired(Some(&agent_id))),
+    }
+
+    /// The root launch's second wait: a process exists, or the reason there is none.
+    ///
+    /// The launch failed between the identity and the process: a working tree marion could not
+    /// snapshot, a `<state>` inside the repository, a configuration document that would not
+    /// compile, an unsupported root surface.
+    ///
+    /// **Answered with the reason, not merely with the fact.** Every one of those is a `RootError`
+    /// marion wrote as a sentence for an operator — it names the directory, the declaration and the
+    /// way through — and until step 6 `marion run` printed it from the error in its own hand. The
+    /// supervisor holds it now, so a client that got the generic sentence back would be told a run
+    /// failed and never told what to change. [`Self::owned_failure`] is where the thread filed it,
+    /// and it is filed before `Progress::Finished` is sent, so it is there by the time this reads.
+    fn await_root_started(
+        &self,
+        progress: &std::sync::mpsc::Receiver<Progress>,
+        deadline: std::time::Instant,
+        agent_id: &AgentId,
+    ) -> Result<(), RpcError> {
+        match recv_progress(progress, deadline) {
+            Ok(Progress::Started) => Ok(()),
+            Ok(_) => Err(root_launch_failed(
+                agent_id,
+                self.owned_failure(agent_id).as_deref(),
+            )),
+            Err(_) => Err(launch_bound_expired(Some(agent_id))),
         }
-        self.live.refresh();
-        let state = self
-            .live
-            .read(|r| r.tree().get(&agent_id).map(|n| n.state))
-            .unwrap_or(NodeState::Spawning);
-        Ok((agent_id, state))
+    }
+
+    /// **The state a launch answers with, read back off the registry rather than asserted.** The
+    /// state this returns is the state the journal says, which is the point of answering at
+    /// `Spawned` rather than before it: a client that renders `Spawning` here is rendering a record
+    /// it could have read itself.
+    fn spawned_state(&self, agent_id: &AgentId) -> NodeState {
+        self.live
+            .read(|r| r.tree().get(agent_id).map(|n| n.state))
+            .unwrap_or(NodeState::Spawning)
     }
 
     /// **`node/resume` — relaunch a lost node under its own id** (`plan-restart-resume.md` step 6).
