@@ -37,7 +37,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 use marion_supervisor::socket::{project_root, socket_paths};
-use marion_testsupport::{Scratch, fixture_repo, scratch, survivors, sweep};
+use marion_testsupport::{Scratch, fixture_repo, scratch, survivors, sweep, until_within};
 use serde_json::{Value, json};
 
 /// A bound that exists **only to fail**, never to be reached on a passing run. Nothing here asserts
@@ -299,11 +299,10 @@ fn spawn_args(background: bool) -> Value {
 
 /// Wait until `f` holds, or fail naming what never happened.
 fn until(what: &str, f: impl Fn() -> bool) {
-    let deadline = Instant::now() + BOUND;
-    while !f() {
-        assert!(Instant::now() < deadline, "{what} never happened");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        until_within(BOUND, Duration::from_millis(20), f),
+        "{what} never happened"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
