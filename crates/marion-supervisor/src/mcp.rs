@@ -1089,50 +1089,13 @@ pub fn serve_stdio(who: Principal) {
         }
         let req = match bridge::parse(line) {
             Ok(req) => req,
-            // Each undecodable line is now *answered*. The one exception is a stray response,
-            // which is silent by rule rather than by omission — see [`bridge::Undecodable`].
-            Err(bridge::Undecodable::NotJson) => {
-                emit(&mut stdout, &bridge::parse_error("not valid JSON"));
+            Err(undecodable) => {
+                reject(&mut stdout, undecodable);
                 continue;
             }
-            Err(bridge::Undecodable::NotAFrame { id }) => {
-                emit(&mut stdout, &bridge::invalid_request(&id));
-                continue;
-            }
-            Err(bridge::Undecodable::StrayResponse) => continue,
         };
-        let mut answered_tools_list = false;
-        let reply = match req {
-            bridge::Request::Initialize {
-                id,
-                offered_version,
-            } => {
-                initialized = true;
-                Some(bridge::initialize_result(&id, offered_version.as_deref()))
-            }
-            // The gate, on the two verbs it applies to. `initialize` is above it by construction.
-            bridge::Request::ToolsList { id } if !initialized => {
-                Some(bridge::not_initialized(&id, "tools/list"))
-            }
-            bridge::Request::ToolsCall { id, .. } if !initialized => {
-                Some(bridge::not_initialized(&id, "tools/call"))
-            }
-            bridge::Request::ToolsList { id } => {
-                answered_tools_list = true;
-                Some(bridge::tools_list_result(&id))
-            }
-            bridge::Request::ToolsCall {
-                id,
-                name,
-                arguments,
-            } => Some(handle_tool_call(&who, &bg, &id, &name, &arguments)),
-            bridge::Request::Notification => None,
-            bridge::Request::Unknown { id, method } => Some(bridge::method_not_found(&id, &method)),
-        };
-        let delivered = match reply {
-            Some(r) => emit(&mut stdout, &r),
-            None => false,
-        };
+        let (reply, answered_tools_list) = answer(&who, &bg, &mut initialized, req);
+        let delivered = reply.is_some_and(|r| emit(&mut stdout, &r));
         // **After the flush, and only if the flush worked.** The marker means "the harness has
         // been sent the list", so it is gated on `delivered` rather than merely sequenced after
         // the call: sequencing alone is invisible to a test, while a marker that cannot appear
@@ -1143,6 +1106,64 @@ pub fn serve_stdio(who: Principal) {
     }
     // EOF, and nothing to wait for. The children of this node belong to the supervisor; this
     // process was the courier, and the courier is leaving.
+}
+
+/// Each undecodable line is *answered*. The one exception is a stray response, which is silent by
+/// rule rather than by omission — see [`bridge::Undecodable`].
+fn reject(stdout: &mut std::io::Stdout, undecodable: bridge::Undecodable) {
+    match undecodable {
+        bridge::Undecodable::NotJson => {
+            emit(stdout, &bridge::parse_error("not valid JSON"));
+        }
+        bridge::Undecodable::NotAFrame { id } => {
+            emit(stdout, &bridge::invalid_request(&id));
+        }
+        bridge::Undecodable::StrayResponse => {}
+    }
+}
+
+/// One decoded frame to its reply, and whether that reply was the tool list — the one answer
+/// [`signal_ready`] hangs on. `None` is a notification, which has no reply by protocol.
+///
+/// `initialized` is the gate on the two verbs it applies to; `initialize` is above it by
+/// construction and is answered exactly like the first every time — see [`serve_stdio`].
+fn answer(
+    who: &Principal,
+    bg: &background::Background,
+    initialized: &mut bool,
+    req: bridge::Request,
+) -> (Option<serde_json::Value>, bool) {
+    match req {
+        bridge::Request::Initialize {
+            id,
+            offered_version,
+        } => {
+            *initialized = true;
+            (
+                Some(bridge::initialize_result(&id, offered_version.as_deref())),
+                false,
+            )
+        }
+        bridge::Request::ToolsList { id } if !*initialized => {
+            (Some(bridge::not_initialized(&id, "tools/list")), false)
+        }
+        bridge::Request::ToolsCall { id, .. } if !*initialized => {
+            (Some(bridge::not_initialized(&id, "tools/call")), false)
+        }
+        bridge::Request::ToolsList { id } => (Some(bridge::tools_list_result(&id)), true),
+        bridge::Request::ToolsCall {
+            id,
+            name,
+            arguments,
+        } => (
+            Some(handle_tool_call(who, bg, &id, &name, &arguments)),
+            false,
+        ),
+        bridge::Request::Notification => (None, false),
+        bridge::Request::Unknown { id, method } => {
+            (Some(bridge::method_not_found(&id, &method)), false)
+        }
+    }
 }
 
 #[cfg(test)]
