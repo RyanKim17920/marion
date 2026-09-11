@@ -72,7 +72,14 @@ own descendants and its parent; sibling addressing is denied unless explicitly g
 
 ---
 
-## Where it actually stands — 2026-09-05, at `d914eb7`
+## Where it actually stands — 2026-09-11, at `f52d65c`
+
+*The rest of this file, in order:* [verified harness facts](#verified-harness-facts) ·
+[resource model](#resource-model) · [chosen tooling](#chosen-tooling) ·
+[testing strategy](#testing-strategy) · [milestones M1–M5](#milestones) ·
+[the strategic challenge](#the-strategic-challenge-independent-codex-review-2026-07-31) ·
+[north star](#north-star) · [out of scope](#explicitly-out-of-scope-for-now).
+Everything below is dated. Re-verify before relying on any harness fact.
 
 **Markers:** M1, M2, M4 `[done]`; M3 `[partial]` on C1's recorded manual session alone; M5
 `[partial]` on clause 3 alone (`NodeSummary` names a harness, not an ACP agent's handshake). The
