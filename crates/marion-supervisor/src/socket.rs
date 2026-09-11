@@ -878,95 +878,11 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
     ensure_dir(paths, uid)?;
     let deadline = Instant::now() + within;
     loop {
-        match UnixStream::connect(paths.socket()) {
-            // A dial that reached **somebody**: a connection over a lock somebody holds. Both halves
-            // are needed. The module doc's measurement runs in this direction too — for a window
-            // after a listener's process is gone, `connect` to its path still succeeds — so a
-            // successful dial on its own would make a caller report `Dialed` about a supervisor that
-            // no longer exists, and the corpse would never be taken over by anybody. A bound socket
-            // implies a held lock by construction, so the lock is what tells the two apart, and it
-            // is the same authority the rest of this function already trusts.
-            Ok(s) if someone_is_serving(paths.lock()) => return Ok(Acquired::Dialed(s)),
-            Ok(_corpse) => {}
-            Err(e) if nobody_answered(&e) => {}
-            Err(e) => {
-                return Err(SocketError::Dial {
-                    path: paths.socket().to_path_buf(),
-                    source: e,
-                });
-            }
+        if let Some(stream) = dial_serving(paths)? {
+            return Ok(Acquired::Dialed(stream));
         }
         match take_lock(paths.lock())? {
-            Some(lock) => {
-                // **The corpse's identity goes first, before anything can be dialed.** The same
-                // proof that licenses unlinking the socket licenses this: nobody is serving, so any
-                // identity here was published by a supervisor that is gone, and it names either
-                // nothing or — after a pid wrap — something that was never a supervisor. Removing
-                // it before the bind means the worst a reader can see between the two is *no*
-                // identity, which is an honest "marion cannot tell you", instead of a confident
-                // wrong pid beside a socket that answers. See [`read_identity`].
-                let _ = std::fs::remove_file(paths.identity());
-                // The lock is the proof. See the module doc: a server holds it for its whole
-                // serving life, so nothing is listening on this path and the file is a corpse.
-                match std::fs::remove_file(paths.socket()) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == ErrorKind::NotFound => {}
-                    Err(e) => {
-                        return Err(SocketError::Bind {
-                            path: paths.socket().to_path_buf(),
-                            source: e,
-                        });
-                    }
-                }
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                match std::fs::remove_file(paths.native_bootstrap()) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == ErrorKind::NotFound => {}
-                    Err(e) => {
-                        return Err(SocketError::Bind {
-                            path: paths.native_bootstrap().to_path_buf(),
-                            source: e,
-                        });
-                    }
-                }
-                // Both listeners are private and nonblocking before `Serving` is published. A
-                // failure on either rolls both paths back, so no bound-but-unserved native socket
-                // can escape this constructor.
-                let (listener, native_bootstrap_listener) = bind_configured_listeners(
-                    paths,
-                    cfg!(any(target_os = "linux", target_os = "macos")),
-                    |listener, path| {
-                        rustix::fs::chmod(path, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
-                            .map_err(std::io::Error::from)?;
-                        listener.set_nonblocking(true)
-                    },
-                )?;
-                // Published **after** the bind and before this returns, so the window in which a
-                // socket exists without an identity beside it is the two syscalls between them and
-                // never a scheduling decision. Best-effort on the write itself: a supervisor that
-                // could not publish its pgid is still a supervisor, and refusing to serve over it
-                // would trade a fleet for a diagnostic.
-                write_identity(paths.identity(), &SupervisorIdentity::own());
-                return Ok(Acquired::Serving(Serving {
-                    canonical_project: paths.canonical_project().to_path_buf(),
-                    // Recorded now, from the filesystem, because these are what this process is
-                    // entitled to — and a pathname is not an identity (see
-                    // [`Serving::still_entitled`]).
-                    bound: FileId::at(paths.socket()),
-                    native_bootstrap_bound: native_bootstrap_listener
-                        .as_ref()
-                        .and_then(|_| FileId::at(paths.native_bootstrap())),
-                    identity_id: FileId::at(paths.identity()),
-                    lock_id: lock.metadata().ok().map(|m| FileId::of(&m)),
-                    listener,
-                    path: paths.socket().to_path_buf(),
-                    native_bootstrap_listener,
-                    native_bootstrap_path: paths.native_bootstrap().to_path_buf(),
-                    identity: paths.identity().to_path_buf(),
-                    lock_path: paths.lock().to_path_buf(),
-                    lock,
-                }));
-            }
+            Some(lock) => return serve_over_corpse(paths, lock).map(Acquired::Serving),
             None => {
                 if Instant::now() >= deadline {
                     return Err(SocketError::Wedged {
@@ -977,6 +893,91 @@ pub fn acquire_within(paths: &SocketPaths, within: Duration) -> Result<Acquired,
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
+    }
+}
+
+/// A connection to a supervisor that is actually serving, or `None` when nobody is.
+///
+/// A dial that reached **somebody** is a connection over a lock somebody holds. Both halves are
+/// needed. The module doc's measurement runs in this direction too — for a window after a
+/// listener's process is gone, `connect` to its path still succeeds — so a successful dial on its
+/// own would make a caller report `Dialed` about a supervisor that no longer exists, and the corpse
+/// would never be taken over by anybody. A bound socket implies a held lock by construction, so the
+/// lock is what tells the two apart, and it is the same authority the rest of this module trusts.
+fn dial_serving(paths: &SocketPaths) -> Result<Option<UnixStream>, SocketError> {
+    match UnixStream::connect(paths.socket()) {
+        Ok(s) if someone_is_serving(paths.lock()) => Ok(Some(s)),
+        Ok(_corpse) => Ok(None),
+        Err(e) if nobody_answered(&e) => Ok(None),
+        Err(e) => Err(SocketError::Dial {
+            path: paths.socket().to_path_buf(),
+            source: e,
+        }),
+    }
+}
+
+/// Take over from whatever the lock proves is gone, and begin serving.
+///
+/// The lock is the proof. See the module doc: a server holds it for its whole serving life, so
+/// nothing is listening on these paths and every file here is a corpse.
+fn serve_over_corpse(paths: &SocketPaths, lock: std::fs::File) -> Result<Serving, SocketError> {
+    // **The corpse's identity goes first, before anything can be dialed.** The same proof that
+    // licenses unlinking the socket licenses this: nobody is serving, so any identity here was
+    // published by a supervisor that is gone, and it names either nothing or — after a pid wrap —
+    // something that was never a supervisor. Removing it before the bind means the worst a reader
+    // can see between the two is *no* identity, which is an honest "marion cannot tell you",
+    // instead of a confident wrong pid beside a socket that answers. See [`read_identity`].
+    let _ = std::fs::remove_file(paths.identity());
+    unlink_corpse(paths.socket())?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    unlink_corpse(paths.native_bootstrap())?;
+    // Both listeners are private and nonblocking before `Serving` is published. A failure on
+    // either rolls both paths back, so no bound-but-unserved native socket can escape this
+    // constructor.
+    let (listener, native_bootstrap_listener) = bind_configured_listeners(
+        paths,
+        cfg!(any(target_os = "linux", target_os = "macos")),
+        |listener, path| {
+            rustix::fs::chmod(path, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
+                .map_err(std::io::Error::from)?;
+            listener.set_nonblocking(true)
+        },
+    )?;
+    // Published **after** the bind and before this returns, so the window in which a socket exists
+    // without an identity beside it is the two syscalls between them and never a scheduling
+    // decision. Best-effort on the write itself: a supervisor that could not publish its pgid is
+    // still a supervisor, and refusing to serve over it would trade a fleet for a diagnostic.
+    write_identity(paths.identity(), &SupervisorIdentity::own());
+    Ok(Serving {
+        canonical_project: paths.canonical_project().to_path_buf(),
+        // Recorded now, from the filesystem, because these are what this process is entitled to —
+        // and a pathname is not an identity (see [`Serving::still_entitled`]).
+        bound: FileId::at(paths.socket()),
+        native_bootstrap_bound: native_bootstrap_listener
+            .as_ref()
+            .and_then(|_| FileId::at(paths.native_bootstrap())),
+        identity_id: FileId::at(paths.identity()),
+        lock_id: lock.metadata().ok().map(|m| FileId::of(&m)),
+        listener,
+        path: paths.socket().to_path_buf(),
+        native_bootstrap_listener,
+        native_bootstrap_path: paths.native_bootstrap().to_path_buf(),
+        identity: paths.identity().to_path_buf(),
+        lock_path: paths.lock().to_path_buf(),
+        lock,
+    })
+}
+
+/// Remove one file the lock has already proved nobody is serving over. An absent file is the
+/// wanted outcome, not a failure; anything else would leave the bind below to fail confusingly.
+fn unlink_corpse(path: &Path) -> Result<(), SocketError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(SocketError::Bind {
+            path: path.to_path_buf(),
+            source: e,
+        }),
     }
 }
 
