@@ -675,77 +675,104 @@ impl Segment {
     }
 
     pub(crate) fn decode(encoded: &[u8]) -> Result<Self, StreamError> {
-        if encoded.len() < HEADER_LEN + TRAILER_LEN {
-            return Err(StreamError::InvalidTrailer);
-        }
-        Header::decode(&encoded[..HEADER_LEN])?;
-        let trailer_start = encoded.len() - TRAILER_LEN;
-        let trailer = &encoded[trailer_start..];
-        if trailer[..TRAILER_VERSION_START] != MAGIC
-            || u16::from_le_bytes(
-                trailer[TRAILER_VERSION_START..TRAILER_COMMITTED_LEN_START]
-                    .try_into()
-                    .unwrap(),
-            ) != VERSION
-        {
-            return Err(StreamError::InvalidTrailer);
-        }
-        let committed_len = usize::try_from(u64::from_le_bytes(
-            trailer[TRAILER_COMMITTED_LEN_START..TRAILER_RECORD_SEQ_START]
-                .try_into()
-                .unwrap(),
-        ))
-        .map_err(|_| StreamError::InvalidTrailer)?;
-        if committed_len != trailer_start {
-            return Err(StreamError::InvalidTrailer);
-        }
-        if blake3::hash(&encoded[..trailer_start]).as_bytes() != &trailer[TRAILER_DIGEST_START..] {
-            return Err(StreamError::TrailerDigestMismatch);
-        }
-
-        let mut records = Vec::new();
-        let mut offset = HEADER_LEN;
-        while offset < trailer_start {
-            if trailer_start - offset < FRAME_LEN_BYTES {
-                return Err(StreamError::InvalidTrailer);
-            }
-            let frame_len = u32::from_le_bytes(
-                encoded[offset..offset + FRAME_LEN_BYTES]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
-            if !(FRAME_FIXED_BYTES..=MAX_RECORD_BYTES).contains(&frame_len) {
-                return Err(StreamError::InvalidTrailer);
-            }
-            let frame_end = offset + FRAME_LEN_BYTES + frame_len + CHECKSUM_BYTES;
-            if frame_end > trailer_start {
-                return Err(StreamError::InvalidTrailer);
-            }
-            records.push(Record::decode(&encoded[offset..frame_end])?);
-            offset = frame_end;
-        }
+        let trailer_start = validate_segment_trailer(encoded)?;
+        let records = decode_segment_records(encoded, trailer_start)?;
         let counters = validate_records(&records)?;
-        let terminal = TrailerCounters {
-            record_seq: u64::from_le_bytes(
-                trailer[TRAILER_RECORD_SEQ_START..TRAILER_DISPLAY_SEQ_START]
-                    .try_into()
-                    .unwrap(),
-            ),
-            display_seq: u64::from_le_bytes(
-                trailer[TRAILER_DISPLAY_SEQ_START..TRAILER_INPUT_SEQ_START]
-                    .try_into()
-                    .unwrap(),
-            ),
-            input_seq: u64::from_le_bytes(
-                trailer[TRAILER_INPUT_SEQ_START..TRAILER_DIGEST_START]
-                    .try_into()
-                    .unwrap(),
-            ),
-        };
-        if terminal != counters {
+        if decode_trailer_counters(&encoded[trailer_start..]) != counters {
             return Err(StreamError::InvalidTrailer);
         }
         Ok(Self { records })
+    }
+}
+
+/// Check the segment is whole before a byte of it is believed, and answer where the trailer starts.
+///
+/// The trailer repeats the format identity and binds every byte before it, header and per-frame
+/// checksums included, so a segment that passes here cannot have been truncated, re-headed or
+/// edited in place — which is what lets the record walk below trust its own lengths.
+fn validate_segment_trailer(encoded: &[u8]) -> Result<usize, StreamError> {
+    if encoded.len() < HEADER_LEN + TRAILER_LEN {
+        return Err(StreamError::InvalidTrailer);
+    }
+    Header::decode(&encoded[..HEADER_LEN])?;
+    let trailer_start = encoded.len() - TRAILER_LEN;
+    let trailer = &encoded[trailer_start..];
+    if trailer[..TRAILER_VERSION_START] != MAGIC
+        || u16::from_le_bytes(
+            trailer[TRAILER_VERSION_START..TRAILER_COMMITTED_LEN_START]
+                .try_into()
+                .unwrap(),
+        ) != VERSION
+    {
+        return Err(StreamError::InvalidTrailer);
+    }
+    let committed_len = usize::try_from(u64::from_le_bytes(
+        trailer[TRAILER_COMMITTED_LEN_START..TRAILER_RECORD_SEQ_START]
+            .try_into()
+            .unwrap(),
+    ))
+    .map_err(|_| StreamError::InvalidTrailer)?;
+    if committed_len != trailer_start {
+        return Err(StreamError::InvalidTrailer);
+    }
+    if blake3::hash(&encoded[..trailer_start]).as_bytes() != &trailer[TRAILER_DIGEST_START..] {
+        return Err(StreamError::TrailerDigestMismatch);
+    }
+    Ok(trailer_start)
+}
+
+/// Walk the frames between the header and a validated trailer.
+///
+/// Every refusal is `InvalidTrailer` rather than a per-frame error: the trailer has already bound
+/// these exact bytes, so a length that does not fit between the header and the trailer is the
+/// trailer disagreeing with itself, not a torn record.
+fn decode_segment_records(
+    encoded: &[u8],
+    trailer_start: usize,
+) -> Result<Vec<Record>, StreamError> {
+    let mut records = Vec::new();
+    let mut offset = HEADER_LEN;
+    while offset < trailer_start {
+        if trailer_start - offset < FRAME_LEN_BYTES {
+            return Err(StreamError::InvalidTrailer);
+        }
+        let frame_len = u32::from_le_bytes(
+            encoded[offset..offset + FRAME_LEN_BYTES]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        if !(FRAME_FIXED_BYTES..=MAX_RECORD_BYTES).contains(&frame_len) {
+            return Err(StreamError::InvalidTrailer);
+        }
+        let frame_end = offset + FRAME_LEN_BYTES + frame_len + CHECKSUM_BYTES;
+        if frame_end > trailer_start {
+            return Err(StreamError::InvalidTrailer);
+        }
+        records.push(Record::decode(&encoded[offset..frame_end])?);
+        offset = frame_end;
+    }
+    Ok(records)
+}
+
+/// The three terminal counters the trailer claims, to be compared against the ones the records add
+/// up to.
+fn decode_trailer_counters(trailer: &[u8]) -> TrailerCounters {
+    TrailerCounters {
+        record_seq: u64::from_le_bytes(
+            trailer[TRAILER_RECORD_SEQ_START..TRAILER_DISPLAY_SEQ_START]
+                .try_into()
+                .unwrap(),
+        ),
+        display_seq: u64::from_le_bytes(
+            trailer[TRAILER_DISPLAY_SEQ_START..TRAILER_INPUT_SEQ_START]
+                .try_into()
+                .unwrap(),
+        ),
+        input_seq: u64::from_le_bytes(
+            trailer[TRAILER_INPUT_SEQ_START..TRAILER_DIGEST_START]
+                .try_into()
+                .unwrap(),
+        ),
     }
 }
 
