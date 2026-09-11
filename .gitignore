@@ -8,6 +8,11 @@ tasks/
 .superpowers/
 .serena/
 
+# `socket.rs`'s unit tests need a socket path short enough to fit `sun_path`, so
+# they scratch in the workspace root rather than under TMPDIR. The guard removes
+# them; a panicking test does not.
+.mr-*/
+
 # macOS and Python droppings. The spike directories are run in place.
 .DS_Store
 __pycache__/
