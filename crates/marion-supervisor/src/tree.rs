@@ -617,8 +617,8 @@ impl Session {
         let events = selected.map_or(&[][..], |n| self.events.tail(&n.agent_id.0));
         // A key that did nothing says why, on the row that lists the keys.
         let keys = match self.hint {
-            Some(hint) => format!("{KEYS}  ·  {hint}"),
-            None => KEYS.to_string(),
+            Some(hint) => format!("{}  ·  {hint}", keys_for(selected)),
+            None => keys_for(selected),
         };
         let _ = terminal.draw(|f| {
             let panes = tree::split(f.area());
@@ -683,7 +683,21 @@ struct Detail<'a> {
 /// not open. Rendered into [`marion_tui::tree::Panes::hints`], which is full width and starts at
 /// the left margin — inside the content pane it began at `TREE_COLUMN + 2` and read as the selected
 /// node's business rather than the screen's.
-const KEYS: &str = "enter open pane nodes only  j/k move  tab focus  q quit  ^] d detach";
+const KEYS: &str = "j/k move  tab focus  q quit  ^] d detach";
+
+/// The hint row for one selection.
+///
+/// `Enter`'s hint is **per node**, because what `Enter` does is per node. A fixed *"enter open pane
+/// nodes only"* states a rule and leaves the operator to apply it, so the only way to learn whether
+/// this selection was one of those nodes was to press the key and read the refusal. An empty forest
+/// keeps the pane-node wording: there is nothing selected to call headless.
+fn keys_for(selected: Option<&NodeSummary>) -> String {
+    let enter = match selected {
+        Some(n) if !n.pane => "enter (headless)",
+        _ => "enter attach",
+    };
+    format!("{enter}  {KEYS}")
+}
 
 /// Why the right-hand half of the screen is facts and then nothing.
 ///
@@ -1195,6 +1209,35 @@ mod tests {
         assert!(text.contains("exited:ok"), "{text}");
     }
 
+    /// **The hint row answers for the node under the cursor, not for the screen in general.**
+    ///
+    /// `enter open pane nodes only` is a rule the operator has to apply themselves: it does not say
+    /// whether *this* selection is one of those nodes, so the only way to find out was to press
+    /// Enter and read the refusal. The affordance moves with the cursor instead — `enter attach` on
+    /// a node that has a pane, `enter (headless)` on one that does not — so a first-time viewer can
+    /// see what the key will do before pressing it.
+    #[test]
+    fn the_hint_row_says_what_enter_will_do_to_this_selection() {
+        let paned = summary("p", Harness::Codex, true, None);
+        let headless = summary("h", Harness::ClaudeCode, false, None);
+
+        assert!(keys_for(Some(&paned)).starts_with("enter attach"));
+        assert!(keys_for(Some(&headless)).starts_with("enter (headless)"));
+        assert!(
+            !keys_for(Some(&headless)).contains("enter attach"),
+            "a headless node must not be offered an attach"
+        );
+        for keys in [
+            keys_for(Some(&paned)),
+            keys_for(Some(&headless)),
+            keys_for(None),
+        ] {
+            for rest in ["j/k move", "tab focus", "q quit", "^] d detach"] {
+                assert!(keys.contains(rest), "`{rest}` left the hint row: {keys}");
+            }
+        }
+    }
+
     /// **The hints belong to the screen, at the bottom left, above the caps strip.**
     ///
     /// Drawn as the content pane's last row they started at `TREE_COLUMN + 2` — forty-six columns
@@ -1217,7 +1260,9 @@ mod tests {
 
         let mut buf = ratatui::buffer::Buffer::empty(screen);
         ratatui::widgets::Widget::render(
-            marion_tui::tree::Hints { keys: KEYS },
+            marion_tui::tree::Hints {
+                keys: &keys_for(None),
+            },
             panes.hints,
             &mut buf,
         );
