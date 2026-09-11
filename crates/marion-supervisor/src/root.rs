@@ -272,6 +272,15 @@ pub struct RootSpec {
     /// rides here rather than being minted so a resumed node keeps the identity every other record
     /// about it already names.
     pub resume: Option<(AgentId, String)>,
+    /// **§9's node-level bound for this run, already resolved** by [`blocked_bound_secs`] from
+    /// `marion run --timeout` and the agent type — not the operator's `Option<u64>`.
+    ///
+    /// It rides on the spec rather than being passed to [`launch`] alone because `prepare` is what
+    /// writes the `SpawnIntent`, and the intent is where the bound has to be recorded for anything
+    /// downstream to be able to say what clock the node is under. One resolution, one field: the
+    /// number the launch enforces and the number the journal reports are the same value, so
+    /// `marion tree` cannot show a bound the run is not actually keeping to.
+    pub bound_secs: u64,
 }
 
 /// The base point of the root's change record, or why there is none (§9).
@@ -754,6 +763,9 @@ pub fn prepare_watched(
             harness,
             depth: ROOT_DEPTH,
             task_id: None,
+            // §3.1's bound as this run resolved it (`blocked_bound_secs`, on the spec), so the
+            // tree reports the clock the operator asked for instead of the agent type's default.
+            timeout_secs: Some(spec.bound_secs),
         }),
     );
     // **§6.1 step 7's shape, applied to the other thing this function decides.**
@@ -2863,6 +2875,9 @@ mod tests {
             no_change_record: false,
             pane: false,
             resume: None,
+            // What `blocked_bound_secs(None, <type>)` resolves to for every type this fixture
+            // drives — §3.1's default, stated rather than left to a `Default`.
+            bound_secs: marion_core::agent_type::DEFAULT_TIMEOUT_SECS,
         }
     }
 
@@ -2951,6 +2966,51 @@ mod tests {
             allowed.starts_with("mcp__marion__spawn") && !allowed.contains("Write"),
             "marion's own verbs are the root's permission axis and no agent type widens them: \
              {allowed}"
+        );
+    }
+
+    /// **A root's `SpawnIntent` records the bound the run is actually held to.**
+    ///
+    /// `prepare` is the only writer of a root's intent, and until it recorded this the journal said
+    /// nothing at all about the node's clock: every reader — `marion tree`'s detail pane first
+    /// among them — re-resolved §3.1's bound from the *agent type* and printed 900 s for a root the
+    /// operator had launched with `--timeout 300`. The value is [`RootSpec::bound_secs`] rather
+    /// than a second resolution here, so the number the launch enforces and the number the journal
+    /// reports are one value.
+    #[test]
+    fn a_roots_intent_records_the_bound_its_launch_was_resolved_to() {
+        let (dir, repo) = temp_repo("root-bound");
+        let node = prepare(&RootSpec {
+            repo: repo.clone(),
+            state: dir.join("state"),
+            bound_secs: 300,
+            ..root_spec(&dir, "claude")
+        })
+        .expect("the root compiles");
+
+        let journalled = std::fs::read_to_string(node.project.journal()).expect("a journal");
+        let intents: Vec<u64> = journalled
+            .lines()
+            .filter_map(|l| marion_core::journal::decode(l.as_bytes()))
+            .filter_map(|r| match r.kind {
+                marion_core::journal::RecordKind::SpawnIntent(i)
+                    if i.agent_id == node.agent_id =>
+                {
+                    Some(i.timeout_secs.expect("the bound is on the record"))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            intents,
+            vec![300],
+            "one intent, carrying the operator's `--timeout 300` — not §3.1's default:\n\
+             {journalled}"
+        );
+        assert_ne!(
+            300,
+            marion_core::agent_type::DEFAULT_TIMEOUT_SECS,
+            "the assertion above is not passing by coincidence with the default"
         );
     }
 

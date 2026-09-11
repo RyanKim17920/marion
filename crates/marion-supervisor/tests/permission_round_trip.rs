@@ -197,6 +197,9 @@ fn prepare_with(name: &str, target: Target, setup: Setup) -> Fixture {
         no_change_record: setup.no_change_record,
         pane: false,
         resume: None,
+        // This file drives `launch` with its own bound; the spec's is what the node's intent
+        // records, and §3.1's default is what a run that states no `--timeout` resolves to.
+        bound_secs: marion_core::agent_type::DEFAULT_TIMEOUT_SECS,
     })
     .expect("the root node prepares");
 

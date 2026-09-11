@@ -322,6 +322,7 @@ mod tests {
             harness: Harness::Codex,
             depth,
             task_id: Some(TaskId(format!("task-{agent}"))),
+            timeout_secs: None,
         })
     }
 

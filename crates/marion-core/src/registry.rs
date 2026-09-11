@@ -741,6 +741,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 depth: 0,
                 task_id: None,
+                timeout_secs: None,
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("root"),
@@ -756,6 +757,7 @@ mod tests {
                 harness: Harness::Codex,
                 depth: 1,
                 task_id: Some(TaskId("t-1".into())),
+                timeout_secs: None,
             })),
             next(RecordKind::Spawned(Spawned {
                 agent_id: id("child"),
@@ -1168,6 +1170,7 @@ mod tests {
                     harness: Harness::ClaudeCode,
                     depth: 0,
                     task_id: None,
+                    timeout_secs: None,
                 }),
             ),
             record(
@@ -1260,6 +1263,7 @@ mod tests {
                     harness: Harness::Codex,
                     depth: 0,
                     task_id: None,
+                    timeout_secs: None,
                 }),
             ),
             at(
@@ -1446,6 +1450,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 depth: 0,
                 task_id: None,
+                timeout_secs: None,
             }),
         )];
         if let Some(observation) = change {
@@ -1738,6 +1743,7 @@ mod tests {
             harness: Harness::Codex,
             depth: 1,
             task_id: Some(TaskId("t-1".into())),
+            timeout_secs: None,
         })
     }
 

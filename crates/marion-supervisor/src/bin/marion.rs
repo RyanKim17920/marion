@@ -3283,6 +3283,7 @@ mod tests {
                             harness: marion_core::harness::Harness::Codex,
                             depth: 1,
                             task_id: None,
+                            timeout_secs: None,
                         }),
                     ),
                     // Written after the run is over, in the window between the stop and the last

@@ -334,6 +334,12 @@ impl NativeNodeJournal {
                 depth: 0,
                 // A root has no contract (§9).
                 task_id: None,
+                // **No bound, and that is the record rather than a gap.** A native launch is the
+                // operator's own session in their own terminal: marion starts it and never holds a
+                // clock over it, so there is no resolved bound to record. `None` reads back as
+                // §3.1's agent-type default in the tree, which is the honest answer for a node
+                // marion is not timing.
+                timeout_secs: None,
             }))
     }
 

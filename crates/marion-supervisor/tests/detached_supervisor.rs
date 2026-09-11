@@ -778,6 +778,7 @@ fn a_running_node(path: &Path, agent: &str, pid: i32) {
             harness: marion_core::harness::Harness::Codex,
             depth: 0,
             task_id: None,
+            timeout_secs: None,
         }),
     );
     seed(
@@ -1048,6 +1049,8 @@ fn a_linked_worktree_resolves_to_its_main_repositorys_supervisor_and_journal() {
         pane: false,
         auth: marion_harness::Auth::Canned,
         resume: None,
+        // Nothing is launched here — this probes only where a run's records land.
+        bound_secs: marion_core::agent_type::DEFAULT_TIMEOUT_SECS,
     };
     let from_wt = marion_supervisor::root::prepare(&spec(&wt)).expect("a root prepares");
     let from_main = marion_supervisor::root::prepare(&spec(&main)).expect("a root prepares");

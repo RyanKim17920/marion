@@ -241,7 +241,15 @@ pub fn summarize(node: &ReplayedNode, pane: bool) -> Result<NodeSummary, Unproje
         depth,
         state: node.state,
         reap_state: node.reap_state,
-        timeout: ty.timeout,
+        // **The bound this node was launched under, and the agent type only where the journal is
+        // silent.** §3.1 makes the type the *default*; the intent records what the launch actually
+        // resolved (`--timeout`, `spawn`'s `timeout_secs`), and a pane that prints the default for
+        // a node running under a different clock is telling an operator the wrong number in the one
+        // place they look to decide whether a run has time left. `None` is an older journal or a
+        // launch marion put no bound of its own on, and the type is the honest answer for both.
+        timeout: intent
+            .timeout_secs
+            .map_or(ty.timeout, marion_core::encoding::Duration::from_secs),
         pane,
     })
 }
@@ -1345,6 +1353,12 @@ fn root_spec_from_spawn(
         // A client `agent/spawn` is always a fresh run: resume is `node/resume`'s path, which
         // builds its own `RootSpec` from the node's journal.
         resume: None,
+        // §9's node-level bound, resolved from what the client stated and the agent type — by the
+        // same function `marion run` used to call in-process, so the number an operator typed and
+        // the number the node runs under are one resolution. It rides on the spec because
+        // `root::prepare` journals it onto the node's `SpawnIntent`, and `launch_root` enforces
+        // the same value: one clock, enforced and reported.
+        bound_secs: crate::root::blocked_bound_secs(p.timeout_secs, agent_type.timeout.0.as_secs()),
     }
 }
 
@@ -3112,16 +3126,11 @@ impl RegistryHandle {
         // one layer down; two call sites of one lookup, never two rules.
         let agent_type =
             agent_type::builtin(&p.agent_type).ok_or_else(spawn_refused_before_the_node_existed)?;
+        // §9's node-level bound is resolved inside the spec — see [`root_spec_from_spawn`] — so
+        // the value the launch enforces is the value `prepare` journals.
         let spec = root_spec_from_spawn(p, repo.clone(), &env, &agent_type);
-        // §9's node-level bound, resolved from what the client stated and the agent type — by the
-        // same function `marion run` used to call in-process, so the number an operator typed and
-        // the number the node runs under are one resolution.
-        let bound = std::time::Duration::from_secs(crate::root::blocked_bound_secs(
-            p.timeout_secs,
-            agent_type.timeout.0.as_secs(),
-        ));
 
-        let (agent_id, state) = self.launch_root(me, spec, repo, bound)?;
+        let (agent_id, state) = self.launch_root(me, spec, repo)?;
         Ok(marion_core::proto::result::AgentSpawnResult {
             state,
             agent_id,
@@ -3142,8 +3151,10 @@ impl RegistryHandle {
         me: Arc<RegistryHandle>,
         spec: crate::root::RootSpec,
         repo: PathBuf,
-        bound: std::time::Duration,
     ) -> Result<(AgentId, NodeState), RpcError> {
+        // §9's bound, off the spec that journaled it: the clock this launch is held to and the
+        // clock the node's `SpawnIntent` records are one number by construction.
+        let bound = std::time::Duration::from_secs(spec.bound_secs);
         let (tx, progress) = std::sync::mpsc::channel();
         let owner = me.clone();
         let join = std::thread::spawn(move || {
@@ -3447,10 +3458,6 @@ impl RegistryHandle {
             .agent_type()
             .and_then(agent_type::builtin)
             .ok_or_else(spawn_refused_before_the_node_existed)?;
-        let bound = std::time::Duration::from_secs(crate::root::blocked_bound_secs(
-            None,
-            agent_type.timeout.0.as_secs(),
-        ));
         let spec = crate::root::RootSpec {
             agent_type: node.agent_type().unwrap_or_default().to_string(),
             prompt: prompt.to_string(),
@@ -3467,8 +3474,18 @@ impl RegistryHandle {
             // node is always headless today; the field keeps that a checked fact.
             pane: node.harness_pane,
             resume: Some((node.agent_id.clone(), session)),
+            // **The node's own bound, from its own journal** — the same discipline the two fields
+            // above follow. A relaunch that re-resolved this from the agent type would put a root
+            // the operator had launched with `--timeout 300` back under §3.1's 900 s, which is a
+            // node quietly given a different clock than the one it was started with. `None` — an
+            // intent written before the field existed — falls back to the type, which is the only
+            // thing a journal that never recorded a bound can honestly say.
+            bound_secs: crate::root::blocked_bound_secs(
+                node.intent.as_ref().and_then(|i| i.timeout_secs),
+                agent_type.timeout.0.as_secs(),
+            ),
         };
-        self.launch_root(me, spec, repo, bound)
+        self.launch_root(me, spec, repo)
     }
 
     /// [`Self::node_resume`]'s child arm: a [`crate::run::SpawnRequest`] rebuilt from the node's
@@ -4541,6 +4558,7 @@ mod tests {
                 .unwrap_or(Harness::Codex),
             depth,
             task_id: None,
+            timeout_secs: None,
         })
     }
 
@@ -4559,7 +4577,7 @@ mod tests {
     /// The projection, on a node the journal fully describes — including the two fields
     /// `registry.rs` refused to fabricate.
     #[test]
-    fn a_summary_resolves_its_bound_from_the_agent_type_and_names_nothing_it_was_not_told() {
+    fn a_summary_falls_back_to_the_agent_type_and_names_nothing_it_was_not_told() {
         let n = node_of(
             &[line(0, 1, intent("child", Some("root"), "codex-impl", 1))],
             "child",
@@ -4574,18 +4592,41 @@ mod tests {
         assert_eq!(
             s.timeout,
             agent_type::builtin("codex-impl").unwrap().timeout,
-            "§3.1 makes the agent type the source of the bound and §9 re-resolves it from there; \
-             a journalled copy would be a second source of truth"
+            "this intent records no bound — an older journal, or a launch marion timed nothing of \
+             — so §3.1's agent-type default is the only thing marion can honestly report"
         );
         assert_eq!(
             s.timeout,
             marion_core::encoding::Duration::from_secs(agent_type::DEFAULT_TIMEOUT_SECS),
-            "and that source really is §3.1's 900 s default, not a value invented here"
+            "and that fallback really is §3.1's 900 s default, not a value invented here"
         );
         assert_eq!(
             s.name, None,
             "nothing sets `Node.name` yet, so `None` is what the journal says rather than a \
              placeholder for what marion does not know"
+        );
+    }
+
+    /// **A recorded bound outranks the agent type's, because it is the one the node is under.**
+    ///
+    /// The sibling above is the fallback; this is the normal case. `marion run --timeout 300` and
+    /// `spawn`'s `timeout_secs` both resolve a bound before the process exists, and the intent
+    /// records it — so the number `marion tree`'s detail pane prints is the clock the node is
+    /// actually being held to, and not its type's default wearing that clock's name.
+    #[test]
+    fn a_summary_reports_the_bound_the_launch_resolved() {
+        let mut i = match intent("child", Some("root"), "codex-impl", 1) {
+            RecordKind::SpawnIntent(i) => i,
+            other => panic!("{other:?}"),
+        };
+        i.timeout_secs = Some(300);
+        let n = node_of(&[line(0, 1, RecordKind::SpawnIntent(i))], "child");
+        let s = summarize(&n, false).expect("a fully described node projects");
+        assert_eq!(s.timeout, marion_core::encoding::Duration::from_secs(300));
+        assert_ne!(
+            s.timeout,
+            agent_type::builtin("codex-impl").unwrap().timeout,
+            "the type's default is what this node is *not* running under"
         );
     }
 
@@ -10497,6 +10538,40 @@ mod tests {
             );
         }
 
+        /// **A root's `--timeout` reaches the spec that both enforces and journals it.**
+        ///
+        /// `marion run --timeout 300` states an `Option<u64>` on the wire and the supervisor
+        /// resolves it (`root::blocked_bound_secs`). Resolved *into the spec* rather than beside
+        /// it, because `root::prepare` is what writes the node's `SpawnIntent`: a bound held
+        /// somewhere the intent cannot see is a bound no reader can report, which is how every node
+        /// in `marion tree` came to read 900 s. A run that states nothing keeps the type's.
+        #[test]
+        fn a_root_spec_carries_the_bound_the_operator_asked_for() {
+            let fx = owning("owns-root-bound", vec![]);
+            let env = fx
+                .handle
+                .spawn_env
+                .as_ref()
+                .expect("an owning handle has a spawn environment");
+            let ty = agent_type::builtin("claude").expect("the fixture type exists");
+
+            let asked = root_spec_from_spawn(&root_params(&fx.repo, 300), fx.repo.clone(), env, &ty);
+            assert_eq!(asked.bound_secs, 300);
+
+            let mut p = root_params(&fx.repo, 300);
+            p.timeout_secs = None;
+            let silent = root_spec_from_spawn(&p, fx.repo.clone(), env, &ty);
+            assert_eq!(
+                silent.bound_secs,
+                ty.timeout.0.as_secs(),
+                "a run that names no bound gets §3.1's, which is the type's"
+            );
+            assert_ne!(
+                asked.bound_secs, silent.bound_secs,
+                "and the two are distinguishable, or the first assertion proves nothing"
+            );
+        }
+
         /// The production `RootSpec` constructor is the preparatory threading proof: byte-exact
         /// context survives that boundary even though the readiness gate keeps production from
         /// reaching it today.
@@ -11374,6 +11449,7 @@ mod tests {
                     harness: Harness::ClaudeCode,
                     depth: 1,
                     task_id: Some(marion_core::contract::TaskId(CHILD_TASK.into())),
+                    timeout_secs: None,
                 }),
                 spawned("child"),
                 session("child", workspace),
@@ -11667,6 +11743,57 @@ mod tests {
                 "the contract this node runs under"
             );
             assert_eq!(fx.handle.owned_nodes(), 2, "the caller and its child");
+            settle(&fx, &agent_id);
+        }
+
+        /// **The bound a caller asked for is the bound the tree reports.**
+        ///
+        /// `marion tree`'s detail pane prints `NodeSummary.timeout`, and until the intent recorded
+        /// one there was nothing in the journal to print: the projection re-resolved §3.1's bound
+        /// from the *agent type*, so every node on the screen read 900 s however short a clock the
+        /// operator or the parent had actually put it under. A pane that reports a bound no node is
+        /// running under is worse than one that reports none — it is the wrong number in the one
+        /// place an operator looks to decide whether a run has time left.
+        ///
+        /// Over a **real** child, through `agent/spawn` and back out of `tree/subscribe`, because
+        /// the two halves this pins are a write and a read on opposite sides of the journal.
+        #[test]
+        fn a_childs_requested_bound_is_what_the_tree_reports() {
+            let fx = owning("owns-child-bound", vec![intent("root", None, "claude", 0)]);
+            let agent_id = spawn_a_real_child(&fx, 120);
+
+            let out = crate::serve::sink(ConnId(4));
+            let MethodResult::TreeSubscribe(snap) = fx
+                .handle
+                .call(
+                    ConnId(4),
+                    &Call::TreeSubscribe(marion_core::proto::params::TreeSubscribeParams {}),
+                    &out,
+                )
+                .expect("the tree is readable")
+            else {
+                panic!("wrong result type")
+            };
+            let child = snap
+                .nodes
+                .iter()
+                .find(|n| n.agent_id == agent_id)
+                .expect("the spawned child is in the tree");
+            assert_eq!(
+                child.timeout,
+                marion_core::encoding::Duration::from_secs(120),
+                "`spawn`'s `timeout_secs` is the clock this node runs under, so it is the clock \
+                 the tree must show — not its agent type's default"
+            );
+            assert_ne!(
+                child.timeout,
+                agent_type::builtin("claude").unwrap().timeout,
+                "and the assertion above is not passing by coincidence with §3.1's default"
+            );
+
+            if let Some(pid) = fx.handle.owned_pid(&agent_id) {
+                crate::run::kill_process_tree_and_wait(pid);
+            }
             settle(&fx, &agent_id);
         }
 

@@ -28,6 +28,7 @@ fn a_tree() -> Vec<RecordKind> {
             harness: Harness::ClaudeCode,
             depth: 0,
             task_id: None,
+            timeout_secs: None,
         }),
         RecordKind::Spawned(Spawned {
             agent_id: AgentId("root".into()),
@@ -46,6 +47,7 @@ fn a_tree() -> Vec<RecordKind> {
             harness: Harness::Codex,
             depth: 1,
             task_id: Some(TaskId(format!("t-{i}"))),
+            timeout_secs: None,
         }));
         kinds.push(RecordKind::Spawned(Spawned {
             agent_id: child.clone(),

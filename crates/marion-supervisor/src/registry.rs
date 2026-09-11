@@ -55,10 +55,12 @@
 //!
 //! # What it deliberately does not answer yet
 //!
-//! * **`marion_core::proto::NodeSummary`.** Two of its fields have no source in the journal at all:
-//!   `timeout` (§3.1's bound — `SpawnIntent` carries no timeout) and `name` (there is no
-//!   `node/rename`). Building one means fabricating both, which is the thing
-//!   `marion-core`'s `ReplayedNode` refuses by making `intent` an `Option`.
+//! * **`marion_core::proto::NodeSummary`.** One of its fields still has no source in the journal:
+//!   `name` (there is no `node/rename`). Building one here means fabricating it, which is the thing
+//!   `marion-core`'s `ReplayedNode` refuses by making `intent` an `Option`. `timeout` used to be
+//!   the second of those and is not any more: `SpawnIntent` records the bound the launch resolved,
+//!   so the projection reports the clock a node is under and falls back to its agent type only
+//!   where an older journal is silent.
 //! * **`marion_core::proto::AttachMode`.** Its `ResubscribeFrom` arm asserts that *the supervisor still
 //!   holds the channel* (§6.2, §7.3.3) — live supervisor state, which no journal can report.
 //!   Deriving it from replay would hand a re-attaching client a live-node verdict for a node whose
@@ -530,6 +532,7 @@ mod tests {
             harness: Harness::Codex,
             depth: u32::from(parent.is_some()),
             task_id: None,
+            timeout_secs: None,
         })
     }
 

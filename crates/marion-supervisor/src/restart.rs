@@ -267,6 +267,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 depth: 0,
                 task_id: Some(TaskId(format!("t-{agent}"))),
+                timeout_secs: None,
             }));
             self.push(RecordKind::Spawned(Spawned {
                 agent_id: id(agent),
@@ -334,6 +335,7 @@ mod tests {
             harness: Harness::ClaudeCode,
             depth: 0,
             task_id: None,
+            timeout_secs: None,
         }));
         log.push(RecordKind::SpawnAborted(SpawnAborted {
             agent_id: id("nevergot"),

@@ -253,6 +253,25 @@ pub struct SpawnIntent {
     /// contract — not a placeholder, an absence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<TaskId>,
+    /// **§3.1's node-level bound, as it was resolved for *this* launch** — `marion run --timeout`
+    /// or `spawn`'s `timeout_secs`, already clamped and defaulted, never the number the caller
+    /// typed. It belongs on the intent for the same reason [`Self::depth`] does: it is decided
+    /// before the process exists and never changes afterwards.
+    ///
+    /// **Recorded because it cannot be re-derived.** The agent type carries a bound too, but it is
+    /// the type's *default* and not the node's: a reader that resolves the bound from the type
+    /// reports 900 s for a root launched with `--timeout 300` and for a child spawned with
+    /// `timeout_secs: 120`, which is what `marion tree`'s detail pane did. Two sources of one fact
+    /// would be the worry if the type were still consulted for a node that has one here; it is not
+    /// — this outranks it, and the type answers only where this is `None`.
+    ///
+    /// **Additive**, per this enum's rule: `#[serde(default)]` so every journal written before it
+    /// still replays, and `skip_serializing_if` so an absent bound is byte-identical to what the
+    /// previous build wrote. `None` means *the journal does not say* — an older record, or a
+    /// launch marion placed no bound of its own on — and a reader falls back to the agent type
+    /// rather than inventing a number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 /// §6.1 step 7's confirmation: the process exists.
@@ -459,6 +478,7 @@ mod tests {
             harness: Harness::Codex,
             depth: 1,
             task_id: Some(TaskId("t-1".into())),
+            timeout_secs: None,
         })
     }
 
@@ -599,6 +619,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 depth: 0,
                 task_id: None,
+                timeout_secs: None,
             })
             .is_barrier()
         );
@@ -717,6 +738,63 @@ mod tests {
             RecordKind::Spawned(with),
             "round-trips, so a replay reads back the identity a spawn recorded"
         );
+    }
+
+    /// **The bound is additive in both directions, for [`Spawned::start_id`]'s reasons.**
+    ///
+    /// An intent written before the field existed must still replay — it does, as `None`, which a
+    /// reader resolves through the agent type exactly as it did before the field was added — and a
+    /// build that has the field but no bound to record must write the byte-identical line the
+    /// previous build wrote.
+    #[test]
+    fn a_spawn_intent_carries_its_bound_and_omits_it_when_there_is_none() {
+        let without = SpawnIntent {
+            agent_id: AgentId("a-1".into()),
+            parent_id: None,
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            depth: 0,
+            task_id: None,
+            timeout_secs: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&RecordKind::SpawnIntent(without)).unwrap(),
+            r#"{"SpawnIntent":{"agent_id":"a-1","parent_id":null,"agent_type":"claude","harness":"claude-code","depth":0}}"#,
+            "`skip_serializing_if` is what keeps an unbounded intent byte-identical to what every \
+             build before this field wrote"
+        );
+
+        let with = SpawnIntent {
+            agent_id: AgentId("a-1".into()),
+            parent_id: None,
+            agent_type: "claude".into(),
+            harness: Harness::ClaudeCode,
+            depth: 0,
+            task_id: None,
+            timeout_secs: Some(300),
+        };
+        let line = serde_json::to_string(&RecordKind::SpawnIntent(with.clone())).unwrap();
+        assert!(
+            line.contains(r#""timeout_secs":300"#),
+            "an operator's `--timeout 300` is on the record as a plain number: {line}"
+        );
+        assert_eq!(
+            serde_json::from_str::<RecordKind>(&line).unwrap(),
+            RecordKind::SpawnIntent(with),
+            "round-trips, so replay reads back the clock the launch resolved"
+        );
+
+        // An intent from a build that predates the field.
+        let old = br#"{"SpawnIntent":{"agent_id":"a-1","parent_id":null,"agent_type":"claude",
+            "harness":"claude-code","depth":0}}"#;
+        let compact: Vec<u8> = old.iter().copied().filter(|b| *b != b'\n').collect();
+        match serde_json::from_slice::<RecordKind>(&compact).expect("an older intent must read") {
+            RecordKind::SpawnIntent(i) => assert_eq!(
+                i.timeout_secs, None,
+                "the journal does not say, which is not the same as 900"
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// **NC — the supervisor exit is not assigned to a convenient node.** A fabricated id would

@@ -1283,10 +1283,21 @@ pub fn run_spawn_watched(
     // The gates (§6.1 step 2) and the scope check run **above** it, unchanged: a spawn that is
     // refused creates no node, and recording an intent for one would put a node in the tree that
     // never existed.
+    //
+    // **The caller's number, clamped once, here.** Everything downstream — the child's wall clock,
+    // the MCP readiness cap, the contract's recorded `timeout` — reads this one value, so the bound
+    // the node ran under and the bound its audit record claims are the same by construction. See
+    // [`MAX_TIMEOUT_SECS`] for why an unclamped `u64` was a live process left behind. It is
+    // resolved *above* the intent rather than at its first use because the intent now records it:
+    // one clamp, and the journal's copy is the compiled value §6.7 records everywhere else.
+    let bound = effective_timeout(req.timeout_secs);
     crate::journal::record(
         &env.project_dir,
         RecordKind::SpawnIntent(SpawnIntent {
             agent_id: agent_id.clone(),
+            // §3.1's bound for *this* child, from the one clamp above — so `marion tree` shows the
+            // clock the node is running under rather than its agent type's default.
+            timeout_secs: Some(bound.as_secs()),
             // §7.5: immutable, written once. The caller is the parent by construction.
             parent_id: Some(AgentId(caller.agent_id.clone())),
             // The canonical name off the resolved type, not the alias `req.agent_type` used —
@@ -1391,11 +1402,6 @@ pub fn run_spawn_watched(
     };
     write_config_documents(adapter.config_files(&launch, &ctx)?)?;
     let inv = adapter.compile(&launch, &ctx)?;
-    // **The caller's number, clamped once, here.** Everything downstream — the child's wall clock,
-    // the MCP readiness cap, the contract's recorded `timeout` — reads this one value, so the bound
-    // the node ran under and the bound its audit record claims are the same by construction. See
-    // [`MAX_TIMEOUT_SECS`] for why an unclamped `u64` was a live process left behind.
-    let bound = effective_timeout(req.timeout_secs);
     // **§7.3.3's replay leg, for the node it needs most.** A child spawned, run and terminated
     // entirely inside a detached window is the case re-attach cannot answer from anything else: it
     // has no live channel to re-subscribe to, and the journal records that it existed and how it

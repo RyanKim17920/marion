@@ -280,6 +280,7 @@ mod tests {
             harness: Harness::Codex,
             depth: 1,
             task_id: None,
+            timeout_secs: None,
         })
     }
 

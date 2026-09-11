@@ -405,6 +405,7 @@ mod tests {
             harness: Harness::ClaudeCode,
             depth: u32::from(parent.is_some()),
             task_id: parent.map(|_| TaskId("t-1".into())),
+            timeout_secs: None,
         })
     }
 
