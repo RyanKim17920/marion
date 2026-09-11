@@ -913,13 +913,6 @@ pub const NO_HARNESSES: &str = "MARION_CI_NO_HARNESSES";
 /// still panics. Only a runner that has explicitly said `MARION_CI_NO_HARNESSES=1` may step over,
 /// and it has to say which harness it stepped over as it goes.
 ///
-/// # Why the skip line is written to the descriptor rather than printed
-///
-/// `cargo test` captures `print!`/`eprint!` for a passing test, so a skip announced through those
-/// macros is invisible on exactly the runs it describes — the green ones. The `std::io::stderr()`
-/// handle is not captured, so this line reaches the log. That is the whole difference between a
-/// loud skip and a silent pass, and it is why this does not use `eprintln!`.
-///
 /// # Why absence still panics off the runner
 ///
 /// A skip that is available everywhere is a skip that will be taken everywhere, and the pin gate
@@ -930,7 +923,7 @@ pub fn harness_available(program: &str) -> bool {
     if on_path(program) {
         return true;
     }
-    if std::env::var_os(NO_HARNESSES).as_deref() != Some(std::ffi::OsStr::new("1")) {
+    if !declared_no_harnesses() {
         panic!(
             "this test drives a REAL {program}; put `{program}` ({version}) on PATH.\n\
              A runner with no harness binaries at all sets {NO_HARNESSES}=1, and this test then \
@@ -938,13 +931,33 @@ pub fn harness_available(program: &str) -> bool {
             version = pinned_version(program),
         );
     }
-    // Not `eprintln!`: libtest captures that macro's output for a passing test, and a skip nobody
-    // can see is the silent pass this whole gate exists to rule out.
-    let _ = writeln!(
-        std::io::stderr(),
-        "SKIPPED (no `{program}`, {NO_HARNESSES}=1): a test that drives a real {program}"
+    announce_skip(
+        &format!("no `{program}`"),
+        &format!("drives a real {program}"),
     );
     false
+}
+
+/// Has this machine declared, explicitly, that it has no harness binaries at all?
+///
+/// Exposed beside [`harness_available`] for the tests whose requirement is not one named program —
+/// `doctor`'s ACP row needs *any* of five agents to answer `initialize`, and there is no single
+/// binary to ask about. Those tests keep every assertion that needs no binary and consult this only
+/// for the half that does.
+pub fn declared_no_harnesses() -> bool {
+    std::env::var_os(NO_HARNESSES).as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
+/// One line on the real stderr saying a criterion did not run, and why.
+///
+/// Not `eprintln!`: libtest captures that macro's output for a passing test, so a skip announced
+/// through it is invisible on exactly the runs it describes. The `std::io::stderr()` handle is not
+/// captured. That is the whole difference between a loud skip and a silent pass.
+pub fn announce_skip(because: &str, what: &str) {
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIPPED ({because}, {NO_HARNESSES}=1): a test that {what}"
+    );
 }
 
 /// The judgement [`on_path`] makes, as a pure function of what the binary printed.

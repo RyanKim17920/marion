@@ -1840,6 +1840,17 @@ mod tests {
             .iter()
             .filter(|r| r.report.harness_version.is_some())
             .collect();
+        // Everything above needed no binary and has already run. Only the capability half is
+        // conditional on a live `initialize`, and only a runner that has said it has no harness
+        // binaries at all may step over it — by name, on the uncaptured stderr. Anywhere else the
+        // assertion below still fails, which is what it is for.
+        if answered.is_empty() && marion_testsupport::declared_no_harnesses() {
+            marion_testsupport::announce_skip(
+                "no ACP agent answered `initialize`",
+                "reads capabilities off a live ACP handshake",
+            );
+            return;
+        }
         assert!(
             !answered.is_empty(),
             "no installed ACP agent answered `initialize`, so this proved nothing: {}",
