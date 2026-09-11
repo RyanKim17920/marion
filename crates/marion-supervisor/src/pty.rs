@@ -2329,6 +2329,21 @@ impl Shared {
     fn observe_pane_guarded_pull(&self) {}
 
     #[cfg(test)]
+    fn observe_reader_would_block(&self) {
+        let hook = self
+            .reader_would_block_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn observe_reader_would_block(&self) {}
+
+    #[cfg(test)]
     fn observe_pane_transition(&self, invoke: bool) {
         if invoke
             && let Some(hook) = self
@@ -3947,24 +3962,10 @@ fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) -> io::R
             Ok(0) => break true,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                #[cfg(test)]
-                if let Some(hook) = shared
-                    .reader_would_block_hook
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                {
-                    hook();
+                if keep_reading_after_would_block(shared, stopped) {
+                    continue;
                 }
-                // A stop request bounds teardown, but it is not terminal-stream evidence. A
-                // descendant may still hold the slave open and write later, so leave without End
-                // and report the replay as incomplete. Only the `Ok(0)` arm above proves EOF (and
-                // includes the terminal `EIO` normalized by `PtyMaster::read`).
-                if stopped.load(Ordering::SeqCst) {
-                    break false;
-                }
-                std::thread::sleep(POLL);
-                continue;
+                break false;
             }
             Err(e) => {
                 eprintln!("marion: pty read failed: {e}");
@@ -3973,16 +3974,7 @@ fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) -> io::R
         };
         record_chunk(shared, &mut utf8, &mut probes, &buf[..n]);
     };
-    let tail = utf8.finish();
-    if !tail.is_empty() {
-        let mut recorders = shared.recorders.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(error) = recorders.cast.output(&tail) {
-            recorders.note_cast_failure("output tail", &error);
-            eprintln!("marion: pty.cast write failed: {error}");
-        }
-        drop(recorders);
-        shared.emit(&tail);
-    }
+    flush_utf8_tail(shared, &mut utf8);
     if reached_eof {
         Ok(())
     } else {
@@ -3991,6 +3983,36 @@ fn read_loop(master: &PtyMaster, shared: &Shared, stopped: &AtomicBool) -> io::R
             "pty reader stopped before kernel EOF",
         ))
     }
+}
+
+/// Nothing to read yet: wait a poll interval, or report that the reader should leave.
+///
+/// A stop request bounds teardown, but it is not terminal-stream evidence. A descendant may still
+/// hold the slave open and write later, so a stopped reader leaves without End and reports the
+/// replay as incomplete. Only `Ok(0)` proves EOF (and includes the terminal `EIO` normalized by
+/// [`PtyMaster::read`]).
+fn keep_reading_after_would_block(shared: &Shared, stopped: &AtomicBool) -> bool {
+    shared.observe_reader_would_block();
+    if stopped.load(Ordering::SeqCst) {
+        return false;
+    }
+    std::thread::sleep(POLL);
+    true
+}
+
+/// Publish whatever partial UTF-8 the stream ended mid-sequence on, once the loop is over.
+fn flush_utf8_tail(shared: &Shared, utf8: &mut Utf8Stream) {
+    let tail = utf8.finish();
+    if tail.is_empty() {
+        return;
+    }
+    let mut recorders = shared.recorders.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(error) = recorders.cast.output(&tail) {
+        recorders.note_cast_failure("output tail", &error);
+        eprintln!("marion: pty.cast write failed: {error}");
+    }
+    drop(recorders);
+    shared.emit(&tail);
 }
 
 /// **Hands the resize job back when the reader leaves, however it leaves.**
