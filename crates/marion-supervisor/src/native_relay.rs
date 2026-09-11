@@ -1031,6 +1031,23 @@ enum FrameError {
     Other(Refusal),
 }
 
+/// A framing failure while the attach response is still outstanding.
+///
+/// Unlike [`RawPaneSession::closed_before_end`], there is nothing yet to attribute a close to:
+/// no keyboard worker is running and no input has been sent, so the plain fact is the whole report.
+fn attach_frame_error(error: FrameError) -> Refusal {
+    match error {
+        // Nothing has been sent that could be refused yet: this is the plain fact.
+        FrameError::Closed { unfinished: 0 } => {
+            "the native pane socket closed before End".to_string()
+        }
+        FrameError::Closed { unfinished } => {
+            format!("the native pane socket closed with {unfinished} unfinished protocol bytes")
+        }
+        FrameError::Other(error) => error,
+    }
+}
+
 impl<W: Write> RawPaneSession<W> {
     /// Attach over `stream`. The caller owns relay signal handling: production acquires
     /// [`RelaySignalGuard`] before this call, so a resize edge published between handler
@@ -1158,16 +1175,7 @@ impl<W: Write> RawPaneSession<W> {
 
     fn await_attach_response(&mut self) -> Result<marion_proto::Response, Refusal> {
         loop {
-            let frame = self.next_frame().map_err(|error| match error {
-                // Nothing has been sent that could be refused yet: this is the plain fact.
-                FrameError::Closed { unfinished: 0 } => {
-                    "the native pane socket closed before End".to_string()
-                }
-                FrameError::Closed { unfinished } => format!(
-                    "the native pane socket closed with {unfinished} unfinished protocol bytes"
-                ),
-                FrameError::Other(error) => error,
-            })?;
+            let frame = self.next_frame().map_err(attach_frame_error)?;
             match frame {
                 Some(Frame::Response(response)) if response.id == RequestId::Number(1) => {
                     return Ok(response);
@@ -1179,10 +1187,7 @@ impl<W: Write> RawPaneSession<W> {
                     ));
                 }
                 Some(Frame::Notification(note))
-                    if matches!(&note.event,
-                        Event::NodePaneFrame(frame) if frame.agent_id == self.id)
-                        || matches!(&note.event,
-                            Event::NodePty { agent_id, .. } if agent_id == &self.id) =>
+                    if crate::pane_client::pane_event_targets(&self.id, &note.event) =>
                 {
                     return Err(format!(
                         "the supervisor sent node `{}` a pane frame before its native attach response",
