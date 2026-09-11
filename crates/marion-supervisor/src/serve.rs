@@ -1410,30 +1410,7 @@ fn answer_one(
 ) -> Option<(Response, bool)> {
     match Frame::from_line(line) {
         Ok(Frame::Request(Request { id: rid, call, .. })) => {
-            if let Call::SessionQuit(p) = &call {
-                *stated = Some(p.disposition.clone());
-            }
-            let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                handle.call(id, &call, out)
-            }));
-            let quit_completed =
-                matches!(call, Call::SessionQuit(_)) && matches!(&answered, Ok(Ok(_)));
-            Some((
-                match answered {
-                    Ok(Ok(result)) => Response::ok(rid, &result),
-                    Ok(Err(e)) => Response::err(rid, e),
-                    Err(_) => Response::err(
-                        rid,
-                        RpcError::internal(
-                            "the supervisor's handler panicked answering this call; the call did not \
-                         complete and nothing about any node changed. The connection is still \
-                         open, because a client that can end the supervisor by sending a request \
-                         is a client that can end the fleet (§5.7).",
-                        ),
-                    ),
-                },
-                quit_completed,
-            ))
+            Some(answer_request(id, rid, call, handle, out, stated))
         }
         // A client sending a *response* or a *notification* is a protocol error: §2's traffic is
         // client→supervisor requests and supervisor→client notifications, and nothing else. A
@@ -1466,6 +1443,43 @@ fn answer_one(
         }
         Err(e) => recover_id(line).map(|rid| (Response::err(rid, e), false)),
     }
+}
+
+/// Run one request and turn what came back into the response its sender can correlate.
+///
+/// The stated disposition is recorded **before** the handler runs, because §7.3.1 asks what the
+/// client said it wanted, not what marion managed to do about it — a quit that panics was still a
+/// quit. The handler is caught for the reason its own refusal text gives: a client that can end the
+/// supervisor by sending a request is a client that can end the fleet (§5.7). Only a call that both
+/// parsed as a quit and answered cleanly completes one.
+fn answer_request(
+    id: ConnId,
+    rid: RequestId,
+    call: Call,
+    handle: &Arc<dyn Handle>,
+    out: &Outbound,
+    stated: &mut Option<QuitDisposition>,
+) -> (Response, bool) {
+    if let Call::SessionQuit(p) = &call {
+        *stated = Some(p.disposition.clone());
+    }
+    let answered =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle.call(id, &call, out)));
+    let quit_completed = matches!(call, Call::SessionQuit(_)) && matches!(&answered, Ok(Ok(_)));
+    let response = match answered {
+        Ok(Ok(result)) => Response::ok(rid, &result),
+        Ok(Err(e)) => Response::err(rid, e),
+        Err(_) => Response::err(
+            rid,
+            RpcError::internal(
+                "the supervisor's handler panicked answering this call; the call did not \
+                         complete and nothing about any node changed. The connection is still \
+                         open, because a client that can end the supervisor by sending a request \
+                         is a client that can end the fleet (§5.7).",
+            ),
+        ),
+    };
+    (response, quit_completed)
 }
 
 /// The `id` of a frame marion could not otherwise parse.
