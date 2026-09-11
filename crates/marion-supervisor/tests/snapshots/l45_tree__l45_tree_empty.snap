@@ -25,6 +25,5 @@ Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
-Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 --- action strip, one line per style run ---
 Style::new().fg(Color::Reset).bg(Color::Reset)  "no nodes                                                                                        "

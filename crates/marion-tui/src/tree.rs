@@ -282,7 +282,7 @@ pub fn nav(bytes: &[u8]) -> Vec<Nav> {
 /// `Enter` never asks the operator to type one. The detail pane shows the whole id.
 pub const TREE_COLUMN: u16 = 44;
 
-/// The tree screen's four regions.
+/// The tree screen's five regions.
 ///
 /// This is [`crate::view::pty_size`]'s counterpart and the place its comment points at: an attach
 /// subtracts no chrome because the node has the terminal, and a tree screen subtracts exactly this
@@ -293,7 +293,11 @@ pub struct Panes {
     pub status: Rect,
     pub tree: Rect,
     pub content: Rect,
-    /// One row along the bottom: the selected node's capabilities, greyed where absent.
+    /// One full-width row at the bottom left: the keys this screen answers to. **Not the content
+    /// pane's last row** — hints belong to the screen, and drawn inside the pane they started at
+    /// `TREE_COLUMN + 2` and read as one more fact about the selected node.
+    pub hints: Rect,
+    /// The last row: the selected node's capabilities, greyed where absent.
     pub actions: Rect,
 }
 
@@ -303,11 +307,16 @@ pub struct Panes {
 /// the status row that row and everything else zero height, two rows gives the strip the second,
 /// and `ratatui` draws nothing into a zero-height `Rect`. Inventing a minimum size here would make
 /// marion refuse to start in a window the operator can see.
+///
+/// The bottom rows are claimed **before** the body, so shrinking a window costs the operator tree
+/// rows rather than the two rows that say what the screen is and what it does.
 pub fn split(area: Rect) -> Panes {
     let status = area.height.min(1);
     let strip = (area.height - status).min(1);
-    let body = area.height - status - strip;
+    let hints = (area.height - status - strip).min(1);
+    let body = area.height - status - strip - hints;
     let body_y = area.y.saturating_add(status);
+    let hints_y = body_y.saturating_add(body);
     let tree_w = TREE_COLUMN.min(area.width);
     Panes {
         status: Rect::new(area.x, area.y, area.width, status),
@@ -318,7 +327,32 @@ pub fn split(area: Rect) -> Panes {
             area.width - tree_w,
             body,
         ),
-        actions: Rect::new(area.x, body_y.saturating_add(body), area.width, strip),
+        hints: Rect::new(area.x, hints_y, area.width, hints),
+        actions: Rect::new(area.x, hints_y.saturating_add(hints), area.width, strip),
+    }
+}
+
+/// The key hints, pinned to the bottom left of the screen.
+///
+/// The words are the caller's, for the same reason [`Action::name`]'s are: this crate cannot say
+/// what `Enter` will do to a node, because it cannot tell one node from another. All it owns is the
+/// row and the margin.
+pub struct Hints<'a> {
+    pub keys: &'a str,
+}
+
+impl Widget for Hints<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.height == 0 {
+            return;
+        }
+        buf.set_stringn(
+            area.x,
+            area.y,
+            self.keys,
+            area.width as usize,
+            Style::default().add_modifier(Modifier::DIM),
+        );
     }
 }
 
@@ -607,8 +641,8 @@ mod tests {
     fn the_split_leaves_the_content_pane_the_rest_and_nothing_overlaps() {
         let p = split(Rect::new(0, 0, 100, 40));
         assert_eq!(p.status, Rect::new(0, 0, 100, 1));
-        assert_eq!(p.tree, Rect::new(0, 1, TREE_COLUMN, 38));
-        assert_eq!(p.content, Rect::new(TREE_COLUMN, 1, 100 - TREE_COLUMN, 38));
+        assert_eq!(p.tree, Rect::new(0, 1, TREE_COLUMN, 37));
+        assert_eq!(p.content, Rect::new(TREE_COLUMN, 1, 100 - TREE_COLUMN, 37));
         assert_eq!(p.actions, Rect::new(0, 39, 100, 1));
 
         // A window narrower than the tree column gives the tree what there is and the content none,
@@ -626,6 +660,52 @@ mod tests {
         assert_eq!(p.status, Rect::new(0, 0, 80, 1));
         assert_eq!(p.tree.height, 0);
         assert_eq!(p.actions, Rect::new(0, 1, 80, 1));
+    }
+
+    /// **The hints are the screen's, not the content pane's.**
+    ///
+    /// They used to be drawn as the content pane's own last row, which starts at `TREE_COLUMN + 2`:
+    /// on a wide terminal that put the one row telling an operator which keys exist forty-six
+    /// columns in from the left, floating under a pane whose text it had nothing to do with, and it
+    /// read as part of the node's detail. They get their own full-width row pinned to the bottom
+    /// left, immediately above the caps strip, which stays the last line.
+    #[test]
+    fn the_hints_own_a_full_width_row_at_the_bottom_left_above_the_caps_strip() {
+        let p = split(Rect::new(0, 0, 100, 40));
+        assert_eq!(
+            p.hints,
+            Rect::new(0, 38, 100, 1),
+            "full width, at the left margin"
+        );
+        assert_eq!(
+            p.actions,
+            Rect::new(0, 39, 100, 1),
+            "the caps strip is still the last line"
+        );
+        assert_eq!(
+            p.hints.y,
+            p.content.y + p.content.height,
+            "no gap, and no overlap"
+        );
+        assert_eq!(p.tree.height, 37);
+
+        // Degenerate heights give the rows away from the bottom up and never underflow.
+        assert_eq!(split(Rect::new(0, 0, 80, 1)).hints.height, 0);
+        assert_eq!(split(Rect::new(0, 0, 80, 2)).hints.height, 0);
+        let p = split(Rect::new(0, 0, 80, 3));
+        assert_eq!(p.hints, Rect::new(0, 1, 80, 1));
+        assert_eq!(p.actions, Rect::new(0, 2, 80, 1));
+        assert_eq!(p.content.height, 0);
+
+        // And the widget writes from the pane's own left edge, not indented into the content pane.
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buf = Buffer::empty(area);
+        Hints {
+            keys: "enter attach  q quit",
+        }
+        .render(area, &mut buf);
+        let row: String = (0..30).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(row.starts_with("enter attach"), "{row:?}");
     }
 
     /// The status row says which project this is and how big the forest is — the two facts that

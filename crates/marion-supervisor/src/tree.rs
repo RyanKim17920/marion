@@ -544,6 +544,7 @@ impl Session {
                 },
                 panes.tree,
             );
+            f.render_widget(tree::Hints { keys: KEYS }, panes.hints);
             f.render_widget(
                 tree::ActionBar {
                     node: tree.selected(),
@@ -588,7 +589,10 @@ struct Detail<'a> {
     notice: Option<&'a str>,
 }
 
-/// The pane's last row: every key this screen answers to, and what `Enter` will and will not open.
+/// The screen's bottom-left row: every key this screen answers to, and what `Enter` will and will
+/// not open. Rendered into [`marion_tui::tree::Panes::hints`], which is full width and starts at
+/// the left margin — inside the content pane it began at `TREE_COLUMN + 2` and read as the selected
+/// node's business rather than the screen's.
 const KEYS: &str = "enter open pane nodes only  j/k move  tab focus  q quit  ^] d detach";
 
 impl Detail<'_> {
@@ -645,11 +649,11 @@ impl ratatui::widgets::Widget for Detail<'_> {
             lines.push(String::new());
             lines.push(notice.to_string());
         }
-        // The hints own the last row; the facts get every row above it.
-        let last = area.height - 1;
+        // Every row is the node's. The key hints are the *screen's* and live in their own
+        // full-width row at the bottom left — see [`marion_tui::tree::Panes::hints`].
         for (i, line) in lines.iter().enumerate() {
             let Ok(y) = u16::try_from(i) else { break };
-            if y >= last {
+            if y >= area.height {
                 break;
             }
             let bold = self.notice.is_some() && i + 1 == lines.len();
@@ -660,12 +664,6 @@ impl ratatui::widgets::Widget for Detail<'_> {
             };
             put(buf, y, line, s);
         }
-        put(
-            buf,
-            last,
-            KEYS,
-            style().add_modifier(ratatui::style::Modifier::DIM),
-        );
     }
 }
 
@@ -887,7 +885,8 @@ mod tests {
     /// **The content pane carries every fact the row cannot.** A row is a state and a short label;
     /// the harness, its version, the surface, the depth, the parent, the bound and the whole id —
     /// which is what `marion attach` wants typed — are all in `NodeSummary` and were shown nowhere.
-    /// The key hints stay, as the pane's last row, and say which nodes `Enter` can open.
+    /// The key hints are **not** among them: they are the screen's row, at the bottom left, and
+    /// `the_hints_are_the_screens_row_and_not_the_panes` is where they are asserted.
     #[test]
     fn the_detail_pane_names_every_fact_the_row_cannot_carry() {
         let mut n = summary(
@@ -920,9 +919,10 @@ mod tests {
         ] {
             assert!(text.contains(fact), "`{fact}` is not in the pane:\n{text}");
         }
-        let keys = rows.last().expect("a last row");
-        assert!(keys.contains("^] d"), "detach hint: {keys}");
-        assert!(keys.contains("pane nodes only"), "what Enter opens: {keys}");
+        assert!(
+            !text.contains("j/k move"),
+            "the key hints are the screen's row, not a fact about this node:\n{text}"
+        );
 
         // The version that was never read is said, not blanked.
         n.harness_version = None;
@@ -938,7 +938,7 @@ mod tests {
         assert!(text.contains("version unknown"), "{text}");
         assert!(text.contains("pane"), "{text}");
 
-        // An empty forest is a sentence, and the hints still show.
+        // An empty forest is a sentence rather than a blank pane.
         let rows = painted(
             area,
             Detail {
@@ -947,7 +947,39 @@ mod tests {
             },
         );
         assert!(rows[0].contains("no nodes"), "{rows:?}");
-        assert!(rows.last().unwrap().contains("q quit"), "{rows:?}");
+    }
+
+    /// **The hints belong to the screen, at the bottom left, above the caps strip.**
+    ///
+    /// Drawn as the content pane's last row they started at `TREE_COLUMN + 2` — forty-six columns
+    /// in on a wide terminal — so the one row that tells a first-time operator which keys exist
+    /// floated in the middle of the screen and read as part of the node's detail. This walks the
+    /// whole painted frame and asserts the row's position, not merely its presence.
+    #[test]
+    fn the_hints_are_the_screens_row_and_not_the_panes() {
+        let screen = ratatui::layout::Rect::new(0, 0, 120, 20);
+        let panes = tree::split(screen);
+        assert_eq!(
+            panes.hints.x, 0,
+            "the hints start at the screen's left margin"
+        );
+        assert_eq!(
+            panes.hints.y + panes.hints.height,
+            panes.actions.y,
+            "the caps strip is the last line and the hints sit directly above it"
+        );
+
+        let mut buf = ratatui::buffer::Buffer::empty(screen);
+        ratatui::widgets::Widget::render(
+            marion_tui::tree::Hints { keys: KEYS },
+            panes.hints,
+            &mut buf,
+        );
+        let row: String = (0..screen.width)
+            .map(|x| buf[(x, panes.hints.y)].symbol())
+            .collect();
+        assert!(row.starts_with("enter"), "{row:?}");
+        assert!(row.contains("^] d detach"), "{row:?}");
     }
 
     /// **`Enter` on a headless node is refused on the screen, not on stderr.** The old path ran

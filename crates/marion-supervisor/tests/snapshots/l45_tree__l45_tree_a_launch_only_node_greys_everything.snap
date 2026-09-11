@@ -25,7 +25,6 @@ Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 Style::new().fg(Color::Reset).bg(Color::Reset)  ""
-Style::new().fg(Color::Reset).bg(Color::Reset)  ""
 --- action strip, one line per style run ---
 Style::new().fg(Color::Reset).bg(Color::Reset)  "caps:"
 Style::new().dark_gray().bg(Color::Reset).dim()  " steer  interrupt  fork  resume  view  permissions  elicitation  set_model  token_deltas  u"
