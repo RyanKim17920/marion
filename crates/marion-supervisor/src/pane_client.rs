@@ -15,6 +15,18 @@ pub(crate) struct DecodedPaneV1 {
     pub(crate) action: PaneV1Action,
 }
 
+/// Whether an event carries display-plane bytes for `id`, on either pane protocol.
+///
+/// Both clients need this before their attach response has named a protocol, which is exactly
+/// when they cannot yet decode a frame: the question is only whose display plane it belongs to.
+pub(crate) fn pane_event_targets(id: &AgentId, event: &Event) -> bool {
+    match event {
+        Event::NodePaneFrame(frame) => frame.agent_id == *id,
+        Event::NodePty { agent_id, .. } => agent_id == id,
+        _ => false,
+    }
+}
+
 /// Validate and decode one event from an already-negotiated pane-v1 stream.
 pub(crate) fn decode_pane_v1_event(
     id: &AgentId,

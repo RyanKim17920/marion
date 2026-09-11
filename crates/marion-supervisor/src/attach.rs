@@ -652,56 +652,7 @@ impl Session {
                         response.id
                     ));
                 }
-                Some(Frame::Notification(note))
-                    if pane_v1
-                        && match &note.event {
-                            Event::NodePaneFrame(frame) => frame.agent_id == self.id,
-                            Event::NodePty { agent_id, .. } => agent_id == &self.id,
-                            _ => false,
-                        } =>
-                {
-                    return Err(format!(
-                        "the supervisor sent node `{}` a pane frame before its node/attach \
-                         response advertised the Ready boundary",
-                        self.id.0
-                    ));
-                }
-                Some(Frame::Notification(note))
-                    if !pane_v1
-                        && matches!(&note.event, Event::NodePty { agent_id, .. }
-                            if agent_id == &self.id) =>
-                {
-                    let Event::NodePty { bytes, .. } = note.event else {
-                        unreachable!("the guard selected node/pty")
-                    };
-                    let next = self
-                        .legacy_prefix
-                        .len()
-                        .checked_add(bytes.len())
-                        .ok_or_else(|| "legacy pane prefix byte count overflowed".to_string())?;
-                    if next > crate::serve::MAX_FRAME_BYTES {
-                        return Err(format!(
-                            "legacy pane output exceeded the {}-byte attach prefix bound before \
-                             its response",
-                            crate::serve::MAX_FRAME_BYTES
-                        ));
-                    }
-                    self.legacy_prefix.push_str(&bytes);
-                }
-                Some(Frame::Notification(note))
-                    if !pane_v1
-                        && matches!(&note.event, Event::NodePaneFrame(frame)
-                            if frame.agent_id == self.id) =>
-                {
-                    return Err(format!(
-                        "the supervisor sent node `{}` a pane-v1 frame while answering its \
-                         explicit legacy attach",
-                        self.id.0
-                    ));
-                }
-                // Durable transcript replay and unrelated notifications may precede an attach
-                // response. This command renders only the display plane.
-                Some(Frame::Notification(_)) => continue,
+                Some(Frame::Notification(note)) => self.absorb_pre_response(note, pane_v1)?,
                 Some(other) => {
                     return Err(format!(
                         "the supervisor sent an unexpected frame while answering node/attach: \
@@ -711,6 +662,65 @@ impl Session {
                 None => continue,
             }
         }
+    }
+
+    /// One notification that arrived before the attach response.
+    ///
+    /// Durable transcript replay and unrelated notifications may precede an attach response, and
+    /// are ignored: this command renders only the display plane. A display frame for this node is
+    /// the exception — under pane-v1 it crosses a Ready boundary the response has not advertised
+    /// yet, and under an explicit legacy retry it is either prefix bytes or a protocol the client
+    /// did not ask for.
+    fn absorb_pre_response(
+        &mut self,
+        note: marion_proto::Notification,
+        pane_v1: bool,
+    ) -> Result<(), Refusal> {
+        if pane_v1 && crate::pane_client::pane_event_targets(&self.id, &note.event) {
+            return Err(format!(
+                "the supervisor sent node `{}` a pane frame before its node/attach \
+                 response advertised the Ready boundary",
+                self.id.0
+            ));
+        }
+        if !pane_v1
+            && matches!(&note.event, Event::NodePty { agent_id, .. }
+                if agent_id == &self.id)
+        {
+            let Event::NodePty { bytes, .. } = note.event else {
+                unreachable!("the guard selected node/pty")
+            };
+            return self.absorb_legacy_prefix(&bytes);
+        }
+        if !pane_v1
+            && matches!(&note.event, Event::NodePaneFrame(frame)
+                if frame.agent_id == self.id)
+        {
+            return Err(format!(
+                "the supervisor sent node `{}` a pane-v1 frame while answering its \
+                 explicit legacy attach",
+                self.id.0
+            ));
+        }
+        Ok(())
+    }
+
+    /// Hold legacy pane output that preceded the attach response, under the frame bound.
+    fn absorb_legacy_prefix(&mut self, bytes: &str) -> Result<(), Refusal> {
+        let next = self
+            .legacy_prefix
+            .len()
+            .checked_add(bytes.len())
+            .ok_or_else(|| "legacy pane prefix byte count overflowed".to_string())?;
+        if next > crate::serve::MAX_FRAME_BYTES {
+            return Err(format!(
+                "legacy pane output exceeded the {}-byte attach prefix bound before \
+                 its response",
+                crate::serve::MAX_FRAME_BYTES
+            ));
+        }
+        self.legacy_prefix.push_str(bytes);
+        Ok(())
     }
 
     fn write_frame(&mut self, frame: &Frame, action: &str) -> Result<(), Refusal> {
