@@ -1280,14 +1280,58 @@ fn validate_stream_file(file: &File) -> Result<(), StreamError> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Fires once, after a refused `flock`, so a test can close the descriptor that owns the lock
+    /// at exactly the step the confirmation below depends on rather than racing a sleep against it.
+    static LOCK_REFUSAL_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn on_lock_refused() {
+    let hook = LOCK_REFUSAL_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// How long a refused `flock` is re-offered before `WriterLocked` is believed.
+///
+/// An `flock` belongs to the **open file description**, and `fork` duplicates that description.
+/// `spawn_pty` installs a `pre_exec`, which forces `std::process::Command` down `fork`+`exec`, so
+/// every child this supervisor starts inherits every stream lock it currently holds and keeps that
+/// lock alive until `exec` closes the `O_CLOEXEC` descriptor. Within that window the owning
+/// writer's own `close` releases nothing, and a `create` or crash-recovery `reopen` racing it is
+/// told the stream has a live writer when the only holder was a copy of its own descriptor on its
+/// way out of the process.
+///
+/// So a single instantaneous refusal is not evidence of a competing writer. This is a bound on how
+/// long the refusal is *confirmed* for, not a timing assumption about the answer: a writer that
+/// really is live still holds the lock past any budget and is still refused, and a duplicate on its
+/// way to `exec` is gone in well under this one.
+const WRITER_LOCK_CONFIRM: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long to wait between offers while confirming. Short enough that a released lock is taken
+/// promptly, long enough that confirming does not spin a core for half a second.
+const WRITER_LOCK_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(1);
+
 fn lock_writer(file: &File) -> Result<(), StreamError> {
-    rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(|error| {
-        if error == rustix::io::Errno::AGAIN {
-            StreamError::WriterLocked
-        } else {
-            StreamError::Storage(error.to_string())
+    let deadline = std::time::Instant::now() + WRITER_LOCK_CONFIRM;
+    loop {
+        match rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => return Ok(()),
+            Err(error) if error == rustix::io::Errno::AGAIN => {
+                #[cfg(test)]
+                on_lock_refused();
+                if std::time::Instant::now() >= deadline {
+                    return Err(StreamError::WriterLocked);
+                }
+                std::thread::sleep(WRITER_LOCK_RETRY_PAUSE);
+            }
+            Err(error) => return Err(StreamError::Storage(error.to_string())),
         }
-    })
+    }
 }
 
 pub(crate) fn recover_session_bytes(encoded: &[u8]) -> Result<SessionRecovery, StreamError> {
@@ -2837,6 +2881,55 @@ mod tests {
                 }
             ]
         ));
+    }
+
+    /// Mutation: believe the first non-blocking `flock` answer.
+    ///
+    /// An `flock` belongs to the **open file description**, not to the descriptor and not to the
+    /// process, and `fork` duplicates that description. `spawn_pty` sets `pre_exec`, which forces
+    /// `std::process::Command` down the `fork`+`exec` path, so every child this supervisor starts
+    /// inherits every stream lock the supervisor holds and keeps it alive until `exec` closes the
+    /// `O_CLOEXEC` descriptor. Inside that window the parent's own `close` releases nothing: a
+    /// writer that has just closed its descriptor is refused its own stream with `WriterLocked`,
+    /// and crash recovery through `reopen` fails for a stream no other writer wants.
+    ///
+    /// `try_clone` is that inherited copy exactly — one description, two descriptors — so the race
+    /// is reproduced here without a child process. The hook closes the duplicate at the step the
+    /// refusal happens, so the test is a causal barrier rather than a sleep sized against a budget.
+    #[test]
+    fn a_lock_left_by_a_duplicate_of_a_closed_descriptor_is_not_a_competing_writer() {
+        let dir = marion_testsupport::scratch("pty-stream-lock-confirm");
+        let cast_path = dir.join("pty.cast");
+        std::fs::write(&cast_path, b"cast").unwrap();
+        let agent = AgentId("lock-confirm".into());
+        let size = super::super::WinSize::new(80, 24);
+        let session_id = [0x44; SESSION_ID_BYTES];
+
+        let writer =
+            SessionWriter::create_with_session(&cast_path, &agent, size, session_id).unwrap();
+        let inherited = writer.file.try_clone().unwrap();
+        drop(writer);
+
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&released);
+        LOCK_REFUSAL_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                drop(inherited);
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+
+        let reopened = SessionWriter::reopen(&cast_path, &agent, size, session_id);
+        assert!(
+            released.load(std::sync::atomic::Ordering::SeqCst),
+            "the duplicate must still own the lock when the first attempt is refused"
+        );
+        assert!(
+            reopened.is_ok(),
+            "a lock released during the confirmation window is not a competing writer: {:?}",
+            reopened.err()
+        );
+        LOCK_REFUSAL_HOOK.with(|slot| *slot.borrow_mut() = None);
     }
 
     /// Mutation: derive truncation only from a live SessionWriter field. Reopen would lose the
