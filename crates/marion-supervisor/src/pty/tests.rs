@@ -2573,18 +2573,26 @@ fn pty_retention_overflow_latches_without_blocking_cast_or_live_output() {
         Some(first_error.as_str())
     );
     assert_eq!(lb.host.retention_snapshot(), frozen);
-    assert!(
-        until(|| lb.host.next_seq() == 3),
-        "live output stopped after retention failed"
-    );
-
+    // **Wait on the frames, not on the counter.** `Shared::emit` bumps `seq` *before* it fans the
+    // event out to the listeners, so `next_seq() == 3` says only that the third write entered
+    // `emit` — under scheduling pressure the third frame can still be unsent when a drain that
+    // trusted the counter reads the channel, and the run fails on a missing `later`. The delivered
+    // frames are the event this test is actually about, so accumulate them until they say what the
+    // third write says.
     let mut live = String::new();
-    while let Ok(frame) = rx.try_recv() {
-        let frame: serde_json::Value = serde_json::from_slice(&frame).unwrap();
-        assert_eq!(frame["method"], "node/pty");
-        live.push_str(frame["params"]["bytes"].as_str().unwrap());
-    }
-    assert_eq!(live, "ok\u{fffd}boomlater");
+    let delivered = until(|| {
+        for frame in rx.try_iter() {
+            let frame: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+            assert_eq!(frame["method"], "node/pty");
+            live.push_str(frame["params"]["bytes"].as_str().unwrap());
+        }
+        live == "ok\u{fffd}boomlater"
+    });
+    assert!(
+        delivered,
+        "live output stopped after retention failed: {live:?}"
+    );
+    assert_eq!(lb.host.next_seq(), 3);
 
     lb.hang_up();
     lb.host.shutdown().unwrap();
