@@ -613,57 +613,11 @@ pub fn spawn_pty(
 ) -> io::Result<PtyChild> {
     let _ = witness;
 
-    // Three **independent** dups, so each stream closes independently (topology point 4). `dup` and
-    // not three `open`s: the brief's topology, and it keeps all three on one open file description
-    // so the termios state a harness sets through one is the state it reads through another.
-    let out = master.open_slave()?;
-    let err = out.try_clone()?;
-    let inp = match stdin {
-        StdinPlan::TerminalSlave => Some(out.try_clone()?),
-        StdinPlan::Piped | StdinPlan::Null => None,
-    };
-    let handed = [
-        inp.as_ref().map_or(-1, AsRawFd::as_raw_fd),
-        out.as_raw_fd(),
-        err.as_raw_fd(),
-    ];
-    // Which descriptor the child will find the slave on. See the module doc, topology point 5:
-    // `ioctl(0, …)` is right only when stdin *is* the slave, and answers `ENOTTY` for a `shared`
-    // node, whose stdin is a pipe.
-    let ctty_fd: c_int = match stdin {
-        StdinPlan::TerminalSlave => 0,
-        StdinPlan::Piped | StdinPlan::Null => 1,
-    };
-
-    command.stdout(Stdio::from(out)).stderr(Stdio::from(err));
-    match (stdin, inp) {
-        (StdinPlan::TerminalSlave, Some(fd)) => {
-            command.stdin(Stdio::from(fd));
-        }
-        (StdinPlan::Piped, _) => {
-            command.stdin(Stdio::piped());
-        }
-        _ => {
-            command.stdin(Stdio::null());
-        }
-    }
-
-    // SAFETY: async-signal-safe body only — two syscalls and no allocation, no locking and no
-    // Rust-side global state. std has already dup2'd the stdio and has not yet `exec`d, so fd 0 is
-    // the slave. `setsid` makes the child a session leader with no controlling terminal, which is
-    // the precondition `TIOCSCTTY` needs; it also subsumes `Command::process_group(0)`, so that is
-    // deliberately not set as well.
-    unsafe {
-        command.pre_exec(move || {
-            if setsid() < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if ioctl(ctty_fd, sys::TIOCSCTTY, 0 as c_int) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    let slave = SlaveStreams::open(master, stdin)?;
+    let handed = slave.handed();
+    let ctty_fd = ctty_fd_for(stdin);
+    attach_slave_streams(command, stdin, slave);
+    install_ctty_pre_exec(command, ctty_fd);
 
     let mut child = crate::spawn_receive_gate::SPAWN_RECEIVE_GATE.spawn(command)?;
     let pid = child.id() as i32;
@@ -701,6 +655,91 @@ pub fn spawn_pty(
     }
 
     Ok(child)
+}
+
+/// The child's three standard streams, before the `Command` takes them.
+struct SlaveStreams {
+    out: OwnedFd,
+    err: OwnedFd,
+    /// `None` where the child is not given the slave for stdin — a `Piped` or `Null` plan.
+    inp: Option<OwnedFd>,
+}
+
+impl SlaveStreams {
+    /// Three **independent** dups, so each stream closes independently (topology point 4). `dup`
+    /// and not three `open`s: the brief's topology, and it keeps all three on one open file
+    /// description so the termios state a harness sets through one is the state it reads through
+    /// another.
+    fn open(master: &PtyMaster, stdin: StdinPlan) -> io::Result<Self> {
+        let out = master.open_slave()?;
+        let err = out.try_clone()?;
+        let inp = match stdin {
+            StdinPlan::TerminalSlave => Some(out.try_clone()?),
+            StdinPlan::Piped | StdinPlan::Null => None,
+        };
+        Ok(Self { out, err, inp })
+    }
+
+    /// The descriptors as the child will see them, `-1` where it was not given the slave. Read
+    /// before the `Command` takes ownership, because that is the last moment they are numbers this
+    /// process can still name. See [`PtyChild::handed`].
+    fn handed(&self) -> [RawFd; 3] {
+        [
+            self.inp.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+            self.out.as_raw_fd(),
+            self.err.as_raw_fd(),
+        ]
+    }
+}
+
+/// Which descriptor the child will find the slave on. See the module doc, topology point 5:
+/// `ioctl(0, …)` is right only when stdin *is* the slave, and answers `ENOTTY` for a `shared` node,
+/// whose stdin is a pipe.
+fn ctty_fd_for(stdin: StdinPlan) -> c_int {
+    match stdin {
+        StdinPlan::TerminalSlave => 0,
+        StdinPlan::Piped | StdinPlan::Null => 1,
+    }
+}
+
+/// Hand the three descriptors to the `Command`, stdin according to the plan.
+fn attach_slave_streams(command: &mut Command, stdin: StdinPlan, slave: SlaveStreams) {
+    command
+        .stdout(Stdio::from(slave.out))
+        .stderr(Stdio::from(slave.err));
+    match (stdin, slave.inp) {
+        (StdinPlan::TerminalSlave, Some(fd)) => {
+            command.stdin(Stdio::from(fd));
+        }
+        (StdinPlan::Piped, _) => {
+            command.stdin(Stdio::piped());
+        }
+        _ => {
+            command.stdin(Stdio::null());
+        }
+    }
+}
+
+/// `setsid` then `TIOCSCTTY` on `ctty_fd`, in the child, between std's dup2 and `exec`.
+///
+/// Topology point 5: `setsid` makes the child a session leader with no controlling terminal, which
+/// is the precondition `TIOCSCTTY` needs; it also subsumes `Command::process_group(0)`, so that is
+/// deliberately not set as well.
+fn install_ctty_pre_exec(command: &mut Command, ctty_fd: c_int) {
+    // SAFETY: async-signal-safe body only — two syscalls and no allocation, no locking and no
+    // Rust-side global state. std has already dup2'd the stdio and has not yet `exec`d, so the
+    // slave is on the descriptor `ctty_fd_for` picked.
+    unsafe {
+        command.pre_exec(move || {
+            if setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if ioctl(ctty_fd, sys::TIOCSCTTY, 0 as c_int) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
