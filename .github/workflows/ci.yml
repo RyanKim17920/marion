@@ -1,0 +1,119 @@
+# What this workflow is, and what it deliberately is not.
+#
+# marion's real test suite drives REAL harness binaries — claude, codex, gemini, opencode,
+# copilot, goose, cline, qwen — at the exact releases `marion_testsupport::PINNED_HARNESSES`
+# admits, against a canned local provider. That matrix cannot run here: the binaries are not
+# installable from a manifest, they auto-update out from under a pin, some need credentials, and
+# the native-facade lanes need a real foreground controlling TTY. **The live matrix stays local
+# and manual** — see CONTRIBUTING.md and MILESTONES.md's "E2E, and how to run it".
+#
+# So CI covers exactly the part that needs no harness binary: format, clippy, the unit tests, and
+# the integration suites that reference neither `marion_testsupport::on_path` nor
+# `PINNED_HARNESSES`. The excluded suites are not skipped-if-absent — `require_claude_and_codex`
+# asserts — so they are named out rather than allowed to fail.
+#
+# The suite list below is explicit on purpose. A glob would sweep a future harness-driving suite
+# into the gate by existing, which is the same reason `.githooks/pre-commit` names its two
+# targets.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rustup reads rust-toolchain.toml (1.94.0, with rustfmt and clippy).
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+
+      # Several suites shell out to `git` inside a scratch repository they create. A runner has no
+      # committer identity of its own.
+      - name: Give git a committer identity
+        run: |
+          git config --global user.name "marion ci"
+          git config --global user.email "ci@marion.invalid"
+
+      # Every binary cargo runs goes through scripts/cargo-runner.sh (.cargo/config.toml), which
+      # needs its executable bit to have survived the checkout.
+      - run: test -x scripts/cargo-runner.sh
+
+      - name: Unit tests
+        run: cargo test --workspace --lib
+
+      # Integration suites that need no harness binary. Verified green on darwin 25.5.0 at
+      # f52d65c; the nineteen harness-driving suites (acp_child, child_events, child_stream,
+      # cross_product, depth_gate, descendant_gate, harness_matrix, journal_wiring, m1_hop,
+      # m4_fan_in, native_facade_e2e, native_facade_smoke, no_git, node_attach, pane_attach,
+      # permission_round_trip, restart_resume, timeout_kill, worktree_reap) are excluded.
+      - name: Integration — marion-core
+        run: cargo test -p marion-core --test pane_wire
+
+      - name: Integration — marion-harness
+        run: >
+          cargo test -p marion-harness
+          --test auth_public_paths
+          --test mcp_bridge_public_paths
+          --test native_injection_kernel
+
+      # l45_driver and l45_tree are the L4.5 snapshot gate that .githooks/pre-commit already runs
+      # on every commit. They are here too because a hook is per-clone and opt-in.
+      - name: Integration — marion-term
+        run: >
+          cargo test -p marion-term
+          --test l45_driver
+          --test replay
+          --test vt100_comparison
+
+      - name: Integration — marion-tui
+        run: cargo test -p marion-tui --test threshold
+
+      - name: Integration — marion-supervisor
+        run: >
+          cargo test -p marion-supervisor
+          --test attach_verb
+          --test auth_mode
+          --test background_spawn
+          --test client_run
+          --test concurrent_projects
+          --test detached_spawn
+          --test detached_supervisor
+          --test journal
+          --test l45_tree
+          --test launch_only_root
+          --test mcp_conformance
+          --test native_bootstrap
+          --test native_facade_cli
+          --test native_facade_gate
+          --test native_injection_binding
+          --test native_mode_matrix
+          --test report_on_a_root
+          --test root_change_record
+          --test run_stream
+          --test spawned_barrier
+          --test top_level_mcp
