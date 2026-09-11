@@ -110,7 +110,13 @@ gemini, goose, cline and ACP refuse by name. TUI: `marion tree` (44-column tree,
 the canned provider and skips loudly where a binary is absent; the version gate is
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:
 `cargo test -p marion-supervisor --test native_facade_e2e` (per enabled lane; needs the harness on
-`PATH` and a real PTY). Restart and resume: `cargo test -p marion-supervisor --test
+`PATH` and a real PTY). Delegation **from** a native root:
+`cargo test -p marion-supervisor --test native_facade_spawn` (the shipped `marion claude` on a real
+PTY calls `spawn` through marion's injected MCP server and gets a real codex child's `TaskContract`
+back as its own tool result; needs `claude` and `codex` on `PATH`, spends nothing — both nodes talk
+to the canned provider, the child through the supervisor's declaration and the root through
+`ANTHROPIC_BASE_URL` in the operator's own environment, which is a native node's environment).
+Restart and resume: `cargo test -p marion-supervisor --test
 restart_resume -- --ignored` (real codex, detached supervisor; **two** tests since 2026-09-10, one
 per depth — a root and a depth-1 child each resumed into its own id after their shared supervisor
 is SIGKILLed. Since 2026-09-06 the root arc asserts the resumed process's own turn — a
@@ -1251,6 +1257,13 @@ acceptance evidence, so every marker remains unchanged.
   (`tests/native_bootstrap.rs::a_native_roots_declaration_carries_a_token_that_authorizes_a_spawn_under_it`):
   the token the **vendor process** really received is presented on the project socket as the
   bridge would present it, and the supervisor journals a child under the native root at depth 1.
+  End to end, `tests/native_facade_spawn.rs` runs `m1_hop`'s hop with the root replaced by the
+  shipped `marion claude` on a real controlling PTY: the native root calls `mcp__marion__spawn`,
+  a real codex child runs under it, the child appears under the root in `tree/subscribe` at depth
+  1, and the root's own request log carries the child's `TaskContract` as that call's tool result.
+  $0.00 — the child reaches the canned provider through the supervisor's declaration and the root
+  through `ANTHROPIC_BASE_URL` in the operator's environment, which is a native node's environment
+  by design (§6.4), so no production override was added for the test.
   *Still open:* C1's
   recorded 10-minute manual session (through `marion claude`); the `gemini` lane (system-settings
   merge unmeasured); `SIGTSTP`/`SIGCONT` through the shipped facade, not observable from the
