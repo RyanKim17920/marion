@@ -1,6 +1,17 @@
 /target
 tasks/
+
+# Agent and editor tooling that happens to live in the checkout. None of it is
+# part of the build, and `.superpowers/sdd/` holds per-task briefs, reports and
+# review diffs that belong to a session rather than to the project.
 .claude/
+.superpowers/
+.serena/
+
+# macOS and Python droppings. The spike directories are run in place.
+.DS_Store
+__pycache__/
+*.pyc
 
 # `insta` writes these beside the accepted snapshot on any snapshot failure, and deletes
 # neither on a later pass — three mutation runs each left five untracked files behind. They are
