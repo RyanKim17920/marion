@@ -7160,27 +7160,200 @@ mod tests {
     ///
     /// A row with no measured switch says so **explicitly**: `UpdatePolicy::None` with a note
     /// naming what was searched. Silence is the one answer the sweep refuses.
-    #[test]
-    fn every_row_states_its_update_policy_and_renders_it_into_every_launch_shape() {
-        use std::ffi::OsString;
+    /// One launch the row rendered: its name, the invocation, the documents beside it.
+    type Launch = (String, Invocation, Vec<(PathBuf, String)>);
 
+    /// One `OsString` as the comparisons below read it.
+    fn lossy(v: &std::ffi::OsString) -> String {
+        v.to_string_lossy().into_owned()
+    }
+
+    /// Every launch this row can render, under both auth modes: headless, and the pane shape
+    /// where the row has one.
+    fn rendered_launches(h: Harness, document_dir: &std::path::Path) -> Vec<Launch> {
+        let row = harness_spec(h);
+        let a = launch_adapter(h).unwrap();
+        let mut launches: Vec<Launch> = Vec::new();
+        for auth in [Auth::Canned, Auth::Inherited] {
+            let launch = LaunchSpec {
+                auth,
+                model: match h {
+                    Harness::OpenCode => Some("anthropic/claude-sonnet-4-5".into()),
+                    _ => spec_for(h).model,
+                },
+                config_dir: document_dir.to_path_buf(),
+                ..spec_for(h)
+            };
+            let files = a.config_files(&launch, &ctx()).unwrap();
+            launches.push((
+                format!("{auth:?} headless"),
+                a.compile(&launch, &ctx())
+                    .unwrap_or_else(|e| panic!("{h}: {e}")),
+                files.clone(),
+            ));
+            if row.pane.is_some() {
+                launches.push((
+                    format!("{auth:?} pane"),
+                    a.compile_pane(&launch, &ctx())
+                        .unwrap_or_else(|e| panic!("{h}: {e}")),
+                    files,
+                ));
+            }
+        }
+        launches
+    }
+
+    /// The native injection, where the row has a native lane.
+    fn native_injection(
+        h: Harness,
+        document_dir: &std::path::Path,
+    ) -> Option<crate::native::NativeInjection> {
         use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
-        use crate::spec::UpdatePolicy;
 
-        /// One launch the row rendered: its name, the invocation, the documents beside it.
-        type Launch = (String, Invocation, Vec<(PathBuf, String)>);
+        let live = LaunchSpec {
+            auth: Auth::Inherited,
+            config_dir: document_dir.to_path_buf(),
+            ..spec_for(h)
+        };
+        let bridge = bridge_env(&live, &ctx());
+        let operator = vec![(
+            std::ffi::OsString::from("PATH"),
+            std::ffi::OsString::from("/usr/bin"),
+        )];
+        native_adapter(h).map(|adapter| {
+            adapter
+                .prepare_native(&NativeNodeContext {
+                    bridge: &bridge,
+                    document_dir,
+                    allowed_marion_tools: &["spawn", "wait", "status"],
+                    environment: NativeEnvironmentView::validate(&operator).unwrap(),
+                })
+                .unwrap_or_else(|e| panic!("{h}: {e}"))
+        })
+    }
 
-        let document_dir = PathBuf::from("/state/agents/019f-root");
-        let operator_env = vec![(OsString::from("PATH"), OsString::from("/usr/bin"))];
-        let lossy = |v: &OsString| v.to_string_lossy().into_owned();
+    /// [`UpdatePolicy::Env`]: the variable is set on every shape's env and on the native overlay,
+    /// and it is **not** also an ordinary `Env` row, where it would be set twice.
+    fn assert_update_env(
+        h: Harness,
+        launches: &[Launch],
+        native: Option<&crate::native::NativeInjection>,
+        key: &str,
+        value: &str,
+    ) {
+        assert!(
+            harness_spec(h).env.iter().all(|e| e.key != key),
+            "{h}: `{key}` is the update policy and must not also be an `Env` row"
+        );
+        let pair = (key.to_string(), value.to_string());
+        for (shape, inv, _) in launches {
+            assert!(
+                inv.env.contains(&pair),
+                "{h} {shape}: no `{key}={value}` in {:?}",
+                inv.env
+            );
+        }
+        if let Some(native) = native {
+            let overlay: Vec<(String, String)> = native
+                .env_overlay
+                .iter()
+                .map(|(k, v)| (lossy(k), lossy(v)))
+                .collect();
+            assert!(
+                overlay.contains(&pair),
+                "{h} native: no `{key}={value}` in the overlay {overlay:?}"
+            );
+        }
+    }
+
+    /// [`UpdatePolicy::Pair`]: the `key=value` token rides every shape's argv and the native
+    /// prefix.
+    fn assert_update_pair(
+        h: Harness,
+        launches: &[Launch],
+        native: Option<&crate::native::NativeInjection>,
+        key: &str,
+        value: &str,
+    ) {
+        let token = format!("{key}={value}");
+        for (shape, inv, _) in launches {
+            assert!(
+                inv.args.contains(&token),
+                "{h} {shape}: no `{token}` on argv {:?}",
+                inv.args
+            );
+        }
+        if let Some(native) = native {
+            let prefix: Vec<String> = native.argv_prefix.iter().map(lossy).collect();
+            assert!(
+                prefix.contains(&token),
+                "{h} native: no `{token}` in the prefix {prefix:?}"
+            );
+        }
+    }
+
+    /// [`UpdatePolicy::Document`]: every shape writes a document carrying the keys, and so does
+    /// the native injection.
+    fn assert_update_document(
+        h: Harness,
+        launches: &[Launch],
+        native: Option<&crate::native::NativeInjection>,
+        keys: &[(&str, bool)],
+    ) {
         /// The value at a dotted path of a JSON document, if the document is one.
         fn at<'a>(doc: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
             key.split('.').try_fold(doc, |v, k| v.get(k))
         }
+        assert!(!keys.is_empty(), "{h}: a document policy with no keys");
+        let carries = |text: &str| -> bool {
+            let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
+                return false;
+            };
+            keys.iter()
+                .all(|(k, v)| at(&doc, k) == Some(&serde_json::Value::Bool(*v)))
+        };
+        for (shape, _, files) in launches {
+            assert!(
+                files.iter().any(|(_, body)| carries(body)),
+                "{h} {shape}: no document carries {keys:?}: {files:?}"
+            );
+        }
+        if let Some(native) = native {
+            assert!(
+                native
+                    .documents
+                    .iter()
+                    .any(|d| carries(std::str::from_utf8(&d.contents).unwrap())),
+                "{h} native: no injected document carries {keys:?}"
+            );
+        }
+    }
+
+    /// [`UpdatePolicy::None`]: the row does not know a switch — so it must also not smuggle one in
+    /// as an ordinary `Env` row, where nothing would check it against the binary, and its note
+    /// must say what was searched and not found.
+    fn assert_update_none(h: Harness, note: &str) {
+        assert!(
+            !harness_spec(h)
+                .env
+                .iter()
+                .any(|e| e.key.to_ascii_uppercase().contains("UPDATE")),
+            "{h}: an update-shaped `Env` row on a row that states no update policy"
+        );
+        assert!(
+            note.contains("no") || note.contains("never"),
+            "{h}: `None` must say what was searched and not found: {note}"
+        );
+    }
+
+    #[test]
+    fn every_row_states_its_update_policy_and_renders_it_into_every_launch_shape() {
+        use crate::spec::UpdatePolicy;
+
+        let document_dir = PathBuf::from("/state/agents/019f-root");
         for h in Harness::ALL {
-            let row = harness_spec(h);
-            let a = launch_adapter(h).unwrap();
-            let note = match row.updates {
+            let updates = harness_spec(h).updates;
+            let note = match updates {
                 UpdatePolicy::Env { note, .. }
                 | UpdatePolicy::Pair { note, .. }
                 | UpdatePolicy::Document { note, .. }
@@ -7190,132 +7363,20 @@ mod tests {
                 !note.trim().is_empty(),
                 "{h}: an update policy without the measurement behind it"
             );
-            // Every launch this row can render, under both auth modes.
-            let mut launches: Vec<Launch> = Vec::new();
-            for auth in [Auth::Canned, Auth::Inherited] {
-                let launch = LaunchSpec {
-                    auth,
-                    model: match h {
-                        Harness::OpenCode => Some("anthropic/claude-sonnet-4-5".into()),
-                        _ => spec_for(h).model,
-                    },
-                    config_dir: document_dir.clone(),
-                    ..spec_for(h)
-                };
-                let files = a.config_files(&launch, &ctx()).unwrap();
-                launches.push((
-                    format!("{auth:?} headless"),
-                    a.compile(&launch, &ctx())
-                        .unwrap_or_else(|e| panic!("{h}: {e}")),
-                    files.clone(),
-                ));
-                if row.pane.is_some() {
-                    launches.push((
-                        format!("{auth:?} pane"),
-                        a.compile_pane(&launch, &ctx())
-                            .unwrap_or_else(|e| panic!("{h}: {e}")),
-                        files,
-                    ));
-                }
-            }
-            // And the native injection, where the row has a native lane.
-            let live = LaunchSpec {
-                auth: Auth::Inherited,
-                config_dir: document_dir.clone(),
-                ..spec_for(h)
-            };
-            let bridge = bridge_env(&live, &ctx());
-            let native = native_adapter(h).map(|adapter| {
-                adapter
-                    .prepare_native(&NativeNodeContext {
-                        bridge: &bridge,
-                        document_dir: &document_dir,
-                        allowed_marion_tools: &["spawn", "wait", "status"],
-                        environment: NativeEnvironmentView::validate(&operator_env).unwrap(),
-                    })
-                    .unwrap_or_else(|e| panic!("{h}: {e}"))
-            });
-            match row.updates {
+            let launches = rendered_launches(h, &document_dir);
+            let native = native_injection(h, &document_dir);
+            let native = native.as_ref();
+            match updates {
                 UpdatePolicy::Env { key, value, .. } => {
-                    assert!(
-                        row.env.iter().all(|e| e.key != key),
-                        "{h}: `{key}` is the update policy and must not also be an `Env` row"
-                    );
-                    for (shape, inv, _) in &launches {
-                        assert!(
-                            inv.env.contains(&(key.to_string(), value.to_string())),
-                            "{h} {shape}: no `{key}={value}` in {:?}",
-                            inv.env
-                        );
-                    }
-                    if let Some(native) = &native {
-                        let overlay: Vec<(String, String)> = native
-                            .env_overlay
-                            .iter()
-                            .map(|(k, v)| (lossy(k), lossy(v)))
-                            .collect();
-                        assert!(
-                            overlay.contains(&(key.to_string(), value.to_string())),
-                            "{h} native: no `{key}={value}` in the overlay {overlay:?}"
-                        );
-                    }
+                    assert_update_env(h, &launches, native, key, value)
                 }
                 UpdatePolicy::Pair { key, value, .. } => {
-                    let token = format!("{key}={value}");
-                    for (shape, inv, _) in &launches {
-                        assert!(
-                            inv.args.contains(&token),
-                            "{h} {shape}: no `{token}` on argv {:?}",
-                            inv.args
-                        );
-                    }
-                    if let Some(native) = &native {
-                        let prefix: Vec<String> = native.argv_prefix.iter().map(lossy).collect();
-                        assert!(
-                            prefix.contains(&token),
-                            "{h} native: no `{token}` in the prefix {prefix:?}"
-                        );
-                    }
+                    assert_update_pair(h, &launches, native, key, value)
                 }
                 UpdatePolicy::Document { keys, .. } => {
-                    assert!(!keys.is_empty(), "{h}: a document policy with no keys");
-                    let carries = |text: &str| -> bool {
-                        let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
-                            return false;
-                        };
-                        keys.iter()
-                            .all(|(k, v)| at(&doc, k) == Some(&serde_json::Value::Bool(*v)))
-                    };
-                    for (shape, _, files) in &launches {
-                        assert!(
-                            files.iter().any(|(_, body)| carries(body)),
-                            "{h} {shape}: no document carries {keys:?}: {files:?}"
-                        );
-                    }
-                    if let Some(native) = &native {
-                        assert!(
-                            native
-                                .documents
-                                .iter()
-                                .any(|d| carries(std::str::from_utf8(&d.contents).unwrap())),
-                            "{h} native: no injected document carries {keys:?}"
-                        );
-                    }
+                    assert_update_document(h, &launches, native, keys)
                 }
-                UpdatePolicy::None { note } => {
-                    // The row does not know a switch — so it must also not smuggle one in as an
-                    // ordinary `Env` row, where nothing would check it against the binary.
-                    assert!(
-                        !row.env
-                            .iter()
-                            .any(|e| e.key.to_ascii_uppercase().contains("UPDATE")),
-                        "{h}: an update-shaped `Env` row on a row that states no update policy"
-                    );
-                    assert!(
-                        note.contains("no") || note.contains("never"),
-                        "{h}: `None` must say what was searched and not found: {note}"
-                    );
-                }
+                UpdatePolicy::None { note } => assert_update_none(h, note),
             }
         }
     }
