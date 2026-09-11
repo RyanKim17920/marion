@@ -242,6 +242,28 @@ struct PriorSignalAction {
     action: Sigaction,
 }
 
+/// Undo a part-built acquisition and report the failure that forced it.
+///
+/// A rollback that itself fails poisons process-global ownership rather than being swallowed: no
+/// later relay could then know which dispositions the process is actually left holding, and
+/// `rolling_back` names which rollback it was so the operator reads one sentence, not two.
+fn roll_back_acquisition(
+    prior: &mut Vec<PriorSignalAction>,
+    failure: String,
+    rolling_back: &str,
+) -> Refusal {
+    match restore_signal_actions_matching(prior, |_| true) {
+        Ok(()) => {
+            clear_relay_signal_state();
+            failure
+        }
+        Err(rollback) => {
+            poison_relay_signal_ownership();
+            format!("{failure}; {rolling_back}: {rollback}")
+        }
+    }
+}
+
 /// Exclusive ownership of marion's process-global relay handlers for one native relay session.
 pub(crate) struct RelaySignalGuard {
     /// Actions Marion's handler still replaces; each is removed the moment it is restored.
@@ -272,6 +294,37 @@ impl std::error::Error for RelaySignalRestoreError {}
 
 impl RelaySignalGuard {
     pub(crate) fn acquire() -> Result<Self, Refusal> {
+        let (owner, stop_owned) = Self::claim_ownership()?;
+        // No signal edge from a prior owner may leak into this session.
+        RESIZED.store(false, Ordering::SeqCst);
+        RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
+        FIRST_RELAY_SIGNAL.store(0, Ordering::SeqCst);
+        #[cfg(test)]
+        RELAY_SIGNAL_INSTALL_ATTEMPT.store(0, Ordering::SeqCst);
+        let mut prior = Self::install_relay_handlers()?;
+        if stop_owned && let Err(error) = change_thread_signal_mask(SIG_BLOCK, SIGTSTP) {
+            return Err(roll_back_acquisition(
+                &mut prior,
+                format!("blocking SIGTSTP on the native relay thread: {error}"),
+                "rolling back process signal actions failed",
+            ));
+        }
+        STOP_OWNED.store(stop_owned, Ordering::SeqCst);
+        Ok(Self {
+            prior,
+            stop_owned,
+            captured_signal: None,
+            _owner: owner,
+        })
+    }
+
+    /// The exclusive claim on marion's process-global relay handlers, and whether this relay also
+    /// owns the terminal's default stop.
+    ///
+    /// Nothing process-global is touched here. A thread that already blocks one of the signals it
+    /// is about to handle could never receive it, so it is refused before it can clear an edge or
+    /// displace another relay's disposition.
+    fn claim_ownership() -> Result<(MutexGuard<'static, ()>, bool), Refusal> {
         let owner = match RELAY_SIGNAL_OWNER.try_lock() {
             Ok(owner) => owner,
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
@@ -298,60 +351,29 @@ impl RelaySignalGuard {
             ));
         }
         let stop_owned = stop_eligible(&mask)?;
-        // No signal edge from a prior owner may leak into this session.
-        RESIZED.store(false, Ordering::SeqCst);
-        RELAY_SIGNAL_EVENTS.store(0, Ordering::SeqCst);
-        FIRST_RELAY_SIGNAL.store(0, Ordering::SeqCst);
-        #[cfg(test)]
-        RELAY_SIGNAL_INSTALL_ATTEMPT.store(0, Ordering::SeqCst);
+        Ok((owner, stop_owned))
+    }
+
+    /// Marion's handler on every relay signal, with each displaced action kept so the guard can
+    /// put it back. A failure part-way through leaves the process as it was found.
+    fn install_relay_handlers() -> Result<Vec<PriorSignalAction>, Refusal> {
         let action = Sigaction::relay_handler();
         let mut prior = Vec::with_capacity(HANDLED_SIGNALS.len());
         for signal in HANDLED_SIGNALS {
             let mut prior_action = Sigaction::zeroed();
             if let Err(error) = install_relay_signal_action(signal, &action, &mut prior_action) {
-                return match restore_signal_actions_matching(&mut prior, |_| true) {
-                    Ok(()) => {
-                        clear_relay_signal_state();
-                        Err(format!(
-                            "installing process signal action {signal}: {error}"
-                        ))
-                    }
-                    Err(rollback) => {
-                        poison_relay_signal_ownership();
-                        Err(format!(
-                            "installing process signal action {signal}: {error}; rolling back partially installed process signal actions failed: {rollback}"
-                        ))
-                    }
-                };
+                return Err(roll_back_acquisition(
+                    &mut prior,
+                    format!("installing process signal action {signal}: {error}"),
+                    "rolling back partially installed process signal actions failed",
+                ));
             }
             prior.push(PriorSignalAction {
                 signal,
                 action: prior_action,
             });
         }
-        if stop_owned && let Err(error) = change_thread_signal_mask(SIG_BLOCK, SIGTSTP) {
-            return match restore_signal_actions_matching(&mut prior, |_| true) {
-                Ok(()) => {
-                    clear_relay_signal_state();
-                    Err(format!(
-                        "blocking SIGTSTP on the native relay thread: {error}"
-                    ))
-                }
-                Err(rollback) => {
-                    poison_relay_signal_ownership();
-                    Err(format!(
-                        "blocking SIGTSTP on the native relay thread: {error}; rolling back process signal actions failed: {rollback}"
-                    ))
-                }
-            };
-        }
-        STOP_OWNED.store(stop_owned, Ordering::SeqCst);
-        Ok(Self {
-            prior,
-            stop_owned,
-            captured_signal: None,
-            _owner: owner,
-        })
+        Ok(prior)
     }
 
     /// Whether this relay owns the terminal's default stop: `SIGTSTP` was default and unblocked
