@@ -1334,6 +1334,15 @@ fn root_spec_from_spawn(
     }
 }
 
+/// What one pane-directed [`marion_proto::Input`] asks of its pane, once the variant that
+/// carries it has been read off the frame.
+#[derive(Clone, Copy)]
+enum PaneDelivery<'a> {
+    LegacyWrite(&'a [u8]),
+    OpaqueWrite(&'a [u8]),
+    Resize { cols: u16, rows: u16 },
+}
+
 impl RegistryHandle {
     /// A handle that describes nodes and does not own any. See [`Self::spawn_env`].
     pub fn new(live: Arc<LiveRegistry>) -> Arc<RegistryHandle> {
@@ -2215,39 +2224,81 @@ impl RegistryHandle {
         self.deliver_input_with_out(conn, input, None);
     }
 
-    fn deliver_input_with_out(
+    /// **The pane-v1 replay handshake**, completed by read-only viewers too.
+    fn deliver_pane_ready(&self, conn: ConnId, ready: &marion_proto::NodePaneReadyV1) {
+        // Read-only viewers complete this handshake too, so it is deliberately independent of
+        // the keyboard lease. Registry expiry runs first: a token cannot revive a Completed
+        // host at or beyond its exact cache deadline.
+        self.prune_completed_panes();
+        let host = {
+            let panes = lock(&self.panes);
+            panes
+                .hosts
+                .get(&ready.agent_id)
+                .and_then(PaneEntry::replay_host)
+                .cloned()
+        };
+        if let Some(host) = host {
+            host.pane_ready(conn, &ready.token, ready.cut);
+        }
+    }
+    /// **One opaque keystroke's admitted delivery**: selection and admission under the
+    /// registry lock, master I/O after it, and the slot outbound failed on either refusal.
+    fn deliver_opaque_input(
         &self,
         conn: ConnId,
         input: &marion_proto::Input,
+        id: &AgentId,
+        bytes: &[u8],
         wire_out: Option<&Outbound>,
     ) {
-        #[derive(Clone, Copy)]
-        enum PaneDelivery<'a> {
-            LegacyWrite(&'a [u8]),
-            OpaqueWrite(&'a [u8]),
-            Resize { cols: u16, rows: u16 },
-        }
-
-        if let marion_proto::Input::NodePaneReady(ready) = input {
-            // Read-only viewers complete this handshake too, so it is deliberately independent of
-            // the keyboard lease. Registry expiry runs first: a token cannot revive a Completed
-            // host at or beyond its exact cache deadline.
-            self.prune_completed_panes();
-            let host = {
-                let panes = lock(&self.panes);
-                panes
+        // Selection, pane-v1 generation validation, and control admission are one registry
+        // transaction. The admission owns the exact slot outbound; durability and master I/O
+        // happen only after the global Panes lock is released.
+        let selected = {
+            let panes = lock(&self.panes);
+            let lease = panes.lease(conn, id).ok_or_else(|| {
+                "opaque pane input requires this connection's live write lease".to_string()
+            });
+            lease.and_then(|lease| {
+                let host = panes
                     .hosts
-                    .get(&ready.agent_id)
-                    .and_then(PaneEntry::replay_host)
+                    .get(id)
+                    .and_then(PaneEntry::live_host)
                     .cloned()
-            };
-            if let Some(host) = host {
-                host.pane_ready(conn, &ready.token, ready.cut);
+                    .ok_or_else(|| "opaque pane input requires a live pane".to_string())?;
+                let admission = host
+                    .admit_opaque_input(&lease, conn)
+                    .map_err(|error| error.to_string())?;
+                Ok((host, admission))
+            })
+        };
+        let (host, admission) = match selected {
+            Ok(selected) => selected,
+            Err(error) => {
+                if let Some(out) = wire_out {
+                    out.fail(crate::serve::Departure::PaneInputFailed {
+                        agent_id: id.0.clone(),
+                        error: error.clone(),
+                    });
+                }
+                eprintln!("marion: {} on node {}: {error}", input.method(), id.0);
+                return;
             }
-            return;
+        };
+        #[cfg(test)]
+        if let Some(hook) = lock(&self.pane_delivery_hook).take() {
+            hook();
         }
-
-        let (id, delivery) = match input {
+        if let Err(error) = host.write_opaque_input_admitted(admission, bytes) {
+            // The admission fails its authoritative slot outbound before releasing the input
+            // delivery barrier, including error and unwind paths.
+            eprintln!("marion: {} on node {}: {error}", input.method(), id.0);
+        }
+    }
+    /// **Which pane and what it is being asked to do**, read off the frame alone.
+    fn classify_pane_delivery(input: &marion_proto::Input) -> (&AgentId, PaneDelivery<'_>) {
+        match input {
             marion_proto::Input::NodePtyWrite {
                 agent_id, bytes, ..
             } => (agent_id, PaneDelivery::LegacyWrite(bytes.as_bytes())),
@@ -2267,53 +2318,18 @@ impl RegistryHandle {
                 },
             ),
             marion_proto::Input::NodePaneReady(_) => unreachable!("handled above"),
-        };
-        if let PaneDelivery::OpaqueWrite(bytes) = delivery {
-            // Selection, pane-v1 generation validation, and control admission are one registry
-            // transaction. The admission owns the exact slot outbound; durability and master I/O
-            // happen only after the global Panes lock is released.
-            let selected = {
-                let panes = lock(&self.panes);
-                let lease = panes.lease(conn, id).ok_or_else(|| {
-                    "opaque pane input requires this connection's live write lease".to_string()
-                });
-                lease.and_then(|lease| {
-                    let host = panes
-                        .hosts
-                        .get(id)
-                        .and_then(PaneEntry::live_host)
-                        .cloned()
-                        .ok_or_else(|| "opaque pane input requires a live pane".to_string())?;
-                    let admission = host
-                        .admit_opaque_input(&lease, conn)
-                        .map_err(|error| error.to_string())?;
-                    Ok((host, admission))
-                })
-            };
-            let (host, admission) = match selected {
-                Ok(selected) => selected,
-                Err(error) => {
-                    if let Some(out) = wire_out {
-                        out.fail(crate::serve::Departure::PaneInputFailed {
-                            agent_id: id.0.clone(),
-                            error: error.clone(),
-                        });
-                    }
-                    eprintln!("marion: {} on node {}: {error}", input.method(), id.0);
-                    return;
-                }
-            };
-            #[cfg(test)]
-            if let Some(hook) = lock(&self.pane_delivery_hook).take() {
-                hook();
-            }
-            if let Err(error) = host.write_opaque_input_admitted(admission, bytes) {
-                // The admission fails its authoritative slot outbound before releasing the input
-                // delivery barrier, including error and unwind paths.
-                eprintln!("marion: {} on node {}: {error}", input.method(), id.0);
-            }
-            return;
         }
+    }
+
+    /// **A leased legacy write or resize**: the lease and host are taken out from under
+    /// the registry lock in one look, and the lock is released before the write.
+    fn deliver_leased_input(
+        &self,
+        conn: ConnId,
+        input: &marion_proto::Input,
+        id: &AgentId,
+        delivery: PaneDelivery<'_>,
+    ) {
         // Both taken out from under the lock in one look, and the lock released before the write:
         // see `Panes::leases`. A harness that has stopped reading its stdin must stall one attach,
         // never the supervisor.
@@ -2341,6 +2357,24 @@ impl RegistryHandle {
         if let Err(e) = outcome {
             eprintln!("marion: {} on node {}: {e}", input.method(), id.0);
         }
+    }
+
+    fn deliver_input_with_out(
+        &self,
+        conn: ConnId,
+        input: &marion_proto::Input,
+        wire_out: Option<&Outbound>,
+    ) {
+        if let marion_proto::Input::NodePaneReady(ready) = input {
+            self.deliver_pane_ready(conn, ready);
+            return;
+        }
+        let (id, delivery) = Self::classify_pane_delivery(input);
+        if let PaneDelivery::OpaqueWrite(bytes) = delivery {
+            self.deliver_opaque_input(conn, input, id, bytes, wire_out);
+            return;
+        }
+        self.deliver_leased_input(conn, input, id, delivery);
     }
 
     /// How many node streams this supervisor is following on behalf of a client.
