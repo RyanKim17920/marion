@@ -117,10 +117,7 @@ pub fn row(node: &NodeSummary) -> tree::Node {
     tree::Node {
         id: id.to_string(),
         parent: node.parent_id.as_ref().map(|p| p.0.clone()),
-        label: node
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("{} {}", node.agent_type, short_id(id))),
+        label: label_of(node),
         state: state_label(node.state, node.reap_state),
         actions: actions_for(node),
         // The conservative key is the right answer for an unread version (§3.3), and the strip
@@ -130,6 +127,17 @@ pub fn row(node: &NodeSummary) -> tree::Node {
             .is_none()
             .then(|| "harness version unknown".to_string()),
     }
+}
+
+/// **What one node is called, in the one place that decides it.**
+///
+/// The tree row and the detail pane's title are the same string by construction rather than by
+/// agreement: two spellings of a node's name is how an operator ends up unsure whether the `8ea3`
+/// in the sidebar and the `01a091ba-8ea3-…` in the pane are the same agent.
+pub fn label_of(node: &NodeSummary) -> String {
+    node.name
+        .clone()
+        .unwrap_or_else(|| format!("{} {}", node.agent_type, short_id(&node.agent_id.0)))
 }
 
 /// The part of an id that tells one node from its siblings.
@@ -607,10 +615,11 @@ impl Detail<'_> {
             .parent_id
             .as_ref()
             .map_or("none (root)", |p| p.0.as_str());
-        let mut out = Vec::with_capacity(8);
-        if let Some(name) = &node.name {
-            out.push(format!("name     {name}"));
-        }
+        let mut out = Vec::with_capacity(9);
+        // The pane's title, and **the same string the tree row carries** — see [`label_of`]. It is
+        // the line that says the short id in the sidebar and the whole id below name one node.
+        out.push(label_of(node));
+        out.push(String::new());
         out.push(format!("type     {}", node.agent_type));
         out.push(format!("harness  {} {version}", node.harness));
         out.push(format!(
@@ -656,7 +665,9 @@ impl ratatui::widgets::Widget for Detail<'_> {
             if y >= area.height {
                 break;
             }
-            let bold = self.notice.is_some() && i + 1 == lines.len();
+            // The title, and the notice: the line that says which node this is and the line that
+            // says why the last keypress did nothing.
+            let bold = i == 0 || (self.notice.is_some() && i + 1 == lines.len());
             let s = if bold {
                 style().add_modifier(ratatui::style::Modifier::BOLD)
             } else {
@@ -947,6 +958,50 @@ mod tests {
             },
         );
         assert!(rows[0].contains("no nodes"), "{rows:?}");
+    }
+
+    /// **The row and the pane name the same node in the same words.**
+    ///
+    /// The tree row says `codex-impl 8ea3` and the pane's facts started at `type codex-impl`, with
+    /// the four hex digits appearing nowhere in it and the whole UUID seven rows down: nothing on
+    /// screen said the `8ea3` in the sidebar and the `01a091ba-8ea3-…` in the pane were one node.
+    /// The pane's first line is now the row's own label, and the row's short id is a prefix of the
+    /// pane's full one.
+    #[test]
+    fn the_detail_panes_title_is_the_tree_rows_own_label() {
+        let mut n = summary(
+            "01a091ba-8ea3-7f8a-9b87-b8ad0e7b38a1",
+            Harness::Codex,
+            false,
+            Some("0.147.0"),
+        );
+        n.agent_type = "codex-impl".into();
+        let title = |n: &NodeSummary| {
+            painted(
+                ratatui::layout::Rect::new(0, 0, 76, 12),
+                Detail {
+                    node: Some(n),
+                    notice: None,
+                },
+            )[0]
+            .trim()
+            .to_string()
+        };
+        assert_eq!(title(&n), "codex-impl 8ea3");
+        assert_eq!(
+            title(&n),
+            row(&n).label,
+            "the row and the pane must not drift"
+        );
+        assert!(
+            n.agent_id.0.contains(short_id(&n.agent_id.0)),
+            "the short id in the title is part of the whole id in the pane"
+        );
+
+        // A renamed node is its name in both places, for the same reason.
+        n.name = Some("collector".into());
+        assert_eq!(title(&n), "collector");
+        assert_eq!(title(&n), row(&n).label);
     }
 
     /// **The hints belong to the screen, at the bottom left, above the caps strip.**
