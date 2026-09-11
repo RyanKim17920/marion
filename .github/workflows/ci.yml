@@ -34,7 +34,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # rustup reads rust-toolchain.toml (1.94.0, with rustfmt and clippy).
+      # rustup reads rust-toolchain.toml (1.94.0, with rustfmt and clippy), so this job and a
+      # developer's machine run the same clippy. They do not lint the same code: this job is the
+      # only place `#[cfg(target_os = "linux")]` bodies are compiled at all, so a lint inside one
+      # is invisible to `cargo clippy` on macOS and lands here first. That is not a toolchain
+      # difference and pinning harder would not have caught it.
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check

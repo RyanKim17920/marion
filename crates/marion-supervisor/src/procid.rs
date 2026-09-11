@@ -524,7 +524,7 @@ pub(crate) fn controlling_terminal(pid: i32) -> Result<ControllingTerminal, Stri
         .parse()
         .map_err(|_| format!("/proc/{pid}/stat tpgid is not a number"))?;
     Ok(ControllingTerminal {
-        device: (tty_nr != 0).then(|| TerminalDevice {
+        device: (tty_nr != 0).then_some(TerminalDevice {
             major: ((tty_nr >> 8) & 0xfff) as u32,
             minor: ((tty_nr & 0xff) | ((tty_nr >> 12) & 0xfff00)) as u32,
         }),
