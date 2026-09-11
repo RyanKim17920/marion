@@ -418,20 +418,42 @@ where
             "outbound frame deadline overflowed",
         )
     })?;
-    let remaining = || {
-        deadline
-            .checked_duration_since(now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "outbound frame deadline expired",
-                )
-            })
-    };
+    write_all_before(writer, frame, deadline, &now)?;
+    flush_before(writer, deadline, &now)
+}
+
+/// What is left of the budget, or the expiry the caller reports instead of another syscall.
+///
+/// A socket timeout is per blocking syscall, so the budget has to be recomputed and reinstalled
+/// before each one; an exhausted budget is an expiry rather than a zero timeout, which the kernel
+/// would read as "block forever".
+fn remaining_before(deadline: Instant, now: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "outbound frame deadline expired",
+            )
+        })
+}
+
+/// Every byte of `frame`, under one deadline. A short write is the normal case on a socket and is
+/// resumed; `Ok(0)` is not, because a writer that accepts nothing will accept nothing next time.
+fn write_all_before<W, N>(
+    writer: &mut W,
+    frame: &[u8],
+    deadline: Instant,
+    now: &N,
+) -> std::io::Result<()>
+where
+    W: FrameWriter,
+    N: Fn() -> Instant,
+{
     let mut unwritten = frame;
     while !unwritten.is_empty() {
-        writer.set_frame_write_timeout(remaining()?)?;
+        writer.set_frame_write_timeout(remaining_before(deadline, now())?)?;
         match writer.write(unwritten) {
             Ok(0) => {
                 return Err(std::io::Error::new(
@@ -444,8 +466,17 @@ where
             Err(error) => return Err(error),
         }
     }
+    Ok(())
+}
+
+/// The flush, under the same deadline: an interrupted flush is retried, anything else is the answer.
+fn flush_before<W, N>(writer: &mut W, deadline: Instant, now: &N) -> std::io::Result<()>
+where
+    W: FrameWriter,
+    N: Fn() -> Instant,
+{
     loop {
-        writer.set_frame_write_timeout(remaining()?)?;
+        writer.set_frame_write_timeout(remaining_before(deadline, now())?)?;
         match writer.flush() {
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             result => return result,
