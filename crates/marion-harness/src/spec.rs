@@ -399,32 +399,43 @@ impl Fields {
 pub fn render_env(rows: &[Env], f: &Fields) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = Vec::new();
     for row in rows {
-        let applies = match row.when {
-            When::Always => true,
-            When::Canned => f.auth == Auth::Canned,
-            When::Present(field) => f.value(field).is_some(),
-        };
-        if !applies {
+        if !env_applies(row.when, f) {
             continue;
         }
-        let value = match row.val {
-            Val::Lit(s) => Some(s.to_string()),
-            Val::Field(field) => f.value(field),
-            Val::Under(rel) => Some(
-                if rel.is_empty() {
-                    f.config_dir.clone()
-                } else {
-                    f.config_dir.join(rel)
-                }
-                .to_string_lossy()
-                .into_owned(),
-            ),
-        };
-        if let Some(v) = value {
+        if let Some(v) = env_value(*row, f) {
             env.push((row.key.to_string(), v));
         }
     }
     env
+}
+
+/// Whether an [`Env`] row's gate lets it reach this launch. One arm per [`When`].
+fn env_applies(when: When, f: &Fields) -> bool {
+    match when {
+        When::Always => true,
+        When::Canned => f.auth == Auth::Canned,
+        When::Present(field) => f.value(field).is_some(),
+    }
+}
+
+/// The value an [`Env`] row carries, or `None` where it carries none and the variable is
+/// therefore **omitted** rather than set empty. One arm per [`Val`].
+fn env_value(row: Env, f: &Fields) -> Option<String> {
+    match row.val {
+        Val::Lit(s) => Some(s.to_string()),
+        Val::Field(field) => f.value(field),
+        Val::Under(rel) => Some(env_under(rel, f)),
+    }
+}
+
+/// [`Val::Under`]: a path under the node's config dir — `""` is the dir itself.
+fn env_under(rel: &str, f: &Fields) -> String {
+    let path = if rel.is_empty() {
+        f.config_dir.clone()
+    } else {
+        f.config_dir.join(rel)
+    };
+    path.to_string_lossy().into_owned()
 }
 
 /// Why a row could not render a launch. Each is the adapter's to name the harness in, because a
