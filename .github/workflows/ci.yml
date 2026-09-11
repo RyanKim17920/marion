@@ -8,9 +8,23 @@
 # and manual** — see CONTRIBUTING.md and MILESTONES.md's "E2E, and how to run it".
 #
 # So CI covers exactly the part that needs no harness binary: format, clippy, the unit tests, and
-# the integration suites that reference neither `marion_testsupport::on_path` nor
-# `PINNED_HARNESSES`. The excluded suites are not skipped-if-absent — `require_claude_and_codex`
-# asserts — so they are named out rather than allowed to fail.
+# the integration suites in which **every test that launches one is behind a gate that can skip**.
+# That is the criterion, and it is not the same as the one this file used to state.
+#
+# The old criterion was textual — "references neither `marion_testsupport::on_path` nor
+# `PINNED_HARNESSES`" — and a suite can drive a real `claude` without mentioning either. Three did:
+# `client_run`, `child_events`/`child_stream` and `node_attach` reached their harness through
+# `common::script`, so the grep read them as needing nothing and listed them here. `client_run`'s
+# five `marion run` tests then failed on both runners, naming a journal invariant rather than the
+# missing `claude`. All four now go through `common::script::require_claude_and_codex`, which is
+# `harness_available` for both programs and therefore skips by name under the variable below — so
+# they are in the list on the same footing as everything else in it.
+#
+# The suites still named out are the ones whose gate is `on_path` directly, which asserts:
+# acp_child, cross_product, depth_gate, descendant_gate, harness_matrix, journal_wiring, m1_hop,
+# m4_fan_in, native_facade_e2e, native_facade_smoke, native_facade_spawn, no_git, pane_attach,
+# permission_round_trip, restart_resume, timeout_kill, worktree_reap. Moving one here means giving
+# its tests the skip-capable gate first, not adding its name.
 #
 # `cargo test --workspace --lib` cannot be named down that way: a handful of unit tests inside
 # `marion-supervisor` do spawn a real `claude`, and they sit in the same binary as 1500 that do
@@ -81,11 +95,10 @@ jobs:
       - name: Unit tests
         run: cargo test --workspace --lib
 
-      # Integration suites that need no harness binary. Verified green on darwin 25.5.0 at
-      # f52d65c; the nineteen harness-driving suites (acp_child, child_events, child_stream,
-      # cross_product, depth_gate, descendant_gate, harness_matrix, journal_wiring, m1_hop,
-      # m4_fan_in, native_facade_e2e, native_facade_smoke, no_git, node_attach, pane_attach,
-      # permission_round_trip, restart_resume, timeout_kill, worktree_reap) are excluded.
+      # Integration suites in which nothing launches a harness that cannot skip. Verified green on
+      # darwin 25.5.0 against a simulated bare runner — `MARION_CI_NO_HARNESSES=1`, a `PATH` of
+      # `/usr/bin:/bin` plus cargo, and an empty `$HOME` so the shim finds no admitted release on
+      # disk either. The seventeen suites gated by a bare `on_path` are named in the header.
       - name: Integration — marion-core
         run: cargo test -p marion-core --test pane_wire
 
@@ -114,6 +127,8 @@ jobs:
           --test attach_verb
           --test auth_mode
           --test background_spawn
+          --test child_events
+          --test child_stream
           --test client_run
           --test concurrent_projects
           --test detached_spawn
@@ -127,6 +142,7 @@ jobs:
           --test native_facade_gate
           --test native_injection_binding
           --test native_mode_matrix
+          --test node_attach
           --test report_on_a_root
           --test root_change_record
           --test run_stream
