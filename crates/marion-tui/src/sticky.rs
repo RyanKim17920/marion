@@ -94,33 +94,24 @@ impl Sticky {
     pub fn absorb(&mut self, chunk: &str) {
         let b = chunk.as_bytes();
         let mut i = 0;
-        while i + 3 < b.len() {
-            if b[i] != 0x1b || b[i + 1] != b'[' || b[i + 2] != b'?' {
-                i += 1;
-                continue;
+        while let Some(m) = next_private_mode(b, i) {
+            for param in m.params.split(|&c| c == b';') {
+                self.apply(param, m.set);
             }
-            // CSI ? <params> <h|l>. Parameters are digits and ';'.
-            let start = i + 3;
-            let mut j = start;
-            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
-                j += 1;
-            }
-            if j >= b.len() || (b[j] != b'h' && b[j] != b'l') {
-                i += 1;
-                continue;
-            }
-            let set = b[j] == b'h';
-            for param in b[start..j].split(|&c| c == b';') {
-                match param {
-                    b"1049" => self.alt_screen = set,
-                    b"1000" => self.mouse_button = set,
-                    b"1002" => self.mouse_drag = set,
-                    b"1003" => self.mouse_motion = set,
-                    b"1006" => self.mouse_sgr = set,
-                    _ => {}
-                }
-            }
-            i = j + 1;
+            i = m.next;
+        }
+    }
+
+    /// The tracked set, and nothing else. An untracked parameter is ignored rather than recorded:
+    /// see the module header for why membership is closed and who decides it.
+    fn apply(&mut self, param: &[u8], set: bool) {
+        match param {
+            b"1049" => self.alt_screen = set,
+            b"1000" => self.mouse_button = set,
+            b"1002" => self.mouse_drag = set,
+            b"1003" => self.mouse_motion = set,
+            b"1006" => self.mouse_sgr = set,
+            _ => {}
         }
     }
 
@@ -160,6 +151,68 @@ impl Sticky {
             out.extend_from_slice(b"\x1b[?1006h");
         }
         out
+    }
+}
+
+/// One `CSI ? <params> <h|l>` the scanner found: the parameter bytes as they appeared, whether it
+/// sets or resets, and where scanning resumes.
+///
+/// Recognising a sequence and deciding what it *means* are two jobs, and they are separated here
+/// because only the second one is allowed to grow: the tracked set is closed (see the module
+/// header), while this half is just "where is the next private-mode sequence" and has no opinion
+/// about which numbers matter.
+struct PrivateMode<'a> {
+    params: &'a [u8],
+    set: bool,
+    next: usize,
+}
+
+/// The next `CSI ? <params> <h|l>` at or after `from`, or `None` when the chunk holds no more.
+fn next_private_mode(b: &[u8], from: usize) -> Option<PrivateMode<'_>> {
+    let mut i = from;
+    // `i + 3 < b.len()`: an introducer with nothing after it cannot be a complete sequence, and
+    // the chunk-boundary caveat on `absorb` is why a partial one is dropped rather than carried.
+    while i + 3 < b.len() {
+        if !is_private_csi(b, i) {
+            i += 1;
+            continue;
+        }
+        let start = i + 3;
+        let end = params_end(b, start);
+        let Some(set) = final_byte(b, end) else {
+            i += 1;
+            continue;
+        };
+        return Some(PrivateMode {
+            params: &b[start..end],
+            set,
+            next: end + 1,
+        });
+    }
+    None
+}
+
+/// Does a `CSI ?` introducer start at `i`? Callers guarantee `i + 2` is in bounds.
+fn is_private_csi(b: &[u8], i: usize) -> bool {
+    b[i] == 0x1b && b[i + 1] == b'[' && b[i + 2] == b'?'
+}
+
+/// The end of the parameter run starting at `from`. Parameters are digits and `;`.
+fn params_end(b: &[u8], from: usize) -> usize {
+    let mut j = from;
+    while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
+        j += 1;
+    }
+    j
+}
+
+/// `Some(true)` for `h`, `Some(false)` for `l`, and `None` for anything else — including the end
+/// of the chunk, which is a sequence the scan never completes rather than one it half-applies.
+fn final_byte(b: &[u8], j: usize) -> Option<bool> {
+    match b.get(j) {
+        Some(b'h') => Some(true),
+        Some(b'l') => Some(false),
+        _ => None,
     }
 }
 
