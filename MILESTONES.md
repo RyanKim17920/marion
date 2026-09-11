@@ -2635,6 +2635,21 @@ grouping.
   runs in ~2–5 s. Codex keeps its session rollout under `$CODEX_HOME` = the node's own agent dir,
   which nothing deletes on orphan/reap (only `run::cleanup` removes the `worktree`, never the agent
   dir), so the resume finds it. **This closes plan-restart-resume.md steps 1–8.**
+  **2026-09-10 — where a node ran is recorded, which is what a child resume was missing.**
+  `SessionObserved` gains `workspace: Option<Workspace>` (additive on the same terms as `pane`:
+  `serde(default)` plus `skip_serializing_if`, so a record without one is byte-identical to what
+  earlier builds wrote), and replay folds it onto `ReplayedNode::launch_workspace`. `Workspace`
+  rather than a bare path because the isolation *kind* is load-bearing on the way back in — a
+  worktree relaunch must reuse the existing tree and its `marion/<task-id>` branch rather than cut a
+  second one the resumed session has never seen, and a `shared-cwd` relaunch must retake §6.6's
+  occupancy claim — so the cwd and the kind are one value that cannot be recorded and read apart.
+  `SessionWatch::in_workspace` carries it, and `run_spawn` is the one caller: a root's cwd is the
+  working tree of the project §2 keys this supervisor on and recording it would be a second copy of
+  a derivation, while a child's is a linked worktree under `.marion/worktrees/…` or the caller's own
+  directory and is recoverable from nothing else. Tests:
+  `registry::tests::session_observed_carries_the_launch_workspace_and_replays_it_onto_the_node`
+  (wire shape pinned, absent replays as `None`) and
+  `session_watch::tests::the_launch_workspace_is_carried_onto_the_session_record`.
 - ~~**The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.~~ **Off this line 2026-09-05, and it had been false since M2:**
   `registry::replay` is the detached supervisor's boot path over the on-disk journal (M2

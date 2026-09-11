@@ -88,6 +88,12 @@ pub struct ReplayedNode {
     /// `false` headless (and the default where no session was observed). A resume reads it so the
     /// relaunch takes the same shape rather than inferring one.
     pub harness_pane: bool,
+    /// **The workspace the last [`SessionObserved`] recorded this node ran in** — its cwd and which
+    /// of §6.6's two isolations produced it. `None` where the journal does not say: no session was
+    /// observed, or the record predates the field. A resume reads it so a child is relaunched into
+    /// the tree its session was created in, and refuses by name when it is `None` rather than
+    /// picking a directory.
+    pub launch_workspace: Option<crate::contract::Workspace>,
     /// `Some` iff the intent was resolved by an abort rather than a confirmation.
     pub spawn_aborted: Option<String>,
     pub state: NodeState,
@@ -147,6 +153,7 @@ impl ReplayedNode {
             start_id: None,
             harness_session: None,
             harness_pane: false,
+            launch_workspace: None,
             spawn_aborted: None,
             // Before any state record, a node is `Spawning` — §3.2's first state, and the only one
             // an intent alone justifies.
@@ -404,10 +411,18 @@ impl ReplayedNode {
     /// reader; the node already knows its own from the intent.
     fn fold_session_observed(&mut self, s: SessionObserved) {
         let SessionObserved {
-            session_id, pane, ..
+            session_id,
+            pane,
+            workspace,
+            ..
         } = s;
         self.harness_session = Some(session_id);
         self.harness_pane = pane;
+        // Assigned rather than merged, for the same "last record wins" reason: the session and the
+        // workspace it was created in are written together on one record, so folding one from this
+        // record and keeping the other from an older one would describe a launch that never
+        // happened. A record that names no workspace therefore leaves the node saying `None`.
+        self.launch_workspace = workspace;
     }
 }
 
@@ -680,6 +695,8 @@ pub fn replay(bytes: &[u8]) -> Replay {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::encoding::SystemTime;
     use crate::ir::Provenance;
@@ -1736,6 +1753,7 @@ mod tests {
             harness: Harness::ClaudeCode,
             session_id: "0a2f7d1e-session".into(),
             pane: false,
+            workspace: None,
         });
         assert_eq!(observed.agent_id(), Some(&AgentId("a-1".into())));
         assert!(
@@ -1794,6 +1812,7 @@ mod tests {
             harness: Harness::ClaudeCode,
             session_id: "s".into(),
             pane: false,
+            workspace: None,
         });
         assert_eq!(
             serde_json::to_string(&headless).unwrap(),
@@ -1805,6 +1824,7 @@ mod tests {
             harness: Harness::ClaudeCode,
             session_id: "s".into(),
             pane: true,
+            workspace: None,
         });
         assert_eq!(
             serde_json::to_string(&paned).unwrap(),
@@ -1816,5 +1836,71 @@ mod tests {
         }
         let node = replay(&bytes).get(&AgentId("a-1".into())).cloned().unwrap();
         assert!(node.harness_pane, "the pane shape folds onto the node");
+    }
+
+    /// **Where the node ran, and under which of §6.6's two workspaces** — the second half of what a
+    /// relaunch needs and the half a *child* could not do without. A root's cwd is derivable from
+    /// the project this supervisor serves; a child's is a linked worktree under
+    /// `.marion/worktrees/…` or a shared cwd, and nothing outside this record says which or where.
+    /// It rides [`SessionObserved`] for the reason `pane` does: it is the record a resume reads,
+    /// and one launch's shape belongs on one record rather than split across two.
+    ///
+    /// Additive on the same terms — absent replays as `None`, and a record without one is
+    /// byte-identical to what earlier builds wrote.
+    #[test]
+    fn session_observed_carries_the_launch_workspace_and_replays_it_onto_the_node() {
+        let wt = crate::contract::Workspace::Worktree {
+            path: PathBuf::from("/p/.marion/worktrees/a-1"),
+            branch: "marion/t-1".into(),
+        };
+        let observed = RecordKind::SessionObserved(SessionObserved {
+            agent_id: id("a-1"),
+            harness: Harness::Codex,
+            session_id: "thr_01".into(),
+            pane: false,
+            workspace: Some(wt.clone()),
+        });
+        assert_eq!(
+            serde_json::to_string(&observed).unwrap(),
+            r#"{"SessionObserved":{"agent_id":"a-1","harness":"codex","session_id":"thr_01","workspace":{"Worktree":{"path":"/p/.marion/worktrees/a-1","branch":"marion/t-1"}}}}"#,
+            "the wire shape is pinned like every other record's"
+        );
+        let r = record(1, observed.clone());
+        let line = encode(&r).unwrap();
+        assert_eq!(decode(&line[..line.len() - 1]).as_ref(), Some(&r));
+
+        let mut bytes = Vec::new();
+        for (seq, kind) in [intent(), observed].into_iter().enumerate() {
+            bytes.extend(encode(&record(seq as u64, kind)).unwrap());
+        }
+        let node = replay(&bytes).get(&id("a-1")).cloned().unwrap();
+        assert_eq!(
+            node.launch_workspace,
+            Some(wt),
+            "the cwd and the isolation kind the child ran under fold onto the node together"
+        );
+
+        // **Absent is `None`, not a guessed cwd**, and the record stays byte-identical to what
+        // earlier builds wrote — a reader that needs one refuses by name rather than relaunching
+        // in whatever directory happens to be at hand.
+        let older = RecordKind::SessionObserved(SessionObserved {
+            agent_id: id("a-1"),
+            harness: Harness::Codex,
+            session_id: "thr_01".into(),
+            pane: false,
+            workspace: None,
+        });
+        assert_eq!(
+            serde_json::to_string(&older).unwrap(),
+            r#"{"SessionObserved":{"agent_id":"a-1","harness":"codex","session_id":"thr_01"}}"#
+        );
+        let mut bytes = Vec::new();
+        for (seq, kind) in [intent(), older].into_iter().enumerate() {
+            bytes.extend(encode(&record(seq as u64, kind)).unwrap());
+        }
+        assert_eq!(
+            replay(&bytes).get(&id("a-1")).unwrap().launch_workspace,
+            None
+        );
     }
 }

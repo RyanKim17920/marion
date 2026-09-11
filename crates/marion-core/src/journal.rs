@@ -357,6 +357,28 @@ pub struct SessionObserved {
     /// wrote.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub pane: bool,
+    /// **Where this node ran, and under which of §6.6's two workspaces** — the other half of the
+    /// launch a relaunch has to reconstruct, and the half a *child* cannot do without.
+    ///
+    /// A root's cwd is derivable: it is the working tree of the project this supervisor is keyed
+    /// on. A child's is not. Under [`Isolation::Worktree`](crate::contract::Isolation::Worktree) it
+    /// is a linked worktree marion created under `.marion/worktrees/…` on a `marion/<task-id>`
+    /// branch; under `SharedCwd` it is the caller's own directory. Nothing else on the journal says
+    /// which of the two it was or where it is, and a harness resumes a session only from the cwd it
+    /// was created in — so without this record a child's resume could only be refused by name.
+    ///
+    /// [`Workspace`](crate::contract::Workspace) rather than a bare path because the *kind* is
+    /// load-bearing on the way back in: a worktree relaunch must reuse the existing tree and its
+    /// branch (creating a second one would be a second tree the resumed session has never seen),
+    /// and a `SharedCwd` relaunch must retake §6.6's occupancy claim. One value carries the cwd and
+    /// the isolation kind together, so the two can never be recorded and read apart.
+    ///
+    /// **Additive**, this enum's rule: `#[serde(default)]` so older journals replay, and
+    /// `skip_serializing_if` so a record without one is byte-identical to what earlier builds
+    /// wrote. `None` means *the journal does not say*, and a reader that needs one refuses by name
+    /// rather than relaunching in whatever directory is at hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::contract::Workspace>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -554,6 +576,7 @@ mod tests {
                 harness: Harness::Codex,
                 session_id: "thr_01".into(),
                 pane: false,
+                workspace: None,
             }),
             RecordKind::SupervisorExited(SupervisorExited {}),
         ];

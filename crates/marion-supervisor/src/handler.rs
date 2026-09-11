@@ -11072,6 +11072,9 @@ mod tests {
                     harness: Harness::ClaudeCode,
                     session_id: session.into(),
                     pane: false,
+                    // A root derives its cwd from the project this supervisor serves, so its
+                    // launch names no workspace. The child fixture below is the one that does.
+                    workspace: None,
                 }),
             ]
         }

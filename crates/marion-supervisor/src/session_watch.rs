@@ -17,7 +17,7 @@
 
 use std::cell::Cell;
 
-use marion_core::contract::AgentId;
+use marion_core::contract::{AgentId, Workspace};
 use marion_core::harness::Harness;
 use marion_core::journal::{RecordKind, SessionObserved};
 use marion_core::paths::ProjectDir;
@@ -36,6 +36,12 @@ pub(crate) struct SessionWatch<'a> {
     /// rather than inferring it. A pane emits no `stream-json`, so today this is only ever seen
     /// beside a `false`; the field is written so a pane node's resume stays a checked refusal.
     pane: bool,
+    /// **Where this node runs**, recorded beside the session for the same reason the shape is: a
+    /// resume reconstructs the launch from written values, and a harness resumes a session only
+    /// from the cwd it was created in. `None` where the launch did not say — a root's cwd is the
+    /// working tree of the project this supervisor is keyed on and is derivable from it, so only
+    /// the child path fills this in.
+    workspace: Option<Workspace>,
     /// The row's grammar, or `None` for a harness whose stream is read as code (ACP) — nothing is
     /// observed, honestly, and the node replays with `harness_session: None`.
     grammar: Option<&'static StreamGrammar>,
@@ -54,9 +60,20 @@ impl<'a> SessionWatch<'a> {
             agent_id,
             harness,
             pane,
+            workspace: None,
             grammar: harness_spec(harness).stream,
             seen: Cell::new(false),
         }
+    }
+
+    /// **Name the tree this node runs in.** A separate step rather than a fifth constructor
+    /// argument because only one of the two launch paths has an answer: `run_spawn` selects a
+    /// workspace and passes it here, while a root's cwd is the project's own working tree and
+    /// recording it would be a second copy of a value §2 already derives. A watch nobody calls this
+    /// on records `None`, which is what "the journal does not say" is spelled as.
+    pub(crate) fn in_workspace(mut self, workspace: Option<Workspace>) -> Self {
+        self.workspace = workspace;
+        self
     }
 
     /// One stdout line as it landed. A line that is not JSON is not a frame and carries nothing.
@@ -92,6 +109,7 @@ impl<'a> SessionWatch<'a> {
                     harness: self.harness,
                     session_id: id,
                     pane: self.pane,
+                    workspace: self.workspace.clone(),
                 }),
             );
         }
@@ -171,5 +189,36 @@ mod tests {
         watch.observe_line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1"}}"#);
         assert!(!watch.seen());
         assert_eq!(records(&project), 0);
+    }
+
+    /// **The workspace the launch chose reaches the record**, so a resume reads where the node ran
+    /// instead of deriving it. A child's is the only one that could not be derived at all — it is a
+    /// linked worktree marion made under `.marion/worktrees/…` — and it is the one carried here.
+    #[test]
+    fn the_launch_workspace_is_carried_onto_the_session_record() {
+        let (_dir, project) = scratch_project("workspace");
+        let id = AgentId("n-4".into());
+        let ws = marion_core::contract::Workspace::Worktree {
+            path: std::path::PathBuf::from("/p/.marion/worktrees/n-4"),
+            branch: "marion/t-4".into(),
+        };
+        let watch =
+            SessionWatch::new(&project, &id, Harness::Codex, false).in_workspace(Some(ws.clone()));
+        watch.observe_line(r#"{"type":"thread.started","thread_id":"t-1"}"#);
+        let bytes = std::fs::read(project.journal()).unwrap_or_default();
+        let node = replay(&bytes).get(&id).cloned().expect("the node replays");
+        assert_eq!(node.harness_session.as_deref(), Some("t-1"));
+        assert_eq!(
+            node.launch_workspace,
+            Some(ws),
+            "the record names the tree the session was created in"
+        );
+
+        // A watch nobody told where it was running says `None` rather than naming a directory.
+        let (_dir, project) = scratch_project("workspace-absent");
+        let watch = SessionWatch::new(&project, &id, Harness::Codex, false);
+        watch.observe_line(r#"{"type":"thread.started","thread_id":"t-2"}"#);
+        let bytes = std::fs::read(project.journal()).unwrap_or_default();
+        assert_eq!(replay(&bytes).get(&id).unwrap().launch_workspace, None);
     }
 }

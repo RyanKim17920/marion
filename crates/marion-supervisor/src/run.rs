@@ -1387,12 +1387,17 @@ pub fn run_spawn_watched(
     // The node's harness session, journaled the moment its stream names one — the handle a later
     // `node/resume` hands back. Beside `events` because both read the same live frames, and for
     // the same reason: a node killed mid-run never reaches a capture.
+    // **And where it ran**, from the workspace `select_workspace` chose a few lines above and from
+    // nothing else. A child's cwd is a linked worktree marion made or the caller's own directory,
+    // and neither is recoverable from anything else on the journal — so a child resume can only
+    // relaunch into the tree its session was created in if this launch writes it down.
     let session = crate::session_watch::SessionWatch::new(
         &env.project_dir,
         &agent_id,
         adapter.harness(),
         false,
-    );
+    )
+    .in_workspace(Some(workspace.clone()));
     // **§6.1 step 3's position, and it is a move rather than a new call.** The version used to be
     // asked for after the child had been run and reaped, which was the only place it *could* be
     // asked while `Spawned` was written there too. Step 7's confirmation now goes out at the
