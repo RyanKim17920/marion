@@ -2326,6 +2326,11 @@ mod tests {
             return;
         }
         let RawRelayTerminal {
+            // Bound, not swallowed by `..`: a field a pattern does not name is dropped at the
+            // destructuring, and dropping the master closes the last master descriptor. Linux then
+            // hangs the slaves up, so the terminal this probe is holding stops being a terminal
+            // mid-test. Darwin keeps answering, which is why `..` survived here.
+            master: _master,
             mut terminal,
             observed_stdin,
             baseline_stdin_flags,
@@ -2363,6 +2368,11 @@ mod tests {
             return;
         }
         let RawRelayTerminal {
+            // Bound, not swallowed by `..`: a field a pattern does not name is dropped at the
+            // destructuring, and dropping the master closes the last master descriptor. Linux then
+            // hangs the slaves up, so the terminal this probe is holding stops being a terminal
+            // mid-test. Darwin keeps answering, which is why `..` survived here.
+            master: _master,
             mut terminal,
             observed_stdin,
             baseline_stdin_flags,
@@ -3695,12 +3705,17 @@ mod tests {
         ResizeFailure,
     }
 
+    /// The last element is the resize terminal, **master and slave together**. Both, because on
+    /// Linux the last close of a pty master hangs the slave up: `TIOCGWINSZ` on it then answers
+    /// `EIO` and `isatty` says no, and the relay's geometry read — which is the first thing
+    /// `open_with_io` does — fails before the session exists. Darwin keeps answering on an
+    /// orphaned slave, which is why holding only the slave passed here for as long as it did.
     type SignalRelay = (
         RawPaneSession<Box<dyn Write>>,
         RelaySignalGuard,
         Option<mpsc::SyncSender<()>>,
         std::thread::JoinHandle<()>,
-        Option<std::os::fd::OwnedFd>,
+        Option<(crate::pty::PtyMaster, std::os::fd::OwnedFd)>,
     );
 
     fn relay_for_signal_exit(exit: SignalExit) -> SignalRelay {
@@ -3764,10 +3779,11 @@ mod tests {
             SignalExit::WriteFailure => Box::new(FailingOutput),
             _ => Box::new(Sink::default()),
         };
-        let resize_tty = crate::pty::PtyMaster::open(crate::pty::WinSize::new(80, 24))
-            .unwrap()
-            .open_slave()
-            .unwrap();
+        // The master is named rather than left a temporary: dropping it here would close the last
+        // master descriptor and hang the slave up before the geometry read below. See
+        // [`SignalRelay`].
+        let resize_master = crate::pty::PtyMaster::open(crate::pty::WinSize::new(80, 24)).unwrap();
+        let resize_tty = resize_master.open_slave().unwrap();
         let input_fd = Some(resize_tty.as_raw_fd());
         let signals = RelaySignalGuard::acquire().expect("the relay owns every signal");
         let session = RawPaneSession::open_with_io(
@@ -3787,7 +3803,7 @@ mod tests {
             signals,
             matches!(exit, SignalExit::Detach).then_some(release_tx),
             server_thread,
-            Some(resize_tty),
+            Some((resize_master, resize_tty)),
         )
     }
 
@@ -3958,14 +3974,21 @@ mod tests {
             return;
         }
         let _restore_original = install_sentinel();
-        let resize_tty = crate::pty::PtyMaster::open(crate::pty::WinSize::new(80, 24)).unwrap();
+        // Shared, not moved: the hook runs *inside* `open_with_io`, just before the geometry read,
+        // so a master owned by the hook would be dropped while the read still needs it. On Linux
+        // that closes the last master descriptor and the slave answers `EIO`. The test keeps the
+        // other handle for the whole session.
+        let resize_tty = std::sync::Arc::new(
+            crate::pty::PtyMaster::open(crate::pty::WinSize::new(80, 24)).unwrap(),
+        );
         let input = resize_tty.open_slave().unwrap();
         let input_fd = input.as_raw_fd();
         let (client, mut server) = UnixStream::pair().unwrap();
+        let hook_tty = std::sync::Arc::clone(&resize_tty);
         *AFTER_RESIZE_SIGNAL_ACQUIRE
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(Box::new(move || {
-            resize_tty
+            hook_tty
                 .set_size(crate::pty::WinSize::new(132, 47))
                 .unwrap();
             raise_winch();
