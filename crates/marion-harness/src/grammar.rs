@@ -258,54 +258,93 @@ fn units<'a>(frames: &'a [Value], w: &Where) -> Vec<&'a Value> {
     out
 }
 
+/// The refusal a unit spells: the first non-empty of `words_at`, else the row's `fallback` —
+/// never an empty string, which reads as "no refusal" downstream.
+fn refused(unit: &Value, words_at: &[&str], fallback: &str) -> CallOutcome {
+    CallOutcome::Refused(words(unit, words_at).unwrap_or_else(|| fallback.to_string()))
+}
+
+/// [`Verdict::Status`]: `ok` is answered, a `pending` or missing status is unknown, and
+/// **anything else is a refusal** spelled `"<status>: <words>"`, or `"<status>"` alone.
+fn read_status(
+    unit: &Value,
+    path: &str,
+    ok: &str,
+    pending: &[&str],
+    words_at: &[&str],
+) -> CallOutcome {
+    match text(unit, path) {
+        Some(s) if s == ok => CallOutcome::Answered,
+        Some(s) if pending.contains(&s.as_str()) => CallOutcome::Unknown,
+        None => CallOutcome::Unknown,
+        Some(status) => CallOutcome::Refused(match words(unit, words_at) {
+            Some(e) => format!("{status}: {e}"),
+            None => status,
+        }),
+    }
+}
+
+/// [`Verdict::Terminal`]: `ok` is answered, `err` a refusal, and a third spelling is one this
+/// harness has not been measured emitting.
+fn read_terminal(
+    unit: &Value,
+    path: &str,
+    ok: &str,
+    err: &str,
+    words_at: &[&str],
+    fallback: &str,
+) -> CallOutcome {
+    match text(unit, path) {
+        Some(s) if s == ok => CallOutcome::Answered,
+        Some(s) if s == err => refused(unit, words_at, fallback),
+        _ => CallOutcome::Unknown,
+    }
+}
+
+/// [`Verdict::Success`]: `true` is answered, `false` a refusal, missing unknown.
+fn read_success(unit: &Value, path: &str, words_at: &[&str], fallback: &str) -> CallOutcome {
+    match unit.pointer(path).and_then(Value::as_bool) {
+        Some(true) => CallOutcome::Answered,
+        Some(false) => refused(unit, words_at, fallback),
+        None => CallOutcome::Unknown,
+    }
+}
+
+/// [`Verdict::ErrorFlag`]: `true` is a refusal; **missing or false is answered**.
+fn read_error_flag(unit: &Value, path: &str, words_at: &[&str], fallback: &str) -> CallOutcome {
+    match unit.pointer(path).and_then(Value::as_bool) {
+        Some(true) => refused(unit, words_at, fallback),
+        _ => CallOutcome::Answered,
+    }
+}
+
 impl Verdict {
+    /// The verdict this shape reads off one call unit. One reader per variant.
     fn read(&self, unit: &Value) -> CallOutcome {
-        let refused = |words_at: &[&str], fallback: &str| {
-            CallOutcome::Refused(words(unit, words_at).unwrap_or_else(|| fallback.to_string()))
-        };
         match self {
             Verdict::Status {
                 path,
                 ok,
                 pending,
                 words: w,
-            } => match text(unit, path) {
-                Some(s) if s == *ok => CallOutcome::Answered,
-                Some(s) if pending.contains(&s.as_str()) => CallOutcome::Unknown,
-                None => CallOutcome::Unknown,
-                Some(status) => CallOutcome::Refused(match words(unit, w) {
-                    Some(e) => format!("{status}: {e}"),
-                    None => status,
-                }),
-            },
+            } => read_status(unit, path, ok, pending, w),
             Verdict::Terminal {
                 path,
                 ok,
                 err,
                 words: w,
                 fallback,
-            } => match text(unit, path) {
-                Some(s) if s == *ok => CallOutcome::Answered,
-                Some(s) if s == *err => refused(w, fallback),
-                _ => CallOutcome::Unknown,
-            },
+            } => read_terminal(unit, path, ok, err, w, fallback),
             Verdict::Success {
                 path,
                 words: w,
                 fallback,
-            } => match unit.pointer(path).and_then(Value::as_bool) {
-                Some(true) => CallOutcome::Answered,
-                Some(false) => refused(w, fallback),
-                None => CallOutcome::Unknown,
-            },
+            } => read_success(unit, path, w, fallback),
             Verdict::ErrorFlag {
                 path,
                 words: w,
                 fallback,
-            } => match unit.pointer(path).and_then(Value::as_bool) {
-                Some(true) => refused(w, fallback),
-                _ => CallOutcome::Answered,
-            },
+            } => read_error_flag(unit, path, w, fallback),
         }
     }
 }
