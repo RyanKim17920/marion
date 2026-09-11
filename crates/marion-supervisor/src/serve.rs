@@ -192,8 +192,9 @@ pub enum Departure {
     ServerStopping,
 }
 
-/// **Who is on the other end of a connection, as the kernel reports it** — `getpeereid(2)`, read
-/// once at accept and never from anything the peer said.
+/// **Who is on the other end of a connection, as the kernel reports it** — `getpeereid(2)` on
+/// macOS, `getsockopt(SO_PEERCRED)` on Linux — read once at accept and never from anything the
+/// peer said.
 ///
 /// This is the *only* identity the transport can establish, and naming what it is not is the whole
 /// point of the type. It answers **which user**. It does not answer **which node** — §5.4's
@@ -208,9 +209,9 @@ pub enum Departure {
 /// `handler::root_spawn_authorized`) — and nothing else consults it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Peer {
-    /// `getpeereid` answered, and this is the peer's effective uid.
+    /// The kernel answered, and this is the peer's effective uid.
     Uid(u32),
-    /// `getpeereid` failed, or this channel has no socket behind it. **Never treated as
+    /// The kernel read failed, or this channel has no socket behind it. **Never treated as
     /// permission**: an unknown peer is refused wherever a known one would have been checked.
     Unknown,
 }
@@ -238,10 +239,20 @@ fn peer_of(stream: &std::os::unix::net::UnixStream) -> Peer {
 ///
 /// Split out **so the failure branch is reachable from a test**. Same uid on both ends of every
 /// socket a `cargo test` can make, so the only half of this function a test can distinguish is the
-/// one where `getpeereid` says no — and a descriptor that is not a socket is exactly that answer,
-/// from the kernel, for a real reason (`ENOTSOCK`). Without this seam, a build that ignored `rc`
-/// and returned `Peer::Uid(own_uid())` unconditionally would pass every test in this workspace
-/// while granting root creation to a peer nobody had identified.
+/// one where the kernel says no — and a descriptor that is not a socket is exactly that answer,
+/// for a real reason (`ENOTSOCK`). Without this seam, a build that ignored the failure and
+/// returned `Peer::Uid(own_uid())` unconditionally would pass every test in this workspace while
+/// granting root creation to a peer nobody had identified.
+///
+/// # Why there are two of these
+///
+/// The question — *what uid is on the other end of this socket* — is one question with two kernel
+/// spellings, and neither is portable. `getpeereid(3)` is BSD and macOS; Linux answers the same
+/// question through `getsockopt(SO_PEERCRED)`, which `native_bootstrap::peer_identity` already
+/// reads through `rustix`. A single ungated `getpeereid` declaration linked on macOS and left
+/// `undefined symbol: getpeereid` on Linux. Both arms fail closed to [`Peer::Unknown`], and the
+/// test below is written over the *answer*, not over either syscall, so it pins both.
+#[cfg(target_os = "macos")]
 fn peer_of_fd(fd: i32) -> Peer {
     unsafe extern "C" {
         fn getpeereid(fd: i32, uid: *mut u32, gid: *mut u32) -> i32;
@@ -256,6 +267,32 @@ fn peer_of_fd(fd: i32) -> Peer {
     } else {
         Peer::Unknown
     }
+}
+
+/// [`peer_of_fd`] on Linux: `getsockopt(SO_PEERCRED)`, the same read
+/// `native_bootstrap::peer_identity` makes, through the same `rustix` wrapper.
+///
+/// `SO_PEERCRED` carries a pid and a gid too; only the uid is taken, because [`Peer`] is the uid
+/// and nothing else consults it. A descriptor that is not a socket fails here with `ENOTSOCK`
+/// exactly as it does under `getpeereid`.
+#[cfg(target_os = "linux")]
+fn peer_of_fd(fd: i32) -> Peer {
+    // SAFETY: `fd` is open for the duration of this call — the only callers are `peer_of`, whose
+    // stream owns it, and a test holding the file it opened — and the borrow does not outlive it.
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+    match rustix::net::sockopt::socket_peercred(borrowed) {
+        Ok(credentials) => Peer::Uid(credentials.uid.as_raw()),
+        Err(_) => Peer::Unknown,
+    }
+}
+
+/// [`peer_of_fd`] where neither spelling has been measured: nobody is identified.
+///
+/// Not a guess and not a fall-through to this process's own uid — an unread peer is
+/// [`Peer::Unknown`], which is refused wherever a known one would have been checked.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn peer_of_fd(_fd: i32) -> Peer {
+    Peer::Unknown
 }
 
 /// What a supervisor does with a call.
@@ -1646,7 +1683,8 @@ mod tests {
     /// uid — this process's, because a `cargo test` cannot make a peer of any other user, which is
     /// the stated limit of what is measurable here and is why `handler::root_spawn_authorized` is
     /// pinned separately over the whole three-way predicate. A descriptor that is **not a socket**
-    /// makes `getpeereid` fail for a real kernel reason (`ENOTSOCK`), and that is the row a build
+    /// makes the peer-credential read fail for a real kernel reason (`ENOTSOCK`), and that is the
+    /// row a build
     /// which ignored the return code could not survive: `Peer::Uid(own_uid())` returned
     /// unconditionally would look right on every socket in this workspace while handing root
     /// creation to a peer nobody identified.
@@ -1665,7 +1703,8 @@ mod tests {
         assert_eq!(
             peer_of_fd(f.as_raw_fd()),
             Peer::Unknown,
-            "`getpeereid` on a non-socket fails, and a check that could not be made must not \
+            "a peer-credential read on a non-socket fails, and a check that could not be made \
+             must not \
              report the answer it would have liked"
         );
         drop(f);
