@@ -277,186 +277,240 @@ pub fn is_valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
 }
 
-/// The two M1 built-ins, by name. `None` is a spawn error (§6.1 step 2 resolves the type first).
+/// One built-in agent type as **data**. Every arm of the old `match` differed only in these
+/// fields, so they are a table rather than fifteen hand-written constructors: a new harness is a
+/// row, and the resolution rule below is written once.
+///
+/// `canonical` is the name the supervisor writes into contracts. `aliases` are the other spellings
+/// that resolve to the *same* definition, rather than to a second one that could drift.
+struct Builtin {
+    canonical: &'static str,
+    aliases: &'static [&'static str],
+    description: &'static str,
+    harness: Harness,
+    /// `None` where §3.1's "absence rather than a guess" default applies; see the field it fills.
+    model: Option<&'static str>,
+    /// The grant list — empty for every type that declares no tool. See [`AgentType::tools`].
+    tools: &'static [&'static str],
+    /// Stated only by the `acp` rows, and meaningless on the others.
+    acp_agent: Option<&'static str>,
+}
+
+impl Builtin {
+    /// §3.1 resolution: the canonical name, or any alias of it.
+    fn matches(&self, name: &str) -> bool {
+        self.canonical == name || self.aliases.contains(&name)
+    }
+
+    /// The row over [`AgentType::defaults`], so a row still states only what it changes.
+    fn build(&self) -> AgentType {
+        AgentType {
+            model: self.model.map(str::to_string),
+            acp_agent: self.acp_agent.map(str::to_string),
+            tools: self.tools.iter().map(|t| (*t).to_string()).collect(),
+            ..AgentType::defaults(self.canonical, self.description, self.harness)
+        }
+    }
+}
+
+/// The built-in types, by name. `None` is a spawn error (§6.1 step 2 resolves the type first).
 ///
 /// `codex-impl` is the spelling the supervisor already defaults `spawn`'s `agent_type` to, and
 /// `codex` is accepted as the same type so the design's own prose reads correctly; both resolve to
-/// one definition rather than two that could drift.
+/// one row rather than two that could drift.
+///
+/// **The `-impl` flavours are the only built-ins that declare a tool**, and they are *new names*
+/// rather than a widening of the plain ones for two reasons that are not the same reason:
+///
+/// 1. An existing type that grew a tool would widen every node anyone already runs under it.
+/// 2. `claude` is the **root orchestrator** — its own description says so — and a root is compiled
+///    with `cwd` set to the operator's own repository rather than a worktree. A grant on that type
+///    is a write tool pointed at the user's tree.
+///
+/// §11 item 24 is what they close: a claude or gemini child was read-only by construction, so
+/// marion spawned it to do work and gave it no route to any — and the contract it persisted was
+/// byte-identical to one whose write had escaped its worktree. `codex-impl` is the precedent for
+/// both halves: the implementer flavour has always been a separate name beside the orchestrator,
+/// and this is what that name was always for.
+///
+/// The second reason is *not* discharged by naming, since `marion run claude-impl` resolves right
+/// here. What discharges it is `marion_supervisor::root::availability_axis`: a root gets a grant
+/// list only over a repository whose working tree marion is recording, and is refused by name
+/// otherwise. See the `tools` field's doc comment.
+///
+/// Most `-impl` rows declare `read` beside `write`, because a node that may create a file and may
+/// not open one is §11 item 24 half-closed — measured in `tests/fixtures/s14/`, where claude's
+/// `Read` is absent under marion's `--tools ""` and present under `--tools Read`.
+const BUILTINS: &[Builtin] = &[
+    Builtin {
+        canonical: "claude",
+        aliases: &[],
+        description: "Root orchestrator: plans, delegates, and reviews.",
+        harness: Harness::ClaudeCode,
+        model: None,
+        tools: &[],
+        acp_agent: None,
+    },
+    Builtin {
+        canonical: "codex-impl",
+        aliases: &["codex"],
+        description: "Implements a well-specified change.",
+        harness: Harness::Codex,
+        model: None,
+        tools: &[],
+        acp_agent: None,
+    },
+    Builtin {
+        canonical: "claude-impl",
+        aliases: &[],
+        description: "Implements a well-specified change on Claude Code.",
+        harness: Harness::ClaudeCode,
+        model: None,
+        tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
+    Builtin {
+        canonical: "gemini-impl",
+        aliases: &[],
+        description: "Implements a well-specified change on the Gemini CLI.",
+        harness: Harness::Gemini,
+        model: Some(GEMINI_DEFAULT_MODEL),
+        tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
+    // The harnesses added with M-generality's adapters. Named for their harness because that is
+    // all they are: the same defaults, dispatched elsewhere. Without a built-in name a harness
+    // with a working adapter is still unreachable from `spawn`, which resolves an agent *type*,
+    // never a harness.
+    Builtin {
+        canonical: "gemini",
+        aliases: &[],
+        description: "Implements a well-specified change on the Gemini CLI.",
+        harness: Harness::Gemini,
+        model: Some(GEMINI_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
+    Builtin {
+        canonical: "opencode",
+        aliases: &[],
+        description: "Implements a well-specified change on opencode.",
+        harness: Harness::OpenCode,
+        model: Some(OPENCODE_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
+    // The fifth binary, on the same footing as `gemini` and `opencode`: the harness's own name,
+    // the defaults, and a model because its adapter refuses to launch canned without one.
+    Builtin {
+        canonical: "copilot",
+        aliases: &[],
+        description: "Implements a well-specified change on the GitHub Copilot CLI.",
+        harness: Harness::Copilot,
+        model: Some(COPILOT_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
+    // The implementer flavour, for the same reason `claude-impl` and `gemini-impl` exist: the
+    // adapter withholds every built-in it is not told to declare (`--available-tools`), so a
+    // `copilot` child has no route to a file at all, and the grant has to live on a type.
+    Builtin {
+        canonical: "copilot-impl",
+        aliases: &[],
+        description: "Implements a well-specified change on the GitHub Copilot CLI.",
+        harness: Harness::Copilot,
+        model: Some(COPILOT_DEFAULT_MODEL),
+        tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
+    // The sixth binary. A model because `GOOSE_MODEL` is how the `openai` provider is told which
+    // model to name, and the adapter refuses to launch canned without one.
+    Builtin {
+        canonical: "goose",
+        aliases: &[],
+        description: "Implements a well-specified change on goose.",
+        harness: Harness::Goose,
+        model: Some(GOOSE_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
+    // The implementer flavour: under `--no-profile` a `goose` child has no route to a file at all,
+    // and `write` is what compiles `--with-builtin developer`. `read` is deliberately absent — the
+    // developer extension has no read-only tool, and answering `read` with an extension that also
+    // carries `shell` and `write` would mislabel the node (S26).
+    Builtin {
+        canonical: "goose-impl",
+        aliases: &[],
+        description: "Implements a well-specified change on goose.",
+        harness: Harness::Goose,
+        model: Some(GOOSE_DEFAULT_MODEL),
+        tools: &[TOOL_WRITE],
+        acp_agent: None,
+    },
+    // The seventh binary, on opencode's footing: one type in both roles, because cline grants its
+    // 26 built-ins unconditionally and a `-impl` flavour would declare a grant marion does not
+    // compile (S27 item 12). A model because `providers.json` needs one.
+    Builtin {
+        canonical: "cline",
+        aliases: &[],
+        description: "Implements a well-specified change on the Cline CLI.",
+        harness: Harness::Cline,
+        model: Some(CLINE_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
+    // The eighth binary. A model because `OPENAI_MODEL` is how the provider is told what to name,
+    // and the adapter refuses to launch canned without one.
+    Builtin {
+        canonical: "qwen",
+        aliases: &[],
+        description: "Implements a well-specified change on Qwen Code.",
+        harness: Harness::Qwen,
+        model: Some(QWEN_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: None,
+    },
+    // The implementer flavour, for the reason `claude-impl` and `copilot-impl` exist: the adapter
+    // offers only what `--core-tools` names, so a `qwen` child has no route to a file at all, and
+    // the grant has to live on a type.
+    Builtin {
+        canonical: "qwen-impl",
+        aliases: &[],
+        description: "Implements a well-specified change on Qwen Code.",
+        harness: Harness::Qwen,
+        model: Some(QWEN_DEFAULT_MODEL),
+        tools: &[TOOL_READ, TOOL_WRITE],
+        acp_agent: None,
+    },
+    // **One built-in per ACP agent, and no built-in named `acp`.** The other harnesses get a type
+    // named after the harness because there the harness *is* the program. Here it is not: a type
+    // named `acp` would have to pick an agent, and §6.4 says marion may not.
+    //
+    // `opencode acp` is the one agent that is both measured to a tool call (S21) and has a recipe
+    // for marion's canned provider, which is what lets an ACP node run in the default suite at
+    // $0.00. The two ACP Registry shims are measured too (S22) but reach a provider only through
+    // the operator's own vendor login, so a built-in for either would be a type that cannot run
+    // without real spend; they stay reachable through `acp::AGENTS` — the doctor probes them — and
+    // earn a row when a canned recipe for them is measured.
+    Builtin {
+        canonical: "acp-opencode",
+        aliases: &[],
+        description: "Implements a well-specified change on opencode over the Agent Client Protocol.",
+        harness: Harness::Acp,
+        model: Some(OPENCODE_DEFAULT_MODEL),
+        tools: &[],
+        acp_agent: Some("opencode"),
+    },
+];
+
+/// A built-in by name, or the one open-ended family: any ACP agent, named by its command.
+///
+/// The table above is closed data; [`acp_command`] is the open half, and stays code because it
+/// parses a command line rather than looking a name up.
 pub fn builtin(name: &str) -> Option<AgentType> {
-    match name {
-        "claude" => Some(AgentType::defaults(
-            "claude",
-            "Root orchestrator: plans, delegates, and reviews.",
-            Harness::ClaudeCode,
-        )),
-        "codex" | "codex-impl" => Some(AgentType {
-            // The canonical name is the one the supervisor writes into contracts today.
-            ..AgentType::defaults(
-                "codex-impl",
-                "Implements a well-specified change.",
-                Harness::Codex,
-            )
-        }),
-        // **The two implementer types, and the only built-ins that declare a tool.**
-        //
-        // §11 item 24: a claude or gemini child was read-only by construction, so marion spawned it
-        // to do work and gave it no route to any — and the contract it persisted was byte-identical
-        // to one whose write had escaped its worktree. These close that, and they are *new names*
-        // rather than a widening of `claude` and `gemini` for two reasons that are not the same
-        // reason:
-        //
-        // 1. An existing type that grew a tool would widen every node anyone already runs under it.
-        // 2. `claude` is the **root orchestrator** — its own description says so — and a root is
-        //    compiled with `cwd` set to the operator's own repository rather than a worktree. A
-        //    grant on that type is a write tool pointed at the user's tree.
-        //
-        // `codex-impl` is the precedent for both: the implementer flavour has always been a
-        // separate name beside the orchestrator, and this is what that name was always for.
-        //
-        // The second reason is *not* discharged by naming, since `marion run claude-impl` resolves
-        // right here. What discharges it is `marion_supervisor::root::availability_axis`: a root
-        // gets this list only over a repository whose working tree marion is recording, and is
-        // refused by name otherwise. See the `tools` field's doc comment.
-        //
-        // Both declare `read` beside `write` because a node that may create a file and may not
-        // open one is §11 item 24 half-closed — measured in `tests/fixtures/s14/`, where claude's
-        // `Read` is absent under marion's `--tools ""` and present under `--tools Read`.
-        "claude-impl" => Some(AgentType {
-            tools: vec![TOOL_READ.into(), TOOL_WRITE.into()],
-            ..AgentType::defaults(
-                "claude-impl",
-                "Implements a well-specified change on Claude Code.",
-                Harness::ClaudeCode,
-            )
-        }),
-        "gemini-impl" => Some(AgentType {
-            model: Some(GEMINI_DEFAULT_MODEL.into()),
-            tools: vec![TOOL_READ.into(), TOOL_WRITE.into()],
-            ..AgentType::defaults(
-                "gemini-impl",
-                "Implements a well-specified change on the Gemini CLI.",
-                Harness::Gemini,
-            )
-        }),
-        // The two harnesses added with M-generality's adapters. Named for their harness because
-        // that is all they are: the same defaults, dispatched elsewhere. Without a built-in name a
-        // harness with a working adapter is still unreachable from `spawn`, which resolves an
-        // agent *type*, never a harness.
-        "gemini" => Some(AgentType {
-            model: Some(GEMINI_DEFAULT_MODEL.into()),
-            ..AgentType::defaults(
-                "gemini",
-                "Implements a well-specified change on the Gemini CLI.",
-                Harness::Gemini,
-            )
-        }),
-        "opencode" => Some(AgentType {
-            model: Some(OPENCODE_DEFAULT_MODEL.into()),
-            ..AgentType::defaults(
-                "opencode",
-                "Implements a well-specified change on opencode.",
-                Harness::OpenCode,
-            )
-        }),
-        // The fifth binary, on the same footing as `gemini` and `opencode`: the harness's own name,
-        // the defaults, and a model because its adapter refuses to launch canned without one.
-        "copilot" => Some(AgentType {
-            model: Some(COPILOT_DEFAULT_MODEL.into()),
-            ..AgentType::defaults(
-                "copilot",
-                "Implements a well-specified change on the GitHub Copilot CLI.",
-                Harness::Copilot,
-            )
-        }),
-        // The implementer flavour, for the same reason `claude-impl` and `gemini-impl` exist: the
-        // adapter withholds every built-in it is not told to declare (`--available-tools`), so a
-        // `copilot` child has no route to a file at all, and the grant has to live on a type.
-        "copilot-impl" => Some(AgentType {
-            model: Some(COPILOT_DEFAULT_MODEL.into()),
-            tools: vec![TOOL_READ.into(), TOOL_WRITE.into()],
-            ..AgentType::defaults(
-                "copilot-impl",
-                "Implements a well-specified change on the GitHub Copilot CLI.",
-                Harness::Copilot,
-            )
-        }),
-        // The sixth binary. A model because `GOOSE_MODEL` is how the `openai` provider is told
-        // which model to name, and the adapter refuses to launch canned without one.
-        "goose" => Some(AgentType {
-            model: Some(GOOSE_DEFAULT_MODEL.into()),
-            ..AgentType::defaults(
-                "goose",
-                "Implements a well-specified change on goose.",
-                Harness::Goose,
-            )
-        }),
-        // The implementer flavour: under `--no-profile` a `goose` child has no route to a file at
-        // all, and `write` is what compiles `--with-builtin developer`. `read` is deliberately
-        // absent — the developer extension has no read-only tool, and answering `read` with an
-        // extension that also carries `shell` and `write` would mislabel the node (S26).
-        "goose-impl" => Some(AgentType {
-            model: Some(GOOSE_DEFAULT_MODEL.into()),
-            tools: vec![TOOL_WRITE.into()],
-            ..AgentType::defaults(
-                "goose-impl",
-                "Implements a well-specified change on goose.",
-                Harness::Goose,
-            )
-        }),
-        // The seventh binary, on opencode's footing: one type in both roles, because cline grants
-        // its 26 built-ins unconditionally and a `-impl` flavour would declare a grant marion does
-        // not compile (S27 item 12). A model because `providers.json` needs one.
-        "cline" => Some(AgentType {
-            model: Some(CLINE_DEFAULT_MODEL.into()),
-            ..AgentType::defaults(
-                "cline",
-                "Implements a well-specified change on the Cline CLI.",
-                Harness::Cline,
-            )
-        }),
-        // The eighth binary. A model because `OPENAI_MODEL` is how the provider is told what to
-        // name, and the adapter refuses to launch canned without one.
-        "qwen" => Some(AgentType {
-            model: Some(QWEN_DEFAULT_MODEL.into()),
-            ..AgentType::defaults(
-                "qwen",
-                "Implements a well-specified change on Qwen Code.",
-                Harness::Qwen,
-            )
-        }),
-        // The implementer flavour, for the reason `claude-impl` and `copilot-impl` exist: the
-        // adapter offers only what `--core-tools` names, so a `qwen` child has no route to a file
-        // at all, and the grant has to live on a type.
-        "qwen-impl" => Some(AgentType {
-            model: Some(QWEN_DEFAULT_MODEL.into()),
-            tools: vec![TOOL_READ.into(), TOOL_WRITE.into()],
-            ..AgentType::defaults(
-                "qwen-impl",
-                "Implements a well-specified change on Qwen Code.",
-                Harness::Qwen,
-            )
-        }),
-        // **One built-in per ACP agent, and no built-in named `acp`.** The other four harnesses
-        // get a type named after the harness because there the harness *is* the program. Here it
-        // is not: a type named `acp` would have to pick an agent, and §6.4 says marion may not.
-        //
-        // `opencode acp` is the one agent that is both measured to a tool call (S21) and has a
-        // recipe for marion's canned provider, which is what lets an ACP node run in the default
-        // suite at $0.00. The two ACP Registry shims are measured too (S22) but reach a provider
-        // only through the operator's own vendor login, so a built-in for either would be a type
-        // that cannot run without real spend; they stay reachable through `acp::AGENTS` — the
-        // doctor probes them — and earn a built-in when a canned recipe for them is measured.
-        "acp-opencode" => Some(AgentType {
-            model: Some(OPENCODE_DEFAULT_MODEL.into()),
-            acp_agent: Some("opencode".into()),
-            ..AgentType::defaults(
-                "acp-opencode",
-                "Implements a well-specified change on opencode over the Agent Client Protocol.",
-                Harness::Acp,
-            )
-        }),
-        // The one open-ended family: any ACP agent, named by its command. See [`acp_command`].
-        _ => acp_command(name),
+    match BUILTINS.iter().find(|b| b.matches(name)) {
+        Some(b) => Some(b.build()),
+        None => acp_command(name),
     }
 }
 
