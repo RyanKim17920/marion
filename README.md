@@ -4,8 +4,7 @@ marion runs any agent harness — Claude Code, Codex, Gemini CLI, opencode, Copi
 
 ![A terminal recording: marion tree showing a codex root whose child is marked blocked:descendants while a grandchild is still live, then a native Claude Code session started by `marion claude` whose /mcp list shows marion connected with 5 tools.](docs/media/marion-teaser.gif)
 
-Full 8-minute demo: (link)
-<!-- FULL_DEMO_URL -->
+Full 8-minute demo (21 scenes, 492 s): [marion-demo.mp4](https://github.com/RyanKim17920/marion/releases/download/v0.1.0/marion-demo.mp4) attached to the [v0.1.0 release](https://github.com/RyanKim17920/marion/releases/tag/v0.1.0).
 
 ## What marion does
 
