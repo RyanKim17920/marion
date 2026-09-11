@@ -2228,14 +2228,15 @@ mod tests {
     #[test]
     fn a_panicking_flow_fails_the_connection_and_releases_once() {
         let rec = Arc::new(Recorder::default());
-        let (gone_tx, gone_rx) = sync_channel(1);
-        *lock(&rec.gone_signal) = Some(gone_tx);
         let handle = Arc::clone(&rec) as Arc<dyn Handle>;
         let stopping = Arc::new(AtomicBool::new(false));
         let conn = ConnId(704);
         let (mut client, server_half) = UnixStream::pair().unwrap();
+        // A hang guard rather than a synchronization bound: it has to sit far above the worst
+        // scheduling delay a loaded machine can put between the flow's panic and the shutdown it
+        // causes, because a lapse here means the connection never failed, not that it was slow.
         client
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(Duration::from_secs(30)))
             .unwrap();
         let worker = {
             let stopping = Arc::clone(&stopping);
@@ -2256,20 +2257,31 @@ mod tests {
             panic!("internal flow panic")
         }));
 
-        let departure = gone_rx.recv_timeout(Duration::from_secs(1));
-        let saw_eof = if departure.is_ok() {
-            let mut tail = String::new();
-            reader.read_line(&mut tail).unwrap() == 0
-        } else {
-            drop(reader);
-            drop(client);
-            false
-        };
+        // The peer's `Eof` is the only thing here that is waited *for*, and the socket's read
+        // timeout bounds it so a flow panic that stopped failing the connection reports itself
+        // instead of wedging the suite. Everything after it is waited *on*: a `start_flow` that
+        // returned true has already queued the flow, so the writer's catch, the shutdown, the
+        // writer's exit and `gone` are all work this connection's worker must finish before it
+        // returns, and joining it is the release barrier. Timing that chain instead would time the
+        // scheduler — the writer only notices a departure on its next `WRITER_POLL` tick, and under
+        // load the wakeups behind that 20ms floor have outlasted a one-second bound, which read as
+        // a leak the code had not committed.
+        let mut tail = String::new();
+        assert!(
+            matches!(reader.read_line(&mut tail), Ok(0)),
+            "flow panic did not shut down the peer"
+        );
         drop(out);
         worker.join().unwrap();
 
-        assert_eq!(departure.unwrap(), Departure::OutboundFlowPanicked);
-        assert!(saw_eof, "flow panic did not shut down the peer");
+        assert_eq!(
+            lock(&rec.gone).as_slice(),
+            &[(
+                conn,
+                ClientGone::SocketClosed,
+                Departure::OutboundFlowPanicked
+            )]
+        );
         assert_eq!(
             drops.load(Ordering::SeqCst),
             1,
