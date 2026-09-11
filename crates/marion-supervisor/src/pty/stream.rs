@@ -1407,6 +1407,25 @@ fn validate_next_record(
     counters: &mut TrailerCounters,
     display_incomplete: &mut bool,
 ) -> Result<(), StreamError> {
+    validate_record_sequence(record, counters)?;
+    validate_display_completeness(record, display_incomplete)?;
+    counters.record_seq = record.record_seq;
+    counters.display_seq = record.display_seq;
+    counters.input_seq = record.input_seq;
+    Ok(())
+}
+
+/// The three counters advance densely, and an input record's own sequence is the one it was placed
+/// at.
+///
+/// Which counters a record advances is a property of its kind: output and resize advance the
+/// display axis, input evidence the input axis, and every record advances the record axis. A gap on
+/// any of them is a record that was lost between two that survived, which is what recovery exists to
+/// refuse rather than to paper over.
+fn validate_record_sequence(
+    record: &Record,
+    counters: &TrailerCounters,
+) -> Result<(), StreamError> {
     let expected_record = counters
         .record_seq
         .checked_add(1)
@@ -1447,6 +1466,16 @@ fn validate_next_record(
     {
         return Err(StreamError::InputSequenceMismatch);
     }
+    Ok(())
+}
+
+/// Display completeness is a one-way latch, and these are the three ways a stream could contradict
+/// it: display output after the marker, the marker stated twice, and an End claiming the replay is
+/// complete when the display was already known not to be.
+fn validate_display_completeness(
+    record: &Record,
+    display_incomplete: &mut bool,
+) -> Result<(), StreamError> {
     if *display_incomplete && matches!(&record.kind, RecordKind::Output(_)) {
         return Err(StreamError::InvalidRecordPayload);
     }
@@ -1462,9 +1491,6 @@ fn validate_next_record(
     {
         return Err(StreamError::InvalidTerminalOutcome);
     }
-    counters.record_seq = record.record_seq;
-    counters.display_seq = record.display_seq;
-    counters.input_seq = record.input_seq;
     Ok(())
 }
 
