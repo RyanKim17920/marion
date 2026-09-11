@@ -2918,6 +2918,38 @@ impl RegistryHandle {
         // Kept out of the thread's move, because the answer names it: the composing client reads
         // `contracts/<task_id>.json` and cannot mint this id itself (see `AgentSpawnResult`).
         let answered_task_id = task_id.clone();
+        let (agent_id, state) = self.launch_child(me, env, req, task_id, caller, repo, decision)?;
+        Ok(marion_proto::result::AgentSpawnResult {
+            state,
+            agent_id,
+            // §9's contract, named before it exists: this call answers at `Spawned`, and the id is
+            // what lets the caller find the file when the run ends.
+            task_id: Some(answered_task_id),
+        })
+    }
+
+    /// **The child launcher, driven from a fully-built [`crate::run::SpawnRequest`]** — the mirror
+    /// of [`Self::launch_root`], and for the same reason: `agent/spawn` and `node/resume` are one
+    /// launch path, differing only in the request (`agent/spawn` builds a fresh one, `node/resume`
+    /// reconstructs a node's own with its id, its session and the workspace it ran in on it). A
+    /// second launcher beside this one is how a resumed child ends up gated, journaled or claimed
+    /// differently from a spawned one.
+    ///
+    /// `repo` is the tree this node's own children branch from, `decision` is §6.1 step 2's
+    /// serialization — held until the node's intent is durable and dropped here, not by the caller,
+    /// so the window it covers is the same on both paths. Returns once the process exists, with the
+    /// node's state as the journal has it.
+    #[allow(clippy::too_many_arguments)]
+    fn launch_child(
+        &self,
+        me: Arc<RegistryHandle>,
+        env: crate::run::Env,
+        req: crate::run::SpawnRequest,
+        task_id: TaskId,
+        caller: crate::run::Caller,
+        repo: PathBuf,
+        decision: std::sync::MutexGuard<'_, ()>,
+    ) -> Result<(AgentId, NodeState), RpcError> {
         let (tx, progress) = std::sync::mpsc::channel();
         let observer = NodeOwner {
             handle: me.clone(),
@@ -2986,19 +3018,7 @@ impl RegistryHandle {
             Err(_) => return Err(launch_bound_expired(Some(&agent_id))),
         }
         self.live.refresh();
-        Ok(marion_proto::result::AgentSpawnResult {
-            // **Read back off the registry, not asserted.** The state this returns is the state the
-            // journal says, which is the point of answering at `Spawned` rather than before it: a
-            // client that renders `Spawning` here is rendering a record it could have read itself.
-            state: self
-                .live
-                .read(|r| r.tree().get(&agent_id).map(|n| n.state))
-                .unwrap_or(NodeState::Spawning),
-            agent_id,
-            // §9's contract, named before it exists: this call answers at `Spawned`, and the id is
-            // what lets the caller find the file when the run ends.
-            task_id: Some(answered_task_id),
-        })
+        Ok((agent_id.clone(), self.spawned_state(&agent_id)))
     }
 
     /// **§11 item 28 step 6: a client creating a root, served.**
