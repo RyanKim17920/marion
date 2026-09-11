@@ -1357,30 +1357,7 @@ fn run_conn_reader(
     // §7.3.1's only evidence of intent. Set when a `session/quit` **parses**, independently of what
     // the handler answers — the client said what it wanted whether or not marion could do it.
     let mut stated: Option<QuitDisposition> = None;
-    let departure = loop {
-        if stopping.load(Ordering::SeqCst) {
-            break Departure::ServerStopping;
-        }
-        match lines.next_line() {
-            Ok(None) => break Departure::Eof,
-            Err(LineError::Oversize { bytes }) => break Departure::Oversize { bytes },
-            Err(LineError::NotUtf8) => break Departure::NotUtf8,
-            Err(LineError::Io(e)) => break Departure::ReadFailed(e),
-            Ok(Some(line)) => {
-                if let Some((answer, quit_completed)) =
-                    answer_one(id, &line, &handle, &out, &mut stated)
-                {
-                    out.send(&Frame::Response(answer));
-                    if quit_completed {
-                        break Departure::QuitCompleted;
-                    }
-                }
-            }
-        }
-        if let Some(d) = out.departed() {
-            break d;
-        }
-    };
+    let departure = read_until_departure(id, lines, &handle, stopping, &out, &mut stated);
     out.depart(departure);
     drop(out); // closes the queue, which ends the writer
     let _ = writer.join();
@@ -1393,6 +1370,55 @@ fn run_conn_reader(
         None => ClientGone::SocketClosed,
     };
     handle.gone(id, &gone, &departure);
+}
+
+/// Read lines until something ends the connection, and say what that something was.
+///
+/// Every exit is a [`Departure`], because §7.3.1 needs a client's disappearance to be describable
+/// rather than merely observed. The outbound half is re-checked after each line: a queue that
+/// departed while the handler was running has already decided this connection is over, and reading
+/// another line would only delay saying so.
+fn read_until_departure(
+    id: ConnId,
+    lines: &mut Lines<std::os::unix::net::UnixStream>,
+    handle: &Arc<dyn Handle>,
+    stopping: &AtomicBool,
+    out: &Outbound,
+    stated: &mut Option<QuitDisposition>,
+) -> Departure {
+    loop {
+        if stopping.load(Ordering::SeqCst) {
+            return Departure::ServerStopping;
+        }
+        match lines.next_line() {
+            Ok(None) => return Departure::Eof,
+            Err(LineError::Oversize { bytes }) => return Departure::Oversize { bytes },
+            Err(LineError::NotUtf8) => return Departure::NotUtf8,
+            Err(LineError::Io(e)) => return Departure::ReadFailed(e),
+            Ok(Some(line)) => {
+                if let Some(departure) = answer_line(id, &line, handle, out, stated) {
+                    return departure;
+                }
+            }
+        }
+        if let Some(d) = out.departed() {
+            return d;
+        }
+    }
+}
+
+/// Answer one line and send what came back. `Some` only when the client's quit completed, which is
+/// the one answer that also ends the connection.
+fn answer_line(
+    id: ConnId,
+    line: &str,
+    handle: &Arc<dyn Handle>,
+    out: &Outbound,
+    stated: &mut Option<QuitDisposition>,
+) -> Option<Departure> {
+    let (answer, quit_completed) = answer_one(id, line, handle, out, stated)?;
+    out.send(&Frame::Response(answer));
+    quit_completed.then_some(Departure::QuitCompleted)
 }
 
 /// Parse one line and produce the response, if a response is possible.
