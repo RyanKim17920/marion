@@ -4048,24 +4048,46 @@ fn apply_pending_resize(
     utf8: &mut Utf8Stream,
     probes: &mut ProbeScan,
 ) {
-    let size = {
-        let mut q = shared.resize.lock().unwrap_or_else(|e| e.into_inner());
-        match q.pending.take() {
-            Some(size) => size,
-            None => return,
-        }
+    let Some(size) = take_pending_resize(shared) else {
+        return;
     };
+    fire_resize_hook(shared);
+    drain_before_resize(master, shared, buf, utf8, probes);
+    let applied = commit_resize(master, shared, size);
+    publish_resize_outcome(shared, applied);
+}
 
-    // The hook writes at the *old* geometry from inside the drain, so its bytes are read and
-    // recorded by this very loop, before the ioctl below. See `PtyHost::set_resize_hook`.
-    #[cfg(test)]
-    {
-        let hook = shared.resize_hook.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(hook) = hook.as_ref() {
-            hook();
-        }
+/// The pending geometry, claimed under the queue lock so two reader turns cannot apply it twice.
+fn take_pending_resize(shared: &Shared) -> Option<WinSize> {
+    let mut q = shared.resize.lock().unwrap_or_else(|e| e.into_inner());
+    q.pending.take()
+}
+
+/// The hook writes at the *old* geometry from inside the drain, so its bytes are read and
+/// recorded by this very loop, before the ioctl. See `PtyHost::set_resize_hook`.
+#[cfg(test)]
+fn fire_resize_hook(shared: &Shared) {
+    let hook = shared.resize_hook.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(hook) = hook.as_ref() {
+        hook();
     }
+}
 
+#[cfg(not(test))]
+fn fire_resize_hook(_shared: &Shared) {}
+
+/// Read the master empty, up to [`RESIZE_DRAIN_READS`], recording every chunk at the old geometry.
+///
+/// Every exit is the same exit: EOF, an empty buffer, and a read failure all mean there is nothing
+/// more the node emitted at the old size that this thread can still see, and the bound means a node
+/// writing faster than marion reads cannot postpone the resize.
+fn drain_before_resize(
+    master: &PtyMaster,
+    shared: &Shared,
+    buf: &mut [u8],
+    utf8: &mut Utf8Stream,
+    probes: &mut ProbeScan,
+) {
     for _ in 0..RESIZE_DRAIN_READS {
         match master.read(buf) {
             Ok(0) => break,
@@ -4075,36 +4097,59 @@ fn apply_pending_resize(
             Err(_) => break,
         }
     }
+}
 
-    let (outcome, retention, durable_failure) = {
-        let mut recorders = shared.recorders.lock().unwrap_or_else(|e| e.into_inner());
-        match shared.set_size(master, size) {
-            Ok(()) => {
-                let durable_failure = recorders
-                    .inject_durable_failure()
-                    .and_then(|()| recorders.durable.append_resize(size))
-                    .err();
-                let retention = shared.retain_resize(size);
-                let outcome = shared.resize_cast(&mut recorders.cast, size);
-                if let Err(error) = &outcome {
-                    recorders.note_cast_failure("resize", error);
-                }
-                (outcome, Some(retention), durable_failure)
-            }
-            Err(error) => (Err(error), None, None),
-        }
-    };
-    if let Some(error) = durable_failure {
+/// What the resize left behind: the cast outcome the blocked caller is owed, the retention to
+/// finish once the recorder lock is released, and a durable-stream failure to report.
+struct AppliedResize {
+    outcome: io::Result<()>,
+    retention: Option<Result<Option<splice::EmitOutcome>, splice::SpliceError>>,
+    durable_failure: Option<String>,
+}
+
+/// The ioctl and the record, under one hold of the recorder lock.
+///
+/// The node begins repainting the moment `TIOCSWINSZ` provokes its `SIGWINCH`, so nothing may be
+/// recorded between the ioctl and the record that explains it. A failed ioctl records nothing: the
+/// terminal is still the old size and an `r` would be a lie.
+fn commit_resize(master: &PtyMaster, shared: &Shared, size: WinSize) -> AppliedResize {
+    let mut recorders = shared.recorders.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(error) = shared.set_size(master, size) {
+        return AppliedResize {
+            outcome: Err(error),
+            retention: None,
+            durable_failure: None,
+        };
+    }
+    let durable_failure = recorders
+        .inject_durable_failure()
+        .and_then(|()| recorders.durable.append_resize(size))
+        .err();
+    let retention = shared.retain_resize(size);
+    let outcome = shared.resize_cast(&mut recorders.cast, size);
+    if let Err(error) = &outcome {
+        recorders.note_cast_failure("resize", error);
+    }
+    AppliedResize {
+        outcome,
+        retention: Some(retention),
+        durable_failure,
+    }
+}
+
+/// Report what could only be reported once the recorder lock was released, then wake the caller.
+fn publish_resize_outcome(shared: &Shared, applied: AppliedResize) {
+    if let Some(error) = applied.durable_failure {
         eprintln!("marion: {error}");
     }
-    if let Some(retention) = retention {
+    if let Some(retention) = applied.retention {
         shared.finish_resize_retention(retention);
     }
 
     let mut q = shared.resize.lock().unwrap_or_else(|e| e.into_inner());
     q.applied = q.requested;
     // Kept rather than printed: the caller is blocked on this and is the one that can report it.
-    q.failure = outcome.err().map(|e| e.to_string());
+    q.failure = applied.outcome.err().map(|e| e.to_string());
     drop(q);
     shared.resize_done.notify_all();
 }
