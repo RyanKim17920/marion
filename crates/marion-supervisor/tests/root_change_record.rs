@@ -33,22 +33,33 @@ use marion_testsupport::{fixture_repo, git, scratch};
 /// `launch_only_root.rs`'s `RUN_BOUND`, and the same reasoning.
 const RUN_BOUND: Duration = Duration::from_secs(60);
 
-/// Files under a directory, counted. The witness NC-3 rests on, so it is a real walk and not a
-/// `read_dir` of the top level: git's loose objects live two levels down in `objects/ab/cdef…`.
-fn files_under(dir: &Path) -> usize {
-    let mut n = 0;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            n += files_under(&p);
-        } else {
-            n += 1;
+/// Files under a directory, **named** and sorted, relative to `dir`. The witness NC-3 rests on, so
+/// it is a real walk and not a `read_dir` of the top level: git's loose objects live two levels
+/// down in `objects/ab/cdef…`.
+///
+/// Paths rather than a count, because a count that moves says only *that* the store moved. The set
+/// says which entry did, which is the difference between a diagnosable failure and a number — and
+/// the assertion is strictly stronger for it: two stores of equal size but different content are
+/// no longer equal.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, prefix: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            let rel = prefix.join(e.file_name());
+            if p.is_dir() {
+                walk(&p, &rel, out);
+            } else {
+                out.push(rel);
+            }
         }
     }
-    n
+    let mut out = Vec::new();
+    walk(dir, Path::new(""), &mut out);
+    out.sort();
+    out
 }
 
 /// **NC-2 — the dirty-repo control, which is what pins the base point.**
@@ -246,7 +257,7 @@ fn taking_two_snapshots_writes_nothing_into_the_operators_own_git_dir() {
     // **The positive half**, so the assertions above cannot be satisfied by marion never having
     // looked: the objects really were written, just somewhere marion owns.
     assert!(
-        files_under(&agent.join("objects")) > 0,
+        !files_under(&agent.join("objects")).is_empty(),
         "a run that wrote no objects anywhere measured nothing"
     );
 }
