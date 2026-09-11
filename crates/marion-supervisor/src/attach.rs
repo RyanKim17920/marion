@@ -223,6 +223,15 @@ fn write_serialized<W: Write>(
     writer.flush()
 }
 
+/// What one read onto the inbound buffer produced.
+enum Fill {
+    /// Bytes arrived, or the read was interrupted: either way, look for a frame again.
+    Again,
+    /// The read timed out with nothing new, which is the loop's chance to notice a `SIGWINCH`
+    /// or a detach.
+    Idle,
+}
+
 /// What one bounded keyboard read produced.
 enum KeyRead {
     /// The poll expired with nothing typed: the loop's chance to notice `leaving`.
@@ -932,19 +941,7 @@ impl Session {
     fn next_frame(&mut self) -> Result<Option<Frame>, Refusal> {
         loop {
             if let Some(end) = self.inbound.iter().position(|byte| *byte == b'\n') {
-                if end > crate::serve::MAX_FRAME_BYTES {
-                    return Err(format!(
-                        "the supervisor sent a frame larger than {} bytes",
-                        crate::serve::MAX_FRAME_BYTES
-                    ));
-                }
-                let mut line = self.inbound.drain(..=end).collect::<Vec<_>>();
-                line.pop();
-                let line = std::str::from_utf8(&line)
-                    .map_err(|_| "the supervisor sent a non-UTF-8 protocol frame".to_string())?;
-                return Frame::from_line(line)
-                    .map(Some)
-                    .map_err(|e| format!("the supervisor sent a frame marion cannot read: {e}"));
+                return self.take_frame(end).map(Some);
             }
             if self.inbound.len() > crate::serve::MAX_FRAME_BYTES {
                 return Err(format!(
@@ -952,30 +949,54 @@ impl Session {
                     crate::serve::MAX_FRAME_BYTES
                 ));
             }
-            let mut chunk = [0u8; 8192];
-            match self.stream.read(&mut chunk) {
-                Ok(0) if self.inbound.is_empty() => {
-                    return Err("the supervisor closed the connection".into());
-                }
-                Ok(0) => {
-                    return Err(format!(
-                        "the supervisor closed the connection with {} bytes of an unfinished \
-                         frame",
-                        self.inbound.len()
-                    ));
-                }
-                Ok(n) => self.inbound.extend_from_slice(&chunk[..n]),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    return Ok(None);
-                }
-                Err(e) => return Err(format!("reading from the supervisor: {e}")),
+            match self.fill_inbound()? {
+                Fill::Again => continue,
+                Fill::Idle => return Ok(None),
             }
+        }
+    }
+
+    /// The completed line ending at `end`, taken out of the inbound buffer and decoded.
+    fn take_frame(&mut self, end: usize) -> Result<Frame, Refusal> {
+        if end > crate::serve::MAX_FRAME_BYTES {
+            return Err(format!(
+                "the supervisor sent a frame larger than {} bytes",
+                crate::serve::MAX_FRAME_BYTES
+            ));
+        }
+        let mut line = self.inbound.drain(..=end).collect::<Vec<_>>();
+        line.pop();
+        let line = std::str::from_utf8(&line)
+            .map_err(|_| "the supervisor sent a non-UTF-8 protocol frame".to_string())?;
+        Frame::from_line(line)
+            .map_err(|e| format!("the supervisor sent a frame marion cannot read: {e}"))
+    }
+
+    /// One read onto the end of the inbound buffer. A close is a refusal, and it says whether it
+    /// interrupted a frame, because a half-frame is evidence and an idle close is not.
+    fn fill_inbound(&mut self) -> Result<Fill, Refusal> {
+        let mut chunk = [0u8; 8192];
+        match self.stream.read(&mut chunk) {
+            Ok(0) if self.inbound.is_empty() => Err("the supervisor closed the connection".into()),
+            Ok(0) => Err(format!(
+                "the supervisor closed the connection with {} bytes of an unfinished \
+                 frame",
+                self.inbound.len()
+            )),
+            Ok(n) => {
+                self.inbound.extend_from_slice(&chunk[..n]);
+                Ok(Fill::Again)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(Fill::Again),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(Fill::Idle)
+            }
+            Err(e) => Err(format!("reading from the supervisor: {e}")),
         }
     }
 
