@@ -1628,8 +1628,29 @@ fn status_reports_the_supervisors_current_state_and_not_a_cached_one() {
     );
 
     // The same handle, after. This is the assertion a cache cannot satisfy.
-    let late = bridge.tool("status", json!({"task_id": &task_id}));
-    let late_text = text_of(&late);
+    //
+    // **Polled to the supervisor's own barrier rather than read once.** `wait` and `status` are
+    // two observers of one death and nothing orders them: `wait` returns the moment the node's own
+    // event stream carries its closing bookend (`courier::await_contract` reads `node/attach`
+    // notifications), while `status` reads the registry the supervisor projects out of the journal
+    // it is *tailing* — so the registry is behind by however long that tail takes to notice. On a
+    // loaded ubuntu runner it was behind by enough to still be reporting `Spawning`, the state at
+    // hand-out time, which reads exactly like the cache this test exists to rule out.
+    //
+    // Waiting for the terminal answer weakens nothing, because the two candidate explanations
+    // diverge rather than converge: a `status` served from `background::Handed` would report
+    // `Spawning` **for ever**, so no amount of polling turns a cached answer into "finished".
+    // [`DEADLOCK_BOUND`] is therefore still a deadlock bound and not a timing assertion — reaching
+    // it means the registry never learnt, which is the bug.
+    let deadline = Instant::now() + DEADLOCK_BOUND;
+    let (late, late_text) = loop {
+        let reply = bridge.tool("status", json!({"task_id": &task_id}));
+        let text = text_of(&reply);
+        if text.contains("finished") || Instant::now() >= deadline {
+            break (reply, text);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert!(
         !is_error(&late),
         "§5.4 permits `status` against a terminal target, and against one an earlier `wait` has \
