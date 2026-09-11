@@ -106,7 +106,9 @@ fn kinds(events: &[Event]) -> Vec<String> {
 
 #[test]
 fn a_real_run_leaves_both_node_kinds_replayable_from_streams_one_supervisor_wrote() {
-    common::script::require_claude_and_codex();
+    if !common::script::require_claude_and_codex() {
+        return;
+    }
     let dir = scratch("child-events");
     let repo = fixture_repo(&dir);
     let state = dir.join("state");

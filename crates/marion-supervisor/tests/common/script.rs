@@ -64,12 +64,33 @@ pub fn claude_delegates_to_codex(d: Delegation<'_>) -> Script {
 /// Since the shim, the gate is also what lays the pinned release into the process's `PATH` prefix,
 /// so a run that skipped it would spawn whatever an auto-update left first on `PATH` while every
 /// gated suite in the same tree spawned the admitted one. See `marion_testsupport::on_path`.
-pub fn require_claude_and_codex() {
+///
+/// # Why this returns a bool rather than asserting
+///
+/// It used to assert, and off a runner it still effectively does: `harness_available` keeps
+/// `on_path`'s rule — an absent or drifted binary panics, naming the program and the pinned
+/// version — for every machine that has not set `MARION_CI_NO_HARNESSES=1`. The one runner that
+/// has says so explicitly, and there the skip is announced by name on the uncaptured stderr and
+/// this returns `false`. The caller's contract is one line:
+///
+/// ```ignore
+/// if !common::script::require_claude_and_codex() {
+///     return;
+/// }
+/// ```
+///
+/// Without that, a suite driving this script could only be kept out of CI by being *named out* of
+/// the workflow's list — and a suite that drives a real harness without ever mentioning `on_path`
+/// reads, to that list, exactly like a suite that needs nothing. `client_run.rs` was one, and it
+/// failed on both runners with five journal invariants rather than with the missing binary.
+///
+/// **Both programs are probed, never short-circuited**, so a machine missing both is told about
+/// both in one run rather than one per fix.
+#[must_use]
+pub fn require_claude_and_codex() -> bool {
+    let mut ready = true;
     for program in ["claude", "codex"] {
-        assert!(
-            marion_testsupport::on_path(program),
-            "this test drives a REAL {program}; put `{program}` ({}) on PATH",
-            marion_testsupport::pinned_version(program)
-        );
+        ready &= marion_testsupport::harness_available(program);
     }
+    ready
 }
