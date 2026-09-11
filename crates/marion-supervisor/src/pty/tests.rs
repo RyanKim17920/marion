@@ -2736,6 +2736,68 @@ fn pty_ioctl_failure_never_retains_resize_in_either_path() {
     fallback.host.shutdown().unwrap();
 }
 
+/// **A resize returns even when the reader thread never performs it.**
+///
+/// `PtyHost::resize` hands the ioctl and the `r` record to the reader thread and waits for the
+/// answer, which is what makes the record truthful. The wait itself, though, is a claim about
+/// another thread's liveness made on a *client connection thread* — `handler`'s `node/resize` runs
+/// there, and `serve.rs`'s accept loop joins those threads before the supervisor can stop. An
+/// unbounded wait therefore does not cost one resize: it costs the shutdown, and a suite that
+/// exercises the path (`handler::tests::a_resize_reaches_the_pty_and_the_child_is_told`) stops
+/// being able to fail and can only hang.
+///
+/// The stall is caused, not timed. The resize hook runs **on the reader thread** inside
+/// `apply_pending_resize`, so `reached` proves the reader is inside the very function the caller is
+/// waiting on before the caller's outcome is sampled — no sleep stands in for that ordering. The
+/// sample itself is bounded so a reintroduced `Condvar::wait` reports `Timeout` here instead of
+/// wedging the harness, and the hook is released on every path so teardown cannot inherit the
+/// stall.
+#[test]
+fn a_resize_returns_even_when_the_reader_never_performs_it() {
+    let mut lb = Loopback::new("pty-resize-stalled-reader", WinSize::new(80, 24));
+    let (release, held) = std::sync::mpsc::sync_channel::<()>(0);
+    let (entered, reached) = std::sync::mpsc::sync_channel::<()>(1);
+    let held = std::sync::Mutex::new(held);
+    lb.host.set_resize_hook(Box::new(move || {
+        let _ = entered.try_send(());
+        let _ = held.lock().unwrap_or_else(|e| e.into_inner()).recv();
+    }));
+
+    let outcome = std::thread::scope(|scope| {
+        let (finished, answered) = std::sync::mpsc::sync_channel::<io::Result<()>>(1);
+        let host = &lb.host;
+        scope.spawn(move || {
+            let _ = finished.send(host.resize(WinSize::new(100, 30)));
+        });
+        reached
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the reader reached the resize it is supposed to perform");
+        // Generously past `RESIZE_APPLY_GRACE`, so this bound can only expire on a resize that has
+        // no bound of its own.
+        let outcome = answered.recv_timeout(Duration::from_secs(20));
+        // Before the assertion, so the reader is freed whichever way the sample went.
+        let _ = release.send(());
+        outcome
+    });
+
+    assert!(
+        matches!(outcome, Ok(Ok(()))),
+        "resize never returned while the reader thread was stalled inside it, so a client \
+         connection thread — and with it the accept loop that joins it — can be wedged by a pty \
+         reader that is merely slow: {outcome:?}"
+    );
+    assert_eq!(
+        lb.host.master().size().expect("TIOCGWINSZ"),
+        WinSize::new(100, 30),
+        "the caller returned without the kernel ever being resized, which would make the answer a \
+         lie rather than a fallback"
+    );
+
+    lb.host.clear_resize_hook();
+    lb.hang_up();
+    lb.host.shutdown().unwrap();
+}
+
 /// **No pty byte reaches `events.jsonl`.** §3.4 said they would; they do not, and §3.4 has been
 /// corrected. Recorded here as a decision so it cannot be undone by accident.
 ///

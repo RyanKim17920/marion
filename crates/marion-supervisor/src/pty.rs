@@ -987,6 +987,21 @@ const POLL: std::time::Duration = std::time::Duration::from_millis(5);
 /// than letting one client hold shutdown forever.
 const CONTROL_DELIVERY_GRACE: Duration = Duration::from_millis(100);
 
+/// Maximum time [`PtyHost::resize`] waits for the reader thread to perform its resize.
+///
+/// The reader is the right performer — see [`PtyHost::resize`] for why the `r` record is only
+/// truthful when it is written where the recorded chunks are — but *waiting for it* is a liveness
+/// claim about another thread, and this caller is a client connection thread inside `serve.rs`,
+/// whose accept loop joins it before the supervisor can stop. An unbounded wait here therefore
+/// turns any reader that is stuck (blocked on the recorder lock behind a master write whose peer
+/// has stopped reading, or simply never scheduled) into a supervisor that cannot be shut down at
+/// all, and a test that exercises the path into one that hangs instead of failing.
+///
+/// Four hundred times the reader's own [`POLL`] interval, so it cannot fire on a merely loaded
+/// machine; past it the caller does the same two steps itself, which is exactly what it already
+/// does when there is no reader at all.
+const RESIZE_APPLY_GRACE: Duration = Duration::from_secs(2);
+
 // ---------------------------------------------------------------------------------------------
 // One writer, and the type that says so
 // ---------------------------------------------------------------------------------------------
@@ -3612,6 +3627,13 @@ impl PtyHost {
     /// after the child hung up — there is nothing to interleave with and nothing to wait for, so
     /// the caller does the same two steps itself under the same lock.
     ///
+    /// **And the wait for the reader is bounded.** Handing the work to another thread is a
+    /// labelling improvement; *waiting forever* for that thread is a liveness bet, and this caller
+    /// is a `serve.rs` connection thread the accept loop joins before the supervisor can stop. So
+    /// the wait carries [`RESIZE_APPLY_GRACE`], after which the same fallback runs. The bound is
+    /// four hundred reader polls wide, so it costs nothing on a loaded machine and only replaces a
+    /// hung supervisor with a slightly less precisely labelled `r`.
+    ///
     /// The explicit `SIGWINCH` is redundant with the kernel's own delivery on a size change. It is
     /// kept because **all five committed captures were made with it** (`ptyhost.py` sends it), so
     /// removing it would make marion's traffic differ from the corpus every claim in §5.3 rests on
@@ -3629,16 +3651,30 @@ impl PtyHost {
         };
         self.shared.resize_done.notify_all();
 
+        let deadline = Instant::now() + RESIZE_APPLY_GRACE;
         let mut q = self.shared.resize.lock().unwrap_or_else(|e| e.into_inner());
         while q.applied < ticket && q.reader {
-            q = match self.shared.resize_done.wait(q) {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
+            // **Bounded, and the bound is a liveness requirement rather than a grace period.**
+            // See [`RESIZE_APPLY_GRACE`]: this runs on a client connection thread that the accept
+            // loop joins, so a reader that never answers would otherwise wedge the whole
+            // supervisor rather than one resize.
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            q = match self.shared.resize_done.wait_timeout(q, remaining) {
+                Ok((g, _)) => g,
+                Err(e) => e.into_inner().0,
             };
         }
         if q.applied < ticket {
-            // No reader to do it. Take the pending size back and do the work here, in the same
-            // order and under the same lock.
+            // No reader to do it, or one that did not answer inside the grace. Take the pending
+            // size back and do the work here, in the same order and under the same lock.
+            //
+            // A reader that had already claimed the pending size and then resumes finds nothing
+            // pending — this branch set `applied` to `requested` — unless it claimed it before
+            // stalling, in which case it re-applies the geometry now already in effect and writes
+            // a second `r` naming it. A record that repeats the size a replayer is at is inert;
+            // a supervisor that cannot be stopped is not.
             let size = q.pending.take().unwrap_or(size);
             q.applied = q.requested;
             let mut recorders = self
