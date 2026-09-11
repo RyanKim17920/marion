@@ -1422,20 +1422,8 @@ impl<W: Write> RawPaneSession<W> {
 
     fn pump(&mut self) -> Result<RelayStop, Refusal> {
         loop {
-            let signal = FIRST_RELAY_SIGNAL.load(Ordering::SeqCst);
-            if signal != 0 {
-                return Ok(RelayStop::ExternalSignal(signal));
-            }
-            if owned_stop_pending()
-                .map_err(|error| format!("querying the pending native relay stop: {error}"))?
-            {
-                return Ok(RelayStop::Suspend);
-            }
-            if self.leaving.load(Ordering::SeqCst) {
-                if let Some(error) = self.take_keyboard_failure() {
-                    return Err(error);
-                }
-                return Ok(RelayStop::Complete);
+            if let Some(stop) = self.stop_before_frame()? {
+                return Ok(stop);
             }
             self.forward_resize()?;
             let frame = match self.next_frame() {
@@ -1445,36 +1433,68 @@ impl<W: Write> RawPaneSession<W> {
                 }
                 Err(FrameError::Other(error)) => return Err(error),
             };
-            match frame {
-                Some(Frame::Notification(note)) => {
-                    let decoded = crate::pane_client::decode_pane_v1_event(
-                        &self.id,
-                        self.next_seq,
-                        self.cut,
-                        note.event,
-                    )?;
-                    self.next_seq = decoded.next_seq;
-                    match decoded.action {
-                        crate::pane_client::PaneV1Action::Output(bytes) => {
-                            self.output
-                                .write_all(bytes.as_bytes())
-                                .and_then(|()| self.output.flush())
-                                .map_err(|error| {
-                                    format!("writing native pane output to the terminal: {error}")
-                                })?;
-                        }
-                        crate::pane_client::PaneV1Action::Resize { .. }
-                        | crate::pane_client::PaneV1Action::Ignore => {}
-                        crate::pane_client::PaneV1Action::End => return Ok(RelayStop::Complete),
-                    }
-                }
-                Some(other) => {
-                    return Err(format!(
-                        "the supervisor sent an unexpected frame during native relay: {other:?}"
-                    ));
-                }
-                None => {}
+            if let Some(stop) = self.apply_frame(frame)? {
+                return Ok(stop);
             }
+        }
+    }
+
+    /// Whether the relay is already over before another frame is read, in the order the reasons
+    /// outrank each other: a signal Marion's handler observed, then an owned stop the terminal's
+    /// default should see, then a keyboard worker that left — carrying its failure if it had one.
+    fn stop_before_frame(&mut self) -> Result<Option<RelayStop>, Refusal> {
+        let signal = FIRST_RELAY_SIGNAL.load(Ordering::SeqCst);
+        if signal != 0 {
+            return Ok(Some(RelayStop::ExternalSignal(signal)));
+        }
+        if owned_stop_pending()
+            .map_err(|error| format!("querying the pending native relay stop: {error}"))?
+        {
+            return Ok(Some(RelayStop::Suspend));
+        }
+        if self.leaving.load(Ordering::SeqCst) {
+            if let Some(error) = self.take_keyboard_failure() {
+                return Err(error);
+            }
+            return Ok(Some(RelayStop::Complete));
+        }
+        Ok(None)
+    }
+
+    /// One frame from the negotiated stream, onto the operator's terminal. `Some` ends the relay.
+    ///
+    /// The sequence advances before the bytes are written: the decode has already validated it,
+    /// and a write failure is this relay's, not a hole in the supervisor's stream.
+    fn apply_frame(&mut self, frame: Option<Frame>) -> Result<Option<RelayStop>, Refusal> {
+        let note = match frame {
+            Some(Frame::Notification(note)) => note,
+            Some(other) => {
+                return Err(format!(
+                    "the supervisor sent an unexpected frame during native relay: {other:?}"
+                ));
+            }
+            None => return Ok(None),
+        };
+        let decoded = crate::pane_client::decode_pane_v1_event(
+            &self.id,
+            self.next_seq,
+            self.cut,
+            note.event,
+        )?;
+        self.next_seq = decoded.next_seq;
+        match decoded.action {
+            crate::pane_client::PaneV1Action::Output(bytes) => {
+                self.output
+                    .write_all(bytes.as_bytes())
+                    .and_then(|()| self.output.flush())
+                    .map_err(|error| {
+                        format!("writing native pane output to the terminal: {error}")
+                    })?;
+                Ok(None)
+            }
+            crate::pane_client::PaneV1Action::Resize { .. }
+            | crate::pane_client::PaneV1Action::Ignore => Ok(None),
+            crate::pane_client::PaneV1Action::End => Ok(Some(RelayStop::Complete)),
         }
     }
 
