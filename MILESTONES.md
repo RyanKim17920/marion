@@ -101,10 +101,14 @@ the canned provider and skips loudly where a binary is absent; the version gate 
 `marion_testsupport::PINNED_HARNESSES`. Native facade from the shipped binary:
 `cargo test -p marion-supervisor --test native_facade_e2e` (per enabled lane; needs the harness on
 `PATH` and a real PTY). Restart and resume: `cargo test -p marion-supervisor --test
-restart_resume -- --ignored` (real codex, detached supervisor; since 2026-09-06 it asserts the
-resumed child's own turn — a post-relaunch provider request carrying the resume prompt and the
-first life's transcript — and its code-0 exit, so a relaunch codex rejects at argv is red in
-seconds with the exit quoted; the pre-fix row fails it at exit 2). Live ACP: `--test acp_child --
+restart_resume -- --ignored` (real codex, detached supervisor; **two** tests since 2026-09-10, one
+per depth — a root and a depth-1 child each resumed into its own id after their shared supervisor
+is SIGKILLed. Since 2026-09-06 the root arc asserts the resumed process's own turn — a
+post-relaunch provider request carrying the resume prompt and the first life's transcript — and its
+code-0 exit, so a relaunch codex rejects at argv is red in seconds with the exit quoted; the pre-fix
+row fails it at exit 2. The child arc adds the facts only a child has: depth 1 and the same
+`parent_id` on the second life, the recorded worktree still the directory it runs in, and the root
+left at generation 1 so the relaunch is the child's own and not the tree's). Live ACP: `--test acp_child --
 --ignored` spends Copilot tokens. Cross-harness: `--test harness_matrix`, `--test cross_product`,
 `--test journal_wiring`, `--test m4_fan_in`. Panes: `--test pane_attach`.
 
@@ -127,8 +131,10 @@ duplication.
 **Open, honestly:** C1's recording; the four disabled lanes; `SIGTSTP`/`SIGCONT` from the
 *shipped* binary (a real kernel stop and continue through the relay is observed by
 `native_relay_stop_and_continue_are_observed_by_a_job_control_leader`, commit acb1cc5, but the
-`spawn_pty` facade fixture cannot observe it); child resume and a linked
-worktree's cwd on resume; Linux `/proc` start identity unmeasured; `verification` execution still
+`spawn_pty` facade fixture cannot observe it); a **root** started in a linked
+worktree, whose cwd on resume is still derived rather than recorded; a resumed child's declared
+scope and acceptance criteria, which no record carries; Linux `/proc` start identity unmeasured;
+`verification` execution still
 not in code (descendant gating §7.6 came off this line 2026-09-10 — see "Not done"); the ACP agent
 identity on `NodeSummary`.
 
@@ -958,11 +964,21 @@ honestly still open. Per milestone:
   now recoverable rather than merely accounted for:** `node/resume` (`Method::ALL` is 16;
   `handler.rs::resume_relaunches_an_orphan_into_its_own_node_id_through_agent_spawns_path`) and
   `marion resume` (`attach_verb.rs::resume_is_dispatched_and_starts_a_supervisor_when_none_serves`)
-  land a lost root back under its own id, measured end to end by
+  land a lost node back under its own id, measured end to end by
   `restart_resume.rs::a_node_resumes_into_the_same_id_after_its_supervisor_is_sigkilled_and_a_new_client_hears_its_next_turn`
-  (`#[ignore]`, real codex, run with `--ignored`). Open, stated: Linux `/proc/<pid>/stat` start
-  identity is written and unmeasured (macOS only is measured); a linked worktree's cwd is not
-  recovered on resume; goose and cline carry no session id in any frame and copilot's arrives
+  (`#[ignore]`, real codex, run with `--ignored`). **2026-09-10: no longer roots only.** The
+  workspace each node was launched in is journaled on `SessionObserved`, so `node/resume` relaunches
+  a lost *child* into its own id, at its own depth, under its own parent and in the worktree its
+  session was created in — `handler.rs::resume_relaunches_a_lost_child_into_its_own_node_id_under_its_parent`
+  with `resume_refuses_a_child_whose_recorded_worktree_is_gone` and
+  `resume_refuses_a_child_whose_parent_is_still_live` as its two named refusals, and
+  `restart_resume.rs::a_lost_child_resumes_into_its_own_node_id_under_its_parent_and_takes_its_next_turn`
+  end to end on a real codex child. Open, stated: Linux `/proc/<pid>/stat` start
+  identity is written and unmeasured (macOS only is measured); a **root** started in a linked
+  worktree still derives its cwd rather than reading a recorded one, so its resume is the case the
+  child's record does not cover; a resumed child's declared scope and acceptance criteria are on no
+  record, so its second life runs at its agent type's ceiling with no criteria;
+  goose and cline carry no session id in any frame and copilot's arrives
   only on its terminal frame, so a resume on those rows is refused by name
   (`adapter.rs::a_harness_whose_row_refuses_resume_is_refused_by_name`).
 - **M3 [partial]** — unchanged, on C1's recorded 10-minute manual session alone. C2 met
@@ -2261,8 +2277,9 @@ says a clause failed.
     marion verb, and the driver answers `session/request_permission` permissively. §11 item 24's
     two axes do not exist on this row.
   - *Resume is wired at the adapter and driver, and unreachable from `node/resume` today.*
-    `node/resume` is root-only, no ACP node is a root, and the ACP row journals no session id (it
-    has no `StreamGrammar` row; the id is in the `session/new` result frame). Both are marion's
+    `node/resume` reaches children since 2026-09-10, so the depth is no longer the obstacle — but
+    the ACP row journals no session id (it has no `StreamGrammar` row; the id is in the
+    `session/new` result frame), and a node with no session is refused by name. Still marion's
     plumbing, not the protocol's.
   - *An agent that honours neither `session/new`'s `mcpServers` nor any argv channel marion knows
     reaches no bridge*, and the run reports nothing rather than failing — the s14 shape. The
