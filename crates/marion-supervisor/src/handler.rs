@@ -2612,20 +2612,10 @@ impl RegistryHandle {
     /// `peer` is the connection's credentials and is consulted on exactly one path — a spawn with
     /// no caller. See [`root_spawn_authorized`] for what that decides and, more importantly, for
     /// what it deliberately does not.
-    fn agent_spawn(
-        &self,
+    /// **§11 item 28 step 6's `caller`/`repo` pairing**, answered from the frame alone.
+    fn check_caller_repo_pairing(
         p: &marion_proto::params::AgentSpawnParams,
-        peer: Peer,
-    ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
-        if p.caller.is_some() {
-            validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_deref())
-                .map_err(NativeLaunchGateError::into_rpc)?;
-        }
-        let me = self.me.upgrade().ok_or_else(|| {
-            RpcError::internal(
-                "this supervisor is being dropped and will not start a node it could not then own",
-            )
-        })?;
+    ) -> Result<(), RpcError> {
         // **The `caller`/`repo` pairing, before anything else and before any state is consulted.**
         // It is a property of the frame alone, so it is answered from the frame alone — and
         // answering it first is what keeps both halves reachable no matter which other refusals
@@ -2663,6 +2653,10 @@ impl RegistryHandle {
             }
             (Some(_), None) | (None, Some(_)) => {}
         }
+        Ok(())
+    }
+    /// **A root's workspace is not a choice**: `isolation` on a spawn with no `caller`.
+    fn check_root_isolation(p: &marion_proto::params::AgentSpawnParams) -> Result<(), RpcError> {
         // **The other half of the same pairing**, and refused for §11 item 23's reason rather than
         // ignored: §9's change record exists only for a root, because only a root runs in the
         // operator's own checkout. A child's writes are judged against the worktree marion made it,
@@ -2693,6 +2687,12 @@ impl RegistryHandle {
                 "§6.6, §9, §11 item 23",
             ));
         }
+        Ok(())
+    }
+    /// **A root has no caller's cwd to share**: `allow_concurrent_writes` without a `caller`.
+    fn check_root_allow_concurrent_writes(
+        p: &marion_proto::params::AgentSpawnParams,
+    ) -> Result<(), RpcError> {
         if p.caller.is_none() && p.allow_concurrent_writes.is_some() {
             return Err(RpcError::refused(
                 "allow_concurrent_writes",
@@ -2703,6 +2703,12 @@ impl RegistryHandle {
                 "§6.6, §11 item 23",
             ));
         }
+        Ok(())
+    }
+    /// **§9's change record is a root's**: `no_change_record` on a spawn with a `caller`.
+    fn check_child_no_change_record(
+        p: &marion_proto::params::AgentSpawnParams,
+    ) -> Result<(), RpcError> {
         if p.caller.is_some() && p.no_change_record.is_some() {
             return Err(RpcError::refused(
                 "no_change_record",
@@ -2715,6 +2721,10 @@ impl RegistryHandle {
                 "§9, §11 item 23",
             ));
         }
+        Ok(())
+    }
+    /// **A contracted child in a pane could only time out**: `pane` on a spawn with a `caller`.
+    fn check_child_pane(p: &marion_proto::params::AgentSpawnParams) -> Result<(), RpcError> {
         // **The third field on the same rule, refused for a reason of its own.** Not symmetry with
         // the two above: a pane is a TUI, and a TUI takes no turn until a human presses return,
         // while a child is defined by a `TaskContract` it must `report` against inside a wall
@@ -2735,6 +2745,27 @@ impl RegistryHandle {
                 "§9 M3, §11 item 23",
             ));
         }
+        Ok(())
+    }
+    fn agent_spawn(
+        &self,
+        p: &marion_proto::params::AgentSpawnParams,
+        peer: Peer,
+    ) -> Result<marion_proto::result::AgentSpawnResult, RpcError> {
+        if p.caller.is_some() {
+            validate_native_launch_boundary(p.caller.as_ref(), p.native_launch.as_deref())
+                .map_err(NativeLaunchGateError::into_rpc)?;
+        }
+        let me = self.me.upgrade().ok_or_else(|| {
+            RpcError::internal(
+                "this supervisor is being dropped and will not start a node it could not then own",
+            )
+        })?;
+        Self::check_caller_repo_pairing(p)?;
+        Self::check_root_isolation(p)?;
+        Self::check_root_allow_concurrent_writes(p)?;
+        Self::check_child_no_change_record(p)?;
+        Self::check_child_pane(p)?;
         let Some(env) = self.spawn_env.clone() else {
             return Err(RpcError::unimplemented(
                 "agent/spawn",
