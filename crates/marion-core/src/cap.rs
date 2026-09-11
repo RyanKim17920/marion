@@ -14,7 +14,7 @@
 //! rule 6's "size does not depend on the input" was true by accident rather than by construction.
 //! It is now true by construction.
 
-use crate::contract::{Capped, TaskContract};
+use crate::contract::{Capped, Completion, TaskContract};
 
 pub const NARRATIVE_CAP: usize = 8 * 1024;
 pub const DIFF_CAP: usize = 16 * 1024;
@@ -85,6 +85,19 @@ fn encoded_len(c: &TaskContract) -> usize {
     serde_json::to_vec(c).map(|v| v.len()).unwrap_or(usize::MAX)
 }
 
+/// Rule 5's steps, in the spec's (a)–(e) order.
+///
+/// A table rather than a straight line so the "re-serialize after each, stop as soon as it fits"
+/// loop is written once: with the check inlined between steps it was repeated five times, and a
+/// sixth step would have had to remember to repeat it again.
+const BACKSTOP_STEPS: [fn(&mut TaskContract); 5] = [
+    rule_5a_empty_diff,
+    rule_5b_drop_evidence,
+    rule_5c_narrative,
+    rule_5d_paths,
+    rule_5e_instructions_and_criteria,
+];
+
 /// Apply the cap. Returns the copy to hand back through the harness.
 pub fn cap_for_return(mut c: TaskContract) -> TaskContract {
     let Some(comp) = c.completion.as_mut() else {
@@ -92,19 +105,33 @@ pub fn cap_for_return(mut c: TaskContract) -> TaskContract {
         return c;
     };
 
-    // Rule 0 — narrative, the only field a *foreign agent* writes.
+    // Rules 0–3, the raw-byte pre-trim. Rule 4 (flags) is not a step of its own: every cap here
+    // goes through `cap_tail`/`cap_head`, which set `truncated` as they shorten.
+    rule_0_narrative(comp);
+    rule_1_evidence_count(comp);
+    rules_2_3_text_budget(comp);
+
+    backstop(c)
+}
+
+/// Rule 0 — narrative, the only field a *foreign agent* writes.
+fn rule_0_narrative(comp: &mut Completion) {
     if let Some(n) = comp.narrative.as_mut() {
         cap_tail(n, NARRATIVE_CAP);
     }
+}
 
-    // Rule 1 — collection cap on evidence, in `verification` order (the parent's own priority).
+/// Rule 1 — collection cap on evidence, in `verification` order (the parent's own priority).
+fn rule_1_evidence_count(comp: &mut Completion) {
     if comp.evidence.len() > MAX_EVIDENCE {
         comp.evidence_omitted += comp.evidence.len() - MAX_EVIDENCE;
         comp.evidence.truncate(MAX_EVIDENCE);
     }
+}
 
-    // Rule 2/3 — text budget. Per-outcome share, halved per stream; an odd byte is unused rather
-    // than handed to one stream, which two implementations would otherwise guess at.
+/// Rules 2/3 — text budget and direction. Per-outcome share, halved per stream; an odd byte is
+/// unused rather than handed to one stream, which two implementations would otherwise guess at.
+fn rules_2_3_text_budget(comp: &mut Completion) {
     let n = comp.evidence.len();
     if n > 0 {
         let per = EVIDENCE_BUDGET / n;
@@ -118,38 +145,55 @@ pub fn cap_for_return(mut c: TaskContract) -> TaskContract {
     if let Some(d) = comp.diff.as_mut() {
         cap_head(d, DIFF_CAP);
     }
+}
 
-    // Rule 5 — backstop, measured on the encoded document, applied in order, stopping as soon as
-    // it fits.
+/// Rules 5 and 6 — backstop, measured on the encoded document, applied in order, stopping as soon
+/// as it fits; rule 6's stub when (a)–(e) are exhausted.
+fn backstop(mut c: TaskContract) -> TaskContract {
+    for step in BACKSTOP_STEPS {
+        if encoded_len(&c) <= BACKSTOP {
+            return c;
+        }
+        step(&mut c);
+    }
     if encoded_len(&c) <= BACKSTOP {
         return c;
     }
-    let comp = c.completion.as_mut().expect("checked above");
-    // (a) empty the diff, keeping its flag and original length
-    if let Some(d) = comp.diff.as_mut() {
+    // Rule 6 — terminal. Field set is fixed and small, so its size does not depend on the input;
+    // `TaskId` is a 36-character UUIDv7, so the path length is fixed and needs no escaping.
+    stub(c)
+}
+
+/// Rule 5 reaches every step only with a completion, which `cap_for_return` established.
+fn completion(c: &mut TaskContract) -> &mut Completion {
+    c.completion.as_mut().expect("checked by cap_for_return")
+}
+
+/// Rule 5(a) — empty the diff, keeping its flag and original length.
+fn rule_5a_empty_diff(c: &mut TaskContract) {
+    if let Some(d) = completion(c).diff.as_mut() {
         d.value.clear();
         d.truncated = true;
     }
-    if encoded_len(&c) <= BACKSTOP {
-        return c;
-    }
-    // (b) drop every outcome
-    let comp = c.completion.as_mut().expect("checked above");
+}
+
+/// Rule 5(b) — drop every outcome.
+fn rule_5b_drop_evidence(c: &mut TaskContract) {
+    let comp = completion(c);
     comp.evidence_omitted += comp.evidence.len();
     comp.evidence.clear();
-    if encoded_len(&c) <= BACKSTOP {
-        return c;
-    }
-    // (c) narrative to 1 KiB
-    let comp = c.completion.as_mut().expect("checked above");
-    if let Some(nar) = comp.narrative.as_mut() {
+}
+
+/// Rule 5(c) — narrative to 1 KiB.
+fn rule_5c_narrative(c: &mut TaskContract) {
+    if let Some(nar) = completion(c).narrative.as_mut() {
         cap_tail(nar, 1024);
     }
-    if encoded_len(&c) <= BACKSTOP {
-        return c;
-    }
-    // (d) elide path lists, and shorten each retained path
-    let comp = c.completion.as_mut().expect("checked above");
+}
+
+/// Rule 5(d) — elide path lists, and shorten each retained path.
+fn rule_5d_paths(c: &mut TaskContract) {
+    let comp = completion(c);
     if comp.changed_paths.len() > MAX_PATHS {
         comp.changed_paths_omitted += comp.changed_paths.len() - MAX_PATHS;
         comp.changed_paths.truncate(MAX_PATHS);
@@ -171,29 +215,19 @@ pub fn cap_for_return(mut c: TaskContract) -> TaskContract {
     {
         *p = shorten_path(&p.to_string_lossy()).into();
     }
-    if encoded_len(&c) <= BACKSTOP {
-        return c;
-    }
-    // (e) instructions and criteria
+}
+
+/// Rule 5(e) — instructions and criteria.
+fn rule_5e_instructions_and_criteria(c: &mut TaskContract) {
     cap_tail(&mut c.instructions, 2048);
     if c.acceptance_criteria.len() > MAX_CRITERIA {
         let dropped = c.acceptance_criteria.len() - MAX_CRITERIA;
         c.acceptance_criteria.truncate(MAX_CRITERIA);
-        c.completion
-            .as_mut()
-            .expect("checked above")
-            .acceptance_criteria_omitted += dropped;
+        completion(c).acceptance_criteria_omitted += dropped;
     }
     for cr in c.acceptance_criteria.iter_mut() {
         cap_tail(cr, 2048);
     }
-    if encoded_len(&c) <= BACKSTOP {
-        return c;
-    }
-
-    // Rule 6 — terminal. Field set is fixed and small, so its size does not depend on the input;
-    // `TaskId` is a 36-character UUIDv7, so the path length is fixed and needs no escaping.
-    stub(c)
 }
 
 /// Rule 6's stub completion: every text field empty, every counter raised to the full dropped
