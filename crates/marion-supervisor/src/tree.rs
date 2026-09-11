@@ -188,6 +188,64 @@ pub fn open_target(node: &NodeSummary) -> Result<&str, String> {
     }
 }
 
+/// Why `Tab` did not move. Shown on the hint row, because a key that silently does nothing is
+/// indistinguishable from a key that is broken.
+const NO_PANE: &str = "no pane to focus";
+
+/// **What `Tab` means for this selection**, as a decision rather than an unconditional flip.
+///
+/// The content pane only ever holds a terminal for a node that has one. `Tab` used to move focus
+/// regardless, so on a headless selection the keyboard went somewhere with nothing in it and the
+/// key looked dead. Focus cycles only among panes that exist, and the refusal carries its reason.
+fn focus_after_tab(focus: Focus, selected: Option<&NodeSummary>) -> Result<Focus, &'static str> {
+    match focus {
+        // Leaving is always possible: the tree is always there.
+        Focus::Content => Ok(Focus::Tree),
+        Focus::Tree if selected.is_some_and(|n| n.pane) => Ok(Focus::Content),
+        Focus::Tree => Err(NO_PANE),
+    }
+}
+
+/// How many of a node's watched state changes the pane keeps.
+const TAIL: usize = 3;
+
+/// **The state changes this screen has watched, per node.**
+///
+/// `tree/subscribe` pushes a `node/state` for every transition and [`Session::absorb`] folds each
+/// into one `state` field, which is the right thing for a tree row and throws the history away. A
+/// headless node has no terminal to show, so its transitions are the only thing the content pane
+/// can show *happening*; `tree/subscribe` carries no per-node event tail of its own, so this is
+/// what the screen has watched since it opened rather than the journal's whole story.
+///
+/// Bounded twice: [`TAIL`] entries per node, and [`Self::retain`] drops nodes that have left the
+/// forest, so a screen left open for a day cannot accumulate one entry per node ever seen.
+#[derive(Default)]
+struct Events {
+    per_node: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl Events {
+    fn record(&mut self, id: &str, state: &str) {
+        let tail = self.per_node.entry(id.to_string()).or_default();
+        if tail.last().is_some_and(|last| last == state) {
+            return;
+        }
+        tail.push(state.to_string());
+        if tail.len() > TAIL {
+            tail.remove(0);
+        }
+    }
+
+    fn tail(&self, id: &str) -> &[String] {
+        self.per_node.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    fn retain(&mut self, live: &[NodeSummary]) {
+        self.per_node
+            .retain(|id, _| live.iter().any(|n| n.agent_id.0 == *id));
+    }
+}
+
 /// Fold one window measurement into `size`, saying whether it moved.
 ///
 /// `None` — a pipe, or a tty the kernel has not sized — leaves the last geometry in place: a frame
@@ -281,6 +339,10 @@ struct Session {
     repo: String,
     /// The last refused `Enter`, shown in the detail pane until the cursor moves.
     notice: Option<String>,
+    /// Why the last `Tab` did not move, shown on the hint row until the cursor moves.
+    hint: Option<&'static str>,
+    /// The state changes this screen has watched, per node.
+    events: Events,
 }
 
 impl Session {
@@ -298,6 +360,8 @@ impl Session {
             focus: Focus::Tree,
             repo,
             notice: None,
+            hint: None,
+            events: Events::default(),
         };
         s.subscribe()?;
         Ok(s)
@@ -369,6 +433,8 @@ impl Session {
                 if let Some(n) = self.nodes.iter_mut().find(|n| n.agent_id == agent_id) {
                     n.state = state;
                     n.reap_state = reap_state;
+                    let label = state_label(state, reap_state);
+                    self.events.record(&agent_id.0, &label);
                     self.rebuild();
                 }
             }
@@ -379,6 +445,7 @@ impl Session {
     fn rebuild(&mut self) {
         let keep = self.tree.selected().map(|n| n.id.clone());
         self.tree = build(&self.nodes, keep.as_deref());
+        self.events.retain(&self.nodes);
     }
 
     fn next_frame(&mut self) -> Result<Option<Frame>, Refusal> {
@@ -497,11 +564,13 @@ impl Session {
             }
             Nav::Up if self.focus == Focus::Tree => {
                 self.notice = None;
+                self.hint = None;
                 self.tree.move_by(-1);
                 None
             }
             Nav::Down if self.focus == Focus::Tree => {
                 self.notice = None;
+                self.hint = None;
                 self.tree.move_by(1);
                 None
             }
@@ -511,10 +580,13 @@ impl Session {
     }
 
     fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::Tree => Focus::Content,
-            Focus::Content => Focus::Tree,
-        };
+        match focus_after_tab(self.focus, self.selected_summary()) {
+            Ok(focus) => {
+                self.focus = focus;
+                self.hint = None;
+            }
+            Err(why) => self.hint = Some(why),
+        }
     }
 
     /// The node `Open` chose, if it has one to attach to.
@@ -542,6 +614,12 @@ impl Session {
             running: running(&self.nodes),
         };
         let notice = self.notice.as_deref();
+        let events = selected.map_or(&[][..], |n| self.events.tail(&n.agent_id.0));
+        // A key that did nothing says why, on the row that lists the keys.
+        let keys = match self.hint {
+            Some(hint) => format!("{KEYS}  ·  {hint}"),
+            None => KEYS.to_string(),
+        };
         let _ = terminal.draw(|f| {
             let panes = tree::split(f.area());
             f.render_widget(status, panes.status);
@@ -552,7 +630,7 @@ impl Session {
                 },
                 panes.tree,
             );
-            f.render_widget(tree::Hints { keys: KEYS }, panes.hints);
+            f.render_widget(tree::Hints { keys: &keys }, panes.hints);
             f.render_widget(
                 tree::ActionBar {
                     node: tree.selected(),
@@ -563,6 +641,7 @@ impl Session {
                 Detail {
                     node: selected,
                     notice,
+                    events,
                 },
                 panes.content,
             );
@@ -595,6 +674,9 @@ struct Detail<'a> {
     /// here rather than printed, because a `eprintln!` under the alternate screen is erased by the
     /// next frame before anyone sees it.
     notice: Option<&'a str>,
+    /// The state changes this screen has watched the node make, oldest first. Empty until it makes
+    /// one — an empty section would read as one more thing that failed to draw.
+    events: &'a [String],
 }
 
 /// The screen's bottom-left row: every key this screen answers to, and what `Enter` will and will
@@ -603,8 +685,14 @@ struct Detail<'a> {
 /// node's business rather than the screen's.
 const KEYS: &str = "enter open pane nodes only  j/k move  tab focus  q quit  ^] d detach";
 
+/// Why the right-hand half of the screen is facts and then nothing.
+///
+/// §5.6's content pane is a node's grid, and a headless node has no grid — so on a headless
+/// selection the pane is correct and looks broken. Said in the pane rather than left to be inferred.
+const HEADLESS: &str = "headless node: no terminal to show; its events are in the journal";
+
 impl Detail<'_> {
-    fn lines(node: &NodeSummary) -> Vec<String> {
+    fn lines(node: &NodeSummary, events: &[String]) -> Vec<String> {
         let version = node.harness_version.as_deref().unwrap_or("version unknown");
         let surface = if node.pane {
             "pane (Enter attaches)"
@@ -631,6 +719,13 @@ impl Detail<'_> {
         out.push(format!("depth    {}   parent  {parent}", node.depth));
         out.push(format!("timeout  {}s", node.timeout.0.as_secs()));
         out.push(format!("id       {}", node.agent_id.0));
+        if !events.is_empty() {
+            out.push(format!("recent   {}", events.join("  →  ")));
+        }
+        if !node.pane {
+            out.push(String::new());
+            out.push(HEADLESS.to_string());
+        }
         out
     }
 }
@@ -651,7 +746,7 @@ impl ratatui::widgets::Widget for Detail<'_> {
             );
         };
         let mut lines = match self.node {
-            Some(n) => Self::lines(n),
+            Some(n) => Self::lines(n, self.events),
             None => vec!["no nodes in this forest".into()],
         };
         if let Some(notice) = self.notice {
@@ -915,6 +1010,7 @@ mod tests {
             Detail {
                 node: Some(&n),
                 notice: None,
+                events: &[],
             },
         );
         let text = rows.join("\n");
@@ -943,6 +1039,7 @@ mod tests {
             Detail {
                 node: Some(&n),
                 notice: None,
+                events: &[],
             },
         )
         .join("\n");
@@ -955,6 +1052,7 @@ mod tests {
             Detail {
                 node: None,
                 notice: None,
+                events: &[],
             },
         );
         assert!(rows[0].contains("no nodes"), "{rows:?}");
@@ -982,6 +1080,7 @@ mod tests {
                 Detail {
                     node: Some(n),
                     notice: None,
+                    events: &[],
                 },
             )[0]
             .trim()
@@ -1002,6 +1101,98 @@ mod tests {
         n.name = Some("collector".into());
         assert_eq!(title(&n), "collector");
         assert_eq!(title(&n), row(&n).label);
+    }
+
+    /// **A pane with no terminal in it must say so, and `Tab` must not pretend there is one.**
+    ///
+    /// A first-time viewer read the tree screen on a headless selection as broken twice over: the
+    /// right-hand pane carried facts and then stopped, with no line saying a headless node has no
+    /// terminal to draw; and `Tab` moved focus into that emptiness, so the key appeared to do
+    /// nothing at all. The explanation is a line of the pane, and `Tab` refuses with a reason
+    /// instead of moving.
+    #[test]
+    fn a_headless_selection_explains_the_empty_pane_and_tab_refuses_to_enter_it() {
+        let headless = summary("h", Harness::ClaudeCode, false, None);
+        let paned = summary("p", Harness::Codex, true, None);
+
+        let text = |n: &NodeSummary| {
+            painted(
+                ratatui::layout::Rect::new(0, 0, 90, 16),
+                Detail {
+                    node: Some(n),
+                    notice: None,
+                    events: &[],
+                },
+            )
+            .join("\n")
+        };
+        let said = text(&headless);
+        assert!(
+            said.contains("headless node: no terminal to show; its events are in the journal"),
+            "the empty half of the screen is unexplained:\n{said}"
+        );
+        assert!(
+            !text(&paned).contains("no terminal to show"),
+            "a pane node has a terminal and must not be told it has none"
+        );
+
+        // Tab, as a decision about the selection rather than an unconditional flip.
+        assert_eq!(
+            focus_after_tab(Focus::Tree, Some(&paned)),
+            Ok(Focus::Content)
+        );
+        assert_eq!(focus_after_tab(Focus::Tree, Some(&headless)), Err(NO_PANE));
+        assert_eq!(
+            focus_after_tab(Focus::Tree, None),
+            Err(NO_PANE),
+            "an empty forest has no pane either"
+        );
+        assert_eq!(
+            focus_after_tab(Focus::Content, Some(&headless)),
+            Ok(Focus::Tree),
+            "leaving the content pane is always allowed, whatever is selected now"
+        );
+    }
+
+    /// **The state changes this screen has already watched are shown, not thrown away.**
+    ///
+    /// `tree/subscribe` pushes `node/state` for every transition, and the screen was folding each
+    /// one into a single `state` field and discarding the history — so a headless node that had
+    /// gone `spawning → running → idle` under the operator's eyes showed one word and no story.
+    /// The tail is bounded and per node, and it is dropped when the node leaves the forest so a
+    /// long-lived screen cannot accumulate one entry per node ever seen.
+    #[test]
+    fn the_watched_state_changes_are_kept_per_node_bounded_and_pruned() {
+        let mut events = Events::default();
+        for s in ["spawning", "running", "idle", "running", "exited:ok"] {
+            events.record("h", s);
+        }
+        events.record("other", "spawning");
+        assert_eq!(
+            events.tail("h"),
+            ["idle", "running", "exited:ok"],
+            "the tail is the last {TAIL} changes, oldest dropped"
+        );
+        assert_eq!(events.tail("never-seen"), Vec::<String>::new());
+
+        // A node that left the forest takes its tail with it.
+        let live = vec![summary("h", Harness::Codex, false, None)];
+        events.retain(&live);
+        assert_eq!(events.tail("h").len(), 3);
+        assert_eq!(events.tail("other"), Vec::<String>::new());
+
+        // And the pane shows them under the explanation, newest last.
+        let rows = painted(
+            ratatui::layout::Rect::new(0, 0, 90, 20),
+            Detail {
+                node: Some(&live[0]),
+                notice: None,
+                events: events.tail("h"),
+            },
+        );
+        let text = rows.join("\n");
+        assert!(text.contains("recent   idle"), "{text}");
+        assert!(text.contains("exited:ok"), "{text}");
     }
 
     /// **The hints belong to the screen, at the bottom left, above the caps strip.**
@@ -1059,6 +1250,7 @@ mod tests {
             Detail {
                 node: Some(&headless),
                 notice: Some(&refusal),
+                events: &[],
             },
             area,
             &mut buf,
@@ -1068,6 +1260,7 @@ mod tests {
             Detail {
                 node: Some(&headless),
                 notice: Some(&refusal),
+                events: &[],
             },
         );
         let (y, _) = rows
