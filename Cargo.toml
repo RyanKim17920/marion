@@ -13,6 +13,12 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.94"
+# Inherited by every member crate. `publish = false`: marion is one workspace of
+# seven internal crates, none of which is a library anybody depends on from
+# crates.io, and an accidental `cargo publish` would claim seven names.
+license = "MIT"
+repository = "https://github.com/RyanKim17920/marion"
+publish = false
 
 [workspace.dependencies]
 base64 = "=0.22.1"
