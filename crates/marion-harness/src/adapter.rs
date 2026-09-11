@@ -6810,12 +6810,233 @@ mod tests {
     /// Mutation: add `--strict-mcp-config` to claude's declaration, relocate `HOME` in the
     /// overlay, spell the file name differently from `config_files`, drop a `-c` pair, or return
     /// an adapter for ACP.
+    /// The native lane's answer for one row, in the strings the comparisons below read it as —
+    /// the documents it wants written, its argv prefix, and its environment overlay.
+    struct Injected {
+        documents: Vec<crate::native::NativeDocument>,
+        prefix: Vec<String>,
+        overlay: Vec<(String, String)>,
+    }
+
+    /// The managed live launch of the same row: what it compiled, what it wrote, and where.
+    struct Managed {
+        inv: Invocation,
+        files: Vec<(PathBuf, String)>,
+        document_dir: PathBuf,
+    }
+
+    /// [`LiveDeclaration::ArgvDocument`]: the same file, byte for byte, named on argv the same way.
+    fn assert_argv_document(
+        h: Harness,
+        d: &Injected,
+        m: &Managed,
+        flag: &str,
+        file: &str,
+        at: &str,
+    ) {
+        let path = m.document_dir.join(file);
+        let body = String::from_utf8(d.documents[0].contents.clone()).unwrap();
+        assert_eq!(
+            m.files,
+            vec![(path.clone(), body)],
+            "{h}: the native document is not the live launch's"
+        );
+        assert_eq!(d.documents.len(), 1, "{h}");
+        assert_eq!(d.documents[0].path, path, "{h}");
+        assert_eq!(
+            d.prefix,
+            vec![flag.to_string(), format!("{at}{}", path.display())],
+            "{h}"
+        );
+        assert!(
+            d.overlay.is_empty(),
+            "{h}: a document carried on argv sets no variable"
+        );
+        assert!(
+            m.inv.args.windows(2).any(|w| w == d.prefix.as_slice()),
+            "{h}: the live launch does not carry `{flag}` the same way: {:?}",
+            m.inv.args
+        );
+    }
+
+    /// [`LiveDeclaration::EnvDocument`]: the same file, byte for byte, named by the same variable.
+    fn assert_env_document(h: Harness, d: &Injected, m: &Managed, key: &str, file: &str) {
+        let path = m.document_dir.join(file);
+        let body = String::from_utf8(d.documents[0].contents.clone()).unwrap();
+        assert_eq!(
+            m.files,
+            vec![(path.clone(), body)],
+            "{h}: the native document is not the live launch's"
+        );
+        assert_eq!(d.documents.len(), 1, "{h}");
+        assert_eq!(d.documents[0].path, path, "{h}");
+        assert_eq!(
+            d.overlay,
+            vec![(key.to_string(), path.display().to_string())],
+            "{h}"
+        );
+        assert!(
+            d.prefix.is_empty(),
+            "{h}: a document carried by env adds no argv"
+        );
+        assert!(
+            m.inv.env.contains(&d.overlay[0]),
+            "{h}: the live launch's env differs: {:?}",
+            m.inv.env
+        );
+    }
+
+    /// [`LiveDeclaration::EnvInline`]: the same inline value on the same variable, no file at all.
+    fn assert_env_inline(h: Harness, d: &Injected, m: &Managed, key: &str) {
+        assert!(m.files.is_empty() && d.documents.is_empty(), "{h}");
+        assert!(d.prefix.is_empty(), "{h}");
+        let live_value = m
+            .inv
+            .env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("{h}: the live launch sets no ${key}"));
+        assert_eq!(d.overlay, vec![(key.to_string(), live_value)], "{h}");
+    }
+
+    /// [`LiveDeclaration::ArgvPairs`]: the same `-c k=v` pairs the live launch carries, and every
+    /// argv token is one of them.
+    fn assert_argv_pairs(h: Harness, d: &Injected, m: &Managed, flag: &str, key: &str) {
+        assert!(m.files.is_empty() && d.documents.is_empty(), "{h}");
+        assert!(d.overlay.is_empty(), "{h}");
+        let live_pairs: Vec<String> = m
+            .inv
+            .args
+            .windows(2)
+            .filter(|w| w[0] == flag)
+            .map(|w| w[1].clone())
+            .collect();
+        let native_pairs: Vec<String> = d
+            .prefix
+            .chunks(2)
+            .map(|c| {
+                assert_eq!(c[0], flag, "{h}: a token that is not `{flag} k=v`");
+                c[1].clone()
+            })
+            .collect();
+        assert!(!native_pairs.is_empty(), "{h}: no pairs at all");
+        assert_eq!(
+            native_pairs, live_pairs,
+            "{h}: the pairs are not the live launch's"
+        );
+        assert!(
+            native_pairs.iter().filter(|p| p.starts_with(key)).count() >= 3,
+            "{h}: command, args and env must all sit under `{key}`: {native_pairs:?}"
+        );
+    }
+
+    /// [`LiveDeclaration::ArgvInline`]: `<flag> <token>` and nothing else, the same way the live
+    /// launch carries it.
+    fn assert_argv_inline(h: Harness, d: &Injected, m: &Managed, flag: &str, key: &str) {
+        assert!(m.files.is_empty() && d.documents.is_empty(), "{h}");
+        assert!(
+            d.overlay.is_empty(),
+            "{h}: a native root's bridge has no token, so nothing rides the env"
+        );
+        assert_eq!(d.prefix.len(), 2, "{h}: `{flag} <token>` and nothing else");
+        assert_eq!(d.prefix[0], flag, "{h}");
+        assert!(d.prefix[1].contains(key), "{h}: {}", d.prefix[1]);
+        assert!(
+            m.inv.args.windows(2).any(|w| w == d.prefix.as_slice()),
+            "{h}: the live launch does not carry `{flag}` the same way: {:?}",
+            m.inv.args
+        );
+    }
+
+    /// **The injection is the live launch's declaration, byte for byte.** One checker per
+    /// [`LiveDeclaration`] channel.
+    fn assert_injection_is_the_live_declaration(
+        h: Harness,
+        declaration: crate::spec::LiveDeclaration,
+        d: &Injected,
+        m: &Managed,
+    ) {
+        use crate::spec::LiveDeclaration;
+        match declaration {
+            LiveDeclaration::ArgvDocument {
+                flag,
+                file,
+                prefix: at,
+                ..
+            } => assert_argv_document(h, d, m, flag, file, at),
+            LiveDeclaration::EnvDocument { key, file, .. } => {
+                assert_env_document(h, d, m, key, file)
+            }
+            LiveDeclaration::EnvInline { key, .. } => assert_env_inline(h, d, m, key),
+            LiveDeclaration::ArgvPairs { flag, key, .. } => assert_argv_pairs(h, d, m, flag, key),
+            LiveDeclaration::ArgvInline { flag, key, .. } => assert_argv_inline(h, d, m, flag, key),
+        }
+    }
+
+    /// **Nothing managed:** no isolation row of this harness appears in the overlay, nothing
+    /// reserved does either, and no document lands outside the node's own directory.
+    fn assert_nothing_managed_reached_the_node(
+        h: Harness,
+        row: &crate::spec::HarnessSpec,
+        d: &Injected,
+        document_dir: &std::path::Path,
+    ) {
+        let isolation: Vec<&str> = row
+            .env
+            .iter()
+            .filter(|e| e.when == crate::spec::When::Canned)
+            .map(|e| e.key)
+            .collect();
+        for (k, _) in &d.overlay {
+            assert!(
+                !isolation.contains(&k.as_str()),
+                "{h}: isolation `{k}` reached a native node"
+            );
+            assert!(
+                !k.starts_with("MARION_"),
+                "{h}: reserved `{k}` in the overlay"
+            );
+        }
+        for doc in &d.documents {
+            assert!(
+                doc.path.starts_with(document_dir),
+                "{h}: {} escaped the node dir",
+                doc.path.display()
+            );
+        }
+    }
+
+    /// **It declares marion's server, by name, pointing at the bridge** — wherever the channel
+    /// puts it: a document, a variable, or argv.
+    fn assert_it_declares_marions_server(h: Harness, ctx: &SpawnCtx, d: &Injected) {
+        let body: String = d
+            .documents
+            .iter()
+            .map(|doc| String::from_utf8_lossy(&doc.contents).into_owned())
+            .chain(d.overlay.iter().map(|(_, v)| v.clone()))
+            .chain(d.prefix.iter().cloned())
+            .collect();
+        assert!(
+            body.contains(crate::spec::MCP_ALIAS),
+            "{h}: no `marion` server in {body}"
+        );
+        assert!(
+            body.contains(&ctx.bridge.to_string_lossy().into_owned()),
+            "{h}: the bridge program is not named"
+        );
+        assert!(
+            body.contains(&ctx.agent_id.0),
+            "{h}: the node's identity is not on the declaration"
+        );
+    }
+
     #[test]
     fn every_native_row_injects_only_marions_mcp_server_and_no_managed_flags() {
         use std::ffi::OsString;
 
         use crate::native::{NativeEnvironmentView, NativeNodeContext, native_adapter};
-        use crate::spec::{LiveDeclaration, McpRoute, When};
+        use crate::spec::McpRoute;
 
         let document_dir = PathBuf::from("/state/agents/019f-root");
         let operator_env = vec![
@@ -6879,9 +7100,12 @@ mod tests {
                 None => managed.compile(&live, &ctx),
             }
             .unwrap_or_else(|e| panic!("{h}: {e}"));
-            let files = managed.config_files(&live, &ctx).unwrap();
+            let managed = Managed {
+                inv,
+                files: managed.config_files(&live, &ctx).unwrap(),
+                document_dir: document_dir.clone(),
+            };
             let lossy = |v: &OsString| v.to_string_lossy().into_owned();
-            let prefix: Vec<String> = injection.argv_prefix.iter().map(lossy).collect();
             let mut overlay: Vec<(String, String)> = injection
                 .env_overlay
                 .iter()
@@ -6900,167 +7124,18 @@ mod tests {
                     "{h}: the switch is set exactly once"
                 );
             }
+            let injected = Injected {
+                prefix: injection.argv_prefix.iter().map(lossy).collect(),
+                overlay,
+                documents: injection.documents,
+            };
 
             // 1. The injection is the live launch's declaration, byte for byte.
-            match declaration {
-                LiveDeclaration::ArgvDocument {
-                    flag,
-                    file,
-                    prefix: at,
-                    ..
-                } => {
-                    let path = document_dir.join(file);
-                    assert_eq!(
-                        files,
-                        vec![(
-                            path.clone(),
-                            String::from_utf8(injection.documents[0].contents.clone()).unwrap()
-                        )],
-                        "{h}: the native document is not the live launch's"
-                    );
-                    assert_eq!(injection.documents.len(), 1, "{h}");
-                    assert_eq!(injection.documents[0].path, path, "{h}");
-                    assert_eq!(
-                        prefix,
-                        vec![flag.to_string(), format!("{at}{}", path.display())],
-                        "{h}"
-                    );
-                    assert!(
-                        overlay.is_empty(),
-                        "{h}: a document carried on argv sets no variable"
-                    );
-                    assert!(
-                        inv.args.windows(2).any(|w| w == prefix.as_slice()),
-                        "{h}: the live launch does not carry `{flag}` the same way: {:?}",
-                        inv.args
-                    );
-                }
-                LiveDeclaration::EnvDocument { key, file, .. } => {
-                    let path = document_dir.join(file);
-                    assert_eq!(
-                        files,
-                        vec![(
-                            path.clone(),
-                            String::from_utf8(injection.documents[0].contents.clone()).unwrap()
-                        )],
-                        "{h}: the native document is not the live launch's"
-                    );
-                    assert_eq!(injection.documents.len(), 1, "{h}");
-                    assert_eq!(
-                        overlay,
-                        vec![(key.to_string(), path.display().to_string())],
-                        "{h}"
-                    );
-                    assert!(
-                        prefix.is_empty(),
-                        "{h}: a document carried by env adds no argv"
-                    );
-                    assert!(
-                        inv.env.contains(&overlay[0]),
-                        "{h}: the live launch's env differs: {:?}",
-                        inv.env
-                    );
-                }
-                LiveDeclaration::EnvInline { key, .. } => {
-                    assert!(files.is_empty() && injection.documents.is_empty(), "{h}");
-                    assert!(prefix.is_empty(), "{h}");
-                    let live_value = inv
-                        .env
-                        .iter()
-                        .find(|(k, _)| k == key)
-                        .map(|(_, v)| v.clone())
-                        .unwrap_or_else(|| panic!("{h}: the live launch sets no ${key}"));
-                    assert_eq!(overlay, vec![(key.to_string(), live_value)], "{h}");
-                }
-                LiveDeclaration::ArgvPairs { flag, key, .. } => {
-                    assert!(files.is_empty() && injection.documents.is_empty(), "{h}");
-                    assert!(overlay.is_empty(), "{h}");
-                    let live_pairs: Vec<String> = inv
-                        .args
-                        .windows(2)
-                        .filter(|w| w[0] == flag)
-                        .map(|w| w[1].clone())
-                        .collect();
-                    let native_pairs: Vec<String> = prefix
-                        .chunks(2)
-                        .map(|c| {
-                            assert_eq!(c[0], flag, "{h}: a token that is not `{flag} k=v`");
-                            c[1].clone()
-                        })
-                        .collect();
-                    assert!(!native_pairs.is_empty(), "{h}: no pairs at all");
-                    assert_eq!(
-                        native_pairs, live_pairs,
-                        "{h}: the pairs are not the live launch's"
-                    );
-                    assert!(
-                        native_pairs.iter().filter(|p| p.starts_with(key)).count() >= 3,
-                        "{h}: command, args and env must all sit under `{key}`: {native_pairs:?}"
-                    );
-                }
-                LiveDeclaration::ArgvInline { flag, key, .. } => {
-                    assert!(files.is_empty() && injection.documents.is_empty(), "{h}");
-                    assert!(
-                        overlay.is_empty(),
-                        "{h}: a native root's bridge has no token, so nothing rides the env"
-                    );
-                    assert_eq!(prefix.len(), 2, "{h}: `{flag} <token>` and nothing else");
-                    assert_eq!(prefix[0], flag, "{h}");
-                    assert!(prefix[1].contains(key), "{h}: {}", prefix[1]);
-                    assert!(
-                        inv.args.windows(2).any(|w| w == prefix.as_slice()),
-                        "{h}: the live launch does not carry `{flag}` the same way: {:?}",
-                        inv.args
-                    );
-                }
-            }
-
-            // 2. Nothing managed: no isolation row of this harness appears in the overlay, and
-            //    nothing reserved does either.
-            let isolation: Vec<&str> = row
-                .env
-                .iter()
-                .filter(|e| e.when == When::Canned)
-                .map(|e| e.key)
-                .collect();
-            for (k, _) in &overlay {
-                assert!(
-                    !isolation.contains(&k.as_str()),
-                    "{h}: isolation `{k}` reached a native node"
-                );
-                assert!(
-                    !k.starts_with("MARION_"),
-                    "{h}: reserved `{k}` in the overlay"
-                );
-            }
-            for doc in &injection.documents {
-                assert!(
-                    doc.path.starts_with(&document_dir),
-                    "{h}: {} escaped the node dir",
-                    doc.path.display()
-                );
-            }
-
+            assert_injection_is_the_live_declaration(h, declaration, &injected, &managed);
+            // 2. Nothing managed reached the node.
+            assert_nothing_managed_reached_the_node(h, row, &injected, &document_dir);
             // 3. It declares marion's server, by name, pointing at the bridge.
-            let body: String = injection
-                .documents
-                .iter()
-                .map(|d| String::from_utf8_lossy(&d.contents).into_owned())
-                .chain(overlay.iter().map(|(_, v)| v.clone()))
-                .chain(prefix.iter().cloned())
-                .collect();
-            assert!(
-                body.contains(crate::spec::MCP_ALIAS),
-                "{h}: no `marion` server in {body}"
-            );
-            assert!(
-                body.contains(&ctx.bridge.to_string_lossy().into_owned()),
-                "{h}: the bridge program is not named"
-            );
-            assert!(
-                body.contains(&ctx.agent_id.0),
-                "{h}: the node's identity is not on the declaration"
-            );
+            assert_it_declares_marions_server(h, &ctx, &injected);
         }
         let mut expected: Vec<Harness> = Harness::ALL
             .into_iter()
