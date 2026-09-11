@@ -857,6 +857,12 @@ mod tests {
     /// with the kernel — a mock would be a test of the test. Three facts, each measured before it
     /// was relied on: a live process answers, the answer is stable, and two different processes do
     /// not share an identity.
+    /// Darwin only, and that is the claim rather than a convenience: `read` is documented to refuse
+    /// on every other platform, and this test asserts a `darwin-p_starttime:` tag against it. The
+    /// refusal itself is pinned on every platform by
+    /// `a_platform_that_cannot_read_an_identity_cannot_claim_there_is_no_live_process`, so nothing
+    /// here rounds a `CannotTell` up — it declines to assert a reading nobody has measured.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_kernel_read_identifies_a_live_process_and_is_stable() {
         let me = std::process::id() as i32;
@@ -902,6 +908,12 @@ mod tests {
     /// treated only a non-zero return as meaningful would report `Unavailable` here and lose the
     /// one definite answer available with no recorded identity — which would make §9's criterion
     /// unprovable for *every* node rather than only for live ones.
+    /// Darwin only, and that is the claim rather than a convenience: `read` is documented to refuse
+    /// on every other platform, and this test asserts a `darwin-p_starttime:` tag against it. The
+    /// refusal itself is pinned on every platform by
+    /// `a_platform_that_cannot_read_an_identity_cannot_claim_there_is_no_live_process`, so nothing
+    /// here rounds a `CannotTell` up — it declines to assert a reading nobody has measured.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_reaped_pid_reads_as_no_such_process() {
         let mut child = std::process::Command::new("/usr/bin/true")
