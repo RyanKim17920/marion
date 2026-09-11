@@ -3709,6 +3709,20 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(0);
         let server_thread = std::thread::spawn(move || {
             complete_attach(&mut server);
+            // `ResizeFailure` and `ReadFailure` ask the same socket to be closed and differ only
+            // in *which* of the relay's two uses of it meets the closed end first — `pump`
+            // forwards a pending resize before it reads. Letting this thread simply fall off the
+            // end would close the socket at a moment nothing orders against the relay: on a fast
+            // machine the drop wins and the resize write gets `EPIPE`, on a loaded runner the
+            // write lands in a still-open socket and the *read* reports `closed before End`
+            // instead. Closing **before** the rendezvous — a close, not a `shutdown`, because a
+            // half-closed `AF_UNIX` peer still accepts a write on macOS — makes the failure this
+            // fixture is named for the only one reachable.
+            if matches!(exit, SignalExit::ResizeFailure) {
+                drop(server);
+                attached_tx.send(()).unwrap();
+                return;
+            }
             attached_tx.send(()).unwrap();
             match exit {
                 SignalExit::End => {
@@ -3722,7 +3736,8 @@ mod tests {
                         .recv_timeout(Duration::from_secs(2))
                         .expect("detach returns while the pane socket remains open");
                 }
-                SignalExit::ReadFailure | SignalExit::ResizeFailure => {}
+                SignalExit::ReadFailure => {}
+                SignalExit::ResizeFailure => unreachable!("closed before the rendezvous above"),
                 SignalExit::WriteFailure => {
                     server
                         .write_all(
