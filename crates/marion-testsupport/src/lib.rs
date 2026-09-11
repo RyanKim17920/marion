@@ -1208,11 +1208,34 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 /// Its own repository and never marion's: the run under test writes to it. The identity is passed
 /// per-invocation rather than configured globally, so the fixture does not depend on — or disturb —
 /// whatever `user.email` the machine running the suite has.
+///
+/// # Why maintenance is turned off before anything is committed
+///
+/// `git commit` ends by launching `git maintenance run --auto --detach`. Detached means `git
+/// commit` returns while that process is still alive, and it holds
+/// `.git/objects/maintenance.lock` for as long as it runs — so a fixture repository hands back an
+/// object store with an extra file in it that nobody wrote and that disappears again on its own,
+/// a millisecond or so later.
+///
+/// A test that *counts* that store then reads two different numbers for one unchanged repository.
+/// `root_change_record.rs`'s NC-3 does exactly that — `.git/objects` before a snapshot and after —
+/// and it failed on both CI runners, where the machine is slow enough for the lock to still be
+/// there at the first read and gone by the second. The store appeared to *shrink*, under an
+/// assertion whose subject is marion never writing into it.
+///
+/// Set in the repository's own config rather than by scrubbing `HOME` or passing `-c` per call:
+/// local config outranks global and system, so this holds for every git process that opens this
+/// repository, including the ones marion itself spawns and any this suite never launched. A
+/// fixture is a throwaway with four objects in it; there is nothing here to maintain and no reason
+/// to let a second writer into a directory the tests are measuring.
 pub fn fixture_repo(root: &Path) -> PathBuf {
     let repo = root.join("repo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::write(repo.join("src/keep.txt"), "keep\n").unwrap();
     git(&repo, &["init", "-q", "-b", "main", "."]);
+    // Before the first commit, because the first commit is already one of the launchers.
+    git(&repo, &["config", "maintenance.auto", "false"]);
+    git(&repo, &["config", "gc.auto", "0"]);
     git(&repo, &["add", "-A"]);
     git(
         &repo,
@@ -1760,6 +1783,41 @@ mod tests {
         assert!(
             git(&repo, &["status", "--porcelain"]).trim().is_empty(),
             "a fixture that starts dirty would put its own noise in every changed_paths"
+        );
+    }
+
+    /// **A fixture repository must not have a second, invisible writer.**
+    ///
+    /// `git commit` ends by launching `git maintenance run --auto --detach`, which is a *detached*
+    /// process: `git commit` returns while it is still running. It takes
+    /// `.git/objects/maintenance.lock` on the way in and removes it on the way out, so for a few
+    /// milliseconds after `fixture_repo` returns, the repository's object store contains a file
+    /// nobody in the test wrote and which will vanish on its own.
+    ///
+    /// That is what broke `root_change_record.rs`'s NC-3 on both CI runners while passing
+    /// everywhere else: it reads `.git/objects` before and after a snapshot, and it happened to
+    /// read the lock the first time and not the second — so the store *shrank*, and an assertion
+    /// about marion never writing there failed naming a file marion does not know exists.
+    ///
+    /// The repository is a throwaway, so there is nothing for maintenance to do and no reason to
+    /// let it race. Turned off locally rather than by scrubbing the environment: a repository's own
+    /// config outranks the global and system files, so this holds for every git process that ever
+    /// opens this repo — including marion's, and including ones this suite never spawned.
+    ///
+    /// Watched red before the two `git config` calls existed: both reads come back empty.
+    #[test]
+    fn a_fixture_repo_never_runs_git_maintenance_behind_the_test() {
+        let dir = scratch("fixture-repo-quiet");
+        let repo = fixture_repo(&dir);
+        assert_eq!(
+            git(&repo, &["config", "--local", "--get", "maintenance.auto"]).trim(),
+            "false",
+            "`git commit` must not detach a maintenance run into this repository"
+        );
+        assert_eq!(
+            git(&repo, &["config", "--local", "--get", "gc.auto"]).trim(),
+            "0",
+            "…nor the auto-gc that packs and prunes the object store under a reader's feet"
         );
     }
 
