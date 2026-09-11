@@ -237,6 +237,41 @@ pub fn ensure_supervisor(paths: &SocketPaths, launch: &Launch) -> Result<Ensured
 /// [`ensure_supervisor`] with the bound named, so a test can observe the *failure* without waiting
 /// out a bound written for a machine under load. The bound never decides a verdict: a supervisor
 /// that is serving answers the first dial, and one that never binds is unreachable at any bound.
+/// A stream to a supervisor that actually exists, or `None` when none does yet.
+///
+/// **A connection is not proof of a supervisor.** `socket.rs` measured on darwin 25.5.0 that
+/// closing a descriptor is not synchronous with another descriptor's view of it: for a window after
+/// a listener's process is gone, `connect` to its path still *succeeds*. A client that took that as
+/// an answer would hand its operator a stream to a supervisor that does not exist — no
+/// notifications, no responses, and a `marion run` that reports it attached to a fleet nobody is
+/// enforcing. The lock is the proof this module already uses everywhere else, and a bound socket
+/// implies a held lock by construction, so a successful dial over a *free* lock is a corpse and is
+/// dialed again rather than returned.
+fn dial_live_supervisor(
+    paths: &SocketPaths,
+) -> Result<Option<std::os::unix::net::UnixStream>, DetachError> {
+    match std::os::unix::net::UnixStream::connect(paths.socket()) {
+        Ok(stream) if !crate::socket::nobody_is_serving(paths) => Ok(Some(stream)),
+        Ok(_corpse) => Ok(None),
+        Err(e) if nobody_answered(&e) => Ok(None),
+        Err(e) => Err(DetachError::Socket(SocketError::Dial {
+            path: paths.socket().to_path_buf(),
+            source: e,
+        })),
+    }
+}
+
+/// Whether this call may bring another supervisor into existence on this pass.
+///
+/// The first pass always may. A later one must wait out `RETRY_QUIET` *and* find the lock still
+/// free, so a supervisor that is two syscalls from binding is not raced by a second start. See
+/// [`MAX_START_ATTEMPTS`] for why the count is neither one nor unbounded.
+fn may_start_another(attempts: usize, last_attempt: Instant, paths: &SocketPaths) -> bool {
+    attempts < MAX_START_ATTEMPTS
+        && (attempts == 0
+            || (last_attempt.elapsed() >= RETRY_QUIET && crate::socket::nobody_is_serving(paths)))
+}
+
 pub fn ensure_supervisor_within(
     paths: &SocketPaths,
     launch: &Launch,
@@ -248,33 +283,10 @@ pub fn ensure_supervisor_within(
     let mut last_attempt = Instant::now();
     let mut last_spawn: Option<DetachError> = None;
     loop {
-        match std::os::unix::net::UnixStream::connect(paths.socket()) {
-            // **A connection is not proof of a supervisor.** `socket.rs` measured on darwin 25.5.0
-            // that closing a descriptor is not synchronous with another descriptor's view of it: for
-            // a window after a listener's process is gone, `connect` to its path still *succeeds*.
-            // A client that took that as an answer would hand its operator a stream to a supervisor
-            // that does not exist — no notifications, no responses, and a `marion run` that reports
-            // it attached to a fleet nobody is enforcing. The lock is the proof this module already
-            // uses everywhere else, and a bound socket implies a held lock by construction, so a
-            // successful dial over a *free* lock is a corpse and is dialed again rather than
-            // returned.
-            Ok(stream) if !crate::socket::nobody_is_serving(paths) => {
-                return Ok(Ensured { stream, started });
-            }
-            Ok(_corpse) => {}
-            Err(e) if nobody_answered(&e) => {}
-            Err(e) => {
-                return Err(DetachError::Socket(SocketError::Dial {
-                    path: paths.socket().to_path_buf(),
-                    source: e,
-                }));
-            }
+        if let Some(stream) = dial_live_supervisor(paths)? {
+            return Ok(Ensured { stream, started });
         }
-        if attempts < MAX_START_ATTEMPTS
-            && (attempts == 0
-                || (last_attempt.elapsed() >= RETRY_QUIET
-                    && crate::socket::nobody_is_serving(paths)))
-        {
+        if may_start_another(attempts, last_attempt, paths) {
             attempts += 1;
             last_attempt = Instant::now();
             started = true;
