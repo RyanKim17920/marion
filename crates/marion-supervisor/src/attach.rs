@@ -1033,56 +1033,70 @@ impl Session {
 
     fn consume_pane_event(&mut self, event: Event) -> Result<PaneProgress, Refusal> {
         match self.pane_stream {
-            PaneStream::Legacy => match event {
-                Event::NodePty {
-                    agent_id, bytes, ..
-                } if agent_id == self.id => {
-                    self.view_mut()?.feed(bytes.as_bytes())?;
-                    Ok(PaneProgress::Continue)
-                }
-                Event::NodeState {
-                    agent_id, state, ..
-                } if agent_id == self.id && state.is_exited() => {
-                    self.view_mut()?.end()?;
-                    Ok(PaneProgress::End)
-                }
-                Event::NodePaneFrame(frame) if frame.agent_id == self.id => Err(format!(
-                    "the supervisor mixed node/pane-frame into node `{}`'s explicit legacy pane \
-                     stream",
-                    self.id.0
-                )),
-                _ => Ok(PaneProgress::Continue),
-            },
-            PaneStream::V1 { next_seq, cut } => {
-                let decoded =
-                    crate::pane_client::decode_pane_v1_event(&self.id, next_seq, cut, event)?;
-                let progress = match decoded.action {
-                    crate::pane_client::PaneV1Action::Output(bytes) => {
-                        self.view_mut()?.feed(bytes.as_bytes())?;
-                        PaneProgress::Continue
-                    }
-                    crate::pane_client::PaneV1Action::Resize { cols, rows } => {
-                        self.view_mut()?.resize_grid(cols, rows)?;
-                        PaneProgress::Continue
-                    }
-                    crate::pane_client::PaneV1Action::End => {
-                        // End is the quiet edge too: paint a final unbracketed tail before the
-                        // screen guard is restored.
-                        self.view_mut()?.end()?;
-                        PaneProgress::End
-                    }
-                    crate::pane_client::PaneV1Action::Ignore => PaneProgress::Continue,
-                };
-                self.pane_stream = PaneStream::V1 {
-                    next_seq: decoded.next_seq,
-                    cut,
-                };
-                Ok(progress)
-            }
+            PaneStream::Legacy => self.consume_legacy_pane_event(event),
+            PaneStream::V1 { next_seq, cut } => self.consume_v1_pane_event(next_seq, cut, event),
             PaneStream::Negotiating => {
                 Err("a pane event arrived before attach negotiation completed".into())
             }
         }
+    }
+
+    /// Legacy has no sequence and no terminal marker of its own: the node's exit is what ends the
+    /// view, and a pane-v1 frame here is a protocol the client explicitly declined.
+    fn consume_legacy_pane_event(&mut self, event: Event) -> Result<PaneProgress, Refusal> {
+        match event {
+            Event::NodePty {
+                agent_id, bytes, ..
+            } if agent_id == self.id => {
+                self.view_mut()?.feed(bytes.as_bytes())?;
+                Ok(PaneProgress::Continue)
+            }
+            Event::NodeState {
+                agent_id, state, ..
+            } if agent_id == self.id && state.is_exited() => {
+                self.view_mut()?.end()?;
+                Ok(PaneProgress::End)
+            }
+            Event::NodePaneFrame(frame) if frame.agent_id == self.id => Err(format!(
+                "the supervisor mixed node/pane-frame into node `{}`'s explicit legacy pane \
+                 stream",
+                self.id.0
+            )),
+            _ => Ok(PaneProgress::Continue),
+        }
+    }
+
+    /// One event from the negotiated pane-v1 stream, painted and then acknowledged by advancing
+    /// the expected sequence. The cut never moves; only the sequence does.
+    fn consume_v1_pane_event(
+        &mut self,
+        next_seq: u64,
+        cut: u64,
+        event: Event,
+    ) -> Result<PaneProgress, Refusal> {
+        let decoded = crate::pane_client::decode_pane_v1_event(&self.id, next_seq, cut, event)?;
+        let progress = match decoded.action {
+            crate::pane_client::PaneV1Action::Output(bytes) => {
+                self.view_mut()?.feed(bytes.as_bytes())?;
+                PaneProgress::Continue
+            }
+            crate::pane_client::PaneV1Action::Resize { cols, rows } => {
+                self.view_mut()?.resize_grid(cols, rows)?;
+                PaneProgress::Continue
+            }
+            crate::pane_client::PaneV1Action::End => {
+                // End is the quiet edge too: paint a final unbracketed tail before the
+                // screen guard is restored.
+                self.view_mut()?.end()?;
+                PaneProgress::End
+            }
+            crate::pane_client::PaneV1Action::Ignore => PaneProgress::Continue,
+        };
+        self.pane_stream = PaneStream::V1 {
+            next_seq: decoded.next_seq,
+            cut,
+        };
+        Ok(progress)
     }
 
     fn view_mut(&mut self) -> Result<&mut View, Refusal> {
