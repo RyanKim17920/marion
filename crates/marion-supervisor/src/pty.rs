@@ -1738,6 +1738,23 @@ enum PaneFlowCompletion {
     Cancelled,
 }
 
+/// What one guarded pull off the cursor decided.
+///
+/// The three outcomes are exactly the three exits the pull loop had when it was one function: a
+/// frame to hand the connection, another turn with the cursor already replaced, or the end of this
+/// flow. Naming them is what lets the loop itself carry no knowledge of which cursor it is on.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "A local step value the caller immediately unwraps into the Option<Frame> it already \
+              returns: boxing would buy no size at that boundary and cost one allocation per \
+              delivered pane frame"
+)]
+enum PaneFlowStep {
+    Yield(Frame),
+    Again,
+    Stop,
+}
+
 impl PaneFlow {
     fn replay(
         shared: &Shared,
@@ -1791,80 +1808,120 @@ impl PaneFlow {
         }
         let shared = self.shared.upgrade()?;
         if self.terminal_cleanup_pending {
-            self.cursor.take();
-            shared.remove_transition(self.conn, self.generation, self.subscriber);
-            self.installed = true;
+            self.finish_terminal_cleanup(&shared);
             return None;
         }
         loop {
-            if self.cancellation.is_cancelled() {
-                return None;
+            match self.pull_once(&shared) {
+                PaneFlowStep::Yield(frame) => return Some(frame),
+                PaneFlowStep::Again => {}
+                PaneFlowStep::Stop => return None,
             }
-            shared.observe_pane_pre_pull();
-            let cancelled = self
-                .cancellation
-                .cancelled
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if *cancelled {
-                return None;
+        }
+    }
+
+    /// The End record has been delivered, so the flow drops its cursor and hands the transition
+    /// back before the connection sees `None`.
+    fn finish_terminal_cleanup(&mut self, shared: &Shared) {
+        self.cursor.take();
+        shared.remove_transition(self.conn, self.generation, self.subscriber);
+        self.installed = true;
+    }
+
+    /// One turn of the pull loop: re-check cancellation under the guard, pull the cursor once, and
+    /// let the cursor's own step decide what happened.
+    ///
+    /// The cancellation guard is held across the pull and released before anything touches `self`
+    /// again, which is the ordering that makes a cancel racing a pull deterministic.
+    fn pull_once(&mut self, shared: &Shared) -> PaneFlowStep {
+        if self.cancellation.is_cancelled() {
+            return PaneFlowStep::Stop;
+        }
+        shared.observe_pane_pre_pull();
+        let cancelled = self
+            .cancellation
+            .cancelled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *cancelled {
+            return PaneFlowStep::Stop;
+        }
+        let Some(cursor) = self.cursor.take() else {
+            return PaneFlowStep::Stop;
+        };
+        shared.observe_pane_guarded_pull();
+        match cursor {
+            PaneFlowCursor::Replay(mut replay) => {
+                let pulled = replay.pull_one();
+                drop(cancelled);
+                self.step_replay(shared, replay, pulled)
             }
-            match self.cursor.take()? {
-                PaneFlowCursor::Replay(mut replay) => {
-                    shared.observe_pane_guarded_pull();
-                    let pulled = replay.pull_one();
-                    drop(cancelled);
-                    match pulled {
-                        Ok(splice::ReplayPull::Record(record)) => {
-                            return Some(self.record_frame(
-                                &shared,
-                                PaneFlowCursor::Replay(replay),
-                                record,
-                            ));
-                        }
-                        Ok(splice::ReplayPull::Ready(ready)) => {
-                            self.cursor = Some(PaneFlowCursor::Ready(ready));
-                        }
-                        Err(error) => {
-                            self.fail_if_overflowed(&shared, &error);
-                            return None;
-                        }
-                    }
+            PaneFlowCursor::Ready(mut ready) => {
+                let pulled = ready.pull_one();
+                drop(cancelled);
+                self.step_ready(shared, ready, pulled)
+            }
+        }
+    }
+
+    /// What a replay pull decided: a replayed record, the handover to the live cursor, or a failure
+    /// that only this subscriber's own overflow is allowed to report.
+    fn step_replay(
+        &mut self,
+        shared: &Shared,
+        replay: splice::ReplaySubscription,
+        pulled: Result<splice::ReplayPull, splice::SpliceError>,
+    ) -> PaneFlowStep {
+        match pulled {
+            Ok(splice::ReplayPull::Record(record)) => PaneFlowStep::Yield(self.record_frame(
+                shared,
+                PaneFlowCursor::Replay(replay),
+                record,
+            )),
+            Ok(splice::ReplayPull::Ready(ready)) => {
+                self.cursor = Some(PaneFlowCursor::Ready(ready));
+                PaneFlowStep::Again
+            }
+            Err(error) => {
+                self.fail_if_overflowed(shared, &error);
+                PaneFlowStep::Stop
+            }
+        }
+    }
+
+    /// What a live pull decided. An exhausted live cursor is not the end on its own: the host
+    /// decides whether this flow is installed, hands back a cursor that gained records while the
+    /// decision was being taken, or reports the flow cancelled underneath it.
+    fn step_ready(
+        &mut self,
+        shared: &Shared,
+        ready: splice::ReadySubscription,
+        pulled: Result<Option<splice::DisplayRecord>, splice::SpliceError>,
+    ) -> PaneFlowStep {
+        match pulled {
+            Ok(Some(record)) => {
+                PaneFlowStep::Yield(self.record_frame(shared, PaneFlowCursor::Ready(ready), record))
+            }
+            Ok(None) => match shared.finish_pane_flow(
+                self.conn,
+                self.generation,
+                self.subscriber,
+                ready,
+                std::mem::take(&mut self.transition_hook_pending),
+            ) {
+                PaneFlowCompletion::Installed => {
+                    self.installed = true;
+                    PaneFlowStep::Stop
                 }
-                PaneFlowCursor::Ready(mut ready) => {
-                    shared.observe_pane_guarded_pull();
-                    let pulled = ready.pull_one();
-                    drop(cancelled);
-                    match pulled {
-                        Ok(Some(record)) => {
-                            return Some(self.record_frame(
-                                &shared,
-                                PaneFlowCursor::Ready(ready),
-                                record,
-                            ));
-                        }
-                        Ok(None) => match shared.finish_pane_flow(
-                            self.conn,
-                            self.generation,
-                            self.subscriber,
-                            ready,
-                            std::mem::take(&mut self.transition_hook_pending),
-                        ) {
-                            PaneFlowCompletion::Installed => {
-                                self.installed = true;
-                                return None;
-                            }
-                            PaneFlowCompletion::Continue(ready) => {
-                                self.cursor = Some(PaneFlowCursor::Ready(ready));
-                            }
-                            PaneFlowCompletion::Cancelled => return None,
-                        },
-                        Err(error) => {
-                            self.fail_if_overflowed(&shared, &error);
-                            return None;
-                        }
-                    }
+                PaneFlowCompletion::Continue(ready) => {
+                    self.cursor = Some(PaneFlowCursor::Ready(ready));
+                    PaneFlowStep::Again
                 }
+                PaneFlowCompletion::Cancelled => PaneFlowStep::Stop,
+            },
+            Err(error) => {
+                self.fail_if_overflowed(shared, &error);
+                PaneFlowStep::Stop
             }
         }
     }
