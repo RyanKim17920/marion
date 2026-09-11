@@ -1051,6 +1051,10 @@ struct RawPaneSession<W: Write> {
     next_seq: u64,
     cut: u64,
     input_fd: Option<std::os::fd::RawFd>,
+    /// Whether the attach kept this claim's write half. False only for a pane that had already
+    /// ended when the relay reached it: the node is finished, so this session replays what it
+    /// said and never sends a resize or a keystroke at it.
+    writable: bool,
     leaving: Arc<AtomicBool>,
     keyboard_failure: Arc<std::sync::Mutex<Option<String>>>,
     /// Whether any keystroke has been forwarded. The supervisor refuses opaque input by closing
@@ -1137,6 +1141,7 @@ impl<W: Write> RawPaneSession<W> {
             next_seq: 0,
             cut: 0,
             input_fd,
+            writable: false,
             leaving: Arc::new(AtomicBool::new(false)),
             keyboard_failure: Arc::new(std::sync::Mutex::new(None)),
             input_sent: Arc::new(AtomicBool::new(false)),
@@ -1188,9 +1193,15 @@ impl<W: Write> RawPaneSession<W> {
         let pane = attached
             .pane
             .ok_or_else(|| "the claimed native node has no display plane".to_string())?;
-        if !pane.writable {
+        // `writable: false` has two opposite meanings and the pane says which. A **live** node
+        // whose keyboard belongs to another connection is not this claim's pane, and relaying it
+        // would put a screen on the operator's terminal that their keystrokes do not drive. A
+        // node that has **ended** took nobody's lease: there is nothing left to type into, and
+        // the replay this relay attached to carry is exactly what the operator asked for.
+        if !pane.writable && !pane.ended {
             return Err("the claimed native connection did not retain its writer lease".into());
         }
+        self.writable = pane.writable;
         let ready = pane.pane_ready.ok_or_else(|| {
             "the native pane attach accepted pane-v1 but omitted its Ready descriptor".to_string()
         })?;
@@ -1198,7 +1209,11 @@ impl<W: Write> RawPaneSession<W> {
 
         // The claim's writer lease already exists. Queue the caller's authoritative geometry
         // before opening the replay gate so every later output is ordered behind that resize.
-        self.send_size(cols, rows)?;
+        // A resize is a write, so an ended pane gets none: the supervisor would drop it, and
+        // sending it anyway would state a geometry nothing can adopt.
+        if self.writable {
+            self.send_size(cols, rows)?;
+        }
         self.reject_buffered_pre_ready_pane_frames()?;
         self.write_frame(
             &Frame::Input(ClientNotification::new(Input::NodePaneReady(
@@ -1303,6 +1318,7 @@ impl<W: Write> RawPaneSession<W> {
         let input_sent = Arc::clone(&self.input_sent);
         let writer = Arc::clone(&self.writer);
         let id = self.id.clone();
+        let writable = self.writable;
         // The pump blocks in `stream.read` for up to `POLL`. Shutting the read side from here
         // returns that read at once, so a worker that stops — for any reason — ends the relay now
         // rather than at the next timeout; `pump` reads the failure slot before the EOF it caused.
@@ -1345,6 +1361,12 @@ impl<W: Write> RawPaneSession<W> {
                         for action in keys.feed(&bytes[..count]) {
                             match action {
                                 Action::Detach => return stop(None),
+                                // A pane that had already ended when this relay attached has
+                                // no write half for anyone. The supervisor answers an unleased
+                                // keystroke by closing the connection, which would cost the
+                                // operator the replay still arriving on it, so the key stops
+                                // here. Detach above is unaffected: leaving is not a write.
+                                Action::Forward(_) if !writable => {}
                                 Action::Forward(bytes) => {
                                     let frame = Frame::Input(ClientNotification::new(
                                         Input::NodePaneWrite(NodePaneWriteV1 {
@@ -3726,6 +3748,20 @@ mod tests {
     }
 
     fn attach_response() -> Frame {
+        attach_response_for(marion_core::proto::result::PaneAttach {
+            cols: 80,
+            rows: 24,
+            writable: true,
+            held_by: None,
+            ended: false,
+            pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
+                token: pane_token(),
+                cut: 0,
+            }),
+        })
+    }
+
+    fn attach_response_for(pane: marion_core::proto::result::PaneAttach) -> Frame {
         use marion_core::encoding::Duration;
         use marion_core::harness::Harness;
         use marion_core::node::{NodeState, ReapState};
@@ -3751,19 +3787,162 @@ mod tests {
                     records: 0,
                     src_seq: None,
                 }),
-                pane: Some(marion_core::proto::result::PaneAttach {
-                    cols: 80,
-                    rows: 24,
-                    writable: true,
-                    held_by: None,
-                    ended: false,
-                    pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
-                        token: pane_token(),
-                        cut: 0,
-                    }),
-                }),
+                pane: Some(pane),
             }),
         ))
+    }
+
+    fn read_only_attach_response(ended: bool, held_by: Option<u64>) -> Frame {
+        attach_response_for(marion_core::proto::result::PaneAttach {
+            cols: 80,
+            rows: 24,
+            writable: false,
+            held_by,
+            ended,
+            pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
+                token: pane_token(),
+                cut: 0,
+            }),
+        })
+    }
+
+    /// A vendor that exits at once — `claude --version` is the shipped example — is gone before
+    /// the relay that claimed it can attach, so the supervisor answers read-only with `ended`.
+    /// That is not a lost writer lease: the relay must open, replay what the vendor said, and end.
+    /// Refusing here threw away the one thing the operator asked for.
+    #[test]
+    fn a_pane_that_ended_before_the_native_attach_is_replayed_rather_than_refused() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            assert!(matches!(read_frame(&mut lines), Frame::Request(_)));
+            server
+                .write_all(read_only_attach_response(true, None).to_line().as_bytes())
+                .unwrap();
+            server.flush().unwrap();
+            // No geometry: a resize is a write, and this relay has no write half. The next frame
+            // is the replay gate itself.
+            assert!(matches!(
+                read_frame(&mut lines),
+                Frame::Input(note) if matches!(note.input, Input::NodePaneReady(_))
+            ));
+            server
+                .write_all(
+                    pane_frame(
+                        0,
+                        PaneFrameKindV1::Output {
+                            bytes: marion_core::proto::OpaquePaneBytesV1::new(b"VENDOR_SAID_THIS"),
+                        },
+                    )
+                    .to_line()
+                    .as_bytes(),
+                )
+                .unwrap();
+            server
+                .write_all(pane_frame(1, PaneFrameKindV1::End {}).to_line().as_bytes())
+                .unwrap();
+            server.flush().unwrap();
+        });
+
+        let sink = Sink::default();
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            IdleInput,
+            sink.clone(),
+            (80, 24),
+        )
+        .expect("a pane that ended is read-only, not a refused claim");
+        session.pump().expect("the relay reaches End");
+        server_thread.join().unwrap();
+
+        assert_eq!(
+            sink.0.lock().unwrap().as_slice(),
+            b"VENDOR_SAID_THIS",
+            "the ended vendor's output never reached the operator's terminal"
+        );
+    }
+
+    /// A read-only relay must not type. The supervisor answers an unleased opaque keystroke by
+    /// closing the connection (`Departure::PaneInputFailed`), so one stray key during the replay
+    /// of an ended pane would cost the operator the very output this session exists to show.
+    /// Detach still works - the operator's way out is not a write.
+    #[test]
+    fn a_read_only_native_relay_swallows_keystrokes_but_still_detaches() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            assert!(matches!(read_frame(&mut lines), Frame::Request(_)));
+            server
+                .write_all(read_only_attach_response(true, None).to_line().as_bytes())
+                .unwrap();
+            server.flush().unwrap();
+            assert!(matches!(
+                read_frame(&mut lines),
+                Frame::Input(note) if matches!(note.input, Input::NodePaneReady(_))
+            ));
+            // The detach below is the barrier: the keyboard worker fed both bytes before it left,
+            // so an empty read here is proof the forwardable one was never sent.
+            let mut after = String::new();
+            lines.read_line(&mut after).unwrap();
+            assert_eq!(
+                after, "",
+                "a relay with no write half sent the supervisor input"
+            );
+        });
+
+        let mut session = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            // One forwardable byte, then the operator's detach.
+            std::io::Cursor::new(vec![0xff, 0x1d, b'd']),
+            Sink::default(),
+            (80, 24),
+        )
+        .expect("a pane that ended is read-only, not a refused claim");
+        assert!(
+            matches!(session.pump(), Ok(RelayStop::Complete)),
+            "the operator could not leave a read-only relay"
+        );
+        drop(session);
+        server_thread.join().unwrap();
+    }
+
+    /// The refusal this relay still owes the operator: read-only because a *live* node's keyboard
+    /// belongs to somebody else. Relaying that would show a screen the operator cannot drive and
+    /// cannot explain, so the claim is reported as lost.
+    #[test]
+    fn a_writer_lease_held_by_another_connection_still_refuses_the_native_claim() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut lines = BufReader::new(server.try_clone().unwrap());
+            assert!(matches!(read_frame(&mut lines), Frame::Request(_)));
+            server
+                .write_all(
+                    read_only_attach_response(false, Some(7))
+                        .to_line()
+                        .as_bytes(),
+                )
+                .unwrap();
+            server.flush().unwrap();
+        });
+
+        let opened = RawPaneSession::open_for_test(
+            client,
+            AgentId("native".into()),
+            IdleInput,
+            Sink::default(),
+            (80, 24),
+        );
+        server_thread.join().unwrap();
+        let Err(error) = opened else {
+            panic!("a live node whose keyboard is taken is not this relay's pane")
+        };
+
+        assert!(
+            error.contains("did not retain its writer lease"),
+            "the refusal lost its sentence: {error}"
+        );
     }
 
     fn pane_frame(seq: u64, frame: PaneFrameKindV1) -> Frame {
