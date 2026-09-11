@@ -112,6 +112,17 @@ left at generation 1 so the relaunch is the child's own and not the tree's). Liv
 --ignored` spends Copilot tokens. Cross-harness: `--test harness_matrix`, `--test cross_product`,
 `--test journal_wiring`, `--test m4_fan_in`. Panes: `--test pane_attach`.
 
+**Verified at `a2b3ed8` (2026-09-11).** Full matrix in an isolated worktree through the shim
+runner, eight harnesses at their pins (claude 2.1.263, codex 0.147.0, opencode 1.18.30, goose
+1.50.0, copilot 1.0.83, gemini 0.53.0, cline 3.0.61, qwen 0.23.0): build, clippy `-D warnings`,
+fmt, 1378 lib tests, 40 integration suites (cross_product 57, harness_matrix 8,
+native_facade_e2e 2 over five lanes, pane_attach 2, descendant_gate 3), `restart_resume
+--ignored` 2 (root and child), six other crates all targets — zero failures. Since `b5d631e`:
+~90 function splits (every production fn in the split files at cyclomatic complexity ≤ 10),
+gemini native lane, §7.6 descendant gating, child resume, `marion-proto` folded into
+`marion_core::proto`, a real stream writer-lock race fixed (forked children inherit `flock`),
+and the video refreshed (492 s, 39 frames). `sentrux` 6542 (cycles 0, depth 9).
+
 **Request-shape drift a pin cannot catch (2026-09-09).** The same shimmed claude 2.1.263 that
 passed `m1_hop` on 2026-09-06 failed it 3/3 on 2026-09-09: the request body now carries
 `role: "system"` messages with plain-string `content` (the environment block, the
