@@ -1640,57 +1640,8 @@ impl RegistryHandle {
         if let Some(hook) = lock(&self.pane_attach_selection_hook).take() {
             hook();
         }
-        if pane_stream_v1
-            && let (Some(pane), Some(host)) = (reserved_pane.as_mut(), reserved_host.as_ref())
-        {
-            let descriptor = pane
-                .pane_ready
-                .as_ref()
-                .expect("a versioned reservation carries its Ready descriptor");
-            let (valid_reservation, writable, held_by) = {
-                let panes = lock(&self.panes);
-                let (same_generation, writable, held_by) = match panes.hosts.get(id) {
-                    Some(PaneEntry::Live(current)) if Arc::ptr_eq(current, host) => {
-                        let writable = panes.lease(out.conn(), id).is_some();
-                        (
-                            true,
-                            writable,
-                            (!writable)
-                                .then(|| host.writer().map(|owner| owner.0))
-                                .flatten(),
-                        )
-                    }
-                    Some(PaneEntry::Closing(current)) if Arc::ptr_eq(current, host) => {
-                        (true, false, None)
-                    }
-                    Some(PaneEntry::Completed { host: current, .. })
-                        if Arc::ptr_eq(current, host) =>
-                    {
-                        (true, false, None)
-                    }
-                    _ => (false, false, None),
-                };
-                // Panes remains held through exact Pending validation. Closing therefore
-                // linearizes wholly before this snapshot (read-only) or wholly after the attach
-                // commit; it cannot revoke the lease between metadata and token validation.
-                let exact_pending = same_generation
-                    && host.pane_replay_reserved(out.conn(), &descriptor.token, descriptor.cut);
-                (exact_pending, writable, held_by)
-            };
-            if !valid_reservation {
-                self.rollback_pane_attach(id, out.conn(), host);
-                return Err(RpcError::conflict(
-                    &id.0,
-                    format!(
-                        "node `{}`'s pane generation changed while attach was being prepared; \
-                         retry against the current generation",
-                        id.0
-                    ),
-                    "§5.3",
-                ));
-            }
-            pane.writable = writable;
-            pane.held_by = held_by;
+        if pane_stream_v1 {
+            self.commit_pane_v1_reservation(id, out, &mut reserved_pane, reserved_host.as_ref())?;
         }
         lock(&self.shared).attached.push(Attachment {
             conn: out.conn(),
@@ -1711,6 +1662,76 @@ impl RegistryHandle {
             mode,
             pane,
         })
+    }
+
+    /// **One look at the pane this attach reserved**, under the registry lock: is the
+    /// retained generation still the current one, and is this connection its writer?
+    fn pane_reservation_snapshot(
+        &self,
+        id: &AgentId,
+        conn: ConnId,
+        host: &Arc<crate::pty::PtyHost>,
+        descriptor: &marion_proto::result::PaneReadyDescriptorV1,
+    ) -> (bool, bool, Option<u64>) {
+        let panes = lock(&self.panes);
+        let (same_generation, writable, held_by) = match panes.hosts.get(id) {
+            Some(PaneEntry::Live(current)) if Arc::ptr_eq(current, host) => {
+                let writable = panes.lease(conn, id).is_some();
+                (
+                    true,
+                    writable,
+                    (!writable)
+                        .then(|| host.writer().map(|owner| owner.0))
+                        .flatten(),
+                )
+            }
+            Some(PaneEntry::Closing(current)) if Arc::ptr_eq(current, host) => (true, false, None),
+            Some(PaneEntry::Completed { host: current, .. }) if Arc::ptr_eq(current, host) => {
+                (true, false, None)
+            }
+            _ => (false, false, None),
+        };
+        // Panes remains held through exact Pending validation. Closing therefore
+        // linearizes wholly before this snapshot (read-only) or wholly after the attach
+        // commit; it cannot revoke the lease between metadata and token validation.
+        let exact_pending =
+            same_generation && host.pane_replay_reserved(conn, &descriptor.token, descriptor.cut);
+        (exact_pending, writable, held_by)
+    }
+
+    /// **The versioned reservation's commit point**: the pane a v1 attach reserved is
+    /// still the current generation and still exactly Pending, or the reservation is
+    /// rolled back and the attach refused as a conflict.
+    fn commit_pane_v1_reservation(
+        &self,
+        id: &AgentId,
+        out: &Outbound,
+        reserved_pane: &mut Option<marion_proto::result::PaneAttach>,
+        reserved_host: Option<&Arc<crate::pty::PtyHost>>,
+    ) -> Result<(), RpcError> {
+        if let (Some(pane), Some(host)) = (reserved_pane.as_mut(), reserved_host) {
+            let descriptor = pane
+                .pane_ready
+                .as_ref()
+                .expect("a versioned reservation carries its Ready descriptor");
+            let (valid_reservation, writable, held_by) =
+                self.pane_reservation_snapshot(id, out.conn(), host, descriptor);
+            if !valid_reservation {
+                self.rollback_pane_attach(id, out.conn(), host);
+                return Err(RpcError::conflict(
+                    &id.0,
+                    format!(
+                        "node `{}`'s pane generation changed while attach was being prepared; \
+                         retry against the current generation",
+                        id.0
+                    ),
+                    "§5.3",
+                ));
+            }
+            pane.writable = writable;
+            pane.held_by = held_by;
+        }
+        Ok(())
     }
 
     /// The **display plane's** half of `node/attach` (§5.3), or `None` for a node with no pty.
