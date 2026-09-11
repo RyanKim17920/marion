@@ -2951,6 +2951,76 @@ fn shutdown_kills_and_reaps_before_closing_the_master() {
     );
 }
 
+/// **A host dropped without `shutdown` keeps its reader on duty across the kill.**
+///
+/// `Drop` used to raise `stopped` before killing anything, which ends the reader within one
+/// [`POLL`] of its next `WouldBlock` — and on a pty the master read is the only thing that drains
+/// the child's terminal output queue. A session leader cannot finish exiting until that queue has
+/// drained, so a node that had fallen quiet left a child stuck in the kernel's exiting state
+/// (`ps`: `?Es`), `Child::wait` never returned, and the drop never completed. Two thread dumps of
+/// `handler::tests::a_resize_reaches_the_pty_and_the_child_is_told` hung under load showed exactly
+/// that stack — `PtyHost::drop` → `kill_and_reap` → `Child::wait` — with every assertion in the
+/// test already passed. A test whose body is bounded and whose teardown is not can only hang.
+///
+/// The claim is the **ordering**, so that is what is asserted, at the one instant where it is
+/// decidable: `shutdown`'s existing pre-sweep hook, fired here too, runs immediately before the
+/// kill. A reader that has not been told to leave by then is still draining, which is the whole of
+/// the fix; asserting the downstream stall instead would mean racing the reader for a quiet window
+/// and passing by luck.
+///
+/// **Mutation:** move `self.stopped.store(true, …)` back above the `kill_and_reap` in
+/// `PtyHost::drop`.
+#[test]
+fn dropping_a_host_kills_its_child_before_it_stops_the_reader_that_drains_the_terminal() {
+    let dir = marion_testsupport::scratch("pty-drop-order");
+    let master = PtyMaster::open(WinSize::new(80, 24)).unwrap();
+    let host = PtyHost::start(
+        AgentId("dropped".into()),
+        master,
+        &dir.join("pty.cast"),
+        WinSize::new(80, 24),
+        "xterm-256color",
+        Instant::now(),
+    )
+    .unwrap();
+    // A node that has spoken and then fallen quiet: the reader reaches `WouldBlock`, which is the
+    // only place it consults `stopped`, so the old ordering really does lose its drainer here.
+    let child = spawn_pty(
+        witness(),
+        &mut sh("echo spoken; exec sleep 30"),
+        host.master(),
+        StdinPlan::TerminalSlave,
+        None,
+    )
+    .unwrap();
+    let pid = child.pid();
+    host.adopt(child);
+    assert!(
+        until(|| host.bytes_read() > 0),
+        "the child never spoke, so the reader was never given a quiet master to leave on"
+    );
+
+    let stopped = Arc::clone(&host.stopped);
+    let reader_was_dismissed = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&reader_was_dismissed);
+    host.set_before_child_sweep_hook(Box::new(move || {
+        observed.store(stopped.load(Ordering::SeqCst), Ordering::SeqCst);
+    }));
+
+    drop(host);
+
+    assert!(
+        !reader_was_dismissed.load(Ordering::SeqCst),
+        "the reader was told to stop before the child was killed, so nothing was draining the \
+         terminal an exiting session leader has to wait on — the drop can then never return"
+    );
+    assert!(
+        until(|| !alive(pid)),
+        "the drop returned without reaping the child, which is the untracked live process this \
+         net exists to prevent"
+    );
+}
+
 /// **A registered host is still a reapable one, and this is the assertion the launch path rests
 /// on.**
 ///

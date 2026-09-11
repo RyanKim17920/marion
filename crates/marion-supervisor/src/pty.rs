@@ -3954,8 +3954,32 @@ fn terminal_outcome(
 }
 
 impl Drop for PtyHost {
+    /// **Kill and reap first, stop the reader second — the same order [`PtyHost::shutdown`] uses,
+    /// and for a reason `shutdown` did not have to state.**
+    ///
+    /// This used to raise `stopped` before killing anything. That flag ends the reader thread
+    /// within one [`POLL`] of its next `WouldBlock`, so on a node that had fallen quiet nothing was
+    /// reading the master by the time `kill_and_reap` ran. A pty child that is a session leader
+    /// cannot finish exiting until its controlling terminal's output queue has drained, and on a
+    /// pty the only thing that drains it is a read on the master. The child therefore sat in the
+    /// kernel's exiting state — `ps` shows it as `?Es` — `Child::wait` never returned, and one
+    /// `PtyHost` that nobody had called `shutdown` on wedged the whole process. That is how
+    /// `handler::tests::a_resize_reaches_the_pty_and_the_child_is_told`, whose every assertion is
+    /// bounded, came to hang after passing: the stall was in its teardown, not its body.
+    ///
+    /// So the reader stays on duty across the kill and is the causal barrier the exiting child
+    /// needs; `stopped` follows as the net for a node whose EOF never comes because a descendant
+    /// kept the slave open.
     fn drop(&mut self) {
-        self.stopped.store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        if self
+            .child
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            self.observe_before_child_sweep_hook();
+        }
         if let Some(child) = self
             .child
             .get_mut()
@@ -3972,6 +3996,7 @@ impl Drop for PtyHost {
             // is dead. Relying on the field's own `Drop` would deadlock the join.
             let _ = child.kill_and_reap();
         }
+        self.stopped.store(true, Ordering::SeqCst);
         if let Some(t) = self
             .reader
             .get_mut()
