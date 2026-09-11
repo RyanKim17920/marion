@@ -108,6 +108,26 @@ fn arm_resize_tracking(resized: &AtomicBool, install: impl FnOnce()) {
     install();
 }
 
+/// Say why this pane will not take keys, onto the screen rather than a stderr the next frame
+/// erases. §5.3's refusal is a sentence, so the holder is named whenever the supervisor named one.
+fn announce_read_only(
+    screen: &Screen,
+    pane: &marion_proto::result::PaneAttach,
+) -> Result<(), Refusal> {
+    if pane.writable {
+        return Ok(());
+    }
+    let banner = pane.held_by.map_or_else(
+        || "\r\nmarion: read-only — this retained pane has no live keyboard.\r\n".into(),
+        |holder| {
+            format!("\r\nmarion: read-only — connection {holder} is typing into this node.\r\n")
+        },
+    );
+    screen
+        .write(banner.as_bytes())
+        .map_err(|e| format!("showing the pane's read-only status: {e}"))
+}
+
 /// This user's real uid, which §2's `/tmp` fallback keys on. The same three lines `marion run`
 /// uses, and deliberately not shared with it: the binary's copy is in a `main` this module must
 /// not depend on, and moving it into `socket.rs` would put a `getuid` in a module whose whole
@@ -498,68 +518,11 @@ impl Session {
         output: S,
         geometry: Option<(u16, u16)>,
     ) -> Result<(), Refusal> {
-        self.send_attach(RequestId::Number(1), true)?;
-        let mut response = self.await_attach_response(RequestId::Number(1), true)?;
-        let mut requested_v1 = true;
-        if matches!(&response.outcome, marion_proto::Outcome::Error(e)
-            if e.code == marion_proto::error::INVALID_PARAMS)
-        {
-            // An older supervisor rejects the additive capability at parameter decoding. That is
-            // the one safe downgrade: the rejected request had no side effects. Every classified
-            // refusal and every internal failure remains visible instead of being retried through
-            // a weaker protocol.
-            requested_v1 = false;
-            self.send_attach(RequestId::Number(2), false)?;
-            response = self.await_attach_response(RequestId::Number(2), false)?;
-        }
-
-        let body = match response.outcome {
-            marion_proto::Outcome::Result(body) => body,
-            marion_proto::Outcome::Error(error) => {
-                return Err(format!(
-                    "the supervisor refused the attach: {}",
-                    error.message
-                ));
-            }
-        };
-        let MethodResult::NodeAttach(attached) = marion_proto::Method::NodeAttach
-            .decode_result(&body)
-            .map_err(|e| format!("the supervisor's node/attach answer did not decode: {e}"))?
-        else {
-            return Err("the supervisor answered node/attach with another method's result".into());
-        };
-        let Some(pane) = attached.pane else {
-            return Err(format!(
-                "node `{}` has no display plane, so there is no pane to attach to. §3.4 gives a \
-                 node a pty only where its surfaces declare `NativePty`; this one renders as \
-                 structured events. `marion run` shows those live, and the node's transcript is \
-                 replayable with `node/attach` from a client that draws them.",
-                self.id.0
-            ));
-        };
+        let (response, requested_v1) = self.negotiated_response()?;
+        let pane = self.decode_attached_pane(response)?;
         self.writable = pane.writable;
         let ready = pane.pane_ready.clone();
-        self.pane_stream = match (requested_v1, ready.is_some()) {
-            (true, true) => PaneStream::V1 {
-                next_seq: 0,
-                cut: ready.as_ref().expect("checked above").cut,
-            },
-            (false, false) => PaneStream::Legacy,
-            (true, false) => {
-                return Err(format!(
-                    "the supervisor accepted pane-stream v1 for node `{}` but omitted its Ready \
-                     descriptor; refusing an ambiguous display stream",
-                    self.id.0
-                ));
-            }
-            (false, true) => {
-                return Err(format!(
-                    "the supervisor answered node `{}`'s explicit legacy retry with an unsolicited \
-                     pane-v1 Ready descriptor",
-                    self.id.0
-                ));
-            }
-        };
+        self.pane_stream = self.select_pane_stream(requested_v1, ready.as_ref())?;
 
         // Clear, install, then take the authoritative size. A signal before installation is
         // reflected by the size read; one after installation remains set for the pump. Reversing
@@ -576,34 +539,8 @@ impl Session {
             &Sticky::initial(viewport_cols, viewport_rows),
         )
         .map_err(|e| format!("entering the terminal: {e}"))?;
-        if !pane.writable {
-            let banner = pane.held_by.map_or_else(
-                || "\r\nmarion: read-only — this retained pane has no live keyboard.\r\n".into(),
-                |holder| {
-                    format!(
-                        "\r\nmarion: read-only — connection {holder} is typing into this node.\r\n"
-                    )
-                },
-            );
-            screen
-                .write(banner.as_bytes())
-                .map_err(|e| format!("showing the pane's read-only status: {e}"))?;
-        }
-        self.view = Some(match self.pane_stream {
-            PaneStream::V1 { .. } => {
-                View::enter_split(screen, pane.cols, pane.rows, viewport_cols, viewport_rows)?
-            }
-            PaneStream::Legacy => {
-                View::enter_split(screen, pane.cols, pane.rows, viewport_cols, viewport_rows)?
-            }
-            PaneStream::Negotiating => unreachable!("the response selected a pane protocol"),
-        });
-        if matches!(self.pane_stream, PaneStream::Legacy) {
-            let prefix = std::mem::take(&mut self.legacy_prefix);
-            if !prefix.is_empty() {
-                self.view_mut()?.feed(prefix.as_bytes())?;
-            }
-        }
+        announce_read_only(&screen, &pane)?;
+        self.enter_view(screen, &pane, viewport_cols, viewport_rows)?;
 
         if let Some(descriptor) = ready {
             let frame = Frame::Input(ClientNotification::new(Input::NodePaneReady(
@@ -623,6 +560,109 @@ impl Session {
                 self.view_mut()?.resize_grid(viewport_cols, viewport_rows)?;
             }
             self.start_keyboard()?;
+        }
+        Ok(())
+    }
+
+    /// The attach response, and whether pane-v1 is the capability it answers.
+    ///
+    /// An older supervisor rejects the additive capability at parameter decoding. That is the one
+    /// safe downgrade: the rejected request had no side effects. Every classified refusal and every
+    /// internal failure remains visible instead of being retried through a weaker protocol.
+    fn negotiated_response(&mut self) -> Result<(marion_proto::Response, bool), Refusal> {
+        self.send_attach(RequestId::Number(1), true)?;
+        let response = self.await_attach_response(RequestId::Number(1), true)?;
+        if !matches!(&response.outcome, marion_proto::Outcome::Error(e)
+            if e.code == marion_proto::error::INVALID_PARAMS)
+        {
+            return Ok((response, true));
+        }
+        self.send_attach(RequestId::Number(2), false)?;
+        let retried = self.await_attach_response(RequestId::Number(2), false)?;
+        Ok((retried, false))
+    }
+
+    /// The display plane the answer attached to, or why this node has none.
+    fn decode_attached_pane(
+        &self,
+        response: marion_proto::Response,
+    ) -> Result<marion_proto::result::PaneAttach, Refusal> {
+        let body = match response.outcome {
+            marion_proto::Outcome::Result(body) => body,
+            marion_proto::Outcome::Error(error) => {
+                return Err(format!(
+                    "the supervisor refused the attach: {}",
+                    error.message
+                ));
+            }
+        };
+        let MethodResult::NodeAttach(attached) = marion_proto::Method::NodeAttach
+            .decode_result(&body)
+            .map_err(|e| format!("the supervisor's node/attach answer did not decode: {e}"))?
+        else {
+            return Err("the supervisor answered node/attach with another method's result".into());
+        };
+        attached.pane.ok_or_else(|| {
+            format!(
+                "node `{}` has no display plane, so there is no pane to attach to. §3.4 gives a \
+                 node a pty only where its surfaces declare `NativePty`; this one renders as \
+                 structured events. `marion run` shows those live, and the node's transcript is \
+                 replayable with `node/attach` from a client that draws them.",
+                self.id.0
+            )
+        })
+    }
+
+    /// Which pane protocol the exchange actually settled on. The two mismatched combinations are
+    /// refused rather than rendered: each would leave the display stream ambiguous in a direction
+    /// the client cannot recover from afterwards.
+    fn select_pane_stream(
+        &self,
+        requested_v1: bool,
+        ready: Option<&marion_proto::result::PaneReadyDescriptorV1>,
+    ) -> Result<PaneStream, Refusal> {
+        match (requested_v1, ready) {
+            (true, Some(descriptor)) => Ok(PaneStream::V1 {
+                next_seq: 0,
+                cut: descriptor.cut,
+            }),
+            (false, None) => Ok(PaneStream::Legacy),
+            (true, None) => Err(format!(
+                "the supervisor accepted pane-stream v1 for node `{}` but omitted its Ready \
+                 descriptor; refusing an ambiguous display stream",
+                self.id.0
+            )),
+            (false, Some(_)) => Err(format!(
+                "the supervisor answered node `{}`'s explicit legacy retry with an unsolicited \
+                 pane-v1 Ready descriptor",
+                self.id.0
+            )),
+        }
+    }
+
+    /// The grid this attach paints into. Both protocols enter the same split view; an explicit
+    /// legacy retry additionally replays the prefix that preceded its response.
+    fn enter_view(
+        &mut self,
+        screen: Screen,
+        pane: &marion_proto::result::PaneAttach,
+        viewport_cols: u16,
+        viewport_rows: u16,
+    ) -> Result<(), Refusal> {
+        self.view = Some(match self.pane_stream {
+            PaneStream::V1 { .. } => {
+                View::enter_split(screen, pane.cols, pane.rows, viewport_cols, viewport_rows)?
+            }
+            PaneStream::Legacy => {
+                View::enter_split(screen, pane.cols, pane.rows, viewport_cols, viewport_rows)?
+            }
+            PaneStream::Negotiating => unreachable!("the response selected a pane protocol"),
+        });
+        if matches!(self.pane_stream, PaneStream::Legacy) {
+            let prefix = std::mem::take(&mut self.legacy_prefix);
+            if !prefix.is_empty() {
+                self.view_mut()?.feed(prefix.as_bytes())?;
+            }
         }
         Ok(())
     }
