@@ -384,6 +384,37 @@ enum PaneEntry {
     Replacing(Arc<crate::pty::PtyHost>),
 }
 
+/// **Why a client may or may not type into the pane it just attached to.** The three answers are
+/// deliberately one type: `writable: false` alone has meant both "somebody else is typing into
+/// this running node" and "this node has finished", and a client cannot act correctly on the pair
+/// collapsed into one bit. A native relay that reads a finished pane as a stolen lease abandons
+/// the replay it attached to carry (§5.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneWriteHalf {
+    /// This connection holds the write half.
+    Held,
+    /// The pane is live and its write half belongs to another connection, named where the host
+    /// still knows it.
+    Elsewhere(Option<u64>),
+    /// The pane generation has ended. Nobody holds its write half and nobody can be given it.
+    Ended,
+}
+
+impl PaneWriteHalf {
+    /// Write this answer onto the attach result. The one place the three states become wire
+    /// fields, so a caller cannot spell a busy writer and an ended pane the same way.
+    fn describe(self, pane: &mut marion_core::proto::result::PaneAttach) {
+        let (writable, held_by, ended) = match self {
+            Self::Held => (true, None, false),
+            Self::Elsewhere(owner) => (false, owner, false),
+            Self::Ended => (false, None, true),
+        };
+        pane.writable = writable;
+        pane.held_by = held_by;
+        pane.ended = ended;
+    }
+}
+
 impl PaneEntry {
     fn host(&self) -> &Arc<crate::pty::PtyHost> {
         match self {
@@ -1700,31 +1731,34 @@ impl RegistryHandle {
         conn: ConnId,
         host: &Arc<crate::pty::PtyHost>,
         descriptor: &marion_core::proto::result::PaneReadyDescriptorV1,
-    ) -> (bool, bool, Option<u64>) {
+    ) -> (bool, PaneWriteHalf) {
         let panes = lock(&self.panes);
-        let (same_generation, writable, held_by) = match panes.hosts.get(id) {
+        let (same_generation, write_half) = match panes.hosts.get(id) {
             Some(PaneEntry::Live(current)) if Arc::ptr_eq(current, host) => {
                 let writable = panes.lease(conn, id).is_some();
                 (
                     true,
-                    writable,
-                    (!writable)
-                        .then(|| host.writer().map(|owner| owner.0))
-                        .flatten(),
+                    if writable {
+                        PaneWriteHalf::Held
+                    } else {
+                        PaneWriteHalf::Elsewhere(host.writer().map(|owner| owner.0))
+                    },
                 )
             }
-            Some(PaneEntry::Closing(current)) if Arc::ptr_eq(current, host) => (true, false, None),
-            Some(PaneEntry::Completed { host: current, .. }) if Arc::ptr_eq(current, host) => {
-                (true, false, None)
+            Some(PaneEntry::Closing(current)) if Arc::ptr_eq(current, host) => {
+                (true, PaneWriteHalf::Ended)
             }
-            _ => (false, false, None),
+            Some(PaneEntry::Completed { host: current, .. }) if Arc::ptr_eq(current, host) => {
+                (true, PaneWriteHalf::Ended)
+            }
+            _ => (false, PaneWriteHalf::Ended),
         };
         // Panes remains held through exact Pending validation. Closing therefore
         // linearizes wholly before this snapshot (read-only) or wholly after the attach
         // commit; it cannot revoke the lease between metadata and token validation.
         let exact_pending =
             same_generation && host.pane_replay_reserved(conn, &descriptor.token, descriptor.cut);
-        (exact_pending, writable, held_by)
+        (exact_pending, write_half)
     }
 
     /// **The versioned reservation's commit point**: the pane a v1 attach reserved is
@@ -1742,7 +1776,7 @@ impl RegistryHandle {
                 .pane_ready
                 .as_ref()
                 .expect("a versioned reservation carries its Ready descriptor");
-            let (valid_reservation, writable, held_by) =
+            let (valid_reservation, write_half) =
                 self.pane_reservation_snapshot(id, out.conn(), host, descriptor);
             if !valid_reservation {
                 self.rollback_pane_attach(id, out.conn(), host);
@@ -1756,10 +1790,35 @@ impl RegistryHandle {
                     "§5.3",
                 ));
             }
-            pane.writable = writable;
-            pane.held_by = held_by;
+            write_half.describe(pane);
         }
         Ok(())
+    }
+
+    /// Claim the write half for `conn` on a **live** host, or say who has it. Re-attaching from
+    /// the connection that already holds it answers `Held` with the lease it already had rather
+    /// than issuing a second one: two live leases for one connection would each clear the slot on
+    /// drop, and the first drop would silently open the node to a third client.
+    fn take_write_half(
+        panes: &mut Panes,
+        host: &Arc<crate::pty::PtyHost>,
+        id: &AgentId,
+        conn: ConnId,
+    ) -> PaneWriteHalf {
+        if panes.lease(conn, id).is_some() {
+            return PaneWriteHalf::Held;
+        }
+        match host.lease_writer(conn) {
+            Ok(lease) => {
+                panes
+                    .leases
+                    .entry(conn)
+                    .or_default()
+                    .push((id.clone(), Arc::new(lease)));
+                PaneWriteHalf::Held
+            }
+            Err(crate::pty::WriterBusy::HeldBy(owner)) => PaneWriteHalf::Elsewhere(Some(owner.0)),
+        }
     }
 
     /// The **display plane's** half of `node/attach` (§5.3), or `None` for a node with no pty.
@@ -1811,30 +1870,23 @@ impl RegistryHandle {
             .native_launches
             .as_ref()
             .is_some_and(|launches| launches.has_pending(id));
-        let (writable, held_by) = if native_reserved {
-            (false, None)
-        } else if panes.lease(out.conn(), id).is_some() {
-            (true, None)
+        // A pending native launch is a write half already promised to a claimant that has not
+        // arrived: read-only, but the node is running, so it is `Elsewhere` and not `Ended`.
+        let write_half = if native_reserved {
+            PaneWriteHalf::Elsewhere(None)
         } else {
-            match host.lease_writer(out.conn()) {
-                Ok(lease) => {
-                    panes
-                        .leases
-                        .entry(out.conn())
-                        .or_default()
-                        .push((id.clone(), Arc::new(lease)));
-                    (true, None)
-                }
-                Err(crate::pty::WriterBusy::HeldBy(owner)) => (false, Some(owner.0)),
-            }
+            Self::take_write_half(&mut panes, &host, id, out.conn())
         };
-        Some(marion_core::proto::result::PaneAttach {
+        let mut pane = marion_core::proto::result::PaneAttach {
             cols: size.cols,
             rows: size.rows,
-            writable,
-            held_by,
+            writable: false,
+            held_by: None,
+            ended: false,
             pane_ready: None,
-        })
+        };
+        write_half.describe(&mut pane);
+        Some(pane)
     }
 
     fn attach_pane_v1(
@@ -1885,37 +1937,27 @@ impl RegistryHandle {
             .native_launches
             .as_ref()
             .is_some_and(|launches| launches.has_pending(id));
-        let (writable, held_by) = if !is_live || native_reserved {
-            (false, None)
-        } else if panes.lease(out.conn(), id).is_some() {
-            (true, None)
+        let write_half = if !is_live {
+            PaneWriteHalf::Ended
+        } else if native_reserved {
+            PaneWriteHalf::Elsewhere(None)
         } else {
-            match host.lease_writer(out.conn()) {
-                Ok(lease) => {
-                    panes
-                        .leases
-                        .entry(out.conn())
-                        .or_default()
-                        .push((id.clone(), Arc::new(lease)));
-                    (true, None)
-                }
-                Err(crate::pty::WriterBusy::HeldBy(owner)) => (false, Some(owner.0)),
-            }
+            Self::take_write_half(&mut panes, &host, id, out.conn())
         };
         let size = host
             .master()
             .size()
             .unwrap_or_else(|_| host.master().intended_size());
-        Ok((
-            Some(marion_core::proto::result::PaneAttach {
-                cols: size.cols,
-                rows: size.rows,
-                writable,
-                held_by,
-                pane_ready: Some(descriptor),
-            }),
-            Some(host),
-        ))
+        let mut pane = marion_core::proto::result::PaneAttach {
+            cols: size.cols,
+            rows: size.rows,
+            writable: false,
+            held_by: None,
+            ended: false,
+            pane_ready: Some(descriptor),
+        };
+        write_half.describe(&mut pane);
+        Ok((Some(pane), Some(host)))
     }
 
     fn rollback_pane_attach(&self, id: &AgentId, conn: ConnId, host: &Arc<crate::pty::PtyHost>) {
@@ -8079,6 +8121,10 @@ mod tests {
         );
         assert!(!closing_v1_pane.writable);
         assert_eq!(closing_v1_pane.held_by, None);
+        assert!(
+            closing_v1_pane.ended,
+            "a Closing pane is read-only because it ended, not because a writer holds it"
+        );
         let closing_descriptor = closing_v1_pane
             .pane_ready
             .expect("Closing advertises a response-first cursor");
@@ -8140,6 +8186,10 @@ mod tests {
         assert!(completed_v1.node.pane);
         assert!(!completed_v1_pane.writable);
         assert_eq!(completed_v1_pane.held_by, None);
+        assert!(
+            completed_v1_pane.ended,
+            "a Completed pane is read-only because it ended"
+        );
         assert!(completed_v1_pane.pane_ready.is_some());
         host.unlisten(closing_v1_conn);
         host.unlisten(ConnId(1_205));
@@ -8363,6 +8413,49 @@ mod tests {
         current.shutdown().unwrap();
     }
 
+    /// A live pane whose write half another connection already holds is the *other* reason a v1
+    /// attach is read-only, and it must not be spelled the same way: `ended` stays false, and
+    /// `held_by` names the colleague. Without this pair a client cannot tell a node somebody else
+    /// is typing into from a node that has finished.
+    #[test]
+    fn pane_v1_attach_separates_a_busy_writer_from_a_pane_that_ended() {
+        let w = Wired::new("handler-pane-v1-busy-vs-ended");
+        let host = pane(&w, "root", "sleep 30");
+        say(&events_of(&w.fx, "root"), "root", &["running"]);
+
+        let writer_conn = ConnId(1_301);
+        let (writer_out, _writer_rx) = crate::serve::capture(writer_conn);
+        let first =
+            w.fx.handle
+                .node_attach(&id("root"), true, &writer_out)
+                .expect("the first attach takes the write half");
+        let first_pane = first.pane.expect("a live pane answers v1");
+        assert!(first_pane.writable);
+        assert!(!first_pane.ended);
+
+        let reader_conn = ConnId(1_302);
+        let (reader_out, _reader_rx) = crate::serve::capture(reader_conn);
+        let second =
+            w.fx.handle
+                .node_attach(&id("root"), true, &reader_out)
+                .expect("a second attach is read-only, not refused");
+        let second_pane = second.pane.expect("a live pane answers v1");
+        assert!(!second_pane.writable);
+        assert_eq!(
+            second_pane.held_by,
+            Some(writer_conn.0),
+            "a busy write half names its holder"
+        );
+        assert!(
+            !second_pane.ended,
+            "the node is still running; only its keyboard is taken"
+        );
+
+        host.unlisten(writer_conn);
+        host.unlisten(reader_conn);
+        host.shutdown().unwrap();
+    }
+
     /// Closing the same host at the final seam preserves its exact replay token but revokes the
     /// keyboard lease. The response must describe the lifecycle it actually committed.
     #[test]
@@ -8387,6 +8480,12 @@ mod tests {
 
         assert!(!pane.writable);
         assert_eq!(pane.held_by, None);
+        assert!(
+            pane.ended,
+            "a pane that closed between reservation and commit ended; its writer lease was not \
+             taken by anybody else, and a claimant told otherwise discards the replay it attached \
+             for"
+        );
         assert_eq!(host.writer(), None);
         assert!(host.pane_replay_reserved(conn, &descriptor.token, descriptor.cut));
         host.unlisten(conn);
@@ -8971,6 +9070,7 @@ mod tests {
             .expect("a node with a registered pty answers with a pane");
         assert!(p.writable, "the first attacher gets the write half");
         assert_eq!(p.held_by, None);
+        assert!(!p.ended, "a live pane has not ended");
         assert_eq!(
             (p.cols, p.rows),
             (80, 24),

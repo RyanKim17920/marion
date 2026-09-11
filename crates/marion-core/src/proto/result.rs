@@ -83,6 +83,17 @@ pub struct PaneAttach {
     /// The connection holding the write half, when it is not this one. `None` when `writable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_by: Option<u64>,
+    /// The pane generation this attach reserved has **already ended**: its child is gone and the
+    /// supervisor is draining it or has drained it. Then `writable` is false for every client —
+    /// including the one that was granted this node's writer lease — because there is nothing
+    /// left to type into.
+    ///
+    /// It is a separate field because `writable: false` otherwise means the opposite thing: that
+    /// somebody else is typing into a node that is still running. A client which cannot tell the
+    /// two apart reports a finished node as a lease it lost, and a native relay that does so
+    /// throws away the very output it attached to replay.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_ready: Option<PaneReadyDescriptorV1>,
 }
@@ -310,12 +321,37 @@ mod tests {
             rows: 24,
             writable: true,
             held_by: None,
+            ended: false,
             pane_ready: None,
         };
         let json = r#"{"cols":80,"rows":24,"writable":true}"#;
 
         assert_eq!(serde_json::to_string(&legacy).unwrap(), json);
         assert_eq!(serde_json::from_str::<PaneAttach>(json).unwrap(), legacy);
+    }
+
+    /// `ended` and `held_by` are the two reasons a pane is read-only and they must stay
+    /// separable on the wire: an older supervisor that never sends `ended` reads as a pane that
+    /// has not ended, and a busy write half never sets it.
+    #[test]
+    fn pane_attach_says_separately_that_a_pane_ended_and_that_a_writer_holds_it() {
+        let busy = r#"{"cols":80,"rows":24,"writable":false,"held_by":3}"#;
+        let decoded = serde_json::from_str::<PaneAttach>(busy).unwrap();
+        assert_eq!(decoded.held_by, Some(3));
+        assert!(!decoded.ended, "an absent `ended` is not an ended pane");
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), busy);
+
+        let ended = PaneAttach {
+            cols: 80,
+            rows: 24,
+            writable: false,
+            held_by: None,
+            ended: true,
+            pane_ready: None,
+        };
+        let json = r#"{"cols":80,"rows":24,"writable":false,"ended":true}"#;
+        assert_eq!(serde_json::to_string(&ended).unwrap(), json);
+        assert_eq!(serde_json::from_str::<PaneAttach>(json).unwrap(), ended);
     }
 
     #[test]
@@ -326,6 +362,7 @@ mod tests {
                 rows: 24,
                 writable: true,
                 held_by: None,
+                ended: false,
                 pane_ready: Some(PaneReadyDescriptorV1 {
                     token: PaneReadyTokenV1::new([
                         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,

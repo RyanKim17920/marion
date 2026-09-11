@@ -3756,6 +3756,7 @@ mod tests {
                     rows: 24,
                     writable: true,
                     held_by: None,
+                    ended: false,
                     pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                         token: pane_token(),
                         cut: 0,

@@ -1354,6 +1354,7 @@ mod tests {
                         rows: ROWS,
                         writable: true,
                         held_by: None,
+                        ended: false,
                         pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                             token: pane_token(),
                             cut: 0,
@@ -1458,6 +1459,7 @@ mod tests {
                         rows: 24,
                         writable: true,
                         held_by: None,
+                        ended: false,
                         pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                             token: pane_token(),
                             cut: 0,
@@ -1800,6 +1802,7 @@ mod tests {
                         rows: 24,
                         writable: false,
                         held_by: Some(7),
+                        ended: false,
                         pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                             token: pane_token(),
                             cut: 4,
@@ -1882,6 +1885,7 @@ mod tests {
                             rows: 24,
                             writable: false,
                             held_by: Some(7),
+                            ended: false,
                             pane_ready: None,
                         },
                     )
@@ -1953,6 +1957,7 @@ mod tests {
                             rows: 24,
                             writable: true,
                             held_by: None,
+                            ended: false,
                             pane_ready: None,
                         },
                     )
@@ -2039,6 +2044,7 @@ mod tests {
                         rows: 24,
                         writable: true,
                         held_by: None,
+                        ended: false,
                         pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                             token: pane_token(),
                             cut: 0,
@@ -2124,6 +2130,7 @@ mod tests {
                             rows: 24,
                             writable: false,
                             held_by: Some(7),
+                            ended: false,
                             pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                                 token: pane_token(),
                                 cut: 0,
@@ -2183,6 +2190,7 @@ mod tests {
                     rows: 24,
                     writable: false,
                     held_by: Some(7),
+                    ended: false,
                     pane_ready: None,
                 },
             );
@@ -2384,6 +2392,7 @@ mod tests {
                 rows: 24,
                 writable: false,
                 held_by: Some(9),
+                ended: false,
                 pane_ready: Some(marion_core::proto::result::PaneReadyDescriptorV1 {
                     token: pane_token(),
                     cut: 1,

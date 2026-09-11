@@ -358,6 +358,7 @@ mod tests {
                         rows: 40,
                         writable: false,
                         held_by: Some(3),
+                        ended: false,
                         pane_ready: None,
                     }),
                 }),
