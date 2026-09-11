@@ -128,6 +128,7 @@ fn spawn_one(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> {
         model: None,
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
+        resume: None,
     };
     // A root caller: depth 0, the same thing `marion run` hands the bridge.
     let caller = Caller::root(

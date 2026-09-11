@@ -2650,6 +2650,38 @@ grouping.
   `registry::tests::session_observed_carries_the_launch_workspace_and_replays_it_onto_the_node`
   (wire shape pinned, absent replays as `None`) and
   `session_watch::tests::the_launch_workspace_is_carried_onto_the_session_record`.
+  **2026-09-10 — `node/resume` brings a lost child back too, so resume is no longer root-only.**
+  `node_resume`'s depth-0 refusal is gone; the preflight it shares with the root (intent present,
+  fate decided, session named, `procid` proves the recorded process gone) now dispatches on the
+  node's own depth to `relaunch_root` or `relaunch_child`. The child arm rebuilds a
+  `run::SpawnRequest` from the journal and goes through `handler::launch_child` — factored out of
+  `agent/spawn` exactly as `launch_root` was, so spawn and resume are one launcher at both depths.
+  `SpawnRequest` gains `resume: Option<ChildResume { agent_id, session, workspace }>`: one field,
+  because an id without a session or a session without the tree that created it each relaunch
+  *something* in the wrong place or under the wrong name. `run_spawn_watched` reuses the recorded
+  id instead of minting one, `select_workspace` returns the recorded workspace instead of cutting a
+  worktree, and `child_launch_spec` hands the session to the row's measured resume flag.
+  **Three refusals the root arm cannot need**, in this order so the tree question settles before
+  the filesystem is asked anything: the parent's fate is decided (a **Live** parent holds this
+  child — its own `spawn` is owed the outcome, and a second process under one contract is what
+  principle 8 forbids); the journal records a workspace at all; that workspace still exists (a reap
+  or a cleanup removes a child's tree, and a session handed back from a directory the harness has
+  never seen starts fresh under a resumed node's name). **The parent rule is a decision taken where
+  the documents are silent** — neither §7 nor the plan gives a child resume a parent rule. The
+  opposite reading (refuse when the parent is *not* live, because the child "reports into nothing")
+  was rejected: a child reports to the *supervisor*, which writes the contract and the journal, so a
+  decided parent costs the report no destination — and that reading would make the case a
+  supervisor SIGKILL actually produces, a whole tree orphaned at once, the one case resume could
+  not serve. **Two stated limits:** a child's `writable_scope` and `acceptance_criteria` are not
+  journaled (they live on a contract an orphaned child never reached), so the second life runs with
+  the empty scope — its agent type's ceiling, still checked against that ceiling — and an empty
+  criteria list. Tests: `run::tests::a_resume_takes_the_recorded_workspace_instead_of_cutting_a_second_one`
+  (the request still says `worktree` and its repo is not a repository at all, so a fresh spawn is
+  `NotAGitRepo` and the recorded tree coming back proves neither arm ran) and, on the `Owning`
+  fixture, `handler::tests::owns_nodes::{resume_relaunches_a_lost_child_into_its_own_node_id_under_its_parent,
+  resume_refuses_a_child_whose_recorded_worktree_is_gone,
+  resume_refuses_a_child_whose_parent_is_still_live}`. All RED first against `53d263e` on the
+  depth-0 refusal.
 - ~~**The registry.** Unchanged. `marion_core::registry::replay` exists as a pure unit and is
   exercised only by tests.~~ **Off this line 2026-09-05, and it had been false since M2:**
   `registry::replay` is the detached supervisor's boot path over the on-disk journal (M2

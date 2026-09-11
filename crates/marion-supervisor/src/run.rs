@@ -144,6 +144,34 @@ pub struct SpawnRequest {
     /// claim and nothing else; it does not widen scope, and a child that takes it is still judged
     /// against `writable_scope`.
     pub allow_concurrent_writes: bool,
+    /// **A resume, or a fresh spawn** — [`crate::root::RootSpec::resume`]'s counterpart on the
+    /// child path, and `None` on every `agent/spawn`.
+    ///
+    /// `Some` makes this launch the **second life of a node that already exists** rather than a new
+    /// one: `run_spawn_watched` reuses the recorded id instead of minting one (so the second
+    /// `Spawned` lands on the node every earlier record names, which replay folds as generation
+    /// two), [`select_workspace`] reuses the recorded workspace instead of cutting a new worktree,
+    /// and the session reaches the harness through its row's measured resume flag.
+    ///
+    /// One field carrying all three, because they are one decision. Splitting it into three
+    /// `Option`s would admit the combinations that are not launches at all — an id without a
+    /// session, a session without the tree it was created in — and each of those relaunches
+    /// *something*, quietly, in the wrong place or under the wrong name.
+    pub resume: Option<ChildResume>,
+}
+
+/// What a child's second life is reconstructed from — all of it read off the journal, none of it
+/// from a caller. See [`SpawnRequest::resume`].
+#[derive(Clone)]
+pub struct ChildResume {
+    /// The node's own id, reused so the relaunch is a second lifetime and not a second node.
+    pub agent_id: AgentId,
+    /// The harness's own name for the conversation, handed back verbatim.
+    pub session: String,
+    /// The tree the session was created in, from the node's `SessionObserved`. A harness resumes a
+    /// session only from the cwd that created it, and the caller has already proved this one is
+    /// still on disk.
+    pub workspace: Workspace,
 }
 
 /// The node whose `spawn` this is — §6.1 step 2's gates read the **caller's** agent type, never
@@ -1238,7 +1266,13 @@ pub fn run_spawn_watched(
     check_spawn_scope(&agent_type.scope_ceiling, &requested)?;
 
     let spawned_at = SystemTime(std::time::SystemTime::now());
-    let agent_id = new_agent_id(unix_millis(), entropy()?);
+    // **A resume reuses the node's own id; a fresh spawn mints one** — `root::prepare_watched`'s
+    // rule, on the child path and for the same reason: the second `Spawned` has to land on the node
+    // every earlier record names, which is the whole of what replay folds as generation two.
+    let agent_id = match &req.resume {
+        Some(r) => r.agent_id.clone(),
+        None => new_agent_id(unix_millis(), entropy()?),
+    };
     // §6.1 step 7, first half: *"journal the spawn intent, start the process, journal
     // confirmation."* **Written at the first instant the node has an identity at all**, and
     // deliberately before the worktree, the config files and the process — everything below this
@@ -1724,6 +1758,24 @@ fn select_workspace(
     task_id: &TaskId,
     agent_id: &AgentId,
 ) -> Result<(Workspace, Option<Oid>, crate::spawn::CwdClaim), SpawnError> {
+    // **A resume takes the tree it left, and this arm is why the workspace is journaled at all.**
+    // Neither branch below is right for a second life: `make_worktree` on a tree that already
+    // exists fails, and a *fresh* worktree would be a directory the resumed session has never seen
+    // — the harness would refuse it or start over, and marion would have called that a resume.
+    // §6.6's occupancy claim is retaken for a `shared-cwd` node, because the claim died with the
+    // supervisor that held it and the guarantee it makes has not changed.
+    if let Some(r) = &req.resume {
+        let base = crate::spawn::head_commit(r.workspace.path());
+        let claim = match &r.workspace {
+            Workspace::SharedCwd { path }
+                if agent_type.writes_files() && !req.allow_concurrent_writes =>
+            {
+                crate::spawn::CwdClaim::claim(path, agent_id)?
+            }
+            _ => crate::spawn::CwdClaim::none(),
+        };
+        return Ok((r.workspace.clone(), base, claim));
+    }
     match req.isolation {
         Isolation::Worktree => {
             // **Asked before it is attempted**, so the answer is marion's sentence and not git's.
@@ -1882,8 +1934,10 @@ fn child_launch_spec(
         // assignment here keeps them the same value by construction, and the adapter's check is
         // what catches a second assignment appearing later.
         //
-        // `None` on the other four, where nothing reads it.
-        resume: None,
+        // The session this launch resumes, handed to the row's measured resume flag — or `None` on
+        // every fresh spawn. A row whose caps refuse resume refuses the launch by name here rather
+        // than starting fresh under a resumed node's id.
+        resume: req.resume.as_ref().map(|r| r.session.clone()),
         extra: Extras {
             acp_agent: agent_type.acp_agent.clone(),
             ..Extras::default()
@@ -2066,6 +2120,70 @@ mod tests {
     use marion_harness::adapter_for;
     use marion_testsupport::{Scratch, scratch};
     use std::sync::Mutex;
+
+    /// **A resume takes the tree its session was created in, and cuts none.**
+    ///
+    /// The two arms of [`select_workspace`] are wrong for a second life in opposite ways:
+    /// `Worktree` would run `make_worktree` on a tree that already exists (which fails) or produce
+    /// a *fresh* tree the resumed session has never seen, and `SharedCwd` would read `req.repo`
+    /// rather than where the node actually ran. So the recorded workspace short-circuits both.
+    ///
+    /// The oracle is that `req` still says `Worktree` and `req.repo` is **not a repository at
+    /// all**: without the resume this call is `NotAGitRepo`, so returning the recorded tree proves
+    /// the recorded value was read and neither arm ran.
+    #[test]
+    fn a_resume_takes_the_recorded_workspace_instead_of_cutting_a_second_one() {
+        let dir = scratch("select-workspace-resume");
+        let repo = dir.join("not-a-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let first_life = dir.join("first-life-worktree");
+        std::fs::create_dir_all(&first_life).unwrap();
+        let recorded = Workspace::Worktree {
+            path: first_life.clone(),
+            branch: "marion/t-1".into(),
+        };
+        let agent_type = builtin("claude").unwrap();
+        let agent_id = AgentId("child".into());
+        let agent_dir = ProjectDir::new(&dir.join("state"), &repo).agent(&agent_id);
+        let task_id = TaskId("t-1".into());
+        let mut req = SpawnRequest {
+            agent_type: "claude".into(),
+            prompt: "carry on".into(),
+            repo: repo.clone(),
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            timeout_secs: 1,
+            model: None,
+            isolation: Isolation::Worktree,
+            allow_concurrent_writes: false,
+            resume: None,
+        };
+        assert!(
+            matches!(
+                select_workspace(&req, &agent_type, &agent_dir, &task_id, &agent_id),
+                Err(SpawnError::NotAGitRepo { .. })
+            ),
+            "the fixture's repo is deliberately not a repository, so a fresh spawn cannot cut a \
+             worktree in it — which is what makes the resume below unambiguous"
+        );
+
+        req.resume = Some(ChildResume {
+            agent_id: agent_id.clone(),
+            session: "sess-1".into(),
+            workspace: recorded.clone(),
+        });
+        let (workspace, _base, _claim) =
+            select_workspace(&req, &agent_type, &agent_dir, &task_id, &agent_id)
+                .expect("the recorded tree needs no repository question asked of it");
+        assert_eq!(
+            workspace, recorded,
+            "the relaunch runs where the journal says the session was created"
+        );
+        assert!(
+            !agent_dir.worktree().exists(),
+            "and no second tree was cut under the agent dir"
+        );
+    }
 
     /// **The journal's terminal record is never durable before the contract it is about.**
     ///
@@ -2743,6 +2861,7 @@ mod tests {
             model: None,
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
+            resume: None,
         };
 
         let result = run_spawn(
@@ -2870,6 +2989,7 @@ mod tests {
             model: None,
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
+            resume: None,
         };
         let observer = Recorder {
             project: env.project_dir.clone(),
@@ -3172,6 +3292,7 @@ mod tests {
             model: model.map(str::to_string),
             isolation: Isolation::Worktree,
             allow_concurrent_writes: false,
+            resume: None,
         }
     }
 

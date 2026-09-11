@@ -128,6 +128,7 @@ fn request(fx: &Fixture, isolation: Isolation) -> SpawnRequest {
         model: None,
         isolation,
         allow_concurrent_writes: false,
+        resume: None,
     }
 }
 

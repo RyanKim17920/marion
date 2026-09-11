@@ -103,6 +103,7 @@ fn spawn_acp_child(fx: &Fixture, task_id: &str) -> Result<TaskContract, String> 
         model: None,
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
+        resume: None,
     };
     // A root caller at depth 0, exactly what `marion run` hands the bridge.
     let caller = Caller::root(
@@ -201,6 +202,7 @@ fn a_real_copilot_acp_child_reports_through_the_argv_declared_bridge() {
         model: None,
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
+        resume: None,
     };
     let caller = Caller::root(
         "root",
@@ -281,6 +283,7 @@ fn a_previously_unknown_acp_agent_reaches_marions_bridge_through_the_generic_pat
         model: None,
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
+        resume: None,
     };
     let caller = Caller::root(
         "root",

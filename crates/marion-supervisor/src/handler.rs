@@ -2913,6 +2913,9 @@ impl RegistryHandle {
             isolation: p.isolation.unwrap_or(Isolation::Worktree),
             // Absent is `false` — marion holds §6.6's guard. See `AgentSpawnParams`.
             allow_concurrent_writes: p.allow_concurrent_writes.unwrap_or(false),
+            // A client `agent/spawn` is always a fresh run: resume is `node/resume`'s path, which
+            // reconstructs this same request from the journal rather than from a caller.
+            resume: None,
         };
 
         // Kept out of the thread's move, because the answer names it: the composing client reads
@@ -3267,14 +3270,18 @@ impl RegistryHandle {
     /// The preflight is in the order §7.2 and §6.7 impose, each refusal naming the node rather than
     /// guessing past it:
     ///
-    /// 1. the node exists;
-    /// 2. it is a root (depth 0) — a child's tree is a worktree its parent entitled, not recorded
-    ///    where a resume could rebuild it, so a child resume is refused by name for now;
-    /// 3. its process is finished — an `Orphaned`/`ReapedIdle`/exited node — never a live one;
-    /// 4. its stream named a session, else there is nothing to resume and the refusal says so;
-    /// 5. its recorded process is provably not still running: `AliveAndOurs` is killed first (the
+    /// 1. the node exists, and its intent says what it was — a node with no `SpawnIntent` has no
+    ///    type, no harness and no depth, and a launch rebuilt from that would be a guess;
+    /// 2. its process is finished — an `Orphaned`/`ReapedIdle`/exited node — never a live one;
+    /// 3. its stream named a session, else there is nothing to resume and the refusal says so;
+    /// 4. its recorded process is provably not still running: `AliveAndOurs` is killed first (the
     ///    same confirmed group kill `session/quit` uses), `CannotTell` refuses rather than risk a
     ///    second live process against one transcript, `Gone` proceeds.
+    ///
+    /// Then the node's own depth selects the launcher — [`Self::relaunch_root`] or
+    /// [`Self::relaunch_child`], which carries the three further refusals a child needs and a root
+    /// cannot need. Both go through the launcher `agent/spawn` uses at that depth: **one spawn
+    /// path**, with the resume as a parameter to it.
     fn node_resume(
         &self,
         p: &marion_proto::params::NodeResumeParams,
@@ -3311,20 +3318,22 @@ impl RegistryHandle {
                     "§2, §7.2",
                 )
             })?;
-        if node.depth() != Some(0) {
+        // **A node with no intent has no depth, and a relaunch of it would be a guess.** Its
+        // agent type, its harness, its parent and its position are all on that one record; a
+        // journal whose head was compacted away yields a node marion has records *about* and no
+        // identity *for*, which is not something to rebuild a launch from.
+        let Some(depth) = node.depth() else {
             return Err(RpcError::refused(
                 "agent_id",
                 format!(
-                    "`{}` is a child at depth {}, and resume is a root operation: a child runs in a \
-                     worktree its parent entitled, which the journal does not record where a \
-                     relaunch could rebuild it. Refused by name rather than relaunched in the wrong \
-                     tree (§6.6).",
-                    p.agent_id.0,
-                    node.depth().map(|d| d as i64).unwrap_or(-1),
+                    "`{}` has records on this journal but no `SpawnIntent`, so marion cannot say \
+                     what it was — its type, its harness, or where it sat in the tree. Refused by \
+                     name rather than relaunched as a guess.",
+                    p.agent_id.0
                 ),
-                "§6.6, §7.2",
+                "§4.3, §7.2",
             ));
-        }
+        };
         // **A live node is not resumed — it is attached to.** Only a node whose fate is decided (an
         // orphan the last restart marked, an idle node deliberately reaped, or one that exited) has
         // a process to relaunch in place of.
@@ -3400,6 +3409,36 @@ impl RegistryHandle {
                 crate::procid::Resolution::Gone => {}
             }
         }
+        // **The tree this node's own children branch from**, and it is the same value at every
+        // depth: `marion run` gives the root the project's working tree, and every `agent/spawn`
+        // hands a child its caller's, so one tree runs the whole fleet. A resumed node at any depth
+        // therefore hands its own children what it would have handed them in its first life.
+        let repo = resumable_root_cwd(&env.project_root);
+        let (agent_id, state) = if depth == 0 {
+            self.relaunch_root(me, &node, &env, &p.prompt, repo, session)?
+        } else {
+            self.relaunch_child(me, &node, &env, &p.prompt, repo, session)?
+        };
+        Ok(marion_proto::result::NodeResumeResult {
+            agent_id,
+            state,
+            // The lifetime this relaunch begins: replay folds a second `Spawned` as generation two,
+            // so the count the caller reads is the recorded one plus this launch.
+            spawn_generation: node.spawn_generation + 1,
+        })
+    }
+
+    /// [`Self::node_resume`]'s root arm: [`crate::root::RootSpec`] rebuilt from the node's journal,
+    /// through the same [`Self::launch_root`] `agent/spawn` uses.
+    fn relaunch_root(
+        &self,
+        me: Arc<RegistryHandle>,
+        node: &marion_core::registry::ReplayedNode,
+        env: &crate::run::Env,
+        prompt: &str,
+        repo: PathBuf,
+        session: String,
+    ) -> Result<(AgentId, NodeState), RpcError> {
         // §6.1 step 5's type resolution, for the wall clock the relaunch runs under — the same
         // number `marion run` and `agent/spawn` resolve, from the node's own recorded type.
         let agent_type = node
@@ -3410,10 +3449,9 @@ impl RegistryHandle {
             None,
             agent_type.timeout.0.as_secs(),
         ));
-        let repo = resumable_root_cwd(&env.project_root);
         let spec = crate::root::RootSpec {
             agent_type: node.agent_type().unwrap_or_default().to_string(),
-            prompt: p.prompt.clone(),
+            prompt: prompt.to_string(),
             native_launch: None,
             repo: repo.clone(),
             state: env.state.clone(),
@@ -3428,14 +3466,184 @@ impl RegistryHandle {
             pane: node.harness_pane,
             resume: Some((node.agent_id.clone(), session)),
         };
-        let (agent_id, state) = self.launch_root(me, spec, repo, bound)?;
-        Ok(marion_proto::result::NodeResumeResult {
-            agent_id,
-            state,
-            // The lifetime this relaunch begins: replay folds a second `Spawned` as generation two,
-            // so the count the caller reads is the recorded one plus this launch.
-            spawn_generation: node.spawn_generation + 1,
-        })
+        self.launch_root(me, spec, repo, bound)
+    }
+
+    /// [`Self::node_resume`]'s child arm: a [`crate::run::SpawnRequest`] rebuilt from the node's
+    /// journal, through the same [`Self::launch_child`] `agent/spawn` uses.
+    ///
+    /// Three more refusals than the root arm, each about something a root cannot lack, and in this
+    /// order because the tree question settles whether there is a relaunch to place at all before
+    /// anything asks the filesystem where it would go:
+    ///
+    /// 1. **its parent's fate is decided** — principle 8. A **Live** parent holds this child: its
+    ///    own `spawn` is owed the outcome, and a relaunch from outside would put a second process
+    ///    under one contract. A parent that is `Orphaned`, `ReapedIdle` or exited holds nothing,
+    ///    and its child resumes: the child reports to the *supervisor* (the report tool writes the
+    ///    contract and the journal), so a decided parent costs the report no destination;
+    /// 2. **its workspace is on the journal** — a child's cwd is a linked worktree marion made or
+    ///    the caller's own directory, and neither is derivable from anything else;
+    /// 3. **that workspace still exists** — `run::cleanup` and `marion worktree reap` both remove a
+    ///    child's tree, and a harness handed a session from a directory it has never seen starts
+    ///    fresh, which marion would then have called a resume.
+    ///
+    /// **The design documents are silent on the third**, and this is the reading taken rather than
+    /// invented: nothing in §7 or `plan-restart-resume.md` gives a child resume a parent rule at
+    /// all. The alternative reading — refuse when the parent is *not* live, on the grounds that the
+    /// child "reports into nothing" — was rejected because the premise is false in this codebase,
+    /// and because it would make the case a supervisor SIGKILL actually produces (a whole tree
+    /// orphaned at once) the one case resume could not serve.
+    ///
+    /// **Two limits, stated rather than hidden.** A child's `writable_scope` and its
+    /// `acceptance_criteria` are not journaled — they live on the contract, which an orphaned child
+    /// never got far enough to write — so the second life runs with the empty scope, which is its
+    /// agent type's ceiling (`run::requested_scope`, still checked against that ceiling) and an
+    /// empty criteria list. Narrowing them again would need a second record, not a guess here.
+    fn relaunch_child(
+        &self,
+        me: Arc<RegistryHandle>,
+        node: &marion_core::registry::ReplayedNode,
+        env: &crate::run::Env,
+        prompt: &str,
+        repo: PathBuf,
+        session: String,
+    ) -> Result<(AgentId, NodeState), RpcError> {
+        // **§7.5's immutable parent link, read back.** The intent is the only record that names it,
+        // and a child that has one always has a parent — `run_spawn` writes `parent_id: Some(..)`
+        // unconditionally.
+        let parent_id = node
+            .intent
+            .as_ref()
+            .and_then(|i| i.parent_id.clone())
+            .ok_or_else(|| {
+                RpcError::refused(
+                    "agent_id",
+                    format!(
+                        "`{}` records a depth below the root and no parent, so marion cannot say \
+                         whose child it is or what gates its relaunch. Refused by name.",
+                        node.agent_id.0
+                    ),
+                    "§7.5",
+                )
+            })?;
+        let parent = self
+            .live
+            .read(|r| r.tree().get(&parent_id).cloned())
+            .ok_or_else(|| {
+                RpcError::refused(
+                    "agent_id",
+                    format!(
+                        "`{}` names `{}` as its parent and no such node is on this journal, so the \
+                         relaunch would have no place in the tree. Refused by name.",
+                        node.agent_id.0, parent_id.0,
+                    ),
+                    "§7.5",
+                )
+            })?;
+        let parent_decided = matches!(
+            parent.reap_state,
+            ReapState::Orphaned | ReapState::ReapedIdle
+        ) || parent.state.is_exited();
+        if !parent_decided {
+            return Err(RpcError::refused(
+                "agent_id",
+                format!(
+                    "`{}`'s parent `{}` is still live ({:?}); marion holds its channel and its own \
+                     `spawn` owns this child, so the child's outcome is owed to a call that is \
+                     still waiting for it. A second process under one contract is what resume \
+                     exists not to do. Resume this child once its parent's fate is decided, or \
+                     reach it through its parent.",
+                    node.agent_id.0, parent_id.0, parent.state,
+                ),
+                "§8, §7.2",
+            ));
+        }
+        let Some(workspace) = node.launch_workspace.clone() else {
+            return Err(RpcError::refused(
+                "agent_id",
+                format!(
+                    "`{}` is a child, and this journal does not record which directory it ran in \
+                     — its session record predates the field, or no frame ever named a session. A \
+                     harness resumes a conversation only from the tree that created it, so marion \
+                     refuses by name rather than relaunching it somewhere the session has never \
+                     been.",
+                    node.agent_id.0
+                ),
+                "§6.6, §8",
+            ));
+        };
+        if !workspace.path().is_dir() {
+            return Err(RpcError::refused(
+                "agent_id",
+                format!(
+                    "`{}` ran in {}, and that tree no longer exists — a reap or a cleanup removed \
+                     it. Its session id outlived its workspace; handing the id back from anywhere \
+                     else would start a fresh run wearing a resumed node's name, so marion refuses \
+                     by name instead.",
+                    node.agent_id.0,
+                    workspace.path().display(),
+                ),
+                "§6.6, §8",
+            ));
+        }
+        let parent_type = parent
+            .agent_type()
+            .and_then(agent_type::builtin)
+            .ok_or_else(spawn_refused_before_the_node_existed)?;
+        let agent_type = node
+            .agent_type()
+            .and_then(agent_type::builtin)
+            .ok_or_else(spawn_refused_before_the_node_existed)?;
+        // **The task this run is still under**, from the node's own intent (§9: one contract per
+        // run of one task). A fresh id here would file the second life's audit record under a task
+        // nothing asked for.
+        let task_id = node
+            .intent
+            .as_ref()
+            .and_then(|i| i.task_id.clone())
+            .ok_or_else(|| {
+                RpcError::refused(
+                    "agent_id",
+                    format!(
+                        "`{}` is a child with no task on its intent, so §9's contract for its \
+                         second life would name nothing. Refused by name.",
+                        node.agent_id.0
+                    ),
+                    "§9",
+                )
+            })?;
+        // Held for the same window `agent/spawn` holds it: §6.1 step 2's gate evaluation and the
+        // intent derived from it are one decision, and this launch is gated exactly as a fresh
+        // child's is (`run_spawn_watched` calls `check_spawn_gates` with this caller).
+        let decision = lock(&self.spawn_decision);
+        let caller = crate::run::Caller {
+            agent_id: parent_id.0.clone(),
+            agent_type: parent_type,
+            depth: parent.depth().unwrap_or(0),
+            live_children: self.live_children_of(&parent_id),
+        };
+        let req = crate::run::SpawnRequest {
+            agent_type: agent_type.name.clone(),
+            prompt: prompt.to_string(),
+            repo: repo.clone(),
+            // Not journaled; see this function's doc for why they are empty rather than invented.
+            acceptance_criteria: vec![],
+            writable_scope: vec![],
+            timeout_secs: agent_type.timeout.0.as_secs(),
+            model: node.model.clone(),
+            // Read off the recorded workspace, so the answer and the directory cannot disagree.
+            isolation: match workspace {
+                marion_core::contract::Workspace::Worktree { .. } => Isolation::Worktree,
+                marion_core::contract::Workspace::SharedCwd { .. } => Isolation::SharedCwd,
+            },
+            allow_concurrent_writes: false,
+            resume: Some(crate::run::ChildResume {
+                agent_id: node.agent_id.clone(),
+                session,
+                workspace,
+            }),
+        };
+        self.launch_child(me, env.clone(), req, task_id, caller, repo, decision)
     }
 
     /// §7.3.2's voluntary path. The mutex is not throughput machinery; it makes the rendered-set
@@ -11038,13 +11246,23 @@ mod tests {
         /// never decided the fate of and the boot restart pass marks it `Orphaned` (§7.2). This is
         /// how a resume gets an orphan to relaunch.
         fn orphaning(tag: &str, records: Vec<RecordKind>) -> Owning {
+            orphaning_with(tag, |_, _| records)
+        }
+
+        /// [`orphaning`] for records that have to **name the fixture's own directories** — a lost
+        /// child's workspace is a path under the project, and the path is not knowable until the
+        /// scratch repo exists. The closure is handed the repo and the project it was keyed to.
+        fn orphaning_with(
+            tag: &str,
+            records: impl FnOnce(&std::path::Path, &ProjectDir) -> Vec<RecordKind>,
+        ) -> Owning {
             let dir = scratch(tag);
             let repo = fixture_repo(&dir);
             let state = dir.join("state");
             let project = ProjectDir::new(&state, &crate::socket::project_root(&repo));
             std::fs::create_dir_all(project.path()).unwrap();
             let journal = project.journal();
-            for (seq, kind) in records.into_iter().enumerate() {
+            for (seq, kind) in records(&repo, &project).into_iter().enumerate() {
                 append(&journal, &line(seq as u64, 1_000 + seq as u64, kind));
             }
             let live = Arc::new(crate::registry::LiveRegistry::follow(
@@ -11097,6 +11315,66 @@ mod tests {
                     workspace: None,
                 }),
             ]
+        }
+
+        /// The `TaskId` every lost-child fixture's contract is under.
+        const CHILD_TASK: &str = "t-lost-child";
+
+        /// The records of a **lost root and its lost child** — the shape a supervisor SIGKILL
+        /// leaves behind. The child carries what a resume of it needs and a root's does not: the
+        /// workspace it ran in, recorded on its `SessionObserved`.
+        ///
+        /// `workspace` is the caller's, so a test can name a tree that no longer exists (or none at
+        /// all) without a second fixture. Neither node records a pid: `procid` is the root path's
+        /// concern and is already measured there, and a fixture that recorded this process's pid
+        /// would refuse for that reason instead of the one under test.
+        fn lost_root_and_child(
+            workspace: Option<marion_core::contract::Workspace>,
+        ) -> Vec<RecordKind> {
+            let spawned = |agent: &str| {
+                RecordKind::Spawned(marion_core::journal::Spawned {
+                    agent_id: id(agent),
+                    harness_version: "test".into(),
+                    model: None,
+                    pid: None,
+                    start_id: None,
+                })
+            };
+            let session = |agent: &str, ws: Option<marion_core::contract::Workspace>| {
+                RecordKind::SessionObserved(marion_core::journal::SessionObserved {
+                    agent_id: id(agent),
+                    harness: Harness::ClaudeCode,
+                    session_id: format!("sess-{agent}"),
+                    pane: false,
+                    workspace: ws,
+                })
+            };
+            vec![
+                intent("root", None, "claude", 0),
+                spawned("root"),
+                session("root", None),
+                RecordKind::SpawnIntent(SpawnIntent {
+                    agent_id: id("child"),
+                    parent_id: Some(id("root")),
+                    agent_type: "claude".into(),
+                    harness: Harness::ClaudeCode,
+                    depth: 1,
+                    task_id: Some(marion_core::contract::TaskId(CHILD_TASK.into())),
+                }),
+                spawned("child"),
+                session("child", workspace),
+            ]
+        }
+
+        /// The worktree a lost child ran in, **made on disk** so a resume of it finds the tree its
+        /// session was created in still there.
+        fn existing_child_worktree(project: &ProjectDir) -> marion_core::contract::Workspace {
+            let path = project.agent(&id("child")).worktree();
+            std::fs::create_dir_all(&path).unwrap();
+            marion_core::contract::Workspace::Worktree {
+                path,
+                branch: format!("marion/{CHILD_TASK}"),
+            }
         }
 
         fn resume(
@@ -11168,6 +11446,125 @@ mod tests {
                 2,
                 "replay folds the second spawn as generation two"
             );
+        }
+
+        /// **A resume relaunches a lost child into its own id, under its own parent.**
+        ///
+        /// The root path could rebuild a root's launch from the project the supervisor is keyed on.
+        /// A child's could not, until its workspace was journaled: its cwd is a linked worktree
+        /// marion made, and a relaunch anywhere else reaches the harness with a cwd the session was
+        /// not created in. Now it is recorded, so the child goes back through the **same**
+        /// `run::run_spawn` path a fresh child takes — its own `AgentId`, its recorded parent, its
+        /// recorded depth, and `resume: Some(session)` — and lands in the tree it left.
+        ///
+        /// The contract the run writes is the oracle for *where*: §6.7 records the workspace, so a
+        /// relaunch that had cut a second worktree would name a different path there.
+        #[test]
+        fn resume_relaunches_a_lost_child_into_its_own_node_id_under_its_parent() {
+            let fx = orphaning_with("resume-child", |_, project| {
+                lost_root_and_child(Some(existing_child_worktree(project)))
+            });
+            let expected = existing_child_worktree(&fx.project);
+
+            let r = resume(&fx, id("child"), "carry on from here").expect("the child relaunches");
+            assert_eq!(r.agent_id, id("child"), "the node keeps its own id");
+            assert_eq!(r.spawn_generation, 2, "the second lifetime of one node");
+            settle(&fx, &id("child"));
+
+            let journalled = std::fs::read_to_string(fx.project.journal()).unwrap();
+            let node = marion_core::registry::replay(journalled.as_bytes())
+                .get(&id("child"))
+                .cloned()
+                .expect("the child still replays under its own id");
+            assert_eq!(node.spawn_generation, 2, "replay folds the second spawn");
+            assert_eq!(
+                node.depth(),
+                Some(1),
+                "§7.5 makes the intent immutable, so the second life is at the same depth"
+            );
+            assert_eq!(
+                node.intent.as_ref().and_then(|i| i.parent_id.clone()),
+                Some(id("root")),
+                "and under the same parent: the tree shows it where it was"
+            );
+
+            // **And it ran in the tree the journal recorded.** The fixture's worktree is a plain
+            // directory rather than a real linked worktree, so `make_worktree` would have failed on
+            // it and the resume would have returned an error instead of a node — a relaunch that
+            // cut a second tree cannot reach this line. The directory is still the one the fixture
+            // made, untouched by git. `select_workspace`'s own unit test asserts the value
+            // directly; this asserts the launch took that path.
+            assert!(
+                expected.path().is_dir() && !expected.path().join(".git").exists(),
+                "the recorded tree is still the one the first life used: {}",
+                expected.path().display()
+            );
+        }
+
+        /// **A resume refuses by name when the tree the session was created in is gone.** `marion
+        /// run`'s cleanup and `worktree_reap` both remove a child's worktree; the session id
+        /// outlives it on the journal, and handing it back from a directory the harness has never
+        /// seen is how a "resume" silently becomes a fresh run under a resumed node's id.
+        #[test]
+        fn resume_refuses_a_child_whose_recorded_worktree_is_gone() {
+            let fx = orphaning_with("resume-child-reaped", |_, project| {
+                lost_root_and_child(Some(marion_core::contract::Workspace::Worktree {
+                    path: project.agent(&id("child")).worktree(),
+                    branch: format!("marion/{CHILD_TASK}"),
+                }))
+            });
+            let before = journal_len(&fx);
+            let e = resume(&fx, id("child"), "carry on").expect_err("a reaped tree blocks it");
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
+            assert!(
+                e.message.contains("no longer exists"),
+                "the refusal names the missing tree: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), before, "nothing was launched");
+
+            // And a child whose journal never named a workspace at all is refused for that, rather
+            // than relaunched in whatever directory is at hand.
+            let fx = orphaning_with("resume-child-unrecorded", |_, _| lost_root_and_child(None));
+            let e = resume(&fx, id("child"), "carry on").expect_err("an unrecorded tree blocks it");
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
+            assert!(
+                e.message.contains("does not record"),
+                "the refusal says the journal is silent: {}",
+                e.message
+            );
+        }
+
+        /// **A resume refuses a child whose parent is still Live.** Principle 8: marion holds a
+        /// running node's channel, and a Live parent's own `spawn` owns this child — its outcome is
+        /// owed to a call that is still waiting for it. Relaunching from outside would put a second
+        /// process under one contract, which is the thing resume exists not to do. A parent whose
+        /// fate is decided holds nothing, and that child resumes.
+        #[test]
+        fn resume_refuses_a_child_whose_parent_is_still_live() {
+            // `owning` writes its records **after** the boot pass, so nothing is marked `Orphaned`:
+            // the root is a node this supervisor holds, and the child is resumable only because its
+            // own `Exited` is on the journal.
+            let mut records = lost_root_and_child(None);
+            records.push(RecordKind::Exited(marion_core::journal::Exited {
+                agent_id: id("child"),
+                status: marion_core::contract::ResultStatus::Failed,
+                exit: ProcessExit {
+                    code: Some(1),
+                    signal: None,
+                    description: "the child's first life ended".into(),
+                },
+            }));
+            let fx = owning("resume-child-live-parent", records);
+            let before = journal_len(&fx);
+            let e = resume(&fx, id("child"), "carry on").expect_err("a live parent blocks it");
+            assert_eq!(e.kind(), Some(FailureKind::Refused), "{e:?}");
+            assert!(
+                e.message.contains("still live"),
+                "the refusal names the parent: {}",
+                e.message
+            );
+            assert_eq!(journal_len(&fx), before, "nothing was launched");
         }
 
         /// **A resume refuses when the orphan's own process cannot be proven gone.** A recorded pid

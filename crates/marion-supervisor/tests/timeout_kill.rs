@@ -152,6 +152,7 @@ fn a_timed_out_codex_child_leaves_no_surviving_tool_call_descendant() {
         model: None,
         isolation: Isolation::Worktree,
         allow_concurrent_writes: false,
+        resume: None,
     };
     let started = Instant::now();
     // A root caller (§6.1 step 2): depth 0, the same top-level `spawn` `marion run` produces.
