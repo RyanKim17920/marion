@@ -223,6 +223,136 @@ fn write_serialized<W: Write>(
     writer.flush()
 }
 
+/// What one bounded keyboard read produced.
+enum KeyRead {
+    /// The poll expired with nothing typed: the loop's chance to notice `leaving`.
+    Idle,
+    Bytes(usize),
+    /// The worker is done, and has already recorded why and set `leaving`.
+    Stop,
+}
+
+/// The keyboard worker's whole life, on its own thread.
+///
+/// It ends by setting `leaving` rather than by exiting the process, so the terminal is restored by
+/// the `Screen` guard on the main thread's normal return — a `std::process::exit` here would skip
+/// every destructor and leave the operator's terminal in raw mode.
+fn watch_keyboard(
+    id: AgentId,
+    input_fd: std::os::fd::RawFd,
+    writer: Arc<std::sync::Mutex<UnixStream>>,
+    leaving: Arc<AtomicBool>,
+    failure: Arc<std::sync::Mutex<Option<String>>>,
+    mut encoder: KeyboardEncoder,
+) {
+    let Some(mut stdin) = open_keyboard(input_fd, &failure, &leaving) else {
+        return;
+    };
+    let mut keys = Keys::new();
+    let mut buf = [0u8; 4096];
+    while !leaving.load(Ordering::SeqCst) {
+        let n = match read_keyboard(&mut stdin, &mut buf, &encoder, &failure, &leaving) {
+            KeyRead::Idle => continue,
+            KeyRead::Bytes(n) => n,
+            KeyRead::Stop => return,
+        };
+        for action in keys.feed(&buf[..n]) {
+            if forward_key(action, &id, &mut encoder, &writer, &failure, &leaving).is_break() {
+                return;
+            }
+        }
+    }
+}
+
+/// The operator's terminal, opened for the worker. A refusal here is the session's, not a detach.
+fn open_keyboard(
+    input_fd: std::os::fd::RawFd,
+    failure: &std::sync::Mutex<Option<String>>,
+    leaving: &AtomicBool,
+) -> Option<marion_tui::guard::Keyboard> {
+    match marion_tui::guard::Keyboard::open(input_fd) {
+        Ok(stdin) => Some(stdin),
+        Err(error) => {
+            *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(format!("watching pane keyboard input: {error}"));
+            leaving.store(true, Ordering::SeqCst);
+            None
+        }
+    }
+}
+
+/// One bounded read. A closed stdin is reported rather than treated as a detach, and the report
+/// names a half-typed scalar because that is the one case where bytes were actually lost.
+fn read_keyboard(
+    stdin: &mut marion_tui::guard::Keyboard,
+    buf: &mut [u8; 4096],
+    encoder: &KeyboardEncoder,
+    failure: &std::sync::Mutex<Option<String>>,
+    leaving: &AtomicBool,
+) -> KeyRead {
+    match stdin.read_within(buf, POLL) {
+        Ok(None) => KeyRead::Idle,
+        Ok(Some(0)) => {
+            *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(if encoder.has_pending_utf8() {
+                    "pane keyboard input closed in the middle of a UTF-8 scalar".into()
+                } else {
+                    "pane keyboard input closed while this attach held the write lease".into()
+                });
+            leaving.store(true, Ordering::SeqCst);
+            KeyRead::Stop
+        }
+        Ok(Some(n)) => KeyRead::Bytes(n),
+        Err(error) => {
+            *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(format!("reading pane keyboard input: {error}"));
+            leaving.store(true, Ordering::SeqCst);
+            KeyRead::Stop
+        }
+    }
+}
+
+/// One filtered keystroke, encoded and sent. `Break` ends the worker: an operator detach, or a
+/// failure it has just recorded.
+fn forward_key(
+    action: Action,
+    id: &AgentId,
+    encoder: &mut KeyboardEncoder,
+    writer: &Arc<std::sync::Mutex<UnixStream>>,
+    failure: &std::sync::Mutex<Option<String>>,
+    leaving: &AtomicBool,
+) -> std::ops::ControlFlow<()> {
+    let bytes = match action {
+        Action::Detach => {
+            if encoder.has_pending_utf8() {
+                *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some("pane detach arrived in the middle of a UTF-8 scalar".into());
+            }
+            leaving.store(true, Ordering::SeqCst);
+            return std::ops::ControlFlow::Break(());
+        }
+        Action::Forward(bytes) => bytes,
+    };
+    let input = match encoder.encode(id, bytes) {
+        Ok(Some(input)) => input,
+        Ok(None) => return std::ops::ControlFlow::Continue(()),
+        Err(error) => {
+            *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+            leaving.store(true, Ordering::SeqCst);
+            return std::ops::ControlFlow::Break(());
+        }
+    };
+    let method = input.method();
+    let f = Frame::Input(ClientNotification::new(input));
+    if let Err(error) = write_serialized(writer, f.to_line().as_bytes()) {
+        *failure.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(format!("sending {method} from the keyboard: {error}"));
+        leaving.store(true, Ordering::SeqCst);
+        return std::ops::ControlFlow::Break(());
+    }
+    std::ops::ControlFlow::Continue(())
+}
+
 /// Incremental UTF-8 for legacy `node/pty-write`. Raw tty reads are not character boundaries;
 /// keeping the incomplete suffix is what prevents a split paste from turning one scalar into
 /// U+FFFD.
@@ -780,7 +910,7 @@ impl Session {
         let id = self.id.clone();
         let input_fd = self.input_fd;
         let writer = Arc::clone(&self.writer);
-        let mut encoder = KeyboardEncoder::for_stream(self.pane_stream)?;
+        let encoder = KeyboardEncoder::for_stream(self.pane_stream)?;
         writer
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -788,83 +918,11 @@ impl Session {
             .map_err(|e| format!("bounding pane keyboard writes: {e}"))?;
         self.keyboard = Some(
             std::thread::Builder::new()
-            .name("marion-attach-keys".into())
-            .spawn(move || {
-                let mut keys = Keys::new();
-                let mut buf = [0u8; 4096];
-                let mut stdin = match marion_tui::guard::Keyboard::open(input_fd) {
-                    Ok(stdin) => stdin,
-                    Err(error) => {
-                        *failure.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some(format!("watching pane keyboard input: {error}"));
-                        leaving.store(true, Ordering::SeqCst);
-                        return;
-                    }
-                };
-                while !leaving.load(Ordering::SeqCst) {
-                    let n = match stdin.read_within(&mut buf, POLL) {
-                        Ok(None) => continue,
-                        Ok(Some(0)) => {
-                            *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                                if encoder.has_pending_utf8() {
-                                    "pane keyboard input closed in the middle of a UTF-8 scalar"
-                                        .into()
-                                } else {
-                                    "pane keyboard input closed while this attach held the write \
-                                     lease"
-                                        .into()
-                                },
-                            );
-                            leaving.store(true, Ordering::SeqCst);
-                            return;
-                        }
-                        Ok(Some(n)) => n,
-                        Err(error) => {
-                            *failure.lock().unwrap_or_else(|e| e.into_inner()) =
-                                Some(format!("reading pane keyboard input: {error}"));
-                            leaving.store(true, Ordering::SeqCst);
-                            return;
-                        }
-                    };
-                    for action in keys.feed(&buf[..n]) {
-                        match action {
-                            Action::Detach => {
-                                if encoder.has_pending_utf8() {
-                                    *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                                        "pane detach arrived in the middle of a UTF-8 scalar".into(),
-                                    );
-                                }
-                                leaving.store(true, Ordering::SeqCst);
-                                return;
-                            }
-                            Action::Forward(bytes) => {
-                                let input = match encoder.encode(&id, bytes) {
-                                    Ok(Some(input)) => input,
-                                    Ok(None) => continue,
-                                    Err(error) => {
-                                        *failure.lock().unwrap_or_else(|e| e.into_inner()) =
-                                            Some(error);
-                                        leaving.store(true, Ordering::SeqCst);
-                                        return;
-                                    }
-                                };
-                                let method = input.method();
-                                let f = Frame::Input(ClientNotification::new(input));
-                                if let Err(error) =
-                                    write_serialized(&writer, f.to_line().as_bytes())
-                                {
-                                    *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                                        format!("sending {method} from the keyboard: {error}"),
-                                    );
-                                    leaving.store(true, Ordering::SeqCst);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            })
-            .map_err(|e| format!("starting the pane keyboard reader: {e}"))?,
+                .name("marion-attach-keys".into())
+                .spawn(move || {
+                    watch_keyboard(id, input_fd, writer, leaving, failure, encoder);
+                })
+                .map_err(|e| format!("starting the pane keyboard reader: {e}"))?,
         );
         Ok(())
     }
