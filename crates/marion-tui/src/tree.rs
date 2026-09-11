@@ -30,8 +30,8 @@
 //!
 //! # Two styles, and no third
 //!
-//! Available is [`Modifier::BOLD`]; unavailable is [`Color::DarkGray`] plus [`Modifier::DIM`] —
-//! dim and not struck, because a strikethrough says *cannot* and §3.3's answer is *unmeasured*. The
+//! Available is [`Modifier::BOLD`]; unavailable is [`greyed`]'s one explicit mid grey — greyed and
+//! not struck, because a strikethrough says *cannot* and §3.3's answer is *unmeasured*. The
 //! label text is **identical** either way, which is deliberate: if the greyed form also changed the
 //! characters, a snapshot would still catch a mis-greyed action while the *style* path — the part
 //! an operator actually reads at a glance — went untested. The only signal is the style, so a test
@@ -441,10 +441,19 @@ impl Widget for TreeView<'_> {
 
 /// The style an unavailable action is drawn in. **This is the greying**, and it is one value so
 /// that a test can name it rather than re-describe it.
+///
+/// One explicit mid grey, and **no `DIM`**. The old value was `DarkGray` *and* `DIM`, which is two
+/// reductions compounded: xterm's colour 8 is already `#808080`, `DIM` halves whatever it lands on
+/// again, and the theme is free to have made colour 8 darker still. The absent half of the strip
+/// came out at a contrast a first-time viewer read as a rendering fault rather than as information,
+/// and §3.3's *unmeasured* is a fact the operator has to be able to read.
+///
+/// `#8a8a8a` is the darkest grey that clears WCAG AA (4.5:1) against `#1e1e1e` — the near-black most
+/// dark terminal themes ship — and it clears 6:1 against pure black.
+/// `an_absent_capability_is_legible_grey_rather_than_dimmed_dark_grey` measures both rather than
+/// taking this sentence's word for it.
 pub fn greyed() -> Style {
-    Style::default()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::DIM)
+    Style::default().fg(Color::Rgb(0x8a, 0x8a, 0x8a))
 }
 
 /// The style an available action is drawn in: bold, so the offered set is the figure and the
@@ -794,9 +803,7 @@ mod tests {
         // greying.
         let grey = |x: u16| {
             let s = buf[(x, 0)].style();
-            s.fg == Some(Color::DarkGray)
-                && s.add_modifier.contains(Modifier::DIM)
-                && !s.add_modifier.contains(Modifier::CROSSED_OUT)
+            s.fg == greyed().fg && !s.add_modifier.contains(Modifier::CROSSED_OUT)
         };
         let bold = |x: u16| buf[(x, 0)].style().add_modifier.contains(Modifier::BOLD);
         assert!(
@@ -812,6 +819,56 @@ mod tests {
             "the label is neither offered nor greyed"
         );
         assert_ne!(offered(), greyed(), "the two styles must be tellable apart");
+    }
+
+    /// **A greyed capability must still be legible.** `DarkGray` plus `DIM` is two reductions
+    /// compounded: xterm's colour 8 is `#808080`, and `DIM` is a *further* halving the terminal
+    /// applies on top — a first-time viewer read the absent half of the strip as a rendering fault
+    /// rather than as information. §3.3's answer is *unmeasured*, which an operator has to be able
+    /// to read, so the greying is one explicit mid grey that clears WCAG AA against a dark ground
+    /// and nothing else.
+    #[test]
+    fn an_absent_capability_is_legible_grey_rather_than_dimmed_dark_grey() {
+        // WCAG 2.x relative luminance and contrast, so "4.5:1" is measured rather than asserted.
+        fn luminance(rgb: (u8, u8, u8)) -> f64 {
+            let chan = |c: u8| {
+                let c = f64::from(c) / 255.0;
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * chan(rgb.0) + 0.7152 * chan(rgb.1) + 0.0722 * chan(rgb.2)
+        }
+        let contrast = |fg: (u8, u8, u8), bg: (u8, u8, u8)| {
+            let (a, b) = (luminance(fg), luminance(bg));
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        };
+
+        let Some(Color::Rgb(r, g, b)) = greyed().fg else {
+            panic!(
+                "the greying must name its own colour rather than borrow a palette slot: {:?}",
+                greyed().fg
+            );
+        };
+        // Both grounds a "dark theme" terminal actually uses: pure black, and the near-black most
+        // themes ship. The strip has to be readable on either.
+        for ground in [(0u8, 0u8, 0u8), (0x1e, 0x1e, 0x1e)] {
+            let ratio = contrast((r, g, b), ground);
+            assert!(
+                ratio >= 4.5,
+                "absent caps are {ratio:.2}:1 on {ground:?}, below WCAG AA's 4.5:1"
+            );
+        }
+        assert!(
+            !greyed().add_modifier.contains(Modifier::DIM),
+            "DIM halves the colour again in the terminal, undoing the contrast measured above"
+        );
+        assert!(
+            offered().add_modifier.contains(Modifier::BOLD),
+            "the present caps are the figure"
+        );
     }
 
     /// A caveat about the key the actions were decided at — the version marion never read — is

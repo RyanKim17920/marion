@@ -304,10 +304,16 @@ fn moving_the_cursor_changes_the_action_strip() {
         "the headless and pane rows of one harness rendered the same strip, so the surface \
          component of §3.3's key reached nothing"
     );
-    // And specifically: `permissions` is offered on one and greyed on the other.
+    // And specifically: `permissions` is offered on one and greyed on the other. The probe is
+    // `tree::greyed`'s own colour rather than a spelling of it, so re-tuning the grey for contrast
+    // cannot quietly turn this assertion into one that matches nothing.
+    let grey = format!(
+        "{:?}",
+        tree::greyed().fg.expect("the greying names a colour")
+    );
     let greyed_permissions = |s: &str| {
         s.lines()
-            .any(|l| l.contains("permissions") && l.contains("dim()"))
+            .any(|l| l.contains("permissions") && l.contains(&grey))
     };
     assert!(!greyed_permissions(&head), "{head}");
     assert!(greyed_permissions(&pane), "{pane}");
