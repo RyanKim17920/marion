@@ -519,18 +519,30 @@ impl Panes {
         if self.completed_count == 0 {
             return Vec::new();
         }
-        if self
-            .next_completed_expiry
-            .is_some_and(|next_expiry| now < next_expiry)
-            && self.completed_count <= self.completed_limit()
-            && self.completed_bytes <= Self::MAX_COMPLETED_BYTES
-        {
+        if self.completed_within_budget(now) {
             return Vec::new();
         }
         #[cfg(test)]
         {
             self.completed_scan_count += 1;
         }
+        let mut victims = self.take_expired_completed(now);
+        self.take_oldest_completed_over_budget(&mut victims);
+        self.recompute_next_completed_expiry();
+        victims
+    }
+
+    /// **Nothing is past its deadline and nothing is over budget**, so no Completed pane is a
+    /// victim and the scan below is skipped entirely.
+    fn completed_within_budget(&self, now: std::time::Instant) -> bool {
+        self.next_completed_expiry
+            .is_some_and(|next_expiry| now < next_expiry)
+            && self.completed_count <= self.completed_limit()
+            && self.completed_bytes <= Self::MAX_COMPLETED_BYTES
+    }
+
+    /// Every Completed pane at or past [`Self::COMPLETED_TTL`], taken out of the accounting.
+    fn take_expired_completed(&mut self, now: std::time::Instant) -> Vec<Arc<crate::pty::PtyHost>> {
         let expired = self
             .hosts
             .iter()
@@ -543,11 +555,15 @@ impl Panes {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let mut victims = expired
+        expired
             .into_iter()
             .filter_map(|id| self.remove_accounted(&id))
             .map(|entry| Arc::clone(entry.host()))
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    }
+
+    /// **Oldest first**, until the retained Completed panes are back inside both budgets.
+    fn take_oldest_completed_over_budget(&mut self, victims: &mut Vec<Arc<crate::pty::PtyHost>>) {
         while self.completed_count > self.completed_limit()
             || self.completed_bytes > Self::MAX_COMPLETED_BYTES
         {
@@ -567,8 +583,6 @@ impl Panes {
                 victims.push(Arc::clone(entry.host()));
             }
         }
-        self.recompute_next_completed_expiry();
-        victims
     }
 
     /// `conn`'s lease on `id`, if it holds one. The lease **is** the permission — there is no
