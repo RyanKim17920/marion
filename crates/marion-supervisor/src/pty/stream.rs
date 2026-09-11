@@ -1494,6 +1494,65 @@ fn validate_display_completeness(
     Ok(())
 }
 
+/// Read the whole stream file, refusing one larger than recovery is allowed to hold.
+///
+/// Twice, and both are needed: the length says what the file claims before a byte is allocated for
+/// it, and the read is bounded one byte past the limit so a file that grew between the two — or
+/// whose length lied — is still refused rather than read without a ceiling.
+fn read_recovery_bytes(file: &mut File) -> Result<Vec<u8>, StreamError> {
+    if file.metadata()?.len() > MAX_RECOVERY_BYTES as u64 {
+        return Err(StreamError::RecoveryTooLarge {
+            max: MAX_RECOVERY_BYTES,
+        });
+    }
+    let mut encoded = Vec::new();
+    file.take(MAX_RECOVERY_BYTES as u64 + 1)
+        .read_to_end(&mut encoded)?;
+    if encoded.len() > MAX_RECOVERY_BYTES {
+        return Err(StreamError::RecoveryTooLarge {
+            max: MAX_RECOVERY_BYTES,
+        });
+    }
+    Ok(encoded)
+}
+
+/// The recovered file must be this session's, at this geometry, in this version.
+///
+/// The checksum says the header is intact; it does not say it is the header this writer expects.
+/// Appending to a stream whose identity or geometry differs would produce one file describing two
+/// sessions.
+fn ensure_header_matches(
+    recovered: &SessionHeader,
+    expected: &SessionHeader,
+) -> Result<(), StreamError> {
+    if recovered.version != SESSION_VERSION
+        || recovered.initial_cols != expected.initial_cols
+        || recovered.initial_rows != expected.initial_rows
+        || recovered.session_id != expected.session_id
+        || recovered.agent_binding != expected.agent_binding
+    {
+        return Err(StreamError::HeaderMismatch);
+    }
+    Ok(())
+}
+
+/// Where the three counters stand after recovery: at the last surviving record, or at zero for a
+/// file that holds nothing but its header.
+fn recovered_counters(records: &[Record]) -> TrailerCounters {
+    records
+        .last()
+        .map(|record| TrailerCounters {
+            record_seq: record.record_seq,
+            display_seq: record.display_seq,
+            input_seq: record.input_seq,
+        })
+        .unwrap_or(TrailerCounters {
+            record_seq: 0,
+            display_seq: 0,
+            input_seq: 0,
+        })
+}
+
 pub(crate) struct SessionWriter {
     file: File,
     header: SessionHeader,
@@ -1595,31 +1654,10 @@ impl SessionWriter {
     ) -> Result<Self, StreamError> {
         let path = PinnedStreamPath::open(cast_path)?;
         let mut file = path.open_existing()?;
-        let file_len = file.metadata()?.len();
-        if file_len > MAX_RECOVERY_BYTES as u64 {
-            return Err(StreamError::RecoveryTooLarge {
-                max: MAX_RECOVERY_BYTES,
-            });
-        }
-        let mut encoded = Vec::new();
-        (&mut file)
-            .take(MAX_RECOVERY_BYTES as u64 + 1)
-            .read_to_end(&mut encoded)?;
-        if encoded.len() > MAX_RECOVERY_BYTES {
-            return Err(StreamError::RecoveryTooLarge {
-                max: MAX_RECOVERY_BYTES,
-            });
-        }
+        let encoded = read_recovery_bytes(&mut file)?;
         let recovery = recover_session_bytes(&encoded)?;
         let expected = SessionHeader::new(agent_id, initial_size, session_id);
-        if recovery.header.version != SESSION_VERSION
-            || recovery.header.initial_cols != expected.initial_cols
-            || recovery.header.initial_rows != expected.initial_rows
-            || recovery.header.session_id != expected.session_id
-            || recovery.header.agent_binding != expected.agent_binding
-        {
-            return Err(StreamError::HeaderMismatch);
-        }
+        ensure_header_matches(&recovery.header, &expected)?;
         path.ensure_current(&file)?;
         let committed_len = recovery.truncate_to.unwrap_or(encoded.len());
         let recovered_torn_tail = recovery.truncate_to.is_some();
@@ -1629,19 +1667,7 @@ impl SessionWriter {
         }
         file.seek(SeekFrom::Start(committed_len as u64))?;
         path.ensure_current(&file)?;
-        let counters = recovery
-            .records
-            .last()
-            .map(|record| TrailerCounters {
-                record_seq: record.record_seq,
-                display_seq: record.display_seq,
-                input_seq: record.input_seq,
-            })
-            .unwrap_or(TrailerCounters {
-                record_seq: 0,
-                display_seq: 0,
-                input_seq: 0,
-            });
+        let counters = recovered_counters(&recovery.records);
         let ended = recovery
             .records
             .last()
@@ -1661,33 +1687,41 @@ impl SessionWriter {
             poisoned: false,
         };
         if !writer.ended && !writer.display_incomplete {
-            // An unended file is crash recovery, even when it ended exactly on a frame boundary:
-            // terminal bytes may have been lost before they reached a durable Output record. Mark
-            // it incomplete before admitting new appends. If marker persistence fails, the next
-            // reopen sees the same unended prefix (or a partial marker), repairs it, and retries.
-            let marker = writer.next_record(RecordKind::DisplayIncomplete)?;
-            let encoded_marker = marker.encode_for(RecordFormat::SessionV3)?;
-            if let Err(error) =
-                persist_repair(&mut writer.file, writer.committed_len, &encoded_marker)
-            {
-                return Err(error.into());
-            }
-            let repaired_len = writer
-                .committed_len
-                .checked_add(encoded_marker.len() as u64)
-                .ok_or(StreamError::CommittedLengthOverflow)?;
-            writer.file.set_len(repaired_len)?;
-            writer.file.sync_data()?;
-            writer.counters = TrailerCounters {
-                record_seq: marker.record_seq,
-                display_seq: marker.display_seq,
-                input_seq: marker.input_seq,
-            };
-            writer.committed_len = repaired_len;
-            writer.display_incomplete = true;
+            writer.repair_unended_prefix(persist_repair)?;
         }
         writer.file.seek(SeekFrom::Start(writer.committed_len))?;
         Ok(writer)
+    }
+
+    /// An unended file is crash recovery, even when it ended exactly on a frame boundary: terminal
+    /// bytes may have been lost before they reached a durable Output record. Mark it incomplete
+    /// before admitting new appends.
+    ///
+    /// If marker persistence fails, nothing here is committed: the next reopen sees the same unended
+    /// prefix, or a partial marker it repairs first, and retries.
+    fn repair_unended_prefix(
+        &mut self,
+        persist_repair: impl FnOnce(&mut File, u64, &[u8]) -> io::Result<()>,
+    ) -> Result<(), StreamError> {
+        let marker = self.next_record(RecordKind::DisplayIncomplete)?;
+        let encoded_marker = marker.encode_for(RecordFormat::SessionV3)?;
+        if let Err(error) = persist_repair(&mut self.file, self.committed_len, &encoded_marker) {
+            return Err(error.into());
+        }
+        let repaired_len = self
+            .committed_len
+            .checked_add(encoded_marker.len() as u64)
+            .ok_or(StreamError::CommittedLengthOverflow)?;
+        self.file.set_len(repaired_len)?;
+        self.file.sync_data()?;
+        self.counters = TrailerCounters {
+            record_seq: marker.record_seq,
+            display_seq: marker.display_seq,
+            input_seq: marker.input_seq,
+        };
+        self.committed_len = repaired_len;
+        self.display_incomplete = true;
+        Ok(())
     }
 
     pub(crate) fn append_output(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
