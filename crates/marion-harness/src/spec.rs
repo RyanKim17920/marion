@@ -441,6 +441,92 @@ pub enum Refusal {
     NoResume,
 }
 
+/// The items a list [`Field`] contributes to a shape's argv.
+///
+/// The row's update policy rides its override channel ahead of the launch's own pairs
+/// ([`UpdatePolicy::Pair`]); every other field reads from `f` alone.
+fn items(spec: &HarnessSpec, f: &Fields, field: Field) -> Vec<String> {
+    let mut items = f.items(field);
+    if let (Field::Pairs, Some((k, v))) = (field, spec.updates.pair()) {
+        items.insert(0, format!("{k}={v}"));
+    }
+    items
+}
+
+/// [`Arg::Flag`]: `<flag> <value>` when the field carries a value; nothing otherwise.
+fn arg_flag(flag: &str, field: Field, f: &Fields) -> Vec<String> {
+    f.value(field)
+        .map(|v| vec![flag.to_string(), v])
+        .unwrap_or_default()
+}
+
+/// [`Arg::FlagEq`]: `<flag>=<value>` when the field carries a value; nothing otherwise.
+fn arg_flag_eq(flag: &str, field: Field, f: &Fields) -> Vec<String> {
+    f.value(field)
+        .map(|v| vec![format!("{flag}={v}")])
+        .unwrap_or_default()
+}
+
+/// [`Arg::Each`]: `<flag> <item>` once per item of a list field.
+fn arg_each(flag: &str, field: Field, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
+    items(spec, f, field)
+        .into_iter()
+        .flat_map(|item| [flag.to_string(), item])
+        .collect()
+}
+
+/// [`Arg::EachEq`]: `<flag>=<item>` once per item of a list field.
+fn arg_each_eq(flag: &str, field: Field, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
+    items(spec, f, field)
+        .into_iter()
+        .map(|item| format!("{flag}={item}"))
+        .collect()
+}
+
+/// [`Arg::Isolation`]: the isolation flag, under [`Auth::Canned`] alone.
+fn arg_isolation(flag: &str, child: &str, f: &Fields) -> Vec<String> {
+    if f.auth != Auth::Canned {
+        return Vec::new();
+    }
+    let path = f.config_dir.join(child).to_string_lossy().into_owned();
+    vec![flag.to_string(), path]
+}
+
+/// [`Arg::Resume`]: the row's [`HarnessSpec::resume`] tokens around the session the launch asks
+/// to resume; nothing where either is absent. The *refusal* for a launch that asks a shape with
+/// no `Resume` slot is [`render`]'s, because only it can see the whole argv.
+fn arg_resume(spec: &HarnessSpec, f: &Fields) -> Vec<String> {
+    let (Some(id), Some(how)) = (f.value(Field::Resume), spec.resume) else {
+        return Vec::new();
+    };
+    match how {
+        Resume::Flag(flag) | Resume::Subcommand(flag) => vec![flag.to_string(), id],
+        Resume::FlagEq(flag) => vec![format!("{flag}={id}")],
+    }
+}
+
+/// The tokens one [`Arg`] contributes to a shape's argv, in order — empty where the row's own
+/// rule says this launch carries nothing for it. One arm per variant, each a single rule.
+fn render_arg(arg: Arg, spec: &HarnessSpec, f: &Fields) -> Vec<String> {
+    match arg {
+        Arg::Lit(s) => vec![s.to_string()],
+        Arg::Flag(flag, field) => arg_flag(flag, field, f),
+        Arg::FlagEq(flag, field) => arg_flag_eq(flag, field, f),
+        Arg::Each(flag, field) => arg_each(flag, field, spec, f),
+        Arg::EachEq(flag, field) => arg_each_eq(flag, field, spec, f),
+        Arg::Joined(flag, field) => vec![flag.to_string(), items(spec, f, field).join(",")],
+        Arg::Pos(field) => f.value(field).into_iter().collect(),
+        Arg::PosIfNonEmpty(field) => f
+            .value(field)
+            .filter(|v| !v.is_empty())
+            .into_iter()
+            .collect(),
+        Arg::Items(field) => items(spec, f, field),
+        Arg::Isolation(flag, child) => arg_isolation(flag, child, f),
+        Arg::Resume => arg_resume(spec, f),
+    }
+}
+
 /// argv + env for one shape of one row, or the [`Refusal`] the row states.
 pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation, Refusal> {
     let argv = match shape {
@@ -454,66 +540,9 @@ pub fn render(spec: &HarnessSpec, shape: Shape, f: &Fields) -> Result<Invocation
     if f.resume.is_some() && !(spec.resume.is_some() && argv.contains(&Arg::Resume)) {
         return Err(Refusal::NoResume);
     }
-    // The row's update policy rides its override channel ahead of the launch's own pairs
-    // ([`UpdatePolicy::Pair`]); every other field reads from `f` alone.
-    let items = |field: Field| -> Vec<String> {
-        let mut items = f.items(field);
-        if let (Field::Pairs, Some((k, v))) = (field, spec.updates.pair()) {
-            items.insert(0, format!("{k}={v}"));
-        }
-        items
-    };
     let mut args: Vec<String> = Vec::new();
     for arg in argv {
-        match *arg {
-            Arg::Lit(s) => args.push(s.into()),
-            Arg::Flag(flag, field) => {
-                if let Some(v) = f.value(field) {
-                    args.push(flag.into());
-                    args.push(v);
-                }
-            }
-            Arg::FlagEq(flag, field) => {
-                if let Some(v) = f.value(field) {
-                    args.push(format!("{flag}={v}"));
-                }
-            }
-            Arg::Each(flag, field) => {
-                for item in items(field) {
-                    args.push(flag.into());
-                    args.push(item);
-                }
-            }
-            Arg::EachEq(flag, field) => {
-                for item in items(field) {
-                    args.push(format!("{flag}={item}"));
-                }
-            }
-            Arg::Joined(flag, field) => {
-                args.push(flag.into());
-                args.push(items(field).join(","));
-            }
-            Arg::Pos(field) => args.extend(f.value(field)),
-            Arg::PosIfNonEmpty(field) => args.extend(f.value(field).filter(|v| !v.is_empty())),
-            Arg::Items(field) => args.extend(items(field)),
-            Arg::Isolation(flag, child) => {
-                if f.auth == Auth::Canned {
-                    args.push(flag.into());
-                    args.push(f.config_dir.join(child).to_string_lossy().into_owned());
-                }
-            }
-            Arg::Resume => {
-                if let (Some(id), Some(how)) = (f.value(Field::Resume), spec.resume) {
-                    match how {
-                        Resume::Flag(flag) | Resume::Subcommand(flag) => {
-                            args.push(flag.into());
-                            args.push(id);
-                        }
-                        Resume::FlagEq(flag) => args.push(format!("{flag}={id}")),
-                    }
-                }
-            }
-        }
+        args.extend(render_arg(*arg, spec, f));
     }
     let mut env = render_env(spec.env, f);
     env.extend(spec.updates.env());
