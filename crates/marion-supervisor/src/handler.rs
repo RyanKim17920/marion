@@ -11068,6 +11068,9 @@ mod tests {
         #[test]
         fn two_roots_in_different_worktrees_of_one_repository_branch_their_children_from_their_own_heads()
          {
+            if !marion_testsupport::harness_available("claude") {
+                return;
+            }
             let dir = scratch("owns-two-worktrees");
             let main = fixture_repo(&dir);
             // Two linked worktrees, each carrying a commit the other does not have, so "branched
@@ -11510,6 +11513,9 @@ mod tests {
         /// then folds it as generation two. Nothing about the launch is a new node.
         #[test]
         fn resume_relaunches_an_orphan_into_its_own_node_id_through_agent_spawns_path() {
+            if !marion_testsupport::harness_available("claude") {
+                return;
+            }
             let fx = orphaning("resume-relaunch", lost_root("sess-relaunch", None, None));
             // The orphan is what a resume is for: fate marked, a session to hand back.
             let before = fx
@@ -11567,6 +11573,9 @@ mod tests {
         /// relaunch that had cut a second worktree would name a different path there.
         #[test]
         fn resume_relaunches_a_lost_child_into_its_own_node_id_under_its_parent() {
+            if !marion_testsupport::harness_available("claude") {
+                return;
+            }
             let fx = orphaning_with("resume-child", |_, project| {
                 lost_root_and_child(Some(existing_child_worktree(project)))
             });
@@ -11717,6 +11726,9 @@ mod tests {
         /// would let a record that had not been written yet appear a few milliseconds later.
         #[test]
         fn the_spawn_response_names_a_node_whose_spawned_record_is_already_on_disk() {
+            if !marion_testsupport::harness_available("claude") {
+                return;
+            }
             let fx = owning("owns-launch", vec![intent("root", None, "claude", 0)]);
             let agent_id = spawn_a_real_child(&fx, 5);
 
@@ -11775,6 +11787,9 @@ mod tests {
         /// the two halves this pins are a write and a read on opposite sides of the journal.
         #[test]
         fn a_childs_requested_bound_is_what_the_tree_reports() {
+            if !marion_testsupport::harness_available("claude") {
+                return;
+            }
             let fx = owning("owns-child-bound", vec![intent("root", None, "claude", 0)]);
             let agent_id = spawn_a_real_child(&fx, 120);
 
@@ -11826,6 +11841,9 @@ mod tests {
         /// alive and would let a node that died a millisecond before the departure satisfy this.
         #[test]
         fn a_departing_client_does_not_touch_a_node_the_supervisor_owns() {
+            if !marion_testsupport::harness_available("claude") {
+                return;
+            }
             let fx = owning("owns-departure", vec![intent("root", None, "claude", 0)]);
             let agent_id = spawn_a_real_child(&fx, 30);
 

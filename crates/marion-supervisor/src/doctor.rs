@@ -2240,6 +2240,9 @@ mod tests {
     /// `--adapter` report, in the same place a failure would appear.
     #[test]
     fn the_checks_this_probe_cannot_run_are_named_rather_than_omitted() {
+        if !marion_testsupport::harness_available("claude") {
+            return;
+        }
         let rows = run(&Options {
             mode: ProbeMode::Adapter,
             harness: Some(Harness::ClaudeCode),

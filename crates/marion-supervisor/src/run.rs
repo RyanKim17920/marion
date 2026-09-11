@@ -2843,6 +2843,9 @@ mod tests {
     /// Codex `config.toml` on disk, still fails.
     #[test]
     fn a_claude_agent_type_never_writes_a_codex_config_or_launches_codex() {
+        if !marion_testsupport::harness_available("claude") {
+            return;
+        }
         let root = scratch("supervisor-dispatch");
         let repo = fixture_repo(&root);
         let state = root.join("state");
@@ -2943,6 +2946,9 @@ mod tests {
     /// failed.
     #[test]
     fn an_owner_learns_a_nodes_identity_before_its_first_side_effect_and_its_pid_at_launch() {
+        if !marion_testsupport::harness_available("claude") {
+            return;
+        }
         struct Recorder {
             project: ProjectDir,
             identified: Mutex<Vec<AgentId>>,

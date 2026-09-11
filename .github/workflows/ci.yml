@@ -12,6 +12,13 @@
 # `PINNED_HARNESSES`. The excluded suites are not skipped-if-absent — `require_claude_and_codex`
 # asserts — so they are named out rather than allowed to fail.
 #
+# `cargo test --workspace --lib` cannot be named down that way: a handful of unit tests inside
+# `marion-supervisor` do spawn a real `claude`, and they sit in the same binary as 1500 that do
+# not. Those call `marion_testsupport::harness_available` as their first statement, which is the
+# single gate for this: it skips by name, on the uncaptured stderr, and **only** because this file
+# sets `MARION_CI_NO_HARNESSES=1` below. Off a runner the same call panics, so the local pin gate
+# keeps its meaning and this file is the complete list of places these criteria do not run.
+#
 # The suite list below is explicit on purpose. A glob would sweep a future harness-driving suite
 # into the gate by existing, which is the same reason `.githooks/pre-commit` names its two
 # targets.
@@ -47,6 +54,10 @@ jobs:
   test:
     name: tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # No harness binary is installable on a runner — see the header. This is the only place in the
+    # repository that sets it; everywhere else, an absent harness is still a failure.
+    env:
+      MARION_CI_NO_HARNESSES: 1
     strategy:
       fail-fast: false
       matrix:

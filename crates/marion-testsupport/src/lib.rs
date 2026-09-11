@@ -40,6 +40,7 @@
 //! `marion` command. It kills processes by pid, removes directories on drop, and shells out to
 //! `git` and `ps`.
 
+use std::io::Write;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -877,6 +878,73 @@ pub fn on_path(program: &str) -> bool {
         Err(GateFailure::Absent) => false,
         Err(GateFailure::Refused(diagnosis)) => panic!("{diagnosis}"),
     }
+}
+
+/// The one variable that turns an absent harness into a named skip instead of a failure.
+///
+/// Set to `1` by `.github/workflows/ci.yml` and by nothing else. Every other value, including
+/// unset, leaves [`on_path`]'s rule in force.
+pub const NO_HARNESSES: &str = "MARION_CI_NO_HARNESSES";
+
+/// **Is `program` installed at the pinned release — and if not, may this test skip?**
+///
+/// `true` means the binary is there and the caller should proceed. `false` is returned *only* on a
+/// runner that has declared it has no harnesses, and the caller's contract is to `return`
+/// immediately:
+///
+/// ```ignore
+/// if !marion_testsupport::harness_available("claude") {
+///     return;
+/// }
+/// ```
+///
+/// # Why this exists at all, when [`on_path`] already decides
+///
+/// §9's rule — a criterion that quietly passes on a machine which cannot run it is worth less than
+/// no criterion — is about *silence*, not about failing. A GitHub runner has no `claude` and never
+/// will; tests that spawn one there were not reporting a gap in marion, they were reporting the
+/// runner. Ten of them failed in the first CI run, six inside one shared fixture, and every
+/// failure named a journal invariant rather than the missing binary. A CI that is red for a reason
+/// nobody can act on is the fastest way to teach a team to stop reading it.
+///
+/// So the gate moves *up*, to the first statement of the test, and the skip is loud and named. It
+/// is not a weakening: the tests are unchanged, they still drive the real binary, and on every
+/// machine that has one — every developer's, and the local matrix MILESTONES describes — absence
+/// still panics. Only a runner that has explicitly said `MARION_CI_NO_HARNESSES=1` may step over,
+/// and it has to say which harness it stepped over as it goes.
+///
+/// # Why the skip line is written to the descriptor rather than printed
+///
+/// `cargo test` captures `print!`/`eprint!` for a passing test, so a skip announced through those
+/// macros is invisible on exactly the runs it describes — the green ones. The `std::io::stderr()`
+/// handle is not captured, so this line reaches the log. That is the whole difference between a
+/// loud skip and a silent pass, and it is why this does not use `eprintln!`.
+///
+/// # Why absence still panics off the runner
+///
+/// A skip that is available everywhere is a skip that will be taken everywhere, and the pin gate
+/// exists to make "I ran the matrix" mean something. Keeping the panic as the default means the
+/// variable — and the one workflow file that sets it — is the complete list of places these
+/// criteria do not run.
+pub fn harness_available(program: &str) -> bool {
+    if on_path(program) {
+        return true;
+    }
+    if std::env::var_os(NO_HARNESSES).as_deref() != Some(std::ffi::OsStr::new("1")) {
+        panic!(
+            "this test drives a REAL {program}; put `{program}` ({version}) on PATH.\n\
+             A runner with no harness binaries at all sets {NO_HARNESSES}=1, and this test then \
+             skips by name instead of failing. Nothing else sets it.",
+            version = pinned_version(program),
+        );
+    }
+    // Not `eprintln!`: libtest captures that macro's output for a passing test, and a skip nobody
+    // can see is the silent pass this whole gate exists to rule out.
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIPPED (no `{program}`, {NO_HARNESSES}=1): a test that drives a real {program}"
+    );
+    false
 }
 
 /// The judgement [`on_path`] makes, as a pure function of what the binary printed.
