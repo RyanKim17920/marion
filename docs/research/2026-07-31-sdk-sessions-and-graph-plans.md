@@ -1,3 +1,13 @@
+# Pre-design research transcript — SDK sessions, subagents, graph plans
+
+*2026-07-31. Superseded; background only.* The raw question-and-answer notes that preceded
+`docs/specs/2026-07-31-marion-design.md`. Kept verbatim for provenance: the design's session
+model, its refusal to re-open a running session, and the "graph-plan" idea parked in
+MILESTONES.md's out-of-scope list all start here. Nothing in it is a current claim, and the
+harness facts it quotes were not version-stamped.
+
+---
+
 If you run something in Claude code sdk, (or other harness sdk’s for future reference), is it possible to load it into Claude code as well? As in, opening that current python run and interfering with it? 
 
 Am trying to create cli-based sub agents and Claude -p, I am not sure if you can reopen/close it at will without interrupting runs (or if it’s even possible)

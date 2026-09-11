@@ -3021,7 +3021,7 @@ completely by the time you want your own execution semantics.
 
 ## Explicitly out of scope (for now)
 
-- **The graph-plan system** sketched in `info.md`: a DAG of plan nodes with executable per-node exit
+- **The graph-plan system** sketched in `docs/research/2026-07-31-sdk-sessions-and-graph-plans.md`: a DAG of plan nodes with executable per-node exit
   criteria, a "node 0" validating the test infrastructure itself, and a red-before-green rule
   requiring each node's test be observed failing before the work and passing after. Good idea,
   separate product, would consume this one. The task contract is shaped so it can attach later.
