@@ -1621,6 +1621,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     const TEST_SA_RESTART: i32 = 0x1000_0000;
 
+    /// The flag libc sets on a Linux disposition when it hands the kernel a signal-return
+    /// trampoline of its own. Where it is present `sa_restorer` is a field of the installed
+    /// disposition and a query reports it; where it is absent — aarch64, whose kernel has no such
+    /// field — a query reports whatever libc's own buffer happened to hold.
+    #[cfg(target_os = "linux")]
+    const TEST_SA_RESTORER: i32 = 0x0400_0000;
+
     fn pty_smoke_outer_bound() -> Duration {
         PTY_NESTED_RUNNER_STARTUP_BOUND + PTY_SMOKE_LIFECYCLE_BOUND
     }
@@ -1773,6 +1780,36 @@ mod tests {
             .collect()
     }
 
+    /// The exact-action oracle: what libc reports for the sentinel actions once each has been
+    /// installed and read back the way [`restore_signal_action`] installs and [`snapshot_actions`]
+    /// reads.
+    ///
+    /// Restoration hands libc back the captured `struct sigaction` byte for byte, so handler,
+    /// mask and flags survive a relay exactly. `sa_restorer` does not, and cannot: it exists only
+    /// on Linux and it is libc's field, not marion's. glibc fills the kernel struct's restorer
+    /// from its own trampoline on installation, so what a query reports afterwards is glibc's
+    /// choice for that call rather than the pointer the caller passed — an install carrying a
+    /// deliberately different restorer changes nothing in the next query on x86_64, and on
+    /// aarch64, where the kernel has no such field to fill, a query hands back libc's own leftover.
+    /// Comparing a snapshot taken before any restoration against one taken after would therefore
+    /// compare two values libc owns on opposite sides of its bookkeeping, which no verbatim
+    /// restore can make equal. Reading the oracle back through one verbatim install of the very
+    /// struct restoration replays puts both sides of [`assert_same_actions`] on the same side of
+    /// that bookkeeping: the fields marion owns stay exact, and libc's field is held to what libc
+    /// itself reports for this struct.
+    fn restored_action_oracle() -> Vec<Sigaction> {
+        let captured = snapshot_actions();
+        for (signal, action) in HANDLED_SIGNALS.iter().zip(captured.iter()) {
+            // SAFETY: each action is the unmodified value libc just reported for this signal, and
+            // the isolated probe has no concurrent signal owner.
+            assert_eq!(
+                unsafe { sigaction(*signal, action, std::ptr::null_mut()) },
+                0
+            );
+        }
+        snapshot_actions()
+    }
+
     fn snapshot_action(signal: std::ffi::c_int) -> Sigaction {
         let mut action = Sigaction::zeroed();
         // SAFETY: a null replacement queries the current action into a valid out pointer.
@@ -1783,6 +1820,24 @@ mod tests {
         action
     }
 
+    /// The part of a queried `sa_mask` the platform actually defines.
+    ///
+    /// Darwin's `sigset_t` is one word and all of it is the mask. Linux's is 128 bytes wide inside
+    /// libc's `struct sigaction`, but `rt_sigaction` carries only `_NSIG / 8` of them — one word,
+    /// every signal the kernel has — and libc copies the remainder of its own uninitialized buffer
+    /// out alongside them. Those trailing bytes are not a disposition: they are whatever libc's
+    /// frame last held, and they move when an unrelated call runs between two queries. Comparing
+    /// them would assert on uninitialized memory, so the oracle stops where the kernel does.
+    #[cfg(target_os = "macos")]
+    fn defined_mask(mask: &SigSet) -> SigSet {
+        *mask
+    }
+
+    #[cfg(target_os = "linux")]
+    fn defined_mask(mask: &SigSet) -> usize {
+        mask[0]
+    }
+
     fn assert_same_actions(actual: &[Sigaction], expected: &[Sigaction]) {
         assert_eq!(actual.len(), expected.len());
         for (signal, (actual, expected)) in HANDLED_SIGNALS
@@ -1790,10 +1845,20 @@ mod tests {
             .zip(actual.iter().zip(expected.iter()))
         {
             assert_eq!(actual.handler, expected.handler, "handler for {signal}");
-            assert_eq!(actual.mask, expected.mask, "mask for {signal}");
+            assert_eq!(
+                defined_mask(&actual.mask),
+                defined_mask(&expected.mask),
+                "mask for {signal}"
+            );
             assert_eq!(actual.flags, expected.flags, "flags for {signal}");
+            // `sa_restorer` is libc's field, not marion's, and it is only a field of the
+            // disposition at all where libc says so. Where it is, restoration must hand back the
+            // captured pointer and a query must report it; where it is not, the value a query
+            // yields belongs to no disposition and asserting on it asserts on libc's leftovers.
             #[cfg(target_os = "linux")]
-            assert_eq!(actual.restorer, expected.restorer, "restorer for {signal}");
+            if expected.flags & TEST_SA_RESTORER != 0 {
+                assert_eq!(actual.restorer, expected.restorer, "restorer for {signal}");
+            }
         }
     }
 
@@ -1812,7 +1877,7 @@ mod tests {
             return;
         }
         let _restore_originals = install_exact_sentinels();
-        let sentinels = snapshot_actions();
+        let sentinels = restored_action_oracle();
         assert!(
             sentinels.iter().all(|action| action.mask != empty_sigset()),
             "the exact-action oracle requires a non-default signal mask"
@@ -1845,7 +1910,7 @@ mod tests {
             return;
         }
         let _restore_originals = install_exact_sentinels();
-        let sentinels = snapshot_actions();
+        let sentinels = restored_action_oracle();
         fail_relay_signal_install_at(3);
 
         let error = RelaySignalGuard::acquire()
@@ -2224,7 +2289,7 @@ mod tests {
             return;
         }
         let _restore_originals = install_exact_sentinels();
-        let sentinels = snapshot_actions();
+        let sentinels = restored_action_oracle();
         let mut guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
         fail_relay_signal_restore_at(1);
         let error = guard
@@ -2249,7 +2314,7 @@ mod tests {
             return;
         }
         let _restore_originals = install_exact_sentinels();
-        let sentinels = snapshot_actions();
+        let sentinels = restored_action_oracle();
         let mut guard = RelaySignalGuard::acquire().expect("the relay owns every signal");
         fail_relay_signal_restore_at_attempts(&[1, 2]);
 
