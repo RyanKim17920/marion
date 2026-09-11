@@ -3440,139 +3440,188 @@ mod tests {
     /// carries its own on `-c` flags; an empty `files` would otherwise let either through this sweep
     /// having proved nothing at all, which is the vacuous-pass shape the `checked` counter exists to
     /// prevent.
+    /// One row's launch under one auth mode, as the escape sweep poses it.
+    ///
+    /// What `--live` implies: marion names no endpoint and mints no credential. The canned default
+    /// names marion's own generated provider block, which a live opencode node deliberately does
+    /// not write (see the refusal it earns), so that one row states its own live model.
+    fn escape_spec(h: Harness, auth: Auth) -> LaunchSpec {
+        let live = auth == Auth::Inherited;
+        LaunchSpec {
+            auth,
+            base_url: spec_for(h).base_url.filter(|_| !live),
+            api_key: spec_for(h).api_key.filter(|_| !live),
+            model: match (h, auth) {
+                (Harness::OpenCode, Auth::Inherited) => Some("anthropic/claude-sonnet-4-5".into()),
+                _ => spec_for(h).model,
+            },
+            ..spec_for(h)
+        }
+    }
+
+    /// [`McpRoute::Session`]: ACP writes no file and sets no variable — its declaration is a
+    /// `session/new` request, and the check that it names marion's own server is
+    /// `McpRoute::verify`'s Session branch, driven directly above.
+    ///
+    /// **The refusal is recorded, not skipped.** Where an agent has no measured way to reach
+    /// marion's endpoint, `continue`ing past it would drop this harness out of the named minimum
+    /// below, which is the vacuity that minimum exists to prevent.
+    fn assert_session_route(
+        h: Harness,
+        auth: Auth,
+        adapter: &(dyn HarnessAdapter + Send + Sync),
+        spec: &LaunchSpec,
+        files: &[(PathBuf, String)],
+        k: &'static str,
+    ) {
+        assert!(
+            !files.iter().any(|(_, body)| body.contains("\"mcp\"")),
+            "{h} under {auth:?}: a session route whose document also declares marion's bridge \
+             has two declarations and no single authority"
+        );
+        let inv = match adapter.compile(spec, &ctx()) {
+            Err(e) => {
+                assert!(
+                    auth == Auth::Canned
+                        && matches!(
+                            e,
+                            HarnessError::MissingInput {
+                                harness: Harness::Acp,
+                                ..
+                            }
+                        ),
+                    "{h} under {auth:?}: {e}"
+                );
+                return;
+            }
+            Ok(inv) => inv,
+        };
+        let session = adapter
+            .session_declaration(spec, &ctx())
+            .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"))
+            .unwrap_or_else(|| panic!("{h} under {auth:?}: no session/new request"));
+        assert!(
+            McpRoute::Session(k)
+                .verify(&[], &inv, Some(&session))
+                .is_ok(),
+            "{h} under {auth:?}: the request carries no marion declaration: {session}"
+        );
+    }
+
+    /// [`McpRoute::Environment`]: the variable the row names carries marion's whole declaration,
+    /// and the adapter wrote no document beside it.
+    fn assert_environment_route(
+        h: Harness,
+        auth: Auth,
+        adapter: &(dyn HarnessAdapter + Send + Sync),
+        spec: &LaunchSpec,
+        files: &[(PathBuf, String)],
+        k: &str,
+    ) {
+        assert!(
+            files.is_empty(),
+            "{h} under {auth:?}: an env route that also writes files has two declarations and \
+             no single authority"
+        );
+        let inv = adapter
+            .compile(spec, &ctx())
+            .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"));
+        let (_, v) = inv
+            .env
+            .iter()
+            .find(|(n, _)| n == k)
+            .unwrap_or_else(|| panic!("{h} under {auth:?}: ${k} was never set"));
+        assert!(
+            v.contains("\"mcp\"") && v.contains(opencode::MCP_ALIAS),
+            "{h} under {auth:?}: ${k} carries no marion declaration: {v}"
+        );
+    }
+
+    /// [`McpRoute::Argv`]: the declaration rides argv, and the adapter wrote no document beside it.
+    fn assert_argv_route(
+        h: Harness,
+        auth: Auth,
+        adapter: &(dyn HarnessAdapter + Send + Sync),
+        spec: &LaunchSpec,
+        files: &[(PathBuf, String)],
+        key: &str,
+    ) {
+        assert!(
+            files.is_empty(),
+            "{h} under {auth:?}: an argv route that also writes files has two declarations and \
+             no single authority"
+        );
+        let inv = adapter
+            .compile(spec, &ctx())
+            .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"));
+        assert!(
+            inv.args.iter().any(|a| a.contains(key)),
+            "{h} under {auth:?}: argv carries no marion declaration: {:?}",
+            inv.args
+        );
+    }
+
+    /// Whichever route this adapter took, it took *a* route, and the route it named is the one it
+    /// actually used. One checker per [`McpRoute`].
+    fn assert_route_is_the_one_taken(
+        h: Harness,
+        auth: Auth,
+        adapter: &(dyn HarnessAdapter + Send + Sync),
+        spec: &LaunchSpec,
+        files: &[(PathBuf, String)],
+    ) {
+        match adapter.mcp_route(spec) {
+            McpRoute::Session(k) => assert_session_route(h, auth, adapter, spec, files, k),
+            McpRoute::Document => assert!(
+                !files.is_empty(),
+                "{h} under {auth:?}: names a document route and wrote none"
+            ),
+            McpRoute::Environment(k) => assert_environment_route(h, auth, adapter, spec, files, k),
+            McpRoute::Argv(key) => assert_argv_route(h, auth, adapter, spec, files, key),
+            McpRoute::None => {
+                panic!("{h} under {auth:?}: asked for marion's bridge and routed nowhere")
+            }
+        }
+    }
+
+    /// Every path an adapter handed back lands inside the node's own agent dir, by an absolute
+    /// path, so where it lands does not depend on the writer's cwd.
+    fn assert_paths_stay_in_the_agent_dir(
+        h: Harness,
+        auth: Auth,
+        spec: &LaunchSpec,
+        files: &[(PathBuf, String)],
+    ) {
+        for (path, _) in files {
+            assert!(
+                path.starts_with(&spec.config_dir),
+                "{h} under {auth:?} would write {} outside its agent dir {} — §6.4: marion \
+                 never mutates the user's real harness config",
+                path.display(),
+                spec.config_dir.display()
+            );
+            assert!(
+                path.is_absolute(),
+                "{h} under {auth:?}: {} is relative, so where it lands depends on the writer's cwd",
+                path.display()
+            );
+        }
+    }
+
     #[test]
     fn no_config_file_any_adapter_emits_ever_escapes_marions_own_agent_dir() {
         for auth in [Auth::Canned, Auth::Inherited] {
             let mut checked = 0;
             let mut bound: Vec<Harness> = Vec::new();
             for h in Harness::ALL {
-                let spec = LaunchSpec {
-                    auth,
-                    // What `--live` implies: marion names no endpoint and mints no credential.
-                    base_url: match auth {
-                        Auth::Canned => spec_for(h).base_url,
-                        Auth::Inherited => None,
-                    },
-                    api_key: match auth {
-                        Auth::Canned => spec_for(h).api_key,
-                        Auth::Inherited => None,
-                    },
-                    // The canned default names marion's own generated provider block, which a live
-                    // opencode node deliberately does not write (see the refusal it earns).
-                    model: match (h, auth) {
-                        (Harness::OpenCode, Auth::Inherited) => {
-                            Some("anthropic/claude-sonnet-4-5".into())
-                        }
-                        _ => spec_for(h).model,
-                    },
-                    ..spec_for(h)
-                };
+                let spec = escape_spec(h, auth);
                 let adapter = launch_adapter(h).unwrap();
                 let Ok(files) = adapter.config_files(&spec, &ctx()) else {
                     continue;
                 };
-                // Whichever route this adapter took, it took *a* route, and the route it named is
-                // the one it actually used.
-                match adapter.mcp_route(&spec) {
-                    // ACP writes no file and sets no variable: its declaration is a request, and
-                    // the check that it names marion's own server is `McpRoute::verify`'s Session
-                    // branch, driven directly above.
-                    McpRoute::Session(k) => {
-                        assert!(
-                            !files.iter().any(|(_, body)| body.contains("\"mcp\"")),
-                            "{h} under {auth:?}: a session route whose document also declares \
-                             marion's bridge has two declarations and no single authority"
-                        );
-                        // **The refusal is recorded, not skipped.** Where an agent has no measured
-                        // way to reach marion's endpoint, `continue`ing past it here would drop
-                        // this harness out of the named minimum below, which is the vacuity that
-                        // minimum exists to prevent.
-                        match adapter.compile(&spec, &ctx()) {
-                            Err(e) => assert!(
-                                auth == Auth::Canned
-                                    && matches!(
-                                        e,
-                                        HarnessError::MissingInput {
-                                            harness: Harness::Acp,
-                                            ..
-                                        }
-                                    ),
-                                "{h} under {auth:?}: {e}"
-                            ),
-                            Ok(inv) => {
-                                let session = adapter
-                                    .session_declaration(&spec, &ctx())
-                                    .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"))
-                                    .unwrap_or_else(|| {
-                                        panic!("{h} under {auth:?}: no session/new request")
-                                    });
-                                assert!(
-                                    McpRoute::Session(k)
-                                        .verify(&[], &inv, Some(&session))
-                                        .is_ok(),
-                                    "{h} under {auth:?}: the request carries no marion \
-                                     declaration: {session}"
-                                );
-                            }
-                        }
-                    }
-                    McpRoute::Document => assert!(
-                        !files.is_empty(),
-                        "{h} under {auth:?}: names a document route and wrote none"
-                    ),
-                    McpRoute::Environment(k) => {
-                        assert!(
-                            files.is_empty(),
-                            "{h} under {auth:?}: an env route that also writes files has two \
-                             declarations and no single authority"
-                        );
-                        let inv = adapter
-                            .compile(&spec, &ctx())
-                            .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"));
-                        let (_, v) =
-                            inv.env.iter().find(|(n, _)| n == k).unwrap_or_else(|| {
-                                panic!("{h} under {auth:?}: ${k} was never set")
-                            });
-                        assert!(
-                            v.contains("\"mcp\"") && v.contains(opencode::MCP_ALIAS),
-                            "{h} under {auth:?}: ${k} carries no marion declaration: {v}"
-                        );
-                    }
-                    McpRoute::Argv(key) => {
-                        assert!(
-                            files.is_empty(),
-                            "{h} under {auth:?}: an argv route that also writes files has two \
-                             declarations and no single authority"
-                        );
-                        let inv = adapter
-                            .compile(&spec, &ctx())
-                            .unwrap_or_else(|e| panic!("{h} under {auth:?}: {e}"));
-                        assert!(
-                            inv.args.iter().any(|a| a.contains(key)),
-                            "{h} under {auth:?}: argv carries no marion declaration: {:?}",
-                            inv.args
-                        );
-                    }
-                    McpRoute::None => {
-                        panic!("{h} under {auth:?}: asked for marion's bridge and routed nowhere")
-                    }
-                }
+                assert_route_is_the_one_taken(h, auth, adapter.as_ref(), &spec, &files);
                 bound.push(h);
-                for (path, _) in &files {
-                    assert!(
-                        path.starts_with(&spec.config_dir),
-                        "{h} under {auth:?} would write {} outside its agent dir {} — §6.4: \
-                         marion never mutates the user's real harness config",
-                        path.display(),
-                        spec.config_dir.display()
-                    );
-                    assert!(
-                        path.is_absolute(),
-                        "{h} under {auth:?}: {} is relative, so where it lands depends on the \
-                         writer's cwd",
-                        path.display()
-                    );
-                }
+                assert_paths_stay_in_the_agent_dir(h, auth, &spec, &files);
                 checked += files.len();
             }
             assert!(
