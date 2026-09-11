@@ -286,27 +286,7 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
     let mut agent = Driver::spawn(spec.inv)?;
     (spec.on_started)(agent.pid);
 
-    agent.send(&acp::initialize_request(INITIALIZE_ID), "initialize")?;
-    let handshake = match agent.settle(INITIALIZE_ID, clip(deadline, HANDSHAKE_BUDGET)) {
-        Some(f) => f,
-        None => {
-            return Err(agent.refuse(|end, frames| AcpChildError::NoHandshake {
-                waited: HANDSHAKE_BUDGET,
-                frames,
-                stderr: excerpt(&end.stderr),
-            }));
-        }
-    };
-    // Parsed, not merely received. §3.3's stage two is what narrows this agent's capabilities, and
-    // an agent that answers with a wire version marion does not speak has to be refused here rather
-    // than prompted anyway and read with a v1 reader.
-    let handshake = match AgentHandshake::parse(&handshake) {
-        Ok(h) => h,
-        Err(e) => {
-            let _ = agent.finish(true);
-            return Err(AcpChildError::Handshake(e));
-        }
-    };
+    let handshake = handshake_with(&mut agent, deadline)?;
     // The one capability the handshake gates here: a resume goes out only to an agent that says
     // it can replay a session. Checked before the frame is sent, so an agent without it never sees
     // a `session/load` it would answer with an error marion would then have to interpret.
@@ -320,7 +300,55 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
         });
     }
 
-    agent.send(&session_new, opening.method)?;
+    let session = open_session(&mut agent, &session_new, &opening, deadline)?;
+    let answered = prompt_session(&mut agent, &session, spec.prompt, deadline)?;
+
+    let (end, _) = agent.finish(!answered);
+    Ok(AcpRun {
+        stdout: end.stdout,
+        stderr: end.stderr,
+        exit: end.exit,
+        capture_truncated: end.capture_truncated,
+    })
+}
+
+/// §3.3's stage two: `initialize`, and the narrowed capabilities it answers with.
+///
+/// Parsed, not merely received. The handshake is what narrows this agent's capabilities, and an
+/// agent that answers with a wire version marion does not speak has to be refused here rather than
+/// prompted anyway and read with a v1 reader.
+fn handshake_with(agent: &mut Driver, deadline: Instant) -> Result<AgentHandshake, AcpChildError> {
+    agent.send(&acp::initialize_request(INITIALIZE_ID), "initialize")?;
+    let handshake = match agent.settle(INITIALIZE_ID, clip(deadline, HANDSHAKE_BUDGET)) {
+        Some(f) => f,
+        None => {
+            return Err(agent.refuse(|end, frames| AcpChildError::NoHandshake {
+                waited: HANDSHAKE_BUDGET,
+                frames,
+                stderr: excerpt(&end.stderr),
+            }));
+        }
+    };
+    match AgentHandshake::parse(&handshake) {
+        Ok(h) => Ok(h),
+        Err(e) => {
+            let _ = agent.finish(true);
+            Err(AcpChildError::Handshake(e))
+        }
+    }
+}
+
+/// The adapter's own opening request, and the session id the agent is then working in.
+///
+/// A fresh session's id is the agent's answer; a loaded session's id was the request's, and the
+/// answer only says whether the agent took it (ACP's `session/load` result carries no id).
+fn open_session(
+    agent: &mut Driver,
+    session_new: &Value,
+    opening: &Opening,
+    deadline: Instant,
+) -> Result<String, AcpChildError> {
+    agent.send(session_new, opening.method)?;
     let opened = match agent.settle(opening.id, clip(deadline, SESSION_BUDGET)) {
         Some(f) => f,
         None => {
@@ -331,41 +359,41 @@ pub fn run_acp_child(spec: AcpChildSpec<'_>) -> Result<AcpRun, AcpChildError> {
             }));
         }
     };
-    // A fresh session's id is the agent's answer; a loaded session's id was the request's, and the
-    // answer only says whether the agent took it (ACP's `session/load` result carries no id).
     let session = match &opening.session {
         None => acp::session_id(&opened),
         Some(s) => acp::session_loaded(&opened).map(|()| s.clone()),
     };
-    let session = match session {
-        Ok(s) => s,
+    match session {
+        Ok(s) => Ok(s),
         Err(e) => {
             let _ = agent.finish(true);
-            return Err(AcpChildError::SessionRefused(e));
+            Err(AcpChildError::SessionRefused(e))
         }
-    };
+    }
+}
 
+/// `session/prompt`, and the turn's expiry. `false` when the agent never answered.
+///
+/// The cancel is §8's interrupt step in ACP's own vocabulary, and it runs *before* the signal
+/// because it is the cleaner one: the pending prompt answers a cancel with
+/// `stopReason: "cancelled"`, which is a frame in the transcript, where a SIGKILL is a hole in it.
+/// Written best-effort — an agent whose stdin has already closed is one the caller's kill handles.
+fn prompt_session(
+    agent: &mut Driver,
+    session: &str,
+    prompt: &str,
+    deadline: Instant,
+) -> Result<bool, AcpChildError> {
     agent.send(
-        &acp::prompt_request(PROMPT_ID, &session, spec.prompt),
+        &acp::prompt_request(PROMPT_ID, session, prompt),
         "session/prompt",
     )?;
-    let answered = agent.settle(PROMPT_ID, deadline).is_some();
-    if !answered {
-        // §8's interrupt step in ACP's own vocabulary, and it runs *before* the signal because it
-        // is the cleaner one: the pending prompt answers a cancel with `stopReason: "cancelled"`,
-        // which is a frame in the transcript, where a SIGKILL is a hole in it. Written
-        // best-effort — an agent whose stdin has already closed is one the kill below handles.
-        let _ = agent.write(&acp::cancel_notification(&session));
-        agent.settle(PROMPT_ID, Instant::now() + CANCEL_GRACE);
+    if agent.settle(PROMPT_ID, deadline).is_some() {
+        return Ok(true);
     }
-
-    let (end, _) = agent.finish(!answered);
-    Ok(AcpRun {
-        stdout: end.stdout,
-        stderr: end.stderr,
-        exit: end.exit,
-        capture_truncated: end.capture_truncated,
-    })
+    let _ = agent.write(&acp::cancel_notification(session));
+    agent.settle(PROMPT_ID, Instant::now() + CANCEL_GRACE);
+    Ok(false)
 }
 
 /// What the adapter's session-opening request asks for, read back off the request itself.
