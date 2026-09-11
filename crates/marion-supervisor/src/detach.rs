@@ -511,6 +511,21 @@ pub enum Stage {
 /// more here: this argv crosses two process boundaries, so a flag dropped in stage 1 would produce a
 /// stage 3 serving a *different* project than the client that asked for it dialed, with nothing
 /// anywhere reporting a problem.
+/// The endpoint stage 3 will serve against, or `None` for a refusal.
+///
+/// The pair is checked as a pair, in the direction each mode makes true: `Canned` means marion
+/// names the endpoint, `Inherited` means marion names none and the harness resolves its own. A
+/// `--base-url` under `Inherited` would be a value stage 3 must then ignore, which is a flag that
+/// says one thing and does another.
+fn paired_base_url(auth: marion_harness::Auth, base_url: Option<String>) -> Option<Option<String>> {
+    match (auth, base_url) {
+        (marion_harness::Auth::Canned, Some(u)) if !u.trim().is_empty() => Some(Some(u)),
+        (marion_harness::Auth::Canned, _) => None,
+        (marion_harness::Auth::Inherited, None) => Some(None),
+        (marion_harness::Auth::Inherited, Some(_)) => None,
+    }
+}
+
 pub fn parse_serve(program: PathBuf, argv: &[String]) -> Option<(Launch, Stage)> {
     let mut state_dir: Option<PathBuf> = None;
     let mut project_root: Option<PathBuf> = None;
@@ -542,16 +557,7 @@ pub fn parse_serve(program: PathBuf, argv: &[String]) -> Option<(Launch, Stage)>
     // supervisor that lingers five minutes and says so in §5.7's own terms, while an unstated auth
     // mode costs an operator's live fleet pointed at an endpoint nobody is running.
     let auth = auth?;
-    // The pair, checked as a pair, in the direction each mode makes true: `Canned` means marion
-    // names the endpoint, `Inherited` means marion names none and the harness resolves its own. A
-    // `--base-url` under `Inherited` would be a value stage 3 must then ignore, which is a flag
-    // that says one thing and does another.
-    let base_url = match (auth, base_url) {
-        (marion_harness::Auth::Canned, Some(u)) if !u.trim().is_empty() => Some(u),
-        (marion_harness::Auth::Canned, _) => return None,
-        (marion_harness::Auth::Inherited, None) => None,
-        (marion_harness::Auth::Inherited, Some(_)) => return None,
-    };
+    let base_url = paired_base_url(auth, base_url)?;
     Some((
         Launch {
             program,
