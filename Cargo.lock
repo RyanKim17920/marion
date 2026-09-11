@@ -448,6 +448,7 @@ dependencies = [
 name = "marion-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "globset",
  "serde",
@@ -469,11 +470,7 @@ dependencies = [
 name = "marion-proto"
 version = "0.1.0"
 dependencies = [
- "base64",
  "marion-core",
- "serde",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]

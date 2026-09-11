@@ -1,9 +1,9 @@
 //! Byte-exact terminal payloads carried by the client protocol.
 
+use crate::contract::AgentId;
 use base64::engine::DecodePaddingMode;
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
 use base64::{Engine, alphabet};
-use marion_core::contract::AgentId;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

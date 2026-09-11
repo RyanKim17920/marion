@@ -1,5 +1,7 @@
 use marion_core::contract::AgentId;
-use marion_proto::{Event, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1, PaneReadyTokenV1};
+use marion_core::proto::{
+    Event, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1, PaneReadyTokenV1,
+};
 
 #[test]
 fn opaque_pane_bytes_round_trip_non_utf8_with_canonical_base64() {

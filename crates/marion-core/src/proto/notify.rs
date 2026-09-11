@@ -11,31 +11,31 @@
 //! behaviour is impossible without it, named in its doc; anything a client can derive from the
 //! journal it already replayed is not here.
 //!
-//! **This enum is not covered by [`crate::Method::ALL`]'s pin.** `method.rs` asserts a length of
+//! **This enum is not covered by [`crate::proto::Method::ALL`]'s pin.** `method.rs` asserts a length of
 //! fifteen, the exact fifteen wire strings in §2's order, and non-collision with these names — and
 //! it says fifteen *requests*. Notifications are a separate enum with a separate table, so adding
 //! one here is not a change to the request surface and does not move that pin. The
 //! `notification_names_never_collide_with_request_methods` test below is the join between the two.
 //!
-//! Notification method names live in a **disjoint namespace** from [`crate::Method`] — asserted by
+//! Notification method names live in a **disjoint namespace** from [`crate::proto::Method`] — asserted by
 //! test. An overlap would make a frame's classification depend on whether it carried an `id`, and
 //! a truncated line is exactly where that goes wrong.
 //!
-//! There is now a **third** table, [`crate::Input`], and it is the client→supervisor direction. The
+//! There is now a **third** table, [`crate::proto::Input`], and it is the client→supervisor direction. The
 //! seam this module's doc describes above is what made it possible without moving the fifteen-pin;
 //! what it costs is that "id-less" no longer implies "outbound", so the disjointness assertion is
 //! three-way and lives in `input.rs` beside the newer table.
 
-use marion_core::contract::AgentId;
-use marion_core::encoding::SystemTime;
-use marion_core::ir::{Provenance, SrcSeq};
-use marion_core::node::{NodeState, ReapState};
+use crate::contract::AgentId;
+use crate::encoding::SystemTime;
+use crate::ir::{Provenance, SrcSeq};
+use crate::node::{NodeState, ReapState};
 use serde::{Deserialize, Serialize};
 
-use crate::PaneFrameV1;
-use crate::model::{ElicitationRequestId, NodeSummary, PermissionRequestId, ResidentReason};
+use crate::proto::PaneFrameV1;
+use crate::proto::model::{ElicitationRequestId, NodeSummary, PermissionRequestId, ResidentReason};
 
-/// Adjacently tagged, exactly as [`crate::Call`] is, so a notification and a request are the same
+/// Adjacently tagged, exactly as [`crate::proto::Call`] is, so a notification and a request are the same
 /// shape minus the `id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -60,7 +60,7 @@ pub enum Event {
     /// One event from a node's stream, for a client attached to it.
     ///
     /// **`agent_seq` is the node's own `events.jsonl` ordinal, and it is the field §7.3.3's seam is
-    /// actually stated in.** [`crate::ReplayPoint`] counts `records` of exactly these ordinals, so
+    /// actually stated in.** [`crate::proto::ReplayPoint`] counts `records` of exactly these ordinals, so
     /// an attach that hands a client `ResubscribeFrom(records: N)` and then sends it events with no
     /// ordinal has handed it a read point it cannot check anything against. It is carried
     /// separately from `src_seq` because the two answer different questions and only one of them is
@@ -148,7 +148,7 @@ pub enum Event {
     },
 
     /// A structured input request (§2: ACP and Codex have these and they are **not** permissions).
-    /// `request` is the harness's own schema — see [`crate::ElicitationResponse`] for why marion
+    /// `request` is the harness's own schema — see [`crate::proto::ElicitationResponse`] for why marion
     /// does not type it.
     #[serde(rename = "elicitation/request")]
     ElicitationRequest {
@@ -177,7 +177,7 @@ pub enum Event {
 }
 
 impl Event {
-    /// The wire spelling, for the same reason [`crate::Method::as_str`] exists: one table.
+    /// The wire spelling, for the same reason [`crate::proto::Method::as_str`] exists: one table.
     pub const fn method(&self) -> &'static str {
         match self {
             Event::NodeAdded { .. } => "tree/node-added",
@@ -208,11 +208,11 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Input, Method, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1};
-    use marion_core::contract::ExitStatus;
-    use marion_core::encoding::Duration;
-    use marion_core::harness::Harness;
-    use marion_core::ir::{Completeness, EventId, Source, Transformation};
+    use crate::contract::ExitStatus;
+    use crate::encoding::Duration;
+    use crate::harness::Harness;
+    use crate::ir::{Completeness, EventId, Source, Transformation};
+    use crate::proto::{Input, Method, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1};
 
     fn ts() -> SystemTime {
         SystemTime::from_unix_millis(1_785_625_628_619)
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&Event::NodeState {
                 agent_id: AgentId("a".into()),
-                state: NodeState::Blocked(marion_core::node::BlockReason::Descendants),
+                state: NodeState::Blocked(crate::node::BlockReason::Descendants),
                 reap_state: ReapState::ReapedIdle,
                 ts: ts(),
             })

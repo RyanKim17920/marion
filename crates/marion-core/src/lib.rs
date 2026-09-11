@@ -1,6 +1,11 @@
-//! marion-core — IR, launch spec, registry model, journal, task contract.
+//! marion-core — IR, launch spec, registry model, journal, task contract, wire vocabulary.
 //!
 //! No process spawning and no filesystem side effects, so §8's L1 tests stay pure.
+//!
+//! [`proto`] is the client↔supervisor JSON-RPC vocabulary. It lives here rather than in a crate of
+//! its own because it is a *spelling* of the model this crate already owns — `NodeSummary` is a
+//! projection of [`node::NodeState`], `ReplayPoint` of [`ir::SrcSeq`] — and a separate crate made
+//! that one-directional dependency look like a peer relationship between two vocabularies.
 
 pub mod agent_type;
 pub mod cap;
@@ -14,6 +19,7 @@ pub mod journal;
 pub mod native_facade;
 pub mod node;
 pub mod paths;
+pub mod proto;
 pub mod registry;
 pub mod root_change;
 pub mod scope;

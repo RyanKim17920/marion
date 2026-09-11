@@ -111,7 +111,7 @@ pub struct TerminalGeometryV1 {
 ///
 /// ```compile_fail
 /// use std::ffi::OsStr;
-/// use marion_proto::{NativeLaunchContextV1, OpaqueOsValueV1, TerminalGeometryV1};
+/// use marion_core::proto::{NativeLaunchContextV1, OpaqueOsValueV1, TerminalGeometryV1};
 ///
 /// let value = OpaqueOsValueV1::from_os_str(OsStr::new("value")).unwrap();
 /// let _invalid = NativeLaunchContextV1 {
@@ -128,7 +128,7 @@ pub struct TerminalGeometryV1 {
 ///
 /// ```compile_fail
 /// use std::ffi::OsStr;
-/// use marion_proto::{NativeLaunchContextV1, OpaqueOsValueV1, TerminalGeometryV1};
+/// use marion_core::proto::{NativeLaunchContextV1, OpaqueOsValueV1, TerminalGeometryV1};
 ///
 /// let value = OpaqueOsValueV1::from_os_str(OsStr::new("value")).unwrap();
 /// let _invalid = NativeLaunchContextV1 {
@@ -162,7 +162,7 @@ pub enum NativeLaunchContext {
 ///
 /// ```compile_fail
 /// use std::ffi::OsStr;
-/// use marion_proto::{NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1};
+/// use marion_core::proto::{NativeLaunchContextV2, OpaqueOsValueV1, TerminalGeometryV1};
 ///
 /// let value = OpaqueOsValueV1::from_os_str(OsStr::new("value")).unwrap();
 /// let _invalid = NativeLaunchContextV2 {
@@ -543,8 +543,8 @@ mod tests {
         NativeEnvVarV1, NativeLaunchContext, NativeLaunchContextV1, NativeLaunchContextV2,
         OpaqueOsValueV1, TerminalGeometryV1,
     };
-    use crate::params::AgentSpawnParams;
-    use crate::{Call, Frame};
+    use crate::proto::params::AgentSpawnParams;
+    use crate::proto::{Call, Frame};
 
     const OLD_SPAWN_FRAME: &str = r#"{"jsonrpc":"2.0","id":1,"method":"agent/spawn","params":{"agent_type":"codex-impl","prompt":"go","caller":null,"repo":"/r","acceptance_criteria":[],"writable_scope":[],"timeout_secs":null,"model":null,"no_change_record":null,"pane":null,"isolation":null,"allow_concurrent_writes":null}}"#;
 

@@ -26,10 +26,10 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::error::RpcError;
-use crate::input::Input;
-use crate::method::Call;
-use crate::notify::Event;
+use crate::proto::error::RpcError;
+use crate::proto::input::Input;
+use crate::proto::method::Call;
+use crate::proto::notify::Event;
 
 /// The literal `"2.0"`, as a type — so that "did we check the version" is not a question anyone has
 /// to ask about a call site.
@@ -101,7 +101,7 @@ impl Request {
 /// An enum and not two `Option` fields: the two-`Option` shape can hold both at once and can hold
 /// neither, and both of those are frames a client cannot act on.
 ///
-/// The success body is JSON rather than a typed result — see [`crate::method`] for why: JSON-RPC
+/// The success body is JSON rather than a typed result — see [`crate::proto::method`] for why: JSON-RPC
 /// does not put the method on a response, so typing it here would require the envelope to carry a
 /// field that is not on the wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -122,7 +122,7 @@ pub struct Response {
 }
 
 impl Response {
-    pub fn ok(id: RequestId, result: &crate::method::MethodResult) -> Self {
+    pub fn ok(id: RequestId, result: &crate::proto::method::MethodResult) -> Self {
         Self {
             jsonrpc: JsonRpcVersion,
             id,
@@ -140,7 +140,7 @@ impl Response {
 }
 
 /// A supervisor→client notification: a request with no `id`, and therefore no answer. See
-/// [`crate::notify`] for why the supervisor must never be able to wait on a client.
+/// [`crate::proto::notify`] for why the supervisor must never be able to wait on a client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification {
     #[serde(default)]
@@ -159,7 +159,7 @@ impl Notification {
 }
 
 /// A client→supervisor notification: a request with no `id`, and therefore no answer. See
-/// [`crate::input`] for why a keystroke must not be a request, and why the transport it needs is a
+/// [`crate::proto::input`] for why a keystroke must not be a request, and why the transport it needs is a
 /// second notification table rather than a sixteenth method.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientNotification {
@@ -280,12 +280,12 @@ fn decode(line: &str, value: serde_json::Value, shape: Shape) -> Result<Frame, R
 
 /// `method` + `id`: a call.
 fn decode_request(line: &str, value: serde_json::Value, method: String) -> Result<Frame, RpcError> {
-    if crate::Method::from_wire(&method).is_none() {
+    if crate::proto::Method::from_wire(&method).is_none() {
         return Err(RpcError::method_not_found(format!(
             "no such method: {method}"
         )));
     }
-    let request = if method == crate::Method::AgentSpawn.as_str() {
+    let request = if method == crate::proto::Method::AgentSpawn.as_str() {
         // Native launch dispatch must see duplicate keys at every depth. `Value` classification
         // above is only a probe; replay this request from its source.
         serde_json::from_str::<Request>(line)
@@ -351,18 +351,18 @@ fn decode_input(line: &str, value: serde_json::Value, method: &str) -> Result<Fr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::FailureKind;
-    use crate::input::Input;
-    use crate::method::{Method, MethodResult};
-    use crate::model::*;
-    use crate::params::*;
-    use crate::result::NodeCancelResult;
-    use crate::{
+    use crate::contract::{AgentId, ExitStatus};
+    use crate::encoding::SystemTime;
+    use crate::node::{NodeState, ReapState};
+    use crate::proto::error::FailureKind;
+    use crate::proto::input::Input;
+    use crate::proto::method::{Method, MethodResult};
+    use crate::proto::model::*;
+    use crate::proto::params::*;
+    use crate::proto::result::NodeCancelResult;
+    use crate::proto::{
         NodePaneReadyV1, OpaquePaneBytesV1, PaneFrameKindV1, PaneFrameV1, PaneReadyTokenV1,
     };
-    use marion_core::contract::{AgentId, ExitStatus};
-    use marion_core::encoding::SystemTime;
-    use marion_core::node::{NodeState, ReapState};
 
     fn req() -> Request {
         Request::new(
@@ -412,7 +412,7 @@ mod tests {
     }
 
     fn input_pane_write() -> ClientNotification {
-        ClientNotification::new(Input::NodePaneWrite(crate::NodePaneWriteV1 {
+        ClientNotification::new(Input::NodePaneWrite(crate::proto::NodePaneWriteV1 {
             agent_id: AgentId("a".into()),
             bytes: OpaquePaneBytesV1::new([0x00, 0x80, 0xff]),
         }))
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn a_null_id_is_refused_by_name() {
         let e = Frame::from_line(r#"{"jsonrpc":"2.0","id":null,"result":{}}"#).unwrap_err();
-        assert_eq!(e.code, crate::error::INVALID_REQUEST);
+        assert_eq!(e.code, crate::proto::error::INVALID_REQUEST);
         assert!(e.message.contains("null `id`"), "{e}");
     }
 
@@ -706,7 +706,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"agent/spawn","params":{"agent_type":"t","prompt":"p","background":true}}"#,
         )
         .unwrap_err();
-        assert_eq!(e.code, crate::error::INVALID_PARAMS);
+        assert_eq!(e.code, crate::proto::error::INVALID_PARAMS);
         assert!(e.message.contains("agent/spawn"), "{e}");
         assert!(e.message.contains("background"), "{e}");
     }
@@ -746,7 +746,7 @@ mod tests {
         // dropped field.
         let e = Frame::from_line(r#"{"jsonrpc":"2.0","id":1,"method":"policy/set","params":{}}"#)
             .unwrap_err();
-        assert_eq!(e.code, crate::error::INVALID_PARAMS);
+        assert_eq!(e.code, crate::proto::error::INVALID_PARAMS);
         assert!(e.message.contains("policy/set names no policy"), "{e}");
     }
 

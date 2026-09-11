@@ -8,20 +8,20 @@
 //! [`MethodResult`] is the response side, and it is deliberately *not* part of the wire envelope.
 //! JSON-RPC does not put the method on a response — correlation is by `id` — so a response type
 //! that carried one would be inventing a field marion does not control. The envelope therefore
-//! carries the result as JSON (see [`crate::Outcome`]) and the typing happens at the seam where the
+//! carries the result as JSON (see [`crate::proto::Outcome`]) and the typing happens at the seam where the
 //! pending-request map already knows which method the `id` belongs to:
 //! [`Method::decode_result`].
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::RpcError;
-use crate::params::{
+use crate::proto::error::RpcError;
+use crate::proto::params::{
     AgentSpawnParams, DoctorRunParams, ElicitationReplyParams, NodeAttachParams, NodeCancelParams,
     NodeDetachParams, NodeGetParams, NodeKillParams, NodePromptParams, NodeRenameParams,
     NodeResumeParams, NodeSteerParams, POLICY_SET_UNSPECIFIED, PermissionReplyParams,
     SessionQuitParams, TreeSubscribeParams, UnspecifiedPolicy,
 };
-use crate::result::{
+use crate::proto::result::{
     AgentSpawnResult, DeliveryResult, DoctorRunResult, NodeAttachResult, NodeCancelResult,
     NodeDetachResult, NodeGetResult, NodeKillResult, NodeRenameResult, NodeResumeResult,
     ReplyResult, SessionQuitResult, TreeSubscribeResult,
@@ -263,7 +263,7 @@ impl MethodResult {
         }
     }
 
-    /// The JSON body a [`crate::Outcome::Result`] carries. Infallible: every inner type is plain
+    /// The JSON body a [`crate::proto::Outcome::Result`] carries. Infallible: every inner type is plain
     /// data, and serialization of plain data into `Value` cannot fail.
     pub fn to_body(&self) -> serde_json::Value {
         fn v<T: Serialize>(t: &T) -> serde_json::Value {
@@ -291,13 +291,13 @@ impl MethodResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::*;
-    use crate::params::*;
-    use crate::result::*;
-    use marion_core::contract::{AgentId, ExitStatus};
-    use marion_core::encoding::{Duration, Millis};
-    use marion_core::harness::Harness;
-    use marion_core::node::{BlockReason, NodeState, ReapState};
+    use crate::contract::{AgentId, ExitStatus};
+    use crate::encoding::{Duration, Millis};
+    use crate::harness::Harness;
+    use crate::node::{BlockReason, NodeState, ReapState};
+    use crate::proto::model::*;
+    use crate::proto::params::*;
+    use crate::proto::result::*;
 
     fn agent(s: &str) -> AgentId {
         AgentId(s.to_string())
@@ -348,12 +348,12 @@ mod tests {
                     node: node(),
                     mode: AttachMode::ResubscribeFrom(ReplayPoint {
                         records: 9,
-                        src_seq: Some(marion_core::ir::SrcSeq::Ordinal(3)),
+                        src_seq: Some(crate::ir::SrcSeq::Ordinal(3)),
                     }),
                     // The representative attach is to a node **with** a pane and one this client
                     // did not get the write half of, because that is the answer with the most
                     // structure in it — the `None` case is a shorter string of the same shape.
-                    pane: Some(crate::result::PaneAttach {
+                    pane: Some(crate::proto::result::PaneAttach {
                         cols: 140,
                         rows: 40,
                         writable: false,
@@ -465,7 +465,7 @@ mod tests {
                     agent_type: "codex-impl".into(),
                     prompt: "implement §6.3".into(),
                     native_launch: None,
-                    caller: Some(crate::params::SpawnCaller {
+                    caller: Some(crate::proto::params::SpawnCaller {
                         agent_id: agent("parent"),
                         node_token: "tok-9f2c".into(),
                     }),
@@ -480,7 +480,7 @@ mod tests {
                 MethodResult::AgentSpawn(AgentSpawnResult {
                     agent_id: agent("a"),
                     state: NodeState::Spawning,
-                    task_id: Some(marion_core::contract::TaskId("task-9f2c".into())),
+                    task_id: Some(crate::contract::TaskId("task-9f2c".into())),
                 }),
             ),
             (
@@ -635,7 +635,7 @@ mod tests {
         let e = Method::PolicySet
             .decode_result(&serde_json::json!({}))
             .unwrap_err();
-        assert_eq!(e.kind(), Some(crate::FailureKind::Unimplemented));
+        assert_eq!(e.kind(), Some(crate::proto::FailureKind::Unimplemented));
         assert!(e.message.contains("accept-and-ignore"));
     }
 

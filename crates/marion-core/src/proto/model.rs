@@ -4,11 +4,11 @@
 //! here is only what is *about the conversation*: how a node is projected for a tree pane, which
 //! of two delivery verbs a state calls for, what a re-attach hands back, and what a quit did.
 
-use marion_core::contract::AgentId;
-use marion_core::encoding::{Duration, Millis};
-use marion_core::harness::Harness;
-use marion_core::ir::SrcSeq;
-use marion_core::node::{BlockReason, NodeState, ReapState};
+use crate::contract::AgentId;
+use crate::encoding::{Duration, Millis};
+use crate::harness::Harness;
+use crate::ir::SrcSeq;
+use crate::node::{BlockReason, NodeState, ReapState};
 use serde::{Deserialize, Serialize};
 
 /// §3.2's `Node`, projected for a client.
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// A client that will not resolve the key still learns a missing capability the way §11 item 23
 /// says a caller should learn anything marion will not do: from a refusal that says so —
-/// [`crate::FailureKind::Unsupported`] on the `node/steer` that needed it.
+/// [`crate::proto::FailureKind::Unsupported`] on the `node/steer` that needed it.
 ///
 /// `binary_path`, `harness_session`, `harness_pane` and §7.6's evidence flags are likewise absent:
 /// they are supervisor-internal, and a tree pane that could render them would be a tree pane that
@@ -69,7 +69,7 @@ pub struct NodeSummary {
     /// does not have — the exact defect §9's M5 clause 3 asks the UI not to have.
     ///
     /// Answered from the supervisor's live pty map rather than from the journal, which is the same
-    /// source `node/attach` builds [`crate::result::PaneAttach`] from. There is no `SpawnIntent`
+    /// source `node/attach` builds [`crate::proto::result::PaneAttach`] from. There is no `SpawnIntent`
     /// field for it, and inventing one would be a second record of a fact the supervisor already
     /// holds.
     ///
@@ -89,7 +89,7 @@ pub enum Delivery {
     /// A new turn on a node that does not have one in flight (`node/prompt`).
     Prompt,
     /// Mid-flight injection (`node/steer`). Requires `caps.steer`; a harness without it answers
-    /// [`crate::FailureKind::Unsupported`], per §6.3's *"and `Unsupported` otherwise"*.
+    /// [`crate::proto::FailureKind::Unsupported`], per §6.3's *"and `Unsupported` otherwise"*.
     Steer,
 }
 
@@ -237,7 +237,7 @@ pub enum ReplyOutcome {
     /// The answer reached the node; here is the state it moved to.
     Delivered { state: NodeState },
     /// The request is no longer answerable. `reason` is a sentence for the same reason
-    /// [`crate::RpcError`] carries one: "stale" alone does not say whether the process died or the
+    /// [`crate::proto::RpcError`] carries one: "stale" alone does not say whether the process died or the
     /// bound expired, and those look identical to an operator and different to a debugger.
     Stale { reason: String },
 }
@@ -472,7 +472,7 @@ pub struct HarnessReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marion_core::contract::ExitStatus;
+    use crate::contract::ExitStatus;
 
     fn agent(s: &str) -> AgentId {
         AgentId(s.to_string())
@@ -647,7 +647,7 @@ mod tests {
             (
                 serde_json::to_string(&AttachMode::ResubscribeFrom(ReplayPoint {
                     records: 1,
-                    src_seq: Some(SrcSeq::Predecessor(marion_core::ir::EventId("u".into()))),
+                    src_seq: Some(SrcSeq::Predecessor(crate::ir::EventId("u".into()))),
                 }))
                 .unwrap(),
                 r#"{"ResubscribeFrom":{"records":1,"src_seq":{"Predecessor":"u"}}}"#,

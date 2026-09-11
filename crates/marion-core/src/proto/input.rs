@@ -2,7 +2,7 @@
 //!
 //! # Why this is not a sixteenth method
 //!
-//! [`crate::Method::ALL`] is pinned at fifteen and the pin exists to force this conversation, so
+//! [`crate::proto::Method::ALL`] is pinned at fifteen and the pin exists to force this conversation, so
 //! composition over the fifteen was tried first and each route is closed for a reason that is
 //! written down somewhere other than here:
 //!
@@ -19,9 +19,9 @@
 //!   resize and none at all to keystrokes.
 //! * The remaining twelve are tree, lifecycle, permission and session verbs with no byte channel.
 //!
-//! What *is* available is the seam [`crate::notify`]'s own module doc names: **notifications are a
+//! What *is* available is the seam [`crate::proto::notify`]'s own module doc names: **notifications are a
 //! separate enum with a separate table, and `method.rs`'s pin is fifteen _requests_.** The envelope
-//! is direction-agnostic — [`crate::Frame::from_line`] classifies an id-less frame as a
+//! is direction-agnostic — [`crate::proto::Frame::from_line`] classifies an id-less frame as a
 //! notification on whichever side reads it — so the inbound direction needs a table of its own and
 //! nothing else. This is that table. `Method::ALL` does not move.
 //!
@@ -30,7 +30,7 @@
 //! §5.7's argument for the outbound direction is that *the supervisor must not be able to block on
 //! a client*. The inbound direction has the mirror of it, and it is stronger: a keystroke has no
 //! answer. There is nothing a supervisor could put in a response that an operator wants — the pty
-//! echo **is** the acknowledgement, and it arrives as [`crate::Event::NodePty`] whether marion
+//! echo **is** the acknowledgement, and it arrives as [`crate::proto::Event::NodePty`] whether marion
 //! answers or not. A request would put a socket round trip between a key press and the next key
 //! press, so a client that awaited each one would type at the speed of the supervisor's event loop,
 //! and one that did not await would have re-invented a notification with an unread `id`.
@@ -48,10 +48,10 @@
 //! is a write to the master. Folding them into one message would give the supervisor a byte string
 //! it had to parse to find out which of two unrelated syscalls to make.
 
-use marion_core::contract::AgentId;
+use crate::contract::AgentId;
 use serde::{Deserialize, Serialize};
 
-use crate::{OpaquePaneBytesV1, PaneReadyTokenV1};
+use crate::proto::{OpaquePaneBytesV1, PaneReadyTokenV1};
 
 /// Maximum decoded payload accepted from one interactive terminal read.
 pub const MAX_PANE_INPUT_BYTES: usize = 16 * 1024;
@@ -91,13 +91,13 @@ pub struct NodePaneReadyV1 {
     pub cut: u64,
 }
 
-/// Adjacently tagged, exactly as [`crate::Call`] and [`crate::Event`] are.
+/// Adjacently tagged, exactly as [`crate::proto::Call`] and [`crate::proto::Event`] are.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum Input {
     /// Keystrokes into a node's pty, from the one client holding its write half.
     ///
-    /// **`bytes` is a JSON string, not base64** — the same encoding [`crate::Event::NodePty`] uses,
+    /// **`bytes` is a JSON string, not base64** — the same encoding [`crate::proto::Event::NodePty`] uses,
     /// and for the same reason: the outbound direction settled it against the committed asciicast
     /// captures, and an inbound direction that disagreed would make one node's session two
     /// encodings.
@@ -144,7 +144,7 @@ pub enum Input {
 }
 
 impl Input {
-    /// The wire spelling. One table, as [`crate::Method::as_str`] and [`crate::Event::method`].
+    /// The wire spelling. One table, as [`crate::proto::Method::as_str`] and [`crate::proto::Event::method`].
     pub const fn method(&self) -> &'static str {
         match self {
             Input::NodePtyWrite { .. } => "node/pty-write",
@@ -178,7 +178,7 @@ impl Input {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Event, Method, PaneReadyTokenV1};
+    use crate::proto::{Event, Method, PaneReadyTokenV1};
 
     fn pane_ready_token() -> PaneReadyTokenV1 {
         PaneReadyTokenV1::new([
@@ -269,7 +269,7 @@ mod tests {
     fn pane_write_preserves_arbitrary_terminal_bytes() {
         let input = Input::NodePaneWrite(NodePaneWriteV1 {
             agent_id: AgentId("a".into()),
-            bytes: crate::OpaquePaneBytesV1::new([0x00, 0x80, 0xff, b'\n']),
+            bytes: crate::proto::OpaquePaneBytesV1::new([0x00, 0x80, 0xff, b'\n']),
         });
         let wire = serde_json::to_string(&input).unwrap();
         assert_eq!(

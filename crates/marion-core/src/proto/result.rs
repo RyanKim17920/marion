@@ -1,6 +1,6 @@
 //! The fifteen methods' results.
 //!
-//! Tolerant of unknown fields, unlike [`crate::params`] — the crate doc argues why the asymmetry is
+//! Tolerant of unknown fields, unlike [`crate::proto::params`] — the crate doc argues why the asymmetry is
 //! deliberate rather than an oversight. The short form: an ignored parameter changes what runs, an
 //! ignored result field only narrows what is shown, and a client that refuses to parse a supervisor
 //! one version newer than itself has turned an additive change into an outage.
@@ -8,12 +8,12 @@
 //! A result is a struct even where it holds one field. `node/get` returning a bare `NodeSummary`
 //! would be shorter and would make the first added field a wire break for every client.
 
-use marion_core::contract::{AgentId, TaskId};
-use marion_core::node::{NodeState, ReapState};
+use crate::contract::{AgentId, TaskId};
+use crate::node::{NodeState, ReapState};
 use serde::{Deserialize, Serialize};
 
-use crate::PaneReadyTokenV1;
-use crate::model::{
+use crate::proto::PaneReadyTokenV1;
+use crate::proto::model::{
     AttachMode, Delivery, HarnessReport, NodeSummary, QuitOutcome, ReplayPoint, ReplyOutcome,
 };
 
@@ -99,7 +99,7 @@ pub struct NodeDetachResult {
 }
 
 /// `node/prompt` and `node/steer` share this result — and only this result. The params are
-/// separate types (see [`crate::params::NodeSteerParams`]) because the two calls are refused under
+/// separate types (see [`crate::proto::params::NodeSteerParams`]) because the two calls are refused under
 /// different conditions; the *answers* are genuinely the same question: which verb was performed,
 /// and what state did the node move to.
 ///
@@ -212,8 +212,8 @@ pub struct SessionQuitResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DetachGuidance, ResidentReason, SupervisorDisposition};
-    use marion_core::contract::ExitStatus;
+    use crate::contract::ExitStatus;
+    use crate::proto::model::{DetachGuidance, ResidentReason, SupervisorDisposition};
 
     #[test]
     fn results_round_trip() {

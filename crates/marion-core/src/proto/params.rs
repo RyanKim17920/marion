@@ -13,15 +13,15 @@
 
 use std::path::PathBuf;
 
-use marion_core::contract::{AgentId, Isolation};
-use marion_core::harness::Harness;
+use crate::contract::{AgentId, Isolation};
+use crate::harness::Harness;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{
+use crate::proto::model::{
     ElicitationRequestId, ElicitationResponse, PermissionDecision, PermissionRequestId, ProbeMode,
     QuitDisposition,
 };
-use crate::native::NativeLaunchContext;
+use crate::proto::native::NativeLaunchContext;
 
 /// `tree/subscribe` — no parameters, deliberately.
 ///
@@ -79,7 +79,7 @@ where
 ///
 /// One node per call, not a session-wide attach, because §7.3.3's finding is that *"the split is
 /// by node, not by session"* and one node's answer (re-subscribe) is not another's (replay). A
-/// session-wide parameter would force a single [`crate::AttachMode`] on a tree that legitimately
+/// session-wide parameter would force a single [`crate::proto::AttachMode`] on a tree that legitimately
 /// needs all three.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,7 +130,7 @@ pub struct NodeResumeParams {
 }
 
 /// `node/steer` — mid-flight injection (§6.3). Requires `caps.steer`; a harness without it is
-/// answered [`crate::FailureKind::Unsupported`].
+/// answered [`crate::proto::FailureKind::Unsupported`].
 ///
 /// A separate params type from [`NodePromptParams`] despite the identical shape. They are not the
 /// same message: §6.3 makes the choice between them a function of the node's state, the two are
@@ -218,7 +218,7 @@ pub struct ElicitationReplyParams {
 /// 2. An invented enum of plausible policies. Worse: it publishes a vocabulary the supervisor
 ///    would have to either implement to marion's guess or refuse per-variant, and a client written
 ///    against the guess is a client that must be un-taught.
-/// 3. Uninhabited. `policy/set` remains a name the protocol knows — [`crate::Method::PolicySet`]
+/// 3. Uninhabited. `policy/set` remains a name the protocol knows — [`crate::proto::Method::PolicySet`]
 ///    exists, is counted in the fifteen, and round-trips — but no call to it can be constructed in
 ///    Rust and none can be deserialized from the wire. The refusal arrives as a sentence naming the
 ///    reason, not as a dropped field.
@@ -285,7 +285,7 @@ pub struct SpawnCaller {
 ///
 /// The two are one method and one params type, distinguished by [`Self::caller`]: `None` is the
 /// client, `Some` is the node. There is deliberately no sixteenth method for the child case. §2
-/// enumerates fifteen, [`crate::Method::ALL`] is pinned at fifteen by test, and the distinction is
+/// enumerates fifteen, [`crate::proto::Method::ALL`] is pinned at fifteen by test, and the distinction is
 /// an `Option` — a second method would have duplicated every field below to carry one extra one.
 ///
 /// Everything from here down is the **root** argument, and it is unchanged because it stays true
@@ -349,7 +349,7 @@ pub struct AgentSpawnParams {
     ///   gated fact is derived from what the supervisor minted, never asserted by the frame.
     ///
     /// A single `Option` and not a second method, for the reason the doc above already gives: §2
-    /// enumerates fifteen methods and [`crate::Method::ALL`] is pinned at fifteen by test.
+    /// enumerates fifteen methods and [`crate::proto::Method::ALL`] is pinned at fifteen by test.
     #[serde(default)]
     pub repo: Option<PathBuf>,
     /// §9's contract terms. Empty is *"none stated"*, which is what a root has.
@@ -451,7 +451,7 @@ pub struct DoctorRunParams {
 ///
 /// The disposition is required and has no default. §7.3.1: a client that closes without calling
 /// this *"has chosen nothing"*, and the absence of a call must never decay into a value — see
-/// [`QuitDisposition`] and [`crate::ClientGone`].
+/// [`QuitDisposition`] and [`crate::proto::ClientGone`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionQuitParams {
